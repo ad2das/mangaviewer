@@ -9,6 +9,7 @@ import android.util.Log;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -35,18 +36,25 @@ public class NtkAppHttpBypassInstrumentedTest {
     public void appHttpClientReachesNtkApiThroughBypassPath() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.init(context);
-        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
+        String siteRoot = InstrumentationRegistry.getArguments()
+                .getString("ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.setNtkSitePreset(siteRoot);
         MainApplication.p.setBaseMode(MTitle.base_comic);
         CustomHttpClient client = MainApplication.getHttpClient();
 
-        String url = CustomHttpClient.NTK_WEBTOON_URL + "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
+        String url = siteRoot + "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
         Map<String, String> headers = new HashMap<>();
         headers.put("User-Agent", client.agent);
         headers.put("Accept", "application/json,text/plain,*/*");
-        headers.put("Referer", CustomHttpClient.NTK_WEBTOON_URL + "/");
+        headers.put("Referer", siteRoot + "/");
 
         long started = System.currentTimeMillis();
-        Response response = client.get(url, headers);
+        Response response = client.mget("/api/manhwa-list?page=1&pageSize=1&withTotal=1", true);
+        if(response == null) {
+            Log.d(TAG, "ntk_app_http_bypass_mget_null root=" + siteRoot
+                    + ",challenge=" + client.getLastCloudflareChallengeUrl());
+            response = client.get(url, headers);
+        }
         assertNotNull("Expected app HTTP bypass path to return an NTK HTTP response", response);
         int code = response.code();
         String body = response.body() == null ? "" : response.body().string();

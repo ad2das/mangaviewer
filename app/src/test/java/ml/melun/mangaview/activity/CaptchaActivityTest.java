@@ -3,6 +3,8 @@ package ml.melun.mangaview.activity;
 import org.junit.Test;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 
+import java.util.Collections;
+
 import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
@@ -21,9 +23,9 @@ public class CaptchaActivityTest {
 
     @Test
     public void stableNtkNormalPageCanFinishCaptchaAfterCookieSync() {
-        assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(1, 2000L));
-        assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(2, 1200L));
-        assertTrue(CaptchaActivity.shouldFinishNormalNtkPageForTest(2, 1201L));
+        assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(0, 2000L));
+        assertFalse(CaptchaActivity.shouldFinishNormalNtkPageForTest(1, 800L));
+        assertTrue(CaptchaActivity.shouldFinishNormalNtkPageForTest(1, 801L));
     }
 
     @Test
@@ -137,19 +139,19 @@ public class CaptchaActivityTest {
     @Test
     public void turnstileTouchRepeatsAreBoundedAndSpaced() {
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(1000L, 0L, 0));
-        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(7000L, 0L, 1));
-        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(8000L, 0L, 1));
-        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(16000L, 8000L, 2));
-        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(24000L, 16000L, 3));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(2400L, 0L, 1));
+        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(2500L, 0L, 1));
+        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(5000L, 2500L, 5));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(7500L, 5000L, 6));
     }
 
     @Test
     public void turnstileCheckBacksOffUntilNextAllowedTouch() {
         assertEquals(600L, CaptchaActivity.nextTurnstileCheckDelayForTest(true, "", 0, 1000L, 0L));
         assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "", 0, 1000L, 0L));
-        assertEquals(6000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 1, 2000L, 0L));
-        assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 2, 9000L, 0L));
-        assertEquals(2000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 3, 9000L, 0L));
+        assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 1, 2000L, 0L));
+        assertEquals(1500L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 2, 1000L, 0L));
+        assertEquals(2000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 6, 9000L, 0L));
     }
 
     @Test
@@ -207,12 +209,40 @@ public class CaptchaActivityTest {
     public void ntkCaptchaBridgeReplaysChallengePostsWithBrowserFetchHeaders() {
         String script = CaptchaActivity.ntkQuicBridgeJavascriptForTest();
 
-        assertTrue(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return String(m||'GET').toUpperCase()!=='GET';"));
+        assertTrue(script.contains("window.__ntkBridgeFetch=function(input,init)"));
+        assertFalse(script.contains("window.fetch=function"));
         assertTrue(script.contains("Sec-Fetch-Dest"));
         assertTrue(script.contains("Sec-Fetch-Mode"));
         assertTrue(script.contains("Sec-Fetch-Site"));
         assertTrue(script.contains("sec-ch-ua"));
         assertTrue(script.contains("navigator.userAgent"));
         assertFalse(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return false;"));
+    }
+
+    @Test
+    public void ntkDocumentVerificationRejectsNginxForbiddenPage() {
+        assertFalse(CaptchaActivity.isUsableNtkDocumentVerificationBodyForTest(
+                "<html><head><title>403 Forbidden</title></head><body><center><h1>403 Forbidden</h1></center><hr><center>nginx/1.24.0</center></body></html>"));
+        assertTrue(CaptchaActivity.isUsableNtkDocumentVerificationBodyForTest(
+                "<!doctype html><html><body><a href=\"/manhwa/2\">One Piece</a><script src=\"/_next/static/app.js\"></script></body></html>"));
+    }
+
+    @Test
+    public void ntkBridgeRetriesOnlyBlockedControlPostsWithHttp2() {
+        NtkQuicFetcher.Result forbidden = new NtkQuicFetcher.Result(
+                403, new byte[0], Collections.emptyMap(), null);
+        NtkQuicFetcher.Result ok = new NtkQuicFetcher.Result(
+                200, new byte[0], Collections.emptyMap(), null);
+
+        assertTrue(CaptchaActivity.shouldRetryNtkBridgePostWithHttp2ForTest(
+                CustomHttpClient.NTK_WEBTOON_URL + "/api/ad/challenge", "POST", forbidden));
+        assertTrue(CaptchaActivity.shouldRetryNtkBridgePostWithHttp2ForTest(
+                CustomHttpClient.NTK_WEBTOON_URL + "/api/ev/sync", "POST", forbidden));
+        assertFalse(CaptchaActivity.shouldRetryNtkBridgePostWithHttp2ForTest(
+                CustomHttpClient.NTK_WEBTOON_URL + "/api/ad/challenge", "GET", forbidden));
+        assertFalse(CaptchaActivity.shouldRetryNtkBridgePostWithHttp2ForTest(
+                CustomHttpClient.NTK_WEBTOON_URL + "/api/manhwa-list", "POST", forbidden));
+        assertFalse(CaptchaActivity.shouldRetryNtkBridgePostWithHttp2ForTest(
+                CustomHttpClient.NTK_WEBTOON_URL + "/api/ad/challenge", "POST", ok));
     }
 }

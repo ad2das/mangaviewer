@@ -44,23 +44,38 @@ public final class NtkQuicFetcher {
 
     public static Result fetch(Context context, String url, String userAgent, String cookieHeader,
                         Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs) {
+        return fetchWithTransport(context, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, true);
+    }
+
+    public static Result fetchHttp2Only(Context context, String url, String userAgent, String cookieHeader,
+                        Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs) {
+        return fetchWithTransport(context, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, false);
+    }
+
+    private static Result fetchWithTransport(Context context, String url, String userAgent, String cookieHeader,
+                        Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs,
+                        boolean enableQuic) {
         if(!isAvailable())
             return Result.error(new UnsupportedOperationException("HttpEngine requires API 34"));
         try {
             String host = URI.create(url).getHost();
             if(host == null || host.length() == 0)
                 return Result.error(new IllegalArgumentException("Missing host: " + url));
-            HttpEngine engine = new HttpEngine.Builder(context.getApplicationContext())
+            HttpEngine.Builder engineBuilder = new HttpEngine.Builder(context.getApplicationContext())
                     .setEnableHttp2(true)
-                    .setEnableQuic(true)
+                    .setEnableQuic(enableQuic)
                     .setEnableBrotli(true)
-                    .setUserAgent(userAgent)
-                    .setQuicOptions(new QuicOptions.Builder()
-                            .addAllowedQuicHost(host)
-                            .setHandshakeUserAgent(userAgent)
-                            .build())
-                    .addQuicHint(host, 443, 443)
-                    .build();
+                    .setUserAgent(userAgent);
+            if(enableQuic) {
+                engineBuilder.setQuicOptions(new QuicOptions.Builder()
+                                .addAllowedQuicHost(host)
+                                .setHandshakeUserAgent(userAgent)
+                                .build())
+                        .addQuicHint(host, 443, 443);
+            }
+            HttpEngine engine = engineBuilder.build();
             ExecutorService executor = Executors.newSingleThreadExecutor();
             try {
                 return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,

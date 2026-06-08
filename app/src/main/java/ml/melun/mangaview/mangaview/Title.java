@@ -203,7 +203,7 @@ public class Title extends MTitle {
             if(allowPathRefresh && shouldRefreshNtkTitlePath(client, titlePath)) {
                 NtkPathRefreshResult refresh = refreshNtkTitlePathFromSearch(client, segment, titlePath);
                 if(refresh.blocked && (titlePath == null || titlePath.length() == 0))
-                    return LOAD_CAPTCHA;
+                    return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
                 titlePath = ntkTitlePath(segment);
             }
             String titleKey = ntkTitleKey(segment);
@@ -241,7 +241,7 @@ public class Title extends MTitle {
                         if(refresh.refreshed)
                             return fetchNtkEps(client, false);
                         if(refresh.blocked)
-                            return LOAD_CAPTCHA;
+                            return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
                     }
                     Log.d(TAG, "ntk_episode_parse reason=rsc_empty_slug,id=" + id
                             + ",segment=" + segment
@@ -271,12 +271,22 @@ public class Title extends MTitle {
                             + ",path=" + titlePath);
                     return LOAD_OK;
                 }
+                NtkEpisodeParser.ParseResult desktopParsed =
+                        parseNtkEpisodesFromDesktopDocument(client, titlePath, segment, titleKey, baseMode);
+                if(desktopParsed.episodes.size() > 0) {
+                    eps = desktopParsed.episodes;
+                    Log.d(TAG, "ntk_episode_parse reason=desktop_document_after_page_failure,id=" + id
+                            + ",segment=" + segment
+                            + ",path=" + titlePath
+                            + ",episodes=" + eps.size());
+                    return LOAD_OK;
+                }
                 if(allowPathRefresh && shouldRefreshNtkTitlePathAfterMissing(client, titlePath)) {
                     NtkPathRefreshResult refresh = refreshNtkTitlePathFromApi(client, segment, titlePath);
                     if(refresh.refreshed)
                         return fetchNtkEps(client, false);
                     if(refresh.blocked)
-                        return LOAD_CAPTCHA;
+                        return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
                 }
                 if(isNtkLoadBlocked(e))
                     return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
@@ -312,7 +322,7 @@ public class Title extends MTitle {
                     if(refresh.refreshed)
                         return fetchNtkEps(client, false);
                     if(refresh.blocked)
-                        return LOAD_CAPTCHA;
+                        return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
                 }
                 return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
             }
@@ -341,7 +351,7 @@ public class Title extends MTitle {
                     if(refresh.refreshed)
                         return fetchNtkEps(client, false);
                     if(refresh.blocked)
-                        return LOAD_CAPTCHA;
+                        return shouldOpenNtkCaptchaForLoadFailure(client) ? LOAD_CAPTCHA : LOAD_ERROR;
                 }
                 return LOAD_ERROR;
             }
@@ -431,6 +441,33 @@ public class Title extends MTitle {
                 return true;
         }
         return false;
+    }
+
+    private NtkEpisodeParser.ParseResult parseNtkEpisodesFromDesktopDocument(CustomHttpClient client, String titlePath,
+                                                                             String segment, String titleKey,
+                                                                             int baseMode) {
+        NtkEpisodeParser.ParseResult empty = new NtkEpisodeParser.ParseResult();
+        if(client == null || titlePath == null || titlePath.length() == 0)
+            return empty;
+        try {
+            CustomHttpClient.PageResponse page = client.mgetNtkDesktopDocumentPage(titlePath, PAGE_CACHE_TTL_MS);
+            Log.d(TAG, "ntk_episode_desktop_document_loaded id=" + id
+                    + ",path=" + titlePath
+                    + ",code=" + page.code
+                    + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
+            if(page.code >= 400 || page.body == null || page.body.length() == 0
+                    || client.isCloudflareChallengeResponse(page.code, page.body))
+                return empty;
+            NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(Jsoup.parse(page.body),
+                    segment, titleKey, baseMode, this);
+            if(parsed.episodes.size() > 0 || parsed.definitiveEmptyEpisodeList)
+                return parsed;
+            return parseNtkEpisodesFromNextPayloads(client, titlePath, page.body, segment, titleKey, baseMode);
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_episode_desktop_document_failed id=" + id
+                    + ",path=" + titlePath, e);
+        }
+        return empty;
     }
 
     private NtkEpisodeParser.ParseResult parseNtkEpisodesFromNextPayloads(CustomHttpClient client, String titlePath,
@@ -544,7 +581,9 @@ public class Title extends MTitle {
     }
 
     private static boolean shouldOpenNtkCaptchaForLoadFailure(CustomHttpClient client) {
-        return client == null || (!client.hasNtkAccessProof() && !client.hasRecentNtkAccessVerification());
+        return client == null || (!client.hasRecentNtkHardBlock()
+                && !client.hasNtkAccessProof()
+                && !client.hasRecentNtkAccessVerification());
     }
 
     private void logNtkEpisodeParse(String reason, CustomHttpClient.PageResponse page, String segment,
@@ -570,12 +609,18 @@ public class Title extends MTitle {
         return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("cloudflare");
     }
 
+    private static boolean isNtkHardBlockFailure(Exception e) {
+        String message = e == null ? null : e.getMessage();
+        return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("ntk hard block");
+    }
+
     private static boolean isNtkLoadBlocked(Exception e) {
         String message = e == null ? null : e.getMessage();
         if(message == null)
             return false;
         String lower = message.toLowerCase(java.util.Locale.ROOT);
-        return lower.contains("cloudflare")
+        return lower.contains("ntk hard block")
+                || lower.contains("cloudflare")
                 || lower.contains("request failed")
                 || lower.contains("connectexception")
                 || lower.contains("connection refused")
@@ -830,6 +875,8 @@ public class Title extends MTitle {
             }
         } catch(Exception e) {
             Log.d(TAG, "ntk_episode_path_refresh_failed id=" + id + ",name=" + name, e);
+            if(isNtkHardBlockFailure(e))
+                return NtkPathRefreshResult.blocked();
             if(isNtkLoadBlocked(e)) {
                 NtkPathRefreshResult searchRefresh = refreshNtkTitlePathFromSearch(client, segment, currentPath);
                 return searchRefresh.refreshed ? searchRefresh : NtkPathRefreshResult.none();
@@ -849,6 +896,10 @@ public class Title extends MTitle {
                         + ",path=" + searchPath
                         + ",code=" + page.code
                         + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
+                NtkPathRefreshResult categoryRefresh =
+                        refreshNtkTitlePathFromCategory(client, segment, currentPath, "search_blocked");
+                if(categoryRefresh.refreshed || categoryRefresh.blocked)
+                    return categoryRefresh;
                 return NtkPathRefreshResult.blocked();
             }
             if(page.code >= 400 || page.code == 301 || page.code == 302) {
@@ -858,7 +909,7 @@ public class Title extends MTitle {
                         + ",code=" + page.code
                         + ",bodyLen=" + (page.body == null ? 0 : page.body.length())
                         + ",snippet=" + ntkLogSnippet(page.body));
-                return NtkPathRefreshResult.none();
+                return refreshNtkTitlePathFromCategory(client, segment, currentPath, "search_unusable");
             }
             String refreshedPath = findNtkSearchTitlePath(Jsoup.parse(page.body), segment, name);
             if(refreshedPath.length() == 0) {
@@ -868,7 +919,7 @@ public class Title extends MTitle {
                         + ",code=" + page.code
                         + ",bodyLen=" + (page.body == null ? 0 : page.body.length())
                         + ",snippet=" + ntkLogSnippet(page.body));
-                return NtkPathRefreshResult.none();
+                return refreshNtkTitlePathFromCategory(client, segment, currentPath, "search_miss");
             }
             Log.d(TAG, "ntk_episode_search_refresh_candidate old=" + currentPath
                     + ",candidate=" + refreshedPath
@@ -881,6 +932,70 @@ public class Title extends MTitle {
                 return refreshNtkTitlePathFromDesktopSearch(client, segment, currentPath, searchPath);
         } catch(Exception e) {
             Log.d(TAG, "ntk_episode_search_refresh_failed id=" + id + ",name=" + name, e);
+            if(isNtkHardBlockFailure(e))
+                return NtkPathRefreshResult.blocked();
+            if(isNtkCloudflareChallengeFailure(e))
+                return NtkPathRefreshResult.blocked();
+            NtkPathRefreshResult categoryRefresh =
+                    refreshNtkTitlePathFromCategory(client, segment, currentPath, "search_exception");
+            if(categoryRefresh.refreshed || categoryRefresh.blocked)
+                return categoryRefresh;
+        }
+        return NtkPathRefreshResult.none();
+    }
+
+    private NtkPathRefreshResult refreshNtkTitlePathFromCategory(CustomHttpClient client, String segment,
+                                                                 String currentPath, String reason) {
+        if(client == null || name == null || name.trim().length() == 0)
+            return NtkPathRefreshResult.none();
+        String categoryPath = "/" + ("webtoon".equals(segment) ? "webtoon" : "manhwa");
+        try {
+            CustomHttpClient.PageResponse page = client.mgetNtkDesktopDocumentPage(categoryPath, PAGE_CACHE_TTL_MS);
+            if(client.isCloudflareChallengeResponse(page.code, page.body)) {
+                Log.d(TAG, "ntk_episode_category_refresh_blocked id=" + id
+                        + ",name=" + name
+                        + ",reason=" + reason
+                        + ",path=" + categoryPath
+                        + ",code=" + page.code
+                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length()));
+                return NtkPathRefreshResult.blocked();
+            }
+            if(page.code >= 400 || page.code == 301 || page.code == 302) {
+                Log.d(TAG, "ntk_episode_category_refresh_unusable id=" + id
+                        + ",name=" + name
+                        + ",reason=" + reason
+                        + ",path=" + categoryPath
+                        + ",code=" + page.code
+                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length())
+                        + ",snippet=" + ntkLogSnippet(page.body));
+                return NtkPathRefreshResult.none();
+            }
+            String refreshedPath = findNtkSearchTitlePath(Jsoup.parse(page.body), segment, name);
+            if(refreshedPath.length() == 0) {
+                Log.d(TAG, "ntk_episode_category_refresh_miss id=" + id
+                        + ",name=" + name
+                        + ",reason=" + reason
+                        + ",path=" + categoryPath
+                        + ",code=" + page.code
+                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length())
+                        + ",links=" + ntkSearchDebugLinks(page.body, segment));
+                return NtkPathRefreshResult.none();
+            }
+            Log.d(TAG, "ntk_episode_category_refresh_candidate old=" + currentPath
+                    + ",candidate=" + refreshedPath
+                    + ",name=" + name
+                    + ",reason=" + reason
+                    + ",bodyLen=" + (page.body == null ? 0 : page.body.length())
+                    + ",links=" + ntkSearchDebugLinks(page.body, segment));
+            return applyNtkTitlePathRefresh(segment, refreshedPath, currentPath)
+                    ? NtkPathRefreshResult.refreshed()
+                    : NtkPathRefreshResult.none();
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_episode_category_refresh_failed id=" + id
+                    + ",name=" + name
+                    + ",reason=" + reason, e);
+            if(isNtkHardBlockFailure(e))
+                return NtkPathRefreshResult.blocked();
             if(isNtkCloudflareChallengeFailure(e))
                 return NtkPathRefreshResult.blocked();
         }
@@ -907,6 +1022,8 @@ public class Title extends MTitle {
                     : NtkPathRefreshResult.none();
         } catch(Exception e) {
             Log.d(TAG, "ntk_episode_desktop_search_refresh_failed id=" + id + ",name=" + name, e);
+            if(isNtkHardBlockFailure(e))
+                return NtkPathRefreshResult.blocked();
             if(isNtkCloudflareChallengeFailure(e))
                 return NtkPathRefreshResult.blocked();
         }

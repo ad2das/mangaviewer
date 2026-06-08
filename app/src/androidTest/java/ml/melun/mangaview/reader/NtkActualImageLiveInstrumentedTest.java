@@ -34,6 +34,8 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.ReaderV2Activity;
 import ml.melun.mangaview.activity.ViewerIntentContract;
+import ml.melun.mangaview.mangaview.CustomHttpClient;
+import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Search;
@@ -44,17 +46,20 @@ import ml.melun.mangaview.repository.MangaRepository;
 public class NtkActualImageLiveInstrumentedTest {
     private static final String TAG = "ViewerPerf";
     private static final String PACKAGE_NAME = "ml.melun.mangaview";
-    private static final String NTK_ROOT = "https://sbxh4.com";
+    private String ntkRoot;
 
     @Before
     public void setUp() {
         LiveNetworkAssume.assumeEnabled();
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.init(context);
-        MainApplication.p.setNtkSitePreset(NTK_ROOT);
+        ntkRoot = InstrumentationRegistry.getArguments()
+                .getString("ntkSiteRoot", "https://sbxh4.com");
+        MainApplication.p.setNtkSitePreset(ntkRoot);
         MainApplication.p.setBaseMode(MTitle.base_comic);
         MainApplication.getHttpClient().clearPageCache();
         MainApplication.getHttpClient().clearLastCloudflareChallenge();
+        MainApplication.getHttpClient().clearNtkAccessVerification();
         Search.clearNtkResultCaches();
     }
 
@@ -67,17 +72,11 @@ public class NtkActualImageLiveInstrumentedTest {
 
         ensureNtkClearance();
 
-        Title title = findOnePieceTitle();
-        int episodeResult = MangaRepository.fetchEpisodesForeground(title);
-        if(episodeResult == Title.LOAD_CAPTCHA) {
-            runCaptchaFlow();
-            episodeResult = MangaRepository.fetchEpisodesForeground(title);
-        }
-        assertTrue("Expected NTK One Piece episodes to load, result=" + episodeResult,
-                episodeResult == Title.LOAD_OK);
+        Title title = findCurrentNtkComicTitleWithEpisodes();
+        assertNotNull("Expected a current NTK comic title with episodes", title);
 
-        Manga episode = findEpisode(title, "1184");
-        assertNotNull("Expected NTK One Piece 1184 episode", episode);
+        Manga episode = findRenderableEpisode(title);
+        assertNotNull("Expected NTK comic episode", episode);
         episode.setMode(0);
         episode.setTitle(title);
         episode.setTitleId(title.getId());
@@ -91,6 +90,7 @@ public class NtkActualImageLiveInstrumentedTest {
                     .prioritizeWebViewFallback());
         }
         assertTrue("Expected NTK One Piece 1184 viewer fetch to load, result=" + viewerResult
+                        + ",title=" + title.getName()
                         + ",path=" + episode.getNtkEpisodePath()
                         + ",imageEpisodeId=" + episode.getNtkImageEpisodeId()
                         + ",imageCount=" + episode.getNtkImageCount()
@@ -106,7 +106,7 @@ public class NtkActualImageLiveInstrumentedTest {
                 + ",parseReason=" + episode.getNtkViewerParseReason()
                 + ",count=" + images.size()
                 + ",first=" + (images.isEmpty() ? "" : images.get(0)));
-        assertTrue("Expected NTK One Piece 1184 image URLs", images.size() > 0);
+        assertTrue("Expected NTK image URLs for " + title.getName(), images.size() > 0);
 
         File firstImage = ReaderImageCache.INSTANCE.getOrFetchFileForeground(context, episode, images.get(0));
         Bitmap decoded = BitmapFactory.decodeFile(firstImage.getAbsolutePath());
@@ -149,8 +149,7 @@ public class NtkActualImageLiveInstrumentedTest {
     }
 
     private void ensureNtkClearance() throws Exception {
-        if(MainApplication.getHttpClient().hasCloudflareClearance()
-                && MainApplication.getHttpClient().hasRecentNtkAccessVerification())
+        if(MainApplication.getHttpClient().hasRecentNtkAccessVerification())
             return;
         runCaptchaFlow();
     }
@@ -158,54 +157,76 @@ public class NtkActualImageLiveInstrumentedTest {
     private void runCaptchaFlow() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         Intent intent = new Intent(context, CaptchaActivity.class);
-        intent.putExtra("url", NTK_ROOT + "/");
+        intent.putExtra("url", ntkRoot + "/");
         try(ActivityScenario<CaptchaActivity> ignored = ActivityScenario.launch(intent)) {
             long deadline = System.currentTimeMillis() + 120_000L;
             while(System.currentTimeMillis() < deadline) {
-                if(MainApplication.getHttpClient().hasCloudflareClearance()
-                        && MainApplication.getHttpClient().hasRecentNtkAccessVerification())
+                if(MainApplication.getHttpClient().hasRecentNtkAccessVerification())
                     return;
                 Thread.sleep(500L);
             }
         }
         assertTrue("Expected in-app NTK captcha flow to produce verified clearance",
-                MainApplication.getHttpClient().hasCloudflareClearance()
-                        && MainApplication.getHttpClient().hasRecentNtkAccessVerification());
+                MainApplication.getHttpClient().hasRecentNtkAccessVerification());
     }
 
-    private Title findOnePieceTitle() throws Exception {
-        Search search = new Search("원피스", 0, MTitle.base_comic);
-        int result = search.fetch(MainApplication.getHttpClient());
-        if(result != 0) {
-            runCaptchaFlow();
-            search = new Search("원피스", 0, MTitle.base_comic);
-            result = search.fetch(MainApplication.getHttpClient());
-        }
-        assertTrue("Expected NTK One Piece search to succeed, result=" + result, result == 0);
-        for(Title title : search.getResult()) {
-            if(title == null || title.getName() == null)
+    private Title findCurrentNtkComicTitleWithEpisodes() throws Exception {
+        CustomHttpClient client = MainApplication.getHttpClient();
+        CustomHttpClient.PageResponse page = client.mgetNtkDesktopDocumentPage("/manhwa", 0L);
+        assertTrue("Expected current NTK manhwa page, code=" + page.code
+                        + ",bodyLen=" + (page.body == null ? 0 : page.body.length()),
+                page.code >= 200 && page.code < 400 && page.body != null && page.body.length() > 0);
+        List<Title> titles = MainPageWebtoon.parseNtkTitleListPayload(page.body, MTitle.base_comic, 12);
+        Log.d(TAG, "ntk_actual_category_titles count=" + titles.size());
+        int attempts = 0;
+        int maxAttempts = parseIntArgument("ntkMaxTitleAttempts", 3);
+        for(Title title : titles) {
+            if(title == null)
                 continue;
-            String name = title.getName().toLowerCase(java.util.Locale.ROOT);
-            if(title.getBaseMode() == MTitle.base_comic
-                    && "ntk".equals(title.getSourceSite())
-                    && (name.contains("원피스") || name.contains("one piece"))) {
-                Log.d(TAG, "ntk_actual_title id=" + title.getId()
-                        + ",name=" + title.getName()
-                        + ",source=" + title.getSourceSite());
-                return title;
+            attempts++;
+            Log.d(TAG, "ntk_actual_title_candidate index=" + attempts
+                    + ",id=" + title.getId()
+                    + ",name=" + title.getName()
+                    + ",source=" + title.getSourceSite()
+                    + ",path=" + title.getPath());
+            int episodeResult = client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY,
+                    () -> MangaRepository.fetchEpisodesForeground(title));
+            if(episodeResult == Title.LOAD_CAPTCHA) {
+                runCaptchaFlow();
+                episodeResult = client.runWithFetchMode(CustomHttpClient.FetchMode.DIRECT_ONLY,
+                        () -> MangaRepository.fetchEpisodesForeground(title));
             }
+            List<Manga> episodes = Title.orderedEpisodeSnapshot(title.getEps());
+            int episodeCount = episodes == null ? 0 : episodes.size();
+            Log.d(TAG, "ntk_actual_title_episode_result index=" + attempts
+                    + ",result=" + episodeResult
+                    + ",eps=" + episodeCount);
+            if(episodeResult == Title.LOAD_OK && episodeCount > 0)
+                return title;
+            if(attempts >= maxAttempts)
+                break;
         }
-        throw new AssertionError("Expected NTK One Piece search result");
+        return null;
     }
 
-    private static Manga findEpisode(Title title, String number) {
+    private static int parseIntArgument(String key, int fallback) {
+        try {
+            String value = InstrumentationRegistry.getArguments().getString(key);
+            return value == null || value.trim().length() == 0 ? fallback : Integer.parseInt(value.trim());
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static Manga findRenderableEpisode(Title title) {
         List<Manga> episodes = Title.orderedEpisodeSnapshot(title == null ? null : title.getEps());
         if(episodes == null)
             return null;
-        for(Manga episode : episodes) {
+        for(int i = episodes.size() - 1; i >= 0; i--) {
+            Manga episode = episodes.get(i);
             if(episode == null)
                 continue;
-            if(number.equals(Manga.visibleEpisodeNumberKey(episode.getName())))
+            if(episode.getNtkEpisodePath() != null && episode.getNtkEpisodePath().length() > 0)
                 return episode;
         }
         return null;

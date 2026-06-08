@@ -648,6 +648,22 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkNginxForbiddenIsHardBlockedForProtectedPaths() {
+        String nginx403 = "<html><head><title>403 Forbidden</title></head>"
+                + "<body><center><h1>403 Forbidden</h1></center>"
+                + "<hr><center>nginx/1.24.0 (Ubuntu)</center></body></html>";
+
+        assertTrue(CustomHttpClient.isNtkHardBlockedResponseForTest(
+                "/manhwa/37043/1816201", 403, nginx403));
+        assertTrue(CustomHttpClient.isNtkHardBlockedResponseForTest(
+                "/api/manhwa-list?page=1", 403, nginx403));
+        assertFalse(CustomHttpClient.isNtkHardBlockedResponseForTest(
+                "/manhwa", 403, nginx403));
+        assertFalse(CustomHttpClient.isNtkHardBlockedResponseForTest(
+                "/manhwa/37043/1816201", 200, nginx403));
+    }
+
+    @Test
     public void coldStartStalePageCacheServesImmediatelyWhenAllowed() {
         assertTrue(CustomHttpClient.shouldServeColdStartCachedPageImmediatelyForTest(true,
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, false));

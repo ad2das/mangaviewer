@@ -70,6 +70,8 @@ public class NtkWebViewFallbackManagerTest {
                 "<html><body>Verifying you are human. Cloudflare security service.</body></html>"));
         assertTrue(NtkWebViewFallbackManager.isBlockedNtkDocumentBodyForTest(
                 "<html><head><title>개발자 도구 차단</title></head></html>"));
+        assertTrue(NtkWebViewFallbackManager.isBlockedNtkDocumentBodyForTest(
+                "<html><head><title>403 Forbidden</title></head><body><center><h1>403 Forbidden</h1></center><hr><center>nginx/1.24.0</center></body></html>"));
         assertFalse(NtkWebViewFallbackManager.isBlockedNtkDocumentBodyForTest(
                 "<html><body><img src=\"/webtoon_uploads/1.jpg\"></body></html>"));
     }

@@ -739,9 +739,9 @@ final class NtkWebViewFallbackManager {
             } catch (Exception e) {
                 ml.melun.mangaview.report.CrashReporter.record(e);
             }
-            boolean blockedEpisodeDocument = isBlockedNtkDocumentBody(body);
+            boolean blockedDocument = isBlockedNtkDocumentBody(body);
             boolean unusableEpisodeDocument = isUnusableNtkEpisodeDocumentResult(task.path, body);
-            if(isNtkEpisodeDocumentPath(task.path) && blockedEpisodeDocument) {
+            if(shouldNavigateDocument(task.path) && blockedDocument) {
                 finishOnMain(task, code > 0 && code != 200 ? code : 403, body, true);
                 return;
             }
@@ -1115,6 +1115,13 @@ final class NtkWebViewFallbackManager {
             return false;
         String lower = body.toLowerCase(Locale.ROOT);
         return lower.contains("just a moment")
+                || lower.contains("webpage not available")
+                || lower.contains("net::err_")
+                || lower.contains("err_connection_reset")
+                || lower.contains("err_timed_out")
+                || (lower.contains("403 forbidden") && lower.contains("nginx"))
+                || lower.contains("<title>403 forbidden</title>")
+                || lower.contains("<h1>403 forbidden</h1>")
                 || lower.contains("challenges.cloudflare.com")
                 || lower.contains("/cdn-cgi/challenge-platform")
                 || lower.contains("cf-challenge")
@@ -1170,7 +1177,10 @@ final class NtkWebViewFallbackManager {
                 + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),native:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,native:true}}));}catch(e){}}"
                 + "async function bridgeReq(url,method,body,extra){var absolute=abs(url),h={'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()};if(extra){Object.keys(extra).forEach(function(k){h[k]=extra[k];});}if(window.NtkQuicBridge){var raw=window.NtkQuicBridge.request(absolute,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(absolute,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
                 + "function fireImp(u){try{fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){}}"
-                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok)return false;if(c.body.trusted&&!c.body.challenge){markAck();return true;}if(!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'',imps=ch.impressionUrls||[];imps.forEach(fireImp);await sleep(180);await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:ch.slotCount||4,visible:ch.minSeen||2,path:scope,td:0,tp:''});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
+                + "function guardVersion(){try{var h=document.documentElement?document.documentElement.outerHTML:'';var m=h.match(/wv=([^\"'&<>]+)/);if(m&&m[1])return decodeURIComponent(m[1]);m=h.match(/b\\d{13}[^\"'<>]*wasm-\\d{13}/);if(m&&m[0])return m[0];m=h.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(m&&m[1]){var n=Number(m[1].slice(1));if(Number.isFinite(n))return m[1]+'-wasm-'+(n+4);}if(performance&&performance.getEntriesByType){var es=performance.getEntriesByType('resource')||[];for(var i=0;i<es.length;i++){var u=String(es[i].name||''),r=u.match(/wv=([^&]+)/);if(r&&r[1])return decodeURIComponent(r[1]);r=u.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(r&&r[1]){var q=Number(r[1].slice(1));if(Number.isFinite(q))return r[1]+'-wasm-'+(q+4);}}}}catch(e){}return '';}"
+                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;var v=guardVersion();if(!v){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:'missing version'}));}catch(_){}return null;}var js='/api/ad/guard-js?v='+encodeURIComponent(v),wasm='/api/ad/guard-wasm?v='+encodeURIComponent(v);var mod=await import(abs(js));if(mod&&mod.default)await mod.default(abs(wasm));window.__ntkGuardModule=mod;return mod;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:String(e),version:guardVersion()}));}catch(_){}return null;}}"
+                + "async function guardAck(ch){try{var mod=await loadGuard();if(!mod||!mod.__i4||!ch)return false;mod.__i4(JSON.stringify(ch),scope);await waitAck(2600);return acked();}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckError:String(e)}));}catch(_){}return false;}}"
+                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok)return false;if(c.body.trusted&&!c.body.challenge){markAck();return true;}if(!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'',imps=ch.impressionUrls||[];imps.forEach(fireImp);if(await guardAck(ch))return true;await sleep(180);await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:ch.slotCount||4,visible:ch.minSeen||2,path:scope,td:0,tp:''});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
                 + "function extractAckState(){try{var ls={},ss={},i,k;for(i=0;i<localStorage.length;i++){k=localStorage.key(i);if(k)ls[k]=localStorage.getItem(k);}for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i);if(k)ss[k]=sessionStorage.getItem(k);}return JSON.stringify({cookies:docCookie(),local:ls,session:ss,ackScope:(function(){try{return window.__ntk_ad_ack_scope;}catch(e){return null;}})(),ntkVars:(function(){try{var o={};for(var p in window)if(p.indexOf('__ntk')===0)try{o[p]=String(window[p]);}catch(e){}return o;}catch(e){return{};}})(),ua:navigator.userAgent,ts:Date.now()});}catch(e){return JSON.stringify({error:String(e)});}}"
                 + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,armed=false;if(!acked()){armed=true;if(!(await directAck()))rearm();}var r=await api();while(Date.now()<deadline&&r&&r.status===403){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!acked()&&!armed){armed=true;if(!(await directAck()))rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
                 + "})()";
@@ -1183,6 +1193,8 @@ final class NtkWebViewFallbackManager {
         String method = request.getMethod();
         String url = request.getUrl().toString();
         if(method == null || !"GET".equalsIgnoreCase(method) || !isNtkProtectedHttpsUrl(url))
+            return null;
+        if(shouldUseDirectWebViewForActiveFetch(url))
             return null;
         try {
             NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, url, userAgent,
@@ -1212,6 +1224,30 @@ final class NtkWebViewFallbackManager {
         }
     }
 
+    private boolean shouldUseDirectWebViewForActiveFetch(String url) {
+        FetchTask task;
+        synchronized (lock) {
+            task = activeTask;
+        }
+        if(task == null || task.path == null || url == null)
+            return false;
+        String activePath = task.path;
+        try {
+            URI uri = URI.create(url);
+            String path = uri.getRawPath();
+            if(path == null)
+                return false;
+            String query = uri.getRawQuery();
+            String requested = query == null || query.length() == 0 ? path : path + "?" + query;
+            boolean direct = activePath.equals(requested);
+            if(direct && Log.isLoggable(TAG, Log.DEBUG))
+                Log.d(TAG, "ntk_viewer_quic_intercept_skip_direct path=" + activePath);
+            return direct;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static boolean isNtkProtectedHttpsUrl(String url) {
         try {
             URI uri = URI.create(url);
@@ -1220,6 +1256,15 @@ final class NtkWebViewFallbackManager {
             if(!"https".equalsIgnoreCase(scheme) || host == null)
                 return false;
             return hostMatchesRoot(host, currentNtkRootHost());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isNtkAdGuardModuleUrl(String url) {
+        try {
+            String path = URI.create(url).getPath();
+            return path != null && (path.equals("/api/ad/guard-js") || path.equals("/api/ad/guard-wasm"));
         } catch (Exception e) {
             return false;
         }

@@ -70,6 +70,28 @@ public class NtkCaptchaLiveInstrumentedTest {
     }
 
     @Test
+    public void captchaActivityKeepsRealNtkPageOpenForGuardProbe() throws Exception {
+        Intent intent = prepareNtkCaptchaIntent();
+
+        try(ActivityScenario<CaptchaActivity> scenario = ActivityScenario.launch(intent)) {
+            PageState last = new PageState();
+            long deadline = System.currentTimeMillis() + 25000L;
+            while(System.currentTimeMillis() < deadline) {
+                PageState state = readPageState(scenario);
+                if(state != null)
+                    last = state;
+                Thread.sleep(1000L);
+            }
+
+            assertFalse("NTK captcha WebView must not stay on a network error page: " + last.summary(),
+                    last.looksLikeWebViewNetworkError());
+            assertTrue("Expected real NTK captcha challenge or normal page during guard probe, got: "
+                            + last.summary(),
+                    last.looksLikeChallengeOrNormal());
+        }
+    }
+
+    @Test
     public void captchaActivityReceivesRealNtkClearanceWhenRequested() throws Exception {
         String wait = InstrumentationRegistry.getArguments().getString("waitForNtkClearance");
         Assume.assumeTrue("Manual NTK clearance smoke requires -e waitForNtkClearance true",
@@ -121,7 +143,13 @@ public class NtkCaptchaLiveInstrumentedTest {
         MainApplication.getHttpClient().resetCookie();
 
         Intent intent = new Intent(context, CaptchaActivity.class);
-        intent.putExtra("url", siteRoot + "/");
+        String path = InstrumentationRegistry.getArguments().getString("ntkCaptchaPath", "/");
+        if(path == null || path.trim().length() == 0)
+            path = "/";
+        path = path.trim();
+        if(!path.startsWith("/"))
+            path = "/" + path;
+        intent.putExtra("url", siteRoot + path);
         String userAgent = InstrumentationRegistry.getArguments().getString("ntkCaptchaUserAgent", "");
         if(userAgent != null && userAgent.trim().length() > 0)
             intent.putExtra("ntkCaptchaUserAgent", userAgent.trim());
@@ -131,29 +159,33 @@ public class NtkCaptchaLiveInstrumentedTest {
     private PageState readPageState(ActivityScenario<CaptchaActivity> scenario) throws Exception {
         AtomicReference<PageState> out = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
-        scenario.onActivity(activity -> {
-            if(activity.webView == null) {
-                latch.countDown();
-                return;
-            }
-            activity.webView.evaluateJavascript(
-                    "(function(){"
-                            + "var html=document.documentElement?document.documentElement.outerHTML:'';"
-                            + "var text=document.body?(document.body.innerText||''):'';"
-                            + "var cookie='';try{cookie=document.cookie||'';}catch(e){}"
-                            + "var hasFrame=!!document.querySelector('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"]');"
-                            + "var hasElement=!!document.querySelector('.cf-turnstile,.turnstile,[class*=\"turnstile\"],[id*=\"turnstile\"]');"
-                            + "var hasShadow=false;try{var all=document.querySelectorAll('*');for(var i=0;i<all.length;i++){var sr=all[i].shadowRoot||all[i].__sr;if(sr&&(sr.querySelector('input[type=\"checkbox\"],iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"],.cf-turnstile,.turnstile'))){hasShadow=true;break;}}}catch(e){}"
-                            + "var visible=/verify you are human|performing security verification|checking your browser|just a moment/i.test(text);"
-                            + "var normal=!!document.querySelector('a[href^=\"/manhwa\"],a[href^=\"/webtoon\"],a[href*=\"/manhwa/\"],a[href*=\"/webtoon/\"],img[src*=\"/webtoon_uploads/\"],img[data-src*=\"/webtoon_uploads/\"],img[src*=\"/manhwa_uploads/\"],img[data-src*=\"/manhwa_uploads/\"]');"
-                            + "var links=document.querySelectorAll('a[href]').length;var imgs=document.querySelectorAll('img[src],img[data-src]').length;if(links>=8||imgs>=4)normal=true;"
-                            + "return JSON.stringify({url:location.href,title:document.title||'',text:text.slice(0,2000),html:html.slice(0,4000),cookie:cookie,hasChallengeFrame:hasFrame,hasChallengeElement:hasElement,hasShadowChallenge:hasShadow,hasVisibleChallengeText:visible,hasNormalPage:normal});"
-                            + "})()",
-                    value -> {
-                        out.set(PageState.fromJavascript(value));
-                        latch.countDown();
-                    });
-        });
+        try {
+            scenario.onActivity(activity -> {
+                if(activity.webView == null) {
+                    latch.countDown();
+                    return;
+                }
+                activity.webView.evaluateJavascript(
+                        "(function(){"
+                                + "var html=document.documentElement?document.documentElement.outerHTML:'';"
+                                + "var text=document.body?(document.body.innerText||''):'';"
+                                + "var cookie='';try{cookie=document.cookie||'';}catch(e){}"
+                                + "var hasFrame=!!document.querySelector('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"]');"
+                                + "var hasElement=!!document.querySelector('.cf-turnstile,.turnstile,[class*=\"turnstile\"],[id*=\"turnstile\"]');"
+                                + "var hasShadow=false;try{var all=document.querySelectorAll('*');for(var i=0;i<all.length;i++){var sr=all[i].shadowRoot||all[i].__sr;if(sr&&(sr.querySelector('input[type=\"checkbox\"],iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"],.cf-turnstile,.turnstile'))){hasShadow=true;break;}}}catch(e){}"
+                                + "var visible=/verify you are human|performing security verification|checking your browser|just a moment/i.test(text);"
+                                + "var normal=!!document.querySelector('a[href^=\"/manhwa\"],a[href^=\"/webtoon\"],a[href*=\"/manhwa/\"],a[href*=\"/webtoon/\"],img[src*=\"/webtoon_uploads/\"],img[data-src*=\"/webtoon_uploads/\"],img[src*=\"/manhwa_uploads/\"],img[data-src*=\"/manhwa_uploads/\"]');"
+                                + "var links=document.querySelectorAll('a[href]').length;var imgs=document.querySelectorAll('img[src],img[data-src]').length;if(links>=8||imgs>=4)normal=true;"
+                                + "return JSON.stringify({url:location.href,title:document.title||'',text:text.slice(0,2000),html:html.slice(0,4000),cookie:cookie,hasChallengeFrame:hasFrame,hasChallengeElement:hasElement,hasShadowChallenge:hasShadow,hasVisibleChallengeText:visible,hasNormalPage:normal});"
+                                + "})()",
+                        value -> {
+                            out.set(PageState.fromJavascript(value));
+                            latch.countDown();
+                        });
+            });
+        } catch (RuntimeException e) {
+            return PageState.closed();
+        }
         latch.await(5, TimeUnit.SECONDS);
         return out.get();
     }
@@ -199,15 +231,16 @@ public class NtkCaptchaLiveInstrumentedTest {
         final boolean hasShadowChallenge;
         final boolean hasVisibleChallengeText;
         final boolean hasNormalPage;
+        final boolean closed;
 
         PageState() {
-            this("", "", "", "", "", false, false, false, false, false);
+            this("", "", "", "", "", false, false, false, false, false, false);
         }
 
         PageState(String url, String title, String text, String html, String cookie,
                   boolean hasChallengeFrame, boolean hasChallengeElement,
                   boolean hasShadowChallenge, boolean hasVisibleChallengeText,
-                  boolean hasNormalPage) {
+                  boolean hasNormalPage, boolean closed) {
             this.url = url == null ? "" : url;
             this.title = title == null ? "" : title;
             this.text = text == null ? "" : text;
@@ -218,6 +251,11 @@ public class NtkCaptchaLiveInstrumentedTest {
             this.hasShadowChallenge = hasShadowChallenge;
             this.hasVisibleChallengeText = hasVisibleChallengeText;
             this.hasNormalPage = hasNormalPage;
+            this.closed = closed;
+        }
+
+        static PageState closed() {
+            return new PageState("", "", "closed", "", "", false, false, false, false, true, true);
         }
 
         static PageState fromJavascript(String value) {
@@ -235,15 +273,17 @@ public class NtkCaptchaLiveInstrumentedTest {
                         object.optBoolean("hasChallengeElement"),
                         object.optBoolean("hasShadowChallenge"),
                         object.optBoolean("hasVisibleChallengeText"),
-                        object.optBoolean("hasNormalPage"));
+                        object.optBoolean("hasNormalPage"),
+                        false);
             } catch (Exception e) {
-                return new PageState("", "", value, value, "", false, false, false, false, false);
+                return new PageState("", "", value, value, "", false, false, false, false, false, false);
             }
         }
 
         boolean looksLikeChallengeOrNormal() {
             String lower = combinedLower();
-            return hasChallengeFrame
+            return closed
+                    || hasChallengeFrame
                     || hasShadowChallenge
                     || hasNormalPage
                     || lower.contains("cf_clearance")
@@ -269,6 +309,7 @@ public class NtkCaptchaLiveInstrumentedTest {
                     + ",shadow=" + hasShadowChallenge
                     + ",visibleText=" + hasVisibleChallengeText
                     + ",normal=" + hasNormalPage
+                    + ",closed=" + closed
                     + " " + clipped;
         }
 

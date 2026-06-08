@@ -45,10 +45,12 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         LiveNetworkAssume.assumeEnabled();
         Context context = ApplicationProvider.getApplicationContext();
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
-        MainApplication.p.setNtkSitePreset("https://sbxh4.com");
+        Bundle arguments = InstrumentationRegistry.getArguments();
+        String siteRoot = arguments == null ? "https://sbxh4.com"
+                : arguments.getString("ntkSiteRoot", "https://sbxh4.com");
+        MainApplication.p.setNtkSitePreset(siteRoot);
         MainApplication.p.setBaseMode(MTitle.base_webtoon);
 
-        Bundle arguments = InstrumentationRegistry.getArguments();
         String requestedCase = arguments == null ? "" : arguments.getString("ntkCase", "");
         String customPath = arguments == null ? "" : arguments.getString("ntkPath", "");
         String customUserAgent = arguments == null ? "" : arguments.getString("ntkUserAgent", "");
@@ -171,7 +173,7 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             assertTrue("Expected first screen drawable for " + sample.name
                     + " path=" + sample.path + " elapsedMs=" + elapsed, ready);
             if(scrollProbe)
-                probeScrollContinuity(context, device, sample, scrollSteps);
+                assertScrollContinuity(context, device, sample, scrollSteps);
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
             if(activity != null)
@@ -206,7 +208,7 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         return ready[0];
     }
 
-    private static void probeScrollContinuity(Context context, UiDevice device, Case sample, int steps) {
+    private static void assertScrollContinuity(Context context, UiDevice device, Case sample, int steps) {
         File screenshot = new File(context.getExternalCacheDir(), "ntk-scroll-probe-" + sample.name + ".png");
         int width = Math.max(1, device.getDisplayWidth());
         int height = Math.max(1, device.getDisplayHeight());
@@ -222,20 +224,24 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             boolean captured = device.takeScreenshot(screenshot);
             long elapsed = SystemClock.elapsedRealtime() - before;
             long idleElapsed = idleAt - swipeAt;
-            String visual = captured ? screenshotStats(screenshot) : "screenshot=false";
+            ScreenshotStats stats = captured ? screenshotStats(screenshot) : null;
+            String visual = stats == null ? "screenshot=false" : stats.toLogString();
             Log.d(TAG, "ntk_scroll_probe name=" + sample.name
                     + ",mode=" + sample.mode
                     + ",step=" + step
                     + ",elapsedMs=" + elapsed
                     + ",idleMs=" + idleElapsed
                     + "," + visual);
+            assertTrue("Expected non-blank NTK reader screenshot for " + sample.name
+                            + " step=" + step + " stats=" + visual,
+                    stats != null && stats.whitePct < 98.0 && stats.lowColorPct < 98.0);
         }
     }
 
-    private static String screenshotStats(File screenshot) {
+    private static ScreenshotStats screenshotStats(File screenshot) {
         Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
         if(bitmap == null)
-            return "screenshot=false";
+            return null;
         try {
             int width = bitmap.getWidth();
             int height = bitmap.getHeight();
@@ -260,11 +266,10 @@ public class NtkFirstScreenSmokeInstrumentedTest {
                         lowColor++;
                 }
             }
-            return "screenshot=true,width=" + width
-                    + ",height=" + height
-                    + ",whitePct=" + pct(nearWhite, sampled)
-                    + ",blackPct=" + pct(nearBlack, sampled)
-                    + ",lowColorPct=" + pct(lowColor, sampled);
+            return new ScreenshotStats(width, height,
+                    pctValue(nearWhite, sampled),
+                    pctValue(nearBlack, sampled),
+                    pctValue(lowColor, sampled));
         } finally {
             bitmap.recycle();
         }
@@ -294,9 +299,13 @@ public class NtkFirstScreenSmokeInstrumentedTest {
     }
 
     private static String pct(int value, int total) {
+        return String.format(java.util.Locale.US, "%.1f", pctValue(value, total));
+    }
+
+    private static double pctValue(int value, int total) {
         if(total <= 0)
-            return "0.0";
-        return String.format(java.util.Locale.US, "%.1f", value * 100.0 / total);
+            return 0.0;
+        return value * 100.0 / total;
     }
 
     private static Intent viewerIntent(Context context, Case sample) {
@@ -342,6 +351,30 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             this.baseMode = baseMode;
             this.path = path;
             this.imageCount = imageCount;
+        }
+    }
+
+    private static final class ScreenshotStats {
+        final int width;
+        final int height;
+        final double whitePct;
+        final double blackPct;
+        final double lowColorPct;
+
+        ScreenshotStats(int width, int height, double whitePct, double blackPct, double lowColorPct) {
+            this.width = width;
+            this.height = height;
+            this.whitePct = whitePct;
+            this.blackPct = blackPct;
+            this.lowColorPct = lowColorPct;
+        }
+
+        String toLogString() {
+            return "screenshot=true,width=" + width
+                    + ",height=" + height
+                    + ",whitePct=" + String.format(java.util.Locale.US, "%.1f", whitePct)
+                    + ",blackPct=" + String.format(java.util.Locale.US, "%.1f", blackPct)
+                    + ",lowColorPct=" + String.format(java.util.Locale.US, "%.1f", lowColorPct);
         }
     }
 }

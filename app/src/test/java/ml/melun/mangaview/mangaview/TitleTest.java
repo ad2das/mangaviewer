@@ -20,6 +20,7 @@ public class TitleTest {
     @Test
     public void ntkBlockedPathRefreshFailuresAreCaptchaFailures() {
         assertTrue(Title.isNtkLoadBlockedForTest(new Exception("Cloudflare challenge")));
+        assertTrue(Title.isNtkLoadBlockedForTest(new Exception("NTK hard block: /manhwa/37043 code=403")));
         assertTrue(Title.isNtkLoadBlockedForTest(new Exception("Request failed: /search?q=title&kind=manhwa")));
         assertFalse(Title.isNtkLoadBlockedForTest(new IllegalStateException("parser invariant failed")));
     }

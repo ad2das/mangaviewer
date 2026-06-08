@@ -958,6 +958,8 @@ public class CustomHttpClient {
     private final Object pageLoadsLock = new Object();
     private volatile String lastCloudflareChallengeUrl = null;
     private volatile long lastCloudflareChallengeAt = 0L;
+    private volatile String lastNtkHardBlockUrl = null;
+    private volatile long lastNtkHardBlockAt = 0L;
     private volatile boolean cloudflareCaptchaActive = false;
     private final ThreadLocal<RequestGroup> currentRequestGroup = requestGroupLocal();
     private final ThreadLocal<FetchMode> currentFetchMode = new ThreadLocal<>();
@@ -1123,6 +1125,12 @@ public class CustomHttpClient {
                 && System.currentTimeMillis() - lastCloudflareChallengeAt < 5 * 60 * 1000L;
     }
 
+    public boolean hasRecentNtkHardBlock() {
+        return lastNtkHardBlockUrl != null
+                && lastNtkHardBlockUrl.length() > 0
+                && System.currentTimeMillis() - lastNtkHardBlockAt < 5 * 60 * 1000L;
+    }
+
     public boolean hasCloudflareChallengeSince(long timestamp) {
         return lastCloudflareChallengeUrl != null
                 && lastCloudflareChallengeUrl.length() > 0
@@ -1132,6 +1140,11 @@ public class CustomHttpClient {
     public void clearLastCloudflareChallenge() {
         lastCloudflareChallengeUrl = null;
         lastCloudflareChallengeAt = 0L;
+    }
+
+    public void clearLastNtkHardBlock() {
+        lastNtkHardBlockUrl = null;
+        lastNtkHardBlockAt = 0L;
     }
 
     public void markCloudflareChallenge(String url) {
@@ -1147,6 +1160,14 @@ public class CustomHttpClient {
         }
     }
 
+    public void markNtkHardBlock(String url) {
+        if(url == null || url.length() == 0)
+            url = getWebtoonUrl();
+        lastNtkHardBlockUrl = url;
+        lastNtkHardBlockAt = System.currentTimeMillis();
+        markCloudflareChallenge(url);
+    }
+
     public void setCloudflareCaptchaActive(boolean active) {
         cloudflareCaptchaActive = active;
     }
@@ -1154,6 +1175,7 @@ public class CustomHttpClient {
     public void markNtkAccessVerified() {
         try {
             clearLastCloudflareChallenge();
+            clearLastNtkHardBlock();
             context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
                     .edit()
                     .putLong("ntkAccessVerifiedAt", System.currentTimeMillis())
@@ -1204,6 +1226,7 @@ public class CustomHttpClient {
                 .remove("ntkAccessVerifiedAt")
                 .apply();
         clearLastCloudflareChallenge();
+        clearLastNtkHardBlock();
         clearPageCache();
     }
 
@@ -1711,6 +1734,229 @@ public class CustomHttpClient {
             appendDiagnosticLine(report, "fatal", exceptionSummary(e));
         }
         return report.toString();
+    }
+
+    String probeNtkDetailTransportVariantsForTest(String path) {
+        String normalized = normalizePath(path);
+        String baseUrl = getBaseUrl(normalized);
+        StringBuilder report = new StringBuilder();
+        appendDiagnosticLine(report, "path", normalized);
+        appendDiagnosticLine(report, "base", baseUrl);
+        try {
+            ensureNumberedDomain(false);
+            baseUrl = getBaseUrl(normalized);
+        } catch (Exception e) {
+            appendDiagnosticLine(report, "ensure_domain", exceptionSummary(e));
+        }
+
+        Map<String, String> mobileDocument = buildHeaders(baseUrl, true, null);
+        Map<String, String> desktopDocument = buildHeaders(baseUrl, true, null);
+        desktopDocument.put("User-Agent", NTK_DESKTOP_DOCUMENT_UA);
+        desktopDocument.put("sec-ch-ua", "\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not_A Brand\";v=\"24\"");
+        desktopDocument.put("sec-ch-ua-mobile", "?0");
+        desktopDocument.put("sec-ch-ua-platform", "\"Windows\"");
+        desktopDocument.put("Sec-Fetch-Dest", "document");
+        desktopDocument.put("Sec-Fetch-Mode", "navigate");
+        desktopDocument.put("Sec-Fetch-Site", "same-origin");
+        Map<String, String> desktopFromCategory = new HashMap<>(desktopDocument);
+        desktopFromCategory.put("Referer", baseUrl + "/manhwa");
+        Map<String, String> rscHeaders = new HashMap<>();
+        rscHeaders.put("accept", "text/x-component");
+        rscHeaders.put("rsc", "1");
+        rscHeaders.put("next-url", normalized);
+        rscHeaders.put("origin", baseUrl);
+        rscHeaders.put("referer", baseUrl + normalized);
+
+        probeNtkDetailOkHttpVariant(report, "okhttp_mobile_doc", baseUrl, normalized, mobileDocument);
+        probeNtkDetailOkHttpVariant(report, "okhttp_desktop_doc", baseUrl, normalized, desktopDocument);
+        probeNtkDetailOkHttpVariant(report, "okhttp_desktop_from_category", baseUrl, normalized, desktopFromCategory);
+        probeNtkDetailOkHttpVariant(report, "okhttp_desktop_trailing_slash", baseUrl, normalized + "/", desktopFromCategory);
+        probeNtkDetailHttp1Variant(report, "http1_desktop_from_category", baseUrl, normalized, desktopFromCategory);
+        probeNtkDetailTls12Variant(report, "tls12_http1_desktop_from_category", baseUrl, normalized, desktopFromCategory);
+        probeNtkDetailIpHostVariant(report, "ip_host_http1_desktop", baseUrl, normalized, desktopFromCategory);
+        probeNtkDetailEngineVariant(report, "engine_quic_desktop", baseUrl, normalized, desktopDocument, true);
+        probeNtkDetailEngineVariant(report, "engine_http2_desktop", baseUrl, normalized, desktopDocument, false);
+        probeNtkDetailEngineVariant(report, "engine_quic_rsc", baseUrl, normalized, rscHeaders, true);
+        return report.toString();
+    }
+
+    private void probeNtkDetailOkHttpVariant(StringBuilder report, String name, String baseUrl,
+                                             String path, Map<String, String> headers) {
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            response = get(baseUrl + path, headers, true);
+            int code = response == null ? 0 : response.code();
+            String body = response == null || response.body() == null ? "" : response.body().string();
+            appendDiagnosticLine(report, name, "code=" + code
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",len=" + body.length()
+                    + ",sample=" + abbreviateLogSample(body, 120));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, name, "fail "
+                    + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
+    private void probeNtkDetailHttp1Variant(StringBuilder report, String name, String baseUrl,
+                                            String path, Map<String, String> headers) {
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            OkHttpClient http1Client = baseClient(new OkHttpClient.Builder()
+                    .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
+                    .protocols(ntkTlsFallbackProtocolsForTest())
+                    .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .callTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .build();
+            Request.Builder builder = new Request.Builder()
+                    .url(baseUrl + path)
+                    .get();
+            if(headers != null) {
+                for(String key : headers.keySet())
+                    builder.addHeader(key, headers.get(key));
+            }
+            response = http1Client.newCall(builder.build()).execute();
+            int code = response.code();
+            String body = response.body() == null ? "" : response.body().string();
+            appendDiagnosticLine(report, name, "code=" + code
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",len=" + body.length()
+                    + ",sample=" + abbreviateLogSample(body, 120));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, name, "fail "
+                    + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
+    private void probeNtkDetailIpHostVariant(StringBuilder report, String name, String baseUrl,
+                                             String path, Map<String, String> headers) {
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            String host = hostOf(baseUrl);
+            List<InetAddress> addresses = NETWORK_RESILIENT_DNS.lookup(host);
+            if(addresses == null || addresses.isEmpty()) {
+                appendDiagnosticLine(report, name, "fail no_ip");
+                return;
+            }
+            String ip = addresses.get(0).getHostAddress();
+            OkHttpClient ipClient = baseClient(getUnsafeOkHttpClient()
+                    .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
+                    .protocols(ntkTlsFallbackProtocolsForTest())
+                    .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .callTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .build();
+            Request.Builder builder = new Request.Builder()
+                    .url("https://" + ip + path)
+                    .get()
+                    .header("Host", host);
+            if(headers != null) {
+                for(String key : headers.keySet()) {
+                    if("Host".equalsIgnoreCase(key))
+                        continue;
+                    builder.header(key, headers.get(key));
+                }
+            }
+            response = ipClient.newCall(builder.build()).execute();
+            int code = response.code();
+            String body = response.body() == null ? "" : response.body().string();
+            appendDiagnosticLine(report, name, "ip=" + ip
+                    + ",code=" + code
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",len=" + body.length()
+                    + ",sample=" + abbreviateLogSample(body, 120));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, name, "fail "
+                    + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
+    private void probeNtkDetailTls12Variant(StringBuilder report, String name, String baseUrl,
+                                            String path, Map<String, String> headers) {
+        long startedAt = System.currentTimeMillis();
+        Response response = null;
+        try {
+            ConnectionSpec tls12 = new ConnectionSpec.Builder(ConnectionSpec.MODERN_TLS)
+                    .tlsVersions(okhttp3.TlsVersion.TLS_1_2)
+                    .build();
+            OkHttpClient tls12Client = baseClient(new OkHttpClient.Builder()
+                    .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
+                    .protocols(ntkTlsFallbackProtocolsForTest())
+                    .connectionSpecs(java.util.Collections.singletonList(tls12))
+                    .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .callTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .build();
+            Request.Builder builder = new Request.Builder()
+                    .url(baseUrl + path)
+                    .get();
+            if(headers != null) {
+                for(String key : headers.keySet())
+                    builder.addHeader(key, headers.get(key));
+            }
+            response = tls12Client.newCall(builder.build()).execute();
+            int code = response.code();
+            String body = response.body() == null ? "" : response.body().string();
+            appendDiagnosticLine(report, name, "code=" + code
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",len=" + body.length()
+                    + ",sample=" + abbreviateLogSample(body, 120));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, name, "fail "
+                    + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
+    private void probeNtkDetailEngineVariant(StringBuilder report, String name, String baseUrl,
+                                             String path, Map<String, String> headers,
+                                             boolean quic) {
+        long startedAt = System.currentTimeMillis();
+        try {
+            String cookieHeader = getCookieHeaderForNtkPath(path);
+            String userAgent = headerValue(headers, "User-Agent", agent);
+            NtkQuicFetcher.Result result = quic
+                    ? NtkQuicFetcher.fetch(context, baseUrl + path, userAgent,
+                            cookieHeader, headers, "GET", null, 4500L)
+                    : NtkQuicFetcher.fetchHttp2Only(context, baseUrl + path, userAgent,
+                            cookieHeader, headers, "GET", null, 4500L);
+            String body = result == null || result.body == null ? "" : result.body;
+            appendDiagnosticLine(report, name, "code=" + (result == null ? 0 : result.code)
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",len=" + body.length()
+                    + ",error=" + (result == null || result.error == null ? "" : result.error.getClass().getSimpleName())
+                    + ",sample=" + abbreviateLogSample(body, 120));
+        } catch (Exception e) {
+            appendDiagnosticLine(report, name, "fail "
+                    + (System.currentTimeMillis() - startedAt) + "ms " + exceptionSummary(e));
+        }
+    }
+
+    private static String headerValue(Map<String, String> headers, String key, String fallback) {
+        if(headers != null && key != null) {
+            for(String existing : headers.keySet()) {
+                if(key.equalsIgnoreCase(existing)) {
+                    String value = headers.get(existing);
+                    if(value != null && value.length() > 0)
+                        return value;
+                }
+            }
+        }
+        return fallback;
     }
 
     private FetchMode effectiveFetchMode(FetchMode defaultMode) {
@@ -2560,6 +2806,11 @@ public class CustomHttpClient {
                     + ",bytes=" + body.length()
                     + ",ms=" + (System.currentTimeMillis() - startedAt)
                     + ",error=" + (result == null ? "" : result.error));
+            if(result != null && result.error == null
+                    && isNtkHardBlockedResponse(normalized, result.code, body)) {
+                markNtkHardBlock(baseUrl + normalized);
+                return new PageResponse(result.code, body, false);
+            }
             if(result != null && result.error == null && result.code > 0 && body.length() > 0
                     && isCloudflareChallengeResponse(result.code, body)) {
                 markCloudflareChallenge(baseUrl + normalized);
@@ -2659,7 +2910,9 @@ public class CustomHttpClient {
 
     public PageResponse mgetNtkDesktopDocumentPage(String url, long ttlMillis) throws Exception {
         String normalized = normalizePath(url);
-        if(!isNtk() || !isNtkSearchPath(normalized))
+        if(!isNtk() || (!isNtkSearchPath(normalized)
+                && !isNtkCategoryDocumentPath(normalized)
+                && !isNtkTitleDocumentPath(normalized)))
             return mgetCachedPage(normalized, ttlMillis);
         long now = System.currentTimeMillis();
         String baseUrl = getBaseUrl(normalized);
@@ -2699,17 +2952,34 @@ public class CustomHttpClient {
             if(result == null || error != null || code <= 0 || body.length() == 0)
                 throw new Exception("Request failed: " + normalized + (error == null ? "" : " " + error));
         }
+        if(code >= 400 && context != null && NtkQuicFetcher.isAvailable()) {
+            String cookieHeader = headers.get("Cookie");
+            NtkQuicFetcher.Result retry = NtkQuicFetcher.fetchHttp2Only(context, baseUrl + normalized,
+                    NTK_DESKTOP_DOCUMENT_UA, cookieHeader == null ? "" : cookieHeader,
+                    headers, "GET", null, 9000L);
+            if(retry != null && retry.error == null && retry.code > 0 && retry.code < code
+                    && retry.body != null && retry.body.length() > 0) {
+                code = retry.code;
+                body = retry.body;
+                transport = "http2";
+                applySetCookieHeaders(retry.headers, baseUrl);
+            }
+        }
         Log.d(TAG, "ntk_desktop_document path=" + normalized
                 + ",transport=" + transport
                 + ",code=" + code
                 + ",bodyLen=" + (body == null ? 0 : body.length())
                 + ",ms=" + (System.currentTimeMillis() - startedAt)
                 + ",error=" + (error == null ? "" : error.getClass().getSimpleName()));
+        if(isNtkHardBlockedResponse(normalized, code, body)) {
+            markNtkHardBlock(baseUrl + normalized);
+            throw new Exception("NTK hard block: " + normalized + " code=" + code);
+        }
         if(isCloudflareChallenge(code, body)) {
             markCloudflareChallenge(baseUrl + normalized);
             throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
         }
-        if(shouldRejectNtkPageResponse(normalized, code, body))
+        if(!isNtkCategoryDocumentPath(normalized) && shouldRejectNtkPageResponse(normalized, code, body))
             throw new Exception("Unusable NTK page: " + normalized + " code=" + code);
         if(code >= 200 && code < 400 && body != null && body.length() > 0 && shouldStoreNetworkPageBody(normalized, body)) {
             CachedPage page = new CachedPage(code, body, now);
@@ -2851,7 +3121,9 @@ public class CustomHttpClient {
         if(message == null)
             return false;
         String lower = message.toLowerCase(Locale.ROOT);
-        return lower.contains("cloudflare") || lower.contains("challenge");
+        return lower.contains("ntk hard block")
+                || lower.contains("cloudflare")
+                || lower.contains("challenge");
     }
 
     private void sleepBeforeWfwfRetry(int attempt) {
@@ -2877,6 +3149,10 @@ public class CustomHttpClient {
         if(isCloudflareChallenge(code, body)) {
             markCloudflareChallenge(getBaseUrl(normalized) + normalized);
             throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
+        }
+        if(isNtk() && isNtkHardBlockedResponse(normalized, code, body)) {
+            markNtkHardBlock(getBaseUrl(normalized) + normalized);
+            throw new Exception("NTK hard block: " + normalized + " code=" + code);
         }
         if(isNtk())
             clearLastCloudflareChallenge();
@@ -2909,6 +3185,23 @@ public class CustomHttpClient {
 
     static boolean shouldRejectNtkPageResponseForTest(String path, int code, String body) {
         return shouldRejectNtkPageResponse(path, code, body);
+    }
+
+    static boolean isNtkHardBlockedResponseForTest(String path, int code, String body) {
+        return isNtkHardBlockedResponse(path, code, body);
+    }
+
+    private static boolean isNtkHardBlockedResponse(String path, int code, String body) {
+        if(path == null || body == null || code != 403)
+            return false;
+        if(isNtkCategoryDocumentPath(path))
+            return false;
+        if(!isNtkWebViewFetchPath(path) && !isNtkApiPath(path) && !isNtkSearchPath(path))
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        return lower.contains("<title>403 forbidden</title>")
+                && lower.contains("<h1>403 forbidden</h1>")
+                && lower.contains("nginx/");
     }
 
     private static boolean shouldRejectNtkPageResponse(String path, int code, String body) {
@@ -3654,6 +3947,14 @@ public class CustomHttpClient {
                 markCloudflareChallenge(url);
                 return null;
             }
+            if(result.code >= 400 && isNtkWebViewFetchPath(path)) {
+                if(Log.isLoggable(TAG, Log.DEBUG))
+                    Log.d(TAG, "ntk_quic_fallback_reject_error path=" + path
+                            + ",code=" + result.code
+                            + ",len=" + result.bodyBytes.length
+                            + ",sample=" + abbreviateLogSample(result.body, 240));
+                return null;
+            }
             if(looksLikeUnrenderedNtkDocument(path, result.code, result.body)) {
                 if(Log.isLoggable(TAG, Log.DEBUG))
                     Log.d(TAG, "ntk_quic_fallback_unrendered path=" + path
@@ -4020,17 +4321,23 @@ public class CustomHttpClient {
                                                                            boolean hasRecentVerification,
                                                                            boolean hasRecentChallenge,
                                                                            Exception error) {
-        if(!ntkUrl || fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || hasAccessProof || hasRecentVerification)
+        if(!ntkUrl || fetchMode != FetchMode.ALLOW_SHARED_WEBVIEW || hasAccessProof)
             return false;
         if(!isNtkWebViewFetchPath(path))
             return false;
-        if(hasRecentChallenge)
-            return true;
         String message = error == null ? null : error.getMessage();
+        String lower = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        if(hasRecentChallenge && !hasRecentVerification)
+            return true;
+        if(isNtkTitleDocumentPath(path)
+                && lower.contains("unusable ntk page")
+                && lower.contains("code=403"))
+            return true;
+        if(lower.contains("ntk hard block") && lower.contains("code=403"))
+            return true;
         if(message == null)
             return false;
-        String lower = message.toLowerCase(Locale.ROOT);
-        return lower.contains("cloudflare") || lower.contains("challenge");
+        return !hasRecentVerification && (lower.contains("cloudflare") || lower.contains("challenge"));
     }
 
     static boolean shouldPrioritizeNtkEpisodeWebViewForTest(boolean ntkUrl, String path,
@@ -4106,6 +4413,10 @@ public class CustomHttpClient {
 
     private static boolean isNtkNavigableDocumentPath(String path) {
         return HttpDocumentPolicy.isNtkNavigableDocumentPath(path);
+    }
+
+    private static boolean isNtkCategoryDocumentPath(String path) {
+        return HttpDocumentPolicy.isNtkCategoryDocumentPath(path);
     }
 
     private static boolean isNtkWebViewFetchPath(String path) {
