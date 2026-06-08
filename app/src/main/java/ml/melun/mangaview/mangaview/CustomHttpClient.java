@@ -5774,10 +5774,12 @@ public class CustomHttpClient {
     private String runWasmVcInWebView(byte[] wasmBytes, String adGuardJs, String token) {
         final String[] result = {null};
         final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        final android.webkit.WebView[] webViewRef = {null};
         android.os.Handler mainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
         mainHandler.post(() -> {
             try {
                 android.webkit.WebView webView = new android.webkit.WebView(context);
+                webViewRef[0] = webView;
                 webView.getSettings().setJavaScriptEnabled(true);
                 webView.addJavascriptInterface(new Object() {
                     @android.webkit.JavascriptInterface
@@ -5789,17 +5791,27 @@ public class CustomHttpClient {
                 }, "NtkWasmBridge");
                 String wasmBase64 = android.util.Base64.encodeToString(wasmBytes, android.util.Base64.NO_WRAP);
                 String jsBase64 = android.util.Base64.encodeToString(adGuardJs.getBytes(StandardCharsets.UTF_8), android.util.Base64.NO_WRAP);
+                // Use initSync if available for faster initialization; fallback to default async
                 String jsHtml = "<html><body><script type='module'>" +
                         "let moduleExports=null;" +
                         "const wasmBase64='" + wasmBase64 + "';" +
                         "const jsCodeStr=atob('" + jsBase64 + "');" +
                         "const blob=new Blob([jsCodeStr],{type:'application/javascript'});" +
                         "const url=URL.createObjectURL(blob);" +
+                        "window.NtkWasmBridge.onVcResult('log:import_start');" +
                         "import(url).then(m=>{" +
                         "  moduleExports=m;" +
-                        "  return m.default({module_or_path:'data:application/wasm;base64,'+wasmBase64});" +
+                        "  window.NtkWasmBridge.onVcResult('log:import_ok');" +
+                        "  if(m.initSync) {" +
+                        "    try { m.initSync(new Uint8Array(atob(wasmBase64).split('').map(c=>c.charCodeAt(0)))); window.NtkWasmBridge.onVcResult('log:initsync_ok'); }" +
+                        "    catch(e) { window.NtkWasmBridge.onVcResult('log:initsync_err:'+e); return m.default({module_or_path:'data:application/wasm;base64,'+wasmBase64}); }" +
+                        "  } else {" +
+                        "    return m.default({module_or_path:'data:application/wasm;base64,'+wasmBase64});" +
+                        "  }" +
                         "}).then(()=>{" +
+                        "  window.NtkWasmBridge.onVcResult('log:wasm_ready');" +
                         "  const r=moduleExports._vc('" + token + "');" +
+                        "  window.NtkWasmBridge.onVcResult('log:vc_result_type='+typeof(r));" +
                         "  window.NtkWasmBridge.onVcResult(String(r));" +
                         "}).catch(e=>{" +
                         "  window.NtkWasmBridge.onVcResult('error:'+e);" +
@@ -5808,16 +5820,22 @@ public class CustomHttpClient {
                 webView.loadDataWithBaseURL(NTK_WEBTOON_URL, jsHtml, "text/html", "UTF-8", null);
                 mainHandler.postDelayed(() -> {
                     try { webView.destroy(); } catch(Exception ignored) {}
+                    webViewRef[0] = null;
                     latch.countDown();
-                }, 5000);
+                }, 15000);
             } catch(Exception ex) {
                 Log.e(TAG, "ntk_wasm_webview_error=" + ex);
                 latch.countDown();
             }
         });
         try {
-            latch.await(6000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            latch.await(16000, java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch(Exception ignored) {}
+        if(webViewRef[0] != null) {
+            mainHandler.post(() -> {
+                try { webViewRef[0].destroy(); } catch(Exception ignored) {}
+            });
+        }
         return result[0];
     }
 
