@@ -2485,7 +2485,7 @@ public class CustomHttpClient {
             loadState = pageLoads.get(loadKey);
         }
         try {
-            PageResponse quicLoaded = loadNtkPageFromQuicPrimary(normalized, now);
+            PageResponse quicLoaded = loadNtkPageFromQuicPrimary(normalized, now, fetchMode);
             if(quicLoaded != null) {
                 if(loadState != null)
                     loadState.response = quicLoaded;
@@ -2522,7 +2522,7 @@ public class CustomHttpClient {
         }
     }
 
-    private PageResponse loadNtkPageFromQuicPrimary(String normalized, long now) throws Exception {
+    private PageResponse loadNtkPageFromQuicPrimary(String normalized, long now, FetchMode fetchMode) throws Exception {
         if(!isNtk() || context == null || !NtkQuicFetcher.isAvailable() || !isNtkWebViewFetchPath(normalized))
             return null;
         String baseUrl = getBaseUrl(normalized);
@@ -2533,20 +2533,37 @@ public class CustomHttpClient {
                 getCookieHeaderForNtkPath(normalized), headers, "GET", null, ntkQuicGetTimeout(baseUrl + normalized));
         String body = result == null || result.body == null ? "" : result.body;
         int code = result == null ? 0 : result.code;
-        String diagnostic = "ntk_page_quic_primary path=" + normalized
-                + ",code=" + code
-                + ",bytes=" + body.length()
-                + ",error=" + (result == null ? "" : throwableSummary(result.error));
-        Log.d(TAG, diagnostic);
-        recordRuntimeDiagnostic(diagnostic);
+        recordNtkQuicPageDiagnostic("ntk_page_quic_primary", normalized, code, body, result);
         if(result == null || result.error != null || code <= 0 || body.length() == 0)
             return null;
         applySetCookieHeaders(result.headers, baseUrl);
+        if(shouldAttemptNtkNativeAckPageRecovery(isNtkUrl(baseUrl), false, code, normalized, fetchMode)) {
+            long ackStartedAt = System.currentTimeMillis();
+            String ackPath = ntkNativeAckProbePath(normalized);
+            boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, ackPath, normalized);
+            recordRuntimeDiagnostic("ntk_page_quic_ack_recover path=" + normalized
+                    + ",success=" + nativeAckCompleted
+                    + ",ackPath=" + ackPath
+                    + ",ms=" + (System.currentTimeMillis() - ackStartedAt));
+            if(nativeAckCompleted) {
+                headers = buildHeaders(baseUrl, true, null);
+                applyNtkApiHeaders(headers, baseUrl, normalized);
+                applyNtkScopedCookieHeader(headers, true, normalized, true, null);
+                result = fetchNtkQuic(baseUrl, baseUrl + normalized,
+                        getCookieHeaderForNtkPath(normalized), headers, "GET", null, ntkQuicGetTimeout(baseUrl + normalized));
+                body = result == null || result.body == null ? "" : result.body;
+                code = result == null ? 0 : result.code;
+                recordNtkQuicPageDiagnostic("ntk_page_quic_primary_retry", normalized, code, body, result);
+                if(result == null || result.error != null || code <= 0 || body.length() == 0)
+                    return null;
+                applySetCookieHeaders(result.headers, baseUrl);
+            }
+        }
         if(isCloudflareChallenge(code, body)) {
             markCloudflareChallenge(baseUrl + normalized);
             throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
         }
-        if(shouldRejectNtkPageResponse(normalized, code, body))
+        if(!isUsableNtkQuicPageResponse(normalized, code, body))
             return null;
         clearLastCloudflareChallenge();
         if(code >= 200 && code < 400 && shouldStoreNetworkPageBody(normalized, body)) {
@@ -2558,6 +2575,16 @@ public class CustomHttpClient {
             writeDiskCachedPage(cacheKey, cachedPage);
         }
         return new PageResponse(code, body, false);
+    }
+
+    private void recordNtkQuicPageDiagnostic(String event, String normalized, int code,
+                                             String body, NtkQuicFetcher.Result result) {
+        String diagnostic = event + " path=" + normalized
+                + ",code=" + code
+                + ",bytes=" + (body == null ? 0 : body.length())
+                + ",error=" + (result == null ? "" : throwableSummary(result.error));
+        Log.d(TAG, diagnostic);
+        recordRuntimeDiagnostic(diagnostic);
     }
 
     public PageResponse mgetNtkViewerPayloadPage(String url, long ttlMillis) throws Exception {
@@ -4139,6 +4166,18 @@ public class CustomHttpClient {
             }
         }
         return false;
+    }
+
+    private static boolean isUsableNtkQuicPageResponse(String path, int code, String body) {
+        return code >= 200
+                && code < 400
+                && body != null
+                && body.length() > 0
+                && !shouldRejectNtkPageResponse(path, code, body);
+    }
+
+    static boolean isUsableNtkQuicPageResponseForTest(String path, int code, String body) {
+        return isUsableNtkQuicPageResponse(path, code, body);
     }
 
     private Response getWithNtkWebViewFallback(String baseUrl, String path, Map<String, String> headers) {

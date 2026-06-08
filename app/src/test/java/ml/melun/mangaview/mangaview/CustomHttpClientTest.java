@@ -530,6 +530,22 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkQuicPagesRejectForbiddenBodies() {
+        assertTrue(CustomHttpClient.isUsableNtkQuicPageResponseForTest(
+                "/webtoon/848103/1580933",
+                200,
+                "<html><body>viewer content</body></html>"));
+        assertFalse(CustomHttpClient.isUsableNtkQuicPageResponseForTest(
+                "/webtoon/848103/1580933",
+                403,
+                "<html><body>access denied</body></html>"));
+        assertFalse(CustomHttpClient.isUsableNtkQuicPageResponseForTest(
+                "/webtoon/848103/1580933",
+                200,
+                ""));
+    }
+
+    @Test
     public void ntkNetworkMissesAreExpectedRequestFailures() {
         assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
                 "https://sbxh1.com/api/manhwa-list?page=1",
