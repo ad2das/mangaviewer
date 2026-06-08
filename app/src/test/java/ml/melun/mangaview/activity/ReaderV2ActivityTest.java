@@ -69,12 +69,35 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
+    public void progressEpisodeIdUsesCanonicalEpisodeWhenPathMatches() {
+        Manga first = new Manga(101, "Episode 10", "", MTitle.base_webtoon);
+        first.setNtkEpisodePath("/webtoon/1/10");
+        Manga second = new Manga(102, "Episode 9", "", MTitle.base_webtoon);
+        second.setNtkEpisodePath("/webtoon/1/9");
+        Manga selected = new Manga(999, "Episode 9", "", MTitle.base_webtoon);
+        selected.setNtkEpisodePath("/webtoon/1/9");
+
+        assertEquals(102, ReaderV2Activity.progressEpisodeIdForTest(
+                Arrays.asList(first, second), selected, -1));
+    }
+
+    @Test
     public void progressEpisodeIndexMatchesVisibleNumberWhenEpisodeIdDiffers() {
         Manga first = new Manga(101, "Episode 10", "", MTitle.base_webtoon);
         Manga second = new Manga(102, "Episode 9", "", MTitle.base_webtoon);
         Manga selected = new Manga(999, "Read Episode 9", "", MTitle.base_webtoon);
 
         assertEquals(2, ReaderV2Activity.progressEpisodeIndexForTest(
+                Arrays.asList(first, second), selected, -1));
+    }
+
+    @Test
+    public void progressEpisodeIdUsesCanonicalEpisodeWhenVisibleNumberMatches() {
+        Manga first = new Manga(101, "Episode 10", "", MTitle.base_webtoon);
+        Manga second = new Manga(102, "Episode 9", "", MTitle.base_webtoon);
+        Manga selected = new Manga(999, "Read Episode 9", "", MTitle.base_webtoon);
+
+        assertEquals(102, ReaderV2Activity.progressEpisodeIdForTest(
                 Arrays.asList(first, second), selected, -1));
     }
 

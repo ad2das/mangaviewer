@@ -206,18 +206,24 @@ public class EpisodeActivity extends AppCompatActivity {
             }
             int newid = data.getIntExtra("id", -1);
             if(newid>0 && newid!=bookmarkId){
-                bookmarkId = newid;
-                //find index of bookmark;
-                if(episodes != null)
+                int matchedIndex = -1;
+                if(episodes != null && episodes.size() > 0) {
                     for(int i=0; i< episodes.size(); i++){
                             Manga episode = safeGet(episodes, i);
-                            if(episode != null && episode.getId()==bookmarkId){
-                                bookmarkIndex = i+1;
-                                if(episodeAdapter != null)
-                                    episodeAdapter.setBookmark(bookmarkIndex);
+                            if(episode != null && episode.getId()==newid){
+                                matchedIndex = i+1;
                                 break;
                             }
                     }
+                    if(matchedIndex > 0) {
+                        bookmarkId = newid;
+                        bookmarkIndex = matchedIndex;
+                        if(episodeAdapter != null)
+                            episodeAdapter.setBookmark(bookmarkIndex);
+                    }
+                } else {
+                    bookmarkId = newid;
+                }
             }
             if(bookmarkId>-1)
                 resumefab.show();
@@ -485,6 +491,7 @@ public class EpisodeActivity extends AppCompatActivity {
         int progressId = bookmarkId;
         int progressIndex = bookmarkIndex;
         int storedIndex = title.getBookmarkEpisodeIndex();
+        boolean progressIdMatched = false;
         if(progressId <= 0)
             progressId = restoredBookmarkId(title);
         if(progressIndex <= 0 && progressId > 0) {
@@ -492,6 +499,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 Manga episode = safeGet(episodes, i);
                 if(episode != null && episode.getId() == progressId) {
                     progressIndex = i + 1;
+                    progressIdMatched = true;
                     break;
                 }
             }
@@ -503,6 +511,7 @@ public class EpisodeActivity extends AppCompatActivity {
                 if(episode != null && resumePath.equals(episode.getNtkEpisodePath())) {
                     progressIndex = i + 1;
                     progressId = episode.getId();
+                    progressIdMatched = true;
                     break;
                 }
             }
@@ -511,15 +520,25 @@ public class EpisodeActivity extends AppCompatActivity {
             progressIndex = storedIndex;
         if(progressIndex > episodes.size())
             progressIndex = -1;
-        if(progressId <= 0 && progressIndex > 0) {
+        if((progressId <= 0 || !progressIdMatched) && progressIndex > 0) {
             Manga episode = safeGet(episodes, progressIndex - 1);
-            if(episode != null)
+            if(episode != null) {
                 progressId = episode.getId();
+                String ntkPath = episode.getNtkEpisodePath();
+                if("ntk".equals(title.getSourceSite()) && ntkPath != null && ntkPath.length() > 0)
+                    title.setResumeNtkEpisodePath(ntkPath);
+            }
         }
-        if(progressId > 0)
+        if(progressId > 0) {
             title.setBookmark(progressId);
+            bookmarkId = progressId;
+            p.setBookmark(title, progressId);
+        }
+        bookmarkIndex = progressIndex;
         title.setReadingProgress(progressId, progressIndex, episodes.size());
         p.updateRecentData(title);
+        if(progressIndex > 0 && episodeAdapter != null)
+            episodeAdapter.setBookmark(progressIndex);
     }
 
     private void warmupInitialViewerTargets() {

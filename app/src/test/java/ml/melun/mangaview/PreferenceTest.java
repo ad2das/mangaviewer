@@ -136,6 +136,23 @@ public class PreferenceTest {
     }
 
     @Test
+    public void progressMergeKeepsExistingIdWhenIncomingHasSameIndexWithDifferentId() {
+        MTitle incoming = new MTitle("Long Webtoon", 36716, "", "", null, "5", MTitle.base_webtoon);
+        incoming.setSourceSite("ntk");
+        incoming.setReadingProgress(999, 18, 120);
+
+        MTitle existing = new MTitle("Long Webtoon", 36716, "", "", null, "5", MTitle.base_webtoon);
+        existing.setSourceSite("ntk");
+        existing.setReadingProgress(210, 18, 100);
+
+        MTitle merged = Preference.preserveMoreCompleteProgressForTest(incoming, existing);
+
+        assertEquals(210, merged.getBookmarkEpisodeId());
+        assertEquals(18, merged.getBookmarkEpisodeIndex());
+        assertEquals(120, merged.getEpisodeCount());
+    }
+
+    @Test
     public void wfwfProgressInfersListIndexFromEpisodeNumber() {
         MTitle title = new MTitle("서머타임 렌더링", 10017, "", "", null, "", MTitle.base_comic);
         title.setSourceSite("wfwf");

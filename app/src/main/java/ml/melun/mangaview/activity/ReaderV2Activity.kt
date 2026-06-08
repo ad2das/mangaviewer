@@ -1530,37 +1530,43 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (episodes.isNotEmpty()) title.setEps(episodes)
         }
         title.eps?.let { info.manga.setEps(it) }
-        val ntkPath = info.manga.ntkEpisodePath ?: ""
+        val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(info.manga) }
+        val episodeIndex = progressEpisodeIndex(episodes, info.manga, title.bookmarkEpisodeIndex)
+        val progressManga = progressEpisodeForIndex(episodes, episodeIndex) ?: info.manga
+        val progressEpisodeId = progressManga.id.takeIf { it > 0 } ?: info.manga.id
+        val ntkPath = (progressManga.ntkEpisodePath ?: "").ifBlank { info.manga.ntkEpisodePath ?: "" }
         if (title.sourceSite == "ntk" && ntkPath.isNotBlank()) {
             title.resumeNtkEpisodePath = ntkPath
         }
-        val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(info.manga) }
-        val episodeIndex = progressEpisodeIndex(episodes, info.manga, title.bookmarkEpisodeIndex)
         val episodeCount = episodes.size.takeIf { it > 0 } ?: title.episodeCount
         if (episodeCount > 0) {
-            title.setReadingProgress(info.manga.id, episodeIndex, episodeCount)
+            title.setReadingProgress(progressEpisodeId, episodeIndex, episodeCount)
         }
         val zeroBasedPage = info.sourcePageIndex.coerceAtLeast(0)
         if (
-            lastSavedEpisodeId == info.manga.id &&
+            lastSavedEpisodeId == progressEpisodeId &&
             lastSavedPage == zeroBasedPage &&
             lastSavedOffset == offset &&
             lastSavedSide == info.side
         ) return
-        lastSavedEpisodeId = info.manga.id
+        lastSavedEpisodeId = progressEpisodeId
         lastSavedPage = zeroBasedPage
         lastSavedOffset = offset
         lastSavedSide = info.side
         p?.addRecent(title)
-        p?.setBookmark(title, info.manga.id)
+        p?.setBookmark(title, progressEpisodeId)
         p?.setViewerBookmark(info.manga, zeroBasedPage, offset, info.side)
     }
 
     private fun updateResultEpisode(manga: Manga?, transitionCard: Boolean = false) {
         if (transitionCard || manga == null || manga.id <= 0) return
         if (!intent.getBooleanExtra("recent", false) && !intent.getBooleanExtra("returnToEpisodes", false)) return
+        val title = currentTitle ?: manga.title
+        val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(manga) }
+        val episodeIndex = progressEpisodeIndex(episodes, manga, title?.bookmarkEpisodeIndex ?: -1)
+        val resultManga = progressEpisodeForIndex(episodes, episodeIndex) ?: manga
         val result = resultIntent ?: Intent().also { resultIntent = it }
-        result.putExtra("id", manga.id)
+        result.putExtra("id", resultManga.id.takeIf { it > 0 } ?: manga.id)
         setResult(RESULT_OK, result)
     }
 
@@ -1854,6 +1860,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return progressEpisodeIndex(episodes, manga, fallbackIndex)
         }
 
+        @JvmStatic
+        fun progressEpisodeIdForTest(
+            episodes: List<Manga>,
+            manga: Manga,
+            fallbackIndex: Int
+        ): Int {
+            val index = progressEpisodeIndex(episodes, manga, fallbackIndex)
+            return progressEpisodeForIndex(episodes, index)?.id ?: manga.id
+        }
+
         private fun pageGapForBaseMode(baseMode: Int): Int {
             return ReaderDisplayPolicy.pageGapForBaseMode(baseMode)
         }
@@ -1890,6 +1906,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     ?.let { return it + 1 }
             }
             return fallbackIndex
+        }
+
+        private fun progressEpisodeForIndex(episodes: List<Manga>, episodeIndex: Int): Manga? {
+            val index = episodeIndex - 1
+            return episodes.getOrNull(index)
         }
 
         private fun episodeNumberKey(name: String?): String {
