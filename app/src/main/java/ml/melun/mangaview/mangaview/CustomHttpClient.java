@@ -5802,6 +5802,13 @@ public class CustomHttpClient {
                         "window.NtkWasmBridge.onVcResult('log:import_start');" +
                         "const nativeFetch=window.fetch;" +
                         "const encryptedBytes=new Uint8Array(atob(wasmBase64).split('').map(c=>c.charCodeAt(0)));" +
+                        "if(typeof Response!=='function'){" +
+                        "  window.Response=function(body,init){" +
+                        "    this.body=body;this.status=(init&&init.status)||200;" +
+                        "    this.headers=(init&&init.headers)||{};" +
+                        "    this.arrayBuffer=function(){return Promise.resolve(this.body.buffer||this.body);};" +
+                        "  };" +
+                        "}" +
                         "window.fetch=function(u){" +
                         "  if(String(u).indexOf('data:application/wasm;base64,')===0){" +
                         "    return Promise.resolve(new Response(encryptedBytes,{status:200,headers:{'Content-Type':'application/wasm'}}));" +
