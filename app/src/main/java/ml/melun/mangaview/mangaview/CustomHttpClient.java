@@ -86,6 +86,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.activity.NtkQuicFetcher;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.repository.CacheFileStore;
+import ml.melun.mangaview.report.DiagnosticLog;
 import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
@@ -1709,6 +1710,12 @@ public class CustomHttpClient {
             report.append('\n');
             appendDiagnosticLine(report, "elapsed_ms", String.valueOf(System.currentTimeMillis() - startedAt));
             appendDiagnosticLine(report, "interpretation", diagnosticInterpretation(report.toString()));
+            String recentLog = DiagnosticLog.readRecent(context);
+            if(recentLog.length() > 0) {
+                report.append('\n');
+                report.append("recent_app_diagnostics:\n");
+                report.append(recentLog);
+            }
         } catch (Exception e) {
             appendDiagnosticLine(report, "fatal", exceptionSummary(e));
         }

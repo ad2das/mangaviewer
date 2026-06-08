@@ -56,6 +56,7 @@ import java.util.concurrent.TimeUnit;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.Search;
+import ml.melun.mangaview.report.DiagnosticLog;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import okhttp3.Response;
 
@@ -79,6 +80,13 @@ public class CaptchaActivity extends AppCompatActivity {
     private static final long TURNSTILE_MAX_WAIT_MS = 30000;
     private static final long COOKIE_READ_THROTTLE_MS = 350;
     private static final String NTK_ACCESS_VERIFY_PATH = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
+    private static final String PAGE_SNAPSHOT_JS = "(function(){" +
+            "try{" +
+            "var text=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').slice(0,700);" +
+            "var lower=text.toLowerCase();" +
+            "return JSON.stringify({url:location.href,title:document.title||'',accessDenied:(lower.indexOf('access denied')>=0||lower.indexOf('forbidden')>=0||lower.indexOf('blocked')>=0||lower.indexOf('접근')>=0||lower.indexOf('차단')>=0),turnstile:!!document.querySelector('iframe[src*=\"turnstile\"],iframe[src*=\"challenges.cloudflare\"],.cf-turnstile,.turnstile,[class*=\"turnstile\"]'),text:text});" +
+            "}catch(e){return JSON.stringify({error:String(e),url:location.href});}" +
+            "})();";
     public static final String SHADOW_HOOK_JS = "(function(){" +
             "if(window.__sh)return;" +
             "window.__sh=1;" +
@@ -389,8 +397,12 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(shouldSuppressCaptchaConsoleMessage(msg))
                     return true;
                 android.util.Log.d("CaptchaActivity", "JS Console [" + consoleMessage.sourceId() + ":" + consoleMessage.lineNumber() + "] " + msg);
+                recordCaptchaEvent("console source=" + consoleMessage.sourceId()
+                        + " line=" + consoleMessage.lineNumber()
+                        + " msg=" + msg);
                 if(msg != null && msg.contains("__TURNSTILE_CB__")) {
                     android.util.Log.d("CaptchaActivity", "Turnstile checkbox detected via MutationObserver - triggering click");
+                    recordCaptchaEvent("turnstile mutation checkbox detected");
                     handler.post(() -> attemptTurnstileClickImmediate());
                 }
                 return true;
@@ -399,6 +411,7 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
                 android.util.Log.d("CaptchaActivity", "JS Alert: " + message);
+                recordCaptchaEvent("js_alert url=" + url + " message=" + message);
                 result.confirm();
                 return true;
             }
@@ -421,16 +434,19 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(request == null || !request.isForMainFrame())
                     return false;
                 String targetUrl = request.getUrl() == null ? null : request.getUrl().toString();
+                recordCaptchaEvent("main_navigation target=" + targetUrl);
                 return shouldBlockCaptchaNavigation(targetUrl);
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                recordCaptchaEvent("main_navigation target=" + url);
                 return shouldBlockCaptchaNavigation(url);
             }
 
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                recordCaptchaEvent("page_started url=" + url);
                 handler.removeCallbacksAndMessages(null);
                 hideCaptchaLoadError();
                 if(progressBar != null) {
@@ -462,6 +478,9 @@ public class CaptchaActivity extends AppCompatActivity {
                     return;
                 }
                 String failingUrl = request != null && request.getUrl() != null ? request.getUrl().toString() : (view == null ? null : view.getUrl());
+                recordCaptchaEvent("main_load_error code=" + (error == null ? 0 : error.getErrorCode())
+                        + " desc=" + (error == null ? "" : error.getDescription())
+                        + " url=" + failingUrl);
                 if(retryCaptchaLoadAfterRedirectLoopIfNeeded(failingUrl, error))
                     return;
                 if(retryCaptchaLoadWithProxyIfNeeded(failingUrl))
@@ -481,11 +500,23 @@ public class CaptchaActivity extends AppCompatActivity {
 
             @Override
             public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+                if(request != null && request.isForMainFrame()) {
+                    String url = request.getUrl() == null ? "" : request.getUrl().toString();
+                    int code = errorResponse == null ? 0 : errorResponse.getStatusCode();
+                    String reason = errorResponse == null ? "" : errorResponse.getReasonPhrase();
+                    recordCaptchaEvent("main_http_error method=" + request.getMethod()
+                            + " code=" + code
+                            + " reason=" + reason
+                            + " url=" + url);
+                }
                 if(request != null && !request.isForMainFrame() && p != null && p.isNtkSite()) {
                     String url = request.getUrl() == null ? "" : request.getUrl().toString();
                     int code = errorResponse == null ? 0 : errorResponse.getStatusCode();
                     android.util.Log.d("CaptchaActivity", "NTK subresource HTTP error: method="
                             + request.getMethod() + ",code=" + code + ",url=" + url);
+                    recordCaptchaEvent("subresource_http_error method=" + request.getMethod()
+                            + " code=" + code
+                            + " url=" + url);
                 }
                 super.onReceivedHttpError(view, request, errorResponse);
             }
@@ -506,6 +537,7 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 android.util.Log.w("CaptchaActivity", "Captcha WebView renderer gone; recovering without crashing");
+                recordCaptchaEvent("renderer_gone didCrash=" + (detail != null && detail.didCrash()));
                 handler.removeCallbacksAndMessages(null);
                 clearWebViewProxy();
                 if(view == webView) {
@@ -539,6 +571,8 @@ public class CaptchaActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if(isFinishing) return;
+                recordCaptchaEvent("page_finished url=" + url);
+                recordCaptchaPageSnapshot(view);
                 if(progressBar != null) {
                     progressBar.setIndeterminate(false);
                     progressBar.setProgress(100);
@@ -560,6 +594,10 @@ public class CaptchaActivity extends AppCompatActivity {
 //        webView.setOnTouchListener((view, motionEvent) -> true);
 
         android.util.Log.d("CaptchaActivity", "Loading captcha URL: " + url);
+        recordCaptchaEvent("initial_load url=" + url
+                + " hasClearance=" + getHttpClient().hasCloudflareClearance()
+                + " hasProof=" + getHttpClient().hasNtkAccessProof()
+                + " recentChallenge=" + getHttpClient().hasRecentCloudflareChallenge());
         loadCaptchaUrl(url);
 
         infoText.setVisibility(View.GONE);
@@ -684,6 +722,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private void showCaptchaLoadError(String failingUrl) {
         captchaLoadErrorVisible = true;
+        recordCaptchaEvent("show_load_error url=" + failingUrl);
         handler.removeCallbacksAndMessages(null);
         if(webView != null)
             webView.setVisibility(View.INVISIBLE);
@@ -699,6 +738,23 @@ public class CaptchaActivity extends AppCompatActivity {
             webView.setVisibility(View.VISIBLE);
         if(infoText != null)
             infoText.setVisibility(View.GONE);
+    }
+
+    private void recordCaptchaPageSnapshot(WebView view) {
+        if(view == null || p == null || !p.isNtkSite())
+            return;
+        try {
+            view.evaluateJavascript(PAGE_SNAPSHOT_JS, result ->
+                    recordCaptchaEvent("page_snapshot " + result));
+        } catch (Exception e) {
+            recordCaptchaEvent("page_snapshot_failed error=" + e.getClass().getSimpleName() + ":" + e.getMessage());
+        }
+    }
+
+    private void recordCaptchaEvent(String message) {
+        if(p == null || !p.isNtkSite())
+            return;
+        DiagnosticLog.record(this, "CaptchaActivity", message);
     }
 
     private void pasteClearanceCookie(String purl) {
@@ -756,6 +812,7 @@ public class CaptchaActivity extends AppCompatActivity {
         String root = p == null ? NTK_WEBTOON_URL : p.getNtkResolvedRoot();
         String retryUrl = ntkCaptchaLoadUrl(root, p == null ? null : p.getUrl());
         android.util.Log.d("CaptchaActivity", "Retrying NTK captcha after redirect loop: " + retryUrl);
+        recordCaptchaEvent("retry_redirect_loop failingUrl=" + failingUrl + " retryUrl=" + retryUrl);
         loadCaptchaUrlDirect(retryUrl);
         return true;
     }
@@ -782,6 +839,7 @@ public class CaptchaActivity extends AppCompatActivity {
         quicCaptchaLoadInFlight = true;
         String retryUrl = failingUrl != null && failingUrl.length() > 0 ? failingUrl : captchaLoadUrl;
         android.util.Log.d("CaptchaActivity", "Retrying NTK captcha WebView with QUIC HTML fallback: " + retryUrl);
+        recordCaptchaEvent("retry_quic_html failingUrl=" + failingUrl + " retryUrl=" + retryUrl);
         quicCaptchaHtmlActive = true;
         quicCaptchaLoadInFlight = false;
         webView.loadUrl(retryUrl);
@@ -1040,9 +1098,11 @@ public class CaptchaActivity extends AppCompatActivity {
             return;
         CookieManager manager = CookieManager.getInstance();
         List<String> setCookies = result.setCookies();
-        if(setCookies.size() > 0)
+        if(setCookies.size() > 0) {
             android.util.Log.d("CaptchaActivity", "NTK QUIC set-cookie names: "
                     + quicSetCookieNamesForTest(setCookies));
+            recordCaptchaEvent("quic_set_cookie_names " + quicSetCookieNamesForTest(setCookies));
+        }
         for(String cookie : setCookies) {
             if(cookie == null || cookie.length() == 0)
                 continue;
@@ -1084,9 +1144,11 @@ public class CaptchaActivity extends AppCompatActivity {
             return null;
         String method = request.getMethod();
         String url = request.getUrl().toString();
-        if(p != null && p.isNtkSite() && isNtkProtectedHttpsUrl(url) && method != null && !"GET".equalsIgnoreCase(method))
+        if(p != null && p.isNtkSite() && isNtkProtectedHttpsUrl(url) && method != null && !"GET".equalsIgnoreCase(method)) {
             android.util.Log.d("CaptchaActivity", "NTK WebView request needs direct WebView transport: method="
                     + method + ",url=" + url);
+            recordCaptchaEvent("quic_intercept_bypass method=" + method + " url=" + url);
+        }
         if(!shouldInterceptNtkQuicRequestForTest(p != null && p.isNtkSite(), quicCaptchaHtmlActive,
                 method, url, NtkQuicFetcher.isAvailable()))
             return null;
@@ -1106,6 +1168,10 @@ public class CaptchaActivity extends AppCompatActivity {
                 responseBytes = injectNtkQuicBridgeScript(url, result.body, result.headers).getBytes(java.nio.charset.StandardCharsets.UTF_8);
             android.util.Log.d("CaptchaActivity", "Intercepted NTK WebView request through QUIC: "
                     + url + ",code=" + result.code + ",len=" + responseBytes.length);
+            recordCaptchaEvent("quic_intercept method=" + method
+                    + " code=" + result.code
+                    + " len=" + responseBytes.length
+                    + " url=" + url);
             return new WebResourceResponse(
                     responseMimeType(result.contentType()),
                     responseEncoding(result.contentType()),
@@ -1115,6 +1181,7 @@ public class CaptchaActivity extends AppCompatActivity {
                     new ByteArrayInputStream(responseBytes));
         } catch (Exception e) {
             android.util.Log.d("CaptchaActivity", "Failed NTK QUIC WebView intercept: " + url, e);
+            recordCaptchaEvent("quic_intercept_failed url=" + url + " error=" + e.getClass().getSimpleName() + ":" + e.getMessage());
             return null;
         }
     }
@@ -1177,6 +1244,10 @@ public class CaptchaActivity extends AppCompatActivity {
         CharSequence description = error == null ? "" : error.getDescription();
         android.util.Log.d("CaptchaActivity", "NTK subresource load error: method="
                 + request.getMethod() + ",code=" + code + ",desc=" + description + ",url=" + url);
+        recordCaptchaEvent("subresource_load_error method=" + request.getMethod()
+                + " code=" + code
+                + " desc=" + description
+                + " url=" + url);
     }
 
     private static String responseMimeType(String contentType) {
@@ -1220,6 +1291,7 @@ public class CaptchaActivity extends AppCompatActivity {
         retriedCaptchaWithProxy = true;
         String retryUrl = failingUrl != null && failingUrl.length() > 0 ? failingUrl : captchaLoadUrl;
         android.util.Log.d("CaptchaActivity", "Retrying NTK captcha WebView with local proxy: " + retryUrl);
+        recordCaptchaEvent("retry_local_proxy failingUrl=" + failingUrl + " retryUrl=" + retryUrl);
         handler.postDelayed(() -> {
             if(isFinishing || isDestroyed() || webView == null)
                 return;
@@ -1239,6 +1311,7 @@ public class CaptchaActivity extends AppCompatActivity {
         retriedCaptchaWithoutProxy = true;
         String retryUrl = failingUrl != null && failingUrl.length() > 0 ? failingUrl : captchaLoadUrl;
         android.util.Log.d("CaptchaActivity", "Retrying NTK captcha WebView without proxy: " + retryUrl);
+        recordCaptchaEvent("retry_without_proxy failingUrl=" + failingUrl + " retryUrl=" + retryUrl);
         clearWebViewProxy();
         handler.postDelayed(() -> {
             if(isFinishing || isDestroyed() || webView == null)
@@ -1283,17 +1356,20 @@ public class CaptchaActivity extends AppCompatActivity {
                     return;
                 }
                 android.util.Log.d("CaptchaActivity", "NTK WebView proxy enabled on port " + proxyPort);
+                recordCaptchaEvent("local_proxy_enabled port=" + proxyPort + " url=" + url);
                 try {
                     quicCaptchaHtmlActive = false;
                     webView.loadUrl(url);
                     webView.evaluateJavascript(SHADOW_HOOK_JS, null);
                 } catch (Exception e) {
                     android.util.Log.d("CaptchaActivity", "Failed to load NTK captcha through proxy", e);
+                    recordCaptchaEvent("local_proxy_load_failed url=" + url + " error=" + e.getClass().getSimpleName() + ":" + e.getMessage());
                 }
             });
             return true;
         } catch (Exception e) {
             android.util.Log.d("CaptchaActivity", "Failed to enable NTK WebView proxy", e);
+            recordCaptchaEvent("local_proxy_enable_failed url=" + url + " error=" + e.getClass().getSimpleName() + ":" + e.getMessage());
             return false;
         }
     }
@@ -1378,6 +1454,7 @@ public class CaptchaActivity extends AppCompatActivity {
             if(isFinishing || isDestroyed() || webView == null)
                 return;
             android.util.Log.d("CaptchaActivity", "Turnstile check result: " + result);
+            recordCaptchaEvent("turnstile_check result=" + result);
             if(result == null || result.equals("null")) return;
 
             try {
@@ -1387,6 +1464,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
                 if("jsclick".equals(type)) {
                     android.util.Log.d("CaptchaActivity", "Turnstile JS direct click executed via shadow hook");
+                    recordCaptchaEvent("turnstile_js_click");
                     isFirstAttempt = false;
                 } else if("iframe".equals(type)) {
                     normalNtkPageCount = 0;
@@ -1401,6 +1479,10 @@ public class CaptchaActivity extends AppCompatActivity {
                     final float touchH = converted[3];
                     String signature = turnstileSignature(obj, x, y, w, h);
                     android.util.Log.d("CaptchaActivity", "Turnstile iframe found css=" + x + "," + y
+                            + " size=" + w + "x" + h
+                            + " touch=" + touchX + "," + touchY
+                            + " touchSize=" + touchW + "x" + touchH);
+                    recordCaptchaEvent("turnstile_iframe css=" + x + "," + y
                             + " size=" + w + "x" + h
                             + " touch=" + touchX + "," + touchY
                             + " touchSize=" + touchW + "x" + touchH);
@@ -1422,12 +1504,14 @@ public class CaptchaActivity extends AppCompatActivity {
                     isFirstAttempt = false;
                     normalNtkPageCount++;
                     android.util.Log.d("CaptchaActivity", "NTK normal page detected without Turnstile: " + normalNtkPageCount);
+                    recordCaptchaEvent("normal_page_detected count=" + normalNtkPageCount);
                     long elapsed = System.currentTimeMillis() - pageFinishedTime;
                     boolean finished = false;
                     if(normalNtkPageCount >= 1 && elapsed > 400L)
                         finished = readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl());
                     if(!finished && shouldFinishNormalNtkPageForTest(normalNtkPageCount, elapsed)) {
                         android.util.Log.d("CaptchaActivity", "NTK normal page stable; finishing captcha after cookie sync");
+                        recordCaptchaEvent("normal_page_stable_finish elapsed=" + elapsed);
                         finishAfterNormalNtkPage(p.getUrl(), webView == null ? null : webView.getUrl());
                     }
                 } else {
@@ -1439,6 +1523,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 }
             } catch(Exception e) {
                 android.util.Log.e("CaptchaActivity", "Failed to parse turnstile result", e);
+                recordCaptchaEvent("turnstile_parse_failed error=" + e.getClass().getSimpleName() + ":" + e.getMessage());
             }
         });
     }
@@ -1711,12 +1796,16 @@ public class CaptchaActivity extends AppCompatActivity {
                     return;
                 if(verified) {
                     android.util.Log.d("CaptchaActivity", "NTK clearance verified by app HTTP client");
+                    recordCaptchaEvent("clearance_verified currentUrl=" + currentUrl);
                     finishWithVerifiedClearance();
                 } else if(shouldFinishAfterVisibleNormalNtkPage()) {
                     android.util.Log.d("CaptchaActivity", "NTK app HTTP verification failed, but visible normal page is stable; finishing captcha");
+                    recordCaptchaEvent("clearance_verify_failed_but_visible_normal currentUrl=" + currentUrl);
                     finishAfterNormalNtkPage(purl, currentUrl);
                 } else {
                     android.util.Log.d("CaptchaActivity", "NTK clearance failed app HTTP verification; keeping captcha open");
+                    recordCaptchaEvent("clearance_verify_failed currentUrl=" + currentUrl
+                            + " hadClearanceValue=" + (clearanceValue != null));
                     if(clearanceValue != null)
                         rejectedClearanceValues.add(clearanceValue);
                     getHttpClient().markCloudflareChallenge(currentUrl == null ? purl : currentUrl);
@@ -1734,6 +1823,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private void finishAfterNormalNtkPage(String purl, String currentUrl) {
         if(isFinishing)
             return;
+        recordCaptchaEvent("finish_after_normal_page currentUrl=" + currentUrl);
         syncCaptchaCookiesToHttpClient(purl, currentUrl);
         finishWithVerifiedClearance();
     }
@@ -1786,6 +1876,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private void finishWithVerifiedClearance() {
         String currentWebViewUrl = webView == null ? null : webView.getUrl();
+        recordCaptchaEvent("finish_verified loadUrl=" + captchaLoadUrl + " currentUrl=" + currentWebViewUrl);
         syncCaptchaCookiesToHttpClient(captchaLoadUrl, currentWebViewUrl);
         getHttpClient().clearNtkTransientLoads();
         Search.clearNtkResultCaches();
@@ -1853,7 +1944,10 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private boolean shouldBlockCaptchaNavigation(String url) {
-        return shouldBlockCaptchaNavigationForTest(url);
+        boolean blocked = shouldBlockCaptchaNavigationForTest(url);
+        if(blocked)
+            recordCaptchaEvent("blocked_navigation url=" + url);
+        return blocked;
     }
 
     static boolean shouldBlockCaptchaNavigationForTest(String url) {
