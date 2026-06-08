@@ -521,6 +521,15 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkQuicImagesOnlyAcceptSuccessfulNonChallengeBodies() {
+        assertTrue(CustomHttpClient.isUsableNtkQuicImageResponseForTest(200, 1024, false));
+        assertFalse(CustomHttpClient.isUsableNtkQuicImageResponseForTest(302, 32, false));
+        assertFalse(CustomHttpClient.isUsableNtkQuicImageResponseForTest(403, 1024, false));
+        assertFalse(CustomHttpClient.isUsableNtkQuicImageResponseForTest(200, 0, false));
+        assertFalse(CustomHttpClient.isUsableNtkQuicImageResponseForTest(200, 1024, true));
+    }
+
+    @Test
     public void ntkNetworkMissesAreExpectedRequestFailures() {
         assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
                 "https://sbxh1.com/api/manhwa-list?page=1",

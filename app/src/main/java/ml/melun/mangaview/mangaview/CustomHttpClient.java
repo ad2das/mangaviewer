@@ -901,6 +901,11 @@ public class CustomHttpClient {
         return trimmed.substring(0, Math.max(0, maxLength - 3)) + "...";
     }
 
+    private void recordRuntimeDiagnostic(String message) {
+        if(context != null)
+            DiagnosticLog.record(context, TAG, message);
+    }
+
     private static String diagnosticInterpretation(String report) {
         String lower = report == null ? "" : report.toLowerCase(Locale.ROOT);
         if(lower.contains("active_site: wfwf")) {
@@ -2528,10 +2533,12 @@ public class CustomHttpClient {
                 getCookieHeaderForNtkPath(normalized), headers, "GET", null, ntkQuicGetTimeout(baseUrl + normalized));
         String body = result == null || result.body == null ? "" : result.body;
         int code = result == null ? 0 : result.code;
-        Log.d(TAG, "ntk_page_quic_primary path=" + normalized
+        String diagnostic = "ntk_page_quic_primary path=" + normalized
                 + ",code=" + code
                 + ",bytes=" + body.length()
-                + ",error=" + (result == null ? "" : result.error));
+                + ",error=" + (result == null ? "" : throwableSummary(result.error));
+        Log.d(TAG, diagnostic);
+        recordRuntimeDiagnostic(diagnostic);
         if(result == null || result.error != null || code <= 0 || body.length() == 0)
             return null;
         applySetCookieHeaders(result.headers, baseUrl);
@@ -3777,13 +3784,29 @@ public class CustomHttpClient {
             if(headerValue(headers, "User-Agent") == null)
                 headers.put("User-Agent", agent);
             NtkQuicFetcher.Result result = fetchNtkQuicImage(baseUrl, url, headers, foregroundPriority);
-            if(isUsableNtkQuicGetResult(result)) {
+            boolean challenge = result != null && isCloudflareChallenge(result.code, result.body);
+            if(challenge) {
+                markCloudflareChallenge(url);
+                recordRuntimeDiagnostic("ntk_quic_image_challenge foreground=" + foregroundPriority
+                        + ",code=" + result.code
+                        + ",len=" + ntkQuicBodyLength(result)
+                        + ",url=" + safeLogUrl(url));
+            } else if(isUsableNtkQuicImageResult(result)) {
                 applySetCookieHeaders(result.headers, baseUrl);
-                if(isCloudflareChallenge(result.code, result.body))
-                    markCloudflareChallenge(url);
                 ViewerWarmupManager.logMetric("ntk_quic_image_code", result.code);
                 ViewerWarmupManager.logMetric("ntk_quic_image_len", result.bodyBytes.length);
+                if(foregroundPriority)
+                    recordRuntimeDiagnostic("ntk_quic_image_result foreground=true"
+                            + ",code=" + result.code
+                            + ",len=" + result.bodyBytes.length
+                            + ",url=" + safeLogUrl(url));
                 return responseFromNtkQuic(request, result, "HttpEngine");
+            } else {
+                recordRuntimeDiagnostic("ntk_quic_image_unusable foreground=" + foregroundPriority
+                        + ",code=" + (result == null ? 0 : result.code)
+                        + ",len=" + ntkQuicBodyLength(result)
+                        + ",error=" + (result == null ? "" : throwableSummary(result.error))
+                        + ",url=" + safeLogUrl(url));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -3793,7 +3816,10 @@ public class CustomHttpClient {
         } catch (Exception e) {
             if(Log.isLoggable(TAG, Log.DEBUG))
                 Log.d(TAG, "ntk_quic_image_failed url=" + safeLogUrl(url), e);
+            recordRuntimeDiagnostic("ntk_quic_image_failed url=" + safeLogUrl(url)
+                    + ",error=" + throwableSummary(e));
         }
+        recordRuntimeDiagnostic("ntk_quic_image_tls_fallback url=" + safeLogUrl(url));
         return chain.proceed(request);
     }
 
@@ -3854,6 +3880,24 @@ public class CustomHttpClient {
                 && result.code > 0
                 && result.bodyBytes != null
                 && result.bodyBytes.length > 0;
+    }
+
+    private static boolean isUsableNtkQuicImageResult(NtkQuicFetcher.Result result) {
+        return result != null
+                && result.error == null
+                && result.code >= 200
+                && result.code < 300
+                && result.bodyBytes != null
+                && result.bodyBytes.length > 0
+                && !isCloudflareChallenge(result.code, result.body);
+    }
+
+    static boolean isUsableNtkQuicImageResponseForTest(int code, int bodyLength, boolean challenge) {
+        return code >= 200 && code < 300 && bodyLength > 0 && !challenge;
+    }
+
+    private static int ntkQuicBodyLength(NtkQuicFetcher.Result result) {
+        return result == null || result.bodyBytes == null ? 0 : result.bodyBytes.length;
     }
 
     private static long ntkQuicGetTimeout(String url) {
