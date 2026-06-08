@@ -2480,6 +2480,12 @@ public class CustomHttpClient {
             loadState = pageLoads.get(loadKey);
         }
         try {
+            PageResponse quicLoaded = loadNtkPageFromQuicPrimary(normalized, now);
+            if(quicLoaded != null) {
+                if(loadState != null)
+                    loadState.response = quicLoaded;
+                return quicLoaded;
+            }
             PageResponse loaded = loadPageFromNetworkWithDomainRetry(normalized, now, staleCached);
             if(loadState != null)
                 loadState.response = loaded;
@@ -2509,6 +2515,42 @@ public class CustomHttpClient {
             if(loadState != null)
             loadState.done.countDown();
         }
+    }
+
+    private PageResponse loadNtkPageFromQuicPrimary(String normalized, long now) throws Exception {
+        if(!isNtk() || context == null || !NtkQuicFetcher.isAvailable() || !isNtkWebViewFetchPath(normalized))
+            return null;
+        String baseUrl = getBaseUrl(normalized);
+        Map<String, String> headers = buildHeaders(baseUrl, true, null);
+        applyNtkApiHeaders(headers, baseUrl, normalized);
+        applyNtkScopedCookieHeader(headers, true, normalized, true, null);
+        NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, baseUrl + normalized,
+                getCookieHeaderForNtkPath(normalized), headers, "GET", null, ntkQuicGetTimeout(baseUrl + normalized));
+        String body = result == null || result.body == null ? "" : result.body;
+        int code = result == null ? 0 : result.code;
+        Log.d(TAG, "ntk_page_quic_primary path=" + normalized
+                + ",code=" + code
+                + ",bytes=" + body.length()
+                + ",error=" + (result == null ? "" : result.error));
+        if(result == null || result.error != null || code <= 0 || body.length() == 0)
+            return null;
+        applySetCookieHeaders(result.headers, baseUrl);
+        if(isCloudflareChallenge(code, body)) {
+            markCloudflareChallenge(baseUrl + normalized);
+            throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
+        }
+        if(shouldRejectNtkPageResponse(normalized, code, body))
+            return null;
+        clearLastCloudflareChallenge();
+        if(code >= 200 && code < 400 && shouldStoreNetworkPageBody(normalized, body)) {
+            String cacheKey = pageCacheKey(normalized);
+            CachedPage cachedPage = new CachedPage(code, body, now);
+            synchronized (pageCacheLock) {
+                pageCache.put(cacheKey, cachedPage);
+            }
+            writeDiskCachedPage(cacheKey, cachedPage);
+        }
+        return new PageResponse(code, body, false);
     }
 
     public PageResponse mgetNtkViewerPayloadPage(String url, long ttlMillis) throws Exception {
