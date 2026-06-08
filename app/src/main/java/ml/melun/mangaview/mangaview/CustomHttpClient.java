@@ -6044,10 +6044,14 @@ public class CustomHttpClient {
 
             // Compute WASM proof for tp (required since server hardened anti-bot checks)
             long wasmProofStarted = System.currentTimeMillis();
+            Log.d(TAG, "ntk_wasm_proof_before_fetch token_len=" + token.length() + ",path=" + challengePath);
             String tp = fetchNtkWasmProof(baseUrl, token);
             Log.d(TAG, "ntk_wasm_proof_result=" + (tp == null ? "null" : "len=" + tp.length())
                     + ",ms=" + (System.currentTimeMillis() - wasmProofStarted)
                     + ",path=" + challengePath);
+            if(tp == null || tp.length() == 0) {
+                Log.d(TAG, "ntk_wasm_proof_null_fallback path=" + challengePath);
+            }
 
             Log.d(TAG, "ntk_native_ack_token_before_ack len=" + token.length() + ",path=" + challengePath);
             int slotCount = challengeObj.optInt("slotCount", 4);
