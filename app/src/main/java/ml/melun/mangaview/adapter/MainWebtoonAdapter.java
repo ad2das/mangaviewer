@@ -39,6 +39,7 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
@@ -47,6 +48,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
+import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.MTitle;
@@ -1719,7 +1721,9 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private boolean markContinueOpen(Title item) {
-        String key = titleKey(item) + ":" + (item == null ? 0 : item.getBookmark()) + ":" + (item == null ? 0 : item.getBookmarkEpisodeId());
+        String key = HomeTitleKeyPolicy.sourceKeyForTitle(item, p) + ":" + titleKey(item)
+                + ":" + (item == null ? 0 : item.getBookmark())
+                + ":" + (item == null ? 0 : item.getBookmarkEpisodeId());
         long now = System.currentTimeMillis();
         if(key.equals(lastContinueOpenKey) && now - lastContinueOpenAt < CONTINUE_OPEN_DEDUPE_MS)
             return false;
@@ -2447,9 +2451,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private String titleKey(Title title) {
-        if(title == null)
-            return "";
-        return title.getBaseMode() + ":" + title.getId();
+        return HomeTitleKeyPolicy.titleKey(title, p);
     }
 
     private String titleListKey(List<Title> titles) {
@@ -2909,5 +2911,30 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 return true;
         }
         return false;
+    }
+}
+
+class HomeTitleKeyPolicy {
+    static String titleKey(Title title, Preference preference) {
+        if(title == null)
+            return "";
+        return sourceKeyForTitle(title, preference) + ":" + title.getBaseMode() + ":" + title.getId();
+    }
+
+    static String sourceKeyForTitle(Title title, Preference preference) {
+        if(title == null)
+            return "";
+        String source = title.getSourceSite();
+        if((source == null || source.length() == 0) && preference != null)
+            source = preference.resolveKnownSourceSite(title);
+        if(source == null)
+            return "";
+        source = source.trim().toLowerCase(Locale.ROOT);
+        if(source.contains("ntk") || source.contains("sbxh") || source.contains("toonflix"))
+            return "ntk";
+        if(source.contains("wfwf") || source.contains("wolf") || source.contains("vcloud")
+                || source.contains("v12st") || source.contains("ao9cloud"))
+            return "wfwf";
+        return "";
     }
 }

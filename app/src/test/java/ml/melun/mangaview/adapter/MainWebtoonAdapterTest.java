@@ -87,4 +87,15 @@ public class MainWebtoonAdapterTest {
         assertEquals(0L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(false));
         assertEquals(0L, HomeContinueWarmupPolicy.visibleHomeWarmupDelayMsForTest(true));
     }
+
+    @Test
+    public void titleKeySeparatesSourcesWithSameIdAndMode() {
+        Title ntk = new Title("same", "", "", Collections.emptyList(), "", 12, base_webtoon);
+        ntk.setSourceSite("ntk");
+        Title wfwf = new Title("same", "", "", Collections.emptyList(), "", 12, base_webtoon);
+        wfwf.setSourceSite("wfwf");
+
+        assertFalse(HomeTitleKeyPolicy.titleKey(ntk, null)
+                .equals(HomeTitleKeyPolicy.titleKey(wfwf, null)));
+    }
 }

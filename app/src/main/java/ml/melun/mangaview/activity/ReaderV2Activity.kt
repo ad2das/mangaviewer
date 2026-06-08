@@ -1535,7 +1535,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val progressManga = progressEpisodeForIndex(episodes, episodeIndex) ?: info.manga
         val progressEpisodeId = progressManga.id.takeIf { it > 0 } ?: info.manga.id
         val ntkPath = (progressManga.ntkEpisodePath ?: "").ifBlank { info.manga.ntkEpisodePath ?: "" }
-        if (title.sourceSite == "ntk" && ntkPath.isNotBlank()) {
+        if (isNtkProgressTitle(title) && ntkPath.isNotBlank()) {
             title.resumeNtkEpisodePath = ntkPath
         }
         val episodeCount = episodes.size.takeIf { it > 0 } ?: title.episodeCount
@@ -1568,6 +1568,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val result = resultIntent ?: Intent().also { resultIntent = it }
         result.putExtra("id", resultManga.id.takeIf { it > 0 } ?: manga.id)
         setResult(RESULT_OK, result)
+    }
+
+    private fun isNtkProgressTitle(title: MTitle): Boolean {
+        val resolved = p?.resolveSourceSite(title)?.takeIf { it.isNotBlank() }
+            ?: title.sourceSite
+        return resolved == "ntk"
     }
 
     private fun displayEpisodeTitle(manga: Manga?, title: Title?): String {

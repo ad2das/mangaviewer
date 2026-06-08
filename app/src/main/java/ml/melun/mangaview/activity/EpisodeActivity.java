@@ -525,7 +525,7 @@ public class EpisodeActivity extends AppCompatActivity {
             if(episode != null) {
                 progressId = episode.getId();
                 String ntkPath = episode.getNtkEpisodePath();
-                if("ntk".equals(title.getSourceSite()) && ntkPath != null && ntkPath.length() > 0)
+                if(isNtkTitle() && ntkPath != null && ntkPath.length() > 0)
                     title.setResumeNtkEpisodePath(ntkPath);
             }
         }
@@ -1308,7 +1308,7 @@ public class EpisodeActivity extends AppCompatActivity {
         int episodeId = selected != null && selected.getId() > 0 ? selected.getId() : manga.getId();
         if(episodeId <= 0)
             return;
-        if("ntk".equals(title.getSourceSite())) {
+        if(isNtkTitle()) {
             String ntkPath = selected == null ? null : selected.getNtkEpisodePath();
             if(ntkPath == null || ntkPath.length() == 0)
                 ntkPath = manga.getNtkEpisodePath();
