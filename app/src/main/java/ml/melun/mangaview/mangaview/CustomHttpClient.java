@@ -1178,7 +1178,7 @@ public class CustomHttpClient {
             context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
                     .edit()
                     .remove("ntkAccessVerifiedAt")
-                    .apply();
+                    .commit();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -1351,9 +1351,9 @@ public class CustomHttpClient {
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=" + LEGACY_NTK_HOST);
                 manager.setCookie(url, "__cf_bm=; Max-Age=0; Path=/; Domain=." + LEGACY_NTK_HOST);
             }
+            clearNtkAccessVerification();
             manager.flush();
             clearCloudflareCookies(false);
-            clearNtkAccessVerification();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
