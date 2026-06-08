@@ -6820,15 +6820,20 @@ public class CustomHttpClient {
         try {
             NtkQuicFetcher.Result jsResult = NtkQuicFetcher.fetch(context, baseUrl + "/wasm/ad-guard/ad_guard.js", agent,
                     getCookieHeader(), Collections.emptyMap(), "GET", null, 5000L);
+            Log.d(TAG, "ntk_wasm_js_fetch=" + (jsResult == null ? "null" : "code=" + jsResult.code + ",len=" + (jsResult.body == null ? 0 : jsResult.body.length()) + ",err=" + jsResult.error));
             if(jsResult == null || jsResult.body == null || jsResult.body.length() < 100)
                 return null;
             NtkQuicFetcher.Result wasmResult = NtkQuicFetcher.fetch(context, baseUrl + "/wasm/ad-guard/ad_guard_bg.wasm", agent,
                     getCookieHeader(), Collections.emptyMap(), "GET", null, 5000L);
+            Log.d(TAG, "ntk_wasm_wasm_fetch=" + (wasmResult == null ? "null" : "code=" + wasmResult.code + ",len=" + (wasmResult.bodyBytes == null ? 0 : wasmResult.bodyBytes.length) + ",err=" + wasmResult.error));
             if(wasmResult == null || wasmResult.bodyBytes == null || wasmResult.bodyBytes.length < 100)
                 return null;
             String tp = runWasmVcInWebView(wasmResult.bodyBytes, jsResult.body, token);
-            Log.d(TAG, "ntk_wasm_proof_generated=" + (tp != null && tp.length() > 0)
+            Log.d(TAG, "ntk_wasm_proof_generated=" + (tp != null && tp.length() > 0 && !tp.startsWith("error:"))
+                    + ",tp=" + (tp == null ? "null" : tp.substring(0, Math.min(60, tp.length())))
                     + ",len=" + (tp == null ? 0 : tp.length()));
+            if(tp != null && tp.startsWith("error:"))
+                return null;
             return tp;
         } catch(Exception e) {
             Log.d(TAG, "ntk_wasm_proof_error=" + e);

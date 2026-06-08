@@ -787,8 +787,38 @@ public class CaptchaActivity extends AppCompatActivity {
 
     private void loadCaptchaUrlDirect(String url) {
         quicCaptchaHtmlActive = false;
+        loadCaptchaUrlDirect(url, false);
+    }
+
+    private void loadCaptchaUrlDirect(String url, boolean quicHtml) {
+        quicCaptchaHtmlActive = quicHtml;
+        syncHttpClientCookiesToWebView(url);
         webView.loadUrl(url);
         webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+    }
+
+    private void syncHttpClientCookiesToWebView(String url) {
+        try {
+            String cookieHeader = getHttpClient().getCookieHeader();
+            if(cookieHeader == null || cookieHeader.length() == 0)
+                return;
+            CookieManager manager = CookieManager.getInstance();
+            for(String pair : cookieHeader.split(";")) {
+                pair = pair.trim();
+                if(pair.length() == 0)
+                    continue;
+                int eq = pair.indexOf('=');
+                if(eq <= 0)
+                    continue;
+                String key = pair.substring(0, eq).trim();
+                String value = pair.substring(eq + 1).trim();
+                if("cf_clearance".equalsIgnoreCase(key) || key.toLowerCase(java.util.Locale.ROOT).startsWith("cf_")) {
+                    manager.setCookie(url, pair);
+                }
+            }
+        } catch(Exception e) {
+            android.util.Log.d("CaptchaActivity", "Failed to sync HTTP cookies to WebView", e);
+        }
     }
 
     private boolean retryCaptchaLoadAfterRedirectLoopIfNeeded(String failingUrl, WebResourceError error) {
@@ -813,7 +843,7 @@ public class CaptchaActivity extends AppCompatActivity {
         String retryUrl = ntkCaptchaLoadUrl(root, p == null ? null : p.getUrl());
         android.util.Log.d("CaptchaActivity", "Retrying NTK captcha after redirect loop: " + retryUrl);
         recordCaptchaEvent("retry_redirect_loop failingUrl=" + failingUrl + " retryUrl=" + retryUrl);
-        loadCaptchaUrlDirect(retryUrl);
+        loadCaptchaUrlDirect(retryUrl, NtkQuicFetcher.isAvailable());
         return true;
     }
 
