@@ -5805,13 +5805,15 @@ public class CustomHttpClient {
                         "if(typeof Response!=='function'){" +
                         "  window.Response=function(body,init){" +
                         "    this.body=body;this.status=(init&&init.status)||200;" +
-                        "    this.headers=(init&&init.headers)||{};" +
+                        "    this.ok=this.status>=200&&this.status<300;" +
+                        "    this.type='basic';" +
+                        "    this.headers={};" +
                         "    this.arrayBuffer=function(){return Promise.resolve(this.body.buffer||this.body);};" +
                         "  };" +
                         "}" +
                         "window.fetch=function(u){" +
                         "  if(String(u).indexOf('data:application/wasm;base64,')===0){" +
-                        "    return Promise.resolve(new Response(encryptedBytes,{status:200,headers:{'Content-Type':'application/wasm'}}));" +
+                        "    return Promise.resolve(new Response(encryptedBytes,{status:200}));" +
                         "  }" +
                         "  return nativeFetch(u);" +
                         "};" +
