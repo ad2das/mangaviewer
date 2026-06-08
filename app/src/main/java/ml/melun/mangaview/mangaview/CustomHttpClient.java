@@ -2715,7 +2715,6 @@ public class CustomHttpClient {
             if(response != null)
                 response.close();
         }
-        appendNtkFragmentedApiDiagnostic(report, root, path);
     }
 
     private boolean shouldPreferFragmentedNtkHttpOverQuic() {
