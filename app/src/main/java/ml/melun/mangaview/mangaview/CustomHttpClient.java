@@ -3730,10 +3730,6 @@ public class CustomHttpClient {
             Map<String, String> headers = requestHeadersMap(request);
             boolean foregroundPriority = "1".equals(headerValue(headers, "X-MangaViewer-Foreground"));
             removeHeaderIgnoreCase(headers, "X-MangaViewer-Foreground");
-            if(foregroundPriority) {
-                ViewerWarmupManager.logMetric("ntk_quic_image_foreground_skip", 1L);
-                return chain.proceed(request);
-            }
             if(headerValue(headers, "Cookie") == null)
                 headers.put("Cookie", getCookieHeader());
             if(headerValue(headers, "User-Agent") == null)
