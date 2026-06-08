@@ -5800,6 +5800,14 @@ public class CustomHttpClient {
                         "const blob=new Blob([jsCodeStr],{type:'application/javascript'});" +
                         "const url=URL.createObjectURL(blob);" +
                         "window.NtkWasmBridge.onVcResult('log:import_start');" +
+                        "const nativeFetch=window.fetch;" +
+                        "const encryptedBytes=new Uint8Array(atob(wasmBase64).split('').map(c=>c.charCodeAt(0)));" +
+                        "window.fetch=function(u){" +
+                        "  if(String(u).indexOf('data:application/wasm;base64,')===0){" +
+                        "    return Promise.resolve(new Response(encryptedBytes,{status:200,headers:{'Content-Type':'application/wasm'}}));" +
+                        "  }" +
+                        "  return nativeFetch(u);" +
+                        "};" +
                         "import(url).then(m=>{" +
                         "  moduleExports=m;" +
                         "  window.NtkWasmBridge.onVcResult('log:import_ok');" +
@@ -5808,7 +5816,7 @@ public class CustomHttpClient {
                         "  window.NtkWasmBridge.onVcResult('log:wasm_ready');" +
                         "  const r=moduleExports._vc('" + token + "');" +
                         "  window.NtkWasmBridge.onVcResult('log:vc_result_type='+typeof(r));" +
-                        "  window.NtkWasmBridge.onVcResult(String(r));" +
+                        "  window.NtkWasmBridge.onVcResult(String(r===true?1:(r===false?0:r)));" +
                         "}).catch(e=>{" +
                         "  window.NtkWasmBridge.onVcResult('error:'+e);" +
                         "});" +
