@@ -55,6 +55,23 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void sniFragmentationSurvivesHttpProxyConnectPrefix() throws Exception {
+        List<Integer> sizes = CustomHttpClient.fragmentingTlsWriteSizesAfterPlainPrefixForTest();
+
+        assertEquals(Integer.valueOf("CONNECT sbxh4.com:443 HTTP/1.1\r\n\r\n".length()), sizes.get(0));
+        assertEquals(Integer.valueOf(1), sizes.get(1));
+        assertEquals(Integer.valueOf(7), sizes.get(2));
+        assertEquals(Integer.valueOf(64), sizes.get(3));
+    }
+
+    @Test
+    public void ntkRscPrefersFragmentedHttpWhenProxyOrChallengeIsActive() {
+        assertTrue(CustomHttpClient.shouldPreferFragmentedNtkHttpOverQuicForTest(true, false));
+        assertTrue(CustomHttpClient.shouldPreferFragmentedNtkHttpOverQuicForTest(false, true));
+        assertFalse(CustomHttpClient.shouldPreferFragmentedNtkHttpOverQuicForTest(false, false));
+    }
+
+    @Test
     public void imageClientUsesWiderDispatcherThanPageClient() {
         assertTrue(CustomHttpClient.imageDispatcherIsWiderForTest());
     }

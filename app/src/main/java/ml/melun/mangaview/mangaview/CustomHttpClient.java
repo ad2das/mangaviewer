@@ -24,6 +24,8 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.net.ProxySelector;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketException;
@@ -1751,7 +1753,8 @@ public class CustomHttpClient {
                 : fastWolfSearchDirect ? unsafeWolfSearchFastClient
                 : fastWolfPageDirect ? unsafeWolfPageFastClient : this.unsafeFallbackClient;
         try {
-            Response quicPrimary = getWithNtkQuicPrimaryUrl(url, headers);
+            Response quicPrimary = shouldPreferFragmentedNtkHttpOverQuic()
+                    ? null : getWithNtkQuicPrimaryUrl(url, headers);
             if(quicPrimary != null)
                 return quicPrimary;
             Request.Builder builder = new Request.Builder()
@@ -2552,6 +2555,23 @@ public class CustomHttpClient {
         headers.put("referer", baseUrl + normalized);
         long startedAt = System.currentTimeMillis();
         try {
+            if(shouldPreferFragmentedNtkHttpOverQuic()) {
+                PageResponse http = fetchNtkRscPageWithFragmentedHttp(baseUrl, normalized, headers);
+                if(http != null && http.body != null && http.body.length() > 0) {
+                    Log.d(TAG, "ntk_rsc_fragmented_http path=" + normalized
+                            + ",code=" + http.code
+                            + ",bytes=" + http.body.length()
+                            + ",ms=" + (System.currentTimeMillis() - startedAt));
+                    if(http.code >= 200 && http.code < 400) {
+                        CachedPage page = new CachedPage(http.code, http.body, now);
+                        synchronized (pageCacheLock) {
+                            pageCache.put(cacheKey, page);
+                        }
+                        writeDiskCachedPage(cacheKey, page);
+                    }
+                    return http;
+                }
+            }
             NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, baseUrl + normalized,
                     getCookieHeaderForNtkPath(normalized), headers, "GET", null, 7000L);
             String body = result == null || result.body == null ? "" : result.body;
@@ -2613,6 +2633,78 @@ public class CustomHttpClient {
             Log.d(TAG, "ntk_rsc_generic_error path=" + normalized + "," + e);
         }
         return mgetCachedPage(normalized, ttlMillis);
+    }
+
+    private PageResponse fetchNtkRscPageWithFragmentedHttp(String baseUrl, String normalized,
+                                                           Map<String, String> headers) {
+        Response response = null;
+        try {
+            Request.Builder builder = new Request.Builder()
+                    .url(baseUrl + normalized)
+                    .get();
+            if(headers != null) {
+                for(String key : headers.keySet()) {
+                    String value = headers.get(key);
+                    if(value != null)
+                        builder.addHeader(key, value);
+                }
+            }
+            String cookieHeader = getCookieHeaderForNtkPath(normalized);
+            if(cookieHeader != null && cookieHeader.length() > 0)
+                builder.addHeader("Cookie", cookieHeader);
+            if(agent != null && agent.length() > 0)
+                builder.addHeader("User-Agent", agent);
+            response = ntkPageFastClient.newCall(builder.build()).execute();
+            storeResponseCookies(response);
+            String body = response.body() == null ? "" : response.body().string();
+            return new PageResponse(response.code(), body, false);
+        } catch (Exception e) {
+            Log.d(TAG, "ntk_rsc_fragmented_http_error path=" + normalized + "," + e);
+            rememberNtkAccessChallengeFailure(baseUrl + normalized,
+                    e instanceof Exception ? (Exception) e : new Exception(e));
+            return null;
+        } finally {
+            if(response != null)
+                response.close();
+        }
+    }
+
+    private boolean shouldPreferFragmentedNtkHttpOverQuic() {
+        return shouldPreferFragmentedNtkHttpOverQuicForTest(hasConfiguredHttpsProxy(),
+                hasRecentCloudflareChallenge());
+    }
+
+    static boolean shouldPreferFragmentedNtkHttpOverQuicForTest(boolean configuredProxy,
+                                                                 boolean recentChallenge) {
+        return configuredProxy || recentChallenge;
+    }
+
+    private static boolean hasConfiguredHttpsProxy() {
+        try {
+            if(hasProxySystemProperty("https.proxyHost") || hasProxySystemProperty("http.proxyHost"))
+                return true;
+            ProxySelector selector = ProxySelector.getDefault();
+            if(selector == null)
+                return false;
+            List<Proxy> proxies = selector.select(URI.create(NTK_WEBTOON_URL));
+            if(proxies == null)
+                return false;
+            for(Proxy proxy : proxies) {
+                if(proxy != null && proxy.type() != Proxy.Type.DIRECT)
+                    return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private static boolean hasProxySystemProperty(String name) {
+        try {
+            String value = System.getProperty(name);
+            return value != null && value.trim().length() > 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public PageResponse mgetNtkStaticTextPage(String url, long ttlMillis) throws Exception {
@@ -3370,6 +3462,9 @@ public class CustomHttpClient {
                 && shouldUseWolfWebViewFallback(ntkBaseUrl, true, url, fetchMode, true);
         boolean prioritizeNtkEpisodeWebView = shouldPrioritizeNtkEpisodeWebView(
                 ntkBaseUrl, url, fetchMode, requestGroup);
+        boolean preferFragmentedNtkHttp = ntkBaseUrl && shouldPreferFragmentedNtkHttpOverQuic();
+        if(preferFragmentedNtkHttp)
+            prioritizeNtkEpisodeWebView = false;
         if(ntkBaseUrl && isNtkEpisodeDocumentPath(url)) {
             Log.d(TAG, "ntk_mget_episode path=" + url
                     + ",mode=" + fetchMode
@@ -3430,7 +3525,8 @@ public class CustomHttpClient {
         }
         boolean ntkFallbackCandidate = response == null || isNtkWebViewFallbackCandidate(response, url);
         boolean useNtkWebViewFallback = shouldUseNtkWebViewFallback(ntkBaseUrl,
-                ntkFallbackCandidate, url, fetchMode);
+                ntkFallbackCandidate, url, fetchMode)
+                && !preferFragmentedNtkHttp;
         if(ntkBaseUrl && isNtkEpisodeDocumentPath(url)) {
             Log.d(TAG, "ntk_mget_fallback_decision path=" + url
                     + ",mode=" + fetchMode
@@ -3462,7 +3558,8 @@ public class CustomHttpClient {
             fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
             response = get(baseUrl + url, headers, fastNtkPageDirect);
             if(shouldUseNtkWebViewFallback(ntkBaseUrl,
-                    response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)) {
+                    response == null || isNtkWebViewFallbackCandidate(response, url), url, fetchMode)
+                    && !preferFragmentedNtkHttp) {
                 if(response != null) {
                     rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                     response.close();
@@ -6890,7 +6987,6 @@ public class CustomHttpClient {
 
         @Override
         public void write(int b) throws IOException {
-            firstTlsRecord = false;
             delegate.write(b);
         }
 
@@ -6901,7 +6997,7 @@ public class CustomHttpClient {
                 fragmentClientHello(b, off, len);
                 return;
             }
-            if(len > 0)
+            if(len > 0 && firstTlsRecord && isTlsRecordStart(b, off, len))
                 firstTlsRecord = false;
             delegate.write(b, off, len);
         }
@@ -6961,6 +7057,40 @@ public class CustomHttpClient {
         return (b[off] & 0xff) == 0x16
                 && (b[off + 1] & 0xff) == 0x03
                 && (b[off + 5] & 0xff) == 0x01;
+    }
+
+    private static boolean isTlsRecordStart(byte[] b, int off, int len) {
+        return b != null && len >= 2 && off >= 0 && off + len <= b.length
+                && (b[off] & 0xff) >= 0x14
+                && (b[off] & 0xff) <= 0x17
+                && (b[off + 1] & 0xff) == 0x03;
+    }
+
+    static List<Integer> fragmentingTlsWriteSizesAfterPlainPrefixForTest() throws IOException {
+        byte[] plainPrefix = "CONNECT sbxh4.com:443 HTTP/1.1\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
+        byte[] tls = new byte[96];
+        tls[0] = 0x16;
+        tls[1] = 0x03;
+        tls[2] = 0x03;
+        tls[3] = 0x00;
+        tls[4] = 0x5b;
+        tls[5] = 0x01;
+        List<Integer> sizes = new ArrayList<>();
+        OutputStream recorder = new OutputStream() {
+            @Override
+            public void write(int b) {
+                sizes.add(1);
+            }
+
+            @Override
+            public void write(byte[] b, int off, int len) {
+                sizes.add(len);
+            }
+        };
+        FragmentingTlsOutputStream stream = new FragmentingTlsOutputStream(new Socket(), recorder);
+        stream.write(plainPrefix, 0, plainPrefix.length);
+        stream.write(tls, 0, tls.length);
+        return sizes;
     }
 
     public interface RequestWork<T> {
