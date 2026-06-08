@@ -1111,6 +1111,7 @@ public class Preference {
             String key = bookmarkKey(title);
             try {
                 if(bookmark.has(key) && bookmark.getInt(key) == id) {
+                    markHistoryIndexDirty();
                     updateRecentProgress(title, id);
                     return;
                 }
@@ -1118,6 +1119,7 @@ public class Preference {
             } catch (Exception e) {
                 //
             }
+            markHistoryIndexDirty();
             updateRecentProgress(title, id);
             writeBookmark();
         }

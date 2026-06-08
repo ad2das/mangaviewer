@@ -50,4 +50,17 @@ public class TitleAdapterTest {
         assertEquals(3, TitleAdapter.watchedEpisodeCountForTest(title));
         assertTrue(TitleAdapter.readingProgressPercentForTest(title) > 0);
     }
+    @Test
+    public void contentKeyChangesWhenOnlyProgressMetadataChanges() {
+        Title checking = new Title("Long Webtoon", "", "", null, "5", 36716, MTitle.base_webtoon);
+        checking.setSourceSite("ntk");
+        checking.setReadingProgress(210, -1, 171);
+
+        Title resolved = new Title("Long Webtoon", "", "", null, "5", 36716, MTitle.base_webtoon);
+        resolved.setSourceSite("ntk");
+        resolved.setReadingProgress(210, 165, 171);
+
+        assertFalse(TitleAdapter.titleContentKeyForTest(checking)
+                .equals(TitleAdapter.titleContentKeyForTest(resolved)));
+    }
 }

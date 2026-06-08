@@ -2255,10 +2255,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(items == null || position < 0 || position >= items.size())
                 return RecyclerView.NO_ID;
             Object item = items.get(position);
-            if(item instanceof Title) {
-                Title title = (Title) item;
-                return (((long) title.getBaseMode()) << 32) ^ title.getId();
-            }
+            if(item instanceof Title)
+                return HomeTitleKeyPolicy.titleKey((Title) item, p).hashCode();
             return item.hashCode();
         }
 
@@ -2532,7 +2530,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             StringBuilder builder = new StringBuilder("hero:").append(hero.titles.size());
             for(Title title : hero.titles)
                 if(title != null)
-                    builder.append(':').append(title.getBaseMode()).append('/').append(title.getId());
+                    builder.append(':').append(titleKey(title));
             return builder.toString();
         }
         if(row instanceof HomeSection) {
@@ -2540,7 +2538,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             StringBuilder builder = new StringBuilder(rowKey(row)).append(':').append(section.style).append(':').append(section.titles.size());
             for(Title title : section.titles)
                 if(title != null) {
-                    builder.append(':').append(title.getBaseMode()).append('/').append(title.getId());
+                    builder.append(':').append(titleKey(title));
                     if(section.style == STYLE_CONTINUE)
                         builder.append('@')
                                 .append(title.getBookmarkEpisodeId()).append('/')
@@ -2556,7 +2554,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             for(Object item : ranking) {
                 if(item instanceof Title) {
                     Title title = (Title) item;
-                    builder.append(':').append(title.getBaseMode()).append('/').append(title.getId());
+                    builder.append(':').append(titleKey(title));
                 } else if(item != null) {
                     builder.append(':').append(item.hashCode());
                 }

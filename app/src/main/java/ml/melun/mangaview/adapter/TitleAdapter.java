@@ -420,11 +420,20 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     private String titleContentKey(Title title) {
+        return titleContentKeyForTest(title);
+    }
+
+    static String titleContentKeyForTest(Title title) {
         if(title == null)
             return "";
         return title.getName() + "|" + title.getThumb() + "|" + title.getAuthor() + "|"
                 + title.getRelease() + "|" + title.getBookmark() + "|" + title.getTags()
-                + "|" + title.getSourceSite() + "|" + title.getNtkStatusLabel();
+                + "|" + title.getSourceSite() + "|" + title.getNtkStatusLabel()
+                + "|" + title.getBookmarkEpisodeId()
+                + "|" + title.getBookmarkEpisodeIndex()
+                + "|" + title.getEpisodeCount()
+                + "|" + title.getEpsCount()
+                + "|" + title.getResumeNtkEpisodePath();
     }
 
     public void clearData(){

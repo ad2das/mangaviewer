@@ -98,4 +98,15 @@ public class MainWebtoonAdapterTest {
         assertFalse(HomeTitleKeyPolicy.titleKey(ntk, null)
                 .equals(HomeTitleKeyPolicy.titleKey(wfwf, null)));
     }
+
+    @Test
+    public void titleKeyNormalizesKnownSourceAliases() {
+        Title ntk = new Title("same", "", "", Collections.emptyList(), "", 12, base_webtoon);
+        ntk.setSourceSite("https://sbxh4.com");
+        Title wfwf = new Title("same", "", "", Collections.emptyList(), "", 12, base_webtoon);
+        wfwf.setSourceSite("https://wfwf455.com");
+
+        assertTrue(HomeTitleKeyPolicy.titleKey(ntk, null).startsWith("ntk:"));
+        assertTrue(HomeTitleKeyPolicy.titleKey(wfwf, null).startsWith("wfwf:"));
+    }
 }
