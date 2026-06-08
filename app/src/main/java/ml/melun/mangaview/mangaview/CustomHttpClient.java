@@ -4873,6 +4873,8 @@ public class CustomHttpClient {
         String lower = body.toLowerCase(Locale.ROOT);
         if(looksLikeNtkNormalPage(lower))
             return false;
+        if(containsNtkBlockedDocumentMarker(lower))
+            return false;
         boolean challengeBody = containsCloudflareChallengeMarker(lower);
         return challengeBody && (code == 403 || code >= 200 && code < 400);
     }
@@ -4904,10 +4906,25 @@ public class CustomHttpClient {
         if(lower == null || lower.length() == 0)
             return false;
         return lower.contains("개발자 도구 차단")
+                || lower.contains("reason=trash")
+                || lower.contains("ntk01@proton")
+                || lower.contains("access denied")
+                || lower.contains("access is blocked")
+                || lower.contains("blocked by policy")
+                || lower.contains("접근이 차단")
+                || lower.contains("차단되었습니다")
                 || lower.contains("developer tools blocked")
                 || lower.contains("developer tool blocked")
                 || lower.contains("devtools blocked")
                 || lower.contains("devtool blocked");
+    }
+
+    static boolean isCloudflareChallengeResponseForTest(int code, String body) {
+        return isCloudflareChallenge(code, body);
+    }
+
+    static boolean containsNtkBlockedDocumentMarkerForTest(String body) {
+        return containsNtkBlockedDocumentMarker(body == null ? null : body.toLowerCase(Locale.ROOT));
     }
 
     public boolean isCloudflareChallengeResponse(int code, String body) {
@@ -5885,22 +5902,40 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_native_ack_challenge_code=" + (challenge == null ? "null" : challenge.code)
                         + ",attempt=" + attempt
                         + ",path=" + path);
+                recordRuntimeDiagnostic("ntk_native_ack_challenge path=" + path
+                        + ",attempt=" + attempt
+                        + ",code=" + (challenge == null ? 0 : challenge.code)
+                        + ",bytes=" + ntkQuicBodyLength(challenge)
+                        + ",error=" + (challenge == null ? "" : throwableSummary(challenge.error)));
                 if(challenge != null && challenge.error == null && challenge.code == 200
                         && looksLikeJsonObject(challenge.body))
                     break;
                 if(isNtkAckHardBlocked(challenge))
                     break;
             }
-            if(challenge == null || challenge.error != null || challenge.code != 200 || challenge.body == null)
+            if(challenge == null || challenge.error != null || challenge.code != 200 || challenge.body == null) {
+                recordRuntimeDiagnostic("ntk_native_ack_challenge_failed path=" + path
+                        + ",code=" + (challenge == null ? 0 : challenge.code)
+                        + ",bytes=" + ntkQuicBodyLength(challenge)
+                        + ",error=" + (challenge == null ? "" : throwableSummary(challenge.error)));
                 return false;
+            }
             if(!looksLikeJsonObject(challenge.body)) {
                 Log.d(TAG, "ntk_native_ack_challenge_non_json path=" + path
                         + ",body=" + challenge.body.substring(0, Math.min(120, challenge.body.length())));
+                recordRuntimeDiagnostic("ntk_native_ack_challenge_non_json path=" + path
+                        + ",code=" + challenge.code
+                        + ",bytes=" + ntkQuicBodyLength(challenge));
                 return false;
             }
             JSONObject challengeJson = new JSONObject(challenge.body);
-            if(!challengeJson.optBoolean("ok", false))
+            if(!challengeJson.optBoolean("ok", false)) {
+                recordRuntimeDiagnostic("ntk_native_ack_challenge_not_ok path=" + path
+                        + ",status=" + challengeJson.optString("status", "")
+                        + ",error=" + challengeJson.optString("error", "")
+                        + ",trusted=" + challengeJson.optBoolean("trusted", false));
                 return false;
+            }
             JSONObject challengeObj = challengeJson.optJSONObject("challenge");
             if(challengeObj == null) {
                 if(challengeJson.optBoolean("trusted", false) && hasNtkAdAckCookieForPath(path)) {
@@ -5973,6 +6008,11 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_native_ack_ack_code=" + (ack == null ? "null" : ack.code)
                         + ",attempt=" + attempt
                         + ",path=" + challengePath);
+                recordRuntimeDiagnostic("ntk_native_ack_ack path=" + challengePath
+                        + ",attempt=" + attempt
+                        + ",code=" + (ack == null ? 0 : ack.code)
+                        + ",bytes=" + ntkQuicBodyLength(ack)
+                        + ",error=" + (ack == null ? "" : throwableSummary(ack.error)));
                 if(ack != null) applySetCookieHeaders(ack.headers, baseUrl);
                 ackBodyOk = false;
                 ackStatus = null;
@@ -6026,6 +6066,14 @@ public class CustomHttpClient {
             phaseStartedMs = logNtkNativeAckPhase("ack", challengePath, startedMs, phaseStartedMs);
             Log.d(TAG, "ntk_native_ack_final_success=" + ackSuccess
                     + ",path=" + challengePath
+                    + ",cookieOk=" + hasNtkAdAckCookieForPath(challengePath)
+                    + ",totalMs=" + (System.currentTimeMillis() - startedMs));
+            recordRuntimeDiagnostic("ntk_native_ack_final path=" + challengePath
+                    + ",success=" + ackSuccess
+                    + ",code=" + (ack == null ? 0 : ack.code)
+                    + ",ok=" + ackBodyOk
+                    + ",status=" + (ackStatus == null ? "" : ackStatus)
+                    + ",error=" + (ackError == null ? "" : ackError)
                     + ",cookieOk=" + hasNtkAdAckCookieForPath(challengePath)
                     + ",totalMs=" + (System.currentTimeMillis() - startedMs));
             if(ackSuccess) {

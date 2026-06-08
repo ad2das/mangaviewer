@@ -546,6 +546,14 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkPolicyBlockIsNotCloudflareChallenge() {
+        String blocked = "<html><body>접근이 차단되었습니다 reason=trash0607 ntk01@proton.me</body></html>";
+
+        assertTrue(CustomHttpClient.containsNtkBlockedDocumentMarkerForTest(blocked));
+        assertFalse(CustomHttpClient.isCloudflareChallengeResponseForTest(403, blocked));
+    }
+
+    @Test
     public void ntkNetworkMissesAreExpectedRequestFailures() {
         assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
                 "https://sbxh1.com/api/manhwa-list?page=1",
