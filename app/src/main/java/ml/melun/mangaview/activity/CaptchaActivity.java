@@ -307,6 +307,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private boolean quicCaptchaHtmlActive = false;
     private boolean retriedCaptchaWithProxy = false;
     private boolean retriedCaptchaWithoutProxy = false;
+    private boolean retriedCaptchaAfterRedirectLoop = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -461,6 +462,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     return;
                 }
                 String failingUrl = request != null && request.getUrl() != null ? request.getUrl().toString() : (view == null ? null : view.getUrl());
+                if(retryCaptchaLoadAfterRedirectLoopIfNeeded(failingUrl, error))
+                    return;
                 if(retryCaptchaLoadWithProxyIfNeeded(failingUrl))
                     return;
                 if(retryCaptchaLoadWithoutProxyIfNeeded(failingUrl))
@@ -576,6 +579,7 @@ public class CaptchaActivity extends AppCompatActivity {
         quicCaptchaHtmlActive = false;
         retriedCaptchaWithProxy = false;
         retriedCaptchaWithoutProxy = false;
+        retriedCaptchaAfterRedirectLoop = false;
         hideCaptchaLoadError();
         clearWebViewProxy();
         if(webView != null)
@@ -635,6 +639,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 quicCaptchaHtmlActive = false;
                 retriedCaptchaWithProxy = false;
                 retriedCaptchaWithoutProxy = false;
+                retriedCaptchaAfterRedirectLoop = false;
                 hideCaptchaLoadError();
                 clearWebViewProxy();
                 loadCaptchaUrl(captchaLoadUrl);
@@ -728,6 +733,42 @@ public class CaptchaActivity extends AppCompatActivity {
         quicCaptchaHtmlActive = false;
         webView.loadUrl(url);
         webView.evaluateJavascript(SHADOW_HOOK_JS, null);
+    }
+
+    private boolean retryCaptchaLoadAfterRedirectLoopIfNeeded(String failingUrl, WebResourceError error) {
+        int errorCode = error == null ? 0 : error.getErrorCode();
+        CharSequence description = error == null ? null : error.getDescription();
+        if(!shouldRetryCaptchaLoadAfterRedirectLoopForTest(
+                p != null && p.isNtkSite(),
+                retriedCaptchaAfterRedirectLoop,
+                errorCode,
+                description == null ? null : description.toString()))
+            return false;
+        retriedCaptchaAfterRedirectLoop = true;
+        retriedCaptchaWithQuic = false;
+        quicCaptchaLoadInFlight = false;
+        quicCaptchaHtmlActive = false;
+        retriedCaptchaWithProxy = false;
+        retriedCaptchaWithoutProxy = false;
+        hideCaptchaLoadError();
+        clearWebViewProxy();
+        getHttpClient().markCloudflareChallenge(failingUrl);
+        String root = p == null ? NTK_WEBTOON_URL : p.getNtkResolvedRoot();
+        String retryUrl = ntkCaptchaLoadUrl(root, p == null ? null : p.getUrl());
+        android.util.Log.d("CaptchaActivity", "Retrying NTK captcha after redirect loop: " + retryUrl);
+        loadCaptchaUrlDirect(retryUrl);
+        return true;
+    }
+
+    static boolean shouldRetryCaptchaLoadAfterRedirectLoopForTest(boolean ntkSite, boolean alreadyRetried,
+                                                                  int errorCode, String description) {
+        if(!ntkSite || alreadyRetried)
+            return false;
+        if(errorCode == WebViewClient.ERROR_REDIRECT_LOOP)
+            return true;
+        String lower = description == null ? "" : description.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("too_many_redirects") || lower.contains("too many redirects")
+                || lower.contains("redirect_loop");
     }
 
     private boolean retryCaptchaLoadWithQuicIfNeeded(String failingUrl) {

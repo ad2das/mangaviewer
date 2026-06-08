@@ -143,6 +143,18 @@ public class CaptchaActivityTest {
     }
 
     @Test
+    public void ntkCaptchaRedirectLoopClearsCookiesAndRetriesOnce() {
+        assertTrue(CaptchaActivity.shouldRetryCaptchaLoadAfterRedirectLoopForTest(
+                true, false, android.webkit.WebViewClient.ERROR_REDIRECT_LOOP, null));
+        assertTrue(CaptchaActivity.shouldRetryCaptchaLoadAfterRedirectLoopForTest(
+                true, false, 0, "net::ERR_TOO_MANY_REDIRECTS"));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadAfterRedirectLoopForTest(
+                true, true, android.webkit.WebViewClient.ERROR_REDIRECT_LOOP, null));
+        assertFalse(CaptchaActivity.shouldRetryCaptchaLoadAfterRedirectLoopForTest(
+                false, false, android.webkit.WebViewClient.ERROR_REDIRECT_LOOP, null));
+    }
+
+    @Test
     public void turnstileTouchRepeatsAreBoundedAndSpaced() {
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(1000L, 0L, 0));
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(2000L, 0L, 1));
