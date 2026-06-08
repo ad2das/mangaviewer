@@ -17,6 +17,7 @@ import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.documentfile.provider.DocumentFile;
 
 import android.os.Bundle;
@@ -39,6 +40,13 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.runtime.AppDispatchers;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -399,9 +407,32 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void showNtkDiagnosticResult(String report) {
-        ScrollView scrollView = new ScrollView(context);
         int padding = dp(16);
-        scrollView.setPadding(padding, padding, padding, padding);
+        LinearLayout content = new LinearLayout(context);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(padding, padding, padding, padding);
+
+        LinearLayout actions = new LinearLayout(context);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button share = new Button(context);
+        share.setText("Share");
+        share.setOnClickListener(v -> shareDiagnosticReport(report));
+        actions.addView(share, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        Button copy = new Button(context);
+        copy.setText("Copy");
+        copy.setOnClickListener(v -> copyDiagnosticReport(report));
+        actions.addView(copy, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        if(p != null && p.isNtkSite()) {
+            Button captcha = new Button(context);
+            captcha.setText("Captcha");
+            captcha.setOnClickListener(v -> openNtkCaptchaFromSettings());
+            actions.addView(captcha, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        }
+        content.addView(actions, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        ScrollView scrollView = new ScrollView(context);
         TextView output = new TextView(context);
         output.setText(report);
         output.setTextIsSelectable(true);
@@ -411,14 +442,14 @@ public class SettingsActivity extends AppCompatActivity {
         scrollView.addView(output, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
+        content.addView(scrollView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
         builder.setTitle("Site network diagnostics")
-                .setView(scrollView)
-                .setPositiveButton("Copy", (dialog, which) -> copyDiagnosticReport(report))
+                .setView(content)
                 .setNegativeButton("Close", null);
-        if(p != null && p.isNtkSite())
-            builder.setNeutralButton("Open captcha", (dialog, which) -> openNtkCaptchaFromSettings());
         builder.show();
     }
 
@@ -436,6 +467,33 @@ public class SettingsActivity extends AppCompatActivity {
         if(clipboard != null) {
             clipboard.setPrimaryClip(ClipData.newPlainText("Site network diagnostics", report));
             Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void shareDiagnosticReport(String report) {
+        try {
+            File dir = new File(getExternalFilesDir(null), "diagnostics");
+            if(!dir.exists() && !dir.mkdirs())
+                throw new IllegalStateException("diagnostics directory unavailable");
+            String timestamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+            File file = new File(dir, "mangaview-ntk-diagnostics-" + timestamp + ".txt");
+            try(FileOutputStream stream = new FileOutputStream(file)) {
+                stream.write(report.getBytes(StandardCharsets.UTF_8));
+            }
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_SUBJECT, "MangaViewer NTK diagnostics");
+            intent.putExtra(Intent.EXTRA_TEXT, report);
+            intent.putExtra(Intent.EXTRA_STREAM, uri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(intent, "Share diagnostics"));
+        } catch(Exception e) {
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_SUBJECT, "MangaViewer NTK diagnostics");
+            intent.putExtra(Intent.EXTRA_TEXT, report);
+            startActivity(Intent.createChooser(intent, "Share diagnostics"));
         }
     }
 
