@@ -585,7 +585,10 @@ public class CaptchaActivity extends AppCompatActivity {
     private boolean shouldFinishRedundantNtkCaptcha(String url, String source) {
         if(p == null || !p.isNtkSite())
             return false;
-        if(!getHttpClient().hasNtkAccessProof())
+        if(!shouldFinishRedundantNtkCaptchaForTest(
+                p != null && p.isNtkSite(),
+                getHttpClient().hasNtkAccessProof(),
+                getHttpClient().hasRecentCloudflareChallenge()))
             return false;
         Log.d("CaptchaActivity", "finish redundant NTK captcha intent source=" + source
                 + " proof=" + getHttpClient().hasNtkAccessProof()
@@ -598,6 +601,10 @@ public class CaptchaActivity extends AppCompatActivity {
         setResult(RESULT_CAPTCHA, resultIntent);
         finish();
         return true;
+    }
+
+    static boolean shouldFinishRedundantNtkCaptchaForTest(boolean ntkSite, boolean hasAccessProof, boolean recentChallenge) {
+        return ntkSite && hasAccessProof && !recentChallenge;
     }
 
     private String resolveCaptchaUrl(Intent intent, String purl) {
@@ -1671,6 +1678,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     android.util.Log.d("CaptchaActivity", "NTK clearance failed app HTTP verification; keeping captcha open");
                     if(clearanceValue != null)
                         rejectedClearanceValues.add(clearanceValue);
+                    getHttpClient().markCloudflareChallenge(currentUrl == null ? purl : currentUrl);
+                    resetInvalidNtkClearanceAndReload(purl, currentUrl);
                 }
             });
         });

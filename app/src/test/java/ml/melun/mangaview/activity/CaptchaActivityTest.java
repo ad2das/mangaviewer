@@ -27,6 +27,14 @@ public class CaptchaActivityTest {
     }
 
     @Test
+    public void redundantNtkCaptchaDoesNotFinishWhenChallengeWasSeenAgain() {
+        assertTrue(CaptchaActivity.shouldFinishRedundantNtkCaptchaForTest(true, true, false));
+        assertFalse(CaptchaActivity.shouldFinishRedundantNtkCaptchaForTest(true, true, true));
+        assertFalse(CaptchaActivity.shouldFinishRedundantNtkCaptchaForTest(true, false, false));
+        assertFalse(CaptchaActivity.shouldFinishRedundantNtkCaptchaForTest(false, true, false));
+    }
+
+    @Test
     public void pastedCookieParserExtractsClearanceOnlyByName() {
         assertEquals("abc123", CaptchaActivity.extractCookieValueForTest(
                 "__cf_bm=skip; cf_clearance=abc123; Path=/", "cf_clearance"));
@@ -137,19 +145,19 @@ public class CaptchaActivityTest {
     @Test
     public void turnstileTouchRepeatsAreBoundedAndSpaced() {
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(1000L, 0L, 0));
-        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(7000L, 0L, 1));
-        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(8000L, 0L, 1));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(2000L, 0L, 1));
+        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(2500L, 0L, 1));
         assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(16000L, 8000L, 2));
-        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(24000L, 16000L, 3));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(24000L, 16000L, 6));
     }
 
     @Test
     public void turnstileCheckBacksOffUntilNextAllowedTouch() {
         assertEquals(600L, CaptchaActivity.nextTurnstileCheckDelayForTest(true, "", 0, 1000L, 0L));
         assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "", 0, 1000L, 0L));
-        assertEquals(6000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 1, 2000L, 0L));
+        assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 1, 2000L, 0L));
         assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 2, 9000L, 0L));
-        assertEquals(2000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 3, 9000L, 0L));
+        assertEquals(2000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 6, 9000L, 0L));
     }
 
     @Test

@@ -832,8 +832,10 @@ public class EpisodeActivity extends AppCompatActivity {
                 ntkLoadTimeoutHandled = true;
                 cancelNtkEpisodeLoadWatchdog();
                 if(p != null && p.isNtkSite() && getHttpClient().hasNtkAccessProof()) {
-                    Log.d("EpisodeActivity", "empty NTK episode result after verified captcha; using error fallback");
-                    handleLoadErrorWithCacheFallback();
+                    Log.d("EpisodeActivity", "empty NTK episode result after verified captcha; reopening captcha");
+                    getHttpClient().markCloudflareChallenge(title.getUrl());
+                    ntkCaptchaRetryAfterVerifiedAttempted = false;
+                    openNtkCaptchaDirect();
                 } else if(title != null) {
                     showCaptchaPopup(title.getUrl(), context, p);
                 }
