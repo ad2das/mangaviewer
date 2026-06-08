@@ -123,7 +123,7 @@ jobs:
           bash tools/release_latest_ci.sh
 
       - name: Save Android incremental build state
-        if: env.STALE_RELEASE_RUN != 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.refresh_gradle_cache == 'true'
+        if: env.STALE_RELEASE_RUN != 'true' && (github.event_name == 'push' || github.event.inputs.refresh_gradle_cache == 'true')
         uses: actions/cache/save@v4
         with:
           path: |
