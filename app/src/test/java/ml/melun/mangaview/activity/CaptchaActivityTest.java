@@ -241,6 +241,9 @@ public class CaptchaActivityTest {
         assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/webtoon/848103/1580933"));
         assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/manhwa/3540"));
         assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("/webtoon/848103"));
+        assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://i.toonflix.app/blacktoon/episodes/769209/897734/p001.jpeg"));
+        assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://i.toonflix.app/webtoon_uploads/page001.webp"));
+        assertTrue(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://i.toonflix.app/board_uploads/2026/05/15/page001.png"));
         assertFalse(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/manhwa"));
         assertFalse(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/ing?tag=6"));
         assertFalse(CaptchaActivity.isNtkContentCaptchaUrlForTest("https://sbxh4.com/cdn-cgi/challenge-platform/h/b/turnstile"));

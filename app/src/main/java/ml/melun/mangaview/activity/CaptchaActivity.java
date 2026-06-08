@@ -1952,7 +1952,15 @@ public class CaptchaActivity extends AppCompatActivity {
             path = path.toLowerCase(java.util.Locale.ROOT);
             return path.startsWith("/webtoon/")
                     || path.startsWith("/manhwa/")
-                    || path.startsWith("/comic/");
+                    || path.startsWith("/comic/")
+                    || path.contains("/webtoon_uploads/")
+                    || path.contains("/manhwa_uploads/")
+                    || path.contains("/comic_uploads/")
+                    || path.contains("/board_uploads/")
+                    || path.contains("/blacktoon/episodes/")
+                    || path.contains("/wt/episodes/")
+                    || path.matches(".*/p?\\d{3,4}\\.(?:jpg|jpeg|png|webp|gif)(?:$|[?#].*)")
+                    || path.matches(".*/[^/]+\\.(?:jpg|jpeg|png|webp|gif)(?:$|[?#].*)");
         } catch (Exception e) {
             return false;
         }
