@@ -5780,7 +5780,9 @@ public class CustomHttpClient {
             try {
                 android.webkit.WebView webView = new android.webkit.WebView(context);
                 webViewRef[0] = webView;
-                webView.getSettings().setJavaScriptEnabled(true);
+                android.webkit.WebSettings settings = webView.getSettings();
+                settings.setJavaScriptEnabled(true);
+                settings.setDomStorageEnabled(true);
                 webView.addJavascriptInterface(new Object() {
                     @android.webkit.JavascriptInterface
                     public void onVcResult(String value) {
@@ -5791,7 +5793,6 @@ public class CustomHttpClient {
                 }, "NtkWasmBridge");
                 String wasmBase64 = android.util.Base64.encodeToString(wasmBytes, android.util.Base64.NO_WRAP);
                 String jsBase64 = android.util.Base64.encodeToString(adGuardJs.getBytes(StandardCharsets.UTF_8), android.util.Base64.NO_WRAP);
-                // Use initSync if available for faster initialization; fallback to default async
                 String jsHtml = "<html><body><script type='module'>" +
                         "let moduleExports=null;" +
                         "const wasmBase64='" + wasmBase64 + "';" +
@@ -5813,7 +5814,23 @@ public class CustomHttpClient {
                         "});" +
                         "</script></body></html>";
                 webView.loadDataWithBaseURL(NTK_WEBTOON_URL, jsHtml, "text/html", "UTF-8", null);
+                // Attach WebView to activity decor so it executes JS properly
+                android.app.Activity activity = ml.melun.mangaview.MainApplication.currentActivity;
+                if(activity != null && !activity.isFinishing() && activity.getWindow() != null) {
+                    android.view.ViewGroup decor = (android.view.ViewGroup) activity.getWindow().getDecorView();
+                    webView.setAlpha(0.01f);
+                    webView.setClickable(false);
+                    webView.setFocusable(false);
+                    webView.setFocusableInTouchMode(false);
+                    android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(1, 1,
+                            android.view.Gravity.BOTTOM | android.view.Gravity.LEFT);
+                    decor.addView(webView, 0, params);
+                }
                 mainHandler.postDelayed(() -> {
+                    try {
+                        android.view.ViewGroup parent = (android.view.ViewGroup) webView.getParent();
+                        if(parent != null) parent.removeView(webView);
+                    } catch(Exception ignored) {}
                     try { webView.destroy(); } catch(Exception ignored) {}
                     webViewRef[0] = null;
                     latch.countDown();
@@ -5828,6 +5845,10 @@ public class CustomHttpClient {
         } catch(Exception ignored) {}
         if(webViewRef[0] != null) {
             mainHandler.post(() -> {
+                try {
+                    android.view.ViewGroup parent = (android.view.ViewGroup) webViewRef[0].getParent();
+                    if(parent != null) parent.removeView(webViewRef[0]);
+                } catch(Exception ignored) {}
                 try { webViewRef[0].destroy(); } catch(Exception ignored) {}
             });
         }
