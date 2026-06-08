@@ -72,6 +72,19 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkDiagnosticsDistinguishRawTlsFailureFromAppBypassSuccess() {
+        String interpretation = CustomHttpClient.diagnosticInterpretationForTest(
+                "active_site: NTK\n"
+                        + "app_dns_sbxh4.com: ok 0ms 104.18.28.13\n"
+                        + "ntk_quic_sni: code=200,ms=115,challenge=false\n"
+                        + "ntk_api_direct: fail 134ms SSLHandshakeException(connection closed)\n"
+                        + "ntk_api_fragmented: code=200,ms=90,body_len=100,challenge=false\n");
+
+        assertEquals("OK: app SNI bypass route can reach NTK. Raw TLS may still be blocked on this network.",
+                interpretation);
+    }
+
+    @Test
     public void imageClientUsesWiderDispatcherThanPageClient() {
         assertTrue(CustomHttpClient.imageDispatcherIsWiderForTest());
     }
