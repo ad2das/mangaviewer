@@ -109,4 +109,26 @@ public class MainWebtoonAdapterTest {
         assertTrue(HomeTitleKeyPolicy.titleKey(ntk, null).startsWith("ntk:"));
         assertTrue(HomeTitleKeyPolicy.titleKey(wfwf, null).startsWith("wfwf:"));
     }
+
+    @Test
+    public void containsTitleKeepsMixedSourceDuplicatesSeparate() {
+        Title staleWfwf = new Title("same", "", "", Collections.emptyList(), "", 12, base_webtoon);
+        staleWfwf.setSourceSite("wfwf");
+        Title resolvedNtk = new Title("same", "", "", Collections.emptyList(), "", 12, base_webtoon);
+        resolvedNtk.setSourceSite("ntk");
+
+        assertFalse(HomeTitleKeyPolicy.containsTitle(
+                Collections.singletonList(staleWfwf), resolvedNtk, null));
+    }
+
+    @Test
+    public void containsTitleDedupesSameSourceSameName() {
+        Title first = new Title("same", "", "", Collections.emptyList(), "", 12, base_webtoon);
+        first.setSourceSite("ntk");
+        Title second = new Title("same", "", "", Collections.emptyList(), "", 99, base_webtoon);
+        second.setSourceSite("ntk");
+
+        assertTrue(HomeTitleKeyPolicy.containsTitle(
+                Collections.singletonList(first), second, null));
+    }
 }

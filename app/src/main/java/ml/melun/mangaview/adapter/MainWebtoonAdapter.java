@@ -1064,17 +1064,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     }
 
     private boolean containsTitle(List<Title> titles, Title target) {
-        if(titles == null || target == null)
-            return false;
-        for(Title title : titles) {
-            if(title == null)
-                continue;
-            if(title.getBaseMode() == target.getBaseMode() && title.getId() == target.getId())
-                return true;
-            if(title.getName() != null && title.getName().equals(target.getName()))
-                return true;
-        }
-        return false;
+        return HomeTitleKeyPolicy.containsTitle(titles, target, p);
+    }
+
+    static boolean containsTitleForTest(List<Title> titles, Title target) {
+        return HomeTitleKeyPolicy.containsTitle(titles, target, null);
     }
 
     private SectionPick findSection(List<Ranking<?>> sections, String titlePart) {
@@ -1089,7 +1083,6 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         }
         return null;
     }
-
     private void bindTitleThumb(ImageView thumbView, Title title, int widthDp, int heightDp) {
         if(title == null || save || title.getThumb() == null || title.getThumb().length() == 0) {
             bindStaticThumb(thumbView, "placeholder", R.drawable.app_cover_placeholder);
@@ -1466,7 +1459,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             if(AdapterPositionGuard.isValidPosition(items, position)) {
                 Title item = items.get(position);
                 if(item != null)
-                    return (((long) item.getBaseMode()) << 32) ^ item.getId();
+                    return HomeTitleKeyPolicy.titleKey(item, p).hashCode();
             }
             return -1000L - position - style * 100L;
         }
@@ -2934,5 +2927,22 @@ class HomeTitleKeyPolicy {
                 || source.contains("v12st") || source.contains("ao9cloud"))
             return "wfwf";
         return "";
+    }
+
+    static boolean containsTitle(List<Title> titles, Title target, Preference preference) {
+        if(titles == null || target == null)
+            return false;
+        String targetKey = titleKey(target, preference);
+        String targetSource = sourceKeyForTitle(target, preference);
+        for(Title title : titles) {
+            if(title == null)
+                continue;
+            if(targetKey.length() > 0 && targetKey.equals(titleKey(title, preference)))
+                return true;
+            String source = sourceKeyForTitle(title, preference);
+            if(targetSource.equals(source) && title.getName() != null && title.getName().equals(target.getName()))
+                return true;
+        }
+        return false;
     }
 }
