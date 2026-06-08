@@ -2537,7 +2537,7 @@ public class CustomHttpClient {
         if(result == null || result.error != null || code <= 0 || body.length() == 0)
             return null;
         applySetCookieHeaders(result.headers, baseUrl);
-        if(shouldAttemptNtkNativeAckPageRecovery(isNtkUrl(baseUrl), false, code, normalized, fetchMode)) {
+        if(shouldAttemptNtkNativeAckPageRecovery(isNtkUrl(baseUrl), false, code, normalized, fetchMode, body)) {
             long ackStartedAt = System.currentTimeMillis();
             String ackPath = ntkNativeAckProbePath(normalized);
             boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, ackPath, normalized);
@@ -4345,7 +4345,13 @@ public class CustomHttpClient {
     static boolean shouldAttemptNtkNativeAckPageRecoveryForTest(boolean ntkUrl, boolean missingResponse,
                                                                 int code, String path,
                                                                 FetchMode fetchMode) {
-        return shouldAttemptNtkNativeAckPageRecovery(ntkUrl, missingResponse, code, path, fetchMode);
+        return shouldAttemptNtkNativeAckPageRecovery(ntkUrl, missingResponse, code, path, fetchMode, null);
+    }
+
+    static boolean shouldAttemptNtkNativeAckPageRecoveryForTest(boolean ntkUrl, boolean missingResponse,
+                                                                int code, String path,
+                                                                FetchMode fetchMode, String body) {
+        return shouldAttemptNtkNativeAckPageRecovery(ntkUrl, missingResponse, code, path, fetchMode, body);
     }
 
     static boolean shouldAttemptNtkRscNativeAckRecoveryForTest(boolean ntkUrl, boolean challengeResponse,
@@ -4356,16 +4362,29 @@ public class CustomHttpClient {
     private static boolean shouldAttemptNtkNativeAckPageRecovery(boolean ntkUrl, Response response,
                                                                  String path, FetchMode fetchMode) {
         return shouldAttemptNtkNativeAckPageRecovery(ntkUrl, response == null,
-                response == null ? 0 : response.code(), path, fetchMode);
+                response == null ? 0 : response.code(), path, fetchMode,
+                peekResponseBodyForPolicyCheck(response));
     }
 
     private static boolean shouldAttemptNtkNativeAckPageRecovery(boolean ntkUrl, boolean missingResponse,
-                                                                 int code, String path, FetchMode fetchMode) {
+                                                                 int code, String path, FetchMode fetchMode,
+                                                                 String body) {
         if(!ntkUrl || path == null || fetchMode == FetchMode.CACHE_ONLY)
             return false;
         if(!isNtkEpisodeDocumentPath(path) || path.startsWith("/api/ad/"))
             return false;
+        // Allow ack-recovery even on trash0607 / blocked-document markers so we can rotate cookies
         return missingResponse || code == 403 || code >= 500;
+    }
+
+    private static String peekResponseBodyForPolicyCheck(Response response) {
+        if(response == null || response.body() == null)
+            return null;
+        try {
+            return response.peekBody(4096).string();
+        } catch(Exception ignored) {
+            return null;
+        }
     }
 
     private static boolean shouldAttemptNtkRscNativeAckRecovery(boolean ntkUrl, boolean challengeResponse,
@@ -4917,6 +4936,17 @@ public class CustomHttpClient {
                 || lower.contains("developer tool blocked")
                 || lower.contains("devtools blocked")
                 || lower.contains("devtool blocked");
+    }
+
+    // Used to treat trash0607 as a hard block that still allows cookie-refresh retries
+    private static boolean containsNtkTrashBlockMarker(String lower) {
+        if(lower == null || lower.length() == 0)
+            return false;
+        return lower.contains("reason=trash")
+                || lower.contains("ntk01@proton")
+                || lower.contains("access is blocked")
+                || lower.contains("접근이 차단")
+                || lower.contains("차단되었습니다");
     }
 
     static boolean isCloudflareChallengeResponseForTest(int code, String body) {
@@ -5888,7 +5918,6 @@ public class CustomHttpClient {
                 dumpNtkAckDebugArtifacts(baseUrl, path);
             }
 
-            Log.d(TAG, "ntk_wasm_fetch_skipped_ack_fast path=" + path);
             phaseStartedMs = logNtkNativeAckPhase("wasm", path, startedMs, phaseStartedMs);
 
             // 1. POST /api/ad/challenge
@@ -5964,8 +5993,12 @@ public class CustomHttpClient {
             Map<String, String> h2 = new HashMap<>(h);
             h2.put("referer", baseUrl + ntkNativeAckScopePath(challengePath));
 
-            // Numeric and slug routes currently accept the challenge token directly; avoid WebView/WASM overhead.
-            Log.d(TAG, "ntk_native_ack_vc_skipped token_len=" + token.length() + ",path=" + challengePath);
+            // Compute WASM proof for tp (required since server hardened anti-bot checks)
+            long wasmProofStarted = System.currentTimeMillis();
+            String tp = fetchNtkWasmProof(baseUrl, token);
+            Log.d(TAG, "ntk_wasm_proof_result=" + (tp == null ? "null" : "len=" + tp.length())
+                    + ",ms=" + (System.currentTimeMillis() - wasmProofStarted)
+                    + ",path=" + challengePath);
 
             Log.d(TAG, "ntk_native_ack_token_before_ack len=" + token.length() + ",path=" + challengePath);
             int slotCount = challengeObj.optInt("slotCount", 4);
@@ -5984,15 +6017,15 @@ public class CustomHttpClient {
                     proactiveCanary, baseUrl, challengePath);
 
             // 4. POST /api/ad/ack with challenge token
-            // WebView sends additional metrics: total, visible, td, tp
-            // tp is a proof computed by ad_guard.js; we leave it empty for now
+            long ackBuildMs = System.currentTimeMillis();
+            long td = Math.max(0, ackBuildMs - startedMs);
             JSONObject ackPayload = new JSONObject();
             ackPayload.put("challengeToken", token);
-            ackPayload.put("total", Math.max(slotCount, 28));
+            ackPayload.put("total", slotCount);
             ackPayload.put("visible", minSeen);
             ackPayload.put("path", challengePath);
-            ackPayload.put("td", 0);
-            ackPayload.put("tp", "");
+            ackPayload.put("td", td);
+            ackPayload.put("tp", tp == null ? "" : tp);
             boolean ackBodyOk = false;
             String ackStatus = null;
             String ackError = null;
@@ -6059,6 +6092,14 @@ public class CustomHttpClient {
                 }
                 if(isNtkAckHardBlocked(ack)) {
                     Log.d(TAG, "ntk_native_ack_ack_hard_blocked path=" + challengePath);
+                    // On hard block (including trash0607), force a fresh cookie re-sync and retry once
+                    if(attempt < NTK_ACK_REQUEST_ATTEMPTS - 1) {
+                        syncCookiesFromWebView(baseUrl + challengePath, true);
+                        removeNtkAckCookies();
+                        Log.d(TAG, "ntk_native_ack_hard_block_retry_sync path=" + challengePath);
+                        skipNextAckDelay = true;
+                        continue;
+                    }
                     break;
                 }
             }
@@ -6095,10 +6136,13 @@ public class CustomHttpClient {
     }
 
     private boolean isNtkAckHardBlocked(NtkQuicFetcher.Result result) {
-        return result != null
-                && result.error == null
-                && result.code == 403
-                && isCloudflareChallengeResponse(result.code, result.body);
+        if(result == null || result.error != null || result.code != 403)
+            return false;
+        // Detect both Cloudflare challenge pages and server-side trash0607 blocks
+        if(isCloudflareChallengeResponse(result.code, result.body))
+            return true;
+        String body = result.body == null ? "" : result.body.toLowerCase(Locale.ROOT);
+        return containsNtkBlockedDocumentMarker(body) || containsNtkTrashBlockMarker(body);
     }
 
     private boolean performNtkNativeAckBypassFresh(String baseUrl, String path) {
@@ -6769,6 +6813,26 @@ public class CustomHttpClient {
             this.url = url;
             this.result = result;
             this.error = error;
+        }
+    }
+
+    private String fetchNtkWasmProof(String baseUrl, String token) {
+        try {
+            NtkQuicFetcher.Result jsResult = NtkQuicFetcher.fetch(context, baseUrl + "/wasm/ad-guard/ad_guard.js", agent,
+                    getCookieHeader(), Collections.emptyMap(), "GET", null, 5000L);
+            if(jsResult == null || jsResult.body == null || jsResult.body.length() < 100)
+                return null;
+            NtkQuicFetcher.Result wasmResult = NtkQuicFetcher.fetch(context, baseUrl + "/wasm/ad-guard/ad_guard_bg.wasm", agent,
+                    getCookieHeader(), Collections.emptyMap(), "GET", null, 5000L);
+            if(wasmResult == null || wasmResult.bodyBytes == null || wasmResult.bodyBytes.length < 100)
+                return null;
+            String tp = runWasmVcInWebView(wasmResult.bodyBytes, jsResult.body, token);
+            Log.d(TAG, "ntk_wasm_proof_generated=" + (tp != null && tp.length() > 0)
+                    + ",len=" + (tp == null ? 0 : tp.length()));
+            return tp;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_wasm_proof_error=" + e);
+            return null;
         }
     }
 

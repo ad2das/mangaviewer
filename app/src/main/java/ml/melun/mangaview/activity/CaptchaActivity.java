@@ -803,7 +803,7 @@ public class CaptchaActivity extends AppCompatActivity {
         retriedCaptchaAfterRedirectLoop = true;
         retriedCaptchaWithQuic = false;
         quicCaptchaLoadInFlight = false;
-        quicCaptchaHtmlActive = false;
+        quicCaptchaHtmlActive = NtkQuicFetcher.isAvailable();
         retriedCaptchaWithProxy = false;
         retriedCaptchaWithoutProxy = false;
         hideCaptchaLoadError();

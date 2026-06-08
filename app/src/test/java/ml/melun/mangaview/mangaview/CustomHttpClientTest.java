@@ -335,6 +335,10 @@ public class CustomHttpClientTest {
                 true, false, 503, "/manhwa/8044/u-mp9phqym-9fo4", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
 
         assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
+                true, false, 403, "/webtoon/848103/1580933",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW,
+                "<html><body>접근이 차단되었습니다 reason=trash0607 ntk01@proton.me</body></html>"));
+        assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
                 true, false, 404, "/api/manhwa-list?page=1", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
         assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
                 true, false, 403, "/manhwa?g=%EC%95%A1%EC%85%98", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
