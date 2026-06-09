@@ -199,6 +199,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             if(!rowKey.equals(h.boundKey)) {
                 setTextIfChanged(h.episode, episode.getName());
                 setTextIfChanged(h.date, episode.getDate());
+                setTextIfChanged(h.newBadge, mainContext.getString(R.string.new_badge));
                 setVisibilityIfChanged(h.newBadge, Dposition == 0 ? View.VISIBLE : View.GONE);
                 setVisibilityIfChanged(h.action, mode == 0 || mode == 1 || mode == 3 || mode == 4 ? View.VISIBLE : View.GONE);
                 h.action.setImageResource(mode == 0 ? R.drawable.download : R.drawable.ic_baseline_close_24);
@@ -273,7 +274,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     private void bindSelection(ViewHolder holder, int position) {
-        int color = position == bookmark
+        boolean selected = position == bookmark;
+        int color = selected
                 ? ContextCompat.getColor(mainContext, dark ? R.color.selectedDark : R.color.appAccentLight)
                 : ContextCompat.getColor(mainContext, dark ? R.color.colorDarkSurface : R.color.appCard);
         Object tag = holder.itemView.getTag(R.id.episode);
@@ -282,8 +284,15 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 holder.card.setCardBackgroundColor(color);
             else
                 holder.itemView.setBackgroundColor(color);
+            if(holder.cardContent != null)
+                holder.cardContent.setBackgroundColor(color);
             holder.itemView.setTag(R.id.episode, color);
         }
+        holder.episode.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+        holder.episode.setTextColor(ContextCompat.getColor(mainContext,
+                selected ? R.color.appAccent : (dark ? R.color.colorDarkText : R.color.appText)));
+        setTextIfChanged(holder.newBadge, mainContext.getString(R.string.new_badge));
+        setVisibilityIfChanged(holder.newBadge, position == 1 ? View.VISIBLE : View.GONE);
     }
 
     private void clearEpisodeRow(ViewHolder holder, int position) {

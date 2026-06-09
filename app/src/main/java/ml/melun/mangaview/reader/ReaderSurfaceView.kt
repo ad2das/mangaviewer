@@ -200,6 +200,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var dragging = false
     private var scrollbarDragging = false
     private var scrollbarDragOffset = 0f
+    private var scrollbarVisible = false
     private var scrollOffset = 0f
     private var activeScrollerOffsetShift = 0f
     private var lockedRestorePage = -1
@@ -260,6 +261,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     fun setWindowListener(listener: WindowListener?) {
         this.listener = listener
+    }
+
+    fun setScrollbarVisible(visible: Boolean) {
+        synchronized(stateLock) {
+            if (scrollbarVisible == visible) return
+            scrollbarVisible = visible
+            if (!visible) {
+                scrollbarDragging = false
+                scrollbarDragOffset = 0f
+            }
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+        }
+        requestRender()
     }
 
     fun setPageGapPx(gapPx: Int) {
@@ -1270,19 +1286,51 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun drawScrollbar(canvas: Canvas, state: DrawState) {
+        if (!scrollbarVisible && !scrollbarDragging) return
         if (state.height <= 0 || state.contentHeight <= state.height) return
         val thumb = scrollbarThumbRectLocked(state.scrollOffset, state.contentHeight, state.height, state.width)
         paint.style = Paint.Style.FILL
         paint.color = SCROLLBAR_TRACK_COLOR
         dst.set(
-            state.width - SCROLLBAR_TRACK_WIDTH_PX,
+            state.width - SCROLLBAR_RIGHT_MARGIN_PX - SCROLLBAR_TRACK_WIDTH_PX,
             0f,
-            state.width.toFloat(),
+            state.width - SCROLLBAR_RIGHT_MARGIN_PX,
             state.height.toFloat()
         )
-        canvas.drawRect(dst, paint)
+        canvas.drawRoundRect(dst, SCROLLBAR_TRACK_RADIUS_PX, SCROLLBAR_TRACK_RADIUS_PX, paint)
         paint.color = if (scrollbarDragging) SCROLLBAR_THUMB_ACTIVE_COLOR else SCROLLBAR_THUMB_COLOR
         canvas.drawRoundRect(thumb, SCROLLBAR_THUMB_RADIUS_PX, SCROLLBAR_THUMB_RADIUS_PX, paint)
+        paint.color = SCROLLBAR_GRIP_COLOR
+        val gripLeft = thumb.left + SCROLLBAR_GRIP_INSET_PX
+        val gripRight = thumb.right - SCROLLBAR_GRIP_INSET_PX
+        val gripCenterY = thumb.centerY()
+        canvas.drawRoundRect(
+            gripLeft,
+            gripCenterY - SCROLLBAR_GRIP_GAP_PX,
+            gripRight,
+            gripCenterY - SCROLLBAR_GRIP_GAP_PX + SCROLLBAR_GRIP_HEIGHT_PX,
+            SCROLLBAR_GRIP_RADIUS_PX,
+            SCROLLBAR_GRIP_RADIUS_PX,
+            paint
+        )
+        canvas.drawRoundRect(
+            gripLeft,
+            gripCenterY,
+            gripRight,
+            gripCenterY + SCROLLBAR_GRIP_HEIGHT_PX,
+            SCROLLBAR_GRIP_RADIUS_PX,
+            SCROLLBAR_GRIP_RADIUS_PX,
+            paint
+        )
+        canvas.drawRoundRect(
+            gripLeft,
+            gripCenterY + SCROLLBAR_GRIP_GAP_PX,
+            gripRight,
+            gripCenterY + SCROLLBAR_GRIP_GAP_PX + SCROLLBAR_GRIP_HEIGHT_PX,
+            SCROLLBAR_GRIP_RADIUS_PX,
+            SCROLLBAR_GRIP_RADIUS_PX,
+            paint
+        )
     }
 
     private fun startScrollbarDragLocked(x: Float, y: Float): Boolean {
@@ -1290,6 +1338,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val viewWidth = width
         val viewHeight = height
         val maxScroll = max(0f, contentHeight - viewHeight)
+        if (!scrollbarVisible) return false
         if (viewWidth <= 0 || viewHeight <= 0 || maxScroll <= 0f) return false
         if (x < viewWidth - SCROLLBAR_TOUCH_WIDTH_PX) return false
         val thumb = scrollbarThumbRectLocked(scrollOffset, contentHeight, viewHeight, viewWidth)
@@ -1329,10 +1378,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val maxScroll = max(1f, totalContentHeight - viewHeight)
         val trackRange = max(1f, viewHeight - thumbHeight)
         val top = (scroll.coerceIn(0f, maxScroll) / maxScroll) * trackRange
+        val right = viewWidth - SCROLLBAR_RIGHT_MARGIN_PX - ((SCROLLBAR_TRACK_WIDTH_PX - SCROLLBAR_THUMB_WIDTH_PX) / 2f)
         return RectF(
-            viewWidth - SCROLLBAR_THUMB_WIDTH_PX,
+            right - SCROLLBAR_THUMB_WIDTH_PX,
             top,
-            viewWidth.toFloat(),
+            right,
             top + thumbHeight
         )
     }
@@ -2526,11 +2576,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val SLOW_FRAME_LOG_INTERVAL_MS = 500L
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
-        private const val SCROLLBAR_TOUCH_WIDTH_PX = 48f
-        private const val SCROLLBAR_TRACK_WIDTH_PX = 8f
-        private const val SCROLLBAR_THUMB_WIDTH_PX = 18f
-        private const val SCROLLBAR_THUMB_RADIUS_PX = 9f
-        private const val SCROLLBAR_MIN_THUMB_HEIGHT_PX = 96f
+        private const val SCROLLBAR_TOUCH_WIDTH_PX = 96f
+        private const val SCROLLBAR_RIGHT_MARGIN_PX = 10f
+        private const val SCROLLBAR_TRACK_WIDTH_PX = 48f
+        private const val SCROLLBAR_TRACK_RADIUS_PX = 24f
+        private const val SCROLLBAR_THUMB_WIDTH_PX = 40f
+        private const val SCROLLBAR_THUMB_RADIUS_PX = 20f
+        private const val SCROLLBAR_MIN_THUMB_HEIGHT_PX = 188f
+        private const val SCROLLBAR_GRIP_INSET_PX = 10f
+        private const val SCROLLBAR_GRIP_HEIGHT_PX = 4f
+        private const val SCROLLBAR_GRIP_GAP_PX = 13f
+        private const val SCROLLBAR_GRIP_RADIUS_PX = 2f
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
@@ -2556,9 +2612,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PENDING_BOUNDS = 3
         private const val PENDING_SIZE = 4
         private const val PAGE_PLACEHOLDER_COLOR = -0x1
-        private const val SCROLLBAR_TRACK_COLOR = 0x22000000
-        private const val SCROLLBAR_THUMB_COLOR = -0x69d5d5d6
-        private const val SCROLLBAR_THUMB_ACTIVE_COLOR = -0x23e3e3e4
+        private const val SCROLLBAR_TRACK_COLOR = 0x44000000
+        private const val SCROLLBAR_THUMB_COLOR = -0xf0f10
+        private const val SCROLLBAR_THUMB_ACTIVE_COLOR = -0x1
+        private const val SCROLLBAR_GRIP_COLOR = 0x66000000
 
         private fun shouldAdjustScrollForChangedPageHeight(
             lastBusy: Boolean,

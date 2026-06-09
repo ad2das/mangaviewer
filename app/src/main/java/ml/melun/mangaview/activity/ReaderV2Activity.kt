@@ -1142,6 +1142,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             .create()
         dialog.setOnShowListener {
+            dialog.listView?.apply {
+                isVerticalScrollBarEnabled = true
+                isFastScrollEnabled = true
+                isFastScrollAlwaysVisible = true
+                scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
+                setPadding(paddingLeft, paddingTop, 6.dp(), paddingBottom)
+                clipToPadding = false
+            }
             if (currentIndex >= 0) {
                 dialog.listView?.post {
                     dialog.listView?.setSelectionFromTop(currentIndex, 96.dp())
@@ -1672,6 +1680,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val visibility = if (visible) View.VISIBLE else View.GONE
         topBar.visibility = visibility
         bottomBar.visibility = visibility
+        renderView.setScrollbarVisible(visible)
     }
 
     private fun hideBoundaryStatus() {
