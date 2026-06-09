@@ -1396,9 +1396,10 @@ public class Title extends MTitle {
         int progressIndex = getBookmarkIndex();
         if(progressIndex <= 0)
             progressIndex = getBookmarkEpisodeIndex();
-        int progressCount = getEpsCount();
-        if(progressCount <= 0)
-            progressCount = getEpisodeCount();
+        int progressCount = Math.max(getEpsCount(), getEpisodeCount());
+        int releaseCount = getNtkReleaseEpisodeCount();
+        if(releaseCount > progressCount)
+            progressCount = releaseCount;
         title.setReadingProgress(progressEpisodeId, progressIndex, progressCount);
         title.setPath(getPath());
         title.setSourceSite(getSourceSite());

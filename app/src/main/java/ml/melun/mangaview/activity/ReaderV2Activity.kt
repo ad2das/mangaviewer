@@ -1538,7 +1538,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (isNtkProgressTitle(title) && ntkPath.isNotBlank()) {
             title.resumeNtkEpisodePath = ntkPath
         }
-        val episodeCount = episodes.size.takeIf { it > 0 } ?: title.episodeCount
+        val episodeCount = maxOf(episodes.size, title.episodeCount, title.ntkReleaseEpisodeCount)
         if (episodeCount > 0) {
             title.setReadingProgress(progressEpisodeId, episodeIndex, episodeCount)
         }

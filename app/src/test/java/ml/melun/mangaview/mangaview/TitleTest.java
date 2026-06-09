@@ -3,6 +3,7 @@ package ml.melun.mangaview.mangaview;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -231,6 +232,23 @@ public class TitleTest {
         title.setReadingProgress(210, 18, 120);
 
         assertEquals(120, title.getDisplayEpisodeCount(0));
+    }
+
+    @Test
+    public void minimizeKeepsKnownProgressCountWhenEpisodeWindowIsSmaller() {
+        Title title = new Title("Windowed Webtoon", "", "", null, "31 episodes", 68714471, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setReadingProgress(14, 18, 31);
+        List<Manga> window = new ArrayList<>();
+        for(int i = 10; i < 15; i++)
+            window.add(new Manga(i, "Episode " + i, "", MTitle.base_webtoon));
+        title.setEps(window);
+
+        MTitle minimized = title.minimize();
+
+        assertEquals(31, minimized.getEpisodeCount());
+        assertEquals(14, minimized.getBookmarkEpisodeId());
+        assertEquals(18, minimized.getBookmarkEpisodeIndex());
     }
 
     @Test
