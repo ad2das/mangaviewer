@@ -36,6 +36,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val offset: Int
     )
 
+    data class ScrollPositionSnapshot(
+        val page: Int,
+        val offset: Int,
+        val scrollOffset: Int
+    )
+
     data class VisibleCoverageSnapshot(
         val viewportPx: Int,
         val drawablePx: Int,
@@ -48,6 +54,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleCards: Int,
         val busy: Boolean,
         val pageCount: Int
+    )
+
+    data class FrameStatsSnapshot(
+        val samples: Int,
+        val strictOverBudget: Int,
+        val missedIntervals: Int,
+        val missedFrames: Int,
+        val droppedFrames: Int,
+        val droppedFrameDebt: Int,
+        val callbackP95: Float,
+        val callbackMax: Float,
+        val drawP95: Float,
+        val totalP95: Float,
+        val totalMax: Float,
+        val noCanvas: Int,
+        val coalesced: Int
     )
 
     interface WindowListener {
@@ -227,6 +249,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastCoverageLog: CoverageStats? = null
     private var lastCoverageLogMs = 0L
     private var lastVisibleCoverageSnapshot: VisibleCoverageSnapshot? = null
+    private var lastFrameStatsSnapshot: FrameStatsSnapshot? = null
 
     init {
         isFocusable = true
@@ -768,9 +791,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    fun currentScrollPositionSnapshot(): ScrollPositionSnapshot? {
+        return synchronized(stateLock) {
+            val progress = progressPositionLocked() ?: return@synchronized null
+            ScrollPositionSnapshot(progress.page, progress.offset, scrollOffset.toInt())
+        }
+    }
+
     fun visibleCoverageSnapshot(): VisibleCoverageSnapshot? {
         return synchronized(stateLock) {
             lastVisibleCoverageSnapshot
+        }
+    }
+
+    fun frameStatsSnapshot(): FrameStatsSnapshot? {
+        return synchronized(stateLock) {
+            lastFrameStatsSnapshot
+        }
+    }
+
+    fun resetFrameStatsSnapshot() {
+        synchronized(stateLock) {
+            lastFrameStatsSnapshot = null
+            resetActiveFrameStatsLocked()
         }
     }
 
@@ -2161,23 +2204,49 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val missedThreshold = measuredBudget * MISSED_VSYNC_FACTOR
         val missedIntervals = frameSamples.count { it > missedThreshold }
         var missedFrames = 0
-        for (interval in frameSamples) missedFrames += max(0, kotlin.math.floor(interval / measuredBudget - 0.5f).toInt())
+        for (interval in frameSamples) {
+            if (interval > missedThreshold) {
+                missedFrames += max(1, kotlin.math.floor(interval / measuredBudget - 1f).toInt())
+            }
+        }
         val droppedFrames = total.count { it > nominalBudget }
         var droppedFrameDebt = 0
         for (duration in total) droppedFrameDebt += max(0, kotlin.math.floor(duration / nominalBudget).toInt())
         val strictPercent = if (frameSamples.isEmpty()) 0f else strictOverBudget * 100f / frameSamples.size
         val missedPercent = if (frameSamples.isEmpty()) 0f else missedIntervals * 100f / frameSamples.size
         val droppedPercent = if (total.isEmpty()) 0f else droppedFrames * 100f / total.size
+        val callbackP95 = percentile(callbackIntervals, 0.95f)
+        val callbackMax = maxOrZero(callbackIntervals)
+        val drawP95 = percentile(draw, 0.95f)
+        val totalP95 = percentile(total, 0.95f)
+        val totalMax = maxOrZero(total)
+        synchronized(stateLock) {
+            lastFrameStatsSnapshot = FrameStatsSnapshot(
+                samples = frameSamples.size,
+                strictOverBudget = strictOverBudget,
+                missedIntervals = missedIntervals,
+                missedFrames = missedFrames,
+                droppedFrames = droppedFrames,
+                droppedFrameDebt = droppedFrameDebt,
+                callbackP95 = callbackP95,
+                callbackMax = callbackMax,
+                drawP95 = drawP95,
+                totalP95 = totalP95,
+                totalMax = totalMax,
+                noCanvas = noCanvas,
+                coalesced = coalesced
+            )
+        }
         Log.i(
             TAG,
             "surface_jank_v3 samples=${frameSamples.size} nominalBudget=${fmt(nominalBudget)} measuredBudget=${fmt(measuredBudget)} " +
                 "strictOverBudget=$strictOverBudget strictPct=${fmt(strictPercent)} " +
                 "missedIntervals=$missedIntervals missedFrames=$missedFrames missedPct=${fmt(missedPercent)} " +
                 "droppedFrames=$droppedFrames droppedFrameDebt=$droppedFrameDebt droppedPct=${fmt(droppedPercent)} " +
-                "callbackP95=${fmt(percentile(callbackIntervals, 0.95f))} callbackMax=${fmt(maxOrZero(callbackIntervals))} " +
+                "callbackP95=${fmt(callbackP95)} callbackMax=${fmt(callbackMax)} " +
                 "postP95=${fmt(percentile(postIntervals, 0.95f))} postMax=${fmt(maxOrZero(postIntervals))} " +
-                "lockP95=${fmt(percentile(lockWait, 0.95f))} drawP95=${fmt(percentile(draw, 0.95f))} " +
-                "unlockP95=${fmt(percentile(post, 0.95f))} totalP95=${fmt(percentile(total, 0.95f))} totalMax=${fmt(maxOrZero(total))} " +
+                "lockP95=${fmt(percentile(lockWait, 0.95f))} drawP95=${fmt(drawP95)} " +
+                "unlockP95=${fmt(percentile(post, 0.95f))} totalP95=${fmt(totalP95)} totalMax=${fmt(totalMax)} " +
                 "inputOldestP95=${fmt(percentile(inputOldest, 0.95f))} inputNewestP95=${fmt(percentile(inputNewest, 0.95f))} " +
                 "noCanvas=$noCanvas coalesced=$coalesced"
         )
@@ -2314,7 +2383,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
         private const val TAG = "ReaderSurfaceStats"
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
-        private const val MISSED_VSYNC_FACTOR = 1.5f
+        private const val MISSED_VSYNC_FACTOR = 2.0f
         private const val MIN_FRAME_SAMPLES = 8
         private const val DEFAULT_PAGE_GAP_PX = 0
         private const val TILE_SEAM_OVERLAP_PX = 1f

@@ -99,6 +99,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingBoundaryStartInteractionMs = 0L
     private var lastReaderInteractionMs = 0L
     private var lastReaderBusyMs = 0L
+    private var lastBusyWindowLogMs = 0L
+    private var lastLoggedWindowBusy = false
+    private var lastInteractionNoteMs = 0L
     private val missingEpisodePromptState = MissingEpisodeNavigator.PromptState()
     private var pendingCaptchaRetryManga: Manga? = null
     private var pendingCaptchaRetryTitle: Title? = null
@@ -114,6 +117,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchStartedAtMs = 0L
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
+    private var firstDrawableElapsedMsForTest = -1L
     private var drawableReadyDescriptionPosted = false
     private var initialStartAtFirstPage = false
     private val launchDrawableMetricPages = HashSet<Int>()
@@ -614,7 +618,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageCards.remove(index)
         pendingPageErrors.remove(index)
         pendingPageBitmaps[index] = bitmap
-        Log.d(TAG, "page_ready_deferred index=$index kind=bitmap")
         bootstrapDeferredFirstPage(index, bitmap)
     }
 
@@ -623,7 +626,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageCards.remove(index)
         pendingPageErrors.remove(index)
         pendingPageTiles[index] = PendingPageTiles(pageWidth, pageHeight, tiles)
-        Log.d(TAG, "page_ready_deferred index=$index kind=tiles")
     }
 
     private fun rememberPendingPageCard(index: Int, title: String) {
@@ -631,7 +633,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageTiles.remove(index)
         pendingPageErrors.remove(index)
         pendingPageCards[index] = title
-        Log.d(TAG, "page_ready_deferred index=$index kind=card")
     }
 
     private fun rememberPendingPageError(index: Int, message: String) {
@@ -639,7 +640,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageTiles.remove(index)
         pendingPageCards.remove(index)
         pendingPageErrors[index] = message
-        Log.d(TAG, "page_ready_deferred index=$index kind=error")
     }
 
     private fun bootstrapDeferredFirstPage(index: Int, bitmap: Bitmap) {
@@ -743,6 +743,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         firstDrawableMetricLogged = true
         scheduleDrawableReadyDescription(index)
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
+        firstDrawableElapsedMsForTest = elapsed
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
     }
 
@@ -864,11 +865,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         busy: Boolean
     ) {
         MainThreadStallMonitor.trace("reader_on_window_changed") {
-            Log.d(
-                TAG,
-                "window_changed first=$firstPage last=$lastPage anchor=$anchorPage " +
-                    "progress=$progressPage offset=$progressOffset busy=$busy current=$currentPage"
-            )
+            val now = SystemClock.uptimeMillis()
+            if (!busy || busy != lastLoggedWindowBusy || now - lastBusyWindowLogMs >= BUSY_WINDOW_LOG_INTERVAL_MS) {
+                lastBusyWindowLogMs = now
+                lastLoggedWindowBusy = busy
+                Log.d(
+                    TAG,
+                    "window_changed first=$firstPage last=$lastPage anchor=$anchorPage " +
+                        "progress=$progressPage offset=$progressOffset busy=$busy current=$currentPage"
+                )
+            }
             currentPage = progressPage
             MainThreadStallMonitor.trace("reader_request_window_async") {
                 session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
@@ -912,8 +918,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ev.actionMasked == MotionEvent.ACTION_UP ||
             ev.actionMasked == MotionEvent.ACTION_CANCEL
         ) {
-            session?.noteUserInteraction()
-            lastReaderInteractionMs = SystemClock.uptimeMillis()
+            val now = SystemClock.uptimeMillis()
+            if (ev.actionMasked != MotionEvent.ACTION_MOVE || now - lastInteractionNoteMs >= INTERACTION_NOTE_INTERVAL_MS) {
+                session?.noteUserInteraction()
+                lastInteractionNoteMs = now
+            }
+            lastReaderInteractionMs = now
         }
         return super.dispatchTouchEvent(ev)
     }
@@ -1767,8 +1777,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return renderView.currentProgressPosition()
     }
 
+    fun testCurrentScrollPositionSnapshot(): ReaderSurfaceView.ScrollPositionSnapshot? {
+        return renderView.currentScrollPositionSnapshot()
+    }
+
+    fun testFirstDrawableElapsedMs(): Long {
+        return firstDrawableElapsedMsForTest
+    }
+
     fun testVisibleCoverageSnapshot(): ReaderSurfaceView.VisibleCoverageSnapshot? {
         return renderView.visibleCoverageSnapshot()
+    }
+
+    fun testFrameStatsSnapshot(): ReaderSurfaceView.FrameStatsSnapshot? {
+        return renderView.frameStatsSnapshot()
+    }
+
+    fun testResetFrameStatsSnapshot() {
+        renderView.resetFrameStatsSnapshot()
     }
 
     fun testPageCount(): Int {
@@ -1814,7 +1840,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val INITIAL_STATUS_DELAY_MS = 450L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
-        private const val BOUNDARY_APPEND_QUIET_MS = 900L
+        private const val BOUNDARY_APPEND_QUIET_MS = 0L
+        private const val BUSY_WINDOW_LOG_INTERVAL_MS = 500L
+        private const val INTERACTION_NOTE_INTERVAL_MS = 120L
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L

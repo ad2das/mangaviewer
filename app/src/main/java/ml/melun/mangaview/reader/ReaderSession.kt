@@ -176,6 +176,10 @@ class ReaderSession(
     private val anchorDecode = Executors.newSingleThreadExecutor(
         readerThreadFactory("ReaderAnchorDecode", Process.THREAD_PRIORITY_DEFAULT)
     )
+    private val adjacentNetwork = Executors.newFixedThreadPool(
+        ADJACENT_PIPELINE_PARALLELISM,
+        readerThreadFactory("ReaderAdjacentNetwork", Process.THREAD_PRIORITY_BACKGROUND)
+    )
     private val urgentNetwork = Executors.newFixedThreadPool(
         URGENT_VISIBLE_PIPELINE_PARALLELISM,
         readerThreadFactory("ReaderUrgentNetwork", Process.THREAD_PRIORITY_BACKGROUND)
@@ -930,6 +934,7 @@ class ReaderSession(
         decode.shutdownNow()
         anchorNetwork.shutdownNow()
         anchorDecode.shutdownNow()
+        adjacentNetwork.shutdownNow()
         urgentNetwork.shutdownNow()
         urgentDecode.shutdownNow()
         primeNetwork.shutdownNow()
@@ -1008,7 +1013,7 @@ class ReaderSession(
     }
 
     fun prepareAdjacentEpisode(anchor: Int, direction: Int) {
-        val quietMs = ntkBackgroundPrepareQuietRemainingMs()
+        val quietMs = if (isNtkSource(manga, title)) 0L else ntkBackgroundPrepareQuietRemainingMs()
         if (quietMs > 0L) {
             scheduleDeferredAdjacentPrepare(anchor, direction, quietMs)
             return
@@ -1047,7 +1052,7 @@ class ReaderSession(
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) return AppendStartResult.CANCELLED
         if (loadingFlag.getAndSet(true)) return AppendStartResult.BUSY
         try {
-            val appendExecutor = if (isNtkSource(manga, title)) anchorNetwork else network
+            val appendExecutor = if (isNtkSource(manga, title)) adjacentNetwork else network
             appendExecutor.execute {
             var captchaRequired = false
             var suppressedCaptcha = false
@@ -1192,7 +1197,7 @@ class ReaderSession(
                     return@execute
                 }
                 appendResolvedEpisode(resolvedTarget, resolvedUrls, direction)
-                appendNtkForwardLookahead(resolvedTarget, currentTitle, episodes, direction)
+                scheduleNtkForwardLookahead(resolvedTarget, currentTitle, episodes, direction)
             } catch (e: Exception) {
                 recordIfUnexpected(e)
             } finally {
@@ -1293,6 +1298,26 @@ class ReaderSession(
         )
         if (appendUrls.result != Title.LOAD_OK || appendUrls.urls.isEmpty()) return
         appendResolvedEpisode(target, appendUrls.urls, ReaderSurfaceView.DIRECTION_NEXT)
+    }
+
+    private fun scheduleNtkForwardLookahead(
+        source: Manga,
+        currentTitle: Title,
+        episodes: List<Manga>,
+        direction: Int
+    ) {
+        if (direction <= 0 || cancelled.get() || !isNtkSource(source, currentTitle)) return
+        try {
+            adjacentNetwork.execute {
+                try {
+                    appendNtkForwardLookahead(source, currentTitle, episodes, direction)
+                } catch (e: Exception) {
+                    recordIfUnexpected(e)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Session is closing; the visible append already completed.
+        }
     }
 
     private fun fetchGeneratedNtkAppendUrls(target: Manga, currentTitle: Title, direction: Int): Int {
@@ -4171,41 +4196,42 @@ class ReaderSession(
         private const val FOREGROUND_PRIME_WARM_GENERATION = Int.MIN_VALUE + 1
         private const val URGENT_VISIBLE_PIPELINE_PARALLELISM = 8
         private const val PRIME_PIPELINE_PARALLELISM = 8
+        private const val ADJACENT_PIPELINE_PARALLELISM = 3
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val STRUCTURE_PUBLISH_DRAIN_DELAY_MS = 16L
         private const val PRIME_FORWARD_EPISODES = 8
         private const val NTK_PRIME_FORWARD_EPISODES = 0
         private const val NTK_GENERATED_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 700L
         private const val NTK_NATIVE_FORWARD_PRIME_AFTER_FIRST_BITMAP_DELAY_MS = 1200L
-        private const val NTK_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 12
-        private const val NTK_PRIMED_EPISODE_PRIORITY_PAGES = 6
-        private const val NTK_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 18
-        private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 8
-        private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 12
+        private const val NTK_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 24
+        private const val NTK_PRIMED_EPISODE_PRIORITY_PAGES = 12
+        private const val NTK_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 48
+        private const val NTK_LIGHT_PRIMED_EPISODE_DECODE_AHEAD_PAGES = 14
+        private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 28
         private const val NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES = 2
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 6
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 2
-        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 2
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 0
-        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 1
-        private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 2
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 4
+        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 3
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 8
+        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 8
+        private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 6
         private const val NTK_INITIAL_PRIORITY_PAGES = 4
         private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 1
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 8
         private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 2
-        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 8
-        private const val NTK_WEBTOON_WINDOW_AFTER = 28
-        private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 6
+        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 12
+        private const val NTK_WEBTOON_WINDOW_AFTER = 64
+        private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 16
         private const val NTK_INITIAL_SECONDARY_WARM_DELAY_MS = 240L
         private const val NTK_INITIAL_FAR_WARM_DELAY_MS = 350L
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 900L
         private const val NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS = 300L
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 1200L
         private const val NTK_TRACE_AHEAD_PAGES = 8
-        private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 900L
+        private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 120L
         private const val BOUNDARY_DECODE_AHEAD_PAGES = 8
         private const val BOUNDARY_BYTE_AHEAD_PAGES = 32
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 8

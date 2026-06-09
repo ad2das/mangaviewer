@@ -80,7 +80,7 @@ public class Manga {
     private static final int NTK_MAX_GENERATED_PAGE_COUNT = 300;
     private static final int NTK_GENERATED_INITIAL_VALIDATION_PAGE_COUNT = 2;
     private static final int NTK_LAST_RESORT_GENERATED_PROBE_LIMIT = 12;
-    private static final boolean NTK_GENERATED_TRIM_BEFORE_FIRST_FRAME = true;
+    private static final boolean NTK_GENERATED_TRIM_BEFORE_FIRST_FRAME = false;
     private static final long NTK_API_FALLBACK_ACK_FAST_PATH_WAIT_MS = 2400L;
     private static final long NTK_API_FALLBACK_DIRECT_RACE_WAIT_MS = 560L;
     private static final long NTK_GENERATED_MISS_ACK_GRACE_MS = 650L;
@@ -770,6 +770,10 @@ public class Manga {
                         attachEpisodeSeriesMetadata();
                         return LOAD_OK;
                     }
+                }
+                if(!nativeAckCompleted && isNtkAccessBlockedForViewer(client, directApiPage)) {
+                    logNtkViewerParse("api-fallback-blocked-fast", directApiPage, path, 0, 0);
+                    return LOAD_CAPTCHA;
                 }
             }
             boolean validateGeneratedFirstImage = true;
@@ -1718,7 +1722,9 @@ public class Manga {
             int pageCount = ntkViewerMetaPageCount(normalized);
             if(pageCount <= 0)
                 pageCount = ntkGeneratedImageCandidateCount();
-            if(addNtkSlugWebtoonGeneratedImageCandidates(client, path, seenImages, pageCount, true))
+            int beforeSlugGenerated = imgs == null ? 0 : imgs.size();
+            if(addNtkSlugWebtoonGeneratedImageCandidates(client, path, seenImages, pageCount, true)
+                    || imgs != null && imgs.size() > beforeSlugGenerated)
                 return true;
         }
         boolean preferNativeApiImageFetch = shouldPreAckBeforeNtkViewerImageApi(path);
@@ -2070,6 +2076,8 @@ public class Manga {
             if(imageExtension.length() == 0)
                 return addNtkSlugWebtoonGeneratedImageCandidates(
                         client, path, seenImages, pageCount, true);
+            Map<Integer, String> validatedPageExtensions = new LinkedHashMap<>();
+            validatedPageExtensions.put(1, imageExtension);
             int validationPageCount = shouldValidateNtkGeneratedInitialPages()
                     ? ntkGeneratedInitialValidationPageCount(safePageCount)
                     : 1;
@@ -2080,21 +2088,42 @@ public class Manga {
                     if(cachedExtension.length() == 0)
                         return addNtkSlugWebtoonGeneratedImageCandidates(
                                 client, path, seenImages, pageCount, true);
-                    if(cachedExtension.equals(imageExtension))
-                        continue;
+                    validatedPageExtensions.put(page, cachedExtension);
+                    continue;
                 }
                 if(!isNtkGeneratedImageReachable(client,
                         ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page, imageExtension))) {
-                    cacheNtkGeneratedImageExtension(cacheKey, "");
-                    return addNtkSlugWebtoonGeneratedImageCandidates(
-                            client, path, seenImages, pageCount, true);
+                    String pageExtension = reachableNtkGeneratedImageExtension(
+                            client, segment, workId, imageEpisodeId, page);
+                    if(pageExtension.length() == 0) {
+                        cacheNtkGeneratedImageExtension(cacheKey, "");
+                        return addNtkSlugWebtoonGeneratedImageCandidates(
+                                client, path, seenImages, pageCount, true);
+                    }
+                    validatedPageExtensions.put(page, pageExtension);
+                    continue;
                 }
                 cacheNtkGeneratedImageExtension(cacheKey, imageExtension);
+                validatedPageExtensions.put(page, imageExtension);
             }
+            String pageTwoExtension = validatedPageExtensions.get(2);
+            String pageCountExtension = pageTwoExtension != null && !pageTwoExtension.equals(imageExtension)
+                    ? pageTwoExtension
+                    : imageExtension;
             if(NTK_GENERATED_TRIM_BEFORE_FIRST_FRAME || getNtkImageCount() <= 0)
-                safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, imageExtension, safePageCount);
+                safePageCount = reachableNtkGeneratedPageCount(client, segment, workId, imageEpisodeId, pageCountExtension, safePageCount);
             else
                 logNtkViewerParse("generated-page-count-" + generatedPageCountSource(), null, path, 0, 0);
+            for(int page = 1; page <= safePageCount; page++) {
+                String extension = validatedPageExtensions.containsKey(page)
+                        ? validatedPageExtensions.get(page)
+                        : page > 1 && pageTwoExtension != null && !pageTwoExtension.equals(imageExtension)
+                        ? pageTwoExtension
+                        : imageExtension;
+                addImageIfValid(client, seenImages,
+                        ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page, extension));
+            }
+            return imgs != null && imgs.size() > before;
         }
         for(int page = 1; page <= safePageCount; page++) {
             String src = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, page, imageExtension);
@@ -2624,6 +2653,14 @@ public class Manga {
             if(response != null)
                 response.close();
         }
+    }
+
+    private static boolean isNtkAccessBlockedForViewer(CustomHttpClient client, CustomHttpClient.PageResponse page) {
+        if(client == null || client.hasNtkAccessProof())
+            return false;
+        if(client.hasRecentNtkHardBlock() || client.hasRecentCloudflareChallenge())
+            return true;
+        return page != null && (page.code == 403 || client.isCloudflareChallengeResponse(page.code, page.body));
     }
 
     private static String generatedImageDebugSuffix(String src) {

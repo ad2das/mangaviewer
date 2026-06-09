@@ -108,7 +108,7 @@ public final class PrefetchCoordinator {
         if(shouldSkipWolfBackgroundPrefetchForTest(title == null ? null : title.getSourceSite(), p != null && p.isNtkSite(), getHttpClient().isNtk()))
             return;
         Context appContext = context.getApplicationContext();
-        warmAndPreload(appContext, current.prevEp(), title, width, autoCut, reverse);
+        warmAndPreload(appContext, current.nextEp(), title, width, autoCut, reverse);
     }
 
     public static void prefetchViewerWindow(Context context, Manga manga, int pageIndex, int width, boolean autoCut, boolean reverse) {
@@ -287,9 +287,10 @@ public final class PrefetchCoordinator {
     }
 
     public static boolean shouldSkipNtkPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {
-        if(ntkPreference || ntkClient)
-            return true;
-        return sourceSite != null && "ntk".equals(sourceSite.trim().toLowerCase(java.util.Locale.ROOT));
+        String normalized = sourceSite == null ? "" : sourceSite.trim().toLowerCase(java.util.Locale.ROOT);
+        if("ntk".equals(normalized) || "wfwf".equals(normalized))
+            return false;
+        return ntkPreference || ntkClient;
     }
 
     public static boolean shouldSkipWolfBackgroundPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {

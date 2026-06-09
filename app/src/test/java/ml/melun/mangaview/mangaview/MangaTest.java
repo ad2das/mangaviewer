@@ -324,8 +324,8 @@ public class MangaTest {
     }
 
     @Test
-    public void ntkGeneratedFastPathTrimsPagesBeforeFirstFrame() {
-        assertTrue(Manga.shouldTrimNtkGeneratedPagesBeforeFirstFrameForTest());
+    public void ntkGeneratedFastPathDoesNotTrimPagesBeforeFirstFrame() {
+        assertFalse(Manga.shouldTrimNtkGeneratedPagesBeforeFirstFrameForTest());
     }
 
     @Test

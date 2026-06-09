@@ -54,9 +54,19 @@ public class NtkRandomStressInstrumentedTest {
     private static final int PAGE_SIZE = 30;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final String[] MODES = new String[]{"generated", "native-ack", "api-fallback"};
-    private static final long NTK_CAPTCHA_PROBE_WAIT_MS = 18_000L;
+    private static final long NTK_CAPTCHA_PROBE_WAIT_MS = 8_000L;
+    private static final long SAFE_DISCOVERY_GAP_MS = 550L;
+    private static final int SAFE_RANDOM_RUNS = 4;
+    private static final int SAFE_SCROLL_STEPS = 6;
+    private static final int SAFE_APPEND_STEPS = 36;
+    private static final int DEFAULT_SWIPE_INPUT_STEPS = 5;
+    private static final long DEFAULT_FIRST_DRAWABLE_MAX_MS = 3_500L;
+    private static final float DEFAULT_RENDER_FRAME_MAX_MS = 16.67f;
     private static final int SCROLL_BACKWARD_JUMP_TOLERANCE_PX = 240;
     private static final int SCROLL_SETTLE_JUMP_TOLERANCE_PX = 420;
+    private static final int SCROLL_POST_STOP_DRIFT_TOLERANCE_PX = 24;
+    private static final long SCROLL_DRIFT_SAMPLE_MS = 250L;
+    private static final long SCROLL_QUIET_STABLE_MS = 480L;
     private static final long DEFAULT_POST_STOP_DRIFT_SAMPLE_MS = 650L;
 
     @Test
@@ -90,11 +100,27 @@ public class NtkRandomStressInstrumentedTest {
         Context context = ApplicationProvider.getApplicationContext();
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         Bundle args = InstrumentationRegistry.getArguments();
-        int runs = parsePositiveInt(arg(args, "ntkRandomRuns", "12"), 12);
-        int scrollSteps = parseNonNegativeInt(arg(args, "ntkScrollSteps", "8"), 8);
+        boolean safeNetwork = Boolean.parseBoolean(arg(args, "ntkSafeNetwork", "true"));
+        int runs = parsePositiveInt(arg(args, "ntkRandomRuns",
+                Integer.toString(safeNetwork ? SAFE_RANDOM_RUNS : 12)), safeNetwork ? SAFE_RANDOM_RUNS : 12);
+        int scrollSteps = parseNonNegativeInt(arg(args, "ntkScrollSteps",
+                Integer.toString(safeNetwork ? SAFE_SCROLL_STEPS : 8)), safeNetwork ? SAFE_SCROLL_STEPS : 8);
         boolean appendProbe = Boolean.parseBoolean(arg(args, "ntkAppendProbe", "true"));
-        int appendSteps = parsePositiveInt(arg(args, "ntkAppendSteps", "60"), 60);
+        int appendSteps = parsePositiveInt(arg(args, "ntkAppendSteps",
+                Integer.toString(safeNetwork ? SAFE_APPEND_STEPS : 60)), safeNetwork ? SAFE_APPEND_STEPS : 60);
         int screenshotEvery = parseNonNegativeInt(arg(args, "ntkScreenshotEvery", "0"), 0);
+        int swipeInputSteps = parsePositiveInt(arg(args, "ntkSwipeInputSteps",
+                Integer.toString(DEFAULT_SWIPE_INPUT_STEPS)), DEFAULT_SWIPE_INPUT_STEPS);
+        long firstDrawableMaxMs = parseNonNegativeLong(
+                arg(args, "ntkFirstDrawableMaxMs", Long.toString(DEFAULT_FIRST_DRAWABLE_MAX_MS)),
+                DEFAULT_FIRST_DRAWABLE_MAX_MS);
+        boolean assertNoJank = Boolean.parseBoolean(arg(args, "ntkAssertNoJank", "true"));
+        boolean assertNoSchedulerGap = Boolean.parseBoolean(arg(args, "ntkAssertNoSchedulerGap", "false"));
+        int maxMissedFrames = parseNonNegativeInt(arg(args, "ntkMaxMissedFrames", "0"), 0);
+        int maxDroppedFrames = parseNonNegativeInt(arg(args, "ntkMaxDroppedFrames", "0"), 0);
+        float renderFrameMaxMs = parseNonNegativeFloat(
+                arg(args, "ntkRenderFrameMaxMs", Float.toString(DEFAULT_RENDER_FRAME_MAX_MS)),
+                DEFAULT_RENDER_FRAME_MAX_MS);
         long postStopDriftMs = parseNonNegativeLong(
                 arg(args, "ntkPostStopDriftMs", Long.toString(DEFAULT_POST_STOP_DRIFT_SAMPLE_MS)),
                 DEFAULT_POST_STOP_DRIFT_SAMPLE_MS);
@@ -121,17 +147,27 @@ public class NtkRandomStressInstrumentedTest {
                 + ",appendProbe=" + appendProbe
                 + ",appendSteps=" + appendSteps
                 + ",screenshotEvery=" + screenshotEvery
+                + ",swipeInputSteps=" + swipeInputSteps
+                + ",firstDrawableMaxMs=" + firstDrawableMaxMs
+                + ",assertNoJank=" + assertNoJank
+                + ",assertNoSchedulerGap=" + assertNoSchedulerGap
+                + ",maxMissedFrames=" + maxMissedFrames
+                + ",maxDroppedFrames=" + maxDroppedFrames
+                + ",renderFrameMaxMs=" + renderFrameMaxMs
                 + ",postStopDriftMs=" + postStopDriftMs
                 + ",cycleModes=" + cycleModes
                 + ",baseMode=" + fixedBaseMode
                 + ",fixedMode=" + fixedMode
+                + ",safeNetwork=" + safeNetwork
                 + ",modeOffset=" + modeOffset);
         if(targetEpisodePath.length() > 0) {
             TargetEpisode target = loadTargetEpisode(client, targetTitlePath, targetEpisodePath, fixedBaseMode);
             for(int run = 0; run < runs; run++) {
                 String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
                 runReaderCase(context, device, run, mode, target.title, target.episode,
-                        scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs);
+                        scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs,
+                        firstDrawableMaxMs, assertNoJank, maxMissedFrames, maxDroppedFrames,
+                        swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs);
             }
             return;
         }
@@ -143,10 +179,17 @@ public class NtkRandomStressInstrumentedTest {
             Title title = null;
             int fetchResult = Title.LOAD_ERROR;
             for(int titleAttempt = 0; titleAttempt < 6; titleAttempt++) {
-                Title candidate = pickRandomTitle(context, client, random, baseMode);
+                Title candidate = pickRandomTitle(context, client, random, baseMode, safeNetwork);
                 fetchResult = candidate.getEps() != null && candidate.getEps().size() > 0
                         ? Title.LOAD_OK : candidate.fetchEps(client);
                 if(fetchResult != Title.LOAD_OK || candidate.getEps() == null || candidate.getEps().size() == 0) {
+                    if(safeNetwork && ntkBlockedWithoutProof(client)) {
+                        Log.d(TAG, "ntk_true_random_title_fetch_blocked_safe run=" + run
+                                + ",attempt=" + titleAttempt
+                                + ",result=" + fetchResult
+                                + ",path=" + candidate.getPath());
+                        break;
+                    }
                     ensureNtkAccessAfterChallenge(context, client, baseMode);
                     fetchResult = candidate.fetchEps(client);
                 }
@@ -172,6 +215,8 @@ public class NtkRandomStressInstrumentedTest {
                         + ",id=" + candidate.getId()
                         + ",path=" + candidate.getPath()
                         + ",result=" + fetchResult);
+                if(safeNetwork)
+                    safeDiscoveryPause(client);
             }
             assertTrue("Expected NTK episode list for run=" + run
                     + " result=" + fetchResult,
@@ -183,7 +228,9 @@ public class NtkRandomStressInstrumentedTest {
                     episode.getNtkEpisodePath().length() > 0);
             String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
             runReaderCase(context, device, run, mode, title, episode,
-                    scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs);
+                    scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs,
+                    firstDrawableMaxMs, assertNoJank, maxMissedFrames, maxDroppedFrames,
+                    swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs);
         }
     }
 
@@ -230,60 +277,102 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static Title pickRandomTitle(Context context, CustomHttpClient client,
-                                         Random random, int baseMode) throws Exception {
+                                         Random random, int baseMode, boolean safeNetwork) throws Exception {
         Exception apiError = null;
+        if(safeNetwork && ntkBlockedWithoutProof(client)) {
+            Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
+            if(dbTitle != null)
+                return dbTitle;
+            Title curatedTitle = pickRandomTitleFromCuratedNtkPool(random, baseMode);
+            if(curatedTitle != null)
+                return curatedTitle;
+        }
         try {
-            return pickRandomTitleFromApi(client, random, baseMode);
+            return pickRandomTitleFromApi(client, random, baseMode, safeNetwork);
         } catch (Exception e) {
             apiError = e;
             Log.d(TAG, "ntk_true_random_api_title_unavailable baseMode=" + baseMode
                     + ",type=" + e.getClass().getSimpleName()
                     + ",message=" + e.getMessage());
             if(isCloudflareFailure(e)) {
-                ensureNtkAccessAfterChallenge(context, client, baseMode);
-                try {
-                    return pickRandomTitleFromApi(client, random, baseMode);
-                } catch (Exception retry) {
-                    apiError = retry;
-                    Log.d(TAG, "ntk_true_random_api_title_retry_unavailable baseMode=" + baseMode
-                            + ",type=" + retry.getClass().getSimpleName()
-                            + ",message=" + retry.getMessage());
+                if(!safeNetwork) {
+                    ensureNtkAccessAfterChallenge(context, client, baseMode);
+                    try {
+                        return pickRandomTitleFromApi(client, random, baseMode, safeNetwork);
+                    } catch (Exception retry) {
+                        apiError = retry;
+                        Log.d(TAG, "ntk_true_random_api_title_retry_unavailable baseMode=" + baseMode
+                                + ",type=" + retry.getClass().getSimpleName()
+                                + ",message=" + retry.getMessage());
+                    }
+                } else {
+                    Log.d(TAG, "ntk_true_random_api_retry_suppressed_safe baseMode=" + baseMode);
                 }
-                if(client.hasRecentCloudflareChallenge() && !client.hasNtkAccessProof()) {
-                    throw new AssertionError("Unable to verify NTK access before random title fallback"
-                            + " baseMode=" + baseMode
-                            + " apiType=" + apiError.getClass().getSimpleName()
-                            + " apiMessage=" + apiError.getMessage(), apiError);
+                if(ntkBlockedWithoutProof(client)) {
+                    Log.d(TAG, "ntk_true_random_access_unverified_before_fallback baseMode=" + baseMode
+                            + ",apiType=" + apiError.getClass().getSimpleName()
+                            + ",apiMessage=" + apiError.getMessage());
                 }
                 Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
                 if(dbTitle != null)
                     return dbTitle;
+                Title curatedTitle = pickRandomTitleFromCuratedNtkPool(random, baseMode);
+                if(curatedTitle != null)
+                    return curatedTitle;
+                if(safeNetwork)
+                    throw new AssertionError("Unable to pick safe fallback NTK title baseMode=" + baseMode, apiError);
                 Title numericTitle = pickRandomTitleFromNumericProbe(client, random, baseMode);
                 if(numericTitle != null)
                     return numericTitle;
             }
         }
-        if(client.hasRecentCloudflareChallenge() && !client.hasNtkAccessProof()) {
-            throw new AssertionError("Unable to verify NTK access before non-API random title fallback"
-                    + " baseMode=" + baseMode
-                    + (apiError == null ? "" : " apiType=" + apiError.getClass().getSimpleName()
-                    + " apiMessage=" + apiError.getMessage()), apiError);
+        if(safeNetwork && ntkBlockedWithoutProof(client)) {
+            Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
+            if(dbTitle != null)
+                return dbTitle;
+            Title curatedTitle = pickRandomTitleFromCuratedNtkPool(random, baseMode);
+            if(curatedTitle != null)
+                return curatedTitle;
+            throw new AssertionError("Unable to pick safe fallback NTK title after access block baseMode=" + baseMode,
+                    apiError);
         }
-        Title htmlTitle = pickRandomTitleFromHtmlSections(client, random, baseMode);
+        Title htmlTitle = pickRandomTitleFromHtmlSections(client, random, baseMode, safeNetwork);
         if(htmlTitle != null)
             return htmlTitle;
         Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
         if(dbTitle != null)
             return dbTitle;
+        Title curatedTitle = pickRandomTitleFromCuratedNtkPool(random, baseMode);
+        if(curatedTitle != null)
+            return curatedTitle;
         Title numericTitle = pickRandomTitleFromNumericProbe(client, random, baseMode);
         if(numericTitle != null)
             return numericTitle;
+        if(client.hasRecentCloudflareChallenge() && !client.hasNtkAccessProof()) {
+            throw new AssertionError("Unable to verify NTK access after API, HTML, DB, and numeric random title fallbacks"
+                    + " baseMode=" + baseMode
+                    + (apiError == null ? "" : " apiType=" + apiError.getClass().getSimpleName()
+                    + " apiMessage=" + apiError.getMessage()), apiError);
+        }
         if(apiError != null)
             throw new AssertionError("Unable to pick random NTK title after API and HTML discovery failures"
                     + " baseMode=" + baseMode
                     + " apiType=" + apiError.getClass().getSimpleName()
                     + " apiMessage=" + apiError.getMessage(), apiError);
         throw new AssertionError("Unable to pick random NTK title baseMode=" + baseMode);
+    }
+
+    private static boolean ntkBlockedWithoutProof(CustomHttpClient client) {
+        return client != null
+                && !client.hasNtkAccessProof()
+                && (client.hasRecentNtkHardBlock() || client.hasRecentCloudflareChallenge());
+    }
+
+    private static void safeDiscoveryPause(CustomHttpClient client) {
+        if(ntkBlockedWithoutProof(client))
+            SystemClock.sleep(SAFE_DISCOVERY_GAP_MS * 4L);
+        else
+            SystemClock.sleep(SAFE_DISCOVERY_GAP_MS);
     }
 
     private static Title pickRandomTitleFromClassificationDb(Context context, Random random, int baseMode) {
@@ -323,6 +412,50 @@ public class NtkRandomStressInstrumentedTest {
             return title;
         }
         return null;
+    }
+
+    private static Title pickRandomTitleFromCuratedNtkPool(Random random, int baseMode) {
+        String[][] pool = baseMode == MTitle.base_webtoon
+                ? CURATED_NTK_WEBTOON_EPISODES
+                : CURATED_NTK_MANHWA_EPISODES;
+        if(pool.length == 0)
+            return null;
+        String[] episodes = pool[random.nextInt(pool.length)];
+        if(episodes == null || episodes.length == 0)
+            return null;
+        Title title = titleFromCuratedEpisodePaths(episodes, baseMode);
+        Log.d(TAG, "ntk_true_random_title_curated baseMode=" + baseMode
+                + ",id=" + title.getId()
+                + ",path=" + title.getPath()
+                + ",episodes=" + (title.getEps() == null ? 0 : title.getEps().size()));
+        return title;
+    }
+
+    private static Title titleFromCuratedEpisodePaths(String[] paths, int baseMode) {
+        String first = normalizeTargetPath(paths[0]);
+        String titlePath = titlePathFromEpisodePath(first, baseMode);
+        int titleId = titleIdFromPath(titlePath);
+        Title title = new Title("ntk-curated-" + titleId, "", "", new ArrayList<>(), "", titleId, baseMode);
+        title.setSourceSite("ntk");
+        title.setPath(titlePath);
+        ArrayList<Manga> episodes = new ArrayList<>();
+        for(int i = 0; i < paths.length; i++) {
+            String path = normalizeTargetPath(paths[i]);
+            int id = parsePositiveInt(path.substring(path.lastIndexOf('/') + 1), stableId(path));
+            Manga episode = new Manga(id, "curated " + (paths.length - i), "", baseMode);
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+            episode.setNtkEpisodePath(path);
+            episode.setNtkImageCount(CURATED_NTK_IMAGE_COUNT);
+            episodes.add(episode);
+        }
+        title.setEps(episodes);
+        for(Manga episode : title.getEps()) {
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+            episode.setEps(title.getEps());
+        }
+        return title;
     }
 
     private static Title pickRandomTitleFromNumericProbe(CustomHttpClient client, Random random, int baseMode) {
@@ -370,13 +503,17 @@ public class NtkRandomStressInstrumentedTest {
         return 28_001 + random.nextInt(12_000);
     }
 
-    private static Title pickRandomTitleFromApi(CustomHttpClient client, Random random, int baseMode) throws Exception {
+    private static Title pickRandomTitleFromApi(CustomHttpClient client, Random random,
+                                                int baseMode, boolean safeNetwork) throws Exception {
         String listPath = listPath(baseMode, 1);
         CustomHttpClient.PageResponse first = fetchRandomApiPage(client, listPath);
         JSONObject firstJson = new JSONObject(first.body == null ? "{}" : first.body);
         int total = Math.max(0, firstJson.optInt("total", 0));
         int maxPage = Math.max(1, total <= 0 ? 80 : (int)Math.ceil(total / (double)PAGE_SIZE));
-        for(int attempt = 0; attempt < 8; attempt++) {
+        int attempts = safeNetwork ? 3 : 8;
+        for(int attempt = 0; attempt < attempts; attempt++) {
+            if(safeNetwork && attempt > 0)
+                safeDiscoveryPause(client);
             int page = 1 + random.nextInt(maxPage);
             CustomHttpClient.PageResponse response = fetchRandomApiPage(client, listPath(baseMode, page));
             JSONObject json = new JSONObject(response.body == null ? "{}" : response.body);
@@ -402,11 +539,15 @@ public class NtkRandomStressInstrumentedTest {
                 () -> client.mgetCachedPage(path, PAGE_CACHE_TTL_MS));
     }
 
-    private static Title pickRandomTitleFromHtmlSections(CustomHttpClient client, Random random, int baseMode) {
+    private static Title pickRandomTitleFromHtmlSections(CustomHttpClient client, Random random,
+                                                         int baseMode, boolean safeNetwork) {
         String[][] sections = MainPageWebtoon.getSections(baseMode, true);
         if(sections == null || sections.length == 0)
             return null;
-        for(int attempt = 0; attempt < 18; attempt++) {
+        int attempts = safeNetwork ? 4 : 18;
+        for(int attempt = 0; attempt < attempts; attempt++) {
+            if(safeNetwork && attempt > 0)
+                safeDiscoveryPause(client);
             String[] section = sections[random.nextInt(sections.length)];
             if(section == null || section.length < 2 || section[1] == null || section[1].length() == 0)
                 continue;
@@ -479,6 +620,7 @@ public class NtkRandomStressInstrumentedTest {
         String lower = message.toLowerCase(Locale.ROOT);
         return lower.contains("cloudflare")
                 || lower.contains("challenge")
+                || lower.contains("ntk hard block")
                 || lower.contains("request failed: /api/");
     }
 
@@ -621,10 +763,25 @@ public class NtkRandomStressInstrumentedTest {
         }
     }
 
+    private static final int CURATED_NTK_IMAGE_COUNT = 80;
+    private static final String[][] CURATED_NTK_WEBTOON_EPISODES = new String[][]{
+            {"/webtoon/61505586/1542542", "/webtoon/61505586/1542544", "/webtoon/61505586/1542546", "/webtoon/61505586/1542547"},
+            {"/webtoon/69035132/kp-69035132-69092973", "/webtoon/69035132/kp-69035132-69093000", "/webtoon/69035132/kp-69035132-69093006"},
+            {"/webtoon/17332/1463501", "/webtoon/17332/1515337"}
+    };
+    private static final String[][] CURATED_NTK_MANHWA_EPISODES = new String[][]{
+            {"/manhwa/25694/1767091", "/manhwa/25694/1767431", "/manhwa/25694/1767898", "/manhwa/25694/1768331"},
+            {"/manhwa/33070/1671781", "/manhwa/33070/1674534", "/manhwa/33070/1685480", "/manhwa/33070/1685542"},
+            {"/manhwa/3220/34227", "/manhwa/3220/34228", "/manhwa/3220/34229", "/manhwa/3220/34230"}
+    };
+
     private static void runReaderCase(Context context, UiDevice device, int run, String mode,
                                       Title title, Manga episode, int scrollSteps,
                                       boolean appendProbe, int appendSteps, int screenshotEvery,
-                                      long postStopDriftMs) {
+                                      long postStopDriftMs, long firstDrawableMaxMs,
+                                      boolean assertNoJank, int maxMissedFrames,
+                                      int maxDroppedFrames, int swipeInputSteps,
+                                      boolean assertNoSchedulerGap, float renderFrameMaxMs) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
         Manga nextEpisode = null;
@@ -649,20 +806,33 @@ public class NtkRandomStressInstrumentedTest {
             activity = InstrumentationRegistry.getInstrumentation()
                     .startActivitySync(viewerIntent(context, title, episode));
             boolean ready = waitForDrawableReady(activity, device, 16000L);
-            long firstMs = SystemClock.elapsedRealtime() - startedAt;
+            long observedFirstMs = SystemClock.elapsedRealtime() - startedAt;
+            long appFirstMs = readFirstDrawableElapsedMs(activity);
+            long firstMs = appFirstMs >= 0L ? appFirstMs : observedFirstMs;
             Log.d(TAG, "ntk_true_random_first_drawable run=" + run
                     + ",mode=" + mode
                     + ",ready=" + ready
                     + ",ms=" + firstMs
+                    + ",observedMs=" + observedFirstMs
+                    + ",appMs=" + appFirstMs
+                    + ",maxMs=" + firstDrawableMaxMs
                     + ",path=" + episode.getNtkEpisodePath());
             assertTrue("Expected first drawable run=" + run
                     + " mode=" + mode
                     + " path=" + episode.getNtkEpisodePath()
                     + " elapsedMs=" + firstMs, ready);
+            assertTrue("Expected first drawable within budget run=" + run
+                            + " mode=" + mode
+                            + " path=" + episode.getNtkEpisodePath()
+                            + " elapsedMs=" + firstMs
+                            + " maxMs=" + firstDrawableMaxMs,
+                    firstDrawableMaxMs <= 0L || firstMs <= firstDrawableMaxMs);
             ReaderV2Activity reader = activity instanceof ReaderV2Activity ? (ReaderV2Activity) activity : null;
             int initialPageCount = reader == null ? -1 : readPageCount(reader);
             probeScrollContinuity(context, device, reader, run, mode, episode,
-                    scrollSteps, screenshotEvery, postStopDriftMs);
+                    scrollSteps, screenshotEvery, postStopDriftMs, assertNoJank,
+                    maxMissedFrames, maxDroppedFrames, swipeInputSteps,
+                    assertNoSchedulerGap, renderFrameMaxMs);
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
@@ -731,7 +901,9 @@ public class NtkRandomStressInstrumentedTest {
     private static boolean waitForDrawableReady(Activity activity, UiDevice device, long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + Math.max(0L, timeoutMs);
         while(SystemClock.elapsedRealtime() < deadline) {
-            if(device.wait(Until.hasObject(By.desc("reader-drawable-ready")), 250L))
+            if(activityHasDrawableReadyMarker(activity))
+                return true;
+            if(device.wait(Until.hasObject(By.desc("reader-drawable-ready")), 50L))
                 return true;
             if(activityHasDrawableReadyMarker(activity))
                 return true;
@@ -753,14 +925,27 @@ public class NtkRandomStressInstrumentedTest {
         return ready[0];
     }
 
+    private static long readFirstDrawableElapsedMs(Activity activity) {
+        if(!(activity instanceof ReaderV2Activity))
+            return -1L;
+        final long[] value = new long[]{-1L};
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                value[0] = ((ReaderV2Activity) activity).testFirstDrawableElapsedMs());
+        return value[0];
+    }
+
     private static void probeScrollContinuity(Context context, UiDevice device, ReaderV2Activity reader, int run,
                                               String mode, Manga episode, int steps, int screenshotEvery,
-                                              long postStopDriftMs) {
+                                              long postStopDriftMs, boolean assertNoJank,
+                                              int maxMissedFrames, int maxDroppedFrames,
+                                              int swipeInputSteps, boolean assertNoSchedulerGap,
+                                              float renderFrameMaxMs) {
         File screenshot = new File(context.getExternalCacheDir(), "ntk-random-scroll-" + run + ".png");
         for(int step = 0; step < steps; step++) {
             ProgressSnapshot progressBefore = readProgressSnapshot(reader);
+            resetFrameStatsSnapshot(reader);
             long before = SystemClock.elapsedRealtime();
-            long dispatchMs = swipeReader(device, reader, 0.82f, 0.24f, 36);
+            long dispatchMs = swipeReader(device, reader, 0.82f, 0.24f, swipeInputSteps);
             long swipeAt = SystemClock.elapsedRealtime();
             device.waitForIdle(450L);
             long idleAt = SystemClock.elapsedRealtime();
@@ -769,9 +954,9 @@ public class NtkRandomStressInstrumentedTest {
             long quietAt = SystemClock.elapsedRealtime();
             SystemClock.sleep(900L);
             ProgressSnapshot progressAfterSettle = readProgressSnapshot(reader);
-            if(postStopDriftMs > 0L)
-                SystemClock.sleep(postStopDriftMs);
-            ProgressSnapshot progressAfterLateSettle = readProgressSnapshot(reader);
+            ReaderSurfaceView.FrameStatsSnapshot frameStats = waitForFrameStatsSnapshot(reader, 1200L);
+            DriftSample driftSample = monitorPostStopDrift(reader, progressAfterSettle, postStopDriftMs);
+            ProgressSnapshot progressAfterLateSettle = driftSample.last;
             long screenshotStart = SystemClock.elapsedRealtime();
             boolean captureScreenshot = shouldCaptureScrollScreenshot(step, screenshotEvery);
             boolean captured = captureScreenshot && device.takeScreenshot(screenshot);
@@ -797,6 +982,8 @@ public class NtkRandomStressInstrumentedTest {
                     + ",progressAfterSettle=" + progressAfterSettle
                     + ",progressAfterLateSettle=" + progressAfterLateSettle
                     + ",postStopDriftMs=" + postStopDriftMs
+                    + ",postStopDrift=" + driftSample
+                    + ",frameStats=" + formatFrameStats(frameStats)
                     + ",coverage=" + formatCoverage(coverage)
                     + "," + stats);
             assertNoBackwardScrollJump("scroll run=" + run
@@ -819,6 +1006,19 @@ public class NtkRandomStressInstrumentedTest {
                     + " step=" + step
                     + " phase=post-stop"
                     + " path=" + episode.getNtkEpisodePath(), progressAfterSettle, progressAfterLateSettle);
+            assertNoPostStopDrift("scroll run=" + run
+                    + " mode=" + mode
+                    + " step=" + step
+                    + " phase=post-stop-drift"
+                    + " path=" + episode.getNtkEpisodePath(), driftSample);
+            if(assertNoJank) {
+                assertNoScrollJank("scroll run=" + run
+                        + " mode=" + mode
+                        + " step=" + step
+                        + " path=" + episode.getNtkEpisodePath(),
+                        frameStats, maxMissedFrames, maxDroppedFrames,
+                        assertNoSchedulerGap, renderFrameMaxMs);
+            }
             assertVisibleViewportReady("scroll run=" + run
                     + " mode=" + mode
                     + " step=" + step
@@ -989,10 +1189,12 @@ public class NtkRandomStressInstrumentedTest {
         if(activity == null)
             return value[0];
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            ReaderSurfaceView.ProgressPosition progress = activity.testCurrentProgressPosition();
+            ReaderSurfaceView.ScrollPositionSnapshot progress =
+                    activity.testCurrentScrollPositionSnapshot();
             value[0] = progress == null
                     ? ProgressSnapshot.NULL
-                    : new ProgressSnapshot(progress.getPage(), progress.getOffset());
+                    : new ProgressSnapshot(progress.getPage(), progress.getOffset(),
+                    progress.getScrollOffset());
         });
         return value[0];
     }
@@ -1000,22 +1202,103 @@ public class NtkRandomStressInstrumentedTest {
     private static ProgressSnapshot waitForReaderQuietProgress(ReaderV2Activity activity, long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         ProgressSnapshot latest = readProgressSnapshot(activity);
+        ProgressSnapshot stableCandidate = latest;
+        long stableSince = SystemClock.elapsedRealtime();
         while(SystemClock.elapsedRealtime() < deadline) {
             ReaderSurfaceView.VisibleCoverageSnapshot coverage = readVisibleCoverage(activity);
             latest = readProgressSnapshot(activity);
-            if(coverage != null && !coverage.getBusy())
+            if(!sameProgress(stableCandidate, latest)) {
+                stableCandidate = latest;
+                stableSince = SystemClock.elapsedRealtime();
+            }
+            if(coverage != null && !coverage.getBusy()
+                    && SystemClock.elapsedRealtime() - stableSince >= SCROLL_QUIET_STABLE_MS)
                 return latest;
             SystemClock.sleep(80L);
         }
         return latest;
     }
 
+    private static boolean sameProgress(ProgressSnapshot a, ProgressSnapshot b) {
+        if(a == null || b == null)
+            return false;
+        if(a.isNull() || b.isNull())
+            return a.isNull() == b.isNull();
+        if(a.hasScrollOffset() && b.hasScrollOffset())
+            return Math.abs(a.scrollOffset - b.scrollOffset) <= SCROLL_POST_STOP_DRIFT_TOLERANCE_PX;
+        return a.page == b.page && Math.abs(a.offset - b.offset) <= SCROLL_POST_STOP_DRIFT_TOLERANCE_PX;
+    }
+
+    private static ReaderSurfaceView.FrameStatsSnapshot waitForFrameStatsSnapshot(
+            ReaderV2Activity activity, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        ReaderSurfaceView.FrameStatsSnapshot latest = readFrameStatsSnapshot(activity);
+        while(SystemClock.elapsedRealtime() < deadline) {
+            latest = readFrameStatsSnapshot(activity);
+            if(latest != null && latest.getSamples() > 0)
+                return latest;
+            SystemClock.sleep(80L);
+        }
+        return latest;
+    }
+
+    private static ReaderSurfaceView.FrameStatsSnapshot readFrameStatsSnapshot(ReaderV2Activity activity) {
+        final ReaderSurfaceView.FrameStatsSnapshot[] value =
+                new ReaderSurfaceView.FrameStatsSnapshot[]{null};
+        if(activity == null)
+            return null;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                value[0] = activity.testFrameStatsSnapshot());
+        return value[0];
+    }
+
+    private static void resetFrameStatsSnapshot(ReaderV2Activity activity) {
+        if(activity == null)
+            return;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(activity::testResetFrameStatsSnapshot);
+    }
+
+    private static DriftSample monitorPostStopDrift(ReaderV2Activity activity, ProgressSnapshot baseline,
+                                                    long durationMs) {
+        if(durationMs <= 0L)
+            return new DriftSample(baseline, baseline, 0, 0, 0, 0L);
+        long deadline = SystemClock.elapsedRealtime() + durationMs;
+        ProgressSnapshot last = baseline == null ? ProgressSnapshot.NULL : baseline;
+        int maxPageDelta = 0;
+        int maxOffsetDelta = 0;
+        int changedSamples = 0;
+        int samples = 0;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            SystemClock.sleep(Math.min(SCROLL_DRIFT_SAMPLE_MS,
+                    Math.max(1L, deadline - SystemClock.elapsedRealtime())));
+            ProgressSnapshot next = readProgressSnapshot(activity);
+            samples++;
+            if(baseline != null && !baseline.isNull() && next != null && !next.isNull()) {
+                int pageDelta = Math.abs(next.page - baseline.page);
+                int offsetDelta = comparableOffsetDelta(baseline, next);
+                maxPageDelta = Math.max(maxPageDelta, pageDelta);
+                maxOffsetDelta = Math.max(maxOffsetDelta, offsetDelta);
+                boolean changed = baseline.hasScrollOffset() && next.hasScrollOffset()
+                        ? offsetDelta > SCROLL_POST_STOP_DRIFT_TOLERANCE_PX
+                        : pageDelta != 0 || offsetDelta > SCROLL_POST_STOP_DRIFT_TOLERANCE_PX;
+                if(changed)
+                    changedSamples++;
+            }
+            last = next;
+        }
+        return new DriftSample(baseline, last, maxPageDelta, maxOffsetDelta, changedSamples, samples);
+    }
+
     private static void assertNoBackwardScrollJump(String label, ProgressSnapshot before,
                                                    ProgressSnapshot after) {
         if(before == null || after == null || before.isNull() || after.isNull())
             return;
-        boolean backwardPage = after.page < before.page;
-        boolean backwardOffset = after.page == before.page
+        boolean backwardPage = before.hasScrollOffset() && after.hasScrollOffset()
+                ? after.scrollOffset < before.scrollOffset - SCROLL_BACKWARD_JUMP_TOLERANCE_PX
+                : after.page < before.page;
+        boolean backwardOffset = before.hasScrollOffset() && after.hasScrollOffset()
+                ? false
+                : after.page == before.page
                 && after.offset > before.offset + SCROLL_BACKWARD_JUMP_TOLERANCE_PX;
         assertTrue(label
                         + " before=" + before
@@ -1028,7 +1311,15 @@ public class NtkRandomStressInstrumentedTest {
         if(before == null || after == null || before.isNull() || after.isNull())
             return;
         int pageDelta = Math.abs(after.page - before.page);
-        int offsetDelta = Math.abs(after.offset - before.offset);
+        int offsetDelta = comparableOffsetDelta(before, after);
+        if(before.hasScrollOffset() && after.hasScrollOffset()) {
+            assertTrue(label
+                            + " before=" + before
+                            + " after=" + after
+                            + " scrollDelta=" + offsetDelta,
+                    offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX);
+            return;
+        }
         boolean samePageSmallMove = pageDelta == 0 && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX;
         boolean adjacentEdgeMove = pageDelta == 1 && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX;
         assertTrue(label
@@ -1039,23 +1330,119 @@ public class NtkRandomStressInstrumentedTest {
                 samePageSmallMove || adjacentEdgeMove);
     }
 
+    private static void assertNoPostStopDrift(String label, DriftSample sample) {
+        if(sample == null || sample.baseline == null || sample.baseline.isNull())
+            return;
+        assertTrue(label + " " + sample,
+                (sample.baseline.hasScrollOffset() || sample.maxPageDelta == 0)
+                        && sample.maxOffsetDelta <= SCROLL_POST_STOP_DRIFT_TOLERANCE_PX
+                        && sample.changedSamples == 0);
+    }
+
+    private static int comparableOffsetDelta(ProgressSnapshot before, ProgressSnapshot after) {
+        if(before != null && after != null && before.hasScrollOffset() && after.hasScrollOffset())
+            return Math.abs(after.scrollOffset - before.scrollOffset);
+        if(before == null || after == null)
+            return Integer.MAX_VALUE;
+        return Math.abs(after.offset - before.offset);
+    }
+
+    private static void assertNoScrollJank(String label, ReaderSurfaceView.FrameStatsSnapshot stats,
+                                           int maxMissedFrames, int maxDroppedFrames,
+                                           boolean assertNoSchedulerGap, float renderFrameMaxMs) {
+        assertTrue(label + " missing frame stats", stats != null && stats.getSamples() > 0);
+        if(assertNoSchedulerGap) {
+            assertTrue(label + " frameStats=" + formatFrameStats(stats)
+                            + " maxMissedFrames=" + maxMissedFrames,
+                    stats.getMissedFrames() <= maxMissedFrames);
+        }
+        assertTrue(label + " frameStats=" + formatFrameStats(stats)
+                        + " maxDroppedFrames=" + maxDroppedFrames,
+                stats.getDroppedFrames() <= maxDroppedFrames
+                        && stats.getDroppedFrameDebt() <= maxDroppedFrames);
+        assertTrue(label + " frameStats=" + formatFrameStats(stats),
+                stats.getNoCanvas() == 0);
+        assertTrue(label + " frameStats=" + formatFrameStats(stats)
+                        + " renderFrameMaxMs=" + renderFrameMaxMs,
+                renderFrameMaxMs <= 0f || stats.getTotalMax() <= renderFrameMaxMs);
+    }
+
+    private static String formatFrameStats(ReaderSurfaceView.FrameStatsSnapshot stats) {
+        if(stats == null)
+            return "null";
+        return "samples=" + stats.getSamples()
+                + ";strictOverBudget=" + stats.getStrictOverBudget()
+                + ";missedIntervals=" + stats.getMissedIntervals()
+                + ";missedFrames=" + stats.getMissedFrames()
+                + ";droppedFrames=" + stats.getDroppedFrames()
+                + ";droppedFrameDebt=" + stats.getDroppedFrameDebt()
+                + ";callbackP95=" + fmt(stats.getCallbackP95())
+                + ";callbackMax=" + fmt(stats.getCallbackMax())
+                + ";drawP95=" + fmt(stats.getDrawP95())
+                + ";totalP95=" + fmt(stats.getTotalP95())
+                + ";totalMax=" + fmt(stats.getTotalMax())
+                + ";noCanvas=" + stats.getNoCanvas()
+                + ";coalesced=" + stats.getCoalesced();
+    }
+
+    private static String fmt(float value) {
+        return String.format(Locale.US, "%.2f", value);
+    }
+
+    private static final class DriftSample {
+        final ProgressSnapshot baseline;
+        final ProgressSnapshot last;
+        final int maxPageDelta;
+        final int maxOffsetDelta;
+        final int changedSamples;
+        final long samples;
+
+        DriftSample(ProgressSnapshot baseline, ProgressSnapshot last, int maxPageDelta,
+                    int maxOffsetDelta, int changedSamples, long samples) {
+            this.baseline = baseline;
+            this.last = last;
+            this.maxPageDelta = maxPageDelta;
+            this.maxOffsetDelta = maxOffsetDelta;
+            this.changedSamples = changedSamples;
+            this.samples = samples;
+        }
+
+        @Override
+        public String toString() {
+            return "baseline=" + baseline
+                    + ";last=" + last
+                    + ";maxPageDelta=" + maxPageDelta
+                    + ";maxOffsetDelta=" + maxOffsetDelta
+                    + ";changedSamples=" + changedSamples
+                    + ";samples=" + samples;
+        }
+    }
+
     private static final class ProgressSnapshot {
-        static final ProgressSnapshot NULL = new ProgressSnapshot(-1, 0);
+        static final ProgressSnapshot NULL = new ProgressSnapshot(-1, 0, Integer.MIN_VALUE);
         final int page;
         final int offset;
+        final int scrollOffset;
 
-        ProgressSnapshot(int page, int offset) {
+        ProgressSnapshot(int page, int offset, int scrollOffset) {
             this.page = page;
             this.offset = offset;
+            this.scrollOffset = scrollOffset;
         }
 
         boolean isNull() {
             return page < 0;
         }
 
+        boolean hasScrollOffset() {
+            return scrollOffset != Integer.MIN_VALUE;
+        }
+
         @Override
         public String toString() {
-            return isNull() ? "null" : page + ":" + offset;
+            if(isNull())
+                return "null";
+            return page + ":" + offset + "@" + scrollOffset;
         }
     }
 
@@ -1245,6 +1632,15 @@ public class NtkRandomStressInstrumentedTest {
         try {
             long parsed = Long.parseLong(value == null ? "" : value);
             return parsed >= 0L ? parsed : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static float parseNonNegativeFloat(String value, float fallback) {
+        try {
+            float parsed = Float.parseFloat(value == null ? "" : value);
+            return parsed >= 0f ? parsed : fallback;
         } catch (Exception ignored) {
             return fallback;
         }

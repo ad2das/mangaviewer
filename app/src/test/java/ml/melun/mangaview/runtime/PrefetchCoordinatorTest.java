@@ -23,7 +23,7 @@ public class PrefetchCoordinatorTest {
         @SuppressWarnings("unchecked")
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
 
-        assertEquals(asList(2, 1, 0, 3), targets);
+        assertEquals(asList(2, 1, 0, 5), targets);
     }
 
     @Test
@@ -36,7 +36,7 @@ public class PrefetchCoordinatorTest {
         @SuppressWarnings("unchecked")
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 3, 4);
 
-        assertEquals(asList(2, 0, 3, 4), targets);
+        assertEquals(asList(2, 0, 5), targets);
     }
 
     @Test
@@ -94,7 +94,7 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
-    public void viewerTargetsUsePreviousEpisodesOnlyAfterNextEpisodes() throws Exception {
+    public void viewerTargetsDoNotSpendWindowOnPreviousEpisodes() throws Exception {
         List<Manga> episodes = episodes(122, 121, 120, 119, 118);
         Method method = PrefetchCoordinator.class.getDeclaredMethod("viewerTargets", List.class, int.class, int.class);
         method.setAccessible(true);
@@ -102,7 +102,7 @@ public class PrefetchCoordinatorTest {
         @SuppressWarnings("unchecked")
         List<Integer> targets = (List<Integer>) method.invoke(null, episodes, 2, 4);
 
-        assertEquals(asList(1, 0, 2, 3), targets);
+        assertEquals(asList(1, 0, 4), targets);
     }
 
     @Test
