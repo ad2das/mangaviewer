@@ -198,6 +198,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastScrollInteractionMs = 0L
     private var pointerDown = false
     private var dragging = false
+    private var scrollbarDragging = false
+    private var scrollbarDragOffset = 0f
     private var scrollOffset = 0f
     private var activeScrollerOffsetShift = 0f
     private var lockedRestorePage = -1
@@ -863,6 +865,30 @@ class ReaderSurfaceView @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
+                val scrollbarRequest = synchronized(stateLock) {
+                    if (startScrollbarDragLocked(event.x, event.y)) {
+                        noteInputLocked(event)
+                        lastScrollInteractionMs = event.eventTime
+                        scroller.forceFinished(true)
+                        activeScrollerOffsetShift = 0f
+                        pointerDown = true
+                        dragging = true
+                        lastBusy = true
+                        renderRequested = true
+                        scheduleFrameLocked()
+                        stateLock.notifyAll()
+                        windowRequestLocked(true)
+                    } else {
+                        null
+                    }
+                }
+                if (scrollbarDragging) {
+                    velocityTracker?.recycle()
+                    velocityTracker = null
+                    dispatchWindowRequest(scrollbarRequest)
+                    requestRender()
+                    return true
+                }
                 velocityTracker?.recycle()
                 velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 synchronized(stateLock) {
@@ -886,6 +912,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (scrollbarDragging) {
+                    val request = synchronized(stateLock) {
+                        noteInputLocked(event)
+                        moveScrollbarDragLocked(event.y)
+                    }
+                    dispatchWindowRequest(request)
+                    requestRender()
+                    return true
+                }
                 var sampleVelocity = false
                 val request = synchronized(stateLock) {
                     val shouldSampleVelocity = event.eventTime - lastVelocitySampleMs >= MOVE_VELOCITY_SAMPLE_MS
@@ -916,6 +951,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (scrollbarDragging) {
+                    val request = synchronized(stateLock) {
+                        noteInputLocked(event)
+                        moveScrollbarDragLocked(event.y)
+                        scrollbarDragging = false
+                        pointerDown = false
+                        dragging = false
+                        pendingDragY = Float.NaN
+                        setBusyLocked(false)
+                    }
+                    dispatchWindowRequest(request)
+                    requestRender()
+                    return true
+                }
                 val tracker = velocityTracker
                 var velocityY = 0
                 var tap = false
@@ -1085,6 +1134,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (!state.empty) {
                 for (item in state.items) drawItem(canvas, state, item)
             }
+            drawScrollbar(canvas, state)
             if (state.hasDrawableContent) hasDrawnContentFrame = true
         } finally {
             Trace.endSection()
@@ -1217,6 +1267,80 @@ class ReaderSurfaceView @JvmOverloads constructor(
         paint.colorFilter = null
         paint.isDither = true
         paint.isFilterBitmap = true
+    }
+
+    private fun drawScrollbar(canvas: Canvas, state: DrawState) {
+        if (state.height <= 0 || state.contentHeight <= state.height) return
+        val thumb = scrollbarThumbRectLocked(state.scrollOffset, state.contentHeight, state.height, state.width)
+        paint.style = Paint.Style.FILL
+        paint.color = SCROLLBAR_TRACK_COLOR
+        dst.set(
+            state.width - SCROLLBAR_TRACK_WIDTH_PX,
+            0f,
+            state.width.toFloat(),
+            state.height.toFloat()
+        )
+        canvas.drawRect(dst, paint)
+        paint.color = if (scrollbarDragging) SCROLLBAR_THUMB_ACTIVE_COLOR else SCROLLBAR_THUMB_COLOR
+        canvas.drawRoundRect(thumb, SCROLLBAR_THUMB_RADIUS_PX, SCROLLBAR_THUMB_RADIUS_PX, paint)
+    }
+
+    private fun startScrollbarDragLocked(x: Float, y: Float): Boolean {
+        rebuildLayoutLocked()
+        val viewWidth = width
+        val viewHeight = height
+        val maxScroll = max(0f, contentHeight - viewHeight)
+        if (viewWidth <= 0 || viewHeight <= 0 || maxScroll <= 0f) return false
+        if (x < viewWidth - SCROLLBAR_TOUCH_WIDTH_PX) return false
+        val thumb = scrollbarThumbRectLocked(scrollOffset, contentHeight, viewHeight, viewWidth)
+        scrollbarDragging = true
+        scrollbarDragOffset = if (y in thumb.top..thumb.bottom) {
+            y - thumb.top
+        } else {
+            thumb.height() / 2f
+        }
+        moveScrollbarDragLocked(y)
+        return true
+    }
+
+    private fun moveScrollbarDragLocked(y: Float): WindowRequest? {
+        rebuildLayoutLocked()
+        val viewHeight = height
+        val viewWidth = width
+        val maxScroll = max(0f, contentHeight - viewHeight)
+        if (viewWidth <= 0 || viewHeight <= 0 || maxScroll <= 0f) return null
+        val thumbHeight = scrollbarThumbHeightLocked(contentHeight, viewHeight)
+        val trackRange = max(1f, viewHeight - thumbHeight)
+        val targetTop = (y - scrollbarDragOffset).coerceIn(0f, trackRange)
+        val nextScroll = (targetTop / trackRange) * maxScroll
+        if (abs(nextScroll - scrollOffset) <= 0.5f) return null
+        setScrollOffsetLocked(nextScroll)
+        clampScrollLocked()
+        lastScrollInteractionMs = SystemClock.uptimeMillis()
+        boundaryArmedDirection = 0
+        renderRequested = true
+        scheduleFrameLocked()
+        stateLock.notifyAll()
+        return windowRequestLocked(true)
+    }
+
+    private fun scrollbarThumbRectLocked(scroll: Float, totalContentHeight: Float, viewHeight: Int, viewWidth: Int): RectF {
+        val thumbHeight = scrollbarThumbHeightLocked(totalContentHeight, viewHeight)
+        val maxScroll = max(1f, totalContentHeight - viewHeight)
+        val trackRange = max(1f, viewHeight - thumbHeight)
+        val top = (scroll.coerceIn(0f, maxScroll) / maxScroll) * trackRange
+        return RectF(
+            viewWidth - SCROLLBAR_THUMB_WIDTH_PX,
+            top,
+            viewWidth.toFloat(),
+            top + thumbHeight
+        )
+    }
+
+    private fun scrollbarThumbHeightLocked(totalContentHeight: Float, viewHeight: Int): Float {
+        if (totalContentHeight <= 0f || viewHeight <= 0) return SCROLLBAR_MIN_THUMB_HEIGHT_PX
+        val proportional = viewHeight * (viewHeight / totalContentHeight)
+        return proportional.coerceIn(SCROLLBAR_MIN_THUMB_HEIGHT_PX, viewHeight.toFloat())
     }
 
     private fun buildDrawStateLocked(busy: Boolean = lastBusy): DrawState? {
@@ -2402,6 +2526,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val SLOW_FRAME_LOG_INTERVAL_MS = 500L
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
+        private const val SCROLLBAR_TOUCH_WIDTH_PX = 48f
+        private const val SCROLLBAR_TRACK_WIDTH_PX = 8f
+        private const val SCROLLBAR_THUMB_WIDTH_PX = 18f
+        private const val SCROLLBAR_THUMB_RADIUS_PX = 9f
+        private const val SCROLLBAR_MIN_THUMB_HEIGHT_PX = 96f
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
@@ -2426,7 +2555,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PENDING_TILES = 2
         private const val PENDING_BOUNDS = 3
         private const val PENDING_SIZE = 4
-        private val PAGE_PLACEHOLDER_COLOR = Color.WHITE
+        private const val PAGE_PLACEHOLDER_COLOR = -0x1
+        private const val SCROLLBAR_TRACK_COLOR = 0x22000000
+        private const val SCROLLBAR_THUMB_COLOR = -0x69d5d5d6
+        private const val SCROLLBAR_THUMB_ACTIVE_COLOR = -0x23e3e3e4
 
         private fun shouldAdjustScrollForChangedPageHeight(
             lastBusy: Boolean,

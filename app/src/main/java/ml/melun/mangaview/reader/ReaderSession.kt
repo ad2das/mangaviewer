@@ -1456,7 +1456,6 @@ class ReaderSession(
         val episodeName = target.name ?: title?.name ?: "회차"
         val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
         val pageRefs = pageRefsForImages(target, urls)
-        if (isNtkSource(target, target.title ?: title)) return pageRefs
         val totalPages = pageRefs.size
         return ArrayList<PageRef>(pageRefs.size + 1).apply {
             if (direction < 0) {
