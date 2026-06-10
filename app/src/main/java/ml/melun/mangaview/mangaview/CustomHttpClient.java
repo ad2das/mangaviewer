@@ -148,6 +148,7 @@ public class CustomHttpClient {
     private static final String PAGE_CACHE_PREFIX = "httpPageCacheV1_";
     private static final String NTK_DNS_CACHE_PREFIX = "ntkDnsCacheV1_";
     private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
+    private static final String GOOGLE_DOH_HOST = "dns.google";
     private static final Gson GSON = new Gson();
     private static final ConnectionPool SHARED_CONNECTION_POOL = new ConnectionPool(12, 5, TimeUnit.MINUTES);
     private static final javax.net.SocketFactory SNI_FRAGMENTING_SOCKET_FACTORY =
@@ -166,6 +167,11 @@ public class CustomHttpClient {
             return Arrays.asList(
                     address(hostname, 1, 1, 1, 1),
                     address(hostname, 1, 0, 0, 1));
+        }
+        if(GOOGLE_DOH_HOST.equalsIgnoreCase(hostname)) {
+            return Arrays.asList(
+                    address(hostname, 8, 8, 8, 8),
+                    address(hostname, 8, 8, 4, 4));
         }
         return Dns.SYSTEM.lookup(hostname);
     };
@@ -337,10 +343,21 @@ public class CustomHttpClient {
     }
 
     private static List<InetAddress> lookupNtkDohFresh(String hostname, String metricName) {
+        List<InetAddress> cloudflare = lookupNtkDohFresh(hostname, CLOUDFLARE_DOH_HOST,
+                "/dns-query", metricName, metricName + "_cloudflare");
+        if(!cloudflare.isEmpty())
+            return cloudflare;
+        return lookupNtkDohFresh(hostname, GOOGLE_DOH_HOST,
+                "/resolve", metricName, metricName + "_google");
+    }
+
+    private static List<InetAddress> lookupNtkDohFresh(String hostname, String providerHost,
+                                                       String path, String totalMetricName,
+                                                       String providerMetricName) {
         long startedAt = System.currentTimeMillis();
         Response response = null;
         try {
-            HttpUrl url = HttpUrl.get("https://" + CLOUDFLARE_DOH_HOST + "/dns-query")
+            HttpUrl url = HttpUrl.get("https://" + providerHost + path)
                     .newBuilder()
                     .addQueryParameter("name", hostname)
                     .addQueryParameter("type", "A")
@@ -362,7 +379,9 @@ public class CustomHttpClient {
         } finally {
             if(response != null)
                 response.close();
-            ViewerWarmupManager.logMetric(metricName, System.currentTimeMillis() - startedAt);
+            long elapsed = System.currentTimeMillis() - startedAt;
+            ViewerWarmupManager.logMetric(providerMetricName, elapsed);
+            ViewerWarmupManager.logMetric(totalMetricName, elapsed);
         }
     }
 
@@ -2814,7 +2833,8 @@ public class CustomHttpClient {
             if(result != null && result.error == null && result.code > 0 && body.length() > 0
                     && isCloudflareChallengeResponse(result.code, body)) {
                 markCloudflareChallenge(baseUrl + normalized);
-                if(shouldAttemptNtkRscNativeAckRecovery(true, true, normalized, fetchMode)) {
+                if(!isModernNtkGuardRoot(baseUrl)
+                        && shouldAttemptNtkRscNativeAckRecovery(true, true, normalized, fetchMode)) {
                     long ackStartedAt = System.currentTimeMillis();
                     boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, normalized);
                     Log.d(TAG, "ntk_rsc_native_ack_recover path=" + normalized
@@ -3657,6 +3677,13 @@ public class CustomHttpClient {
         boolean fastNtkPageDirect = shouldUseFastNtkPageDirect(ntkBaseUrl, url, fetchMode);
         boolean wolfWebViewFallbackAllowed = allowsWolfWebViewFallback();
         RequestGroup requestGroup = currentRequestGroup.get();
+        if(ntkBaseUrl
+                && fetchMode == FetchMode.ALLOW_SHARED_WEBVIEW
+                && requestGroup != null
+                && isModernNtkGuardRoot(baseUrl)
+                && isNtkEpisodeDocumentPath(url)) {
+            requestGroup.prioritizeWebViewFallback();
+        }
         boolean prioritizeWolfWebView = requestGroup != null
                 && requestGroup.prioritizesWebViewFallback()
                 && !ntkBaseUrl
@@ -3699,6 +3726,7 @@ public class CustomHttpClient {
             response = get(baseUrl + url, headers, fastNtkPageDirect);
         }
         if(ntkBaseUrl && NtkQuicFetcher.isAvailable()
+                && !isModernNtkGuardRoot(baseUrl)
                 && shouldAttemptNtkNativeAckPageRecovery(ntkBaseUrl, response, url, fetchMode)) {
             if(response != null) {
                 rememberCloudflareChallengeIfPresent(response, baseUrl, url);
@@ -4379,6 +4407,11 @@ public class CustomHttpClient {
         if(path.startsWith("/api/ad/"))
             return false;
         return isNtkNavigableDocumentPath(path);
+    }
+
+    private static boolean isModernNtkGuardRoot(String root) {
+        root = root == null ? "" : root.toLowerCase(Locale.ROOT);
+        return root.contains("sbxh") || root.contains("toonflix");
     }
 
     private static boolean shouldPrioritizeNtkEpisodeWebView(boolean ntkUrl, String path,
@@ -5369,12 +5402,8 @@ public class CustomHttpClient {
                     return urls;
             }
 
-            boolean nativeAckCompleted = performNtkNativeAckBypass(baseUrl, cookiePath, apiRefererPath);
-            if(!nativeAckCompleted && Thread.currentThread().isInterrupted()) {
-                Log.d(TAG, "ntk_images_api_pre_ack_interrupted_cleared path=" + path);
-                Thread.interrupted();
-                nativeAckCompleted = performNtkNativeAckBypass(baseUrl, cookiePath, apiRefererPath);
-            }
+            boolean nativeAckCompleted = false;
+            Log.d(TAG, "ntk_images_api_native_ack_skipped path=" + path);
             if(!nativeAckCompleted) {
                 Log.d(TAG, "ntk_images_api_skip_unacked path=" + path);
                 Log.d(TAG, "ntk_images_api_webview_start path=" + path);
@@ -5392,26 +5421,6 @@ public class CustomHttpClient {
                 }
                 if(Thread.currentThread().isInterrupted())
                     return urls;
-                nativeAckCompleted = performNtkNativeAckBypassFresh(baseUrl, cookiePath, apiRefererPath);
-                if(nativeAckCompleted) {
-                    String nvAfterFreshAck = getCookie("nv");
-                    if(!isNtkNvValid(nvAfterFreshAck)) {
-                        issueNtkNvCookie(baseUrl);
-                        nvAfterFreshAck = getCookie("nv");
-                    }
-                    if(isNtkNvValid(nvAfterFreshAck)) {
-                        JSONObject payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nvAfterFreshAck);
-                        NtkQuicFetcher.Result result = fetchNtkViewerImagesApi(baseUrl, endpoint, path,
-                                cookiePath, headers, payload);
-                        ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
-                        if(appendReachableNtkViewerImages(urls, result, baseUrl, path)) {
-                            cacheNtkViewerImageUrls(cacheKey, urls);
-                            return urls;
-                        }
-                        if(ntkViewerImagesCount(result) > 0)
-                            return urls;
-                    }
-                }
                 return urls;
             }
 
@@ -5813,6 +5822,11 @@ public class CustomHttpClient {
     public boolean performNtkNativeAckBypass(String baseUrl, String path, String refererPath) {
         if(baseUrl == null || path == null || baseUrl.length() == 0 || path.length() == 0)
             return false;
+        if(isModernNtkGuardRoot(baseUrl)) {
+            Log.d(TAG, "ntk_native_ack_skipped_modern_guard path=" + path);
+            syncCookiesFromWebView(baseUrl + ntkNativeAckScopePath(path), true);
+            return hasNtkAdAckCookieForPath(path);
+        }
         String ackPath = ntkNativeAckScopePath(path);
         String ackRefererPath = refererPath != null && refererPath.length() > 0 ? refererPath : path;
         String cacheKey = baseUrl + ackPath;

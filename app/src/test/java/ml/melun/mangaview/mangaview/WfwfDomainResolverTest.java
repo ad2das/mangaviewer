@@ -26,6 +26,12 @@ public class WfwfDomainResolverTest {
     }
 
     @Test
+    public void supportedNumberedUrlAcceptsCurrentNtkRoots() {
+        assertTrue(WfwfDomainResolver.isSupportedNumberedUrl("https://sbxh5.com/manhwa/"));
+        assertTrue(WfwfDomainResolver.isSupportedNumberedUrl("https://toonflix.app/manhwa/"));
+    }
+
+    @Test
     public void extractsUpdatedWolfAddressFromGuidePage() {
         String body = "<html><body>늑대닷컴 접속 주소 안내 <a href=\"https://wfwf451.com\">새로운 주소로 이동</a></body></html>";
         assertEquals("https://wfwf451.com", WfwfDomainResolver.extractUpdatedRootForTest(body));
@@ -38,8 +44,22 @@ public class WfwfDomainResolverTest {
     }
 
     @Test
+    public void extractsCurrentNtkAddressFromGuidePage() {
+        String body = "<html><body>updated <a class=\"main-btn\" href=\"https://sbxh5.com/manhwa\">go</a></body></html>";
+        assertEquals("https://sbxh5.com", WfwfDomainResolver.extractUpdatedRootForTest(body));
+    }
+
+    @Test
+    public void extractsToonflixAddressFromGuidePage() {
+        String body = "<html><body>address changed https://toonflix.app/manhwa</body></html>";
+        assertEquals("https://toonflix.app", WfwfDomainResolver.extractUpdatedRootForTest(body));
+    }
+
+    @Test
     public void guideAddressMustPointToDifferentSupportedRootBeforeVerification() {
         assertTrue(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf450.com", "https://wfwf451.com"));
+        assertTrue(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://sbxh4.com", "https://sbxh5.com"));
+        assertTrue(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://sbxh5.com", "https://toonflix.app"));
         assertFalse(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf451.com", "https://wfwf451.com"));
         assertFalse(WfwfDomainResolver.shouldAcceptUpdatedRootForTest("https://wfwf451.com", "https://example.com"));
     }

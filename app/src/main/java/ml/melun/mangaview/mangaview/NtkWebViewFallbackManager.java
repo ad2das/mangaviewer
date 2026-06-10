@@ -46,7 +46,7 @@ import org.json.JSONObject;
 final class NtkWebViewFallbackManager {
     private static final String TAG = "ViewerPerf";
     private static final long WEBVIEW_LOAD_TIMEOUT_MS = 22_000L;
-    private static final long CALLER_WAIT_TIMEOUT_MS = 30_000L;
+    private static final long CALLER_WAIT_TIMEOUT_MS = 38_000L;
     private static final long DOCUMENT_READY_WAIT_MS = 18_000L;
     private static final long HIDDEN_CHALLENGE_WAIT_MS = 2_500L;
     private static final long PRIORITY_WOLF_DOCUMENT_READY_WAIT_MS = 2_500L;
@@ -60,7 +60,7 @@ final class NtkWebViewFallbackManager {
             + "function parseUrl(u){try{return new URL(u,location.href);}catch(e){return null;}}"
             + "function ntkRootHost(){var h=(location.hostname||'').toLowerCase();return h.indexOf('www.')===0?h.slice(4):h;}"
             + "function hostMatchesRoot(h){h=String(h||'').toLowerCase();if(h.indexOf('www.')===0)h=h.slice(4);var r=ntkRootHost();return !!r&&(h===r||h.slice(-(r.length+1))==='.'+r);}"
-            + "function shouldBridge(u,m){var x=parseUrl(u);if(!x||x.protocol!=='https:')return false;if(!hostMatchesRoot(x.hostname))return false;if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;return String(m||'GET').toUpperCase()!=='GET';}"
+            + "function shouldBridge(u,m){var x=parseUrl(u);if(!x||x.protocol!=='https:')return false;if(!hostMatchesRoot(x.hostname))return false;if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;if(x.pathname==='/api/ad/ack'||x.pathname==='/api/ad/canary'||x.pathname==='/api/ad/challenge')return false;return String(m||'GET').toUpperCase()!=='GET';}"
             + "function textBase64(s){return btoa(unescape(encodeURIComponent(s||'')));}"
             + "function bodyBase64(b){try{if(b==null)return '';if(typeof b==='string')return textBase64(b);if(window.URLSearchParams&&b instanceof URLSearchParams)return textBase64(b.toString());if(window.ArrayBuffer&&b instanceof ArrayBuffer){var a=new Uint8Array(b),r='';for(var i=0;i<a.length;i++)r+=String.fromCharCode(a[i]);return btoa(r);}if(window.ArrayBuffer&&ArrayBuffer.isView&&ArrayBuffer.isView(b)){var v=new Uint8Array(b.buffer,b.byteOffset,b.byteLength),o='';for(var j=0;j<v.length;j++)o+=String.fromCharCode(v[j]);return btoa(o);}return textBase64(String(b));}catch(e){return '';}}"
             + "function bodyBase64Async(b){try{if(b&&window.Request&&b instanceof Request&&b.clone)return b.clone().arrayBuffer().then(function(a){return bodyBase64(a);});if(b&&window.Blob&&b instanceof Blob&&b.arrayBuffer)return b.arrayBuffer().then(function(a){return bodyBase64(a);});}catch(e){}return Promise.resolve(bodyBase64(b));}"
@@ -127,7 +127,8 @@ final class NtkWebViewFallbackManager {
         synchronized (lock) {
             task = inFlight.get(key);
             if(task == null) {
-                task = new FetchTask(String.valueOf(nextToken++), key, userAgent, baseUrl, path, headers,
+                task = new FetchTask(String.valueOf(nextToken++), key,
+                        webViewUserAgentForTask(userAgent, baseUrl, path), baseUrl, path, headers,
                         requestGroup, requestGroup != null && requestGroup.prioritizesWebViewFallback());
                 inFlight.put(key, task);
                 if(task.highPriority) {
@@ -592,8 +593,16 @@ final class NtkWebViewFallbackManager {
             task.startedOnMainAt = SystemClock.elapsedRealtime();
             task.requested = false;
             if(shouldNavigateDocument(task.path)) {
-                webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
                 boolean episodeDocument = isNtkEpisodeDocumentPath(task.path);
+                if(episodeDocument && task.highPriority && isModernNtkRoot(task.baseUrl)) {
+                    webView.loadDataWithBaseURL(task.baseUrl,
+                            "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"></head><body></body></html>",
+                            "text/html", "UTF-8", null);
+                    mainHandler.postDelayed(() -> runEpisodePreAckOnMain(task), 120L);
+                    mainHandler.postDelayed(() -> startEpisodeNavigationOnMain(task, "preack-timeout"), 4200L);
+                } else {
+                    startEpisodeNavigationOnMain(task, "direct");
+                }
                 mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, !episodeDocument, false), 1500L);
                 mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, !episodeDocument, episodeDocument), 4000L);
                 mainHandler.postDelayed(() -> requestDocumentHtmlOnMain(task, !episodeDocument, episodeDocument), 8000L);
@@ -608,6 +617,26 @@ final class NtkWebViewFallbackManager {
             ml.melun.mangaview.report.CrashReporter.record(e);
             finishOnMain(task, 0, "", true);
         }
+    }
+
+    private void runEpisodePreAckOnMain(FetchTask task) {
+        if(completeCancelledTaskOnMain(task, "preack"))
+            return;
+        if(task == null || task.completed || webView == null || task.navigationStarted)
+            return;
+        if(Log.isLoggable(TAG, Log.DEBUG))
+            Log.d(TAG, "ntk_webview_preack_start path=" + task.path);
+        webView.evaluateJavascript(buildEpisodePreAckScript(task.token, task.baseUrl, task.path), null);
+    }
+
+    private void startEpisodeNavigationOnMain(FetchTask task, String reason) {
+        if(completeCancelledTaskOnMain(task, "navigate"))
+            return;
+        if(task == null || task.completed || webView == null || task.navigationStarted)
+            return;
+        task.navigationStarted = true;
+        Log.d(TAG, "ntk_webview_navigate path=" + task.path + ",reason=" + reason);
+        webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
     }
 
     private void ensureWebView(String userAgent) {
@@ -650,14 +679,32 @@ final class NtkWebViewFallbackManager {
                 synchronized (lock) {
                     task = activeTask;
                 }
+                if(Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "ntk_webview_page_finished url=" + url
+                            + ",path=" + (task == null ? "" : task.path)
+                            + ",requested=" + (task != null && task.requested));
+                }
                 if(task == null || task.completed || task.requested)
                     return;
                 if(shouldNavigateDocument(task.path) && !isFinishedDocumentUrl(url, task.baseUrl, task.path))
                     return;
                 if(shouldNavigateDocument(task.path) && !isNtkEpisodeDocumentPath(task.path))
                     requestDocumentHtmlOnMain(task, true, false);
+                else if(shouldNavigateDocument(task.path) && isNtkEpisodeDocumentPath(task.path))
+                    requestDocumentHtmlOnMain(task, false, true);
                 else if(!shouldNavigateDocument(task.path))
                     view.evaluateJavascript(CustomHttpClient.buildNtkWebViewFetchScript(task.path, task.headers, task.token), null);
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request,
+                                            WebResourceResponse errorResponse) {
+                super.onReceivedHttpError(view, request, errorResponse);
+                if(request != null && request.isForMainFrame()) {
+                    Log.d(TAG, "ntk_webview_http_error url=" + request.getUrl()
+                            + ",status=" + (errorResponse == null ? 0 : errorResponse.getStatusCode())
+                            + ",reason=" + (errorResponse == null ? "" : errorResponse.getReasonPhrase()));
+                }
             }
 
             @Override
@@ -701,8 +748,14 @@ final class NtkWebViewFallbackManager {
         if(task.requested && (!episodeDocument || !immediate))
             return;
         String currentUrl = webView.getUrl();
-        if(!isFinishedDocumentUrl(currentUrl, task.baseUrl, task.path))
+        if(!isFinishedDocumentUrl(currentUrl, task.baseUrl, task.path)) {
+            if(Log.isLoggable(TAG, Log.DEBUG)) {
+                Log.d(TAG, "ntk_webview_document_skip_url path=" + task.path
+                        + ",current=" + currentUrl
+                        + ",immediate=" + immediate);
+            }
             return;
+        }
         if(stopLoading) {
             try {
                 webView.stopLoading();
@@ -713,6 +766,12 @@ final class NtkWebViewFallbackManager {
             task.requested = true;
         if(task.loadStartedAt <= 0)
             task.loadStartedAt = SystemClock.elapsedRealtime();
+        if(Log.isLoggable(TAG, Log.DEBUG)) {
+            Log.d(TAG, "ntk_webview_document_request path=" + task.path
+                    + ",immediate=" + immediate
+                    + ",stop=" + stopLoading
+                    + ",url=" + currentUrl);
+        }
         webView.evaluateJavascript(immediate
                 ? buildImmediateDocumentHtmlScript(task.token)
                 : buildDocumentHtmlScript(task.token, documentReadyWaitMs(task)), null);
@@ -1036,11 +1095,24 @@ final class NtkWebViewFallbackManager {
             return WEBVIEW_LOAD_TIMEOUT_MS;
         if(isNtkTitleDocumentPath(task.path) || isNtkSearchDocumentPath(task.path))
             return 8_000L;
+        if(task.highPriority && isNtkEpisodeDocumentPath(task.path))
+            return 32_000L;
         return webViewLoadTimeoutMs(task.highPriority, CustomHttpClient.isWolfEpisodeDocumentPath(task.path));
     }
 
     private static long webViewLoadTimeoutMs(boolean highPriority, boolean wolfDocument) {
         return highPriority && wolfDocument ? PRIORITY_WOLF_LOAD_TIMEOUT_MS : WEBVIEW_LOAD_TIMEOUT_MS;
+    }
+
+    private static boolean isModernNtkRoot(String root) {
+        root = root == null ? "" : root.toLowerCase(Locale.ROOT);
+        return root.contains("sbxh") || root.contains("toonflix");
+    }
+
+    private static String webViewUserAgentForTask(String userAgent, String baseUrl, String path) {
+        if(isModernNtkRoot(baseUrl) && isNtkEpisodeDocumentPath(path))
+            return CustomHttpClient.NTK_DESKTOP_DOCUMENT_UA;
+        return userAgent;
     }
 
     private static boolean isNtkTitleDocumentPath(String path) {
@@ -1087,6 +1159,23 @@ final class NtkWebViewFallbackManager {
                 + "function send(code,body){window.NtkBridge.onFetchResult(token,JSON.stringify({code:code,body:body||''}));}"
                 + "try{var d=document.documentElement;var b=document.body;var v=d?d.outerHTML:(b?b.innerHTML:'');send(v&&v.length>0?200:0,v||'');}"
                 + "catch(e){send(0,String(e));}})()";
+    }
+
+    private static String buildEpisodePreAckScript(String token, String baseUrl, String path) {
+        return "(async function(){var token=" + jsonQuote(token) + ",base=" + jsonQuote(baseUrl)
+                + ",scope=" + jsonQuote(path) + ";"
+                + "function done(ok,reason){try{window.NtkBridge.onPreAckDone(token,!!ok,String(reason||''));}catch(e){}}"
+                + "function abs(u){return new URL(u,base).href;}"
+                + "function pageUrl(){return abs(scope);}"
+                + "function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}"
+                + "function acked(){try{if(window.__ntk_ad_ack_scope===scope)return true;var l=window.__ntk_ad_ack_last;if(l&&l.scope===scope)return true;}catch(e){}return false;}"
+                + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),preack:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,preack:true}}));}catch(e){}}"
+                + "async function req(url,body){var r=await fetch(abs(url),{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','accept':'application/json','origin':base,'referer':pageUrl()},body:JSON.stringify(body||{})});var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
+                + "function fireImp(u){try{fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){}}"
+                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;var mod=await import(abs('/api/ad/guard-js'));if(mod&&mod.default)await mod.default(abs('/api/ad/guard-wasm'));window.__ntkGuardModule=mod;return mod;}catch(e){return null;}}"
+                + "function waitAck(ms){return new Promise(function(resolve){if(acked())return resolve(true);var done=false;function finish(v){if(done)return;done=true;clearTimeout(to);clearInterval(iv);window.removeEventListener('ntk-ad-ack-ready',ev);resolve(v);}function ev(e){if((e.detail&&e.detail.scope===scope)||acked())finish(true);}var to=setTimeout(function(){finish(acked());},ms);var iv=setInterval(function(){if(acked())finish(true);},120);window.addEventListener('ntk-ad-ack-ready',ev);});}"
+                + "async function guardAck(ch){try{var mod=await loadGuard();if(!mod||!ch)return false;var fn=mod.__i4||mod.i4||mod._i4||mod.guardAck||mod.adAck;if(!fn)return false;var tries=[ch,JSON.stringify(ch),ch.token||''];for(var i=0;i<tries.length;i++){try{var r=fn(tries[i],scope);if(r&&r.then)await r;if(await waitAck(1400))return true;}catch(e){}}return acked();}catch(e){return false;}}"
+                + "try{var c=await req('/api/ad/challenge',{path:scope});if(c&&c.status===200&&c.body&&c.body.ok){if(c.body.trusted&&!c.body.challenge){markAck();done(true,'trusted');return;}var ch=c.body.challenge;if(ch){(ch.impressionUrls||[]).forEach(fireImp);if(await guardAck(ch)){done(true,'guard');return;}var tok=ch.token||'';await sleep(180);await req('/api/ad/canary',{adAckCanary:true,challengeToken:tok,token:tok,path:scope});var a=await req('/api/ad/ack',{challengeToken:tok,total:Math.max(ch.slotCount||4,28),visible:ch.minSeen||2,path:scope,td:0,tp:''});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();done(true,'ack');return;}}}}catch(e){done(false,String(e));return;}done(acked(),acked()?'event':'miss');})()";
     }
 
     private static boolean isUnusableNtkEpisodeDocumentResult(String path, String body) {
@@ -1175,12 +1264,13 @@ final class NtkWebViewFallbackManager {
                 + "async function api(){var v=await nv();if(!v)return{status:401,body:{error:'missing session'}};var n=new Uint8Array(24);crypto.getRandomValues(n);var nonce=b64(n);var proof=await hmac(v,token+'.'+nonce+'.'+navigator.userAgent),body={workId:workId,episodeId:episodeId,token:token,nonce:nonce,proof:proof};return await bridgeReq(endpoint,'POST',body,{'x-images-client':'viewer-v1'});}"
                 + "function decode64(b){try{return decodeURIComponent(escape(atob(b||'')));}catch(e){try{return atob(b||'');}catch(_){return '';}}}"
                 + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),native:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,native:true}}));}catch(e){}}"
-                + "async function bridgeReq(url,method,body,extra){var absolute=abs(url),h={'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()};if(extra){Object.keys(extra).forEach(function(k){h[k]=extra[k];});}if(window.NtkQuicBridge){var raw=window.NtkQuicBridge.request(absolute,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(absolute,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
+                + "async function bridgeReq(url,method,body,extra){var absolute=abs(url),h={'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()};if(extra){Object.keys(extra).forEach(function(k){h[k]=extra[k];});}var adPath=false;try{adPath=(new URL(absolute)).pathname.indexOf('/api/ad/')===0;}catch(_){}if(window.NtkQuicBridge&&!adPath){var raw=window.NtkQuicBridge.request(absolute,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(absolute,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
                 + "function fireImp(u){try{fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){}}"
                 + "function guardVersion(){try{var h=document.documentElement?document.documentElement.outerHTML:'';var m=h.match(/wv=([^\"'&<>]+)/);if(m&&m[1])return decodeURIComponent(m[1]);m=h.match(/b\\d{13}[^\"'<>]*wasm-\\d{13}/);if(m&&m[0])return m[0];m=h.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(m&&m[1]){var n=Number(m[1].slice(1));if(Number.isFinite(n))return m[1]+'-wasm-'+(n+4);}if(performance&&performance.getEntriesByType){var es=performance.getEntriesByType('resource')||[];for(var i=0;i<es.length;i++){var u=String(es[i].name||''),r=u.match(/wv=([^&]+)/);if(r&&r[1])return decodeURIComponent(r[1]);r=u.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(r&&r[1]){var q=Number(r[1].slice(1));if(Number.isFinite(q))return r[1]+'-wasm-'+(q+4);}}}}catch(e){}return '';}"
-                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;var v=guardVersion();if(!v){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:'missing version'}));}catch(_){}return null;}var js='/api/ad/guard-js?v='+encodeURIComponent(v),wasm='/api/ad/guard-wasm?v='+encodeURIComponent(v);var mod=await import(abs(js));if(mod&&mod.default)await mod.default(abs(wasm));window.__ntkGuardModule=mod;return mod;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:String(e),version:guardVersion()}));}catch(_){}return null;}}"
-                + "async function guardAck(ch){try{var mod=await loadGuard();if(!mod||!mod.__i4||!ch)return false;mod.__i4(JSON.stringify(ch),scope);await waitAck(2600);return acked();}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckError:String(e)}));}catch(_){}return false;}}"
-                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok)return false;if(c.body.trusted&&!c.body.challenge){markAck();return true;}if(!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'',imps=ch.impressionUrls||[];imps.forEach(fireImp);if(await guardAck(ch))return true;await sleep(180);await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:ch.slotCount||4,visible:ch.minSeen||2,path:scope,td:0,tp:''});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
+                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;var v=guardVersion();var q=v?'?v='+encodeURIComponent(v):'';var js='/api/ad/guard-js'+q,wasm='/api/ad/guard-wasm'+q;if(!v){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadFallback:'no version'}));}catch(_){}}var mod=await import(abs(js));if(mod&&mod.default)await mod.default(abs(wasm));window.__ntkGuardModule=mod;return mod;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:String(e),version:guardVersion()}));}catch(_){}return null;}}"
+                + "async function guardAck(ch){try{var mod=await loadGuard();if(!mod||!ch){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckMissing:'module'}));}catch(_){}return false;}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardExports:Object.keys(mod).slice(0,24),hasI4:!!mod.__i4,defaultType:typeof mod.default}));}catch(_){}var fn=mod.__i4||mod.i4||mod._i4||mod.guardAck||mod.adAck;if(!fn)return false;var tries=[ch,JSON.stringify(ch),ch.token||''];for(var i=0;i<tries.length;i++){try{var r=fn(tries[i],scope);if(r&&r.then)r=await r;try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckTry:i,result:String(r||'').slice(0,80)}));}catch(_){}if(await waitAck(1200))return true;}catch(inner){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckTryError:i,error:String(inner)}));}catch(_){}}}return acked();}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckError:String(e)}));}catch(_){}return false;}}"
+                + "async function guardProof(token){try{var mod=await loadGuard();if(!mod||!mod._vc||!token)return '';var args=[token,JSON.stringify({token:token,path:scope}),scope];for(var i=0;i<args.length;i++){try{var v=mod._vc(args[i],scope);if(v&&v.then)v=await v;v=String(v||'');try{window.NtkViewerBridge.onAckState(JSON.stringify({guardProofTry:i,len:v.length,value:v.slice(0,16)}));}catch(_){}if(v&&v!=='true'&&v!=='false')return v;}catch(inner){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardProofTryError:i,error:String(inner)}));}catch(_){}}}return '';}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardProofError:String(e)}));}catch(_){}return '';}}"
+                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok)return false;if(c.body.trusted&&!c.body.challenge){markAck();return true;}if(!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'',imps=ch.impressionUrls||[];imps.forEach(fireImp);if(await guardAck(ch))return true;var tp=await guardProof(token);await sleep(180);await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:Math.max(ch.slotCount||4,28),visible:ch.minSeen||2,path:scope,td:0,tp:tp});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
                 + "function extractAckState(){try{var ls={},ss={},i,k;for(i=0;i<localStorage.length;i++){k=localStorage.key(i);if(k)ls[k]=localStorage.getItem(k);}for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i);if(k)ss[k]=sessionStorage.getItem(k);}return JSON.stringify({cookies:docCookie(),local:ls,session:ss,ackScope:(function(){try{return window.__ntk_ad_ack_scope;}catch(e){return null;}})(),ntkVars:(function(){try{var o={};for(var p in window)if(p.indexOf('__ntk')===0)try{o[p]=String(window[p]);}catch(e){}return o;}catch(e){return{};}})(),ua:navigator.userAgent,ts:Date.now()});}catch(e){return JSON.stringify({error:String(e)});}}"
                 + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,armed=false;if(!acked()){armed=true;if(!(await directAck()))rearm();}var r=await api();while(Date.now()<deadline&&r&&r.status===403){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!acked()&&!armed){armed=true;if(!(await directAck()))rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
                 + "})()";
@@ -1535,6 +1625,22 @@ final class NtkWebViewFallbackManager {
         @JavascriptInterface
         public void onFetchResult(String token, String value) {
             onBridgeResult(token, value);
+        }
+
+        @JavascriptInterface
+        public void onPreAckDone(String token, boolean ok, String reason) {
+            mainHandler.post(() -> {
+                FetchTask task;
+                synchronized (lock) {
+                    task = activeTask;
+                }
+                if(task == null || task.completed || !task.token.equals(token))
+                    return;
+                Log.d(TAG, "ntk_webview_preack_done path=" + task.path
+                        + ",ok=" + ok
+                        + ",reason=" + reason);
+                startEpisodeNavigationOnMain(task, ok ? "preack-ok" : "preack-miss");
+            });
         }
     }
 
@@ -1915,6 +2021,7 @@ final class NtkWebViewFallbackManager {
         final long enqueuedAt = SystemClock.elapsedRealtime();
         volatile boolean requested = false;
         volatile boolean completed = false;
+        volatile boolean navigationStarted = false;
         volatile int code = 0;
         volatile String body = "";
         volatile long startedOnMainAt = 0L;

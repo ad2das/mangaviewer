@@ -1166,7 +1166,7 @@ public class Manga {
                                                                     AsyncNtkPageFetch fallbackFetch,
                                                                     CustomHttpClient client,
                                                                     String path) throws Exception {
-        long deadline = System.currentTimeMillis() + 14_000L;
+        long deadline = System.currentTimeMillis() + ntkBestPageFetchWaitMs(client, path, fallbackFetch);
         CustomHttpClient.PageResponse direct = null;
         CustomHttpClient.PageResponse fallback = null;
         boolean kpPath = isNtkKpWebtoonEpisodePath(path);
@@ -1232,6 +1232,20 @@ public class Manga {
         return fallback != null ? fallback
                 : direct != null ? direct
                 : client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+    }
+
+    private static long ntkBestPageFetchWaitMs(CustomHttpClient client, String path,
+                                               AsyncNtkPageFetch fallbackFetch) {
+        if(client == null || fallbackFetch == null)
+            return 14_000L;
+        String root = "";
+        try {
+            root = String.valueOf(client.getUrl(path)).toLowerCase(Locale.ROOT);
+        } catch(Exception ignored) {
+        }
+        if(root.contains("sbxh") || root.contains("toonflix"))
+            return 30_000L;
+        return 14_000L;
     }
 
     private CustomHttpClient.PageResponse awaitFastNtkApiPageFetch(AsyncNtkPageFetch directFetch,

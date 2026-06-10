@@ -24,6 +24,9 @@ public class WfwfDomainResolver {
     private static final Pattern WFWF_PATTERN = Pattern.compile("^https?://wfwf(\\d+)\\.com(?:/cm)?/?$");
     private static final Pattern NUMBERED_DOMAIN_PATTERN = Pattern.compile("^https?://(wfwf|ntk)(\\d+)\\.com(?:/(?:cm|manhwa))?/?$");
     private static final Pattern NUMBERED_ROOT_PATTERN = Pattern.compile("https?://(?:www\\.)?(wfwf|ntk)(\\d+)\\.com", Pattern.CASE_INSENSITIVE);
+    private static final Pattern NTK_ROOT_PATTERN = Pattern.compile(
+            "https?://(?:www\\.)?(?:(?:ntk\\d+|sbxh\\d+|newto\\d+|newtoki\\d*)\\.com|toonflix\\.app)",
+            Pattern.CASE_INSENSITIVE);
     private static final int DEFAULT_NUMBER = 455;
     private static final int DEFAULT_NTK_NUMBER = 1;
     private static final int FORWARD_SCAN_LIMIT = 300;
@@ -83,7 +86,7 @@ public class WfwfDomainResolver {
     }
 
     public static boolean isSupportedNumberedUrl(String url) {
-        return parseDomain(url) != null;
+        return parseDomain(url) != null || normalizeKnownNtkRoot(url) != null;
     }
 
     public static String toRoot(String url) {
@@ -243,7 +246,12 @@ public class WfwfDomainResolver {
         if(updatedRoot == null)
             return null;
         String root = toRoot(updatedRoot);
-        return root.length() == 0 || !isSupportedNumberedUrl(root) ? null : root;
+        if(root.length() == 0)
+            return null;
+        String ntkRoot = normalizeKnownNtkRoot(root);
+        if(ntkRoot != null)
+            return ntkRoot;
+        return parseDomain(root) == null ? null : root;
     }
 
     private static ProbeResult probe(OkHttpClient client, String url, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
@@ -327,15 +335,35 @@ public class WfwfDomainResolver {
             if(directMatcher.find())
                 return "https://" + directMatcher.group(1).toLowerCase(Locale.ROOT)
                         + directMatcher.group(2) + ".com";
+            Matcher ntkDirectMatcher = NTK_ROOT_PATTERN.matcher(body);
+            if(ntkDirectMatcher.find())
+                return normalizeKnownNtkRoot(ntkDirectMatcher.group());
         }
         if(!lower.contains("주소") && !lower.contains("address") && !lower.contains("새로운") && !lower.contains("updated"))
             return null;
         Matcher matcher = NUMBERED_ROOT_PATTERN.matcher(body);
-        if(!matcher.find())
+        if(matcher.find()) {
+            String prefix = matcher.group(1).toLowerCase(Locale.ROOT);
+            String digits = matcher.group(2);
+            return "https://" + prefix + digits + ".com";
+        }
+        Matcher ntkMatcher = NTK_ROOT_PATTERN.matcher(body);
+        if(ntkMatcher.find())
+            return normalizeKnownNtkRoot(ntkMatcher.group());
+        return null;
+    }
+
+    private static String normalizeKnownNtkRoot(String url) {
+        if(url == null)
             return null;
-        String prefix = matcher.group(1).toLowerCase(Locale.ROOT);
-        String digits = matcher.group(2);
-        return "https://" + prefix + digits + ".com";
+        String root = toRoot(url);
+        if(root.length() == 0)
+            return null;
+        String lower = root.toLowerCase(Locale.ROOT);
+        Matcher matcher = NTK_ROOT_PATTERN.matcher(lower);
+        if(!matcher.matches())
+            return null;
+        return matcher.group().replace("://www.", "://");
     }
 
     private static boolean looksLikeWfwf(String body) {
