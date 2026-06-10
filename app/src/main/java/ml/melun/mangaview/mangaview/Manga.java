@@ -538,8 +538,7 @@ public class Manga {
             final boolean kpApiDirectOnlyEpisode = isNtkKpWebtoonEpisodePath(path)
                     && !nativeAckMode
                     && !apiFallbackMode;
-            if(isNtkGeneratedModeOverride()
-                    && !nativeAckMode
+            if(!nativeAckMode
                     && !apiFallbackMode
                     && shouldProbeGeneratedModeBeforeApi(path, getNtkImageCount())
                     && addNtkGeneratedPathImageCandidates(client, path, seenImages,
