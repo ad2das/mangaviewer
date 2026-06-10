@@ -1415,6 +1415,11 @@ public class CustomHttpClient {
 
     public void clearAllWebViewData() {
         try {
+            NtkWebViewFallbackManager.get(context).cancelAll();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
             CookieManager.getInstance().removeAllCookies(null);
             CookieManager.getInstance().flush();
         } catch (Exception e) {
@@ -1434,6 +1439,18 @@ public class CustomHttpClient {
         }
         try {
             clearPageCache();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("cfClearanceValue")
+                    .remove("cfClearanceExpireAt")
+                    .remove("ntkAccessVerifiedAt")
+                    .remove("httpUserAgent")
+                    .remove("httpCookies")
+                    .apply();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }

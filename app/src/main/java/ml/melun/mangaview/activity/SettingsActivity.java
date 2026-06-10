@@ -381,10 +381,42 @@ public class SettingsActivity extends AppCompatActivity {
 
     private String generateRandomUserAgent() {
         String[] models = {"SM-G981B","SM-S928N","SM-G998N","SM-F946N","SM-X910","SM-A546N","SM-N986N","SM-M546B","SM-G975N","SM-N971N","SM-A736B"};
-        int chrome = 130 + (int)(Math.random() * 35);
-        int android = 14 + (int)(Math.random() * 5);
         String model = models[(int)(Math.random() * models.length)];
-        return "Mozilla/5.0 (Linux; Android " + android + "; " + model + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chrome + ".0.0.0 Mobile Safari/537.36";
+        try {
+            android.webkit.WebView webView = new android.webkit.WebView(context);
+            String defaultUA = webView.getSettings().getUserAgentString();
+            webView.destroy();
+            if(defaultUA != null && defaultUA.length() > 0) {
+                String cleaned = defaultUA
+                        .replace("; wv", "")
+                        .replace(" wv", "")
+                        .replace("Version/4.0 ", "");
+                // Replace the device model part (between "Android X; " and ")")
+                int androidIdx = cleaned.indexOf("Android ");
+                int modelEnd = cleaned.indexOf(")", androidIdx);
+                if(androidIdx >= 0 && modelEnd > androidIdx) {
+                    int modelStart = cleaned.lastIndexOf(";", modelEnd);
+                    if(modelStart > androidIdx) {
+                        return cleaned.substring(0, modelStart + 2) + model + cleaned.substring(modelEnd);
+                    }
+                }
+                return cleaned;
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        // Fallback to generated UA matching actual WebView version
+        try {
+            android.webkit.WebView webView = new android.webkit.WebView(context);
+            String defaultUA = webView.getSettings().getUserAgentString();
+            webView.destroy();
+            if(defaultUA != null && defaultUA.length() > 0) {
+                return defaultUA.replace("; wv", "").replace(" wv", "").replace("Version/4.0 ", "");
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        return "Mozilla/5.0 (Linux; Android 13; " + model + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
     }
 
     private void updateSiteToggleText() {
