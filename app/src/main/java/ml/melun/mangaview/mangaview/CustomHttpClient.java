@@ -9,6 +9,8 @@ import android.net.http.QuicOptions;
 import android.util.Base64;
 import android.util.Log;
 import android.webkit.CookieManager;
+import android.webkit.WebStorage;
+import android.webkit.WebViewDatabase;
 
 import com.google.gson.Gson;
 import org.json.JSONArray;
@@ -1409,6 +1411,32 @@ public class CustomHttpClient {
         }
         invalidateCookieHeaderCache();
         persistCookies();
+    }
+
+    public void clearAllWebViewData() {
+        try {
+            CookieManager.getInstance().removeAllCookies(null);
+            CookieManager.getInstance().flush();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
+            WebStorage.getInstance().deleteAllData();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
+            WebViewDatabase db = WebViewDatabase.getInstance(context);
+            db.clearHttpAuthUsernamePassword();
+            db.clearFormData();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
+            clearPageCache();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
     }
 
     public void syncCookiesFromWebView(String url){

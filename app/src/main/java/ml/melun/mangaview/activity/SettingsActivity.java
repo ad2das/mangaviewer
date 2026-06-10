@@ -102,6 +102,30 @@ public class SettingsActivity extends AppCompatActivity {
 //                p.setHomeDir("/sdcard");
 //            }
 //        });
+        this.findViewById(R.id.setting_change_device).setOnClickListener(v -> {
+            DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
+                switch (which) {
+                    case DialogInterface.BUTTON_POSITIVE:
+                        String newAgent = generateRandomUserAgent();
+                        getHttpClient().setUserAgent(newAgent);
+                        getHttpClient().resetCookie();
+                        getHttpClient().clearAllWebViewData();
+                        Toast.makeText(context, "기기정보가 변경되었습니다. 앱을 재시작하면 적용됩니다.", Toast.LENGTH_LONG).show();
+                        setResult(RESULT_NEED_RESTART);
+                        break;
+                    case DialogInterface.BUTTON_NEGATIVE:
+                        break;
+                }
+            };
+            AlertDialog.Builder builder;
+            if(dark) builder = new AlertDialog.Builder(context, R.style.darkDialog);
+            else builder = new AlertDialog.Builder(context);
+            builder.setMessage("기기정보를 변경하면 서버 차단이 해제될 수 있습니다.\nWebView 쿠키/캐시/저장 데이터도 모두 삭제됩니다.\n계속 하시겠습니까?")
+                    .setPositiveButton("네", dialogClickListener)
+                    .setNegativeButton("아니오", dialogClickListener)
+                    .show();
+        });
+
         s_resetHistory = this.findViewById(R.id.setting_reset);
         s_resetHistory.setOnClickListener(v -> {
             DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
@@ -353,6 +377,14 @@ public class SettingsActivity extends AppCompatActivity {
 
     private int dp(int value) {
         return SettingsScreenStyler.dp(this, value);
+    }
+
+    private String generateRandomUserAgent() {
+        String[] models = {"SM-G981B","SM-S928N","SM-G998N","SM-F946N","SM-X910","SM-A546N","SM-N986N","SM-M546B","SM-G975N","SM-N971N","SM-A736B"};
+        int chrome = 130 + (int)(Math.random() * 35);
+        int android = 14 + (int)(Math.random() * 5);
+        String model = models[(int)(Math.random() * models.length)];
+        return "Mozilla/5.0 (Linux; Android " + android + "; " + model + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chrome + ".0.0.0 Mobile Safari/537.36";
     }
 
     private void updateSiteToggleText() {
