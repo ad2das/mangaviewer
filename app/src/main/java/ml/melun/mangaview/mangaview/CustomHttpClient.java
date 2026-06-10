@@ -85,6 +85,7 @@ import okhttp3.ResponseBody;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.activity.NtkQuicFetcher;
 import ml.melun.mangaview.MainApplication;
+import ml.melun.mangaview.NtkDeviceIdentityManager;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.runtime.PerfTrace;
 
@@ -1182,10 +1183,18 @@ public class CustomHttpClient {
     }
 
     public void markNtkHardBlock(String url) {
+        markNtkHardBlock(url, null);
+    }
+
+    public void markNtkHardBlock(String url, String body) {
         if(url == null || url.length() == 0)
             url = getWebtoonUrl();
         lastNtkHardBlockUrl = url;
         lastNtkHardBlockAt = System.currentTimeMillis();
+        if(NtkDeviceIdentityManager.isTrash0607Block(body)) {
+            Log.d(TAG, "ntk_trash0607_device_change url=" + url);
+            NtkDeviceIdentityManager.changeDeviceInfo(context, false);
+        }
         markCloudflareChallenge(url);
     }
 
@@ -2918,7 +2927,7 @@ public class CustomHttpClient {
                     + ",error=" + (result == null ? "" : result.error));
             if(result != null && result.error == null
                     && isNtkHardBlockedResponse(normalized, result.code, body)) {
-                markNtkHardBlock(baseUrl + normalized);
+                markNtkHardBlock(baseUrl + normalized, body);
                 return new PageResponse(result.code, body, false);
             }
             if(result != null && result.error == null && result.code > 0 && body.length() > 0
@@ -3083,7 +3092,7 @@ public class CustomHttpClient {
                 + ",ms=" + (System.currentTimeMillis() - startedAt)
                 + ",error=" + (error == null ? "" : error.getClass().getSimpleName()));
         if(isNtkHardBlockedResponse(normalized, code, body)) {
-            markNtkHardBlock(baseUrl + normalized);
+            markNtkHardBlock(baseUrl + normalized, body);
             throw new Exception("NTK hard block: " + normalized + " code=" + code);
         }
         if(isCloudflareChallenge(code, body)) {
@@ -3262,7 +3271,7 @@ public class CustomHttpClient {
             throw new Exception(code == 403 ? "Cloudflare challenge" : "Cloudflare/server error");
         }
         if(isNtk() && isNtkHardBlockedResponse(normalized, code, body)) {
-            markNtkHardBlock(getBaseUrl(normalized) + normalized);
+            markNtkHardBlock(getBaseUrl(normalized) + normalized, body);
             throw new Exception("NTK hard block: " + normalized + " code=" + code);
         }
         if(isNtk())
@@ -3310,6 +3319,8 @@ public class CustomHttpClient {
         if(!isNtkWebViewFetchPath(path) && !isNtkApiPath(path) && !isNtkSearchPath(path))
             return false;
         String lower = body.toLowerCase(Locale.ROOT);
+        if(NtkDeviceIdentityManager.isTrash0607Block(lower))
+            return true;
         return lower.contains("<title>403 forbidden</title>")
                 && lower.contains("<h1>403 forbidden</h1>")
                 && lower.contains("nginx/");
@@ -5493,8 +5504,13 @@ public class CustomHttpClient {
                     return urls;
             }
 
-            boolean nativeAckCompleted = false;
-            Log.d(TAG, "ntk_images_api_native_ack_skipped path=" + path);
+            long ackStartedAt = System.currentTimeMillis();
+            boolean nativeAckCompleted = hasNtkAdAckCookieForPath(cookiePath);
+            if(!nativeAckCompleted)
+                nativeAckCompleted = performNtkNativeAckBypassFresh(baseUrl, cookiePath, apiRefererPath);
+            Log.d(TAG, "ntk_images_api_native_ack path=" + path
+                    + ",success=" + nativeAckCompleted
+                    + ",ms=" + (System.currentTimeMillis() - ackStartedAt));
             if(!nativeAckCompleted) {
                 Log.d(TAG, "ntk_images_api_skip_unacked path=" + path);
                 Log.d(TAG, "ntk_images_api_webview_start path=" + path);

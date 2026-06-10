@@ -60,6 +60,8 @@ public class NtkFirstScreenSmokeInstrumentedTest {
         }
         boolean scrollProbe = arguments != null && Boolean.parseBoolean(arguments.getString("ntkScroll", "false"));
         int scrollSteps = arguments == null ? 6 : parsePositiveInt(arguments.getString("ntkScrollSteps", "6"), 6);
+        long firstDrawableTimeoutMs = arguments == null ? 15000L
+                : parseLong(arguments.getString("ntkFirstDrawableTimeoutMs", "15000"), 15000L);
         int randomRuns = arguments == null ? 0 : parsePositiveInt(arguments.getString("ntkRandomRuns", "0"), 0);
         boolean realModesOnly = arguments != null && Boolean.parseBoolean(arguments.getString("ntkRealModesOnly", "false"));
         long randomSeed = arguments == null ? SystemClock.elapsedRealtime()
@@ -74,14 +76,15 @@ public class NtkFirstScreenSmokeInstrumentedTest {
                     parseBaseMode(arguments.getString("ntkBaseMode", "webtoon")),
                     customPath,
                     parsePositiveInt(arguments.getString("ntkImageCount", "0"), 0));
-            runCase(context, device, custom, scrollProbe, scrollSteps);
+            runCase(context, device, custom, scrollProbe, scrollSteps, firstDrawableTimeoutMs);
             return;
         }
         List<Case> cases = allCases();
         if(realModesOnly && requestedCase.length() == 0)
             cases = realModeCases(cases);
         if(randomRuns > 0 && requestedCase.length() == 0) {
-            runRandomCases(context, device, cases, randomRuns, randomSeed, scrollProbe, scrollSteps);
+            runRandomCases(context, device, cases, randomRuns, randomSeed, scrollProbe, scrollSteps,
+                    firstDrawableTimeoutMs);
             return;
         }
         boolean ranCase = false;
@@ -89,14 +92,14 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             if(requestedCase.length() > 0 && !requestedCase.equals(sample.name))
                 continue;
             ranCase = true;
-            runCase(context, device, sample, scrollProbe, scrollSteps);
+            runCase(context, device, sample, scrollProbe, scrollSteps, firstDrawableTimeoutMs);
         }
         assertTrue("No NTK smoke case matched " + requestedCase, ranCase);
     }
 
     private static void runRandomCases(Context context, UiDevice device, List<Case> cases,
                                        int randomRuns, long randomSeed,
-                                       boolean scrollProbe, int scrollSteps) {
+                                       boolean scrollProbe, int scrollSteps, long firstDrawableTimeoutMs) {
         assertTrue("No NTK smoke cases configured", cases != null && cases.size() > 0);
         Random random = new Random(randomSeed);
         Log.d(TAG, "ntk_random_start runs=" + randomRuns
@@ -112,7 +115,7 @@ public class NtkFirstScreenSmokeInstrumentedTest {
                     + ",name=" + sample.name
                     + ",mode=" + sample.mode
                     + ",path=" + sample.path);
-            runCase(context, device, sample, scrollProbe, scrollSteps);
+            runCase(context, device, sample, scrollProbe, scrollSteps, firstDrawableTimeoutMs);
         }
     }
 
@@ -152,7 +155,7 @@ public class NtkFirstScreenSmokeInstrumentedTest {
     }
 
     private static void runCase(Context context, UiDevice device, Case sample,
-                                boolean scrollProbe, int scrollSteps) {
+                                boolean scrollProbe, int scrollSteps, long firstDrawableTimeoutMs) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
         try {
@@ -163,7 +166,7 @@ public class NtkFirstScreenSmokeInstrumentedTest {
             Manga.setNtkViewerFetchModeOverrideForTest(sample.mode);
             activity = InstrumentationRegistry.getInstrumentation()
                     .startActivitySync(viewerIntent(context, sample));
-            boolean ready = waitForDrawableReady(activity, device, 15000L);
+            boolean ready = waitForDrawableReady(activity, device, firstDrawableTimeoutMs);
             long elapsed = SystemClock.elapsedRealtime() - startedAt;
             Log.d(TAG, "ntk_first_screen_case name=" + sample.name
                     + ",mode=" + sample.mode

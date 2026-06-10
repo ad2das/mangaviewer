@@ -108,6 +108,7 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean ntkCaptchaRetryAfterVerifiedAttempted = false;
     boolean destroyed = false;
     boolean compatibleCacheLookupInFlight = false;
+    boolean captchaCacheLookupInFlight = false;
     boolean pendingLoadErrorAfterCacheLookup = false;
     Runnable ntkEpisodeLoadWatchdogRunnable;
     Runnable episodeRefreshRunnable;
@@ -798,6 +799,8 @@ public class EpisodeActivity extends AppCompatActivity {
                     + " titleUrl=" + (title == null ? null : title.getUrl()));
             if(retryNtkEpisodeLoadAfterRecentCaptcha())
                 return;
+            if(handleCaptchaWithCacheFallback())
+                return;
             if(p != null && p.isNtkSite())
                 openNtkCaptchaDirect();
             else
@@ -1154,6 +1157,42 @@ public class EpisodeActivity extends AppCompatActivity {
                 }
             });
         });
+    }
+
+    private boolean handleCaptchaWithCacheFallback() {
+        if(hasRenderedEpisodes())
+            return true;
+        if(showCachedEpisodesFromMemory())
+            return true;
+        if(title == null || captchaCacheLookupInFlight)
+            return false;
+        captchaCacheLookupInFlight = true;
+        Context appContext = getApplicationContext();
+        Title target = title;
+        String stableName = originalTitleName;
+        String cacheKey = episodeCacheKey();
+        AppDispatchers.submitIo(() -> {
+            EpisodeCachedEpisodes exact = readCachedEpisodes(appContext, cacheKey);
+            EpisodeCompatibleCachedEpisodes compatible = exact == null
+                    ? findCompatibleCachedEpisodes(appContext, target, stableName)
+                    : null;
+            AppDispatchers.runOnMain(() -> {
+                captchaCacheLookupInFlight = false;
+                if(!isUiAlive())
+                    return;
+                if(showCachedEpisodes(exact))
+                    return;
+                if(applyCompatibleCachedEpisodes(compatible))
+                    return;
+                if(hasRenderedEpisodes())
+                    return;
+                if(p != null && p.isNtkSite())
+                    openNtkCaptchaDirect();
+                else
+                    showCaptchaPopup(title == null ? "" : title.getUrl(), context, RESULT_CAPTCHA, p);
+            });
+        });
+        return true;
     }
 
     private boolean applyCompatibleCachedEpisodes(EpisodeCompatibleCachedEpisodes compatible) {

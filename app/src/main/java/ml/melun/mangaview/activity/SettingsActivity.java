@@ -35,6 +35,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import ml.melun.mangaview.Preference;
+import ml.melun.mangaview.NtkDeviceIdentityManager;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.interfaces.StringCallback;
@@ -106,10 +107,7 @@ public class SettingsActivity extends AppCompatActivity {
             DialogInterface.OnClickListener dialogClickListener = (dialog, which) -> {
                 switch (which) {
                     case DialogInterface.BUTTON_POSITIVE:
-                        String newAgent = generateRandomUserAgent();
-                        getHttpClient().setUserAgent(newAgent);
-                        getHttpClient().resetCookie();
-                        getHttpClient().clearAllWebViewData();
+                        NtkDeviceIdentityManager.changeDeviceInfo(context, false);
                         Toast.makeText(context, "기기정보가 변경되었습니다. 앱을 재시작합니다.", Toast.LENGTH_LONG).show();
                         restartAppAfterDeviceChange();
                         break;

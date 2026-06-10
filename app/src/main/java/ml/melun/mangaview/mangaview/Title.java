@@ -226,9 +226,6 @@ public class Title extends MTitle {
                             + ",path=" + titlePath);
                     return LOAD_OK;
                 }
-                if(client != null && client.hasRecentCloudflareChallenge()
-                        && shouldOpenNtkCaptchaForLoadFailure(client))
-                    return LOAD_CAPTCHA;
                 if(isNonNumericNtkTitlePath(titlePath)) {
                     boolean shouldRefresh = shouldRefreshNtkTitlePathAfterMissing(client, titlePath);
                     Log.d(TAG, "ntk_episode_slug_refresh_check id=" + id

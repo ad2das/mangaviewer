@@ -657,6 +657,8 @@ public class CustomHttpClientTest {
                 "/manhwa/37043/1816201", 403, nginx403));
         assertTrue(CustomHttpClient.isNtkHardBlockedResponseForTest(
                 "/api/manhwa-list?page=1", 403, nginx403));
+        assertTrue(CustomHttpClient.isNtkHardBlockedResponseForTest(
+                "/webtoon/840540/1546170", 403, "<html><body>trash0607</body></html>"));
         assertFalse(CustomHttpClient.isNtkHardBlockedResponseForTest(
                 "/manhwa", 403, nginx403));
         assertFalse(CustomHttpClient.isNtkHardBlockedResponseForTest(

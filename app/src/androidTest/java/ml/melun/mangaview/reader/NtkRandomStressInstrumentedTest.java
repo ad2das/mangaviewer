@@ -139,6 +139,7 @@ public class NtkRandomStressInstrumentedTest {
         }
         String targetEpisodePath = arg(args, "ntkTargetEpisodePath", "").trim();
         String targetTitlePath = arg(args, "ntkTargetTitlePath", "").trim();
+        int targetEpisodeNumber = parseNonNegativeInt(arg(args, "ntkTargetEpisodeNumber", "0"), 0);
         String fixedMode = arg(args, "ntkMode", "").trim();
 
         Log.d(TAG, "ntk_true_random_start runs=" + runs
@@ -160,8 +161,9 @@ public class NtkRandomStressInstrumentedTest {
                 + ",fixedMode=" + fixedMode
                 + ",safeNetwork=" + safeNetwork
                 + ",modeOffset=" + modeOffset);
-        if(targetEpisodePath.length() > 0) {
-            TargetEpisode target = loadTargetEpisode(client, targetTitlePath, targetEpisodePath, fixedBaseMode);
+        if(targetEpisodePath.length() > 0 || targetEpisodeNumber > 0) {
+            TargetEpisode target = loadTargetEpisode(context, client, targetTitlePath, targetEpisodePath,
+                    targetEpisodeNumber, fixedBaseMode);
             for(int run = 0; run < runs; run++) {
                 String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
                 runReaderCase(context, device, run, mode, target.title, target.episode,
@@ -694,10 +696,12 @@ public class NtkRandomStressInstrumentedTest {
         return cycleModes ? MODES[(modeOffset + run) % MODES.length] : MODES[random.nextInt(MODES.length)];
     }
 
-    private static TargetEpisode loadTargetEpisode(CustomHttpClient client, String titlePath,
-                                                   String episodePath, int fixedBaseMode) {
+    private static TargetEpisode loadTargetEpisode(Context context, CustomHttpClient client, String titlePath,
+                                                   String episodePath, int targetEpisodeNumber,
+                                                   int fixedBaseMode) {
         String normalizedEpisodePath = normalizeTargetPath(episodePath);
-        int baseMode = fixedBaseMode > 0 ? fixedBaseMode : baseModeForTargetPath(normalizedEpisodePath);
+        int baseMode = fixedBaseMode > 0 ? fixedBaseMode : baseModeForTargetPath(
+                normalizedEpisodePath.length() > 0 ? normalizedEpisodePath : titlePath);
         MainApplication.p.setBaseMode(baseMode);
         String resolvedTitlePath = normalizeTargetPath(titlePath);
         if(resolvedTitlePath.length() == 0)
@@ -707,9 +711,28 @@ public class NtkRandomStressInstrumentedTest {
         title.setSourceSite("ntk");
         title.setPath(resolvedTitlePath);
         int result = title.fetchEps(client);
+        if(result == Title.LOAD_CAPTCHA || result == Title.LOAD_ERROR && client.hasRecentCloudflareChallenge()) {
+            ensureNtkAccessAfterChallenge(context, client, baseMode);
+            result = title.fetchEps(client);
+        }
         assertTrue("Expected NTK target title episodes result=" + result
                         + " titlePath=" + resolvedTitlePath,
                 result == Title.LOAD_OK && title.getEps() != null && title.getEps().size() > 0);
+        if(targetEpisodeNumber > 0 && normalizedEpisodePath.length() == 0) {
+            for(Manga episode : title.getEps()) {
+                if(episode != null && episodeNumber(episode.getName()) == targetEpisodeNumber) {
+                    Log.d(TAG, "ntk_true_random_target_number number=" + targetEpisodeNumber
+                            + ",path=" + episode.getNtkEpisodePath()
+                            + ",titlePath=" + resolvedTitlePath
+                            + ",episodes=" + title.getEps().size()
+                            + ",name=" + episode.getName());
+                    return new TargetEpisode(title, episode);
+                }
+            }
+            throw new AssertionError("Target episode number not found number=" + targetEpisodeNumber
+                    + " titlePath=" + resolvedTitlePath
+                    + " episodes=" + episodeSample(title.getEps()));
+        }
         for(Manga episode : title.getEps()) {
             if(episode != null && normalizedEpisodePath.equals(episode.getNtkEpisodePath())) {
                 Log.d(TAG, "ntk_true_random_target path=" + normalizedEpisodePath
@@ -722,6 +745,31 @@ public class NtkRandomStressInstrumentedTest {
         throw new AssertionError("Target episode not found titlePath=" + resolvedTitlePath
                 + " episodePath=" + normalizedEpisodePath
                 + " episodes=" + title.getEps().size());
+    }
+
+    private static int episodeNumber(String name) {
+        if(name == null)
+            return -1;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)").matcher(name);
+        if(!matcher.find())
+            return -1;
+        return parsePositiveInt(matcher.group(1), -1);
+    }
+
+    private static String episodeSample(List<Manga> episodes) {
+        if(episodes == null || episodes.size() == 0)
+            return "[]";
+        StringBuilder builder = new StringBuilder("[");
+        int count = Math.min(episodes.size(), 20);
+        for(int i = 0; i < count; i++) {
+            Manga episode = episodes.get(i);
+            if(i > 0)
+                builder.append(", ");
+            builder.append(episode == null ? "null" : episode.getName() + "=" + episode.getNtkEpisodePath());
+        }
+        if(episodes.size() > count)
+            builder.append(", ...");
+        return builder.append(']').toString();
     }
 
     private static String normalizeTargetPath(String path) {
@@ -805,7 +853,10 @@ public class NtkRandomStressInstrumentedTest {
                     + ",hasPrevious=" + (previousEpisode != null));
             activity = InstrumentationRegistry.getInstrumentation()
                     .startActivitySync(viewerIntent(context, title, episode));
-            boolean ready = waitForDrawableReady(activity, device, 16000L);
+            long firstDrawableWaitMs = firstDrawableMaxMs > 0L
+                    ? Math.max(1500L, firstDrawableMaxMs + 1000L)
+                    : 16000L;
+            boolean ready = waitForDrawableReady(activity, device, firstDrawableWaitMs);
             long observedFirstMs = SystemClock.elapsedRealtime() - startedAt;
             long appFirstMs = readFirstDrawableElapsedMs(activity);
             long firstMs = appFirstMs >= 0L ? appFirstMs : observedFirstMs;

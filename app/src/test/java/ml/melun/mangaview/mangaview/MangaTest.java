@@ -428,6 +428,31 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkFullHtmlImagesWinOverTokenOnlyDirectPage() {
+        String direct = "1:\"$Sreact.fragment\" {\"imagesToken\":\"token\","
+                + "\"imageMetas\":[{\"page\":1}],\"episodePath\":\"/webtoon/840540/1546169\"}";
+        String fallback = "<html><body><div class=\"vw-imgs\">"
+                + "<img alt=\"page 1\" src=\"https://i.toonflix.app/board_uploads/2026/05/15/p001.png\">"
+                + "<img alt=\"page 2\" src=\"https://i.toonflix.app/board_uploads/2026/05/15/p002.png\">"
+                + "<img alt=\"page 3\" src=\"https://i.toonflix.app/board_uploads/2026/05/15/p003.png\">"
+                + "</div></body></html>";
+
+        assertTrue(Manga.shouldPreferNtkHtmlImagePageForTest(
+                direct, fallback, "/webtoon/840540/1546169"));
+    }
+
+    @Test
+    public void ntkBoardUploadAdsDoNotWinOverTokenOnlyDirectPage() {
+        String direct = "1:\"$Sreact.fragment\" {\"imagesToken\":\"token\","
+                + "\"imageMetas\":[{\"page\":1}],\"episodePath\":\"/webtoon/840540/1546169\"}";
+        String fallback = "<html><body><img alt=\"banner\" "
+                + "src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\"></body></html>";
+
+        assertFalse(Manga.shouldPreferNtkHtmlImagePageForTest(
+                direct, fallback, "/webtoon/840540/1546169"));
+    }
+
+    @Test
     public void ntkViewerImageApiPrefersTokenEpisodeOverViewPingEpisode() {
         assertEquals("1542544", Manga.ntkViewerApiImageEpisodeIdForTest(
                 "1542544", "", "1542544", "140318"));
