@@ -962,7 +962,18 @@ public class Manga {
                 boolean apiAttempted = false;
                 if(allowGeneratedImages && !generatedCandidatesChecked)
                     addNtkViewerMetaImageCandidates(client, page.body, path, seenImages);
-                if(apiFirstNtkEpisode && !confirmedEmptyViewerPayload) {
+                if(apiFirstNtkEpisode
+                        && !confirmedEmptyViewerPayload
+                        && !generatedCandidatesChecked
+                        && !skipGeneratedForSlugEpisode
+                        && !apiFirstCanonicalWebtoonEpisode
+                        && addNtkGeneratedPathImageCandidates(client, path, seenImages,
+                        ntkGeneratedImageCandidateCount(), true)) {
+                    generatedCandidatesChecked = true;
+                    logNtkViewerParse("generated-before-api-empty-page", page, path,
+                            pageImages.size(), fallbackBoardImages.size());
+                }
+                if(apiFirstNtkEpisode && !confirmedEmptyViewerPayload && imgs.size() == 0) {
                     apiAttempted = true;
                     addNtkApiViewerImageCandidates(client, page.body, path, seenImages, false);
                 }
