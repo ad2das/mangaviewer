@@ -110,8 +110,11 @@ public class SettingsActivity extends AppCompatActivity {
                         getHttpClient().setUserAgent(newAgent);
                         getHttpClient().resetCookie();
                         getHttpClient().clearAllWebViewData();
-                        Toast.makeText(context, "기기정보가 변경되었습니다. 앱을 재시작하면 적용됩니다.", Toast.LENGTH_LONG).show();
-                        setResult(RESULT_NEED_RESTART);
+                        Toast.makeText(context, "기기정보가 변경되었습니다. 2초 후 앱이 재시작됩니다.", Toast.LENGTH_LONG).show();
+                        new android.os.Handler().postDelayed(() -> {
+                            android.os.Process.killProcess(android.os.Process.myPid());
+                            System.exit(0);
+                        }, 2000);
                         break;
                     case DialogInterface.BUTTON_NEGATIVE:
                         break;

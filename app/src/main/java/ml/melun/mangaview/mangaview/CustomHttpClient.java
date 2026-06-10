@@ -1478,11 +1478,7 @@ public class CustomHttpClient {
         try {
             context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
                     .edit()
-                    .remove("cfClearanceValue")
-                    .remove("cfClearanceExpireAt")
-                    .remove("ntkAccessVerifiedAt")
-                    .remove("httpUserAgent")
-                    .remove("httpCookies")
+                    .clear()
                     .apply();
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
