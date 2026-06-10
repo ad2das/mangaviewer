@@ -813,7 +813,11 @@ public class Preference {
             host = host.toLowerCase(Locale.ROOT);
             if(host.startsWith("www."))
                 host = host.substring(4);
-            return "ntk01.com".equals(host) || "sbxh1.com".equals(host);
+            if("ntk01.com".equals(host))
+                return true;
+            if(host.matches("sbxh[1-4]\\.com"))
+                return true;
+            return false;
         } catch (Exception e) {
             return false;
         }

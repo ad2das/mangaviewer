@@ -887,8 +887,8 @@ public class CustomHttpClientTest {
     public void ntkDiagnosticInterpretsClosedSniRouteAsTunnelRequired() {
         String report = "active_site: ntk\n"
                 + "network: cellular,validated=true,internet=true\n"
-                + "system_dns_sbxh4.com: ok 104.21.48.220,172.67.156.176\n"
-                + "app_dns_sbxh4.com: ok 104.21.48.220,172.67.156.176\n"
+                + "system_dns_sbxh5.com: ok 104.21.48.220,172.67.156.176\n"
+                + "app_dns_sbxh5.com: ok 104.21.48.220,172.67.156.176\n"
                 + "ntk_quic_sni: code=0,ms=102,error=NetworkExceptionWrapper(net::ERR_CONNECTION_CLOSED, ErrorCode=5, InternalErrorCode=-100)\n"
                 + "ntk_api_direct: fail 501ms SocketException(Connection reset)";
 
@@ -902,7 +902,7 @@ public class CustomHttpClientTest {
     public void ntkDiagnosticKeepsCaptchaInterpretationWhenChallengeIsReached() {
         String report = "active_site: ntk\n"
                 + "network: cellular+vpn,validated=true,internet=true\n"
-                + "app_dns_sbxh4.com: ok 104.21.48.220,172.67.156.176\n"
+                + "app_dns_sbxh5.com: ok 104.21.48.220,172.67.156.176\n"
                 + "ntk_quic_sni: code=403,ms=110,body_len=2048,challenge=true,error=\n"
                 + "ntk_api_direct: code=403,ms=130,body_len=2048,challenge=true";
 
