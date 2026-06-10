@@ -110,11 +110,8 @@ public class SettingsActivity extends AppCompatActivity {
                         getHttpClient().setUserAgent(newAgent);
                         getHttpClient().resetCookie();
                         getHttpClient().clearAllWebViewData();
-                        Toast.makeText(context, "기기정보가 변경되었습니다. 2초 후 앱이 재시작됩니다.", Toast.LENGTH_LONG).show();
-                        new android.os.Handler().postDelayed(() -> {
-                            android.os.Process.killProcess(android.os.Process.myPid());
-                            System.exit(0);
-                        }, 2000);
+                        Toast.makeText(context, "기기정보가 변경되었습니다. 앱을 재시작합니다.", Toast.LENGTH_LONG).show();
+                        restartAppAfterDeviceChange();
                         break;
                     case DialogInterface.BUTTON_NEGATIVE:
                         break;
@@ -376,6 +373,23 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void styleSettingsScreen() {
         SettingsScreenStyler.style(this, dark);
+    }
+
+    private void restartAppAfterDeviceChange() {
+        View content = findViewById(android.R.id.content);
+        Runnable restart = () -> {
+            Intent intent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+            if(intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                startActivity(intent);
+            }
+            finishAffinity();
+            android.os.Process.killProcess(android.os.Process.myPid());
+        };
+        if(content != null)
+            content.postDelayed(restart, 900L);
+        else
+            new android.os.Handler().postDelayed(restart, 900L);
     }
 
     private int dp(int value) {
