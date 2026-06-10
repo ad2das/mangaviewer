@@ -1416,6 +1416,7 @@ public class CustomHttpClient {
     public void clearAllWebViewData() {
         try {
             NtkWebViewFallbackManager.get(context).cancelAll();
+            NtkWebViewFallbackManager.instanceRef = null;
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -1438,7 +1439,39 @@ public class CustomHttpClient {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         try {
+            android.webkit.WebView webView = new android.webkit.WebView(context);
+            webView.clearCache(true);
+            webView.clearHistory();
+            webView.destroy();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
             clearPageCache();
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
+            context.deleteDatabase("webview.db");
+            context.deleteDatabase("webviewCache.db");
+            context.deleteDatabase("Web Data");
+            context.deleteDatabase("Cookies");
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
+            java.io.File appWebView = new java.io.File(context.getDataDir(), "app_webview");
+            if(appWebView.exists() && appWebView.isDirectory()) {
+                deleteDir(appWebView);
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        try {
+            java.io.File httpCache = new java.io.File(context.getCacheDir(), "http");
+            if(httpCache.exists() && httpCache.isDirectory()) {
+                deleteDir(httpCache);
+            }
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
@@ -1454,6 +1487,19 @@ public class CustomHttpClient {
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private static void deleteDir(java.io.File dir) {
+        java.io.File[] files = dir.listFiles();
+        if(files != null) {
+            for(java.io.File file : files) {
+                if(file.isDirectory())
+                    deleteDir(file);
+                else
+                    file.delete();
+            }
+        }
+        dir.delete();
     }
 
     public void syncCookiesFromWebView(String url){

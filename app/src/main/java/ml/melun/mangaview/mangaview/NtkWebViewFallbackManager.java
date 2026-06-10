@@ -75,7 +75,7 @@ final class NtkWebViewFallbackManager {
             + "function rearmAck(reason){try{var p=location.pathname||'';if(/^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(p))window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{reason:reason,scope:p}}));}catch(e){}}"
             + "var rearmCount=0,rearmTimer=setInterval(function(){rearmAck('native-bridge-ready');if(++rearmCount>=10)clearInterval(rearmTimer);},250);setTimeout(function(){rearmAck('native-bridge-ready');},0);"
             + "})();";
-    private static WeakReference<NtkWebViewFallbackManager> instanceRef;
+    static WeakReference<NtkWebViewFallbackManager> instanceRef;
     private static final Map<String, CachedViewerImages> VIEWER_IMAGE_API_CACHE = new ConcurrentHashMap<>();
 
     private final Object lock = new Object();
