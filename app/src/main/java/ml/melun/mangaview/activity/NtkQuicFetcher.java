@@ -16,6 +16,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -27,6 +28,22 @@ import java.util.concurrent.TimeUnit;
 @TargetApi(34)
 public final class NtkQuicFetcher {
     private NtkQuicFetcher() {
+    }
+
+    public interface PartialTextObserver {
+        void onPartialText(String text);
+    }
+
+    public interface EarlyTextObserver {
+        boolean onPartialText(int code, Map<String, List<String>> headers, String text);
+    }
+
+    public interface ResponseStartedObserver {
+        void onResponseStarted(int code, Map<String, List<String>> headers);
+    }
+
+    public interface PartialBytesObserver {
+        boolean onPartialBytes(int code, Map<String, List<String>> headers, byte[] bytes);
     }
 
     public static boolean isAvailable() {
@@ -44,19 +61,45 @@ public final class NtkQuicFetcher {
 
     public static Result fetch(Context context, String url, String userAgent, String cookieHeader,
                         Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs) {
+        return fetch(context, url, userAgent, cookieHeader, requestHeaders, method, body, timeoutMs, null);
+    }
+
+    public static Result fetch(Context context, String url, String userAgent, String cookieHeader,
+                        Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs,
+                        PartialTextObserver partialTextObserver) {
         return fetchWithTransport(context, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, true);
+                method, body, timeoutMs, true, partialTextObserver);
     }
 
     public static Result fetchHttp2Only(Context context, String url, String userAgent, String cookieHeader,
                         Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs) {
         return fetchWithTransport(context, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, false);
+                method, body, timeoutMs, false, null);
+    }
+
+    public static Session newHttp2Session(Context context, String userAgent) {
+        if(!isAvailable())
+            return null;
+        try {
+            return new Session(context, userAgent, false, null);
+        } catch (Throwable throwable) {
+            return null;
+        }
+    }
+
+    public static Session newQuicSession(Context context, String userAgent, String host) {
+        if(!isAvailable())
+            return null;
+        try {
+            return new Session(context, userAgent, true, host);
+        } catch (Throwable throwable) {
+            return null;
+        }
     }
 
     private static Result fetchWithTransport(Context context, String url, String userAgent, String cookieHeader,
                         Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs,
-                        boolean enableQuic) {
+                        boolean enableQuic, PartialTextObserver partialTextObserver) {
         if(!isAvailable())
             return Result.error(new UnsupportedOperationException("HttpEngine requires API 34"));
         try {
@@ -93,13 +136,68 @@ public final class NtkQuicFetcher {
         }
     }
 
+    public static final class Session implements AutoCloseable {
+        private final HttpEngine engine;
+        private final ExecutorService executor;
+
+        private Session(Context context, String userAgent, boolean enableQuic, String host) {
+            HttpEngine.Builder engineBuilder = new HttpEngine.Builder(context.getApplicationContext())
+                    .setEnableHttp2(true)
+                    .setEnableQuic(enableQuic)
+                    .setEnableBrotli(true)
+                    .setUserAgent(userAgent);
+            if(enableQuic && host != null && host.length() > 0) {
+                engineBuilder.setQuicOptions(new QuicOptions.Builder()
+                                .addAllowedQuicHost(host)
+                                .setHandshakeUserAgent(userAgent)
+                                .build())
+                        .addQuicHint(host, 443, 443);
+            }
+            engine = engineBuilder.build();
+            executor = Executors.newSingleThreadExecutor();
+        }
+
+        public Result fetch(String url, String userAgent, String cookieHeader,
+                            Map<String, String> requestHeaders, String method, byte[] body,
+                            long timeoutMs) {
+            try {
+                return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                        method, body, timeoutMs);
+            } catch (Throwable throwable) {
+                return Result.error(throwable);
+            }
+        }
+
+        @Override
+        public void close() {
+            try {
+                engine.shutdown();
+            } catch (Throwable ignored) {
+            }
+            executor.shutdown();
+            try {
+                executor.awaitTermination(2_500, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     public static Result fetchWithEngine(HttpEngine engine, String url, String userAgent,
                                           String cookieHeader, Map<String, String> requestHeaders,
                                           String method, byte[] body, long timeoutMs) throws InterruptedException {
+        return fetchWithEngine(engine, url, userAgent, cookieHeader, requestHeaders, method, body,
+                timeoutMs, null);
+    }
+
+    public static Result fetchWithEngine(HttpEngine engine, String url, String userAgent,
+                                          String cookieHeader, Map<String, String> requestHeaders,
+                                          String method, byte[] body, long timeoutMs,
+                                          PartialTextObserver partialTextObserver) throws InterruptedException {
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                    method, body, timeoutMs);
+                    method, body, timeoutMs, partialTextObserver);
         } finally {
             executor.shutdown();
             executor.awaitTermination(2_500, TimeUnit.MILLISECONDS);
@@ -109,10 +207,57 @@ public final class NtkQuicFetcher {
     public static Result fetchWithEngine(HttpEngine engine, ExecutorService executor, String url, String userAgent,
                                           String cookieHeader, Map<String, String> requestHeaders,
                                           String method, byte[] body, long timeoutMs) throws InterruptedException {
+        return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, null);
+    }
+
+    public static Result fetchWithEngine(HttpEngine engine, ExecutorService executor, String url, String userAgent,
+                                          String cookieHeader, Map<String, String> requestHeaders,
+                                          String method, byte[] body, long timeoutMs,
+                                          PartialTextObserver partialTextObserver) throws InterruptedException {
+        return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, partialTextObserver, null);
+    }
+
+    public static Result fetchWithEngine(HttpEngine engine, ExecutorService executor, String url, String userAgent,
+                                          String cookieHeader, Map<String, String> requestHeaders,
+                                          String method, byte[] body, long timeoutMs,
+                                          PartialTextObserver partialTextObserver,
+                                          PartialBytesObserver partialBytesObserver) throws InterruptedException {
+        return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, partialTextObserver, partialBytesObserver, null, null);
+    }
+
+    public static Result fetchWithEngineUntilText(HttpEngine engine, ExecutorService executor, String url, String userAgent,
+                                                  String cookieHeader, Map<String, String> requestHeaders,
+                                                  String method, byte[] body, long timeoutMs,
+                                                  EarlyTextObserver earlyTextObserver) throws InterruptedException {
+        return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, null, null, earlyTextObserver, null);
+    }
+
+    public static Result fetchWithEngineObserve(HttpEngine engine, ExecutorService executor, String url, String userAgent,
+                                                String cookieHeader, Map<String, String> requestHeaders,
+                                                String method, byte[] body, long timeoutMs,
+                                                EarlyTextObserver earlyTextObserver,
+                                                ResponseStartedObserver responseStartedObserver) throws InterruptedException {
+        return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, null, null, earlyTextObserver, responseStartedObserver);
+    }
+
+    private static Result fetchWithEngineInternal(HttpEngine engine, ExecutorService executor, String url, String userAgent,
+                                                  String cookieHeader, Map<String, String> requestHeaders,
+                                                  String method, byte[] body, long timeoutMs,
+                                                  PartialTextObserver partialTextObserver,
+                                                  PartialBytesObserver partialBytesObserver,
+                                                  EarlyTextObserver earlyTextObserver,
+                                                  ResponseStartedObserver responseStartedObserver) throws InterruptedException {
         CountDownLatch done = new CountDownLatch(1);
         State state = new State();
         UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
                 final ByteArrayOutputStream response = new ByteArrayOutputStream();
+                boolean notifyPartialText;
+                boolean notifyPartialBytes;
 
                 @Override
                 public void onRedirectReceived(UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
@@ -122,16 +267,59 @@ public final class NtkQuicFetcher {
                 @Override
                 public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
                     state.code = info.getHttpStatusCode();
-                    state.headers = info.getHeaders().getAsMap();
-                    request.read(ByteBuffer.allocateDirect(32 * 1024));
+                    state.headers = new HashMap<>(info.getHeaders().getAsMap());
+                    if(responseStartedObserver != null) {
+                        try {
+                            responseStartedObserver.onResponseStarted(state.code, state.headers);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    notifyPartialText = (partialTextObserver != null || earlyTextObserver != null)
+                            && Result.shouldDecodeBodyAsText(state.headers);
+                    notifyPartialBytes = partialBytesObserver != null && !Result.shouldDecodeBodyAsText(state.headers);
+                    int bufferBytes = partialTextObserver != null
+                            ? 256
+                            : (notifyPartialText || notifyPartialBytes ? 1024 : 128 * 1024);
+                    request.read(ByteBuffer.allocateDirect(bufferBytes));
                 }
 
                 @Override
                 public void onReadCompleted(UrlRequest request, UrlResponseInfo info, ByteBuffer byteBuffer) {
+                    if(state.completedEarly)
+                        return;
                     byteBuffer.flip();
                     byte[] bytes = new byte[byteBuffer.remaining()];
                     byteBuffer.get(bytes);
                     response.write(bytes, 0, bytes.length);
+                    if(notifyPartialText) {
+                        try {
+                            String text = response.toString(StandardCharsets.UTF_8.name());
+                            if(partialTextObserver != null)
+                                partialTextObserver.onPartialText(text);
+                            if(earlyTextObserver != null
+                                    && earlyTextObserver.onPartialText(state.code, state.headers, text)) {
+                                state.bodyBytes = response.toByteArray();
+                                state.completedEarly = true;
+                                done.countDown();
+                                request.cancel();
+                                return;
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if(notifyPartialBytes) {
+                        try {
+                            byte[] partial = response.toByteArray();
+                            if(partialBytesObserver.onPartialBytes(state.code, state.headers, partial)) {
+                                state.bodyBytes = partial;
+                                state.completedEarly = true;
+                                done.countDown();
+                                request.cancel();
+                                return;
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
                     byteBuffer.clear();
                     request.read(byteBuffer);
                 }
@@ -139,7 +327,7 @@ public final class NtkQuicFetcher {
                 @Override
                 public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
                     state.code = info.getHttpStatusCode();
-                    state.headers = info.getHeaders().getAsMap();
+                    state.headers = new HashMap<>(info.getHeaders().getAsMap());
                     state.bodyBytes = response.toByteArray();
                     done.countDown();
                 }
@@ -150,7 +338,7 @@ public final class NtkQuicFetcher {
                     if(info != null) {
                         try {
                             state.code = info.getHttpStatusCode();
-                            state.headers = info.getHeaders().getAsMap();
+                            state.headers = new HashMap<>(info.getHeaders().getAsMap());
                         } catch (Exception ignored) {
                         }
                     }
@@ -159,6 +347,8 @@ public final class NtkQuicFetcher {
 
                 @Override
                 public void onCanceled(UrlRequest request, UrlResponseInfo info) {
+                    if(state.completedEarly)
+                        return;
                     state.error = new InterruptedException("cancelled");
                     done.countDown();
                 }
@@ -249,13 +439,41 @@ public final class NtkQuicFetcher {
         Result(int code, byte[] bodyBytes, Map<String, List<String>> headers, Throwable error) {
             this.code = code;
             this.bodyBytes = bodyBytes == null ? new byte[0] : bodyBytes;
-            this.body = new String(this.bodyBytes, StandardCharsets.UTF_8);
             this.headers = headers;
+            this.body = shouldDecodeBodyAsText(headers)
+                    ? new String(this.bodyBytes, StandardCharsets.UTF_8)
+                    : "";
             this.error = error;
         }
 
-        static Result error(Throwable error) {
+        private static boolean shouldDecodeBodyAsText(Map<String, List<String>> headers) {
+            if(headers == null || headers.isEmpty())
+                return true;
+            for(String key : headers.keySet()) {
+                if(!"content-type".equalsIgnoreCase(key))
+                    continue;
+                List<String> values = headers.get(key);
+                if(values == null || values.isEmpty())
+                    return true;
+                String value = values.get(0);
+                if(value == null)
+                    return true;
+                String lower = value.toLowerCase(Locale.ROOT);
+                return lower.startsWith("text/")
+                        || lower.contains("json")
+                        || lower.contains("javascript")
+                        || lower.contains("xml")
+                        || lower.contains("x-component");
+            }
+            return true;
+        }
+
+        public static Result error(Throwable error) {
             return new Result(0, new byte[0], Collections.emptyMap(), error);
+        }
+
+        public static Result fromBytes(int code, byte[] bodyBytes, Map<String, List<String>> headers) {
+            return new Result(code, bodyBytes, headers == null ? Collections.emptyMap() : headers, null);
         }
 
         public boolean isUsableHtml() {
@@ -289,6 +507,7 @@ public final class NtkQuicFetcher {
         byte[] bodyBytes;
         Map<String, List<String>> headers;
         Throwable error;
+        boolean completedEarly;
     }
 
     private static final class ByteArrayUploadDataProvider extends UploadDataProvider {

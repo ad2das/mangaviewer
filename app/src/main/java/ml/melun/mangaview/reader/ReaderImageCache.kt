@@ -40,13 +40,17 @@ object ReaderImageCache {
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private const val TRIM_DEBOUNCE_MS = 30_000L
     private const val FOREGROUND_RACE_DELAY_MS = 80L
-    private const val FOREGROUND_RACE_ATTEMPTS = 2
+    private const val FOREGROUND_RACE_ATTEMPTS = 1
+    private const val FOREGROUND_STREAM_RACE_ATTEMPTS = 1
+    private const val FOREGROUND_STREAM_HANDOFF_TTL_MS = 2500L
+    private const val EARLY_NTK_IMAGE_URL_TTL_MS = 6000L
     private const val MAX_DIRECT_STREAM_DECODE_BYTES = 16L * 1024L * 1024L
     private const val MAX_DIRECT_STREAM_BITMAP_BYTES = 2L * 1024L * 1024L
     private const val DIRECT_STREAM_TILE_ASPECT_RATIO = 3.0f
     private const val DIRECT_STREAM_TILE_MIN_ESTIMATED_BYTES = 12L * 1024L * 1024L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val foregroundStreams = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
+    private val earlyNtkImageUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
     private val ntkApiFallbackImages = ConcurrentHashMap<String, List<String>>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
@@ -72,6 +76,11 @@ object ReaderImageCache {
             priority = Thread.NORM_PRIORITY
         }
     })
+
+    private data class EarlyNtkImageUrls(
+        val urls: List<String>,
+        val createdAtMs: Long
+    )
 
     class FileLease internal constructor(
         val file: File,
@@ -175,7 +184,97 @@ object ReaderImageCache {
 
     fun hasActiveFetch(manga: Manga, image: String): Boolean {
         if (!manga.isOnline) return false
-        return flights.containsKey(key(manga.baseMode, image))
+        val key = key(manga.baseMode, image)
+        return flights.containsKey(key) || foregroundStreams.containsKey(key)
+    }
+
+    fun rememberEarlyNtkImageUrls(path: String?, urls: List<String>?) {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty() || urls.isNullOrEmpty()) return
+        val trusted = urls.mapNotNull { it?.trim()?.takeIf { value -> isTrustedNtkImageUrl(value) } }
+        if (trusted.isEmpty()) return
+        earlyNtkImageUrls[key] = EarlyNtkImageUrls(Collections.unmodifiableList(ArrayList(trusted)), SystemClock.elapsedRealtime())
+        Log.d(TAG, "reader_early_ntk_urls_remember path=$key,count=${trusted.size},first=${safeImageName(trusted.firstOrNull())}")
+    }
+
+    fun earlyNtkImageUrls(path: String?, minCreatedAtMs: Long): List<String> {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return emptyList()
+        val entry = earlyNtkImageUrls[key] ?: return emptyList()
+        val ageMs = SystemClock.elapsedRealtime() - entry.createdAtMs
+        if (entry.createdAtMs < minCreatedAtMs || ageMs > EARLY_NTK_IMAGE_URL_TTL_MS) {
+            earlyNtkImageUrls.remove(key, entry)
+            return emptyList()
+        }
+        return entry.urls
+    }
+
+    fun startForegroundStreamFetch(
+        context: Context,
+        manga: Manga,
+        image: String,
+        cancellation: Cancellation? = null,
+        anchorHedge: Boolean = false
+    ): Boolean {
+        if (!manga.isOnline) return false
+        cancellation?.throwIfCancelled()
+        val appContext = context.applicationContext
+        if (cachedFile(appContext, manga, image) != null) return false
+        val key = key(manga.baseMode, image)
+        if (flights.containsKey(key)) return false
+        val startedAt = SystemClock.elapsedRealtime()
+        val task = FutureTask<ByteArray?> {
+            try {
+                val bytes = fetchForegroundBytes(
+                    appContext,
+                    manga,
+                    image,
+                    cancellation,
+                    startedAt,
+                    FOREGROUND_STREAM_RACE_ATTEMPTS,
+                    anchorHedge
+                )
+                logCacheEvent(
+                    "foreground_stream_async_done",
+                    manga,
+                    image,
+                    true,
+                    "ms=${SystemClock.elapsedRealtime() - startedAt},bytes=${bytes?.size ?: 0}"
+                )
+                ViewerWarmupManager.logMetric("reader_foreground_stream_async_done_ms", SystemClock.elapsedRealtime() - startedAt)
+                bytes
+            } catch (t: Throwable) {
+                logCacheEvent(
+                    "foreground_stream_async_error",
+                    manga,
+                    image,
+                    true,
+                    "ms=${SystemClock.elapsedRealtime() - startedAt},error=${t.javaClass.simpleName}"
+                )
+                null
+            }
+        }
+        val existing = foregroundStreams.putIfAbsent(key, task)
+        if (existing != null) {
+            logCacheEvent("foreground_stream_async_join", manga, image, true, "activeStream=true")
+            ViewerWarmupManager.logMetric("reader_foreground_stream_async_join", 1L)
+            return false
+        }
+        logCacheEvent("foreground_stream_async_start", manga, image, true, "activeStream=false")
+        ViewerWarmupManager.logMetric("reader_foreground_stream_async_start", 1L)
+        return try {
+            foregroundRaceExecutor.execute {
+                try {
+                    task.run()
+                } finally {
+                    scheduleForegroundStreamHandoffExpiry(key, task)
+                }
+            }
+            true
+        } catch (_: Exception) {
+            foregroundStreams.remove(key, task)
+            false
+        }
     }
 
     fun decodeForegroundBitmap(
@@ -185,7 +284,8 @@ object ReaderImageCache {
         targetWidth: Int,
         autoCut: Boolean,
         allowSplit: Boolean,
-        cancellation: Cancellation? = null
+        cancellation: Cancellation? = null,
+        anchorHedge: Boolean = false
     ): Bitmap? {
         if (!manga.isOnline) return null
         cancellation?.throwIfCancelled()
@@ -194,48 +294,27 @@ object ReaderImageCache {
         val key = key(manga.baseMode, image)
         val startedAt = SystemClock.elapsedRealtime()
         val task = FutureTask<ByteArray?> {
-            requestWithNtkGeneratedFallback(appContext, manga, image, foreground = true, cancellation = cancellation).use { response ->
-                val headersAt = SystemClock.elapsedRealtime()
-                if (!response.isSuccessful) return@FutureTask null
-                val body = response.body ?: return@FutureTask null
-                val contentLength = body.contentLength()
-                if (contentLength > MAX_DIRECT_STREAM_DECODE_BYTES) return@FutureTask null
-                val bytes = body.bytes()
-                if (bytes.size > MAX_DIRECT_STREAM_DECODE_BYTES) return@FutureTask null
-                val bytesAt = SystemClock.elapsedRealtime()
-                cacheForegroundBytes(appContext, manga, image, bytes)
-                ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
-                ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
-                ViewerWarmupManager.logMetric("reader_foreground_stream_bytes", if (contentLength >= 0L) contentLength else bytes.size.toLong())
-                bytes
-            }
+            fetchForegroundBytes(appContext, manga, image, cancellation, startedAt, FOREGROUND_RACE_ATTEMPTS, anchorHedge)
         }
         val existing = foregroundStreams.putIfAbsent(key, task)
         if (existing != null) {
             ViewerWarmupManager.logMetric("reader_foreground_stream_join", 1L)
-            logCacheEvent("foreground_stream_join", manga, image, true, "activeStream=true")
-            return null
+            logCacheEvent(
+                "foreground_stream_join",
+                manga,
+                image,
+                true,
+                "activeStream=${!existing.isDone},doneStream=${existing.isDone}"
+            )
+            return try {
+                decodeForegroundBytes(existing, startedAt, autoCut, allowSplit, targetWidth)
+            } finally {
+                foregroundStreams.remove(key, existing)
+            }
         }
         try {
             task.run()
-            val bytes = task.get() ?: return null
-            val bytesAt = SystemClock.elapsedRealtime()
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (shouldPreferFileDecodeAfterForegroundCache(bounds, bytes.size, autoCut)) {
-                ViewerWarmupManager.logMetric("reader_foreground_stream_file_decode_preferred", bytes.size.toLong())
-                logCacheEvent("foreground_file_decode_preferred", manga, image, true, "bytes=${bytes.size}")
-                return null
-            }
-            val decodeTargetWidth = foregroundDecodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, autoCut, allowSplit)
-            val options = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.ARGB_8888
-                inSampleSize = foregroundSampleSize(bounds.outWidth, decodeTargetWidth)
-            }
-            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
-            val decodedAt = SystemClock.elapsedRealtime()
-            ViewerWarmupManager.logMetric("reader_foreground_stream_decode_ms", decodedAt - bytesAt)
-            return bitmap
+            return decodeForegroundBytes(task, startedAt, autoCut, allowSplit, targetWidth)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             return null
@@ -244,6 +323,90 @@ object ReaderImageCache {
         } finally {
             foregroundStreams.remove(key, task)
         }
+    }
+
+    private fun scheduleForegroundStreamHandoffExpiry(key: String, task: FutureTask<ByteArray?>) {
+        foregroundRaceExecutor.execute {
+            try {
+                Thread.sleep(FOREGROUND_STREAM_HANDOFF_TTL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                foregroundStreams.remove(key, task)
+            }
+        }
+    }
+
+    private fun fetchForegroundBytes(
+        context: Context,
+        manga: Manga,
+        image: String,
+        cancellation: Cancellation?,
+        startedAt: Long,
+        raceAttempts: Int = FOREGROUND_RACE_ATTEMPTS,
+        anchorHedge: Boolean = false
+    ): ByteArray? {
+        requestWithNtkGeneratedFallback(
+            context,
+            manga,
+            image,
+            foreground = true,
+            cancellation = cancellation,
+            foregroundRaceAttempts = raceAttempts,
+            anchorHedge = anchorHedge
+        ).use { response ->
+            val headersAt = SystemClock.elapsedRealtime()
+            if (!response.isSuccessful) return null
+            val body = response.body ?: return null
+            val contentLength = body.contentLength()
+            if (contentLength > MAX_DIRECT_STREAM_DECODE_BYTES) return null
+            val bytes = body.bytes()
+            if (bytes.size > MAX_DIRECT_STREAM_DECODE_BYTES) return null
+            val bytesAt = SystemClock.elapsedRealtime()
+            val partialImage = response.header("x-mangaviewer-partial-image") == "1"
+            if (!partialImage) {
+                cacheForegroundBytes(context, manga, image, bytes)
+            }
+            ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
+            ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
+            ViewerWarmupManager.logMetric("reader_foreground_stream_bytes", if (contentLength >= 0L) contentLength else bytes.size.toLong())
+            if (partialImage) ViewerWarmupManager.logMetric("reader_foreground_stream_partial_bytes", bytes.size.toLong())
+            return bytes
+        }
+    }
+
+    private fun decodeForegroundBytes(
+        task: FutureTask<ByteArray?>,
+        startedAt: Long,
+        autoCut: Boolean,
+        allowSplit: Boolean,
+        targetWidth: Int
+    ): Bitmap? {
+        val bytes = try {
+            task.get()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        } catch (_: ExecutionException) {
+            return null
+        } ?: return null
+        val bytesAt = SystemClock.elapsedRealtime()
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (shouldPreferFileDecodeAfterForegroundCache(bounds, bytes.size, autoCut)) {
+            ViewerWarmupManager.logMetric("reader_foreground_stream_file_decode_preferred", bytes.size.toLong())
+            return null
+        }
+        val decodeTargetWidth = foregroundDecodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, autoCut, allowSplit)
+        val options = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inSampleSize = foregroundSampleSize(bounds.outWidth, decodeTargetWidth)
+        }
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+        val decodedAt = SystemClock.elapsedRealtime()
+        ViewerWarmupManager.logMetric("reader_foreground_stream_decode_ms", decodedAt - bytesAt)
+        ViewerWarmupManager.logMetric("reader_foreground_stream_total_ms", decodedAt - startedAt)
+        return bitmap
     }
 
     private fun shouldPreferFileDecodeAfterForegroundCache(
@@ -283,8 +446,15 @@ object ReaderImageCache {
     }
 
     private data class ForegroundRaceResult(
+        val attempt: ForegroundRaceAttempt,
         val call: Call,
         val response: Response
+    )
+
+    private data class ForegroundRaceAttempt(
+        val transport: String,
+        val client: okhttp3.OkHttpClient,
+        val request: Request
     )
 
     private fun foregroundDecodeTargetWidth(
@@ -324,20 +494,10 @@ object ReaderImageCache {
             return finalFile
         }
         awaitForegroundStreamFile(key, finalFile, manga, image, foreground)?.let { return it }
-        if (foreground && flights[key] != null) {
-            ViewerWarmupManager.logMetric("reader_foreground_bypass_warmup_fetch", 1L)
-            logCacheEvent("foreground_bypass", manga, image, true, "activeFlight=true")
-            return downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
-        }
         val task = FutureTask {
             downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
         }
         val existing = flights.putIfAbsent(key, task)
-        if (foreground && existing != null) {
-            ViewerWarmupManager.logMetric("reader_foreground_bypass_warmup_fetch", 1L)
-            logCacheEvent("foreground_bypass", manga, image, true, "activeFlight=true")
-            return downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
-        }
         if (existing != null) {
             logCacheEvent("flight_join", manga, image, foreground, "activeFlight=true")
             ViewerWarmupManager.logMetric("reader_image_cache_flight_join", 1L)
@@ -397,6 +557,27 @@ object ReaderImageCache {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest("$baseMode|$normalized".toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun earlyNtkPathKey(path: String?): String {
+        return path?.trim().orEmpty()
+    }
+
+    private fun isTrustedNtkImageUrl(value: String): Boolean {
+        val lower = value.lowercase()
+        if (lower.startsWith("toonflix.app/") || lower.startsWith("//toonflix.app/")) return true
+        return try {
+            val host = Uri.parse(value).host?.lowercase().orEmpty()
+            host == "toonflix.app" || host.endsWith(".toonflix.app")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun safeImageName(image: String?): String {
+        if (image.isNullOrBlank()) return ""
+        val clean = image.substringBefore('?')
+        return clean.substringAfterLast('/').takeLast(64)
     }
 
     private fun logCacheEvent(stage: String, manga: Manga, image: String, foreground: Boolean, detail: String) {
@@ -481,13 +662,21 @@ object ReaderImageCache {
         }
     }
 
-    private fun requestFor(manga: Manga, image: String, foregroundPriority: Boolean = false): Request {
+    private fun requestFor(
+        manga: Manga,
+        image: String,
+        foregroundPriority: Boolean = false,
+        anchorHedge: Boolean = false
+    ): Request {
         val requestBuilder = Request.Builder().url(Utils.viewerImageRequestUrl(image, manga.baseMode))
         for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
             requestBuilder.addHeader(entry.key, entry.value)
         }
         if (foregroundPriority) {
             requestBuilder.addHeader("X-MangaViewer-Foreground", "1")
+        }
+        if (anchorHedge) {
+            requestBuilder.addHeader("X-MangaViewer-Anchor-Hedge", "1")
         }
         return requestBuilder.build()
     }
@@ -497,12 +686,22 @@ object ReaderImageCache {
         manga: Manga,
         image: String,
         foreground: Boolean = false,
-        cancellation: Cancellation? = null
+        cancellation: Cancellation? = null,
+        foregroundRaceAttempts: Int = FOREGROUND_RACE_ATTEMPTS,
+        anchorHedge: Boolean = false
     ): okhttp3.Response {
         val foregroundApiFallbackTask: FutureTask<List<String>?>? = null
         var initialFailure: IOException? = null
         val response = try {
-            requestForForegroundMode(context, manga, image, foreground, cancellation)
+            requestForForegroundMode(
+                context,
+                manga,
+                image,
+                foreground,
+                cancellation,
+                foregroundRaceAttempts,
+                anchorHedge
+            )
         } catch (e: IOException) {
             if (!shouldTryNtkGeneratedExtensionFallback(image)) throw e
             initialFailure = e
@@ -793,10 +992,22 @@ object ReaderImageCache {
         manga: Manga,
         image: String,
         foreground: Boolean,
-        cancellation: Cancellation? = null
+        cancellation: Cancellation? = null,
+        foregroundRaceAttempts: Int = FOREGROUND_RACE_ATTEMPTS,
+        anchorHedge: Boolean = false
     ): okhttp3.Response {
         if (!foreground) return request(context, manga, image, cancellation)
-        return if (shouldRaceForegroundImage(image)) requestForegroundRace(manga, image, cancellation) else request(context, manga, image, cancellation)
+        return if (shouldRaceForegroundImage(image)) {
+            requestForegroundRace(
+                manga,
+                image,
+                cancellation,
+                foregroundRaceAttempts,
+                anchorHedge
+            )
+        } else {
+            request(context, manga, image, cancellation)
+        }
     }
 
     private fun shouldRaceForegroundImage(image: String): Boolean {
@@ -805,44 +1016,80 @@ object ReaderImageCache {
         return true
     }
 
-    private fun requestForegroundRace(manga: Manga, image: String, cancellation: Cancellation? = null): okhttp3.Response {
-        val request = requestFor(manga, image, foregroundPriority = true)
-        val client = getHttpClient().imageClient
+    private fun requestForegroundRace(
+        manga: Manga,
+        image: String,
+        cancellation: Cancellation? = null,
+        raceAttempts: Int = FOREGROUND_RACE_ATTEMPTS,
+        anchorHedge: Boolean = false
+    ): okhttp3.Response {
+        val foregroundRequest = requestFor(
+            manga,
+            image,
+            foregroundPriority = true,
+            anchorHedge = anchorHedge
+        )
+        val attempts = foregroundRaceAttempts(foregroundRequest, raceAttempts)
         val calls = Collections.synchronizedList(ArrayList<Call>())
         val completion = ExecutorCompletionService<ForegroundRaceResult>(foregroundRaceExecutor)
         val completed = AtomicBoolean(false)
-        fun submit(delayMs: Long) {
+        val startedAt = SystemClock.elapsedRealtime()
+        fun submit(attempt: ForegroundRaceAttempt, delayMs: Long) {
             completion.submit(Callable {
                 if (delayMs > 0L) Thread.sleep(delayMs)
                 cancellation?.throwIfCancelled()
                 if (completed.get()) throw IOException("Foreground image race already completed")
-                val call = client.newCall(request)
+                val call = attempt.client.newCall(attempt.request)
                 cancellation?.track(call)
                 calls.add(call)
                 try {
-                    ForegroundRaceResult(call, call.execute())
+                    ForegroundRaceResult(attempt, call, call.execute())
+                } catch (t: Throwable) {
+                    logCacheEvent(
+                        "foreground_race_call_error",
+                        manga,
+                        image,
+                        true,
+                        "transport=${attempt.transport},error=${t.javaClass.simpleName},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                    )
+                    throw t
                 } finally {
                     cancellation?.untrack(call)
                 }
             })
         }
-        repeat(FOREGROUND_RACE_ATTEMPTS) { attempt ->
-            submit(FOREGROUND_RACE_DELAY_MS * attempt)
+        attempts.forEachIndexed { index, attempt ->
+            val delayMs = if (attempts.size > 1) 0L else FOREGROUND_RACE_DELAY_MS * index
+            submit(attempt, delayMs)
         }
         var failure: Throwable? = null
-        repeat(FOREGROUND_RACE_ATTEMPTS) {
+        repeat(attempts.size) { completedIndex ->
             try {
                 val result = completion.take().get()
                 val response = result.response
                 if (response.isSuccessful) {
-                    if (it > 0) ViewerWarmupManager.logMetric("reader_foreground_image_race_won", it.toLong())
+                    if (completedIndex > 0) ViewerWarmupManager.logMetric("reader_foreground_image_race_won", completedIndex.toLong())
                     completed.set(true)
                     for (call in calls) {
                         if (call !== result.call) call.cancel()
                     }
+                    logCacheEvent(
+                        "foreground_race_win",
+                        manga,
+                        image,
+                        true,
+                        "transport=${result.attempt.transport},completed=$completedIndex,total=${attempts.size},code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                    )
                     return response
                 }
                 failure = IOException("Image request failed: ${response.code}")
+                logCacheEvent(
+                    "foreground_race_miss",
+                    manga,
+                    image,
+                    true,
+                    "transport=${result.attempt.transport},completed=$completedIndex,total=${attempts.size},code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
                 response.close()
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
@@ -856,6 +1103,14 @@ object ReaderImageCache {
         }
         for (call in calls) call.cancel()
         throw IOException("Foreground image race failed", failure)
+    }
+
+    private fun foregroundRaceAttempts(foregroundRequest: Request, raceAttempts: Int): List<ForegroundRaceAttempt> {
+        val httpClient = getHttpClient()
+        val attempts = raceAttempts.coerceIn(1, 2)
+        return List(attempts) { index ->
+            ForegroundRaceAttempt("image-${index + 1}", httpClient.imageClient, foregroundRequest)
+        }
     }
 
     private fun shouldTryNtkGeneratedExtensionFallback(image: String): Boolean {
@@ -1047,6 +1302,7 @@ object ReaderImageCache {
             || lower.contains("/thumb")
             || lower.contains("/data/member/")
         ) return false
+        if (isNtkProtectedImageUrl(sourceUrl) && !isNtkProtectedImageUrl(candidate)) return false
 
         val sourceName = fileName(sourceUrl)
         val candidateName = fileName(candidate)
@@ -1059,6 +1315,20 @@ object ReaderImageCache {
             || lower.contains("/webtoon/")
             || lower.contains("/manhwa/")
             || lower.contains("/comic/")
+    }
+
+    private fun isNtkProtectedImageUrl(url: String): Boolean {
+        val host = try {
+            Uri.parse(url).host?.lowercase().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+        if (host.isEmpty()) return false
+        if (host.contains("naver") || host.contains("pstatic")) return false
+        return host == "toonflix.app" ||
+            host.endsWith(".toonflix.app") ||
+            host.startsWith("img.") ||
+            Regex("^(www\\.)?pl\\d+\\.com$").matches(host)
     }
 
     private fun fileName(url: String): String {

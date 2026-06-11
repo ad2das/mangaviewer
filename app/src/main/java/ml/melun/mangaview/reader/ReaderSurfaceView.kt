@@ -294,7 +294,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
-    fun setPageCount(count: Int) {
+    @JvmOverloads
+    fun setPageCount(count: Int, deferInitialEmptyDraw: Boolean = false) {
         val request = synchronized(stateLock) {
             scroller.forceFinished(true)
             activeScrollerOffsetShift = 0f
@@ -313,12 +314,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastNearStart = false
             lastNearEnd = false
             hasDrawnContentFrame = false
-            deferInitialEmptyDraw = false
+            this.deferInitialEmptyDraw = deferInitialEmptyDraw
             initialViewportHoldUntilMs = 0L
             structuralScrollAdjustUntilMs = 0L
             lastVisibleCoverageSnapshot = null
             layoutDirty = true
-            renderRequested = true
+            renderRequested = !this.deferInitialEmptyDraw
             if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
             windowRequestLocked(false)
@@ -839,7 +840,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         super.onAttachedToWindow()
         synchronized(stateLock) {
             renderRunning = true
-            renderRequested = pages.isNotEmpty()
+            renderRequested = pages.isNotEmpty() && !shouldBlockInitialEmptyFrameLocked()
             if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
         }
@@ -854,10 +855,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             clampScrollLocked()
             lastAnchor = -1
-            renderRequested = pages.isNotEmpty()
+            val hasPages = pages.isNotEmpty()
+            renderRequested = hasPages && !shouldBlockInitialEmptyFrameLocked()
             if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
-            if (renderRequested) windowRequestLocked(lastBusy) else null
+            if (hasPages) windowRequestLocked(lastBusy) else null
         }
         dispatchWindowRequest(request)
     }
@@ -1634,13 +1636,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun shouldDeferInitialEmptyDrawLocked(): Boolean {
         if (!deferInitialEmptyDraw || pages.isEmpty()) return false
-        for (index in pages.indices) {
-            if (pageHasDrawableContentLocked(index)) {
-                deferInitialEmptyDraw = false
-                return false
-            }
+        if (hasAnyDrawableContentLocked()) {
+            deferInitialEmptyDraw = false
+            return false
         }
         return true
+    }
+
+    private fun shouldBlockInitialEmptyFrameLocked(): Boolean {
+        return shouldSuppressInitialEmptyRenderLocked() || shouldDeferInitialEmptyDrawLocked()
+    }
+
+    private fun hasAnyDrawableContentLocked(): Boolean {
+        for (index in pages.indices) {
+            if (pageHasDrawableContentLocked(index)) return true
+        }
+        return false
     }
 
     private fun pageHasDrawableContentLocked(index: Int): Boolean {
@@ -1651,6 +1662,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun requestRender() {
         synchronized(stateLock) {
             if (pages.isEmpty()) return
+            if (shouldBlockInitialEmptyFrameLocked()) {
+                renderRequested = false
+                stateLock.notifyAll()
+                return
+            }
             renderRequested = true
             scheduleFrameLocked(preferImmediate = pointerDown || dragging)
             stateLock.notifyAll()
@@ -1677,13 +1693,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun scheduleFrameLocked(preferImmediate: Boolean = false) {
         if (!renderRunning) return
+        if (shouldBlockInitialEmptyFrameLocked()) {
+            renderRequested = false
+            return
+        }
         if (frameScheduled) {
             statsCoalescedRequests++
             return
         }
         frameToken++
         frameScheduled = true
-        postInvalidateOnAnimation()
+        val firstDrawableFrame = !hasDrawnContentFrame && hasAnyDrawableContentLocked()
+        if (preferImmediate || firstDrawableFrame) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                invalidate()
+            } else {
+                postInvalidate()
+            }
+        } else {
+            postInvalidateOnAnimation()
+        }
     }
 
     private fun stopRenderThreadLocked(): Thread? {
@@ -2612,10 +2641,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PENDING_BOUNDS = 3
         private const val PENDING_SIZE = 4
         private const val PAGE_PLACEHOLDER_COLOR = -0x1
-        private const val SCROLLBAR_TRACK_COLOR = 0x44000000
+        private const val SCROLLBAR_TRACK_COLOR = 0x1A000000
         private const val SCROLLBAR_THUMB_COLOR = -0xf0f10
         private const val SCROLLBAR_THUMB_ACTIVE_COLOR = -0x1
-        private const val SCROLLBAR_GRIP_COLOR = 0x66000000
+        private const val SCROLLBAR_GRIP_COLOR = 0x4D000000
 
         private fun shouldAdjustScrollForChangedPageHeight(
             lastBusy: Boolean,

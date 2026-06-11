@@ -56,6 +56,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private lateinit var episodeButton: Button
     private lateinit var nextButton: Button
     private lateinit var autoCutButton: Button
+    private var readerRoot: FrameLayout? = null
+    private var toolbarAttached = false
     private var session: ReaderSession? = null
     private var pagesReady = false
     private var toolbarVisible = false
@@ -142,7 +144,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         override fun run() {
             if (destroyed || isFinishing || drawableReadyDescriptionPosted) return
             if (isVisibleViewportReady()) {
-                postDrawableReadyDescription()
+                logVisibleViewportReadyMetric()
             } else {
                 statusHandler.postDelayed(this, DRAWABLE_READY_CHECK_INTERVAL_MS)
             }
@@ -192,14 +194,80 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         toolbarTouchSlop = ViewConfiguration.get(this).scaledTouchSlop
+
+        val title = Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
+        val manga = Gson().fromJson<Manga?>(intent.getStringExtra("manga"), object : TypeToken<Manga?>() {}.type)
+        if (manga == null) {
+            releaseInitialDrawGate("no_manga")
+            finish()
+            return
+        }
+        currentManga = manga
+        currentTitle = title
+        viewerLaunchStartedAtMs = intent.getLongExtra("viewerLaunchStartedAtMs", 0L)
+        viewerLaunchSourceSite = intent.getStringExtra("viewerLaunchSourceSite")
+            ?: title?.sourceSite
+            ?: manga.title?.sourceSite
+            ?: ""
+        if (title != null) {
+            manga.title = title
+            manga.titleId = title.id
+            title.eps?.let { manga.setEps(it) }
+        }
         ReaderChromeStyler.applyReaderWindow(this)
+        if (!intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)) {
+            startCurrentNtkAckPreflight(manga)
+        } else {
+            Log.d(TAG, "reader_ntk_ack_preflight_join_existing path=${manga.ntkEpisodePath}")
+        }
         val root = FrameLayout(this)
         renderView = ReaderSurfaceView(this).also {
             it.id = R.id.strip
             it.isClickable = true
-            it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            it.contentDescription = READER_LOADING_DESCRIPTION
+            it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            it.contentDescription = null
             it.setWindowListener(this)
+        }
+        status = TextView(this).apply {
+            text = "로딩 중"
+            setTextColor(0xffcccccc.toInt())
+            textSize = 14f
+            setPadding(24, 24, 24, 24)
+            visibility = View.GONE
+        }
+        val preparedKey = intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY)
+        val startAtFirstPage = intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
+        startReaderSession(
+            manga,
+            title,
+            preparedKey,
+            startAtFirstPage
+        )
+        renderView.setPageGapPx(pageGapForBaseMode(manga.baseMode))
+        status.text = displayEpisodeTitle(manga, title)
+        root.addView(renderView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        root.addView(status, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ))
+        readerRoot = root
+        if (
+            viewerLaunchStartedAtMs > 0L &&
+            manga.isOnline
+        ) {
+            val gateTimeoutMs = if (viewerLaunchSourceSite.equals("ntk", ignoreCase = true)) {
+                NTK_INITIAL_DRAW_GATE_TIMEOUT_MS
+            } else {
+                INITIAL_DRAW_GATE_TIMEOUT_MS
+            }
+            installInitialDrawGate(root, gateTimeoutMs)
+        }
+        setContentView(root)
+        if (viewerLaunchStartedAtMs > 0L) {
+            Log.d("ViewerPerf", "reader_activity_create_from_launch source=$viewerLaunchSourceSite ms=${SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs}")
         }
         topBar = LinearLayout(this).apply {
             id = R.id.viewerToolbar
@@ -272,30 +340,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             setOnClickListener { toggleAutoCut() }
         }
         updateAutoCutButton()
-        status = TextView(this).apply {
-            text = "로딩 중"
-            setTextColor(0xffcccccc.toInt())
-            textSize = 14f
-            setPadding(24, 24, 24, 24)
-            visibility = View.GONE
-        }
-        root.addView(renderView, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        ))
-        root.addView(status, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
-        ))
+        titleView.text = displayEpisodeTitle(manga, title)
         topBar.addView(backButton, LinearLayout.LayoutParams(52.dp(), 44.dp()))
         topBar.addView(titleView, LinearLayout.LayoutParams(0, 40.dp(), 1f).apply {
             leftMargin = 8.dp()
         })
-        root.addView(topBar, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            60.dp(),
-            Gravity.TOP
-        ))
         bottomBar.addView(pageView, LinearLayout.LayoutParams(0, 44.dp(), 1f))
         bottomBar.addView(autoCutButton, LinearLayout.LayoutParams(108.dp(), 44.dp()).apply {
             rightMargin = 8.dp()
@@ -307,50 +356,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         bottomBar.addView(nextButton, LinearLayout.LayoutParams(64.dp(), 44.dp()).apply {
             leftMargin = 6.dp()
         })
-        root.addView(bottomBar, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            60.dp(),
-            Gravity.BOTTOM
-        ))
         installToolbarTouchForwarder(
             topBar,
             bottomBar,
             titleView,
             pageView
         )
-        setContentView(root)
-        val title = Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
-        val manga = Gson().fromJson<Manga?>(intent.getStringExtra("manga"), object : TypeToken<Manga?>() {}.type)
-        if (manga == null) {
-            releaseInitialDrawGate("no_manga")
-            finish()
-            return
-        }
-        currentManga = manga
-        currentTitle = title
-        viewerLaunchStartedAtMs = intent.getLongExtra("viewerLaunchStartedAtMs", 0L)
-        viewerLaunchSourceSite = intent.getStringExtra("viewerLaunchSourceSite")
-            ?: title?.sourceSite
-            ?: manga.title?.sourceSite
-            ?: ""
-        if (viewerLaunchStartedAtMs > 0L) {
-            Log.d("ViewerPerf", "reader_activity_create_from_launch source=$viewerLaunchSourceSite ms=${SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs}")
-        }
-        renderView.setPageGapPx(pageGapForBaseMode(manga.baseMode))
-        if (title != null) {
-            manga.title = title
-            manga.titleId = title.id
-            title.eps?.let { manga.setEps(it) }
-        }
-        titleView.text = displayEpisodeTitle(manga, title)
-        status.text = displayEpisodeTitle(manga, title)
-        startReaderSession(
-            manga,
-            title,
-            intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY),
-            intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
-        )
-        updateAdjacentButtons()
+        if (!shouldDeferInitialToolbarAttach()) attachToolbarIfNeeded()
         updateResultEpisode(manga)
         if (!manga.isOnline) p?.removeViewerBookmark(manga)
     }
@@ -463,7 +475,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         hideBoundaryStatus()
         pageCount = count
-        renderView.setPageCount(count)
+        renderView.setPageCount(
+            count,
+            deferInitialEmptyDraw = viewerLaunchSourceSite.equals("ntk", ignoreCase = true) &&
+                !firstDrawableMetricLogged
+        )
         updateCurrentEpisode(currentPage)
         flushPendingPageCallbacks()
     }
@@ -626,6 +642,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageCards.remove(index)
         pendingPageErrors.remove(index)
         pendingPageTiles[index] = PendingPageTiles(pageWidth, pageHeight, tiles)
+        bootstrapDeferredFirstPageTiles(index, pageWidth, pageHeight, tiles)
     }
 
     private fun rememberPendingPageCard(index: Int, title: String) {
@@ -651,6 +668,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageBitmaps.remove(index)
         Log.d(TAG, "page_ready_deferred_bootstrap index=$index count=$pageCount")
         applyPageBitmap(index, bitmap)
+    }
+
+    private fun bootstrapDeferredFirstPageTiles(
+        index: Int,
+        pageWidth: Int,
+        pageHeight: Int,
+        tiles: List<ReaderTile>
+    ) {
+        if (pagesReady || index != currentPage || tiles.isEmpty()) return
+        if (tiles.any { it.bitmap.isRecycled }) return
+        if (pageCount <= index) {
+            pageCount = index + 1
+            renderView.setPageCount(pageCount)
+        }
+        pendingPageTiles.remove(index)
+        Log.d(TAG, "page_tiles_deferred_bootstrap index=$index count=$pageCount tiles=${tiles.size}")
+        applyPageTiles(index, pageWidth, pageHeight, tiles)
     }
 
     private fun flushPendingPageCallbacks() {
@@ -720,7 +754,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.setPageError(index, message)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         logLaunchDrawableMetric(index, "error")
-        if (visibleInitialDrawable) logFirstDrawableMetric(index, "error")
         if (visibleInitialDrawable) releaseInitialDrawGate("error")
     }
 
@@ -745,6 +778,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         firstDrawableElapsedMsForTest = elapsed
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+        statusHandler.post { attachToolbarIfNeeded() }
     }
 
     private fun scheduleDrawableReadyDescription(index: Int) {
@@ -765,7 +799,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             snapshot.missingPx == 0 &&
             snapshot.placeholderPx == 0
         ) {
-            return isInitialContinuousScrollReady()
+            return true
         }
         return false
     }
@@ -787,8 +821,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun postDrawableReadyDescription() {
         if (drawableReadyDescriptionPosted) return
         drawableReadyDescriptionPosted = true
+        renderView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
         renderView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+    }
+
+    private fun logVisibleViewportReadyMetric() {
+        if (!firstDrawableMetricLogged && viewerLaunchStartedAtMs > 0L) {
+            firstDrawableMetricLogged = true
+            val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
+            firstDrawableElapsedMsForTest = elapsed
+            Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=viewport page=$currentPage ms=$elapsed")
+            statusHandler.post { attachToolbarIfNeeded() }
+        }
+        postDrawableReadyDescription()
     }
 
     private fun logLaunchDrawableMetric(index: Int, kind: String) {
@@ -1177,6 +1223,31 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         )
     }
 
+    private fun startCurrentNtkAckPreflight(manga: Manga) {
+        val path = manga.ntkEpisodePath
+        if (path.isNullOrBlank()) return
+        if (!isCurrentNtkReader()) return
+        Thread({
+            try {
+                val client = getHttpClient()
+                client.performNtkNativeAckBypass(client.getUrl(path), path)
+            } catch (e: Exception) {
+                Log.d(TAG, "reader_ntk_ack_preflight_error path=$path,$e")
+            }
+        }, "reader-ntk-ack-preflight").apply {
+            isDaemon = true
+            start()
+        }
+        Log.d(TAG, "reader_ntk_ack_preflight_start path=$path")
+    }
+
+    private fun isCurrentNtkReader(): Boolean {
+        val path = currentManga?.ntkEpisodePath
+        return viewerLaunchSourceSite.equals("ntk", ignoreCase = true) ||
+            path?.startsWith("/webtoon/") == true ||
+            path?.startsWith("/manhwa/") == true
+    }
+
     private fun startReaderSession(
         manga: Manga,
         title: Title?,
@@ -1242,7 +1313,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val next = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, true)
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
-        primeAdjacentLaunchWindow(title, next)
+        if (shouldPrimeAdjacentNow()) primeAdjacentLaunchWindow(title, next)
         prevButton.isEnabled = shouldEnableAdjacentButton(
             previous != null,
             canFetchMissingAdjacent(manga, title, previous)
@@ -1676,11 +1747,42 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun setToolbarVisible(visible: Boolean) {
+        if (visible) attachToolbarIfNeeded()
         toolbarVisible = visible
         val visibility = if (visible) View.VISIBLE else View.GONE
         topBar.visibility = visibility
         bottomBar.visibility = visibility
         renderView.setScrollbarVisible(visible)
+    }
+
+    private fun shouldDeferInitialToolbarAttach(): Boolean {
+        return isCurrentNtkReader() && !firstDrawableMetricLogged
+    }
+
+    private fun shouldPrimeAdjacentNow(): Boolean {
+        return !isCurrentNtkReader() || firstDrawableMetricLogged || toolbarAttached
+    }
+
+    private fun attachToolbarIfNeeded() {
+        if (toolbarAttached) return
+        val root = readerRoot ?: return
+        if (!::topBar.isInitialized || !::bottomBar.isInitialized) return
+        if (topBar.parent == null) {
+            root.addView(topBar, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                60.dp(),
+                Gravity.TOP
+            ))
+        }
+        if (bottomBar.parent == null) {
+            root.addView(bottomBar, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                60.dp(),
+                Gravity.BOTTOM
+            ))
+        }
+        toolbarAttached = true
+        updateAdjacentButtons()
     }
 
     private fun hideBoundaryStatus() {
@@ -1709,7 +1811,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return reveal
     }
 
-    private fun installInitialDrawGate(root: View) {
+    private fun installInitialDrawGate(root: View, timeoutMs: Long) {
         initialDrawGateOpen = false
         initialDrawGateView = root
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
@@ -1719,7 +1821,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialDrawGateListener = listener
         val observer = root.viewTreeObserver
         if (observer.isAlive) observer.addOnPreDrawListener(listener)
-        statusHandler.postDelayed(initialDrawGateTimeoutRunnable, INITIAL_DRAW_GATE_TIMEOUT_MS)
+        statusHandler.postDelayed(initialDrawGateTimeoutRunnable, timeoutMs)
     }
 
     private fun releaseInitialDrawGate(reason: String) {
@@ -1855,6 +1957,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
+        private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_MS = 5200L
         private const val READER_LOADING_DESCRIPTION = "reader-loading"
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
         private const val DRAWABLE_READY_CHECK_INTERVAL_MS = 80L
