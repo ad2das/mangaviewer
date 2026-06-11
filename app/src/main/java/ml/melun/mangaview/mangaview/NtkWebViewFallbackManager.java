@@ -10,7 +10,9 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -54,13 +56,14 @@ final class NtkWebViewFallbackManager {
     private static final long PRIORITY_NTK_VIEWER_IMAGE_GRACE_MS = 2_500L;
     private static final long VIEWER_IMAGE_CACHE_TTL_MS = 45_000L;
     private static final Object INSTANCE_LOCK = new Object();
+    private static final Object VIEWER_IMAGE_FLIGHT_LOCK = new Object();
     private static final String NTK_QUIC_BRIDGE_JS = "(function(){"
             + "if(window.__ntkViewerQuicBridgeInstalled||!window.NtkQuicBridge)return;"
             + "window.__ntkViewerQuicBridgeInstalled=1;"
             + "function parseUrl(u){try{return new URL(u,location.href);}catch(e){return null;}}"
             + "function ntkRootHost(){var h=(location.hostname||'').toLowerCase();return h.indexOf('www.')===0?h.slice(4):h;}"
             + "function hostMatchesRoot(h){h=String(h||'').toLowerCase();if(h.indexOf('www.')===0)h=h.slice(4);var r=ntkRootHost();return !!r&&(h===r||h.slice(-(r.length+1))==='.'+r);}"
-            + "function shouldBridge(u,m){var x=parseUrl(u);if(!x||x.protocol!=='https:')return false;if(!hostMatchesRoot(x.hostname))return false;if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;if(x.pathname==='/api/ad/ack'||x.pathname==='/api/ad/canary'||x.pathname==='/api/ad/challenge')return false;return String(m||'GET').toUpperCase()!=='GET';}"
+            + "function shouldBridge(u,m){var x=parseUrl(u);if(!x||x.protocol!=='https:')return false;if(!hostMatchesRoot(x.hostname))return false;if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;if(x.pathname==='/api/ad/guard-js'||x.pathname==='/api/ad/guard-wasm')return true;return String(m||'GET').toUpperCase()!=='GET';}"
             + "function textBase64(s){return btoa(unescape(encodeURIComponent(s||'')));}"
             + "function bodyBase64(b){try{if(b==null)return '';if(typeof b==='string')return textBase64(b);if(window.URLSearchParams&&b instanceof URLSearchParams)return textBase64(b.toString());if(window.ArrayBuffer&&b instanceof ArrayBuffer){var a=new Uint8Array(b),r='';for(var i=0;i<a.length;i++)r+=String.fromCharCode(a[i]);return btoa(r);}if(window.ArrayBuffer&&ArrayBuffer.isView&&ArrayBuffer.isView(b)){var v=new Uint8Array(b.buffer,b.byteOffset,b.byteLength),o='';for(var j=0;j<v.length;j++)o+=String.fromCharCode(v[j]);return btoa(o);}return textBase64(String(b));}catch(e){return '';}}"
             + "function bodyBase64Async(b){try{if(b&&window.Request&&b instanceof Request&&b.clone)return b.clone().arrayBuffer().then(function(a){return bodyBase64(a);});if(b&&window.Blob&&b instanceof Blob&&b.arrayBuffer)return b.arrayBuffer().then(function(a){return bodyBase64(a);});}catch(e){}return Promise.resolve(bodyBase64(b));}"
@@ -69,14 +72,15 @@ final class NtkWebViewFallbackManager {
             + "function noteAck(url,res,body64){try{if(String(url||'').indexOf('/api/ad/ack')<0)return;var req={},body={};try{req=JSON.parse(textFromBase64(body64)||'{}');}catch(e){}try{body=JSON.parse(textFromBase64(res&&res.bodyBase64)||'{}');}catch(e){}if((res.status||0)!==200||!(body.ok||body.acked||body.status==='ok'||body.status==='acked'))return;var p=req.path||location.pathname||'';window.__ntk_ad_ack_scope=p;window.__ntk_ad_ack_last={scope:p,ts:Date.now(),bridge:true};window.__ntk_ad_ack_tp=req.tp||'';try{window.NtkViewerBridge.onAckProof(req.tp||'');}catch(e){}window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:p,bridge:true,tp:req.tp||''}}));}catch(e){}}"
             + "function collectHeaders(input,init){var out={};try{var h=new Headers(input&&input.headers?input.headers:{});if(init&&init.headers){new Headers(init.headers).forEach(function(v,k){h.set(k,v);});}h.forEach(function(v,k){out[k]=v;});}catch(e){}return out;}"
             + "function addDefaultHeaders(h){try{if(!h['Origin']&&!h['origin'])h['Origin']=location.origin;if(!h['Referer']&&!h['referer'])h['Referer']=location.href;if(!h['Accept']&&!h['accept'])h['Accept']='*/*';}catch(e){}return h;}"
-            + "var nativeFetch=window.fetch;if(nativeFetch){window.fetch=function(input,init){var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';var method=(init&&init.method)||(input&&input.method)||'GET';if(!shouldBridge(url,method))return nativeFetch.apply(this,arguments);return new Promise(function(resolve,reject){try{var absolute=new URL(url,location.href).href;var hasInitBody=init&&Object.prototype.hasOwnProperty.call(init,'body');var bodyArg=hasInitBody?init.body:((input&&window.Request&&input instanceof Request)?input:null);bodyBase64Async(bodyArg).then(function(body64){try{var raw=window.NtkQuicBridge.request(absolute,String(method),JSON.stringify(addDefaultHeaders(collectHeaders(input,init))),body64);var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');noteAck(absolute,res,body64);resolve(new Response(bytesFromBase64(res.bodyBase64||''),{status:res.status||200,statusText:res.statusText||'OK',headers:res.headers||{}}));}catch(e){reject(e);}},reject);}catch(e){reject(e);}});};}"
+            + "var nativeFetch=window.fetch;try{if(nativeFetch&&!window.__ntkNativeFetch)window.__ntkNativeFetch=nativeFetch;}catch(e){}if(nativeFetch){window.fetch=function(input,init){var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';var method=(init&&init.method)||(input&&input.method)||'GET';if(!shouldBridge(url,method))return nativeFetch.apply(this,arguments);return new Promise(function(resolve,reject){try{var absolute=new URL(url,location.href).href;var hasInitBody=init&&Object.prototype.hasOwnProperty.call(init,'body');var bodyArg=hasInitBody?init.body:((input&&window.Request&&input instanceof Request)?input:null);bodyBase64Async(bodyArg).then(function(body64){try{var raw=window.NtkQuicBridge.request(absolute,String(method),JSON.stringify(addDefaultHeaders(collectHeaders(input,init))),body64);var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');noteAck(absolute,res,body64);resolve(new Response(bytesFromBase64(res.bodyBase64||''),{status:res.status||200,statusText:res.statusText||'OK',headers:res.headers||{}}));}catch(e){reject(e);}},reject);}catch(e){reject(e);}});};}"
             + "var xhrOpen=window.XMLHttpRequest&&XMLHttpRequest.prototype.open;var xhrSend=window.XMLHttpRequest&&XMLHttpRequest.prototype.send;var xhrSetHeader=window.XMLHttpRequest&&XMLHttpRequest.prototype.setRequestHeader;if(xhrOpen&&xhrSend){XMLHttpRequest.prototype.open=function(m,u,a,user,pw){this.__ntkq={method:m||'GET',url:u||'',headers:{}};return xhrOpen.apply(this,arguments);};XMLHttpRequest.prototype.setRequestHeader=function(k,v){if(this.__ntkq&&k)this.__ntkq.headers[String(k)]=String(v);return xhrSetHeader?xhrSetHeader.apply(this,arguments):undefined;};XMLHttpRequest.prototype.send=function(body){var meta=this.__ntkq;if(!meta||!shouldBridge(meta.url,meta.method))return xhrSend.apply(this,arguments);var xhr=this;setTimeout(function(){try{var absolute=new URL(meta.url,location.href).href,body64=bodyBase64(body);var raw=window.NtkQuicBridge.request(absolute,String(meta.method),JSON.stringify(addDefaultHeaders(meta.headers||{})),body64);var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');noteAck(absolute,res,body64);var headers=res.headers||{},headerText='';Object.keys(headers).forEach(function(k){headerText+=k+': '+headers[k]+'\\r\\n';});var arr=bytesFromBase64(res.bodyBase64||''),response=arr;if(!xhr.responseType||xhr.responseType==='text'){var bin='';for(var i=0;i<arr.length;i++)bin+=String.fromCharCode(arr[i]);response=decodeURIComponent(escape(bin));}Object.defineProperty(xhr,'readyState',{configurable:true,get:function(){return 4;}});Object.defineProperty(xhr,'status',{configurable:true,get:function(){return res.status||200;}});Object.defineProperty(xhr,'statusText',{configurable:true,get:function(){return res.statusText||'OK';}});Object.defineProperty(xhr,'response',{configurable:true,get:function(){return response;}});Object.defineProperty(xhr,'responseText',{configurable:true,get:function(){return typeof response==='string'?response:'';}});xhr.getAllResponseHeaders=function(){return headerText;};xhr.getResponseHeader=function(n){var l=String(n||'').toLowerCase();for(var k in headers){if(k.toLowerCase()===l)return headers[k];}return null;};['readystatechange','load','loadend'].forEach(function(n){var e=new Event(n);xhr.dispatchEvent(e);var cb=xhr['on'+n];if(typeof cb==='function')cb.call(xhr,e);});}catch(e){var ev=new Event('error');xhr.dispatchEvent(ev);if(typeof xhr.onerror==='function')xhr.onerror.call(xhr,ev);}},0);};}"
-            + "var nativeBeacon=navigator.sendBeacon;if(nativeBeacon){navigator.sendBeacon=function(url,data){if(!shouldBridge(url,'POST'))return nativeBeacon.apply(this,arguments);try{var absolute=new URL(url,location.href).href;bodyBase64Async(data).then(function(body64){try{var raw=window.NtkQuicBridge.request(absolute,'POST','{}',body64);noteAck(absolute,JSON.parse(raw||'{}'),body64);}catch(e){}});return true;}catch(e){return false;}};}"
+            + "var nativeBeacon=navigator.sendBeacon;try{if(nativeBeacon&&!window.__ntkNativeBeacon)window.__ntkNativeBeacon=nativeBeacon;}catch(e){}if(nativeBeacon){navigator.sendBeacon=function(url,data){if(!shouldBridge(url,'POST'))return nativeBeacon.apply(this,arguments);try{var absolute=new URL(url,location.href).href;bodyBase64Async(data).then(function(body64){try{var raw=window.NtkQuicBridge.request(absolute,'POST','{}',body64);noteAck(absolute,JSON.parse(raw||'{}'),body64);}catch(e){}});return true;}catch(e){return false;}};}"
             + "function rearmAck(reason){try{var p=location.pathname||'';if(/^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(p))window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{reason:reason,scope:p}}));}catch(e){}}"
             + "var rearmCount=0,rearmTimer=setInterval(function(){rearmAck('native-bridge-ready');if(++rearmCount>=10)clearInterval(rearmTimer);},250);setTimeout(function(){rearmAck('native-bridge-ready');},0);"
             + "})();";
     static WeakReference<NtkWebViewFallbackManager> instanceRef;
     private static final Map<String, CachedViewerImages> VIEWER_IMAGE_API_CACHE = new ConcurrentHashMap<>();
+    private static final Map<String, ViewerImageFlight> VIEWER_IMAGE_FLIGHTS = new HashMap<>();
 
     private final Object lock = new Object();
     private final Context context;
@@ -256,18 +260,76 @@ final class NtkWebViewFallbackManager {
                                            Map<String, String> headers, String kind,
                                            String workId, String episodeId, String imagesToken,
                                            String fallbackCookieHeader) {
+        return fetchViewerImageUrls(userAgent, baseUrl, path, path, headers, kind,
+                workId, episodeId, imagesToken, fallbackCookieHeader);
+    }
+
+    ArrayList<String> fetchViewerImageUrls(String userAgent, String baseUrl, String path,
+                                           String ackScopePath, Map<String, String> headers, String kind,
+                                           String workId, String episodeId, String imagesToken,
+                                           String fallbackCookieHeader) {
+        return fetchViewerImageUrls(userAgent, baseUrl, path, ackScopePath, headers, kind,
+                workId, episodeId, imagesToken, fallbackCookieHeader, null);
+    }
+
+    ArrayList<String> fetchViewerImageUrls(String userAgent, String baseUrl, String path,
+                                           String ackScopePath, Map<String, String> headers, String kind,
+                                           String workId, String episodeId, String imagesToken,
+                                           String fallbackCookieHeader, String shellHtml) {
+        ArrayList<String> cached = new ArrayList<>();
+        appendCachedViewerImageUrls(cached, kind, workId, episodeId, path);
+        if(cached.size() > 0)
+            return cached;
+        if(Looper.myLooper() == Looper.getMainLooper() || baseUrl == null || path == null
+                || kind == null || workId == null || episodeId == null || imagesToken == null)
+            return cached;
+        String flightKey = viewerImageFlightKey(baseUrl, path, kind, workId, episodeId, imagesToken);
+        ViewerImageFlight flight;
+        boolean owner = false;
+        synchronized (VIEWER_IMAGE_FLIGHT_LOCK) {
+            flight = VIEWER_IMAGE_FLIGHTS.get(flightKey);
+            if(flight == null) {
+                flight = new ViewerImageFlight(flightKey);
+                VIEWER_IMAGE_FLIGHTS.put(flightKey, flight);
+                owner = true;
+            } else {
+                flight.waiters++;
+            }
+        }
+        if(!owner)
+            return awaitViewerImageFlight(flight, kind, workId, episodeId, path);
+        try {
+            ArrayList<String> urls = fetchViewerImageUrlsUnshared(userAgent, baseUrl, path, ackScopePath,
+                    headers, kind, workId, episodeId, imagesToken, fallbackCookieHeader, shellHtml);
+            synchronized (flight) {
+                flight.urls.clear();
+                flight.urls.addAll(urls);
+            }
+            return urls;
+        } finally {
+            flight.done.countDown();
+            synchronized (VIEWER_IMAGE_FLIGHT_LOCK) {
+                if(VIEWER_IMAGE_FLIGHTS.get(flightKey) == flight)
+                    VIEWER_IMAGE_FLIGHTS.remove(flightKey);
+            }
+        }
+    }
+
+    private ArrayList<String> fetchViewerImageUrlsUnshared(String userAgent, String baseUrl, String path,
+                                                           String ackScopePath, Map<String, String> headers,
+                                                           String kind, String workId, String episodeId,
+                                                           String imagesToken, String fallbackCookieHeader,
+                                                           String shellHtml) {
         ArrayList<String> urls = new ArrayList<>();
         appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
         if(urls.size() > 0)
-            return urls;
-        if(Looper.myLooper() == Looper.getMainLooper() || baseUrl == null || path == null
-                || kind == null || workId == null || episodeId == null || imagesToken == null)
             return urls;
         CountDownLatch done = new CountDownLatch(1);
         ViewerImageResult result = new ViewerImageResult();
         AtomicReference<Runnable> cancelRef = new AtomicReference<>();
         mainHandler.post(() -> fetchViewerImageUrlsOnMain(userAgent, baseUrl, path, headers, kind,
-                workId, episodeId, imagesToken, fallbackCookieHeader, result, done, cancelRef));
+                workId, episodeId, imagesToken, ackScopePath, fallbackCookieHeader, shellHtml,
+                result, done, cancelRef));
         try {
             long deadline = SystemClock.elapsedRealtime() + 65_000L;
             while(!done.await(120L, TimeUnit.MILLISECONDS)) {
@@ -311,6 +373,32 @@ final class NtkWebViewFallbackManager {
         return urls;
     }
 
+    private ArrayList<String> awaitViewerImageFlight(ViewerImageFlight flight, String kind, String workId,
+                                                     String episodeId, String path) {
+        ArrayList<String> urls = new ArrayList<>();
+        Log.d(TAG, "ntk_webview_viewer_images_flight_join path=" + path
+                + ",waiters=" + flight.waiters);
+        try {
+            long deadline = SystemClock.elapsedRealtime() + 65_000L;
+            while(!flight.done.await(120L, TimeUnit.MILLISECONDS)) {
+                appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
+                if(urls.size() > 0)
+                    return urls;
+                if(SystemClock.elapsedRealtime() >= deadline)
+                    return urls;
+            }
+            appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
+            if(urls.size() > 0)
+                return urls;
+            synchronized (flight) {
+                urls.addAll(flight.urls);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return urls;
+    }
+
     ArrayList<String> cachedViewerImageUrls(String kind, String workId, String episodeId, String path) {
         ArrayList<String> urls = new ArrayList<>();
         appendCachedViewerImageUrls(urls, kind, workId, episodeId, path);
@@ -323,6 +411,41 @@ final class NtkWebViewFallbackManager {
             return;
         VIEWER_IMAGE_API_CACHE.remove(key);
         Log.d(TAG, "ntk_webview_viewer_images_cache_drop key=" + key);
+    }
+
+    void cacheViewerImageUrls(String kind, String workId, String episodeId, String path,
+                              List<String> urls, String reason) {
+        String key = viewerImageCacheKey(kind, workId, episodeId, path);
+        if(key.length() == 0 || urls == null || urls.size() == 0)
+            return;
+        try {
+            JSONObject body = new JSONObject();
+            JSONArray images = new JSONArray();
+            for(String url : urls) {
+                if(url == null || url.length() == 0)
+                    continue;
+                JSONObject image = new JSONObject();
+                image.put("src", url);
+                images.put(image);
+            }
+            if(images.length() == 0)
+                return;
+            body.put("images", images);
+            VIEWER_IMAGE_API_CACHE.put(key, new CachedViewerImages(body.toString(), System.currentTimeMillis()));
+            Log.d(TAG, "ntk_webview_viewer_images_cache_store key=" + key
+                    + ",count=" + images.length()
+                    + ",reason=" + reason);
+        } catch (Exception e) {
+            Log.d(TAG, "ntk_webview_viewer_images_cache_store_error key=" + key + "," + e);
+        }
+    }
+
+    void clearCachedViewerImageUrlsForTest() {
+        VIEWER_IMAGE_API_CACHE.clear();
+        synchronized (VIEWER_IMAGE_FLIGHTS) {
+            VIEWER_IMAGE_FLIGHTS.clear();
+        }
+        Log.d(TAG, "ntk_webview_viewer_images_cache_clear_for_test");
     }
 
     private static void appendCachedViewerImageUrls(ArrayList<String> urls, String kind, String workId,
@@ -359,7 +482,8 @@ final class NtkWebViewFallbackManager {
     private void fetchViewerImageUrlsOnMain(String userAgent, String baseUrl, String path,
                                             Map<String, String> headers, String kind,
                                             String workId, String episodeId, String imagesToken,
-                                            String fallbackCookieHeader, ViewerImageResult result,
+                                            String ackScopePath, String fallbackCookieHeader, String shellHtml,
+                                            ViewerImageResult result,
                                             CountDownLatch done, AtomicReference<Runnable> cancelRef) {
         if(Looper.myLooper() != Looper.getMainLooper()) {
             done.countDown();
@@ -367,8 +491,12 @@ final class NtkWebViewFallbackManager {
         }
         final WebView view = new WebView(context);
         final String fallbackCookies = fallbackCookieHeader == null ? "" : fallbackCookieHeader;
+        final NtkQuicBridge quicBridge = NtkQuicFetcher.isAvailable()
+                ? new NtkQuicBridge(context, userAgent, fallbackCookies) : null;
         final boolean[] finished = {false};
         final boolean[] requested = {false};
+        final int[] scriptRequests = {0};
+        final String shellGuardVersion = ntkGuardVersionFromText(shellHtml);
         Runnable finish = new Runnable() {
             @Override
             public void run() {
@@ -389,6 +517,8 @@ final class NtkWebViewFallbackManager {
                     view.destroy();
                 } catch (Exception ignored) {
                 }
+                if(quicBridge != null)
+                    quicBridge.close();
                 done.countDown();
             }
         };
@@ -404,16 +534,35 @@ final class NtkWebViewFallbackManager {
             applyWebViewCookieHeader(baseUrl, fallbackCookies);
             applyWebViewCookieHeader(baseUrl + path, fallbackCookies);
             view.addJavascriptInterface(new ViewerImageBridge(result, finish, mainHandler), "NtkViewerBridge");
-            if(NtkQuicFetcher.isAvailable())
-                view.addJavascriptInterface(new NtkQuicBridge(userAgent, fallbackCookies), "NtkQuicBridge");
+            if(quicBridge != null)
+                view.addJavascriptInterface(quicBridge, "NtkQuicBridge");
+            String shellUrl = baseUrl + path;
+            boolean modernGuardRoot = isModernNtkGuardRoot(baseUrl);
+            view.setWebChromeClient(new WebChromeClient() {
+                @Override
+                public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+                    if(consoleMessage != null) {
+                        Log.d(TAG, "ntk_images_api_hidden_console path=" + path
+                                + ",level=" + consoleMessage.messageLevel()
+                                + ",line=" + consoleMessage.lineNumber()
+                                + ",source=" + consoleMessage.sourceId()
+                                + ",message=" + consoleMessage.message());
+                    }
+                    return super.onConsoleMessage(consoleMessage);
+                }
+            });
             view.setWebViewClient(new WebViewClient() {
                 @Override
                 public void onPageFinished(WebView view, String url) {
+                    Log.d(TAG, "ntk_images_api_hidden_finished url=" + url + ",path=" + path
+                            + ",requested=" + requested[0]
+                            + ",finished=" + finished[0]
+                            + ",match=" + isFinishedDocumentUrl(url, baseUrl, path));
                     if(requested[0] || finished[0] || !isFinishedDocumentUrl(url, baseUrl, path))
                         return;
                     requested[0] = true;
-                    mainHandler.post(() -> evaluateViewerImageFetchScript(view, finished, baseUrl, path,
-                            kind, workId, episodeId, imagesToken));
+                    mainHandler.post(() -> evaluateViewerImageFetchScript(view, finished, scriptRequests, baseUrl, path,
+                            ackScopePath, kind, workId, episodeId, imagesToken));
                 }
 
                 @Override
@@ -425,6 +574,11 @@ final class NtkWebViewFallbackManager {
 
                 @Override
                 public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                    if(request != null && request.isForMainFrame()
+                            && isFinishedDocumentUrl(request.getUrl() == null ? "" : request.getUrl().toString(),
+                            baseUrl, path)) {
+                        return viewerShellResponse(shellHtml, shellGuardVersion);
+                    }
                     WebResourceResponse response = interceptViewerQuicRequest(userAgent, fallbackCookies, request);
                     return response == null ? super.shouldInterceptRequest(view, request) : response;
                 }
@@ -436,16 +590,21 @@ final class NtkWebViewFallbackManager {
                 view.setClickable(false);
                 view.setFocusable(false);
                 view.setFocusableInTouchMode(false);
-                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(1, 1,
-                        Gravity.BOTTOM | Gravity.LEFT);
+                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                        Math.max(390, decor.getWidth()), Math.max(720, decor.getHeight()),
+                        Gravity.TOP | Gravity.LEFT);
                 decor.addView(view, 0, params);
             }
-            view.loadUrl(baseUrl + path);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 120L);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 700L);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 1_800L);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 3_800L);
-            scheduleViewerImageFetch(view, finished, baseUrl, path, kind, workId, episodeId, imagesToken, 7_000L);
+            Log.d(TAG, "ntk_images_api_hidden_document path=" + path
+                    + ",modernGuard=" + modernGuardRoot
+                    + ",realMainFrame=false"
+                    + ",shellGuardVersion=" + shellGuardVersion);
+            scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 120L);
+            scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 700L);
+            scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 1_800L);
+            scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 3_800L);
+            scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 7_000L);
+            view.loadUrl(shellUrl, webViewHeaders(headers));
             mainHandler.postDelayed(finish, 64_000L);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
@@ -460,31 +619,119 @@ final class NtkWebViewFallbackManager {
         mainHandler.post(cancel);
     }
 
-    private void scheduleViewerImageFetch(WebView view, boolean[] finished, String baseUrl, String path,
+    private void scheduleViewerImageFetch(WebView view, boolean[] finished, int[] scriptRequests,
+                                          String baseUrl, String path,
+                                          String ackScopePath,
                                           String kind, String workId, String episodeId,
                                           String imagesToken, long delayMs) {
         mainHandler.postDelayed(() -> {
-            if(finished[0] || view == null)
+            if(finished[0] || scriptRequests[0] >= 4 || view == null)
                 return;
             String currentUrl = view.getUrl();
-            if(!isFinishedDocumentUrl(currentUrl, baseUrl, path))
+            boolean matched = isFinishedDocumentUrl(currentUrl, baseUrl, path);
+            Log.d(TAG, "ntk_images_api_hidden_schedule delay=" + delayMs
+                    + ",url=" + currentUrl
+                    + ",path=" + path
+                    + ",match=" + matched
+                    + ",attempts=" + scriptRequests[0]);
+            if(!matched)
                 return;
-            evaluateViewerImageFetchScript(view, finished, baseUrl, path, kind, workId,
+            evaluateViewerImageFetchScript(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId,
                     episodeId, imagesToken);
         }, delayMs);
     }
 
-    private void evaluateViewerImageFetchScript(WebView view, boolean[] finished, String baseUrl, String path,
-                                                String kind, String workId, String episodeId,
-                                                String imagesToken) {
-        if(finished[0] || view == null)
-            return;
+    private static WebResourceResponse viewerShellResponse(String html, String guardVersion) {
+        String bodyText = html == null || html.length() == 0
+                ? "<!doctype html><html data-ntk-fast-shell=\"1\"><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body></body></html>"
+                : html;
+        if(guardVersion != null && guardVersion.length() > 0 && !bodyText.contains(guardVersion)) {
+            String marker = "<head>";
+            String meta = "<meta name=\"ntk-guard-version\" content=\"" + guardVersion + "\">";
+            int index = bodyText.toLowerCase(Locale.US).indexOf(marker);
+            bodyText = index >= 0
+                    ? bodyText.substring(0, index + marker.length()) + meta + bodyText.substring(index + marker.length())
+                    : meta + bodyText;
+        }
+        if(!bodyText.toLowerCase(Locale.US).contains("data-ntk-fast-shell")) {
+            int htmlStart = bodyText.toLowerCase(Locale.US).indexOf("<html");
+            if(htmlStart >= 0) {
+                int htmlEnd = bodyText.indexOf('>', htmlStart);
+                if(htmlEnd > htmlStart)
+                    bodyText = bodyText.substring(0, htmlEnd) + " data-ntk-fast-shell=\"1\"" + bodyText.substring(htmlEnd);
+            } else {
+                bodyText = "<!doctype html><html data-ntk-fast-shell=\"1\"><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body>"
+                        + bodyText + "</body></html>";
+            }
+        }
+        byte[] body = bodyText
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Map<String, String> headers = new HashMap<>();
+        headers.put("content-type", "text/html; charset=utf-8");
+        return new WebResourceResponse("text/html", "UTF-8", 200, "OK", headers,
+                new ByteArrayInputStream(body));
+    }
+
+    private static WebResourceResponse viewerDocumentResponse(String html) {
+        String bodyText = html == null || html.length() == 0
+                ? "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body></body></html>"
+                : html;
+        byte[] body = bodyText.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Map<String, String> headers = new HashMap<>();
+        headers.put("content-type", "text/html; charset=utf-8");
+        return new WebResourceResponse("text/html", "UTF-8", 200, "OK", headers,
+                new ByteArrayInputStream(body));
+    }
+
+    private static String ntkGuardVersionFromText(String text) {
+        if(text == null || text.length() == 0)
+            return "";
         try {
-            view.stopLoading();
+            java.util.regex.Matcher matcher = java.util.regex.Pattern
+                    .compile("wv=([^\"'&<>\\\\\\s]+)")
+                    .matcher(text);
+            if(matcher.find()) {
+                String value = URLDecoder.decode(matcher.group(1), "UTF-8");
+                if(value.matches("b\\d{13}-wasm-\\d{13}"))
+                    return value;
+            }
+            matcher = java.util.regex.Pattern
+                    .compile("b\\d{13}[^\"'<>\\\\\\s]*wasm-\\d{13}")
+                    .matcher(text);
+            if(matcher.find()) {
+                String value = matcher.group();
+                return value.matches("b\\d{13}-wasm-\\d{13}") ? value : "";
+            }
+            matcher = java.util.regex.Pattern
+                    .compile("/(b\\d{13})/_next/static/")
+                    .matcher(text);
+            if(matcher.find()) {
+                long build = Long.parseLong(matcher.group(1).substring(1));
+                return matcher.group(1) + "-wasm-" + (build + 4L);
+            }
         } catch (Exception ignored) {
         }
-        view.evaluateJavascript(buildViewerImageFetchScript(baseUrl, path, kind, workId,
-                episodeId, imagesToken), null);
+        return "";
+    }
+
+    private void evaluateViewerImageFetchScript(WebView view, boolean[] finished, int[] scriptRequests,
+                                                String baseUrl, String path,
+                                                String ackScopePath,
+                                                String kind, String workId, String episodeId,
+                                                String imagesToken) {
+        if(finished[0] || scriptRequests[0] >= 4 || view == null)
+            return;
+        scriptRequests[0]++;
+        String script = buildViewerImageFetchScript(baseUrl, path, ackScopePath, kind, workId,
+                episodeId, imagesToken);
+        Log.d(TAG, "ntk_images_api_eval_script path=" + path
+                + ",url=" + view.getUrl()
+                + ",attempt=" + scriptRequests[0]
+                + ",len=" + script.length()
+                + ",finished=" + finished[0]);
+        view.evaluateJavascript(script, value -> Log.d(TAG, "ntk_images_api_eval_result path=" + path
+                + ",url=" + view.getUrl()
+                + ",value=" + (value == null ? "" : value)));
     }
 
     static long webViewLoadTimeoutMsForTest(boolean highPriority, boolean wolfDocument) {
@@ -493,6 +740,11 @@ final class NtkWebViewFallbackManager {
 
     private static boolean shouldStopWaitingForCaller(boolean requestCancelled, long now, long deadline) {
         return requestCancelled || now >= deadline;
+    }
+
+    private static boolean isModernNtkGuardRoot(String root) {
+        root = root == null ? "" : root.toLowerCase(Locale.ROOT);
+        return root.contains("sbxh") || root.contains("toonflix");
     }
 
     private void releaseWaiterAndCancelIfUnused(FetchTask task) {
@@ -592,7 +844,7 @@ final class NtkWebViewFallbackManager {
             task.requested = false;
             if(shouldNavigateDocument(task.path)) {
                 boolean episodeDocument = isNtkEpisodeDocumentPath(task.path);
-                if(episodeDocument && task.highPriority && isModernNtkRoot(task.baseUrl)) {
+                if(episodeDocument && isModernNtkRoot(task.baseUrl)) {
                     webView.loadDataWithBaseURL(task.baseUrl,
                             "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"></head><body></body></html>",
                             "text/html", "UTF-8", null);
@@ -637,6 +889,25 @@ final class NtkWebViewFallbackManager {
         webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
     }
 
+    private boolean retryEpisodeNavigationOnMain(FetchTask task, int errorCode, CharSequence description) {
+        if(task == null || task.completed || webView == null || !isNtkEpisodeDocumentPath(task.path))
+            return false;
+        if(task.navigationErrorRetries >= 1)
+            return false;
+        task.navigationErrorRetries++;
+        task.requested = false;
+        Log.d(TAG, "ntk_webview_navigate_retry path=" + task.path
+                + ",attempt=" + task.navigationErrorRetries
+                + ",code=" + errorCode
+                + ",description=" + description);
+        mainHandler.postDelayed(() -> {
+            if(task.completed || webView == null)
+                return;
+            webView.loadUrl(task.baseUrl + task.path, webViewHeaders(task.headers));
+        }, 180L);
+        return true;
+    }
+
     private void ensureWebView(String userAgent) {
         if(webView != null) {
             webView.getSettings().setUserAgentString(userAgent);
@@ -654,7 +925,7 @@ final class NtkWebViewFallbackManager {
         CookieManager.getInstance().setAcceptCookie(true);
         webView.addJavascriptInterface(new Bridge(), "NtkBridge");
         if(NtkQuicFetcher.isAvailable())
-            webView.addJavascriptInterface(new NtkQuicBridge(userAgent, ""), "NtkQuicBridge");
+            webView.addJavascriptInterface(new NtkQuicBridge(context, userAgent, ""), "NtkQuicBridge");
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
@@ -729,6 +1000,9 @@ final class NtkWebViewFallbackManager {
                 }
                 if(task != null && CustomHttpClient.isWolfEpisodeDocumentPath(task.path))
                     finishOnMain(task, 0, "", true);
+                else if(task != null)
+                    retryEpisodeNavigationOnMain(task, error == null ? 0 : error.getErrorCode(),
+                            error == null ? "" : error.getDescription());
             }
         });
     }
@@ -798,6 +1072,19 @@ final class NtkWebViewFallbackManager {
             }
             boolean blockedDocument = isBlockedNtkDocumentBody(body);
             boolean unusableEpisodeDocument = isUnusableNtkEpisodeDocumentResult(task.path, body);
+            if(isNtkEpisodeDocumentPath(task.path) && isWebViewNetworkErrorDocumentBody(body)
+                    && task.navigationErrorRetries > 0
+                    && SystemClock.elapsedRealtime() - task.enqueuedAt
+                    < Math.max(0L, webViewLoadTimeoutMs(task) - 800L)) {
+                task.requested = false;
+                if(Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "ntk_webview_ignore_network_error_episode_probe path=" + task.path
+                            + ",code=" + code
+                            + ",retries=" + task.navigationErrorRetries
+                            + ",htmlLen=" + (body == null ? 0 : body.length()));
+                }
+                return;
+            }
             if(shouldNavigateDocument(task.path) && blockedDocument) {
                 finishOnMain(task, code > 0 && code != 200 ? code : 403, body, true);
                 return;
@@ -837,7 +1124,8 @@ final class NtkWebViewFallbackManager {
             webView.setClickable(false);
             webView.setFocusable(false);
             webView.setFocusableInTouchMode(false);
-            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(1, 1,
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                    Math.max(360, decor.getWidth()), Math.max(220, decor.getHeight() / 4),
                     Gravity.BOTTOM | Gravity.LEFT);
             decor.addView(webView, 0, params);
             Log.d(TAG, "ntk_webview_attached");
@@ -1108,8 +1396,6 @@ final class NtkWebViewFallbackManager {
     }
 
     private static String webViewUserAgentForTask(String userAgent, String baseUrl, String path) {
-        if(isModernNtkRoot(baseUrl) && isNtkEpisodeDocumentPath(path))
-            return CustomHttpClient.NTK_DESKTOP_DOCUMENT_UA;
         return userAgent;
     }
 
@@ -1132,7 +1418,7 @@ final class NtkWebViewFallbackManager {
                 + "function lower(v){return (v||'').toLowerCase();}"
                 + "function emptyDoc(v){var b=document.body;return !v||v.length<160||(!document.querySelector('a[href],img,script[src],link[href]')&&(!b||!(b.innerText||'').trim()));}"
                 + "function webviewError(v){v=lower(v);return v.indexOf('webpage not available')>=0||v.indexOf('net::err_')>=0||v.indexOf('err_connection_reset')>=0||v.indexOf('err_name_not_resolved')>=0||v.indexOf('err_timed_out')>=0||v.indexOf('error code 522')>=0||v.indexOf('connection timed out')>=0;}"
-                + "function challenge(v){v=lower(v);return v.indexOf('just a moment')>=0||v.indexOf('challenges.cloudflare.com')>=0||v.indexOf('/cdn-cgi/challenge-platform')>=0||v.indexOf('cf-challenge')>=0||v.indexOf('cf_chl')>=0||v.indexOf('cf-chl')>=0||v.indexOf('_cf_chl')>=0||v.indexOf('cf-mitigated')>=0||v.indexOf('cf-turnstile')>=0||v.indexOf('cf_clearance')>=0||v.indexOf('cf-ray')>=0||v.indexOf('turnstile')>=0||v.indexOf('verifying you are human')>=0||v.indexOf('verify you are human')>=0||(v.indexOf('cloudflare')>=0&&v.indexOf('security service')>=0)||v.indexOf('개발자 도구 차단')>=0||v.indexOf('developer tools blocked')>=0||v.indexOf('developer tool blocked')>=0||v.indexOf('devtools blocked')>=0||v.indexOf('devtool blocked')>=0;}"
+                + "function challenge(v){v=lower(v);return v.indexOf('just a moment')>=0||v.indexOf('challenges.cloudflare.com')>=0||v.indexOf('/cdn-cgi/challenge-platform')>=0||v.indexOf('cf-challenge')>=0||v.indexOf('cf_chl')>=0||v.indexOf('cf-chl')>=0||v.indexOf('_cf_chl')>=0||v.indexOf('cf-mitigated')>=0||v.indexOf('cf-turnstile')>=0||v.indexOf('cf_clearance')>=0||v.indexOf('cf-ray')>=0||v.indexOf('turnstile')>=0||v.indexOf('verifying you are human')>=0||v.indexOf('verify you are human')>=0||(v.indexOf('cloudflare')>=0&&v.indexOf('security service')>=0)||v.indexOf('developer tools blocked')>=0||v.indexOf('developer tool blocked')>=0||v.indexOf('devtools blocked')>=0||v.indexOf('devtool blocked')>=0;}"
                 + "function ntkViewerProps(v){v=lower(v);return v.indexOf('\"imagestoken\"')>=0&&v.indexOf('\"imagemetas\"')>=0;}"
                 + "function ntkRendered(){try{var episode=/^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(location.pathname||'');var ns=document.querySelectorAll('img[src],img[data-src],img[data-original],link[rel=preload][as=image][href]');for(var i=0;i<ns.length;i++){var s=(ns[i].getAttribute('src')||ns[i].getAttribute('data-src')||ns[i].getAttribute('data-original')||ns[i].getAttribute('href')||'').toLowerCase();if(s.indexOf('/webtoon_uploads/')>=0||s.indexOf('/manhwa_uploads/')>=0||s.indexOf('/comic_uploads/')>=0||s.indexOf('/blacktoon/episodes/')>=0)return true;}if(episode)return false;if(document.querySelector('.vw-main,.vw-imgs,.viewer-content,.toon-view,div.image-view,section.webtoon-body'))return true;var as=document.querySelectorAll('a[href]'),episodeLinks=0;for(var j=0;j<as.length;j++){var h=(as[j].getAttribute('href')||'').toLowerCase();if(/^\\/(manhwa|webtoon)\\/[^\\/?#%]+\\/[^\\/?#%]+/.test(h)&&h.indexOf('%5b')<0&&h.indexOf('page-')<0)episodeLinks++;}return episodeLinks>0&&Date.now()-started>1200;}catch(e){return false;}}"
                 + "function ntkShell(v){v=lower(v);return (v.indexOf('/_next/static/')>=0||v.indexOf('self.__next_f')>=0||v.indexOf('id=\"__next\"')>=0||v.indexOf(\"id='__next'\")>=0)&&(v.indexOf('%5bsourceworkid%5d')>=0||v.indexOf('[sourceworkid]')>=0||v.indexOf('%5bviewid%5d')>=0||v.indexOf('[viewid]')>=0||v.indexOf('next-route-announcer')>=0||v.indexOf('app-router-announcer')>=0)&&!ntkRendered();}"
@@ -1160,7 +1446,7 @@ final class NtkWebViewFallbackManager {
     }
 
     private static String buildEpisodePreAckScript(String token, String baseUrl, String path) {
-        return "(async function(){var token=" + jsonQuote(token) + ",base=" + jsonQuote(baseUrl)
+        return NTK_QUIC_BRIDGE_JS + "(async function(){var token=" + jsonQuote(token) + ",base=" + jsonQuote(baseUrl)
                 + ",scope=" + jsonQuote(path) + ";"
                 + "function done(ok,reason){try{window.NtkBridge.onPreAckDone(token,!!ok,String(reason||''));}catch(e){}}"
                 + "function abs(u){return new URL(u,base).href;}"
@@ -1169,11 +1455,12 @@ final class NtkWebViewFallbackManager {
                 + "function acked(){try{if(window.__ntk_ad_ack_scope===scope)return true;var l=window.__ntk_ad_ack_last;if(l&&l.scope===scope)return true;}catch(e){}return false;}"
                 + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),preack:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,preack:true}}));}catch(e){}}"
                 + "async function req(url,body){var r=await fetch(abs(url),{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','accept':'application/json','origin':base,'referer':pageUrl()},body:JSON.stringify(body||{})});var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
-                + "function fireImp(u){try{fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){}}"
-                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;var mod=await import(abs('/api/ad/guard-js'));if(mod&&mod.default)await mod.default(abs('/api/ad/guard-wasm'));window.__ntkGuardModule=mod;return mod;}catch(e){return null;}}"
+                + "function fireImp(u){try{if(typeof bridgeReq==='function')return bridgeReq(u,'GET',null,{'accept':'image/gif,image/*,*/*'}).catch(function(){});return fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){return Promise.resolve();}}"
+                + "function ensureGuardRows(ch){try{ch=ch||{};var urls=ch.impressionUrls||[],slot=Math.max(2,Number(ch.slotCount||urls.length||4)),root=document.getElementById('__ntk_guard_rows'),host=document.body||document.documentElement;if(!root){root=document.createElement('section');root.id='__ntk_guard_rows';root.setAttribute('data-br','1');root.setAttribute('data-brs','header');root.setAttribute('data-br-n',String(slot));host.insertBefore(root,host.firstChild||null);}if(root.getAttribute('data-ntk-token')!==String(ch.token||'')){root.textContent='';root.setAttribute('data-ntk-token',String(ch.token||''));root.setAttribute('data-br-n',String(slot));for(var i=0;i<slot;i++){var b=document.createElement('button');b.type='button';b.className='';b.setAttribute(i===0?'data-bs':'data-bp','1');var img=document.createElement('img');img.width=64;img.height=34;img.alt='';img.loading='eager';img.decoding='sync';img.src=urls[i]?abs(urls[i]):'data:image/gif;base64,R0lGODlhCgAGAPAAAP///wAAACH5BAAAAAAALAAAAAAKAAYAAAIIhI+py+0PYysAOw==';b.appendChild(img);root.appendChild(b);}}var de=document.documentElement,ab=de.getAttribute('data-ab')||'__bSeen',rb=de.getAttribute('data-rb')||ab;if(!de.getAttribute('data-ab'))de.setAttribute('data-ab',ab);if(!de.getAttribute('data-rb'))de.setAttribute('data-rb',rb);window.__bSeen=Math.max(Number(window.__bSeen||0),slot);window[ab]=Math.max(Number(window[ab]||0),slot);window[rb]=Math.max(Number(window[rb]||0),slot);var seen=Number(window.__bSeen||window[ab]||window[rb]||0);try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsReady:true,slot:slot,ab:ab,rb:rb,seen:seen,siteShape:true,unstyled:true}));}catch(_){}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsError:String(e)}));}catch(_){}}}"
+                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;var mod=await import(abs('/api/ad/guard-js'));if(mod&&mod.default)await mod.default({module_or_path:abs('/api/ad/guard-wasm')});window.__ntkGuardModule=mod;return mod;}catch(e){return null;}}"
                 + "function waitAck(ms){return new Promise(function(resolve){if(acked())return resolve(true);var done=false;function finish(v){if(done)return;done=true;clearTimeout(to);clearInterval(iv);window.removeEventListener('ntk-ad-ack-ready',ev);resolve(v);}function ev(e){if((e.detail&&e.detail.scope===scope)||acked())finish(true);}var to=setTimeout(function(){finish(acked());},ms);var iv=setInterval(function(){if(acked())finish(true);},120);window.addEventListener('ntk-ad-ack-ready',ev);});}"
                 + "async function guardAck(ch){try{var mod=await loadGuard();if(!mod||!ch)return false;var fn=mod.__i4||mod.i4||mod._i4||mod.guardAck||mod.adAck;if(!fn)return false;var tries=[ch,JSON.stringify(ch),ch.token||''];for(var i=0;i<tries.length;i++){try{var r=fn(tries[i],scope);if(r&&r.then)await r;if(await waitAck(1400))return true;}catch(e){}}return acked();}catch(e){return false;}}"
-                + "try{var c=await req('/api/ad/challenge',{path:scope});if(c&&c.status===200&&c.body&&c.body.ok){if(c.body.trusted&&!c.body.challenge){markAck();done(true,'trusted');return;}var ch=c.body.challenge;if(ch){(ch.impressionUrls||[]).forEach(fireImp);if(await guardAck(ch)){done(true,'guard');return;}var tok=ch.token||'';await sleep(180);await req('/api/ad/canary',{adAckCanary:true,challengeToken:tok,token:tok,path:scope});var a=await req('/api/ad/ack',{challengeToken:tok,total:Math.max(ch.slotCount||4,28),visible:ch.minSeen||2,path:scope,td:0,tp:''});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();done(true,'ack');return;}}}}catch(e){done(false,String(e));return;}done(acked(),acked()?'event':'miss');})()";
+                + "try{var c=await req('/api/ad/challenge',{path:scope});if(c&&c.status===200&&c.body&&c.body.ok){if(c.body.trusted&&!c.body.challenge){markAck();done(true,'trusted');return;}var ch=c.body.challenge;if(ch){(ch.impressionUrls||[]).forEach(fireImp);if(await guardAck(ch)){done(true,'guard');return;}}}}catch(e){done(false,String(e));return;}done(acked(),acked()?'event':'miss');})()";
     }
 
     private static boolean isUnusableNtkEpisodeDocumentResult(String path, String body) {
@@ -1230,6 +1517,16 @@ final class NtkWebViewFallbackManager {
                 || lower.contains("devtool blocked");
     }
 
+    private static boolean isWebViewNetworkErrorDocumentBody(String body) {
+        if(body == null || body.length() == 0)
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        return lower.contains("webpage not available")
+                || lower.contains("net::err_")
+                || lower.contains("err_connection_reset")
+                || lower.contains("err_timed_out");
+    }
+
     private static boolean looksLikeNtkViewerPayload(String body) {
         if(body == null)
             return false;
@@ -1240,7 +1537,7 @@ final class NtkWebViewFallbackManager {
     private static String buildViewerImageFetchScript(String baseUrl, String path, String kind, String workId,
                                                       String episodeId, String imagesToken) {
         String endpoint = "webtoon".equals(kind) ? "/api/webtoon-images" : "/api/manhwa-images";
-        return "(function(){var base=" + jsonQuote(baseUrl) + ",scope=" + jsonQuote(path) + ",kind=" + jsonQuote(kind)
+        return NTK_QUIC_BRIDGE_JS + "(function(){var base=" + jsonQuote(baseUrl) + ",scope=" + jsonQuote(path) + ",kind=" + jsonQuote(kind)
                 + ",workId=" + jsonQuote(workId) + ",episodeId=" + jsonQuote(episodeId)
                 + ",token=" + jsonQuote(imagesToken) + ",endpoint=" + jsonQuote(endpoint) + ";"
                 + "var sent=false;"
@@ -1254,43 +1551,88 @@ final class NtkWebViewFallbackManager {
                 + "function docCookie(){try{return document.cookie||'';}catch(e){return '';}}"
                 + "function bridgeCookie(name){try{return window.NtkQuicBridge?String(window.NtkQuicBridge.cookie(pageUrl(),name)||''):'';}catch(e){return '';}}"
                 + "function cookie(name){var text=docCookie(),m=text.match(new RegExp('(?:^|;\\\\s*)'+name+'=([^;]*)'));if(m)return decodeURIComponent(m[1]);return bridgeCookie(name);}"
+                + "function b64json(v){try{v=String(v||'').replace(/-/g,'+').replace(/_/g,'/');while(v.length%4)v+='=';return JSON.parse(atob(v));}catch(e){return null;}}"
+                + "function ackCookieMatches(v){try{if(!v)return false;var p=String(v).split('.'),j=b64json(p.length>2?p[1]:p[0]);return !!j&&j.scope===scope;}catch(e){return false;}}"
                 + "async function hmac(key,msg){var enc=new TextEncoder();if(window.crypto&&crypto.subtle&&crypto.subtle.importKey){try{var k=await crypto.subtle.importKey('raw',enc.encode(key),{name:'HMAC',hash:'SHA-256'},false,['sign']);return b64(new Uint8Array(await crypto.subtle.sign('HMAC',k,enc.encode(msg))));}catch(e){}}if(window.NtkQuicBridge){var v=String(window.NtkQuicBridge.hmacSha256(key,msg)||'');if(v)return v;}throw new Error('hmac unavailable');}"
                 + "async function nv(){var v=cookie('nv');if(!v||(v.split('.')[0]||'').length<40){try{await bridgeReq('/api/nv-issue','POST',null);}catch(e){}v=cookie('nv');}if(!v||(v.split('.')[0]||'').length<40){await fetch(abs('/api/nv-issue'),{method:'POST',credentials:'same-origin',cache:'no-store'}).catch(function(){});v=cookie('nv');}return (!v||(v.split('.')[0]||'').length<40)?'':v;}"
-                + "function acked(){try{if(window.__ntk_ad_ack_scope===scope)return true;var l=window.__ntk_ad_ack_last;if(l&&l.scope===scope)return true;}catch(e){}return false;}"
+                + "function acked(){try{if(window.__ntk_ad_ack_scope===scope)return true;var l=window.__ntk_ad_ack_last;if(l&&l.scope===scope)return true;if(ackCookieMatches(cookie('ad_ack'))){markAck();return true;}}catch(e){}return false;}"
                 + "function rearm(){try{window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{reason:kind+'-native-403',scope:scope}}));}catch(e){}}"
                 + "function waitAck(ms){return new Promise(function(resolve){if(acked())return resolve(true);var done=false;function finish(v){if(done)return;done=true;clearTimeout(to);clearInterval(iv);window.removeEventListener('ntk-ad-ack-ready',ev);resolve(v);}function ev(e){if((e.detail&&e.detail.scope===scope)||acked())finish(true);}var to=setTimeout(function(){finish(acked());},ms);var iv=setInterval(function(){if(acked())finish(true);},120);window.addEventListener('ntk-ad-ack-ready',ev);});}"
                 + "async function api(){var v=await nv();if(!v)return{status:401,body:{error:'missing session'}};var n=new Uint8Array(24);crypto.getRandomValues(n);var nonce=b64(n);var proof=await hmac(v,token+'.'+nonce+'.'+navigator.userAgent),body={workId:workId,episodeId:episodeId,token:token,nonce:nonce,proof:proof};return await bridgeReq(endpoint,'POST',body,{'x-images-client':'viewer-v1'});}"
                 + "function decode64(b){try{return decodeURIComponent(escape(atob(b||'')));}catch(e){try{return atob(b||'');}catch(_){return '';}}}"
+                + "function bytesFrom64(b){try{var s=atob(b||''),a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i)&255;return a;}catch(e){return new Uint8Array(0);}}"
                 + "function markAck(){try{window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_last={scope:scope,ts:Date.now(),native:true};window.dispatchEvent(new CustomEvent('ntk-ad-ack-ready',{detail:{scope:scope,native:true}}));}catch(e){}}"
-                + "async function bridgeReq(url,method,body,extra){var absolute=abs(url),h={'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()};if(extra){Object.keys(extra).forEach(function(k){h[k]=extra[k];});}var adPath=false,imageApiPath=false;try{var p=(new URL(absolute)).pathname;adPath=p.indexOf('/api/ad/')===0;imageApiPath=p==='/api/webtoon-images'||p==='/api/manhwa-images';}catch(_){}if(window.NtkQuicBridge&&!adPath&&!imageApiPath){var raw=window.NtkQuicBridge.request(absolute,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(absolute,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
-                + "function fireImp(u){try{fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){}}"
-                + "function guardVersion(){try{var h=document.documentElement?document.documentElement.outerHTML:'';var m=h.match(/wv=([^\"'&<>]+)/);if(m&&m[1])return decodeURIComponent(m[1]);m=h.match(/b\\d{13}[^\"'<>]*wasm-\\d{13}/);if(m&&m[0])return m[0];m=h.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(m&&m[1]){var n=Number(m[1].slice(1));if(Number.isFinite(n))return m[1]+'-wasm-'+(n+4);}if(performance&&performance.getEntriesByType){var es=performance.getEntriesByType('resource')||[];for(var i=0;i<es.length;i++){var u=String(es[i].name||''),r=u.match(/wv=([^&]+)/);if(r&&r[1])return decodeURIComponent(r[1]);r=u.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(r&&r[1]){var q=Number(r[1].slice(1));if(Number.isFinite(q))return r[1]+'-wasm-'+(q+4);}}}}catch(e){}return '';}"
-                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;var v=guardVersion();var q=v?'?v='+encodeURIComponent(v):'';var js='/api/ad/guard-js'+q,wasm='/api/ad/guard-wasm'+q;if(!v){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadFallback:'no version'}));}catch(_){}}var mod=await import(abs(js));if(mod&&mod.default)await mod.default(abs(wasm));window.__ntkGuardModule=mod;return mod;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:String(e),version:guardVersion()}));}catch(_){}return null;}}"
-                + "async function guardAck(ch){try{var mod=await loadGuard();if(!mod||!ch){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckMissing:'module'}));}catch(_){}return false;}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardExports:Object.keys(mod).slice(0,24),hasI4:!!mod.__i4,defaultType:typeof mod.default}));}catch(_){}var fn=mod.__i4||mod.i4||mod._i4||mod.guardAck||mod.adAck;if(!fn)return false;var tries=[ch,JSON.stringify(ch),ch.token||''];for(var i=0;i<tries.length;i++){try{var r=fn(tries[i],scope);if(r&&r.then)r=await r;try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckTry:i,result:String(r||'').slice(0,80)}));}catch(_){}if(await waitAck(1200))return true;}catch(inner){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckTryError:i,error:String(inner)}));}catch(_){}}}return acked();}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckError:String(e)}));}catch(_){}return false;}}"
+                + "async function bridgeReq(url,method,body,extra){var absolute=abs(url),h={'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()};if(extra){Object.keys(extra).forEach(function(k){h[k]=extra[k];});}var adPath=false,imageApiPath=false;try{var p=(new URL(absolute)).pathname;adPath=p.indexOf('/api/ad/')===0;imageApiPath=p==='/api/webtoon-images'||p==='/api/manhwa-images';}catch(_){}if(window.NtkQuicBridge){var raw=window.NtkQuicBridge.request(absolute,method,JSON.stringify(h),body?b64(new TextEncoder().encode(JSON.stringify(body))):'');var o=JSON.parse(raw||'{}');if(!o.ok)throw new Error(o.error||'bridge failed');var text=decode64(o.bodyBase64||''),json={};try{json=JSON.parse(text||'{}');}catch(e){}return{status:o.status||0,body:json,text:text};}var opt={method:method,credentials:'same-origin',cache:'no-store',headers:h};if(body)opt.body=JSON.stringify(body);var r=await fetch(absolute,opt);var t=await r.text().catch(function(){return '';});var j={};try{j=JSON.parse(t||'{}');}catch(e){}return{status:r.status,body:j,text:t};}"
+                + "function fireImp(u){try{if(typeof bridgeReq==='function')return bridgeReq(u,'GET',null,{'accept':'image/gif,image/*,*/*'}).catch(function(){});return fetch(abs(u),{credentials:'same-origin',cache:'no-store',mode:'no-cors'}).catch(function(){});}catch(e){return Promise.resolve();}}"
+                + "function body64Async(b){try{if(b==null)return Promise.resolve('');if(window.Request&&b instanceof Request&&b.clone)return b.clone().arrayBuffer().then(function(a){return b64(new Uint8Array(a));});if(typeof b==='string')return Promise.resolve(b64(new TextEncoder().encode(b)));if(window.ArrayBuffer&&b instanceof ArrayBuffer)return Promise.resolve(b64(new Uint8Array(b)));if(window.ArrayBuffer&&ArrayBuffer.isView&&ArrayBuffer.isView(b))return Promise.resolve(b64(new Uint8Array(b.buffer,b.byteOffset,b.byteLength)));if(window.Blob&&b instanceof Blob&&b.arrayBuffer)return b.arrayBuffer().then(function(a){return b64(new Uint8Array(a));});return Promise.resolve(b64(new TextEncoder().encode(String(b))));}catch(e){return Promise.resolve('');}}"
+                + "function installGuardBeaconBridge(){try{if(!window.NtkQuicBridge||navigator.__ntkGuardBeaconBridge)return;var nativeBeacon=window.__ntkNativeBeacon||navigator.sendBeacon,nativeFetch=window.__ntkNativeFetch||window.fetch;function shouldBridgePath(p){return p==='/api/ad/canary'||p==='/api/ad/ack'||p==='/api/m/ev';}function ackFrom(p,o,j){try{if(p==='/api/ad/ack'&&(o.status||0)===200&&(j.ok||j.acked||j.status==='ok'||j.status==='acked'))markAck();}catch(_){}}function bridgePost(p,u,body,tag){try{var requestText='';try{requestText=decode64(body||'').slice(0,420);}catch(_){}var raw=window.NtkQuicBridge.request(u,'POST',JSON.stringify({'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()}),body);var o=JSON.parse(raw||'{}'),text=decode64(o.bodyBase64||''),j={};try{j=JSON.parse(text||'{}');}catch(_){}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridge:tag,path:p,status:o.status||0,len:body.length,request:requestText,body:j}));}catch(_){}ackFrom(p,o,j);return{raw:o,text:text,json:j};}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeError:tag,path:p,error:String(e)}));}catch(_){}return null;}}navigator.__ntkGuardBeaconBridge=1;navigator.sendBeacon=function(url,data){try{var u=abs(url),p=(new URL(u)).pathname;if(!shouldBridgePath(p))return nativeBeacon?nativeBeacon.apply(this,arguments):false;body64Async(data).then(function(body){bridgePost(p,u,body,'beacon');});return true;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBeaconBridgeOuterError:String(e)}));}catch(_){}return nativeBeacon?nativeBeacon.apply(this,arguments):false;}};if(nativeFetch){window.fetch=function(input,init){try{var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'',u=abs(url),p=(new URL(u)).pathname;if(!shouldBridgePath(p))return nativeFetch.apply(this,arguments);var method=String((init&&init.method)||(input&&input.method)||'GET').toUpperCase();if(method!=='POST')return nativeFetch.apply(this,arguments);var bodyArg=(init&&Object.prototype.hasOwnProperty.call(init,'body'))?init.body:((input&&window.Request&&input instanceof Request)?input:null);return body64Async(bodyArg).then(function(body){var r=bridgePost(p,u,body,'fetch');var bytes=bytesFrom64(r&&r.raw?r.raw.bodyBase64||'':'');return new Response(bytes,{status:r&&r.raw&&r.raw.status||200,statusText:r&&r.raw&&r.raw.statusText||'OK',headers:r&&r.raw&&r.raw.headers||{}});});}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardFetchBridgeOuterError:String(e)}));}catch(_){}return nativeFetch.apply(this,arguments);}};}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBeaconBridgeInstalled:true,mEv:true,fetch:true}));}catch(_){}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBeaconBridgeInstallError:String(e)}));}catch(_){}}}"
+                + "function ensureGuardRows(ch){try{ch=ch||{};var urls=ch.impressionUrls||[],slot=Math.max(2,Number(ch.slotCount||urls.length||4)),root=document.getElementById('__ntk_guard_rows'),host=document.body||document.documentElement;if(!root){root=document.createElement('section');root.id='__ntk_guard_rows';root.setAttribute('data-br','1');root.setAttribute('data-brs','header');root.setAttribute('data-br-n',String(slot));host.insertBefore(root,host.firstChild||null);}if(root.getAttribute('data-ntk-token')!==String(ch.token||'')){root.textContent='';root.setAttribute('data-ntk-token',String(ch.token||''));root.setAttribute('data-br-n',String(slot));for(var i=0;i<slot;i++){var b=document.createElement('button');b.type='button';b.className='';b.setAttribute(i===0?'data-bs':'data-bp','1');var img=document.createElement('img');img.width=64;img.height=34;img.alt='';img.loading='eager';img.decoding='sync';img.src=urls[i]?abs(urls[i]):'data:image/gif;base64,R0lGODlhCgAGAPAAAP///wAAACH5BAAAAAAALAAAAAAKAAYAAAIIhI+py+0PYysAOw==';b.appendChild(img);root.appendChild(b);}}var de=document.documentElement,ab=de.getAttribute('data-ab')||'__bSeen',rb=de.getAttribute('data-rb')||ab;if(!de.getAttribute('data-ab'))de.setAttribute('data-ab',ab);if(!de.getAttribute('data-rb'))de.setAttribute('data-rb',rb);window.__bSeen=Math.max(Number(window.__bSeen||0),slot);window[ab]=Math.max(Number(window[ab]||0),slot);window[rb]=Math.max(Number(window[rb]||0),slot);var seen=Number(window.__bSeen||window[ab]||window[rb]||0);try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsReady:true,slot:slot,ab:ab,rb:rb,seen:seen,siteShape:true,unstyled:true}));}catch(_){}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsError:String(e)}));}catch(_){}}}"
+                + "function ensureGuardRows(ch){try{ch=ch||{};var host=document.body||document.documentElement,total=26,token=String(ch.token||''),urls=ch.impressionUrls||[],old=document.querySelectorAll('[data-ntk-synth-br=\"1\"]');for(var oi=0;oi<old.length;oi++){if(old[oi].getAttribute('data-ntk-token')!==token){try{old[oi].parentNode&&old[oi].parentNode.removeChild(old[oi]);}catch(_){}}}function ad(btn,i){btn.setAttribute('data-bs','1');var img=document.createElement('img');img.width=88;img.height=44;img.alt='';img.loading='eager';img.decoding='sync';img.style.cssText='display:block;width:88px;height:44px;object-fit:cover;opacity:1;visibility:visible';img.src=urls.length?abs(urls[i%urls.length]):'data:image/gif;base64,R0lGODlhWAA sAPAAAP///wAAACH5BAAAAAAALAAAAABYACwAAAIKjI+py+0Po5yUFQA7'.replace(' ','');btn.appendChild(img);}function make(slot,count,id,offset){var root=id?document.getElementById(id):null;if(!root||root.getAttribute('data-ntk-token')!==token){root=document.createElement('section');if(id)root.id=id;root.className='';root.style.cssText='display:grid;grid-template-columns:repeat(4,88px);gap:8px;position:relative;z-index:1;opacity:1;visibility:visible;pointer-events:auto';root.setAttribute('data-ntk-synth-br','1');root.setAttribute('data-ntk-token',token);root.setAttribute('data-br','1');root.setAttribute('data-brs',slot);root.setAttribute('data-br-n',String(count));for(var i=0;i<count;i++){var b=document.createElement('button');b.type='button';b.className='';b.style.cssText='display:block;width:88px;height:44px;padding:0;margin:0;border:0;background:transparent;opacity:1;visibility:visible;pointer-events:auto';b.setAttribute('aria-label','newtoki62');ad(b,offset+i);root.appendChild(b);}host.insertBefore(root,host.firstChild||null);}return root;}make('header',24,'__ntk_guard_rows',0);make('detail',2,'__ntk_guard_rows_detail',24);var de=document.documentElement,ab=de.getAttribute('data-ab')||'__bSeen',rb=de.getAttribute('data-rb')||ab;if(!de.getAttribute('data-ab'))de.setAttribute('data-ab',ab);if(!de.getAttribute('data-rb'))de.setAttribute('data-rb',rb);window.__bSeen=Math.max(Number(window.__bSeen||0),total);window[ab]=Math.max(Number(window[ab]||0),total);window[rb]=Math.max(Number(window[rb]||0),total);try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsReady:true,slot:total,header:24,detail:2,ab:ab,rb:rb,seen:Number(window.__bSeen||0),siteShape:true,siteBannerRows:true,adImages:true,imageUrls:urls.length}));}catch(_){}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsError:String(e)}));}catch(_){}}}"
+                + "function siteRowsReady(){try{var rows=Array.from(document.querySelectorAll('[data-br=\"1\"][data-br-n]'));if(!rows.length)return false;for(var ri=0;ri<rows.length;ri++){var row=rows[ri],n=Number(row.getAttribute('data-br-n')||'0');if(!Number.isFinite(n)||n<=0)return false;if(n<2)continue;var bs=Array.from(row.children).filter(function(e){return e instanceof HTMLElement&&e.tagName==='BUTTON'&&(e.hasAttribute('data-bs')||e.hasAttribute('data-bp'));});if(bs.length<2)return false;var r0=bs[0].getBoundingClientRect();if(bs[0].getClientRects().length===0)return false;var sep=false;for(var i=1;i<bs.length;i++){var r=bs[i].getBoundingClientRect();if(Math.abs(r.left-r0.left)>=1||Math.abs(r.top-r0.top)>=1){sep=true;break;}}if(!sep)return false;}return true;}catch(e){return false;}}"
+                + "function waitSiteRows(ms){return new Promise(function(resolve){try{if(siteRowsReady())return resolve(true);var done=false,started=Date.now();function finish(v){if(done)return;done=true;try{mo&&mo.disconnect();}catch(_){}clearTimeout(to);resolve(v);}function check(){if(siteRowsReady())finish(true);else if(Date.now()-started>=ms)finish(false);}var mo=new MutationObserver(check),to=setTimeout(function(){finish(siteRowsReady());},Math.max(300,Number(ms||3000)));try{mo.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-br-n','data-bs','data-bp','src','style','class']});}catch(_){}requestAnimationFrame(function(){requestAnimationFrame(check);});}catch(e){resolve(false);}});}"
+                + "function guardImages(){try{return Array.from(document.querySelectorAll('[data-br=\"1\"][data-br-n] img'));}catch(e){return[];}}"
+                + "function guardLoadedCount(){try{var imgs=guardImages(),n=0;for(var i=0;i<imgs.length;i++){if(imgs[i].complete&&imgs[i].naturalWidth>0&&imgs[i].naturalHeight>0)n++;}return n;}catch(e){return 0;}}"
+                + "function waitGuardImages(need,ms){return new Promise(function(resolve){try{need=Math.max(1,Number(need||1));if(guardLoadedCount()>=need)return resolve(true);var imgs=guardImages(),done=false;function finish(v){if(done)return;done=true;clearTimeout(to);imgs.forEach(function(img){try{img.removeEventListener('load',check);img.removeEventListener('error',check);}catch(_){}});resolve(v);}function check(){if(guardLoadedCount()>=need)finish(true);}imgs.forEach(function(img){try{img.addEventListener('load',check);img.addEventListener('error',check);if(img.decode)img.decode().then(check,check);}catch(_){}});var to=setTimeout(function(){finish(guardLoadedCount()>=need);},Math.max(300,Number(ms||3600)));check();}catch(e){resolve(false);}});}"
+                + "function guardDomState(label,mod){try{var rows=Array.from(document.querySelectorAll('[data-br=\"1\"][data-br-n]')),root=rows[0]||document.getElementById('__ntk_guard_rows'),imgs=guardImages(),buttons=root?root.querySelectorAll('button'):[],rr=root?root.getBoundingClientRect():null,first=imgs[0]||null,br=buttons[0]?buttons[0].getBoundingClientRect():null,ready=mod&&mod.__i5?!!mod.__i5():null;window.NtkViewerBridge.onAckState(JSON.stringify({guardDomState:label,ready:ready,rows:rows.length,imgs:imgs.length,loaded:guardLoadedCount(),buttons:buttons.length,root:rr?{w:rr.width,h:rr.height}:null,button:br?{w:br.width,h:br.height}:null,img:first?{complete:first.complete,nw:first.naturalWidth,nh:first.naturalHeight,w:first.width,h:first.height,src:String(first.getAttribute('src')||'').slice(0,160),currentSrc:String(first.currentSrc||'').slice(0,160)}:null,seen:Number(window.__bSeen||0)}));}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardDomStateError:label,error:String(e)}));}catch(_){}}}"
+                + "function guardGlobalState(label,mod){try{var o={guardGlobalState:label,acked:acked(),ready:mod&&mod.__i5?!!mod.__i5():null,ibOk:window.__ntk_ib_ok===undefined?null:String(window.__ntk_ib_ok),ibLoaded:window.__ntk_ib_loaded===undefined?null:String(window.__ntk_ib_loaded),aiTampered:window.__ntk_ai_tampered===undefined?null:String(window.__ntk_ai_tampered),inflight:window.__ntk_ad_ack_inflight===undefined?null:String(window.__ntk_ad_ack_inflight).slice(0,96),ackScope:window.__ntk_ad_ack_scope===undefined?null:String(window.__ntk_ad_ack_scope),ackLast:window.__ntk_ad_ack_last?JSON.stringify(window.__ntk_ad_ack_last).slice(0,160):null,guardLoadLast:window.__ntk_ad_guard_load_last?JSON.stringify(window.__ntk_ad_guard_load_last).slice(0,160):null,seen:Number(window.__bSeen||0),rows:document.querySelectorAll('[data-br=\"1\"][data-br-n]').length};window.NtkViewerBridge.onAckState(JSON.stringify(o));}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardGlobalStateError:label,error:String(e)}));}catch(_){}}}"
+                + "function guardVersion(){try{var h=document.documentElement?document.documentElement.outerHTML:'';var m=h.match(/wv=([^\"'&<>]+)/);if(m&&m[1])return decodeURIComponent(m[1]);m=h.match(/b\\d{13}[^\"'<>]*wasm-\\d{13}/);if(m&&m[0])return m[0];m=h.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(m&&m[1]){var n=Number(m[1].slice(1));if(Number.isFinite(n))return m[1]+'-wasm-'+(n+4);}if(performance&&performance.getEntriesByType){var es=performance.getEntriesByType('resource')||[];for(var i=0;i<es.length;i++){var u=String(es[i].name||''),r=u.match(/wv=([^&]+)/);if(r&&r[1])return decodeURIComponent(r[1]);r=u.match(/\\/(b\\d{13})\\/_next\\/static\\//);if(r&&r[1]){var q=Number(r[1].slice(1));if(Number.isFinite(q))return r[1]+'-wasm-'+(q+4);}}}try{if(window.NtkQuicBridge&&window.NtkQuicBridge.guardVersionFor){var gv=String(window.NtkQuicBridge.guardVersionFor(pageUrl())||'');if(gv)return gv;}}catch(_){}}catch(e){}return '';}"
+                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;try{if(window.__ntkNativeFetch)window.fetch=window.__ntkNativeFetch;if(window.__ntkNativeBeacon)navigator.sendBeacon=window.__ntkNativeBeacon;window.NtkViewerBridge.onAckState(JSON.stringify({guardNativeApisRestored:true,fetchNative:/native code/.test(Function.prototype.toString.call(window.fetch))}));}catch(_){ }var v=guardVersion();var q=v?'?v='+encodeURIComponent(v):'';var js='/api/ad/guard-js'+q,wasm='/api/ad/guard-wasm'+q;if(!v){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadFallback:'no version'}));}catch(_){}}var mod=null,wasmUrl='';if(window.NtkQuicBridge){try{var h=JSON.stringify({'accept':'application/javascript,application/wasm,*/*','origin':baseOrigin(),'referer':pageUrl()});var jr=JSON.parse(window.NtkQuicBridge.request(abs(js),'GET',h,'')||'{}');var wr=JSON.parse(window.NtkQuicBridge.request(abs(wasm),'GET',h,'')||'{}');if((jr.status||0)===200&&(wr.status||0)===200){var jb=bytesFrom64(jr.bodyBase64||''),jt=new TextDecoder().decode(jb),blob=new Blob([jt],{type:'application/javascript'}),bu=URL.createObjectURL(blob),wb=bytesFrom64(wr.bodyBase64||'');wasmUrl=URL.createObjectURL(new Blob([wb],{type:'application/wasm'}));mod=await import(bu);try{URL.revokeObjectURL(bu);}catch(_){}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeModule:true,jsBytes:jb.length,wasmBytes:wb.length,version:v,wasmBlob:true}));}catch(_){}}}catch(bridgeLoadErr){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeModuleError:String(bridgeLoadErr)}));}catch(_){}}}if(!mod)mod=await import(abs(js));if(mod&&mod.default){try{await mod.default({module_or_path:wasmUrl||abs(wasm)});}finally{if(wasmUrl)try{URL.revokeObjectURL(wasmUrl);}catch(_){}}}window.__ntkGuardModule=mod;return mod;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:String(e),version:guardVersion()}));}catch(_){}return null;}}"
+                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;try{if(window.__ntkNativeFetch)window.fetch=window.__ntkNativeFetch;if(window.__ntkNativeBeacon)navigator.sendBeacon=window.__ntkNativeBeacon;window.NtkViewerBridge.onAckState(JSON.stringify({guardNativeApisRestored:true,fetchNative:/native code/.test(Function.prototype.toString.call(window.fetch)),fetchText:String(Function.prototype.toString.call(window.fetch)).slice(0,80)}));}catch(_){ }var v=guardVersion();var q=v?'?v='+encodeURIComponent(v):'',js='/api/ad/guard-js'+q,wasm='/api/ad/guard-wasm'+q,mod=null,wasmUrl='';try{var st=performance.now();mod=await import(abs(js));try{window.NtkViewerBridge.onAckState(JSON.stringify({guardDirectModule:true,version:v,ms:Math.round(performance.now()-st),source:abs(js)}));}catch(_){}if(mod&&mod.default){var it=performance.now();await mod.default({module_or_path:abs(wasm)});try{window.NtkViewerBridge.onAckState(JSON.stringify({guardDirectInit:true,loaded:mod.__i5?!!mod.__i5():null,ms:Math.round(performance.now()-it)}));}catch(_){}}}catch(directErr){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardDirectModuleError:String(directErr),version:v}));}catch(_){}if(window.NtkQuicBridge){try{var h=JSON.stringify({'accept':'application/javascript,application/wasm,*/*','origin':baseOrigin(),'referer':pageUrl()});var jr=JSON.parse(window.NtkQuicBridge.request(abs(js),'GET',h,'')||'{}');var wr=JSON.parse(window.NtkQuicBridge.request(abs(wasm),'GET',h,'')||'{}');if((jr.status||0)===200&&(wr.status||0)===200){var jb=bytesFrom64(jr.bodyBase64||''),jt=new TextDecoder().decode(jb),blob=new Blob([jt],{type:'application/javascript'}),bu=URL.createObjectURL(blob),wb=bytesFrom64(wr.bodyBase64||'');wasmUrl=URL.createObjectURL(new Blob([wb],{type:'application/wasm'}));mod=await import(bu);try{URL.revokeObjectURL(bu);}catch(_){}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeModule:true,jsBytes:jb.length,wasmBytes:wb.length,version:v,wasmBlob:true}));}catch(_){}if(mod&&mod.default){try{await mod.default({module_or_path:wasmUrl||abs(wasm)});}finally{if(wasmUrl)try{URL.revokeObjectURL(wasmUrl);}catch(_){}}}}}catch(bridgeLoadErr){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeModuleError:String(bridgeLoadErr)}));}catch(_){}}}}window.__ntkGuardModule=mod;return mod;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:String(e),version:guardVersion()}));}catch(_){}return null;}}"
+                + "async function loadGuard(){try{if(window.__ntkGuardModule)return window.__ntkGuardModule;try{if(window.__ntkNativeFetch)window.fetch=window.__ntkNativeFetch;if(window.__ntkNativeBeacon)navigator.sendBeacon=window.__ntkNativeBeacon;window.NtkViewerBridge.onAckState(JSON.stringify({guardNativeApisRestored:true,fetchNative:/native code/.test(Function.prototype.toString.call(window.fetch)),bridgeFirst:true}));}catch(_){ }var v=guardVersion(),q=v?'?v='+encodeURIComponent(v):'',js='/api/ad/guard-js'+q,wasm='/api/ad/guard-wasm'+q,mod=null,wasmUrl='',st=performance.now();if(window.NtkQuicBridge){try{var h=JSON.stringify({'accept':'application/javascript,application/wasm,*/*','origin':baseOrigin(),'referer':pageUrl()});var jr=JSON.parse(window.NtkQuicBridge.request(abs(js),'GET',h,'')||'{}');var wr=JSON.parse(window.NtkQuicBridge.request(abs(wasm),'GET',h,'')||'{}');if((jr.status||0)===200&&(wr.status||0)===200){var jb=bytesFrom64(jr.bodyBase64||''),wb=bytesFrom64(wr.bodyBase64||''),jt=new TextDecoder().decode(jb),bu=URL.createObjectURL(new Blob([jt],{type:'application/javascript'}));wasmUrl=URL.createObjectURL(new Blob([wb],{type:'application/wasm'}));mod=await import(bu);try{URL.revokeObjectURL(bu);}catch(_){}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeModuleFirst:true,jsBytes:jb.length,wasmBytes:wb.length,version:v,ms:Math.round(performance.now()-st)}));}catch(_){}if(mod&&mod.default){var it=performance.now();try{await mod.default({module_or_path:wasmUrl});}finally{if(wasmUrl)try{URL.revokeObjectURL(wasmUrl);}catch(_){}}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeInit:true,loaded:mod.__i5?!!mod.__i5():null,ms:Math.round(performance.now()-it)}));}catch(_){}}}}catch(bridgeErr){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardBridgeModuleFirstError:String(bridgeErr),version:v}));}catch(_){}}}if(!mod){try{var dt=performance.now();mod=await import(abs(js));try{window.NtkViewerBridge.onAckState(JSON.stringify({guardDirectModuleFallback:true,version:v,ms:Math.round(performance.now()-dt),source:abs(js)}));}catch(_){}if(mod&&mod.default){var di=performance.now();await mod.default({module_or_path:abs(wasm)});try{window.NtkViewerBridge.onAckState(JSON.stringify({guardDirectInitFallback:true,loaded:mod.__i5?!!mod.__i5():null,ms:Math.round(performance.now()-di)}));}catch(_){}}}catch(directErr){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardDirectModuleFallbackError:String(directErr),version:v}));}catch(_){}}}window.__ntkGuardModule=mod;return mod;}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardLoadError:String(e),version:guardVersion(),bridgeFirst:true}));}catch(_){}return null;}}"
+                + "async function guardAck(ch){try{var mod=await loadGuard();if(!mod||!ch){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckMissing:'module'}));}catch(_){}return false;}try{if(window.__ntkNativeFetch)window.fetch=window.__ntkNativeFetch;if(window.__ntkNativeBeacon)navigator.sendBeacon=window.__ntkNativeBeacon;window.NtkViewerBridge.onAckState(JSON.stringify({guardNativeApisBeforeI4:true}));}catch(_){}try{installGuardBeaconBridge();}catch(_){}try{if(mod.__i6&&!window.__ntk_guard_i6_once){window.__ntk_guard_i6_once=1;mod.__i6();window.NtkViewerBridge.onAckState(JSON.stringify({guardPrimeI6:true}));}}catch(primeErr){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardPrimeI6Error:String(primeErr)}));}catch(_){}}try{var fastShell=document.documentElement&&document.documentElement.getAttribute('data-ntk-fast-shell')==='1';var realRows=false;if(!fastShell)realRows=await waitSiteRows(4500);if(realRows){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsNative:true,count:document.querySelectorAll('[data-br=\"1\"][data-br-n]').length}));}catch(_){}}else{ensureGuardRows(ch);try{window.NtkViewerBridge.onAckState(JSON.stringify({guardRowsSyntheticFast:fastShell,count:document.querySelectorAll('[data-br=\"1\"][data-br-n]').length}));}catch(_){}}var imageNeed=Math.max(1,Number((ch&&ch.minSeen)||2));var imageReady=await waitGuardImages(imageNeed,1800);try{window.NtkViewerBridge.onAckState(JSON.stringify({guardImagesReady:imageReady,need:imageNeed,loaded:guardLoadedCount(),total:guardImages().length,fastShell:fastShell}));}catch(_){}guardDomState('rows',mod);}catch(_){}try{var seenBefore=await fireGuardImpressions(ch);try{window.NtkViewerBridge.onAckState(JSON.stringify({guardPreI4Imps:true,seen:seenBefore}));}catch(_){}}catch(_){}try{guardDomState('after-imps',mod);}catch(_){}try{var et=await bridgeReq('/api/ev/etag','GET',null,{'accept':'application/json,*/*'});try{window.NtkViewerBridge.onAckState(JSON.stringify({guardEtagBeforeI4:true,status:et&&et.status||0}));}catch(_){}}catch(etagErr){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardEtagBeforeI4Error:String(etagErr)}));}catch(_){}}try{delete window.__ntk_ad_ack_inflight;window.NtkViewerBridge.onAckState(JSON.stringify({guardInflightCleared:true}));}catch(_){}try{guardGlobalState('before-i4',mod);}catch(_){}try{window.NtkViewerBridge.onAckState(JSON.stringify({guardExports:Object.keys(mod).slice(0,24),hasI4:!!mod.__i4,hasI5:!!mod.__i5,defaultType:typeof mod.default,prime:'i6'}));}catch(_){}var fn=mod.__i4||mod.i4||mod._i4||mod.guardAck||mod.adAck;if(!fn)return false;var arg=JSON.stringify(ch);for(var i=0;i<6;i++){try{var before=mod.__i5?!!mod.__i5():null;var r=fn(arg,scope);if(r&&r.then)r=await r;var after=mod.__i5?!!mod.__i5():null;try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckTry:i,mode:'site-like-native-webview',argLen:String(arg||'').length,arg2Len:String(scope||'').length,arg:String(arg||'').slice(0,48),result:String(r||'').slice(0,80),before:before,after:after,acked:acked(),siteRetry:true}));}catch(_){}try{guardDomState('after-i4-'+i,mod);guardGlobalState('after-i4-'+i,mod);}catch(_){}if(await waitAck(550))return true;}catch(inner){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckTryError:i,error:String(inner),siteRetry:true}));}catch(_){}}}try{guardGlobalState('after-i4-all',mod);}catch(_){}return acked();}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardAckError:String(e)}));}catch(_){}return false;}}"
                 + "async function guardProof(token){try{var mod=await loadGuard();if(!mod||!mod._vc||!token)return '';var args=[token,JSON.stringify({token:token,path:scope}),scope];for(var i=0;i<args.length;i++){try{var v=mod._vc(args[i],scope);if(v&&v.then)v=await v;v=String(v||'');try{window.NtkViewerBridge.onAckState(JSON.stringify({guardProofTry:i,len:v.length,value:v.slice(0,16)}));}catch(_){}if(v&&v!=='true'&&v!=='false')return v;}catch(inner){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardProofTryError:i,error:String(inner)}));}catch(_){}}}return '';}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({guardProofError:String(e)}));}catch(_){}return '';}}"
-                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok)return false;if(c.body.trusted&&!c.body.challenge){markAck();return true;}if(!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'',imps=ch.impressionUrls||[];imps.forEach(fireImp);if(await guardAck(ch))return true;var tp=await guardProof(token);await sleep(180);await bridgeReq('/api/ad/canary','POST',{adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:Math.max(ch.slotCount||4,28),visible:ch.minSeen||2,path:scope,td:0,tp:tp});var b=a&&a.body?a.body:{};if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
+                + "async function fireGuardImpressions(ch){var seen=0,submitted=0;try{var imps=(ch&&ch.impressionUrls)||[],minSeen=Math.max(1,Number((ch&&ch.minSeen)||2)),target=Math.max(1,Math.min(minSeen+1,imps.length));for(var i=0;i<target;i++){try{submitted++;var r=await bridgeReq(imps[i],'GET',null,{'accept':'image/gif,image/*,*/*'});var code=r&&r.status||0;if(code>=200&&code<300)seen++;try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckImp:i,status:code,seen:seen,target:target}));}catch(_){}}catch(inner){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckImpError:i,error:String(inner)}));}catch(_){}}}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckImpsError:String(e)}));}catch(_){}}try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckImpsComplete:true,seen:seen,submitted:submitted}));}catch(_){}return seen;}"
+                + "function randHex(n){try{var a=new Uint8Array(Math.ceil((n||16)/2));crypto.getRandomValues(a);var s='';for(var i=0;i<a.length;i++)s+=('0'+a[i].toString(16)).slice(-2);return s.slice(0,n||16);}catch(e){return String(Date.now().toString(16)+Math.random().toString(16).slice(2)).slice(0,n||16);}}"
+                + "async function directAck(){try{var c=await bridgeReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok)return false;if(c.body.trusted&&!c.body.challenge){markAck();return true;}if(!c.body.challenge)return false;var ch=c.body.challenge,token=ch.token||'';if(await guardAck(ch))return true;var seen=await fireGuardImpressions(ch);var tp=await guardProof(token);if(!tp||tp==='true'||tp==='false')tp='';var minSeen=Math.max(1,Number(ch.minSeen||2)),total=Math.max(Number(ch.slotCount||4),28),visible=minSeen;try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckSubmit:true,tp:String(tp||''),tpLen:String(tp||'').length,total:total,visible:visible,seen:seen,minSeen:minSeen}));}catch(_){}await sleep(120);var cy=await bridgeReq('/api/ad/canary','POST',{adGuardLoaded:true,adAckCanary:true,challengeToken:token,token:token,path:scope});try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckCanary:true,status:cy&&cy.status||0,body:cy&&cy.body||{}}));}catch(_){}var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:total,visible:visible,path:scope,td:0,tp:tp});var b=a&&a.body?a.body:{};try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckResponse:true,status:a&&a.status||0,body:b}));}catch(_){}if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markAck();return true;}}catch(e){try{window.NtkViewerBridge.onAckState(JSON.stringify({directAckError:String(e)}));}catch(_){}}return false;}"
                 + "function extractAckState(){try{var ls={},ss={},i,k;for(i=0;i<localStorage.length;i++){k=localStorage.key(i);if(k)ls[k]=localStorage.getItem(k);}for(i=0;i<sessionStorage.length;i++){k=sessionStorage.key(i);if(k)ss[k]=sessionStorage.getItem(k);}return JSON.stringify({cookies:docCookie(),local:ls,session:ss,ackScope:(function(){try{return window.__ntk_ad_ack_scope;}catch(e){return null;}})(),ntkVars:(function(){try{var o={};for(var p in window)if(p.indexOf('__ntk')===0)try{o[p]=String(window[p]);}catch(e){}return o;}catch(e){return{};}})(),ua:navigator.userAgent,ts:Date.now()});}catch(e){return JSON.stringify({error:String(e)});}}"
                 + "(async function(){try{for(var i=0;i<20;i++){if(document.body)break;await sleep(100);}var deadline=Date.now()+18000,armed=false;if(!acked()){armed=true;if(!(await directAck()))rearm();}var r=await api();while(Date.now()<deadline&&r&&r.status===403){try{window.NtkViewerBridge.onAckState(extractAckState());}catch(e){}if(!acked()&&!armed){armed=true;if(!(await directAck()))rearm();}await waitAck(Math.min(1800,Math.max(0,deadline-Date.now())));await sleep(180);r=await api();}send({code:r?r.status:0,body:r?r.body:{error:'timeout'}});}catch(e){send({code:0,error:String(e)});}})();"
                 + "})()";
     }
 
+    private static String buildViewerImageFetchScript(String baseUrl, String path, String ackScopePath,
+                                                      String kind, String workId,
+                                                      String episodeId, String imagesToken) {
+        String scope = ackScopePath == null || ackScopePath.length() == 0 ? path : ackScopePath;
+        return buildViewerImageFetchScript(baseUrl, scope, kind, workId, episodeId, imagesToken);
+    }
     private WebResourceResponse interceptViewerQuicRequest(String userAgent, String fallbackCookieHeader,
                                                            WebResourceRequest request) {
         if(request == null || request.getUrl() == null || !NtkQuicFetcher.isAvailable())
             return null;
         String method = request.getMethod();
         String url = request.getUrl().toString();
-        if(method == null || !"GET".equalsIgnoreCase(method) || !isNtkProtectedHttpsUrl(url))
+        boolean metricImage = false;
+        boolean cdnImage = false;
+        try {
+            URI requestUri = URI.create(url);
+            String requestPath = requestUri.getPath();
+            metricImage = "/api/m/i".equals(requestPath);
+            cdnImage = isNtkImageCdnUrl(requestUri);
+        } catch (Exception ignored) {
+        }
+        if(method == null || !"GET".equalsIgnoreCase(method)
+                || (!isNtkProtectedHttpsUrl(url) && !cdnImage))
             return null;
         if(shouldUseDirectWebViewForActiveFetch(url))
             return null;
         try {
+            if(metricImage || cdnImage)
+                Log.d(TAG, "ntk_viewer_quic_intercept_image_start url=" + url
+                        + ",cdn=" + cdnImage
+                        + ",metric=" + metricImage
+                        + ",headers=" + request.getRequestHeaders());
             NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, url, userAgent,
                     mergedCookieHeader(url, fallbackCookieHeader), request.getRequestHeaders(),
                     request.isForMainFrame() ? 15000L : 10000L);
             if(result == null || result.error != null || result.code < 200 || result.code >= 500
-                    || result.bodyBytes == null || result.bodyBytes.length == 0)
+                    || result.bodyBytes == null || result.bodyBytes.length == 0) {
+                if(metricImage || cdnImage)
+                    Log.d(TAG, "ntk_viewer_quic_intercept_image_miss code="
+                            + (result == null ? 0 : result.code)
+                            + ",error=" + (result == null ? "null" : result.error)
+                            + ",len=" + (result == null || result.bodyBytes == null ? 0 : result.bodyBytes.length));
                 return null;
+            }
             if(Log.isLoggable(TAG, Log.DEBUG))
                 Log.d(TAG, "ntk_viewer_quic_intercept url=" + url
                         + ",main=" + request.isForMainFrame()
@@ -1301,8 +1643,19 @@ final class NtkWebViewFallbackManager {
             byte[] responseBytes = result.bodyBytes;
             if(request.isForMainFrame() && responseMimeType(result.contentType()).toLowerCase(Locale.ROOT).contains("html"))
                 responseBytes = injectNtkQuicBridgeScript(result.body, result.headers).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            return new WebResourceResponse(responseMimeType(result.contentType()),
-                    responseEncoding(result.contentType()), result.code,
+            String mimeType = metricImage ? "image/gif" : responseMimeType(result.contentType());
+            if((metricImage || cdnImage) && !mimeType.toLowerCase(Locale.ROOT).startsWith("image/"))
+                mimeType = imageMimeTypeFromUrl(url);
+            if(metricImage || cdnImage)
+                Log.d(TAG, "ntk_viewer_quic_intercept_image_hit code=" + result.code
+                        + ",cdn=" + cdnImage
+                        + ",metric=" + metricImage
+                        + ",type=" + result.contentType()
+                        + ",mime=" + mimeType
+                        + ",len=" + responseBytes.length
+                        + ",sig=" + responseSignature(responseBytes));
+            return new WebResourceResponse(mimeType,
+                    (metricImage || cdnImage) ? null : responseEncoding(result.contentType()), result.code,
                     result.code >= 400 ? "Cloudflare" : "OK",
                     responseHeaders(result.headers), new ByteArrayInputStream(responseBytes));
         } catch (Exception e) {
@@ -1557,7 +1910,7 @@ final class NtkWebViewFallbackManager {
         if(source == null)
             return result;
         for(String key : source.keySet()) {
-            if(key == null || "set-cookie".equalsIgnoreCase(key))
+            if(key == null || shouldStripWebResourceResponseHeader(key))
                 continue;
             List<String> values = source.get(key);
             if(values != null && values.size() > 0 && values.get(0) != null)
@@ -1566,12 +1919,72 @@ final class NtkWebViewFallbackManager {
         return result;
     }
 
+    private static boolean isNtkImageCdnUrl(URI uri) {
+        if(uri == null || !"https".equalsIgnoreCase(uri.getScheme()))
+            return false;
+        String host = uri.getHost();
+        String path = uri.getPath();
+        if(host == null || path == null)
+            return false;
+        String lowerHost = host.toLowerCase(Locale.ROOT);
+        String lowerPath = path.toLowerCase(Locale.ROOT);
+        return lowerHost.equals("i.toonflix.app")
+                && (lowerPath.contains("/board_uploads/")
+                || lowerPath.contains("/webtoon_uploads/")
+                || lowerPath.contains("/manhwa_uploads/")
+                || lowerPath.contains("/comic_uploads/")
+                || lowerPath.contains("/blacktoon/episodes/")
+                || lowerPath.contains("/wt/episodes/"))
+                && lowerPath.matches(".*\\.(?:jpg|jpeg|png|webp|gif)$");
+    }
+
+    private static String imageMimeTypeFromUrl(String url) {
+        String lower = url == null ? "" : url.toLowerCase(Locale.ROOT);
+        if(lower.endsWith(".png"))
+            return "image/png";
+        if(lower.endsWith(".webp"))
+            return "image/webp";
+        if(lower.endsWith(".gif"))
+            return "image/gif";
+        return "image/jpeg";
+    }
+
+    private static boolean shouldStripWebResourceResponseHeader(String key) {
+        if(key == null)
+            return true;
+        String lower = key.toLowerCase(Locale.ROOT);
+        return "set-cookie".equals(lower)
+                || "content-encoding".equals(lower)
+                || "content-length".equals(lower)
+                || "transfer-encoding".equals(lower)
+                || "connection".equals(lower);
+    }
+
+    private static String responseSignature(byte[] bytes) {
+        if(bytes == null || bytes.length == 0)
+            return "";
+        StringBuilder builder = new StringBuilder();
+        int count = Math.min(12, bytes.length);
+        for(int i = 0; i < count; i++) {
+            if(i > 0)
+                builder.append(' ');
+            builder.append(String.format(Locale.US, "%02x", bytes[i] & 0xff));
+        }
+        return builder.toString();
+    }
+
     private static String viewerImageCacheKey(String kind, String workId, String episodeId, String path) {
         if(kind == null || workId == null || episodeId == null || path == null
                 || kind.length() == 0 || workId.length() == 0 || episodeId.length() == 0
                 || path.length() == 0)
             return "";
         return kind + ':' + workId + ':' + episodeId + ':' + path;
+    }
+
+    private static String viewerImageFlightKey(String baseUrl, String path, String kind, String workId,
+                                               String episodeId, String imagesToken) {
+        return (baseUrl == null ? "" : baseUrl) + '|'
+                + viewerImageCacheKey(kind, workId, episodeId, path);
     }
 
     private static String jsonQuote(String value) {
@@ -1661,30 +2074,99 @@ final class NtkWebViewFallbackManager {
 
         @JavascriptInterface
         public void onAckState(String value) {
-            if(Log.isLoggable(TAG, Log.DEBUG))
-                Log.d(TAG, "ntk_ack_state=" + (value == null ? "" : value));
+            Log.d(TAG, "ntk_ack_state=" + (value == null ? "" : value));
         }
 
         @JavascriptInterface
         public void onAckProof(String value) {
-            if(Log.isLoggable(TAG, Log.DEBUG))
-                Log.d(TAG, "ntk_ack_proof=" + (value == null ? "" : value));
+            Log.d(TAG, "ntk_ack_proof=" + (value == null ? "" : value));
         }
     }
 
     private static final class NtkQuicBridge {
+        private final Context context;
         private final String userAgent;
         private final String fallbackCookieHeader;
+        private final NtkQuicFetcher.Session http2Session;
+        private final Map<String, byte[]> guardLoaderByVersion = new ConcurrentHashMap<>();
+        private NtkQuicFetcher.Session quicSession;
+        private String quicSessionHost = "";
 
-        NtkQuicBridge(String userAgent, String fallbackCookieHeader) {
+        NtkQuicBridge(Context context, String userAgent, String fallbackCookieHeader) {
+            this.context = context == null ? MainApplication.appContext : context.getApplicationContext();
             this.userAgent = userAgent;
             this.fallbackCookieHeader = fallbackCookieHeader == null ? "" : fallbackCookieHeader;
+            this.http2Session = NtkQuicFetcher.newHttp2Session(this.context, userAgent);
+        }
+
+        void close() {
+            if(http2Session != null)
+                http2Session.close();
+            if(quicSession != null)
+                quicSession.close();
         }
 
         @JavascriptInterface
         public String cookie(String url, String name) {
             String value = cookieValue(webViewCookieHeader(url), name);
             return value.length() > 0 ? value : cookieValue(fallbackCookieHeader, name);
+        }
+
+        @JavascriptInterface
+        public String guardVersion() {
+            try {
+                String value = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                        .getString("ntk_guard_version", "");
+                return value != null && value.matches("b\\d{13}-wasm-\\d{13}") ? value : "";
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public String guardVersionFor(String url) {
+            String remembered = guardVersion();
+            if(remembered.length() > 0)
+                return remembered;
+            if(!isNtkProtectedHttpsUrl(url) || !NtkQuicFetcher.isAvailable())
+                return "";
+            try {
+                URI uri = URI.create(url);
+                String origin = uri.getScheme() + "://" + uri.getHost();
+                String pageUrl = origin + (uri.getRawPath() == null || uri.getRawPath().length() == 0
+                        ? "/" : uri.getRawPath());
+                if(uri.getRawQuery() != null && uri.getRawQuery().length() > 0)
+                    pageUrl += "?" + uri.getRawQuery();
+                String cookieHeader = bridgeCookieHeader(pageUrl, fallbackCookieHeader, new HashMap<>(), new byte[0]);
+                Map<String, String> headers = new HashMap<>();
+                headers.put("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+                headers.put("referer", pageUrl);
+                headers.put("origin", origin);
+                NtkQuicFetcher.Session session = quicControlSession(pageUrl);
+                long started = SystemClock.uptimeMillis();
+                NtkQuicFetcher.Result result = session == null
+                        ? NtkQuicFetcher.fetch(context, pageUrl, userAgent, cookieHeader,
+                                headers, "GET", null, 2200L)
+                        : session.fetch(pageUrl, userAgent, cookieHeader,
+                                headers, "GET", null, 2200L);
+                String version = result == null || result.body == null ? "" : ntkGuardVersionFromText(result.body);
+                if(version.length() > 0) {
+                    context.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                            .edit()
+                            .putString("ntk_guard_version", version)
+                            .apply();
+                }
+                Log.d(TAG, "ntk_viewer_guard_version_discovery url=" + pageUrl
+                        + ",code=" + (result == null ? 0 : result.code)
+                        + ",error=" + (result == null ? "null" : result.error)
+                        + ",len=" + (result == null || result.bodyBytes == null ? 0 : result.bodyBytes.length)
+                        + ",version=" + version
+                        + ",ms=" + (SystemClock.uptimeMillis() - started));
+                return version;
+            } catch (Exception e) {
+                Log.d(TAG, "ntk_viewer_guard_version_discovery_error " + e);
+                return "";
+            }
         }
 
         @JavascriptInterface
@@ -1704,28 +2186,118 @@ final class NtkWebViewFallbackManager {
         }
 
         @JavascriptInterface
+        public String hmacSha256Bytes(String keyBase64, String messageBase64) {
+            try {
+                byte[] key = Base64.decode(keyBase64, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                byte[] message = Base64.decode(messageBase64, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+                mac.init(new javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"));
+                return Base64.encodeToString(mac.doFinal(message),
+                        Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public String aesGcmDecrypt(String keyBase64, String ivBase64, String cipherBase64) {
+            try {
+                byte[] key = Base64.decode(keyBase64, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                byte[] iv = Base64.decode(ivBase64, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                byte[] cipherText = Base64.decode(cipherBase64, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+                javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(javax.crypto.Cipher.DECRYPT_MODE,
+                        new javax.crypto.spec.SecretKeySpec(key, "AES"),
+                        new javax.crypto.spec.GCMParameterSpec(128, iv));
+                return Base64.encodeToString(cipher.doFinal(cipherText),
+                        Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
         public String request(String url, String method, String headersJson, String bodyBase64) {
-            if(!NtkQuicFetcher.isAvailable() || !isNtkProtectedHttpsUrl(url))
+            if(!isNtkProtectedHttpsUrl(url))
                 return bridgeError("unsupported url");
             try {
+                String cachedGuard = cachedGuardModuleResponse(url);
+                if(cachedGuard != null)
+                    return cachedGuard;
+                if(!NtkQuicFetcher.isAvailable())
+                    return bridgeError("quic unavailable");
                 byte[] body = bodyBase64 == null || bodyBase64.length() == 0
                         ? new byte[0] : Base64.decode(bodyBase64, Base64.DEFAULT);
                 Map<String, String> headers = parseBridgeHeaders(headersJson);
                 String cookieHeader = bridgeCookieHeader(url, fallbackCookieHeader, headers, body);
+                removeHeaderIgnoreCase(headers, "cookie");
                 logBridgeRequest(url, method, headers, body, cookieHeader);
-                NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(MainApplication.appContext,
-                        url, userAgent, cookieHeader, headers,
-                        method, body, 15000L);
+                boolean adControlPost = shouldUseHttp2ForNtkAdControlPost(url, method);
+                NtkQuicFetcher.Result result;
+                if(adControlPost) {
+                    long startMs = SystemClock.uptimeMillis();
+                    NtkQuicFetcher.Session primarySession = quicControlSession(url);
+                    result = primarySession == null
+                            ? NtkQuicFetcher.fetch(MainApplication.appContext,
+                                    url, userAgent, cookieHeader, headers,
+                                    method, body, 2500L)
+                            : primarySession.fetch(url, userAgent, cookieHeader, headers,
+                                    method, body, 2500L);
+                    Log.d(TAG, "ntk_viewer_ad_bridge_quic_first code="
+                            + (result == null ? -1 : result.code)
+                            + ",error=" + (result == null ? "null" : result.error)
+                            + ",elapsedMs=" + (SystemClock.uptimeMillis() - startMs)
+                            + ",session=" + (primarySession != null)
+                            + ",url=" + url);
+                    if(result == null || result.error != null || result.code >= 500) {
+                        long retryStartMs = SystemClock.uptimeMillis();
+                        NtkQuicFetcher.Result retry = http2Session == null
+                                ? NtkQuicFetcher.fetchHttp2Only(MainApplication.appContext,
+                                        url, userAgent, cookieHeader, headers, method, body, 1800L)
+                                : http2Session.fetch(url, userAgent, cookieHeader, headers,
+                                        method, body, 1800L);
+                        Log.d(TAG, "ntk_viewer_ad_bridge_http2_retry code="
+                                + (retry == null ? -1 : retry.code)
+                                + ",error=" + (retry == null ? "null" : retry.error)
+                                + ",elapsedMs=" + (SystemClock.uptimeMillis() - retryStartMs)
+                                + ",session=" + (http2Session != null)
+                                + ",url=" + url);
+                        if(retry != null && retry.error == null
+                                && (result == null || result.error != null || retry.code < result.code)) {
+                            result = retry;
+                            Log.d(TAG, "ntk_viewer_ad_bridge_http2_retry_selected code="
+                                    + result.code + ",url=" + url);
+                        }
+                    }
+                } else {
+                    result = NtkQuicFetcher.fetch(MainApplication.appContext,
+                            url, userAgent, cookieHeader, headers,
+                            method, body, 15000L);
+                }
                 if(result == null)
                     return bridgeError("empty result");
-                if(result.error != null)
+                if(result.error != null) {
+                    String localGuard = localGuardModuleResponse(url);
+                    if(localGuard != null)
+                        return localGuard;
                     return bridgeError(String.valueOf(result.error));
+                }
+                String localGuard = result.code >= 400 ? localGuardModuleResponse(url) : null;
+                if(localGuard != null)
+                    return localGuard;
+                rememberGuardModuleResponse(url, result.bodyBytes);
+                String decodedGuard = decodedVersionedGuardWasmResponse(url, result);
+                if(decodedGuard != null)
+                    return decodedGuard;
                 applyWebViewCookies(url, result);
                 if(Log.isLoggable(TAG, Log.DEBUG))
                     Log.d(TAG, "ntk_viewer_quic_bridge method=" + method
                             + ",code=" + result.code
                             + ",len=" + result.bodyBytes.length
                             + ",url=" + url);
+                logAdControlBridgeResponse(url, method, result);
+                logMetricsBridgeResponse(url, method, result);
+                logViewerImageBridgeResponse(url, method, result);
                 cacheViewerImageApiResponse(url, headers, body, result);
                 JSONObject object = new JSONObject();
                 object.put("ok", true);
@@ -1739,9 +2311,615 @@ final class NtkWebViewFallbackManager {
             }
         }
 
+        @JavascriptInterface
+        public String requestGetBatch(String urlsJson, String headersJson) {
+            try {
+                JSONArray urls = new JSONArray(urlsJson == null ? "[]" : urlsJson);
+                int count = Math.min(urls.length(), 8);
+                JSONArray results = new JSONArray();
+                if(count <= 0) {
+                    JSONObject out = new JSONObject();
+                    out.put("ok", true);
+                    out.put("results", results);
+                    return out.toString();
+                }
+                Map<String, String> baseHeaders = parseBridgeHeaders(headersJson);
+                java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors
+                        .newFixedThreadPool(Math.min(4, count));
+                java.util.List<java.util.concurrent.Future<JSONObject>> futures = new ArrayList<>();
+                long started = SystemClock.uptimeMillis();
+                try {
+                    for(int i = 0; i < count; i++) {
+                        final int index = i;
+                        final String url = urls.optString(i, "");
+                        futures.add(executor.submit(() -> {
+                            JSONObject item = new JSONObject();
+                            item.put("index", index);
+                            item.put("url", url);
+                            if(!isNtkProtectedHttpsUrl(url)) {
+                                item.put("ok", false);
+                                item.put("error", "unsupported url");
+                                return item;
+                            }
+                            Map<String, String> headers = new HashMap<>(baseHeaders);
+                            String cookieHeader = bridgeCookieHeader(url, fallbackCookieHeader, headers, new byte[0]);
+                            removeHeaderIgnoreCase(headers, "cookie");
+                            NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(context, url, userAgent,
+                                    cookieHeader, headers, "GET", null, 2200L);
+                            if(result != null)
+                                applyWebViewCookies(url, result);
+                            item.put("ok", result != null && result.error == null
+                                    && result.code >= 200 && result.code < 400);
+                            item.put("status", result == null ? 0 : result.code);
+                            item.put("error", result == null ? "null" : String.valueOf(result.error));
+                            item.put("len", result == null || result.bodyBytes == null ? 0 : result.bodyBytes.length);
+                            return item;
+                        }));
+                    }
+                    for(java.util.concurrent.Future<JSONObject> future : futures) {
+                        try {
+                            results.put(future.get(2600L, TimeUnit.MILLISECONDS));
+                        } catch (Exception e) {
+                            JSONObject item = new JSONObject();
+                            item.put("ok", false);
+                            item.put("error", String.valueOf(e));
+                            results.put(item);
+                        }
+                    }
+                } finally {
+                    executor.shutdownNow();
+                }
+                Log.d(TAG, "ntk_viewer_quic_bridge_batch_get count=" + count
+                        + ",ms=" + (SystemClock.uptimeMillis() - started));
+                JSONObject out = new JSONObject();
+                out.put("ok", true);
+                out.put("results", results);
+                return out.toString();
+            } catch (Exception e) {
+                return bridgeError(String.valueOf(e));
+            }
+        }
+
+        private static boolean shouldUseHttp2ForNtkAdControlPost(String url, String method) {
+            if(method == null || !"POST".equalsIgnoreCase(method))
+                return false;
+            try {
+                String path = URI.create(url).getPath();
+                return "/api/ad/challenge".equals(path)
+                        || "/api/ad/canary".equals(path)
+                        || "/api/ad/ack".equals(path)
+                        || "/api/ev/sync".equals(path)
+                        || "/api/m/ev".equals(path);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        private synchronized NtkQuicFetcher.Session quicControlSession(String url) {
+            try {
+                String host = URI.create(url).getHost();
+                if(host == null || host.length() == 0)
+                    return null;
+                if(quicSession != null && host.equalsIgnoreCase(quicSessionHost))
+                    return quicSession;
+                if(quicSession != null)
+                    quicSession.close();
+                quicSession = NtkQuicFetcher.newQuicSession(context, userAgent, host);
+                quicSessionHost = quicSession == null ? "" : host;
+                return quicSession;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private void logAdControlBridgeResponse(String url, String method, NtkQuicFetcher.Result result) {
+            if(result == null)
+                return;
+            try {
+                URI uri = URI.create(url);
+                String path = uri.getPath();
+                if(path == null || !path.startsWith("/api/ad/"))
+                    return;
+                String body = result.body == null ? "" : result.body;
+                body = body.replace('\n', ' ').replace('\r', ' ');
+                if(body.length() > 220)
+                    body = body.substring(0, 220);
+                List<String> setCookies = result.setCookies();
+                Log.d(TAG, "ntk_viewer_ad_bridge_response method=" + method
+                        + ",path=" + path
+                        + ",code=" + result.code
+                        + ",len=" + result.bodyBytes.length
+                        + ",setCookies=" + setCookies.size()
+                        + ",cookieNames=" + cookieNames(setCookies)
+                        + ",body=" + body);
+            } catch (Exception ignored) {
+            }
+        }
+
+        private static String cookieNames(List<String> cookies) {
+            if(cookies == null || cookies.size() == 0)
+                return "";
+            StringBuilder builder = new StringBuilder();
+            for(String cookie : cookies) {
+                if(cookie == null)
+                    continue;
+                String trimmed = cookie.trim();
+                int equals = trimmed.indexOf('=');
+                if(equals <= 0)
+                    continue;
+                if(builder.length() > 0)
+                    builder.append('|');
+                builder.append(trimmed.substring(0, equals));
+            }
+            return builder.toString();
+        }
+
+        private void logViewerImageBridgeResponse(String url, String method, NtkQuicFetcher.Result result) {
+            if(result == null)
+                return;
+            try {
+                URI uri = URI.create(url);
+                String path = uri.getPath();
+                if(path == null || !(path.endsWith("/manhwa-images") || path.endsWith("/webtoon-images")))
+                    return;
+                String body = result.body == null ? "" : result.body;
+                body = body.replace('\n', ' ').replace('\r', ' ');
+                if(body.length() > 320)
+                    body = body.substring(0, 320);
+                Log.d(TAG, "ntk_viewer_image_bridge_response method=" + method
+                        + ",path=" + path
+                        + ",code=" + result.code
+                        + ",len=" + result.bodyBytes.length
+                        + ",body=" + body);
+            } catch (Exception ignored) {
+            }
+        }
+
+        private void logMetricsBridgeResponse(String url, String method, NtkQuicFetcher.Result result) {
+            if(result == null)
+                return;
+            try {
+                URI uri = URI.create(url);
+                String path = uri.getPath();
+                if(path == null || !path.startsWith("/api/m/"))
+                    return;
+                String body = result.body == null ? "" : result.body;
+                body = body.replace('\n', ' ').replace('\r', ' ');
+                if(body.length() > 320)
+                    body = body.substring(0, 320);
+                Log.d(TAG, "ntk_viewer_metrics_bridge_response method=" + method
+                        + ",path=" + path
+                        + ",code=" + result.code
+                        + ",len=" + result.bodyBytes.length
+                        + ",body=" + body);
+            } catch (Exception ignored) {
+            }
+        }
+
+        private String localGuardModuleResponse(String url) {
+            if(!isNtkAdGuardModuleUrl(url))
+                return null;
+            try {
+                String path = URI.create(url).getPath();
+                boolean wasm = "/api/ad/guard-wasm".equals(path);
+                byte[] bytes = readAssetBytes(context, wasm
+                        ? "ntk_guard/guard-wasm.bin"
+                        : "ntk_guard/guard.js");
+                if(bytes == null || bytes.length == 0)
+                    return null;
+                if(wasm) {
+                    byte[] loader = readAssetBytes(context, "ntk_guard/guard.js");
+                    if(!isHardenedGuardLoader(loader)) {
+                        byte[] raw = decryptLocalGuardWasm(bytes);
+                        if(raw != null && raw.length > 4)
+                            bytes = raw;
+                        else
+                            return null;
+                    }
+                } else {
+                    String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    if(!text.startsWith("/*!HARDENED*/"))
+                        bytes = stripEncryptedGuardLoader(bytes);
+                }
+                JSONObject object = new JSONObject();
+                object.put("ok", true);
+                object.put("status", 200);
+                object.put("statusText", "OK");
+                JSONObject headers = new JSONObject();
+                headers.put("content-type", wasm ? "application/wasm" : "application/javascript");
+                object.put("headers", headers);
+                object.put("bodyBase64", Base64.encodeToString(bytes, Base64.NO_WRAP));
+                Log.d(TAG, "ntk_viewer_quic_bridge_local_guard url=" + url
+                        + ",wasm=" + wasm
+                        + ",len=" + bytes.length);
+                return object.toString();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private String decodedVersionedGuardWasmResponse(String url, NtkQuicFetcher.Result result) {
+            if(result == null || result.code != 200 || result.bodyBytes == null)
+                return null;
+            if(!isNtkAdGuardModuleUrl(url))
+                return null;
+            try {
+                URI uri = URI.create(url);
+                if(!"/api/ad/guard-wasm".equals(uri.getPath()))
+                    return null;
+                if(ntkGuardVersionFromUrl(url).length() == 0)
+                    return null;
+                if(isHardenedGuardLoader(ntkGuardVersionFromUrl(url)))
+                    return null;
+                byte[] raw = decryptVersionedGuardWasm(ntkGuardVersionFromUrl(url), result.bodyBytes);
+                if(raw == null || raw.length <= 4)
+                    raw = decryptLocalGuardWasm(result.bodyBytes);
+                if(raw == null || raw.length <= 4)
+                    return null;
+                Log.d(TAG, "ntk_viewer_quic_bridge_decoded_guard_wasm url=" + url
+                        + ",encryptedBytes=" + result.bodyBytes.length
+                        + ",plainBytes=" + raw.length);
+                return guardModuleBridgeObject(raw, true).toString();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private String cachedGuardModuleResponse(String url) {
+            if(!isNtkAdGuardModuleUrl(url))
+                return null;
+            try {
+                String version = ntkGuardVersionFromUrl(url);
+                if(version.length() == 0)
+                    return localGuardModuleResponse(url);
+                String path = URI.create(url).getPath();
+                boolean wasm = "/api/ad/guard-wasm".equals(path);
+                java.io.File file = new java.io.File(new java.io.File(context.getCacheDir(), "ntk_guard_cache"),
+                        (wasm ? "guard-wasm-" : "guard-js-") + version + (wasm ? ".bin" : ".js"));
+                if(!file.isFile() || file.length() <= 0L)
+                    return null;
+                byte[] bytes = readFileBytes(file);
+                if(bytes == null || bytes.length == 0)
+                    return null;
+                if(wasm) {
+                    if(!isHardenedGuardLoader(version)) {
+                        byte[] raw = decryptVersionedGuardWasm(version, bytes);
+                        if(raw != null && raw.length > 4)
+                            bytes = raw;
+                        else
+                            return null;
+                    }
+                } else {
+                    String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    if(!text.startsWith("/*!HARDENED*/"))
+                        bytes = stripEncryptedGuardLoader(bytes);
+                }
+                JSONObject object = guardModuleBridgeObject(bytes, wasm);
+                Log.d(TAG, "ntk_viewer_quic_bridge_cached_guard url=" + url
+                        + ",wasm=" + wasm
+                        + ",len=" + bytes.length);
+                return object.toString();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private static String ntkGuardVersionFromUrl(String url) {
+            try {
+                String query = URI.create(url).getRawQuery();
+                if(query == null || query.length() == 0)
+                    return "";
+                for(String part : query.split("&")) {
+                    int equals = part.indexOf('=');
+                    if(equals <= 0 || !"v".equals(part.substring(0, equals)))
+                        continue;
+                    String value = URLDecoder.decode(part.substring(equals + 1), "UTF-8");
+                    return value.matches("b\\d{13}-wasm-\\d{13}") ? value : "";
+                }
+            } catch (Exception ignored) {
+            }
+            return "";
+        }
+
+        private static JSONObject guardModuleBridgeObject(byte[] bytes, boolean wasm) throws Exception {
+            JSONObject object = new JSONObject();
+            object.put("ok", true);
+            object.put("status", 200);
+            object.put("statusText", "OK");
+            JSONObject headers = new JSONObject();
+            headers.put("content-type", wasm ? "application/wasm" : "application/javascript");
+            object.put("headers", headers);
+            object.put("bodyBase64", Base64.encodeToString(bytes, Base64.NO_WRAP));
+            return object;
+        }
+
+        private static byte[] readFileBytes(java.io.File file) {
+            if(file == null || !file.isFile())
+                return null;
+            try(java.io.FileInputStream input = new java.io.FileInputStream(file);
+                java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+                byte[] buffer = new byte[16 * 1024];
+                int read;
+                while((read = input.read(buffer)) >= 0) {
+                    if(read > 0)
+                        output.write(buffer, 0, read);
+                }
+                return output.toByteArray();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private static byte[] readAssetBytes(Context context, String assetPath) {
+            if(context == null || assetPath == null || assetPath.length() == 0)
+                return null;
+            try(java.io.InputStream input = context.getAssets().open(assetPath);
+                java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+                byte[] buffer = new byte[16 * 1024];
+                int read;
+                while((read = input.read(buffer)) >= 0) {
+                    if(read > 0)
+                        output.write(buffer, 0, read);
+                }
+                return output.toByteArray();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private boolean isHardenedGuardLoader(String version) {
+            if(version == null || version.length() == 0)
+                return false;
+            byte[] bytes = guardLoaderByVersion.get(version);
+            if(isHardenedGuardLoader(bytes))
+                return true;
+            java.io.File file = new java.io.File(new java.io.File(context.getCacheDir(), "ntk_guard_cache"),
+                    "guard-js-" + version + ".js");
+            return isHardenedGuardLoader(readFileBytes(file));
+        }
+
+        private static boolean isHardenedGuardLoader(byte[] bytes) {
+            if(bytes == null || bytes.length < 12)
+                return false;
+            try {
+                String prefix = new String(bytes, 0, Math.min(bytes.length, 64),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                return prefix.startsWith("/*!HARDENED*/");
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        private static byte[] stripEncryptedGuardLoader(byte[] bytes) {
+            if(bytes == null || bytes.length == 0)
+                return bytes;
+            try {
+                String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                int marker = text.indexOf("\n/*!ENCRYPTED*/");
+                if(marker <= 0)
+                    marker = text.indexOf("/*!ENCRYPTED*/");
+                if(marker <= 0)
+                    return bytes;
+                String stripped = text.substring(0, marker);
+                if(!stripped.contains("export{O as initSync,H as default}")
+                        && stripped.contains("async function H("))
+                    stripped = stripped + "\nexport{O as initSync,H as default};";
+                Log.d(TAG, "ntk_viewer_guard_js_stripped encryptedBytes=" + bytes.length
+                        + ",plainBytes=" + stripped.length());
+                return stripped.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                return bytes;
+            }
+        }
+
+        private void rememberGuardModuleResponse(String url, byte[] bytes) {
+            if(bytes == null || bytes.length == 0 || !isNtkAdGuardModuleUrl(url))
+                return;
+            try {
+                String version = ntkGuardVersionFromUrl(url);
+                if(version.length() == 0)
+                    return;
+                String path = URI.create(url).getPath();
+                boolean wasm = "/api/ad/guard-wasm".equals(path);
+                if(!wasm)
+                    guardLoaderByVersion.put(version, bytes);
+                java.io.File dir = new java.io.File(context.getCacheDir(), "ntk_guard_cache");
+                if(!dir.isDirectory() && !dir.mkdirs())
+                    return;
+                java.io.File file = new java.io.File(dir,
+                        (wasm ? "guard-wasm-" : "guard-js-") + version + (wasm ? ".bin" : ".js"));
+                try(java.io.FileOutputStream output = new java.io.FileOutputStream(file)) {
+                    output.write(bytes);
+                }
+                Log.d(TAG, "ntk_viewer_quic_bridge_guard_cache_write url=" + url
+                        + ",wasm=" + wasm
+                        + ",len=" + bytes.length);
+            } catch (Exception e) {
+                Log.d(TAG, "ntk_viewer_quic_bridge_guard_cache_write_failed " + e);
+            }
+        }
+
+        private byte[] decryptVersionedGuardWasm(String version, byte[] encrypted) {
+            if(version == null || version.length() == 0 || encrypted == null || encrypted.length <= 28)
+                return null;
+            try {
+                byte[] memoryLoader = guardLoaderByVersion.get(version);
+                byte[] raw = decryptGuardWasmWithLoader(encrypted, memoryLoader);
+                if(raw != null && raw.length > 4) {
+                    Log.d(TAG, "ntk_viewer_guard_wasm_decrypted_memory version=" + version
+                            + ",encryptedBytes=" + encrypted.length
+                            + ",plainBytes=" + raw.length);
+                    return raw;
+                }
+                java.io.File file = new java.io.File(new java.io.File(context.getCacheDir(), "ntk_guard_cache"),
+                        "guard-js-" + version + ".js");
+                byte[] js = readFileBytes(file);
+                if(js == null || js.length == 0)
+                    return null;
+                raw = decryptGuardWasmWithLoader(encrypted, js);
+                if(raw != null && raw.length > 4) {
+                    Log.d(TAG, "ntk_viewer_guard_wasm_decrypted_versioned version=" + version
+                            + ",encryptedBytes=" + encrypted.length
+                            + ",plainBytes=" + raw.length);
+                }
+                return raw;
+            } catch (Exception e) {
+                Log.d(TAG, "ntk_viewer_guard_wasm_decrypt_versioned_failed " + e);
+                return null;
+            }
+        }
+
+        private static byte[] decryptGuardWasmWithLoader(byte[] encrypted, byte[] loaderBytes) {
+            try {
+                if(loaderBytes == null || loaderBytes.length == 0)
+                    return null;
+                String text = new String(loaderBytes, java.nio.charset.StandardCharsets.UTF_8);
+                int marker = text.indexOf("/*!ENCRYPTED*/");
+                if(marker < 0)
+                    return null;
+                String array = "\\[\\[[0-9,\\]\\[\\s-]+\\]\\]";
+                java.util.regex.Matcher matcher = java.util.regex.Pattern
+                        .compile("(?:var|let|const)\\s+\\w+\\s*=\\s*(" + array + ")\\s*,\\s*\\w+\\s*=\\s*(" + array + ")\\s*,")
+                        .matcher(text.substring(marker));
+                if(!matcher.find())
+                    return null;
+                int[][] hmacSeed = parseGuardIntMatrix(matcher.group(1), 4, 4);
+                int[][] aesSeed = parseGuardIntMatrix(matcher.group(2), 8, 4);
+                if(hmacSeed == null || aesSeed == null)
+                    return null;
+                return decryptGuardWasmWithSeeds(encrypted, hmacSeed, aesSeed);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private static int[][] parseGuardIntMatrix(String text, int rows, int cols) {
+            try {
+                int[][] out = new int[rows][cols];
+                java.util.regex.Matcher rowMatcher = java.util.regex.Pattern
+                        .compile("\\[([^\\[\\]]+)\\]")
+                        .matcher(text);
+                int row = 0;
+                while(rowMatcher.find() && row < rows) {
+                    String[] parts = rowMatcher.group(1).split(",");
+                    if(parts.length != cols)
+                        return null;
+                    for(int col = 0; col < cols; col++)
+                        out[row][col] = Integer.parseInt(parts[col].trim());
+                    row++;
+                }
+                return row == rows ? out : null;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private static byte[] decryptGuardWasmWithSeeds(byte[] encrypted, int[][] hmacSeed, int[][] aesSeed) {
+            if(encrypted == null || encrypted.length <= 28)
+                return null;
+            try {
+                byte[] hmacKey = new byte[16];
+                for(int t = 0; t < 4; t++) {
+                    int mask = (163 + 71 * t) & 255;
+                    for(int r = 0; r < 4; r++)
+                        hmacKey[4 * t + r] = (byte) (hmacSeed[t][r] ^ mask);
+                }
+                javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+                mac.init(new javax.crypto.spec.SecretKeySpec(hmacKey, "HmacSHA256"));
+                byte[] digest = mac.doFinal("ntk-ad-guard-v2".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                byte[] aesMaterial = new byte[32];
+                int[] order = {3, 0, 6, 1, 4, 7, 2, 5};
+                for(int r = 0; r < 8; r++) {
+                    int c = order[r];
+                    int mask = (93 + 43 * c + 17 * r) & 255;
+                    for(int u = 0; u < 4; u++)
+                        aesMaterial[4 * c + u] = (byte) (aesSeed[r][u] ^ mask);
+                }
+                byte[] aesKey = new byte[32];
+                for(int i = 0; i < 32; i++)
+                    aesKey[i] = (byte) (aesMaterial[i] ^ digest[i]);
+                byte[] iv = java.util.Arrays.copyOfRange(encrypted, 0, 12);
+                byte[] cipherText = java.util.Arrays.copyOfRange(encrypted, 12, encrypted.length);
+                javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(javax.crypto.Cipher.DECRYPT_MODE,
+                        new javax.crypto.spec.SecretKeySpec(aesKey, "AES"),
+                        new javax.crypto.spec.GCMParameterSpec(128, iv));
+                byte[] plain = cipher.doFinal(cipherText);
+                for(int i = 0; i < plain.length; i++)
+                    plain[i] = (byte) (plain[i] ^ digest[i % 32]);
+                if(plain.length < 4 || plain[0] != 0 || plain[1] != 97 || plain[2] != 115 || plain[3] != 109)
+                    return null;
+                return plain;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private static byte[] decryptLocalGuardWasm(byte[] encrypted) {
+            if(encrypted == null || encrypted.length <= 28)
+                return null;
+            try {
+                int[][] m = {
+                        {67, 62, 10, 179},
+                        {80, 118, 157, 198},
+                        {25, 249, 170, 187},
+                        {8, 198, 69, 199}
+                };
+                int[][] w = {
+                        {88, 44, 175, 28},
+                        {98, 138, 111, 85},
+                        {56, 215, 132, 3},
+                        {19, 180, 160, 203},
+                        {26, 132, 95, 121},
+                        {221, 5, 155, 93},
+                        {162, 202, 184, 47},
+                        {224, 107, 103, 135}
+                };
+                byte[] hmacKey = new byte[16];
+                for(int t = 0; t < 4; t++) {
+                    int mask = (163 + 71 * t) & 255;
+                    for(int r = 0; r < 4; r++)
+                        hmacKey[4 * t + r] = (byte) (m[t][r] ^ mask);
+                }
+                javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+                mac.init(new javax.crypto.spec.SecretKeySpec(hmacKey, "HmacSHA256"));
+                byte[] digest = mac.doFinal("ntk-ad-guard-v2".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                byte[] aesMaterial = new byte[32];
+                int[] order = {3, 0, 6, 1, 4, 7, 2, 5};
+                for(int r = 0; r < 8; r++) {
+                    int c = order[r];
+                    int mask = (93 + 43 * c + 17 * r) & 255;
+                    for(int u = 0; u < 4; u++)
+                        aesMaterial[4 * c + u] = (byte) (w[r][u] ^ mask);
+                }
+                byte[] aesKey = new byte[32];
+                for(int i = 0; i < 32; i++)
+                    aesKey[i] = (byte) (aesMaterial[i] ^ digest[i]);
+                byte[] iv = java.util.Arrays.copyOfRange(encrypted, 0, 12);
+                byte[] cipherText = java.util.Arrays.copyOfRange(encrypted, 12, encrypted.length);
+                javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(javax.crypto.Cipher.DECRYPT_MODE,
+                        new javax.crypto.spec.SecretKeySpec(aesKey, "AES"),
+                        new javax.crypto.spec.GCMParameterSpec(128, iv));
+                byte[] plain = cipher.doFinal(cipherText);
+                for(int i = 0; i < plain.length; i++)
+                    plain[i] = (byte) (plain[i] ^ digest[i % 32]);
+                if(plain.length < 4 || plain[0] != 0 || plain[1] != 97 || plain[2] != 115 || plain[3] != 109)
+                    return null;
+                Log.d(TAG, "ntk_viewer_guard_wasm_decrypted encryptedBytes=" + encrypted.length
+                        + ",plainBytes=" + plain.length);
+                return plain;
+            } catch (Exception e) {
+                Log.d(TAG, "ntk_viewer_guard_wasm_decrypt_failed " + e);
+                return null;
+            }
+        }
+
         private static String bridgeCookieHeader(String url, String fallbackCookieHeader,
                                                  Map<String, String> headers, byte[] body) {
-            String cookieHeader = mergedCookieHeader(url, fallbackCookieHeader);
+            String cookieHeader = mergeCookieHeaders(
+                    headerValueIgnoreCase(headers, "cookie"),
+                    mergedCookieHeader(url, fallbackCookieHeader));
             String scope = ntkBridgeScopeForRequest(url, headers, body);
             if(scope.length() == 0)
                 return cookieHeader;
@@ -1786,14 +2964,25 @@ final class NtkWebViewFallbackManager {
             if(url == null)
                 return "";
             String kind = "";
+            String apiPath = "";
             try {
                 URI uri = URI.create(url);
-                String path = uri.getPath();
-                if(path == null || !(path.endsWith("/manhwa-images") || path.endsWith("/webtoon-images")))
+                apiPath = uri.getPath();
+                if(apiPath == null)
                     return "";
-                kind = path.endsWith("/webtoon-images") ? "webtoon" : "manhwa";
+                if(apiPath.endsWith("/manhwa-images") || apiPath.endsWith("/webtoon-images"))
+                    kind = apiPath.endsWith("/webtoon-images") ? "webtoon" : "manhwa";
             } catch (Exception e) {
                 return "";
+            }
+            try {
+                if(body != null && body.length > 0) {
+                    JSONObject payload = new JSONObject(new String(body, java.nio.charset.StandardCharsets.UTF_8));
+                    String explicitPath = payload.optString("path", "");
+                    if(explicitPath.matches("^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$"))
+                        return explicitPath;
+                }
+            } catch (Exception ignored) {
             }
             String referer = headers == null ? "" : headers.get("referer");
             if(referer == null || referer.length() == 0)
@@ -1811,7 +3000,7 @@ final class NtkWebViewFallbackManager {
                     JSONObject payload = new JSONObject(new String(body, java.nio.charset.StandardCharsets.UTF_8));
                     String workId = payload.optString("workId", "");
                     String episodeId = payload.optString("episodeId", "");
-                    if(workId.length() > 0 && episodeId.length() > 0)
+                    if(kind.length() > 0 && workId.length() > 0 && episodeId.length() > 0)
                         return "/" + kind + "/" + workId + "/" + episodeId;
                 }
             } catch (Exception ignored) {
@@ -1853,21 +3042,33 @@ final class NtkWebViewFallbackManager {
             String lower = url.toLowerCase(Locale.ROOT);
             if(!(lower.contains("/api/webtoon-images") || lower.contains("/api/manhwa-images")
                     || lower.contains("/api/ad/ack") || lower.contains("/api/ad/challenge")
-                    || lower.contains("/api/ad/canary")))
+                    || lower.contains("/api/ad/canary") || lower.contains("/api/ad/guard-js")
+                    || lower.contains("/api/ad/guard-wasm") || lower.contains("/api/m/i")
+                    || lower.contains("/api/m/ev")))
                 return;
             String bodyText = "";
             if(body != null && body.length > 0) {
                 bodyText = new String(body, java.nio.charset.StandardCharsets.UTF_8);
-                if(bodyText.length() > 420)
-                    bodyText = bodyText.substring(0, 420);
+                if(bodyText.length() > 1400)
+                    bodyText = bodyText.substring(0, 1400);
             }
             String origin = headers == null ? "" : String.valueOf(headers.get("origin"));
             String referer = headers == null ? "" : String.valueOf(headers.get("referer"));
+            String scope = ntkBridgeScopeForRequest(url, headers, body);
+            String adAck = cookieValue(cookieHeader, "ad_ack");
+            String adAckC = cookieValue(cookieHeader, "ad_ack_c");
+            String adGuardL = cookieValue(cookieHeader, "ad_guard_l");
             Log.d(TAG, "ntk_viewer_quic_bridge_request method=" + method
                     + ",url=" + url
                     + ",origin=" + origin
                     + ",referer=" + referer
                     + ",cookieLen=" + (cookieHeader == null ? 0 : cookieHeader.length())
+                    + ",scope=" + scope
+                    + ",hasAdAck=" + (adAck.length() > 0)
+                    + ",hasAdAckC=" + (adAckC.length() > 0)
+                    + ",hasAdGuardL=" + (adGuardL.length() > 0)
+                    + ",adAckMatches=" + ntkAckCookieMatchesScope(adAck, scope)
+                    + ",adAckCMatches=" + ntkAckCookieMatchesScope(adAckC, scope)
                     + ",body=" + bodyText);
         }
 
@@ -1962,6 +3163,56 @@ final class NtkWebViewFallbackManager {
             return "";
         }
 
+        private static String mergeCookieHeaders(String first, String second) {
+            LinkedHashMap<String, String> values = new LinkedHashMap<>();
+            appendCookieHeader(values, first);
+            appendCookieHeader(values, second);
+            StringBuilder builder = new StringBuilder();
+            for(Map.Entry<String, String> entry : values.entrySet()) {
+                if(builder.length() > 0)
+                    builder.append("; ");
+                builder.append(entry.getKey()).append('=').append(entry.getValue());
+            }
+            return builder.toString();
+        }
+
+        private static void appendCookieHeader(LinkedHashMap<String, String> values, String cookieHeader) {
+            if(values == null || cookieHeader == null || cookieHeader.length() == 0)
+                return;
+            for(String part : cookieHeader.split(";")) {
+                String trimmed = part == null ? "" : part.trim();
+                int equals = trimmed.indexOf('=');
+                if(equals <= 0)
+                    continue;
+                String name = trimmed.substring(0, equals).trim();
+                String value = trimmed.substring(equals + 1).trim();
+                if(name.length() > 0)
+                    values.put(name, value);
+            }
+        }
+
+        private static String headerValueIgnoreCase(Map<String, String> headers, String name) {
+            if(headers == null || name == null)
+                return "";
+            for(Map.Entry<String, String> entry : headers.entrySet()) {
+                if(entry.getKey() != null && entry.getKey().equalsIgnoreCase(name))
+                    return entry.getValue() == null ? "" : entry.getValue();
+            }
+            return "";
+        }
+
+        private static void removeHeaderIgnoreCase(Map<String, String> headers, String name) {
+            if(headers == null || name == null)
+                return;
+            ArrayList<String> remove = new ArrayList<>();
+            for(String key : headers.keySet()) {
+                if(key != null && key.equalsIgnoreCase(name))
+                    remove.add(key);
+            }
+            for(String key : remove)
+                headers.remove(key);
+        }
+
         private static Map<String, String> parseBridgeHeaders(String headersJson) {
             HashMap<String, String> result = new HashMap<>();
             if(headersJson == null || headersJson.length() == 0)
@@ -1996,6 +3247,17 @@ final class NtkWebViewFallbackManager {
         volatile String body = "";
     }
 
+    private static final class ViewerImageFlight {
+        final CountDownLatch done = new CountDownLatch(1);
+        final String key;
+        final ArrayList<String> urls = new ArrayList<>();
+        int waiters = 1;
+
+        ViewerImageFlight(String key) {
+            this.key = key == null ? "" : key;
+        }
+    }
+
     private static final class CachedViewerImages {
         final String body;
         final long storedAtMs;
@@ -2020,6 +3282,7 @@ final class NtkWebViewFallbackManager {
         volatile boolean requested = false;
         volatile boolean completed = false;
         volatile boolean navigationStarted = false;
+        volatile int navigationErrorRetries = 0;
         volatile int code = 0;
         volatile String body = "";
         volatile long startedOnMainAt = 0L;
