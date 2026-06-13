@@ -45,6 +45,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1244,11 +1245,35 @@ public class CustomHttpClient {
             manager.clearCachedViewerImageUrlsForTest();
         }
         String url = baseUrl != null && baseUrl.length() > 0 ? baseUrl : NTK_WEBTOON_URL;
-        for(String root : new String[]{url, NTK_WEBTOON_URL, "https://toonflix.app"}) {
+        LinkedHashSet<String> clearRoots = new LinkedHashSet<>();
+        clearRoots.add(url);
+        clearRoots.add(NTK_WEBTOON_URL);
+        clearRoots.add(NTK_COMIC_URL);
+        clearRoots.add("https://toonflix.app");
+        try {
+            Uri uri = Uri.parse(url);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            if(scheme != null && host != null && scheme.length() > 0 && host.length() > 0) {
+                String root = scheme + "://" + host;
+                clearRoots.add(root);
+                String path = uri.getPath();
+                if(path != null && path.length() > 0) {
+                    String normalizedPath = path.startsWith("/") ? path : "/" + path;
+                    String[] parts = normalizedPath.split("/");
+                    if(parts.length > 1 && parts[1].length() > 0)
+                        clearRoots.add(root + "/" + parts[1]);
+                    if(parts.length > 2 && parts[1].length() > 0 && parts[2].length() > 0)
+                        clearRoots.add(root + "/" + parts[1] + "/" + parts[2]);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        for(String root : clearRoots) {
             for(String key : NTK_STRICT_FRESH_AUTH_COOKIES)
                 expireWebViewCookie(root, key);
         }
-        Log.d(TAG, "ntk_ack_state_clear_for_test url=" + url);
+        Log.d(TAG, "ntk_ack_state_clear_for_test url=" + url + ",roots=" + clearRoots);
     }
 
     public synchronized boolean hasCloudflareClearance() {
@@ -4351,7 +4376,8 @@ public class CustomHttpClient {
         if(host.contains("naver") || host.contains("pstatic"))
             return false;
         return host.matches("fvcdn\\d*\\.com")
-                && (path.contains("/board_uploads/")
+                && (path.contains("/blacktoon/episodes/")
+                || path.contains("/board_uploads/")
                 || path.contains("/webtoon_uploads/")
                 || path.contains("/manhwa_uploads/")
                 || path.contains("/comic_uploads/"));
@@ -6184,6 +6210,8 @@ public class CustomHttpClient {
                 syncCookiesFromWebView(baseUrl + path, true);
                 boolean ok = hasNtkAdAckCookieForPath(path)
                         || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
+                if(!ok)
+                    ok = waitForNtkAckCookieAfterWebViewPreflight(baseUrl, path, startedAt);
                 Log.d(TAG, "ntk_webview_ack_preflight_done path=" + path
                         + ",success=" + ok
                         + ",ms=" + (System.currentTimeMillis() - startedAt));
@@ -6197,6 +6225,35 @@ public class CustomHttpClient {
         } finally {
             NTK_WEBVIEW_ACK_FLIGHTS.remove(flightKey, ownerStamp);
         }
+    }
+
+    private boolean waitForNtkAckCookieAfterWebViewPreflight(String baseUrl, String path,
+            long startedAt) {
+        long deadline = System.currentTimeMillis() + 1_500L;
+        boolean loggedWait = false;
+        while(System.currentTimeMillis() < deadline) {
+            syncCookiesFromWebView(baseUrl, true);
+            syncCookiesFromWebView(baseUrl + path, true);
+            if(hasNtkAdAckCookieForPath(path)
+                    || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path)) {
+                Log.d(TAG, "ntk_webview_ack_preflight_cookie_late path=" + path
+                        + ",ms=" + (System.currentTimeMillis() - startedAt));
+                return true;
+            }
+            if(!loggedWait) {
+                loggedWait = true;
+                Log.d(TAG, "ntk_webview_ack_preflight_cookie_late_wait path=" + path
+                        + ",ms=" + (System.currentTimeMillis() - startedAt));
+            }
+            try {
+                Thread.sleep(120L);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return hasNtkAdAckCookieForPath(path)
+                || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
     }
 
     private static String ntkWebViewAckFlightKey(String baseUrl, String path) {
@@ -6322,8 +6379,7 @@ public class CustomHttpClient {
                     return urls;
             }
             if(modernGuardRoot && generatedDirectNumeric) {
-                Log.d(TAG, "ntk_images_api_skip_generated_direct path=" + path);
-                return urls;
+                Log.d(TAG, "ntk_images_api_try_modern_numeric path=" + path);
             }
 
             long ackStartedAt = System.currentTimeMillis();
@@ -6351,9 +6407,14 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_images_api_native_ack_skip_modern_guard path=" + path);
             }
 
-            if(!modernGuardRoot && shouldTryNtkViewerImagesBeforeAck(kind, baseUrl, path, cookiePath,
-                    nativeAckRace != null)) {
+            boolean tryViewerImagesBeforeAck = !modernGuardRoot
+                    && shouldTryNtkViewerImagesBeforeAck(kind, baseUrl, path, cookiePath,
+                    nativeAckRace != null);
+            boolean tryModernNumericBeforeAck = modernGuardRoot && generatedDirectNumeric;
+            if(tryViewerImagesBeforeAck || tryModernNumericBeforeAck) {
                 JSONObject payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nv);
+                Log.d(TAG, "ntk_images_api_pre_ack_try path=" + path
+                        + ",modern=" + modernGuardRoot);
                 NtkQuicFetcher.Result result = fetchNtkViewerImagesApi(baseUrl, endpoint, path,
                         cookiePath, headers, payload, trustedUrlsCallback);
                 ViewerWarmupManager.logMetric("ntk_images_api_code", result == null ? 0 : result.code);
@@ -6376,7 +6437,7 @@ public class CustomHttpClient {
             Thread webViewRaceThread = null;
             boolean webViewAckInFlight = modernGuardRoot
                     && isNtkWebViewAckInFlight(baseUrl, cookiePath);
-            if(context != null) {
+            if(context != null && !(modernGuardRoot && webViewAckInFlight)) {
                 webViewRace = new FutureTask<>(() -> NtkWebViewFallbackManager.get(context)
                         .fetchViewerImageUrls(agent, baseUrl, path, cookiePath, headers, kind,
                                 workId, episodeId, imagesToken, getCookieHeaderForNtkPath(cookiePath),
@@ -6386,6 +6447,8 @@ public class CustomHttpClient {
                 webViewRaceThread.start();
                 Log.d(TAG, "ntk_images_api_webview_race_start path=" + path
                         + ",modernGuard=" + modernGuardRoot);
+            } else if(modernGuardRoot && webViewAckInFlight) {
+                Log.d(TAG, "ntk_images_api_webview_race_skip_ack_inflight path=" + path);
             }
             if(!nativeAckCompleted && nativeAckRace != null) {
                 long raceDeadline = System.currentTimeMillis() + 3200L;
@@ -6551,6 +6614,24 @@ public class CustomHttpClient {
             if(isNtkNvValid(nvAfterAck))
                 nv = nvAfterAck;
             JSONObject payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nv);
+            if(modernGuardRoot && "manhwa".equals(kind) && generatedDirectNumeric) {
+                Log.d(TAG, "ntk_images_api_webview_first_after_ack path=" + path);
+                urls.addAll(NtkWebViewFallbackManager.get(context).fetchViewerImageUrls(agent, baseUrl,
+                        path, cookiePath, headers, kind, workId, episodeId, imagesToken,
+                        getCookieHeaderForNtkPath(cookiePath)));
+                Log.d(TAG, "ntk_images_api_webview_first_after_ack_result path=" + path
+                        + ",count=" + urls.size());
+                if(urls.size() > 0) {
+                    if(areInitialNtkViewerImageUrlsReachable(urls, baseUrl, path)) {
+                        cacheNtkViewerImageUrls(cacheKey, urls);
+                        return urls;
+                    }
+                    Log.d(TAG, "ntk_images_api_webview_first_after_ack_invalid path=" + path
+                            + ",count=" + urls.size());
+                    NtkWebViewFallbackManager.get(context).dropCachedViewerImageUrls(kind, workId, episodeId, path);
+                    urls.clear();
+                }
+            }
             NtkQuicFetcher.Result result = fetchNtkViewerImagesApi(baseUrl, endpoint, path,
                     cookiePath, headers, payload, trustedUrlsCallback);
             boolean hardForbidden = ntkViewerImagesHardForbidden(result);

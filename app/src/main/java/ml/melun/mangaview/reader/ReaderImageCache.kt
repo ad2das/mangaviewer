@@ -1493,7 +1493,9 @@ object ReaderImageCache {
 
     private fun shouldTryNtkGeneratedExtensionFallback(image: String): Boolean {
         val lower = image.lowercase()
-        return (lower.contains("://toonflix.app/") || lower.contains("://i.toonflix.app/"))
+        return (lower.contains("://toonflix.app/")
+                || lower.contains("://i.toonflix.app/")
+                || Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower))
             && (
                 Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
