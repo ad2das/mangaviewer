@@ -283,7 +283,12 @@ final class NtkEpisodeParser {
         manga.setTitle(title);
         manga.setTitleId(titleId);
         manga.setNtkEpisodePath(epPath);
-        String imageEpisodeId = extractImageEpisodeId(imageCountMetadata, epPath);
+        String imageEpisodeId = "";
+        String embeddedId = embeddedStringField(objectJson, "id");
+        if(!sourceEpisodeId.matches("\\d+") && embeddedId.matches("\\d{1,12}"))
+            imageEpisodeId = embeddedId;
+        if(imageEpisodeId.length() == 0)
+            imageEpisodeId = extractImageEpisodeId(imageCountMetadata, epPath);
         manga.setNtkImageEpisodeId(imageEpisodeId.length() == 0 ? sourceEpisodeId : imageEpisodeId);
         if(imageCount <= 0)
             imageCount = extractImageCount(imageCountMetadata, epPath);

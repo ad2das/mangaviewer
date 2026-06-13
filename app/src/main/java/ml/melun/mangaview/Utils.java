@@ -635,9 +635,12 @@ public class Utils {
             viewer.putExtra("title", toViewerTitleJsonForReader(launchTitle, manga, includeTitleEpisodes));
         if(recent)
             viewer.putExtra("recent", true);
-        viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
+        long viewerLaunchStartedAtMs = SystemClock.elapsedRealtime();
+        viewer.putExtra("viewerLaunchStartedAtMs", viewerLaunchStartedAtMs);
         viewer.putExtra("viewerLaunchSourceSite", launchTitle == null ? "" : launchTitle.getSourceSite());
         viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        if(startNtkViewerAckPreflight(manga, launchTitle))
+            viewer.putExtra("viewerNtkAckPreflightStarted", true);
         try {
             ViewerWarmupManager.logMetric(preparedKey == null ? "viewer_launch_start_unprepared" : "viewer_launch_start_prepared", manga.getId());
             if(context instanceof Activity) {
@@ -651,6 +654,32 @@ public class Utils {
             ViewerWarmupManager.logMetric("viewer_launch_exception", manga.getId());
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    private static boolean startNtkViewerAckPreflight(Manga manga, Title title) {
+        if(manga == null)
+            return false;
+        String path = manga.getNtkEpisodePath();
+        if(path == null || path.length() == 0)
+            return false;
+        String sourceSite = title == null ? "" : title.getSourceSite();
+        boolean ntkSource = "ntk".equalsIgnoreCase(sourceSite)
+                || path.startsWith("/webtoon/")
+                || path.startsWith("/manhwa/");
+        if(!ntkSource)
+            return false;
+        Thread thread = new Thread(() -> {
+            try {
+                CustomHttpClient client = getHttpClient();
+                client.performNtkNativeAckBypass(client.getUrl(path), path);
+            } catch(Exception e) {
+                android.util.Log.d("ViewerPerf", "viewer_ntk_ack_preflight_error path=" + path + "," + e);
+            }
+        }, "viewer-ntk-ack-preflight");
+        thread.setDaemon(true);
+        thread.start();
+        android.util.Log.d("ViewerPerf", "viewer_ntk_ack_preflight_start path=" + path);
+        return true;
     }
 
     private static boolean shouldStartExactEpisodeAtFirstPage(Manga manga) {

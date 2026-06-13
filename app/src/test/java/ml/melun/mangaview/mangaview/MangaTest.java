@@ -185,6 +185,10 @@ public class MangaTest {
                 "<main class=\"vw-main\"><div class=\"vw-imgs\"><a href=\"https://i.toonflix.app/webtoon_uploads/page002.webp\"><img src=\"https://i.toonflix.app/webtoon_uploads/page002.webp\"></a></div></main>"));
 
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<img src=\"https://image-comic.pstatic.net/webtoon/849864/7/001.jpg\">"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<img src=\"https://comic.naver.com/webtoon/849864/7/001.jpg\">"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\">"));
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<img src=\"https://i.toonflix.app/blacktoon/thumbs/15741.png?v2\">"));
@@ -270,6 +274,17 @@ public class MangaTest {
     public void ntkEmbeddedScriptImagesAreParsed() {
         List<String> images = Manga.ntkEmbeddedPageImagesForTest(
                 "<script>{\"images\":[\"https:\\/\\/i.toonflix.app\\/webtoon_uploads\\/page001.jpg\"]}</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page001.jpg", images.get(0));
+    }
+
+    @Test
+    public void ntkEmbeddedScriptImagesIgnoreNaverOriginalMetadata() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>{\"viewerUrl\":\"https://comic.naver.com/webtoon/detail?titleId=849864&no=7\","
+                        + "\"images\":[\"https:\\/\\/image-comic.pstatic.net\\/webtoon\\/849864\\/7\\/001.jpg\","
+                        + "\"https:\\/\\/i.toonflix.app\\/webtoon_uploads\\/page001.jpg\"]}</script>");
 
         assertEquals(1, images.size());
         assertEquals("https://i.toonflix.app/webtoon_uploads/page001.jpg", images.get(0));
@@ -368,8 +383,8 @@ public class MangaTest {
                 "/webtoon/최강-매니저", "ignored"));
         assertEquals("최강-매니저", Manga.ntkCanonicalWebtoonSlugCandidateForTest(
                 "/webtoon/840894", "최강 매니저"));
-        assertEquals("https://i.toonflix.app/wt/episodes/최강-매니저/1073395/p001.jpeg",
-                Manga.ntkSlugWebtoonImageUrlForTest("최강-매니저", "1073395", 1));
+        assertEquals("https://toonflix.app/wt/episodes/최강-매니저/1073395/p001.webp",
+                Manga.ntkSlugWebtoonImageUrlForTest("최강-매니저", "1073395", 1, "webp"));
     }
 
     @Test
@@ -379,9 +394,7 @@ public class MangaTest {
                         + "\\\"imagesToken\\\":\\\"token\\\"}</script>",
                 "/manhwa/3540/135918");
 
-        assertEquals(2, images.size());
-        assertEquals("https://i.toonflix.app/manhwa/3540/135918/p001.jpg", images.get(0));
-        assertEquals("https://i.toonflix.app/manhwa/3540/135918/p002.jpg", images.get(1));
+        assertTrue(images.isEmpty());
     }
 
     @Test
@@ -393,9 +406,7 @@ public class MangaTest {
                         + "\"image\":\"https://i.toonflix.app/blacktoon/thumbs/19353.png?v2\"}</script>",
                 "/webtoon/849365/tk_1075221");
 
-        assertEquals(2, images.size());
-        assertEquals("https://i.toonflix.app/wt/episodes/19353/tk_1075221/p001.jpeg", images.get(0));
-        assertEquals("https://i.toonflix.app/wt/episodes/19353/tk_1075221/p002.jpeg", images.get(1));
+        assertTrue(images.isEmpty());
     }
 
     @Test
@@ -460,6 +471,10 @@ public class MangaTest {
                 "", "", "1542544", "140318"));
         assertEquals("140318", Manga.ntkViewerApiImageEpisodeIdForTest(
                 "", "", "", "140318"));
+        assertEquals("1165013", Manga.ntkViewerApiImageEpisodeIdForTest(
+                "nv-849864-7", "1165013", "nv-849864-7", ""));
+        assertEquals("1165013", Manga.ntkViewerApiImageEpisodeIdForTest(
+                "nv-849864-7", "", "nv-849864-7", "1165013"));
     }
 
     @Test

@@ -26,10 +26,10 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkAckStartsProactiveCanaryWhenChallengeHasImpressions() {
+    public void ntkAckDoesNotStartProactiveCanaryBeforeAckFailure() {
         assertFalse(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(0));
-        assertTrue(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(1));
-        assertTrue(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(4));
+        assertFalse(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(1));
+        assertFalse(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(4));
     }
 
     @Test
@@ -360,6 +360,8 @@ public class CustomHttpClientTest {
                 "webtoon", "/webtoon/840894/1073395", true, false));
         assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/1073395", false, true));
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "/webtoon/840894/nv-840894-7", false, true));
         assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/u-slug-1073395", false, false));
         assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(

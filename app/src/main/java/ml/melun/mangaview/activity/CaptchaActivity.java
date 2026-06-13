@@ -55,6 +55,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.NtkDeviceIdentityManager;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.runtime.AppDispatchers;
@@ -165,6 +166,8 @@ public class CaptchaActivity extends AppCompatActivity {
             "}" +
             "}" +
             "var host=(location.hostname||'').toLowerCase();" +
+            "var ntkText=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ');" +
+            "if(/trash0607/i.test(ntkText+' '+(document.title||'')))return JSON.stringify({type:'trash0607'});" +
             "function normalNtkPage(){" +
             "if(host.indexOf('ntk')<0&&host.indexOf('sbxh')<0&&host.indexOf('toonflix')<0)return false;" +
             "var pageText=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ');" +
@@ -234,6 +237,22 @@ public class CaptchaActivity extends AppCompatActivity {
             "}catch(e){reject(e);}});" +
             "}catch(e){reject(e);}});" +
             "};" +
+            "var nativeFetch=window.fetch;" +
+            "if(nativeFetch)window.fetch=function(input,init){" +
+            "try{var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';var absolute=new URL(url,location.href);var method=(init&&init.method)||(input&&input.method)||'GET';" +
+            "if(absolute.protocol==='https:'&&absolute.host===location.host&&absolute.pathname.indexOf('/cdn-cgi/challenge-platform/')===0&&String(method).toUpperCase()!=='GET')return window.__ntkBridgeFetch(input,init);" +
+            "}catch(e){}" +
+            "return nativeFetch.apply(this,arguments);" +
+            "};" +
+            "var xp=window.XMLHttpRequest&&XMLHttpRequest.prototype,xo=xp&&xp.open,xs=xp&&xp.send,xh=xp&&xp.setRequestHeader;" +
+            "function fireXhr(xhr,n){try{var e=new Event(n);xhr.dispatchEvent(e);var cb=xhr['on'+n];if(typeof cb==='function')cb.call(xhr,e);}catch(e){}}" +
+            "if(xp&&xo&&xs){xp.open=function(m,u,a,user,pw){try{this.__ntkq={method:m||'GET',url:u||'',headers:{}};}catch(e){}return xo.apply(this,arguments);};" +
+            "if(xh)xp.setRequestHeader=function(k,v){try{if(this.__ntkq&&k)this.__ntkq.headers[String(k)]=String(v);}catch(e){}return xh.apply(this,arguments);};" +
+            "xp.send=function(body){var meta=this.__ntkq||{},absolute;try{absolute=new URL(meta.url||'',location.href);}catch(e){}" +
+            "if(!absolute||absolute.protocol!=='https:'||absolute.host!==location.host||absolute.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0||String(meta.method||'GET').toUpperCase()==='GET')return xs.apply(this,arguments);" +
+            "var xhr=this;window.__ntkBridgeFetch(absolute.href,{method:meta.method||'POST',headers:meta.headers||{},body:body}).then(function(r){return r.text().then(function(t){return{r:r,t:t};});}).then(function(o){" +
+            "try{Object.defineProperty(xhr,'readyState',{configurable:true,get:function(){return 4;}});Object.defineProperty(xhr,'status',{configurable:true,get:function(){return o.r.status||200;}});Object.defineProperty(xhr,'statusText',{configurable:true,get:function(){return o.r.statusText||'OK';}});Object.defineProperty(xhr,'responseText',{configurable:true,get:function(){return o.t||'';}});Object.defineProperty(xhr,'response',{configurable:true,get:function(){return o.t||'';}});xhr.getAllResponseHeaders=function(){return '';};xhr.getResponseHeader=function(){return null;};}catch(e){}fireXhr(xhr,'readystatechange');fireXhr(xhr,'load');fireXhr(xhr,'loadend');" +
+            "}).catch(function(){fireXhr(xhr,'error');fireXhr(xhr,'loadend');});};}" +
             "try{console.log('__NTK_BRIDGE_FETCH_READY__');}catch(e){}" +
             "})();";
     private long pageFinishedTime = 0;
@@ -330,6 +349,8 @@ public class CaptchaActivity extends AppCompatActivity {
                 ? intent.getStringExtra("ntkCaptchaUserAgent") : null;
         String realChromeUA = userAgentOverride != null && userAgentOverride.trim().length() > 0
                 ? userAgentOverride.trim()
+                : ntkSite && getHttpClient().agent != null && getHttpClient().agent.trim().length() > 0
+                ? getHttpClient().agent.trim()
                 : captchaUserAgent(settings.getUserAgentString(), ntkSite);
         settings.setUserAgentString(realChromeUA);
         getHttpClient().setUserAgent(settings.getUserAgentString());
@@ -1081,6 +1102,7 @@ public class CaptchaActivity extends AppCompatActivity {
             android.util.Log.d("CaptchaActivity", "NTK WebView request needs direct WebView transport: method="
                     + method + ",url=" + url);
         if(isNtkGuardModulePath(url)) {
+            rememberNtkGuardVersion(url);
             android.util.Log.d("CaptchaActivity", "NTK guard module QUIC request headers="
                     + (request.getRequestHeaders() == null ? "none" : request.getRequestHeaders().keySet())
                     + ",cookies=" + summarizeCookieHeaderForLog(captchaCookieHeaderFor(url))
@@ -1150,6 +1172,18 @@ public class CaptchaActivity extends AppCompatActivity {
                         return localGuard;
                 }
             }
+            if(result != null && isNtkGuardModulePath(url) && result.code >= 200 && result.code < 300
+                    && result.bodyBytes != null && result.bodyBytes.length > 0) {
+                applyQuicCaptchaCookies(url, result);
+                cacheNtkGuardModule(url, result.bodyBytes);
+                return new WebResourceResponse(
+                        responseMimeType(result.contentType()),
+                        responseEncoding(result.contentType()),
+                        result.code,
+                        "OK",
+                        responseHeaders(result.headers),
+                        new ByteArrayInputStream(result.bodyBytes));
+            }
             if(result == null || !result.isUsableHtml())
                 return null;
             applyQuicCaptchaCookies(url, result);
@@ -1185,6 +1219,73 @@ public class CaptchaActivity extends AppCompatActivity {
             android.util.Log.d("CaptchaActivity", "Rewrote NTK JS API calls for QUIC bridge: " + url);
         }
         return rewritten;
+    }
+
+    private void rememberNtkGuardVersion(String url) {
+        try {
+            String query = URI.create(url).getRawQuery();
+            if(query == null || query.length() == 0)
+                return;
+            for(String part : query.split("&")) {
+                int equals = part.indexOf('=');
+                if(equals <= 0)
+                    continue;
+                if(!"v".equals(part.substring(0, equals)))
+                    continue;
+                String value = java.net.URLDecoder.decode(part.substring(equals + 1),
+                        java.nio.charset.StandardCharsets.UTF_8.name());
+                if(value.matches("b\\d{13}-wasm-\\d{13}")) {
+                    getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                            .edit()
+                            .putString("ntk_guard_version", value)
+                            .apply();
+                    android.util.Log.d("CaptchaActivity", "Remembered NTK guard version: " + value);
+                }
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void cacheNtkGuardModule(String url, byte[] bytes) {
+        if(bytes == null || bytes.length == 0)
+            return;
+        try {
+            String version = ntkGuardVersionFromUrl(url);
+            if(version.length() == 0)
+                return;
+            String path = URI.create(url).getPath();
+            boolean wasm = path != null && path.equals("/api/ad/guard-wasm");
+            java.io.File dir = new java.io.File(getCacheDir(), "ntk_guard_cache");
+            if(!dir.exists() && !dir.mkdirs())
+                return;
+            java.io.File out = new java.io.File(dir, (wasm ? "guard-wasm-" : "guard-js-")
+                    + version + (wasm ? ".bin" : ".js"));
+            try(java.io.FileOutputStream stream = new java.io.FileOutputStream(out, false)) {
+                stream.write(bytes);
+            }
+            android.util.Log.d("CaptchaActivity", "Cached NTK guard module: asset="
+                    + out.getName() + ",len=" + bytes.length);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static String ntkGuardVersionFromUrl(String url) {
+        try {
+            String query = URI.create(url).getRawQuery();
+            if(query == null || query.length() == 0)
+                return "";
+            for(String part : query.split("&")) {
+                int equals = part.indexOf('=');
+                if(equals <= 0 || !"v".equals(part.substring(0, equals)))
+                    continue;
+                String value = java.net.URLDecoder.decode(part.substring(equals + 1),
+                        java.nio.charset.StandardCharsets.UTF_8.name());
+                return value.matches("b\\d{13}-wasm-\\d{13}") ? value : "";
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
     }
 
     private static boolean isNtkJavascriptResponse(String url, String contentType) {
@@ -1322,7 +1423,11 @@ public class CaptchaActivity extends AppCompatActivity {
 
     static boolean shouldInterceptNtkQuicRequestForTest(boolean ntkSite, boolean quicHtmlActive,
                                                         String method, String url, boolean quicAvailable) {
-        if(!ntkSite || !quicHtmlActive || !quicAvailable || method == null || !"GET".equalsIgnoreCase(method))
+        if(!ntkSite || !quicAvailable || method == null || !"GET".equalsIgnoreCase(method))
+            return false;
+        if(isNtkGuardModulePath(url))
+            return isNtkProtectedHttpsUrl(url);
+        if(!quicHtmlActive)
             return false;
         return isNtkProtectedHttpsUrl(url);
     }
@@ -1574,6 +1679,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 + "if(host.indexOf('ntk')<0&&host.indexOf('sbxh')<0&&host.indexOf('toonflix')<0)return 'none';"
                 + "var text=(document.body?(document.body.innerText||''):'').replace(/\\s+/g,' ');"
                 + "var title=document.title||'';"
+                + "if(/trash0607/i.test(text+' '+title))return 'trash0607';"
                 + "if(/웹페이지를 사용할 수 없음|webpage not available|403 forbidden|err_connection_reset|err_timed_out|err_name_not_resolved/i.test(text+' '+title))return 'none';"
                 + "if(/verify you are human|checking your browser|performing security verification|just a moment/i.test(text))return 'challenge';"
                 + "var links=document.querySelectorAll('a[href^=\"/manhwa\"],a[href^=\"/webtoon\"],a[href*=\"/manhwa/\"],a[href*=\"/webtoon/\"]').length;"
@@ -1587,6 +1693,10 @@ public class CaptchaActivity extends AppCompatActivity {
             if(isFinishing || isDestroyed() || webView == null)
                 return;
             String clean = result == null ? "" : result.replace("\"", "");
+            if("trash0607".equals(clean)) {
+                handleNtkTrash0607Block(webView.getUrl(), "normal-probe");
+                return;
+            }
             if(!"normal".equals(clean))
                 return;
             normalNtkPageCount = Math.max(normalNtkPageCount, 1);
@@ -1679,6 +1789,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     } else if(normalNtkPageCount >= 1 && elapsed > 300L) {
                         readCookiesAndFinish(CookieManager.getInstance(), p.getUrl(), webView == null ? null : webView.getUrl());
                     }
+                } else if("trash0607".equals(type)) {
+                    handleNtkTrash0607Block(webView == null ? null : webView.getUrl(), "turnstile-probe");
                 } else {
                     isFirstAttempt = false;
                     normalNtkPageCount = 0;
@@ -1690,6 +1802,16 @@ public class CaptchaActivity extends AppCompatActivity {
                 android.util.Log.e("CaptchaActivity", "Failed to parse turnstile result", e);
             }
         });
+    }
+
+    private void handleNtkTrash0607Block(String currentUrl, String source) {
+        if(isFinishing || isDestroyed())
+            return;
+        String url = currentUrl != null && currentUrl.length() > 0 ? currentUrl : captchaLoadUrl;
+        Log.d("CaptchaActivity", "ntk_trash0607_device_change source=" + source + ",url=" + url);
+        isFinishing = true;
+        handler.removeCallbacksAndMessages(null);
+        NtkDeviceIdentityManager.changeDeviceInfo(this, true);
     }
 
     private boolean shouldSuppressCaptchaConsoleMessage(String msg) {
@@ -1970,6 +2092,44 @@ public class CaptchaActivity extends AppCompatActivity {
         });
     }
 
+    private boolean shouldWaitForNtkAdAckBeforeFinish(String purl, String currentUrl) {
+        if(p == null || !p.isNtkSite())
+            return false;
+        String path = ntkVerificationUrl(purl, currentUrl);
+        String lower = path == null ? "" : path.toLowerCase(java.util.Locale.ROOT);
+        return lower.startsWith("/webtoon/") || lower.startsWith("/manhwa/");
+    }
+
+    private boolean hasNtkAdAckCookie(String purl, String currentUrl) {
+        syncCaptchaCookiesToHttpClient(purl, currentUrl);
+        String path = ntkVerificationUrl(purl, currentUrl);
+        return path.length() > 0 && getHttpClient().hasUsableNtkAdAckCookieForPath(path);
+    }
+
+    private void waitForNtkAdAckAndFinish(String purl, String currentUrl, int attempt) {
+        if(isFinishing)
+            return;
+        if(attempt == 0 && webView != null) {
+            try {
+                webView.evaluateJavascript(
+                        "try{window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{source:'app-finish'}}));}catch(e){}",
+                        null);
+            } catch (Exception ignored) {
+            }
+        }
+        if(hasNtkAdAckCookie(purl, currentUrl)) {
+            android.util.Log.d("CaptchaActivity", "NTK ad guard ack verified before finish attempt=" + attempt);
+            finishWithVerifiedClearance();
+            return;
+        }
+        if(attempt >= 14) {
+            android.util.Log.d("CaptchaActivity", "NTK ad guard ack not observed before finish; continuing after wait");
+            finishWithVerifiedClearance();
+            return;
+        }
+        handler.postDelayed(() -> waitForNtkAdAckAndFinish(purl, currentUrl, attempt + 1), 250L);
+    }
+
     private boolean shouldFinishAfterVisibleNormalNtkPage() {
         long elapsed = System.currentTimeMillis() - pageFinishedTime;
         return shouldFinishNormalNtkPageForTest(normalNtkPageCount, elapsed);
@@ -2006,9 +2166,52 @@ public class CaptchaActivity extends AppCompatActivity {
                     && !getHttpClient().isCloudflareChallengeResponse(code, body);
             if(!ok)
                 logNtkVerificationFailure("NTK document verification failed", path, code, body);
-            return ok;
+            if(!ok)
+                return false;
+            return verifyNtkRscPath(path);
         } catch(Exception e) {
             android.util.Log.d("CaptchaActivity", "NTK document verification request failed", e);
+            return false;
+        }
+    }
+
+    private boolean verifyNtkRscPath(String path) {
+        if(path == null || path.length() == 0)
+            return false;
+        String lowerPath = path.toLowerCase(java.util.Locale.ROOT);
+        if(!lowerPath.startsWith("/webtoon/") && !lowerPath.startsWith("/manhwa/"))
+            return true;
+        if(!NtkQuicFetcher.isAvailable())
+            return true;
+        try {
+            String baseUrl = getHttpClient().getUrl(path);
+            String targetUrl = baseUrl + path;
+            Map<String, String> headers = new HashMap<>();
+            headers.put("accept", "text/x-component");
+            headers.put("rsc", "1");
+            headers.put("next-url", path);
+            headers.put("origin", baseUrl);
+            headers.put("referer", targetUrl);
+            NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(
+                    getApplicationContext(),
+                    targetUrl,
+                    getHttpClient().agent,
+                    getHttpClient().getCookieHeader(),
+                    headers,
+                    "GET",
+                    null,
+                    7000L);
+            String body = result == null || result.body == null ? "" : result.body;
+            int code = result == null ? 0 : result.code;
+            boolean ok = result != null && result.error == null && code >= 200 && code < 400
+                    && body.length() > 0
+                    && !getHttpClient().isCloudflareChallengeResponse(code, body)
+                    && !NtkDeviceIdentityManager.isTrash0607Block(body);
+            if(!ok)
+                logNtkVerificationFailure("NTK RSC verification failed", path, code, body);
+            return ok;
+        } catch(Exception e) {
+            android.util.Log.d("CaptchaActivity", "NTK RSC verification request failed", e);
             return false;
         }
     }
@@ -2299,8 +2502,50 @@ public class CaptchaActivity extends AppCompatActivity {
         try {
             CookieManager manager = CookieManager.getInstance();
             manager.flush();
-            for(String cookieUrl : cookieReadUrls(purl, currentUrl))
+            for(String cookieUrl : cookieReadUrls(purl, currentUrl)) {
+                logCaptchaCookieSummary(manager, cookieUrl);
                 getHttpClient().syncCookiesFromWebView(cookieUrl, true);
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+    }
+
+    private void logCaptchaCookieSummary(CookieManager manager, String cookieUrl) {
+        if(!isNtkLikeUrlForCaptcha(cookieUrl))
+            return;
+        try {
+            String cookieStr = manager.getCookie(cookieUrl);
+            if(cookieStr == null || cookieStr.length() == 0) {
+                Log.d("CaptchaActivity", "ntk_captcha_cookie_summary url=" + cookieUrl
+                        + ",empty=true");
+                return;
+            }
+            final int[] count = new int[]{0};
+            final boolean[] hasClearance = new boolean[]{false};
+            final boolean[] hasAdGuard = new boolean[]{false};
+            final boolean[] hasAdAck = new boolean[]{false};
+            StringBuilder names = new StringBuilder();
+            CaptchaCookiePolicy.forEachCookiePair(cookieStr, (key, value) -> {
+                if(key == null || key.length() == 0)
+                    return;
+                if(count[0] > 0)
+                    names.append('|');
+                names.append(key);
+                count[0]++;
+                if("cf_clearance".equalsIgnoreCase(key))
+                    hasClearance[0] = true;
+                if(key.toLowerCase(java.util.Locale.ROOT).startsWith("ad_guard"))
+                    hasAdGuard[0] = true;
+                if(key.toLowerCase(java.util.Locale.ROOT).startsWith("ad_ack"))
+                    hasAdAck[0] = true;
+            });
+            Log.d("CaptchaActivity", "ntk_captcha_cookie_summary url=" + cookieUrl
+                    + ",count=" + count[0]
+                    + ",cf=" + hasClearance[0]
+                    + ",adGuard=" + hasAdGuard[0]
+                    + ",adAck=" + hasAdAck[0]
+                    + ",names=" + names);
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }

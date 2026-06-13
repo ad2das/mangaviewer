@@ -2,6 +2,7 @@ package ml.melun.mangaview;
 
 import android.content.Context;
 import android.content.Intent;
+import android.util.Log;
 import android.webkit.WebView;
 
 import java.util.Locale;
@@ -19,9 +20,10 @@ public final class NtkDeviceIdentityManager {
 
     public static String changeDeviceInfo(Context context, boolean restartApp) {
         String newAgent = generateRandomUserAgent(context);
-        getHttpClient().setUserAgent(newAgent);
         getHttpClient().resetCookie();
         getHttpClient().clearAllWebViewData();
+        getHttpClient().setNtkDeviceIdentityUserAgent(newAgent);
+        Log.d("NtkDeviceIdentity", "changedUserAgent=" + newAgent + ",restart=" + restartApp);
         if(restartApp)
             restartApp(context);
         return newAgent;

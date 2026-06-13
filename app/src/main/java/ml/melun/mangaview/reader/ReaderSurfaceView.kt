@@ -1150,7 +1150,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             Trace.beginSection("RSV.draw")
             canvas.drawColor(PAGE_PLACEHOLDER_COLOR)
             if (!state.empty) {
-                for (item in state.items) drawItem(canvas, state, item)
+                val fastInitialBitmapDraw = !hasDrawnContentFrame && state.hasDrawableContent
+                for (item in state.items) drawItem(canvas, state, item, fastInitialBitmapDraw)
             }
             drawScrollbar(canvas, state)
             if (state.hasDrawableContent) hasDrawnContentFrame = true
@@ -1171,7 +1172,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         )
     }
 
-    private fun drawItem(canvas: Canvas, state: DrawState, item: DrawItem) {
+    private fun drawItem(canvas: Canvas, state: DrawState, item: DrawItem, fastBitmapDraw: Boolean) {
         val bitmap = item.bitmap
         val cardText = item.cardText
         if (cardText != null) {
@@ -1234,12 +1235,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val dstTop = floor(visibleTop).toInt()
             val dstBottom = ceil(visibleBottom).toInt().coerceAtLeast(dstTop + 1)
             dstInt.set(0, dstTop, state.width, dstBottom)
-            prepareBitmapPaint()
+            prepareBitmapPaint(fastBitmapDraw)
             canvas.drawBitmap(bitmap, src, dstInt, paint)
             return
         }
         if (item.tiles.isNotEmpty()) {
-            drawTiles(canvas, state, item)
+            drawTiles(canvas, state, item, fastBitmapDraw)
             return
         }
         paint.color = PAGE_PLACEHOLDER_COLOR
@@ -1247,11 +1248,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         canvas.drawRect(dst, paint)
     }
 
-    private fun drawTiles(canvas: Canvas, state: DrawState, item: DrawItem) {
+    private fun drawTiles(canvas: Canvas, state: DrawState, item: DrawItem, fastBitmapDraw: Boolean) {
         val visibleTop = max(0f, item.top)
         val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
         if (visibleBottom <= visibleTop) return
-        prepareBitmapPaint()
+        prepareBitmapPaint(fastBitmapDraw)
         val sourceHeight = item.tiles.firstOrNull()?.sourceHeight?.takeIf { it > 0 } ?: return
         val pageScale = item.pageHeight / sourceHeight.toFloat()
         for (tile in item.tiles) {
@@ -1280,11 +1281,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
-    private fun prepareBitmapPaint() {
+    private fun prepareBitmapPaint(fastBitmapDraw: Boolean) {
         paint.alpha = 255
         paint.colorFilter = null
         paint.isDither = true
-        paint.isFilterBitmap = true
+        paint.isFilterBitmap = !fastBitmapDraw
     }
 
     private fun drawScrollbar(canvas: Canvas, state: DrawState) {

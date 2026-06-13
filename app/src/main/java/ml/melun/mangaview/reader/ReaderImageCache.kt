@@ -26,6 +26,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
+import java.util.concurrent.Semaphore
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -39,21 +40,28 @@ object ReaderImageCache {
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private const val TRIM_DEBOUNCE_MS = 30_000L
-    private const val FOREGROUND_RACE_DELAY_MS = 80L
-    private const val FOREGROUND_RACE_ATTEMPTS = 1
-    private const val FOREGROUND_STREAM_RACE_ATTEMPTS = 1
+    private const val FOREGROUND_RACE_DELAY_MS = 120L
+    private const val FOREGROUND_RACE_ATTEMPTS = 2
+    private const val FOREGROUND_STREAM_RACE_ATTEMPTS = 2
+    private const val FOREGROUND_STREAM_JOIN_TIMEOUT_MS = 900L
     private const val FOREGROUND_STREAM_HANDOFF_TTL_MS = 2500L
     private const val EARLY_NTK_IMAGE_URL_TTL_MS = 6000L
+    private const val EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS = 1200L
     private const val MAX_DIRECT_STREAM_DECODE_BYTES = 16L * 1024L * 1024L
     private const val MAX_DIRECT_STREAM_BITMAP_BYTES = 2L * 1024L * 1024L
     private const val DIRECT_STREAM_TILE_ASPECT_RATIO = 3.0f
     private const val DIRECT_STREAM_TILE_MIN_ESTIMATED_BYTES = 12L * 1024L * 1024L
+    private const val FULL_DECODE_VALIDATION_MAX_BYTES = 256L * 1024L
+    private const val NTK_GENERATED_FETCH_PARALLELISM = 4
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val foregroundStreams = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
     private val earlyNtkImageUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
     private val ntkApiFallbackImages = ConcurrentHashMap<String, List<String>>()
+    private val ntkGeneratedAckRecoveryFlights = ConcurrentHashMap<String, FutureTask<Boolean>>()
+    private val ntkGeneratedEpisodeExtensions = ConcurrentHashMap<String, String>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
+    private val ntkGeneratedFetchGate = Semaphore(NTK_GENERATED_FETCH_PARALLELISM)
     private val trimLock = Any()
     private val trimScheduled = AtomicBoolean(false)
     private val trimDirty = AtomicBoolean(false)
@@ -188,6 +196,11 @@ object ReaderImageCache {
         return flights.containsKey(key) || foregroundStreams.containsKey(key)
     }
 
+    @JvmStatic
+    fun clearNtkGeneratedEpisodeExtensionHintsForTest() {
+        ntkGeneratedEpisodeExtensions.clear()
+    }
+
     fun rememberEarlyNtkImageUrls(path: String?, urls: List<String>?) {
         val key = earlyNtkPathKey(path)
         if (key.isEmpty() || urls.isNullOrEmpty()) return
@@ -202,7 +215,9 @@ object ReaderImageCache {
         if (key.isEmpty()) return emptyList()
         val entry = earlyNtkImageUrls[key] ?: return emptyList()
         val ageMs = SystemClock.elapsedRealtime() - entry.createdAtMs
-        if (entry.createdAtMs < minCreatedAtMs || ageMs > EARLY_NTK_IMAGE_URL_TTL_MS) {
+        if (entry.createdAtMs + EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS < minCreatedAtMs ||
+            ageMs > EARLY_NTK_IMAGE_URL_TTL_MS
+        ) {
             earlyNtkImageUrls.remove(key, entry)
             return emptyList()
         }
@@ -256,6 +271,9 @@ object ReaderImageCache {
         }
         val existing = foregroundStreams.putIfAbsent(key, task)
         if (existing != null) {
+            if (existing.isDone && foregroundStreams.remove(key, existing)) {
+                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge)
+            }
             logCacheEvent("foreground_stream_async_join", manga, image, true, "activeStream=true")
             ViewerWarmupManager.logMetric("reader_foreground_stream_async_join", 1L)
             return false
@@ -307,14 +325,14 @@ object ReaderImageCache {
                 "activeStream=${!existing.isDone},doneStream=${existing.isDone}"
             )
             return try {
-                decodeForegroundBytes(existing, startedAt, autoCut, allowSplit, targetWidth)
+                decodeForegroundBytes(existing, startedAt, autoCut, allowSplit, targetWidth, boundedWait = true)
             } finally {
                 foregroundStreams.remove(key, existing)
             }
         }
         try {
             task.run()
-            return decodeForegroundBytes(task, startedAt, autoCut, allowSplit, targetWidth)
+            return decodeForegroundBytes(task, startedAt, autoCut, allowSplit, targetWidth, boundedWait = false)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             return null
@@ -346,17 +364,20 @@ object ReaderImageCache {
         raceAttempts: Int = FOREGROUND_RACE_ATTEMPTS,
         anchorHedge: Boolean = false
     ): ByteArray? {
-        requestWithNtkGeneratedFallback(
-            context,
-            manga,
-            image,
-            foreground = true,
-            cancellation = cancellation,
-            foregroundRaceAttempts = raceAttempts,
-            anchorHedge = anchorHedge
-        ).use { response ->
+        withNtkGeneratedFetchPermit(manga, image, true) {
+            requestWithNtkGeneratedFallback(
+                context,
+                manga,
+                image,
+                foreground = true,
+                cancellation = cancellation,
+                foregroundRaceAttempts = raceAttempts,
+                anchorHedge = anchorHedge
+            )
+        }.use { response ->
             val headersAt = SystemClock.elapsedRealtime()
             if (!response.isSuccessful) return null
+            rememberNtkGeneratedEpisodeExtension(response.request.url.toString())
             val body = response.body ?: return null
             val contentLength = body.contentLength()
             if (contentLength > MAX_DIRECT_STREAM_DECODE_BYTES) return null
@@ -365,7 +386,17 @@ object ReaderImageCache {
             val bytesAt = SystemClock.elapsedRealtime()
             val partialImage = response.header("x-mangaviewer-partial-image") == "1"
             if (!partialImage) {
-                cacheForegroundBytes(context, manga, image, bytes)
+                val cacheImage = foregroundResponseCacheImage(image, response)
+                cacheForegroundBytes(context, manga, cacheImage, bytes)
+                if (cacheImage != image) {
+                    logCacheEvent(
+                        "foreground_cached_actual_url",
+                        manga,
+                        cacheImage,
+                        true,
+                        "requested=${image.substringAfterLast('/').takeLast(64)}"
+                    )
+                }
             }
             ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
             ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
@@ -380,12 +411,16 @@ object ReaderImageCache {
         startedAt: Long,
         autoCut: Boolean,
         allowSplit: Boolean,
-        targetWidth: Int
+        targetWidth: Int,
+        boundedWait: Boolean
     ): Bitmap? {
         val bytes = try {
-            task.get()
+            if (boundedWait) task.get(FOREGROUND_STREAM_JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS) else task.get()
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
+            return null
+        } catch (_: java.util.concurrent.TimeoutException) {
+            ViewerWarmupManager.logMetric("reader_foreground_stream_join_timeout", 1L)
             return null
         } catch (_: ExecutionException) {
             return null
@@ -445,6 +480,12 @@ object ReaderImageCache {
         }
     }
 
+    private fun foregroundResponseCacheImage(image: String, response: okhttp3.Response): String {
+        val actual = response.request.url.toString()
+        if (actual.isBlank() || actual == image) return image
+        return actual
+    }
+
     private data class ForegroundRaceResult(
         val attempt: ForegroundRaceAttempt,
         val call: Call,
@@ -495,7 +536,9 @@ object ReaderImageCache {
         }
         awaitForegroundStreamFile(key, finalFile, manga, image, foreground)?.let { return it }
         val task = FutureTask {
-            downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
+            withNtkGeneratedFetchPermit(manga, image, foreground) {
+                downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
+            }
         }
         val existing = flights.putIfAbsent(key, task)
         if (existing != null) {
@@ -534,9 +577,13 @@ object ReaderImageCache {
         logCacheEvent("foreground_stream_wait", manga, image, foreground, "activeStream=true")
         ViewerWarmupManager.logMetric("reader_foreground_stream_wait", 1L)
         try {
-            stream.get()
+            stream.get(FOREGROUND_STREAM_JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
+            return null
+        } catch (_: java.util.concurrent.TimeoutException) {
+            logCacheEvent("foreground_stream_wait_timeout", manga, image, foreground, "activeStream=true")
+            ViewerWarmupManager.logMetric("reader_foreground_stream_wait_timeout", 1L)
             return null
         } catch (_: ExecutionException) {
             return null
@@ -574,6 +621,42 @@ object ReaderImageCache {
         }
     }
 
+    private fun isNtkGeneratedImageUrl(value: String): Boolean {
+        val lower = value.lowercase()
+        return lower.contains("://i.toonflix.app/") &&
+            (
+                Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+                )
+    }
+
+    private fun <T> withNtkGeneratedFetchPermit(
+        manga: Manga,
+        image: String,
+        foreground: Boolean,
+        block: () -> T
+    ): T {
+        if (!isNtkGeneratedImageUrl(Utils.viewerImageRequestUrl(image, manga.baseMode))) return block()
+        val startedAt = SystemClock.elapsedRealtime()
+        ntkGeneratedFetchGate.acquire()
+        val waitedMs = SystemClock.elapsedRealtime() - startedAt
+        if (waitedMs > 100L) {
+            logCacheEvent(
+                "ntk_generated_fetch_gate_wait",
+                manga,
+                image,
+                foreground,
+                "ms=$waitedMs,available=${ntkGeneratedFetchGate.availablePermits()}"
+            )
+        }
+        return try {
+            block()
+        } finally {
+            ntkGeneratedFetchGate.release()
+        }
+    }
+
     private fun safeImageName(image: String?): String {
         if (image.isNullOrBlank()) return ""
         val clean = image.substringBefore('?')
@@ -604,6 +687,7 @@ object ReaderImageCache {
             requestWithNtkGeneratedFallback(context, manga, image, foreground, cancellation).use { response ->
                 val headersAt = SystemClock.elapsedRealtime()
                 if (!response.isSuccessful) throw java.io.IOException("Image request failed: ${response.code} url=$requestUrl")
+                rememberNtkGeneratedEpisodeExtension(response.request.url.toString())
                 val body = response.body ?: throw java.io.IOException("Empty image body")
                 val contentLength = body.contentLength()
                 FileOutputStream(tmp).use { out -> body.byteStream().copyTo(out) }
@@ -691,6 +775,52 @@ object ReaderImageCache {
         anchorHedge: Boolean = false
     ): okhttp3.Response {
         val foregroundApiFallbackTask: FutureTask<List<String>?>? = null
+        val hintedImage = ntkGeneratedImageWithHintedExtension(image)
+        if (hintedImage != image) {
+            logCacheEvent(
+                "generated_extension_hint_request",
+                manga,
+                hintedImage,
+                foreground,
+                "source=${image.substringAfterLast('/').takeLast(64)}"
+            )
+            var hintedFailure: IOException? = null
+            val hintedResponse = try {
+                requestForForegroundMode(
+                    context,
+                    manga,
+                    hintedImage,
+                    foreground,
+                    cancellation,
+                    foregroundRaceAttempts,
+                    anchorHedge
+                )
+            } catch (e: IOException) {
+                hintedFailure = e
+                null
+            }
+            if (hintedResponse != null && hintedResponse.isSuccessful) {
+                rememberNtkGeneratedEpisodeExtension(hintedResponse.request.url.toString())
+                return hintedResponse
+            }
+            val hintedCode = hintedResponse?.code ?: imageFailureCode(hintedFailure)
+            hintedResponse?.close()
+            if (hintedCode != 404) {
+                retryOriginalNtkGeneratedImage(
+                    context,
+                    manga,
+                    hintedImage,
+                    foreground,
+                    cancellation,
+                    foregroundRaceAttempts,
+                    anchorHedge,
+                    hintedFailure
+                )?.let { return it }
+                retryNtkGeneratedAfterNativeAck(context, manga, hintedImage, foreground, cancellation)?.let { return it }
+                retryNtkGeneratedViaApiFallback(context, manga, hintedImage, foreground, cancellation = cancellation)?.let { return it }
+                return requestForForegroundMode(context, manga, hintedImage, foreground, cancellation)
+            }
+        }
         var initialFailure: IOException? = null
         val response = try {
             requestForForegroundMode(
@@ -707,9 +837,88 @@ object ReaderImageCache {
             initialFailure = e
             null
         }
-        if (response != null && (response.isSuccessful || !shouldTryNtkGeneratedExtensionFallback(image))) return response
+        if (response == null && isCancellationFailure(initialFailure)) {
+            throw initialFailure ?: java.io.InterruptedIOException("Reader image request cancelled")
+        }
+        if (response != null && (response.isSuccessful || !shouldTryNtkGeneratedExtensionFallback(image))) {
+            if (response.isSuccessful) rememberNtkGeneratedEpisodeExtension(response.request.url.toString())
+            return response
+        }
         if (response == null && !shouldTryNtkGeneratedExtensionFallback(image)) {
             throw IOException("Generated image request failed before fallback: $image")
+        }
+        if (response == null && imageFailureCode(initialFailure) != 404 && ntkGeneratedEpisodeExtensionMatches(image)) {
+            val target = ntkGeneratedTarget(image)
+            logCacheEvent(
+                "generated_extension_fallback_skip",
+                manga,
+                image,
+                foreground,
+                "page=${target?.page ?: 0},code=0,reason=hint_matches_current_initial_failure"
+            )
+            retryOriginalNtkGeneratedImage(
+                context,
+                manga,
+                image,
+                foreground,
+                cancellation,
+                foregroundRaceAttempts,
+                anchorHedge,
+                initialFailure
+            )?.let { return it }
+            retryOriginalNtkGeneratedImage(
+                context,
+                manga,
+                image,
+                foreground = false,
+                cancellation = cancellation,
+                foregroundRaceAttempts = 1,
+                anchorHedge = false,
+                initialFailure = initialFailure
+            )?.let { return it }
+            retryNtkGeneratedAfterNativeAck(context, manga, image, foreground, cancellation)?.let { return it }
+            return requestForForegroundMode(context, manga, image, foreground = false, cancellation = cancellation)
+        }
+        if (response == null && foreground && imageFailureCode(initialFailure) != 404) {
+            val target = ntkGeneratedTarget(image)
+            val apiFallbackTask = target?.let { startNtkApiFallbackImages(context, manga, it) }
+            if (apiFallbackTask != null) {
+                requestForegroundGeneratedRace(context, manga, image, apiFallbackTask)?.let { return it }
+            }
+            val ackRecoveryTask = startNtkGeneratedAckRecovery(context, manga, image)
+            retryOriginalNtkGeneratedImage(
+                context,
+                manga,
+                image,
+                foreground,
+                cancellation,
+                foregroundRaceAttempts,
+                anchorHedge,
+                initialFailure
+            )?.let { return it }
+            retryOriginalNtkGeneratedImage(
+                context,
+                manga,
+                image,
+                foreground = false,
+                cancellation = cancellation,
+                foregroundRaceAttempts = 1,
+                anchorHedge = false,
+                initialFailure = initialFailure
+            )?.let { return it }
+            retryNtkGeneratedViaApiFallback(context, manga, image, foreground, apiFallbackTask, cancellation)
+                ?.let { return it }
+            retryNtkGeneratedAfterNativeAck(context, manga, image, foreground, cancellation)
+                ?.let { return it }
+            retryNtkGeneratedAfterWebViewAck(
+                context,
+                manga,
+                image,
+                foreground,
+                ackRecoveryTask,
+                cancellation
+            )?.let { return it }
+            return requestForForegroundMode(context, manga, image, foreground = false, cancellation = cancellation)
         }
         val failedCode = response?.code ?: imageFailureCode(initialFailure)
         var generated404 = failedCode == 404
@@ -718,6 +927,28 @@ object ReaderImageCache {
         }
         response?.close()
         val target = ntkGeneratedTarget(image)
+        if (!generated404 && ntkGeneratedEpisodeExtensionMatches(image)) {
+            logCacheEvent(
+                "generated_extension_fallback_skip",
+                manga,
+                image,
+                foreground,
+                "page=${target?.page ?: 0},code=$failedCode,reason=hint_matches_current"
+            )
+            retryOriginalNtkGeneratedImage(
+                context,
+                manga,
+                image,
+                foreground,
+                cancellation,
+                foregroundRaceAttempts,
+                anchorHedge,
+                initialFailure
+            )?.let { return it }
+            retryNtkGeneratedAfterNativeAck(context, manga, image, foreground, cancellation)?.let { return it }
+            retryNtkGeneratedViaApiFallback(context, manga, image, foreground, cancellation = cancellation)?.let { return it }
+            return requestForForegroundMode(context, manga, image, foreground, cancellation)
+        }
         var apiFallbackTask = foregroundApiFallbackTask ?: if (generated404) target?.let {
             startNtkApiFallbackImages(context, manga, it)
         } else null
@@ -735,7 +966,10 @@ object ReaderImageCache {
                 }
                 continue
             }
-            if (fallback.isSuccessful) return fallback
+            if (fallback.isSuccessful) {
+                rememberNtkGeneratedEpisodeExtension(fallback.request.url.toString())
+                return fallback
+            }
             if (fallback.code == 404 && isLikelyPastGeneratedTail(manga, candidate)) {
                 fallback.close()
                 throw IOException("Generated image past tail: $candidate")
@@ -755,6 +989,75 @@ object ReaderImageCache {
         retryNtkGeneratedAfterNativeAck(context, manga, image, foreground, cancellation)?.let { return it }
         retryNtkGeneratedViaApiFallback(context, manga, image, foreground, cancellation = cancellation)?.let { return it }
         return requestForForegroundMode(context, manga, image, foreground, cancellation)
+    }
+
+    private fun retryOriginalNtkGeneratedImage(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean,
+        cancellation: Cancellation?,
+        foregroundRaceAttempts: Int,
+        anchorHedge: Boolean,
+        initialFailure: IOException?
+    ): okhttp3.Response? {
+        val target = ntkGeneratedTarget(image) ?: return null
+        ViewerWarmupManager.logMetric("ntk_generated_image_original_retry", target.page.toLong())
+        logCacheEvent(
+            "generated_original_retry_start",
+            manga,
+            image,
+            foreground,
+            "page=${target.page},initial=${initialFailure?.javaClass?.simpleName ?: "IOException"}"
+        )
+        val retry = try {
+            requestForForegroundMode(
+                context,
+                manga,
+                image,
+                foreground,
+                cancellation,
+                foregroundRaceAttempts,
+                anchorHedge
+            )
+        } catch (e: IOException) {
+            logCacheEvent(
+                "generated_original_retry_error",
+                manga,
+                image,
+                foreground,
+                "page=${target.page},error=${e.javaClass.simpleName}"
+            )
+            return null
+        }
+        if (retry.isSuccessful) {
+            logCacheEvent(
+                "generated_original_retry_hit",
+                manga,
+                image,
+                foreground,
+                "page=${target.page},code=${retry.code}"
+            )
+            return retry
+        }
+        logCacheEvent(
+            "generated_original_retry_miss",
+            manga,
+            image,
+            foreground,
+            "page=${target.page},code=${retry.code}"
+        )
+        retry.close()
+        return null
+    }
+
+    private fun isCancellationFailure(error: Throwable?): Boolean {
+        var current = error
+        while (current != null) {
+            if (current is java.io.InterruptedIOException) return true
+            current = current.cause
+        }
+        return false
     }
 
     private fun imageFailureCode(error: Throwable?): Int {
@@ -861,6 +1164,80 @@ object ReaderImageCache {
             if (fallback.isSuccessful) return fallback
             fallback.close()
         }
+        return null
+    }
+
+    private fun startNtkGeneratedAckRecovery(
+        context: Context,
+        manga: Manga,
+        image: String
+    ): FutureTask<Boolean>? {
+        val target = ntkGeneratedTarget(image) ?: return null
+        val path = ntkFallbackKeyPath(manga, target)
+        val key = "${target.baseUrl}$path"
+        val task = FutureTask {
+            val startedAt = SystemClock.elapsedRealtime()
+            logCacheEvent(
+                "generated_webview_ack_recovery_start",
+                manga,
+                image,
+                true,
+                "path=$path"
+            )
+            val ok = try {
+                getHttpClient().performNtkWebViewAckPreflight(path)
+            } catch (_: Exception) {
+                false
+            }
+            logCacheEvent(
+                "generated_webview_ack_recovery_done",
+                manga,
+                image,
+                true,
+                "path=$path,success=$ok,ms=${SystemClock.elapsedRealtime() - startedAt}"
+            )
+            ok
+        }
+        val existing = ntkGeneratedAckRecoveryFlights.putIfAbsent(key, task)
+        if (existing != null) return existing
+        try {
+            ntkApiFallbackExecutor.execute(task)
+        } catch (_: Exception) {
+            task.run()
+        }
+        return task
+    }
+
+    private fun retryNtkGeneratedAfterWebViewAck(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean,
+        runningTask: FutureTask<Boolean>?,
+        cancellation: Cancellation? = null
+    ): okhttp3.Response? {
+        val target = ntkGeneratedTarget(image) ?: return null
+        val task = runningTask ?: startNtkGeneratedAckRecovery(context, manga, image) ?: return null
+        val ok = try {
+            task.get(26, TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        } catch (_: Exception) {
+            false
+        } finally {
+            ntkGeneratedAckRecoveryFlights.remove("${target.baseUrl}${ntkFallbackKeyPath(manga, target)}", task)
+        }
+        if (!ok) return null
+        cancellation?.throwIfCancelled()
+        ViewerWarmupManager.logMetric("ntk_generated_image_webview_ack_retry", target.page.toLong())
+        val retry = try {
+            requestForForegroundMode(context, manga, image, foreground, cancellation)
+        } catch (_: IOException) {
+            null
+        }
+        if (retry != null && retry.isSuccessful) return retry
+        retry?.close()
         return null
     }
 
@@ -1012,7 +1389,7 @@ object ReaderImageCache {
 
     private fun shouldRaceForegroundImage(image: String): Boolean {
         val ntkTarget = ntkGeneratedTarget(image)
-        if (ntkTarget != null) return ntkTarget.page <= 16
+        if (ntkTarget != null) return false
         return true
     }
 
@@ -1059,7 +1436,7 @@ object ReaderImageCache {
             })
         }
         attempts.forEachIndexed { index, attempt ->
-            val delayMs = if (attempts.size > 1) 0L else FOREGROUND_RACE_DELAY_MS * index
+            val delayMs = FOREGROUND_RACE_DELAY_MS * index
             submit(attempt, delayMs)
         }
         var failure: Throwable? = null
@@ -1107,6 +1484,7 @@ object ReaderImageCache {
 
     private fun foregroundRaceAttempts(foregroundRequest: Request, raceAttempts: Int): List<ForegroundRaceAttempt> {
         val httpClient = getHttpClient()
+        val target = ntkGeneratedTarget(foregroundRequest.url.toString())
         val attempts = raceAttempts.coerceIn(1, 2)
         return List(attempts) { index ->
             ForegroundRaceAttempt("image-${index + 1}", httpClient.imageClient, foregroundRequest)
@@ -1115,7 +1493,7 @@ object ReaderImageCache {
 
     private fun shouldTryNtkGeneratedExtensionFallback(image: String): Boolean {
         val lower = image.lowercase()
-        return lower.contains("://i.toonflix.app/")
+        return (lower.contains("://toonflix.app/") || lower.contains("://i.toonflix.app/"))
             && (
                 Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
@@ -1155,12 +1533,68 @@ object ReaderImageCache {
         return NtkGeneratedTarget(slugMatch.groupValues[1], "/webtoon/$slug/$episodeId", page)
     }
 
+    private data class NtkGeneratedImageRef(
+        val episodeKey: String,
+        val extension: String
+    )
+
+    private fun ntkGeneratedImageRef(image: String): NtkGeneratedImageRef? {
+        val numericMatch = Regex("^(?:https?://[^/]+)/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image)
+        if (numericMatch != null) {
+            val key = "${numericMatch.groupValues[1].lowercase()}/${numericMatch.groupValues[2]}/${numericMatch.groupValues[3]}"
+            return NtkGeneratedImageRef(key, numericMatch.groupValues[4].lowercase())
+        }
+        val blacktoonMatch = Regex("^(?:https?://[^/]+)/blacktoon/episodes/(\\d+)/([^/?#]+)/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image)
+        if (blacktoonMatch != null) {
+            val key = "webtoon/${blacktoonMatch.groupValues[1]}/${blacktoonMatch.groupValues[2]}"
+            return NtkGeneratedImageRef(key, blacktoonMatch.groupValues[3].lowercase())
+        }
+        val slugMatch = Regex("^(?:https?://[^/]+)/wt/episodes/([^/?#]+)/([^/?#]+)/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image) ?: return null
+        val key = "wt/${slugMatch.groupValues[1]}/${slugMatch.groupValues[2]}"
+        return NtkGeneratedImageRef(key, slugMatch.groupValues[3].lowercase())
+    }
+
+    private fun rememberNtkGeneratedEpisodeExtension(image: String) {
+        val ref = ntkGeneratedImageRef(image) ?: return
+        val previous = ntkGeneratedEpisodeExtensions.put(ref.episodeKey, ref.extension)
+        if (previous != ref.extension) {
+            Log.d(TAG, "ntk_generated_episode_extension_hint key=${ref.episodeKey},extension=${ref.extension},previous=${previous.orEmpty()}")
+        }
+    }
+
+    private fun ntkGeneratedEpisodeExtensionMatches(image: String): Boolean {
+        val ref = ntkGeneratedImageRef(image) ?: return false
+        return ntkGeneratedEpisodeExtensions[ref.episodeKey] == ref.extension
+    }
+
+    private fun ntkGeneratedImageWithHintedExtension(image: String): String {
+        val ref = ntkGeneratedImageRef(image) ?: return image
+        val hinted = ntkGeneratedEpisodeExtensions[ref.episodeKey] ?: return image
+        if (hinted == ref.extension) return image
+        val match = Regex("(?i)\\.(jpg|jpeg|png|webp)([?#].*)?$").find(image) ?: return image
+        val suffix = match.groupValues.getOrNull(2).orEmpty()
+        return image.substring(0, match.range.first) + ".$hinted$suffix"
+    }
+
     private fun ntkGeneratedExtensionFallbacks(image: String): List<String> {
         val match = Regex("(?i)\\.(jpg|jpeg|png|webp)([?#].*)?$").find(image) ?: return emptyList()
         val current = match.groupValues[1].lowercase()
         val suffix = match.groupValues.getOrNull(2).orEmpty()
         val prefix = image.substring(0, match.range.first)
-        return listOf("jpg", "jpeg", "png", "webp")
+        val hinted = ntkGeneratedImageRef(image)
+            ?.episodeKey
+            ?.let { ntkGeneratedEpisodeExtensions[it] }
+            ?.takeIf { it != current }
+        val ordered = if (hinted != null) {
+            listOf(hinted, "jpg", "jpeg", "png", "webp")
+        } else {
+            listOf("jpg", "jpeg", "png", "webp")
+        }
+        return ordered
+            .distinct()
             .filter { it != current }
             .map { "$prefix.$it$suffix" }
     }
@@ -1350,14 +1784,27 @@ object ReaderImageCache {
     private fun isUsableImage(file: File): Boolean {
         if (!file.isFile || file.length() < 32L) return false
         return try {
-            file.inputStream().use { input ->
-                val header = ByteArray(16)
-                val read = input.read(header)
-                read > 0 && looksLikeImage(header.copyOf(read))
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
+            if (file.length() > FULL_DECODE_VALIDATION_MAX_BYTES) return true
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inSampleSize = sampledValidationDecodeSize(bounds.outWidth, bounds.outHeight)
             }
+            val bitmap = BitmapFactory.decodeFile(file.absolutePath, options) ?: return false
+            bitmap.recycle()
+            true
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun sampledValidationDecodeSize(width: Int, height: Int): Int {
+        val maxDim = max(width, height)
+        var sample = 1
+        while (maxDim / sample > 256) sample = sample shl 1
+        return sample
     }
 
     private fun looksLikeImage(bytes: ByteArray): Boolean {

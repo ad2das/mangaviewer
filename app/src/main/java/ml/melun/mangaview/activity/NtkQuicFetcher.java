@@ -42,6 +42,10 @@ public final class NtkQuicFetcher {
         void onResponseStarted(int code, Map<String, List<String>> headers);
     }
 
+    public interface EarlyResponseStartedObserver {
+        boolean onResponseStarted(int code, Map<String, List<String>> headers);
+    }
+
     public interface PartialBytesObserver {
         boolean onPartialBytes(int code, Map<String, List<String>> headers, byte[] bytes);
     }
@@ -225,7 +229,7 @@ public final class NtkQuicFetcher {
                                           PartialTextObserver partialTextObserver,
                                           PartialBytesObserver partialBytesObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, partialTextObserver, partialBytesObserver, null, null);
+                method, body, timeoutMs, partialTextObserver, partialBytesObserver, null, null, null);
     }
 
     public static Result fetchWithEngineUntilText(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -233,7 +237,7 @@ public final class NtkQuicFetcher {
                                                   String method, byte[] body, long timeoutMs,
                                                   EarlyTextObserver earlyTextObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, null, null, earlyTextObserver, null);
+                method, body, timeoutMs, null, null, earlyTextObserver, null, null);
     }
 
     public static Result fetchWithEngineObserve(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -242,7 +246,19 @@ public final class NtkQuicFetcher {
                                                 EarlyTextObserver earlyTextObserver,
                                                 ResponseStartedObserver responseStartedObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, null, null, earlyTextObserver, responseStartedObserver);
+                method, body, timeoutMs, null, null, earlyTextObserver, responseStartedObserver, null);
+    }
+
+    public static Result fetchWithEngineUntilResponseStarted(HttpEngine engine, ExecutorService executor,
+                                                             String url, String userAgent,
+                                                             String cookieHeader,
+                                                             Map<String, String> requestHeaders,
+                                                             String method, byte[] body,
+                                                             long timeoutMs,
+                                                             EarlyResponseStartedObserver earlyResponseStartedObserver)
+            throws InterruptedException {
+        return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
+                method, body, timeoutMs, null, null, null, null, earlyResponseStartedObserver);
     }
 
     private static Result fetchWithEngineInternal(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -251,7 +267,8 @@ public final class NtkQuicFetcher {
                                                   PartialTextObserver partialTextObserver,
                                                   PartialBytesObserver partialBytesObserver,
                                                   EarlyTextObserver earlyTextObserver,
-                                                  ResponseStartedObserver responseStartedObserver) throws InterruptedException {
+                                                  ResponseStartedObserver responseStartedObserver,
+                                                  EarlyResponseStartedObserver earlyResponseStartedObserver) throws InterruptedException {
         CountDownLatch done = new CountDownLatch(1);
         State state = new State();
         UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
@@ -271,6 +288,18 @@ public final class NtkQuicFetcher {
                     if(responseStartedObserver != null) {
                         try {
                             responseStartedObserver.onResponseStarted(state.code, state.headers);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if(earlyResponseStartedObserver != null) {
+                        try {
+                            if(earlyResponseStartedObserver.onResponseStarted(state.code, state.headers)) {
+                                state.bodyBytes = new byte[0];
+                                state.completedEarly = true;
+                                done.countDown();
+                                request.cancel();
+                                return;
+                            }
                         } catch (Exception ignored) {
                         }
                     }

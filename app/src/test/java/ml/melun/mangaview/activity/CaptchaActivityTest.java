@@ -186,17 +186,23 @@ public class CaptchaActivityTest {
     }
 
     @Test
-    public void ntkQuicInterceptOnlyRunsInsideQuicHtmlFallback() {
+    public void ntkQuicInterceptKeepsGeneralResourcesInsideFallbackButCachesGuardModules() {
         String root = CustomHttpClient.NTK_WEBTOON_URL;
         String imgRoot = root.replace("https://", "https://img.");
         assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
                 true, true, "GET", root + "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1", true));
         assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
                 true, true, "GET", imgRoot + "/resource.js", true));
+        assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, false, "GET", root + "/api/ad/guard-js?v=b1781038137728-wasm-1781038137731", true));
+        assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, false, "GET", root + "/api/ad/guard-wasm?v=b1781038137728-wasm-1781038137731", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
                 true, false, "GET", root + "/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
                 true, true, "POST", root + "/cdn-cgi/challenge-platform/h/b/flow/ov1", true));
+        assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
+                true, false, "POST", root + "/api/ad/guard-js?v=b1781038137728-wasm-1781038137731", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
                 true, true, "GET", "https://challenges.cloudflare.com/turnstile/v0/api.js", true));
         assertFalse(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
@@ -210,7 +216,11 @@ public class CaptchaActivityTest {
         String script = CaptchaActivity.ntkQuicBridgeJavascriptForTest();
 
         assertTrue(script.contains("window.__ntkBridgeFetch=function(input,init)"));
-        assertFalse(script.contains("window.fetch=function"));
+        assertTrue(script.contains("window.fetch=function"));
+        assertTrue(script.contains("XMLHttpRequest"));
+        assertTrue(script.contains("xp.open=function"));
+        assertTrue(script.contains("absolute.pathname.indexOf('/cdn-cgi/challenge-platform/')===0"));
+        assertTrue(script.contains("return nativeFetch.apply(this,arguments)"));
         assertTrue(script.contains("Sec-Fetch-Dest"));
         assertTrue(script.contains("Sec-Fetch-Mode"));
         assertTrue(script.contains("Sec-Fetch-Site"));
