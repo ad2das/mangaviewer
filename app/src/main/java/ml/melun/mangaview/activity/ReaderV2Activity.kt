@@ -121,6 +121,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchStartedAtMs = 0L
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
+    private var firstDrawableLoggedAtMs = 0L
     private var firstDrawableElapsedMsForTest = -1L
     private var drawableReadyDescriptionPosted = false
     private var initialStartAtFirstPage = false
@@ -133,8 +134,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var deferredNtkAckPreflightManga: Manga? = null
     private var ntkAckCaptchaRequested = false
     private var pendingInitialNtkCaptchaDeferrals = 0
-    private val deferredNtkAckPreflightRunnable = Runnable {
+    private val deferredNtkAckPreflightTimeoutRunnable = Runnable {
         startDeferredNtkAckPreflight("timeout")
+    }
+    private val deferredNtkAckPreflightQuietRunnable = Runnable {
+        maybeStartDeferredNtkAckAfterInitialContinuous()
     }
     private val initialDrawGateTimeoutRunnable = Runnable {
         if (!pagesReady && !destroyed && !isFinishing) {
@@ -228,7 +232,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (shouldDeferInitialNtkAckPreflight(manga)) {
             deferredNtkAckPreflightManga = manga
             statusHandler.postDelayed(
-                deferredNtkAckPreflightRunnable,
+                deferredNtkAckPreflightTimeoutRunnable,
                 DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS
             )
             val existing = intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)
@@ -470,7 +474,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
-        statusHandler.removeCallbacks(deferredNtkAckPreflightRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
         statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
         statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
         missingEpisodePromptState.dismiss()
@@ -800,6 +805,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun logFirstDrawableMetric(index: Int, kind: String) {
         if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
         firstDrawableMetricLogged = true
+        firstDrawableLoggedAtMs = SystemClock.uptimeMillis()
         scheduleDrawableReadyDescription(index)
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         firstDrawableElapsedMsForTest = elapsed
@@ -856,6 +862,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun logVisibleViewportReadyMetric() {
         if (!firstDrawableMetricLogged && viewerLaunchStartedAtMs > 0L) {
             firstDrawableMetricLogged = true
+            firstDrawableLoggedAtMs = SystemClock.uptimeMillis()
             val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
             firstDrawableElapsedMsForTest = elapsed
             Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=viewport page=$currentPage ms=$elapsed")
@@ -879,7 +886,35 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun maybeStartDeferredNtkAckAfterInitialContinuous() {
         if (deferredNtkAckPreflightManga == null) return
         if (!isInitialContinuousScrollReady()) return
+        val quietMs = ntkAckPreflightQuietRemainingMs()
+        if (quietMs > 0L) {
+            statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+            statusHandler.postDelayed(deferredNtkAckPreflightQuietRunnable, quietMs)
+            return
+        }
         startDeferredNtkAckPreflight("initial_continuous")
+    }
+
+    private fun ntkAckPreflightQuietRemainingMs(): Long {
+        val now = SystemClock.uptimeMillis()
+        var remaining = 0L
+        if (firstDrawableLoggedAtMs > 0L) {
+            remaining = maxOf(
+                remaining,
+                firstDrawableLoggedAtMs + NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS - now
+            )
+        }
+        if (readerWindowBusy) {
+            remaining = maxOf(remaining, NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS)
+        }
+        val lastActiveMs = maxOf(lastReaderInteractionMs, lastReaderBusyMs)
+        if (lastActiveMs > 0L) {
+            remaining = maxOf(
+                remaining,
+                lastActiveMs + NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS - now
+            )
+        }
+        return remaining.coerceAtLeast(0L)
     }
 
     private fun shouldMarkFirstDrawable(index: Int, currentPage: Int): Boolean {
@@ -1330,13 +1365,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun shouldDeferInitialNtkAckPreflight(manga: Manga): Boolean {
         if (!isCurrentNtkReader()) return false
-        return false
+        val path = manga.ntkEpisodePath ?: return false
+        return path.startsWith("/webtoon/") || path.startsWith("/manhwa/")
     }
 
     private fun startDeferredNtkAckPreflight(reason: String) {
         val manga = deferredNtkAckPreflightManga ?: return
         deferredNtkAckPreflightManga = null
-        statusHandler.removeCallbacks(deferredNtkAckPreflightRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
         if (destroyed || isFinishing) return
         Log.d(TAG, "reader_ntk_ack_preflight_deferred_start reason=$reason,path=${manga.ntkEpisodePath}")
         startCurrentNtkAckPreflight(manga)
@@ -1405,6 +1442,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         status.visibility = TextView.GONE
         status.text = displayEpisodeTitle(manga, title)
+        firstDrawableMetricLogged = false
+        firstDrawableLoggedAtMs = 0L
+        firstDrawableElapsedMsForTest = -1L
+        drawableReadyDescriptionPosted = false
+        launchDrawableMetricPages.clear()
+        launchDrawableElapsedMsByPage.clear()
         if (clearViewImmediately) renderView.setPageCount(0)
         session?.cancel()
         session = ReaderSession(
@@ -2112,6 +2155,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val NTK_INITIAL_CAPTCHA_DEFER_MS = 1800L
         private const val NTK_INITIAL_CAPTCHA_MAX_DEFERS = 2
         private const val DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS = 45000L
+        private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS = 450L
+        private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 900L
         private const val NTK_ACK_INITIAL_CONTINUOUS_PAGES = 3
         private const val NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS = 1
         private const val READER_LOADING_DESCRIPTION = "reader-loading"

@@ -68,6 +68,7 @@ object ReaderImageCache {
     private val ntkGeneratedAckRecoveryFlights = ConcurrentHashMap<String, FutureTask<Boolean>>()
     private val ntkGeneratedEpisodeExtensions = ConcurrentHashMap<String, String>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
+    private val cacheGeneration = AtomicLong(0L)
     private val ntkGeneratedBackgroundFetchGate = Semaphore(NTK_GENERATED_BACKGROUND_FETCH_PARALLELISM)
     private val ntkGeneratedForegroundFetchGate = Semaphore(NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM)
     private val trimLock = Any()
@@ -97,6 +98,25 @@ object ReaderImageCache {
         val urls: List<String>,
         val createdAtMs: Long
     )
+
+    @JvmStatic
+    fun clearVolatileStateForTest() {
+        val generation = cacheGeneration.incrementAndGet()
+        flights.values.forEach { it.cancel(true) }
+        flights.clear()
+        foregroundStreams.values.forEach { it.cancel(true) }
+        foregroundStreams.clear()
+        foregroundStreamStartedAt.clear()
+        earlyNtkImageUrls.clear()
+        ntkApiFallbackFlights.values.forEach { it.cancel(true) }
+        ntkApiFallbackFlights.clear()
+        ntkApiFallbackImages.clear()
+        ntkGeneratedAckRecoveryFlights.values.forEach { it.cancel(true) }
+        ntkGeneratedAckRecoveryFlights.clear()
+        ntkGeneratedEpisodeExtensions.clear()
+        activeReads.clear()
+        Log.d(TAG, "reader_image_cache_volatile_clear_for_test generation=$generation")
+    }
 
     class FileLease internal constructor(
         val file: File,
@@ -246,6 +266,7 @@ object ReaderImageCache {
         val key = key(manga.baseMode, image)
         if (flights.containsKey(key)) return false
         val startedAt = SystemClock.elapsedRealtime()
+        val generation = cacheGeneration.get()
         val task = FutureTask<ByteArray?> {
             try {
                 val bytes = fetchForegroundBytes(
@@ -255,7 +276,8 @@ object ReaderImageCache {
                     cancellation,
                     startedAt,
                     FOREGROUND_STREAM_RACE_ATTEMPTS,
-                    anchorHedge
+                    anchorHedge,
+                    generation
                 )
                 logCacheEvent(
                     "foreground_stream_async_done",
@@ -330,8 +352,18 @@ object ReaderImageCache {
         if (cachedFile(appContext, manga, image) != null) return null
         val key = key(manga.baseMode, image)
         val startedAt = SystemClock.elapsedRealtime()
+        val generation = cacheGeneration.get()
         val task = FutureTask<ByteArray?> {
-            fetchForegroundBytes(appContext, manga, image, cancellation, startedAt, FOREGROUND_RACE_ATTEMPTS, anchorHedge)
+            fetchForegroundBytes(
+                appContext,
+                manga,
+                image,
+                cancellation,
+                startedAt,
+                FOREGROUND_RACE_ATTEMPTS,
+                anchorHedge,
+                generation
+            )
         }
         val existing = foregroundStreams.putIfAbsent(key, task)
         if (existing != null) {
@@ -399,7 +431,8 @@ object ReaderImageCache {
         cancellation: Cancellation?,
         startedAt: Long,
         raceAttempts: Int = FOREGROUND_RACE_ATTEMPTS,
-        anchorHedge: Boolean = false
+        anchorHedge: Boolean = false,
+        generation: Long = cacheGeneration.get()
     ): ByteArray? {
         withNtkGeneratedFetchPermit(manga, image, true) {
             requestWithNtkGeneratedFallback(
@@ -424,7 +457,7 @@ object ReaderImageCache {
             val partialImage = response.header("x-mangaviewer-partial-image") == "1"
             if (!partialImage) {
                 val cacheImage = foregroundResponseCacheImage(image, response)
-                cacheForegroundBytes(context, manga, cacheImage, bytes)
+                cacheForegroundBytes(context, manga, cacheImage, bytes, generation)
                 rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
                 if (cacheImage != image) {
                     logCacheEvent(
@@ -523,8 +556,12 @@ object ReaderImageCache {
             estimatedBytes >= DIRECT_STREAM_TILE_MIN_ESTIMATED_BYTES
     }
 
-    private fun cacheForegroundBytes(context: Context, manga: Manga, image: String, bytes: ByteArray) {
+    private fun cacheForegroundBytes(context: Context, manga: Manga, image: String, bytes: ByteArray, generation: Long) {
         if (bytes.isEmpty()) return
+        if (generation != cacheGeneration.get()) {
+            logCacheEvent("foreground_cache_generation_skip", manga, image, true, "generation=$generation,current=${cacheGeneration.get()}")
+            return
+        }
         val finalFile = File(cacheDir(context), "${key(manga.baseMode, image)}.img")
         if (isUsableImage(finalFile)) return
         val tmp = File(finalFile.parentFile, "${finalFile.name}.fg.${System.nanoTime()}")
@@ -600,9 +637,10 @@ object ReaderImageCache {
             return finalFile
         }
         awaitForegroundStreamFile(key, finalFile, manga, image, foreground)?.let { return it }
+        val generation = cacheGeneration.get()
         val task = FutureTask {
             withNtkGeneratedFetchPermit(manga, image, foreground) {
-                downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation)
+                downloadAtomically(appContext, manga, image, finalFile, foreground, cancellation, generation)
             }
         }
         val existing = flights.putIfAbsent(key, task)
@@ -779,7 +817,8 @@ object ReaderImageCache {
         image: String,
         finalFile: File,
         foreground: Boolean = false,
-        cancellation: Cancellation? = null
+        cancellation: Cancellation? = null,
+        generation: Long = cacheGeneration.get()
     ): File {
         val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
         val startedAt = SystemClock.elapsedRealtime()
@@ -825,6 +864,9 @@ object ReaderImageCache {
             }
             if (foreground) {
                 ViewerWarmupManager.logMetric("reader_foreground_image_validate_ms", SystemClock.elapsedRealtime() - startedAt)
+            }
+            if (generation != cacheGeneration.get()) {
+                throw java.io.IOException("Image cache generation invalidated")
             }
             replace(tmp, finalFile)
             finalFile.setLastModified(System.currentTimeMillis())

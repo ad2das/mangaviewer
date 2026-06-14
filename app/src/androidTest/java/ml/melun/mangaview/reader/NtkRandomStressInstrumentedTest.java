@@ -117,6 +117,8 @@ public class NtkRandomStressInstrumentedTest {
         int screenshotEvery = parseNonNegativeInt(arg(args, "ntkScreenshotEvery", "0"), 0);
         int swipeInputSteps = parsePositiveInt(arg(args, "ntkSwipeInputSteps",
                 Integer.toString(DEFAULT_SWIPE_INPUT_STEPS)), DEFAULT_SWIPE_INPUT_STEPS);
+        String scrollInputMode = normalizedArg(args, "ntkScrollInputMode", "touch");
+        String scrollPattern = normalizedArg(args, "ntkScrollPattern", "mixed");
         long firstDrawableMaxMs = parseNonNegativeLong(
                 arg(args, "ntkFirstDrawableMaxMs", Long.toString(DEFAULT_FIRST_DRAWABLE_MAX_MS)),
                 DEFAULT_FIRST_DRAWABLE_MAX_MS);
@@ -175,6 +177,8 @@ public class NtkRandomStressInstrumentedTest {
                 + ",appendSteps=" + appendSteps
                 + ",screenshotEvery=" + screenshotEvery
                 + ",swipeInputSteps=" + swipeInputSteps
+                + ",scrollInputMode=" + scrollInputMode
+                + ",scrollPattern=" + scrollPattern
                 + ",firstDrawableMaxMs=" + firstDrawableMaxMs
                 + ",initialContinuousPages=" + initialContinuousPages
                 + ",initialContinuousMaxMs=" + initialContinuousMaxMs
@@ -208,7 +212,7 @@ public class NtkRandomStressInstrumentedTest {
                         firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
                         assertNoJank, maxMissedFrames, maxDroppedFrames,
                         swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs,
-                        holdAfterFirstDrawableMs);
+                        holdAfterFirstDrawableMs, scrollInputMode, scrollPattern);
             }
             return;
         }
@@ -298,7 +302,7 @@ public class NtkRandomStressInstrumentedTest {
                     firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
                     assertNoJank, maxMissedFrames, maxDroppedFrames,
                     swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs,
-                    holdAfterFirstDrawableMs);
+                    holdAfterFirstDrawableMs, scrollInputMode, scrollPattern);
             completedRuns++;
         }
         assertTrue("Expected NTK episode list for all runs completed=" + completedRuns
@@ -323,6 +327,7 @@ public class NtkRandomStressInstrumentedTest {
         if(clearReaderImageCache && context != null) {
             Manga.clearNtkGeneratedExtensionCacheForTest();
             ReaderImageCache.clearNtkGeneratedEpisodeExtensionHintsForTest();
+            ReaderImageCache.clearVolatileStateForTest();
             Log.d(TAG, "ntk_generated_extension_cache_clear_for_test");
             File dir = new File(context.getCacheDir(), "reader_image_cache_v1");
             int deleted = deleteRecursivelyForTest(dir);
@@ -1038,7 +1043,8 @@ public class NtkRandomStressInstrumentedTest {
                                       boolean assertNoJank, int maxMissedFrames,
                                       int maxDroppedFrames, int swipeInputSteps,
                                       boolean assertNoSchedulerGap, float renderFrameMaxMs,
-                                      long holdAfterFirstDrawableMs) {
+                                      long holdAfterFirstDrawableMs, String scrollInputMode,
+                                      String scrollPattern) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
         Manga nextEpisode = null;
@@ -1058,6 +1064,8 @@ public class NtkRandomStressInstrumentedTest {
                     + ",path=" + episode.getNtkEpisodePath()
                     + ",title=" + title.getName()
                     + ",episode=" + episode.getName()
+                    + ",scrollInputMode=" + scrollInputMode
+                    + ",scrollPattern=" + scrollPattern
                     + ",hasNext=" + (nextEpisode != null)
                     + ",hasPrevious=" + (previousEpisode != null));
             activity = InstrumentationRegistry.getInstrumentation()
@@ -1130,7 +1138,8 @@ public class NtkRandomStressInstrumentedTest {
             probeScrollContinuity(context, device, reader, run, mode, episode,
                     scrollSteps, screenshotEvery, postStopDriftMs, assertNoJank,
                     maxMissedFrames, maxDroppedFrames, swipeInputSteps,
-                    assertNoSchedulerGap, renderFrameMaxMs);
+                    assertNoSchedulerGap, renderFrameMaxMs, scrollInputMode,
+                    scrollPattern);
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
@@ -1301,13 +1310,16 @@ public class NtkRandomStressInstrumentedTest {
                                               long postStopDriftMs, boolean assertNoJank,
                                               int maxMissedFrames, int maxDroppedFrames,
                                               int swipeInputSteps, boolean assertNoSchedulerGap,
-                                              float renderFrameMaxMs) {
+                                              float renderFrameMaxMs, String scrollInputMode,
+                                              String scrollPattern) {
         File screenshot = new File(context.getExternalCacheDir(), "ntk-random-scroll-" + run + ".png");
         for(int step = 0; step < steps; step++) {
             ProgressSnapshot progressBefore = readProgressSnapshot(reader);
             resetFrameStatsSnapshot(reader);
+            ScrollGesture gesture = scrollGestureForStep(scrollPattern, step, swipeInputSteps);
             long before = SystemClock.elapsedRealtime();
-            long dispatchMs = swipeReader(device, reader, 0.82f, 0.24f, swipeInputSteps);
+            long dispatchMs = swipeReader(device, reader, gesture.startYRatio, gesture.endYRatio,
+                    gesture.inputSteps, scrollInputMode);
             long swipeAt = SystemClock.elapsedRealtime();
             device.waitForIdle(450L);
             long idleAt = SystemClock.elapsedRealtime();
@@ -1338,6 +1350,8 @@ public class NtkRandomStressInstrumentedTest {
                     + ",screenshotMs=" + (screenshotAt - screenshotStart)
                     + ",statsMs=" + (statsAt - screenshotAt)
                     + ",path=" + episode.getNtkEpisodePath()
+                    + ",input=" + scrollInputMode
+                    + ",gesture=" + gesture
                     + ",progressBefore=" + progressBefore
                     + ",progressAfterIdle=" + progressAfterIdle
                     + ",progressAfterQuiet=" + progressAfterQuiet
@@ -1390,6 +1404,52 @@ public class NtkRandomStressInstrumentedTest {
 
     private static boolean shouldCaptureScrollScreenshot(int step, int screenshotEvery) {
         return screenshotEvery > 0 && step % screenshotEvery == 0;
+    }
+
+    private static ScrollGesture scrollGestureForStep(String pattern, int step, int baseInputSteps) {
+        int baseSteps = Math.max(2, baseInputSteps);
+        String normalized = pattern == null ? "" : pattern.trim().toLowerCase(Locale.ROOT);
+        if("reverse".equals(normalized) || "up".equals(normalized))
+            return new ScrollGesture(0.24f, 0.82f, baseSteps, "reverse");
+        if("slow".equals(normalized))
+            return new ScrollGesture(0.82f, 0.24f, Math.max(baseSteps, 12), "slow");
+        if("fast".equals(normalized))
+            return new ScrollGesture(0.86f, 0.16f, Math.min(baseSteps, 4), "fast");
+        if("mixed".equals(normalized)) {
+            switch(Math.floorMod(step, 4)) {
+                case 1:
+                    return new ScrollGesture(0.78f, 0.32f, Math.max(baseSteps, 12), "slow-down");
+                case 2:
+                    return new ScrollGesture(0.24f, 0.82f, Math.max(3, Math.min(baseSteps, 5)), "reverse-fast");
+                case 3:
+                    return new ScrollGesture(0.70f, 0.42f, Math.max(baseSteps, 8), "short-down");
+                case 0:
+                default:
+                    return new ScrollGesture(0.86f, 0.16f, Math.max(3, Math.min(baseSteps, 5)), "fast-down");
+            }
+        }
+        return new ScrollGesture(0.82f, 0.24f, baseSteps, "down");
+    }
+
+    private static final class ScrollGesture {
+        final float startYRatio;
+        final float endYRatio;
+        final int inputSteps;
+        final String name;
+
+        ScrollGesture(float startYRatio, float endYRatio, int inputSteps, String name) {
+            this.startYRatio = startYRatio;
+            this.endYRatio = endYRatio;
+            this.inputSteps = inputSteps;
+            this.name = name;
+        }
+
+        @Override
+        public String toString() {
+            return name + ":" + String.format(Locale.US, "%.2f", startYRatio)
+                    + "->" + String.format(Locale.US, "%.2f", endYRatio)
+                    + "x" + inputSteps;
+        }
     }
 
     private static void probeNextAppend(UiDevice device, ReaderV2Activity reader, int run,
@@ -1857,7 +1917,8 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static long swipeReader(UiDevice device, ReaderV2Activity reader,
-                                    float startYRatio, float endYRatio, int steps) {
+                                    float startYRatio, float endYRatio, int steps,
+                                    String inputMode) {
         if(reader == null)
             return 0L;
         final int[] bounds = new int[4];
@@ -1876,11 +1937,13 @@ public class NtkRandomStressInstrumentedTest {
         float startY = bounds[1] + bounds[3] * startYRatio;
         float endY = bounds[1] + bounds[3] * endYRatio;
         long startedAt = SystemClock.elapsedRealtime();
-        float scrollDelta = Math.max(1f, startY - endY);
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
-                reader.testScrollByPixels(scrollDelta));
-        return SystemClock.elapsedRealtime() - startedAt;
-        /*
+        String normalizedMode = inputMode == null ? "" : inputMode.trim().toLowerCase(Locale.ROOT);
+        if("direct".equals(normalizedMode) || "programmatic".equals(normalizedMode)) {
+            float scrollDelta = startY - endY;
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                    reader.testScrollByPixels(scrollDelta));
+            return SystemClock.elapsedRealtime() - startedAt;
+        }
         long downTime = SystemClock.uptimeMillis();
         int safeSteps = Math.max(1, Math.min(steps, 12));
         dispatchTouch(reader, downTime, downTime, MotionEvent.ACTION_DOWN, x, startY, false);
@@ -1894,7 +1957,6 @@ public class NtkRandomStressInstrumentedTest {
         dispatchTouch(reader, downTime, downTime + safeSteps * 18L,
                 MotionEvent.ACTION_UP, x, endY, false);
         return SystemClock.elapsedRealtime() - startedAt;
-        */
     }
 
     private static void dispatchTouch(ReaderV2Activity reader, long downTime, long eventTime,
@@ -1963,6 +2025,12 @@ public class NtkRandomStressInstrumentedTest {
     private static String arg(Bundle args, String key, String fallback) {
         String value = args == null ? null : args.getString(key);
         return value == null ? fallback : value;
+    }
+
+    private static String normalizedArg(Bundle args, String key, String fallback) {
+        String value = arg(args, key, fallback);
+        value = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        return value.length() == 0 ? fallback : value;
     }
 
     private static int parseBaseMode(String value) {

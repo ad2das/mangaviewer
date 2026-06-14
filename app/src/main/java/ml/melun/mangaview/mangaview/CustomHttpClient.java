@@ -1238,6 +1238,7 @@ public class CustomHttpClient {
         NTK_ACK_CHALLENGE_HARDBLOCKS.clear();
         NTK_ACK_PROOF_REQUIREDS.clear();
         NTK_WEBVIEW_ACK_FLIGHTS.clear();
+        NtkWebViewFallbackManager.clearRecentServerAckSuccessForTest(baseUrl);
         synchronized (ntkViewerImageUrlCacheLock) {
             ntkViewerImageUrlCache.clear();
             ntkViewerImageUrlMissCache.clear();
@@ -6324,10 +6325,6 @@ public class CustomHttpClient {
         String cookiePath = ackScopePath != null && ackScopePath.length() > 0 ? ackScopePath : path;
         String baseUrl = getBaseUrl(path);
         String cacheKey = baseUrl + path + "|" + kind + "|" + workId + "|" + episodeId;
-        Log.d(TAG, "ntk_images_api_start path=" + path
-                + ",ackPath=" + cookiePath
-                + ",endpoint=" + endpoint
-                + ",tokenLen=" + imagesToken.length());
         List<String> cachedUrls = cachedNtkViewerImageUrls(cacheKey);
         if(!cachedUrls.isEmpty()) {
             List<String> recentUrls = recentlyCachedNtkViewerImageUrls(cacheKey);
@@ -6355,6 +6352,15 @@ public class CustomHttpClient {
             Log.d(TAG, "ntk_images_api_skip_hardblock path=" + path);
             return urls;
         }
+        if(isModernNtkGuardRoot(baseUrl) && isNumericNtkGeneratedEpisode(kind, workId, episodeId, path)) {
+            Log.d(TAG, "ntk_images_api_skip_modern_numeric_generated_direct path=" + path);
+            cacheNtkViewerImageUrlMiss(cacheKey);
+            return urls;
+        }
+        Log.d(TAG, "ntk_images_api_start path=" + path
+                + ",ackPath=" + cookiePath
+                + ",endpoint=" + endpoint
+                + ",tokenLen=" + imagesToken.length());
         FutureTask<List<String>> task = new FutureTask<>(() ->
                 fetchNtkViewerImageUrlsUncached(kind, endpoint, baseUrl, path, cookiePath, segment,
                         workId, episodeId, imagesToken, cacheKey, viewerBody, trustedUrlsCallback));
@@ -6675,6 +6681,10 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_images_api_pre_ack_miss path=" + path
                         + ",code=" + (result == null ? 0 : result.code)
                         + ",ackRequired=" + ntkViewerImagesAckRequired(result));
+                if(tryModernNumericBeforeAck) {
+                    Log.d(TAG, "ntk_images_api_modern_numeric_keep_generated_direct path=" + path);
+                    return urls;
+                }
                 if(Thread.currentThread().isInterrupted())
                     return urls;
             }
