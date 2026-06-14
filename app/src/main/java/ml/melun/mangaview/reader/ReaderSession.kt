@@ -4272,6 +4272,7 @@ class ReaderSession(
     private fun initialAnchorCoalesceDelayMs(delivery: Delivery): Long {
         if (firstBitmapLogged.get()) return 0L
         if (!isNtkSource(manga, title)) return 0L
+        if (isNtkGeneratedImageUrl(delivery.page.image.orEmpty())) return 0L
         val start = currentStartPage()
         if (delivery.index != start) return 0L
         val firstNext = start + 1

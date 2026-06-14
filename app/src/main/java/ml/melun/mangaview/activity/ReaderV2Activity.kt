@@ -136,7 +136,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var ntkAckCaptchaRequested = false
     private var pendingInitialNtkCaptchaDeferrals = 0
     private var deferredNtkAckPreflightBlockProbeAttempts = 0
-    private var deferredNtkAckPreflightCfImageGraceUsed = false
     private val deferredNtkAckPreflightTimeoutRunnable = Runnable {
         startDeferredNtkAckPreflight("timeout")
     }
@@ -238,7 +237,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (shouldDeferInitialNtkAckPreflight(manga)) {
             deferredNtkAckPreflightManga = manga
             deferredNtkAckPreflightBlockProbeAttempts = 0
-            deferredNtkAckPreflightCfImageGraceUsed = false
             statusHandler.postDelayed(
                 deferredNtkAckPreflightTimeoutRunnable,
                 DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS
@@ -1422,15 +1420,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 )
                 return
             }
-            if (!deferredNtkAckPreflightCfImageGraceUsed && pendingInitialNtkCaptchaDeferrals <= 0) {
-                deferredNtkAckPreflightCfImageGraceUsed = true
+            if (pendingInitialNtkCaptchaDeferrals <= 0 &&
+                deferredNtkAckPreflightBlockProbeAttempts < NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS
+            ) {
                 Log.d(
                     TAG,
                     "reader_ntk_ack_preflight_initial_cf_probe_wait_images path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts"
                 )
                 statusHandler.postDelayed(
                     deferredNtkAckPreflightBlockProbeRunnable,
-                    NTK_ACK_PREFLIGHT_INITIAL_CF_IMAGE_GRACE_MS
+                    NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS
                 )
                 return
             }
@@ -2236,7 +2235,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 900L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MS = 650L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS = 450L
-        private const val NTK_ACK_PREFLIGHT_INITIAL_CF_IMAGE_GRACE_MS = 260L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS = 5
         private const val NTK_ACK_INITIAL_CONTINUOUS_PAGES = 3
         private const val NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS = 1

@@ -647,12 +647,11 @@ final class NtkWebViewFallbackManager {
                         + ",fallback=" + summarizeNtkCookieHeaderForLog(webViewSeedCookies)
                         + ",merged=" + summarizeNtkCookieHeaderForLog(mergedCookies));
             }
+            installViewerImageBridges(view, result, finish, ackOnlyFrame, quicBridge,
+                    ackScopePath);
             if(ackOnlyPlainCloudflarePass) {
                 view.setTag(ACK_ONLY_PLAIN_CF_TAG);
                 Log.d(TAG, "ntk_ack_only_plain_cf_stage path=" + path);
-            } else {
-                installViewerImageBridges(view, result, finish, ackOnlyFrame, quicBridge,
-                        ackScopePath);
             }
             final int[] ackOnlyMainFrameRetries = new int[]{0};
             final boolean[] ackOnlyCloudflareReloaded = new boolean[]{false};
@@ -709,7 +708,8 @@ final class NtkWebViewFallbackManager {
                     if(ackOnlyPlainCloudflarePass && isAckOnlyPlainCloudflarePending(view.getTag())) {
                         maybePromoteAckOnlyPlainCloudflarePass(view, finished, requested, scriptRequests,
                                 result, finish, ackOnlyFrame, quicBridge, shellUrl, headers, path,
-                                ackOnlyPlainClearanceReloaded, "page-finished");
+                                ackOnlyPlainClearanceReloaded, baseUrl, ackScopePath, kind, workId,
+                                episodeId, imagesToken, "page-finished");
                         return;
                     }
                     requested[0] = true;
@@ -840,19 +840,24 @@ final class NtkWebViewFallbackManager {
                     } else {
                         scheduleAckOnlyPlainCloudflarePromotion(view, finished, requested, scriptRequests,
                                 result, finish, ackOnlyFrame, quicBridge, shellUrl, headers, path,
-                                ackOnlyPlainClearanceReloaded, 1_200L);
+                                ackOnlyPlainClearanceReloaded, baseUrl, ackScopePath, kind, workId,
+                                episodeId, imagesToken, 1_200L);
                         scheduleAckOnlyPlainCloudflarePromotion(view, finished, requested, scriptRequests,
                                 result, finish, ackOnlyFrame, quicBridge, shellUrl, headers, path,
-                                ackOnlyPlainClearanceReloaded, 2_500L);
+                                ackOnlyPlainClearanceReloaded, baseUrl, ackScopePath, kind, workId,
+                                episodeId, imagesToken, 2_500L);
                         scheduleAckOnlyPlainCloudflarePromotion(view, finished, requested, scriptRequests,
                                 result, finish, ackOnlyFrame, quicBridge, shellUrl, headers, path,
-                                ackOnlyPlainClearanceReloaded, 4_800L);
+                                ackOnlyPlainClearanceReloaded, baseUrl, ackScopePath, kind, workId,
+                                episodeId, imagesToken, 4_800L);
                         scheduleAckOnlyPlainCloudflarePromotion(view, finished, requested, scriptRequests,
                                 result, finish, ackOnlyFrame, quicBridge, shellUrl, headers, path,
-                                ackOnlyPlainClearanceReloaded, 8_500L);
+                                ackOnlyPlainClearanceReloaded, baseUrl, ackScopePath, kind, workId,
+                                episodeId, imagesToken, 8_500L);
                         scheduleAckOnlyPlainCloudflarePromotion(view, finished, requested, scriptRequests,
                                 result, finish, ackOnlyFrame, quicBridge, shellUrl, headers, path,
-                                ackOnlyPlainClearanceReloaded, 13_500L);
+                                ackOnlyPlainClearanceReloaded, baseUrl, ackScopePath, kind, workId,
+                                episodeId, imagesToken, 13_500L);
                         installAckOnlyTurnstileShadowHook(view, finished, path, "before-load");
                         scheduleAckOnlyTurnstileShadowHook(view, finished, path, 60L);
                         scheduleAckOnlyTurnstileShadowHook(view, finished, path, 180L);
@@ -981,6 +986,9 @@ final class NtkWebViewFallbackManager {
                                                         boolean ackOnlyFrame, NtkQuicBridge quicBridge,
                                                         String shellUrl, Map<String, String> headers,
                                                         String path, boolean[] clearanceReloaded,
+                                                        String baseUrl, String ackScopePath,
+                                                        String kind, String workId, String episodeId,
+                                                        String imagesToken,
                                                         String reason) {
         if(finished[0] || view == null)
             return;
@@ -1021,7 +1029,6 @@ final class NtkWebViewFallbackManager {
             }
             if(cloudflareUrl || cloudflarePage || state.contains("ERR:") || !readyComplete)
                 return;
-            installViewerImageBridges(view, result, finish, ackOnlyFrame, quicBridge, path);
             view.setTag(ACK_ONLY_PLAIN_CF_PROMOTED_TAG);
             requested[0] = false;
             scriptRequests[0] = 0;
@@ -1029,10 +1036,8 @@ final class NtkWebViewFallbackManager {
                     + ",reason=" + reason
                     + ",url=" + view.getUrl()
                     + ",cookies=" + summarizeNtkCookieHeaderForLog(webViewCookieHeader(shellUrl)));
-            mainHandler.postDelayed(() -> {
-                if(!finished[0] && view != null)
-                    view.loadUrl(shellUrl, webViewHeaders(headers));
-            }, 80L);
+            mainHandler.post(() -> evaluateViewerImageFetchScript(view, finished, scriptRequests,
+                    baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken));
         });
     }
 
@@ -1137,10 +1142,14 @@ final class NtkWebViewFallbackManager {
                                                          boolean ackOnlyFrame, NtkQuicBridge quicBridge,
                                                          String shellUrl, Map<String, String> headers,
                                                          String path, boolean[] clearanceReloaded,
+                                                         String baseUrl, String ackScopePath,
+                                                         String kind, String workId, String episodeId,
+                                                         String imagesToken,
                                                          long delayMs) {
         mainHandler.postDelayed(() -> maybePromoteAckOnlyPlainCloudflarePass(view, finished, requested,
                 scriptRequests, result, finish, ackOnlyFrame, quicBridge, shellUrl, headers, path,
-                clearanceReloaded, "delay-" + delayMs), delayMs);
+                clearanceReloaded, baseUrl, ackScopePath, kind, workId, episodeId, imagesToken,
+                "delay-" + delayMs), delayMs);
     }
 
     private void installAckOnlyTurnstileShadowHook(WebView view, boolean[] finished, String path,
