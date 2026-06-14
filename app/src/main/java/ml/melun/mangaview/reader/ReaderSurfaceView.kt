@@ -39,7 +39,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     data class ScrollPositionSnapshot(
         val page: Int,
         val offset: Int,
-        val scrollOffset: Int
+        val scrollOffset: Int,
+        val busy: Boolean
     )
 
     data class VisibleCoverageSnapshot(
@@ -813,7 +814,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun currentScrollPositionSnapshot(): ScrollPositionSnapshot? {
         return synchronized(stateLock) {
             val progress = progressPositionLocked() ?: return@synchronized null
-            ScrollPositionSnapshot(progress.page, progress.offset, scrollOffset.toInt())
+            val busy = lastBusy || pointerDown || dragging || !scroller.isFinished
+            ScrollPositionSnapshot(progress.page, progress.offset, scrollOffset.toInt(), busy)
         }
     }
 
@@ -1125,7 +1127,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val state = if (shouldDraw && !shouldDeferInitialEmptyDrawLocked()) buildDrawStateLocked(busyNow) else null
             if (renderRequested && pages.isEmpty()) renderRequested = false
             if (shouldDraw) renderRequested = false
-            if (animateScroll) scheduleFrameLocked()
+            if (animateScroll) scheduleFrameLocked(preferImmediate = pointerDown || dragging)
             RenderWork(request, boundary, state)
         }
         dispatchWindowRequest(work.request)

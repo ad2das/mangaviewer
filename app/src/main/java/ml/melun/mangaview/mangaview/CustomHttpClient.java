@@ -4339,7 +4339,10 @@ public class CustomHttpClient {
                 ViewerWarmupManager.logMetric("ntk_quic_image_foreground_race", 1L);
             return fetchNtkForegroundImageRace(baseUrl, url, cookieHeader, headers);
         }
-        String key = ntkQuicImageFlightKey(url, cookieHeader);
+        boolean independentHedge = anchorHedge && isNtkGeneratedImageCdnUrl(url);
+        if(independentHedge)
+            ViewerWarmupManager.logMetric("ntk_quic_image_background_anchor_hedge", 1L);
+        String key = ntkQuicImageFlightKey(url, cookieHeader, independentHedge);
         FutureTask<NtkQuicFetcher.Result> task = new FutureTask<>(() ->
                 fetchNtkQuic(baseUrl, url, cookieHeader, headers, "GET", null, NTK_QUIC_IMAGE_TIMEOUT_MS));
         FutureTask<NtkQuicFetcher.Result> running = ntkQuicImageFlights.putIfAbsent(key, task);
@@ -4365,8 +4368,10 @@ public class CustomHttpClient {
         }
     }
 
-    private static String ntkQuicImageFlightKey(String url, String cookieHeader) {
-        return (url == null ? "" : url) + "\n" + (cookieHeader == null ? "" : cookieHeader);
+    private static String ntkQuicImageFlightKey(String url, String cookieHeader, boolean independentHedge) {
+        return (url == null ? "" : url)
+                + "\n" + (cookieHeader == null ? "" : cookieHeader)
+                + "\nhedge=" + (independentHedge ? "1" : "0");
     }
 
     private static boolean shouldUseNtkQuicPrimaryUrl(String url) {

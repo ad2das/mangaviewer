@@ -1616,7 +1616,7 @@ public class NtkRandomStressInstrumentedTest {
             value[0] = progress == null
                     ? ProgressSnapshot.NULL
                     : new ProgressSnapshot(progress.getPage(), progress.getOffset(),
-                    progress.getScrollOffset());
+                    progress.getScrollOffset(), progress.getBusy());
         });
         return value[0];
     }
@@ -1627,13 +1627,12 @@ public class NtkRandomStressInstrumentedTest {
         ProgressSnapshot stableCandidate = latest;
         long stableSince = SystemClock.elapsedRealtime();
         while(SystemClock.elapsedRealtime() < deadline) {
-            ReaderSurfaceView.VisibleCoverageSnapshot coverage = readVisibleCoverage(activity);
             latest = readProgressSnapshot(activity);
             if(!sameProgress(stableCandidate, latest)) {
                 stableCandidate = latest;
                 stableSince = SystemClock.elapsedRealtime();
             }
-            if(coverage != null && !coverage.getBusy()
+            if(latest != null && !latest.busy
                     && SystemClock.elapsedRealtime() - stableSince >= SCROLL_QUIET_STABLE_MS)
                 return latest;
             SystemClock.sleep(80L);
@@ -1841,15 +1840,17 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static final class ProgressSnapshot {
-        static final ProgressSnapshot NULL = new ProgressSnapshot(-1, 0, Integer.MIN_VALUE);
+        static final ProgressSnapshot NULL = new ProgressSnapshot(-1, 0, Integer.MIN_VALUE, false);
         final int page;
         final int offset;
         final int scrollOffset;
+        final boolean busy;
 
-        ProgressSnapshot(int page, int offset, int scrollOffset) {
+        ProgressSnapshot(int page, int offset, int scrollOffset, boolean busy) {
             this.page = page;
             this.offset = offset;
             this.scrollOffset = scrollOffset;
+            this.busy = busy;
         }
 
         boolean isNull() {
