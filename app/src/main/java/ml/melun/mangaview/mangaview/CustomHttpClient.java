@@ -6412,8 +6412,7 @@ public class CustomHttpClient {
         if(!owner) {
             long deadline = System.currentTimeMillis() + NTK_WEBVIEW_ACK_PREFLIGHT_STALE_MS;
             while(System.currentTimeMillis() < deadline) {
-                if(hasNtkAdAckCookieForPath(path)
-                        || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path)) {
+                if(NtkWebViewFallbackManager.hasRecentServerAckSuccess(path)) {
                     Log.d(TAG, "ntk_webview_ack_preflight_join_done path=" + path
                             + ",success=true,ms=" + (System.currentTimeMillis() - startedAt));
                     return true;
@@ -6427,21 +6426,20 @@ public class CustomHttpClient {
                     break;
                 }
             }
-            boolean ok = hasNtkAdAckCookieForPath(path)
-                    || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
+            boolean ok = NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
             Log.d(TAG, "ntk_webview_ack_preflight_join_done path=" + path
                     + ",success=" + ok
                     + ",ms=" + (System.currentTimeMillis() - startedAt));
             return ok;
         }
         try {
-            if(hasNtkAdAckCookieForPath(path)) {
-                Log.d(TAG, "ntk_webview_ack_preflight_cookie_hit path=" + path);
+            if(NtkWebViewFallbackManager.hasRecentServerAckSuccess(path)) {
+                Log.d(TAG, "ntk_webview_ack_preflight_strict_hit path=" + path);
                 return true;
             }
             {
-                if(hasNtkAdAckCookieForPath(path)) {
-                    Log.d(TAG, "ntk_webview_ack_preflight_cookie_hit_after_wait path=" + path
+                if(NtkWebViewFallbackManager.hasRecentServerAckSuccess(path)) {
+                    Log.d(TAG, "ntk_webview_ack_preflight_strict_hit_after_wait path=" + path
                             + ",ms=" + (System.currentTimeMillis() - startedAt));
                     return true;
                 }
@@ -6460,10 +6458,9 @@ public class CustomHttpClient {
                         getCookieHeaderForNtkPath(path), null);
                 syncCookiesFromWebView(baseUrl, true);
                 syncCookiesFromWebView(baseUrl + path, true);
-                boolean ok = hasNtkAdAckCookieForPath(path)
-                        || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
+                boolean ok = NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
                 if(!ok)
-                    ok = waitForNtkAckCookieAfterWebViewPreflight(baseUrl, path, startedAt);
+                    ok = waitForNtkStrictAckProofAfterWebViewPreflight(baseUrl, path, startedAt);
                 Log.d(TAG, "ntk_webview_ack_preflight_done path=" + path
                         + ",success=" + ok
                         + ",ms=" + (System.currentTimeMillis() - startedAt));
@@ -6479,22 +6476,21 @@ public class CustomHttpClient {
         }
     }
 
-    private boolean waitForNtkAckCookieAfterWebViewPreflight(String baseUrl, String path,
+    private boolean waitForNtkStrictAckProofAfterWebViewPreflight(String baseUrl, String path,
             long startedAt) {
         long deadline = System.currentTimeMillis() + 350L;
         boolean loggedWait = false;
         while(System.currentTimeMillis() < deadline) {
             syncCookiesFromWebView(baseUrl, true);
             syncCookiesFromWebView(baseUrl + path, true);
-            if(hasNtkAdAckCookieForPath(path)
-                    || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path)) {
-                Log.d(TAG, "ntk_webview_ack_preflight_cookie_late path=" + path
+            if(NtkWebViewFallbackManager.hasRecentServerAckSuccess(path)) {
+                Log.d(TAG, "ntk_webview_ack_preflight_strict_late path=" + path
                         + ",ms=" + (System.currentTimeMillis() - startedAt));
                 return true;
             }
             if(!loggedWait) {
                 loggedWait = true;
-                Log.d(TAG, "ntk_webview_ack_preflight_cookie_late_wait path=" + path
+                Log.d(TAG, "ntk_webview_ack_preflight_strict_late_wait path=" + path
                         + ",ms=" + (System.currentTimeMillis() - startedAt));
             }
             try {
@@ -6504,8 +6500,7 @@ public class CustomHttpClient {
                 break;
             }
         }
-        return hasNtkAdAckCookieForPath(path)
-                || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
+        return NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
     }
 
     private static String ntkWebViewAckFlightKey(String baseUrl, String path) {

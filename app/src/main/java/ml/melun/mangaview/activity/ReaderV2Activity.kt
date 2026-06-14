@@ -36,6 +36,7 @@ import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Manga
 import ml.melun.mangaview.mangaview.Title
 import ml.melun.mangaview.reader.ReaderLaunchPreparer
+import ml.melun.mangaview.reader.ReaderImageCache
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator
 import ml.melun.mangaview.reader.ReaderSession
 import ml.melun.mangaview.reader.ReaderSurfaceView
@@ -134,11 +135,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var deferredNtkAckPreflightManga: Manga? = null
     private var ntkAckCaptchaRequested = false
     private var pendingInitialNtkCaptchaDeferrals = 0
+    private var deferredNtkAckPreflightBlockProbeAttempts = 0
+    private var deferredNtkAckPreflightCfImageGraceUsed = false
     private val deferredNtkAckPreflightTimeoutRunnable = Runnable {
         startDeferredNtkAckPreflight("timeout")
     }
     private val deferredNtkAckPreflightQuietRunnable = Runnable {
         maybeStartDeferredNtkAckAfterInitialContinuous()
+    }
+    private val deferredNtkAckPreflightBlockProbeRunnable = Runnable {
+        maybeStartDeferredNtkAckForInitialCloudflareProbe()
     }
     private val initialDrawGateTimeoutRunnable = Runnable {
         if (!pagesReady && !destroyed && !isFinishing) {
@@ -231,9 +237,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         manga.startNtkVerifiedInitialImageProbe(getHttpClient())
         if (shouldDeferInitialNtkAckPreflight(manga)) {
             deferredNtkAckPreflightManga = manga
+            deferredNtkAckPreflightBlockProbeAttempts = 0
+            deferredNtkAckPreflightCfImageGraceUsed = false
             statusHandler.postDelayed(
                 deferredNtkAckPreflightTimeoutRunnable,
                 DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS
+            )
+            statusHandler.postDelayed(
+                deferredNtkAckPreflightBlockProbeRunnable,
+                NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MS
             )
             val existing = intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)
             Log.d(TAG, "reader_ntk_ack_preflight_deferred path=${manga.ntkEpisodePath},nativeStarted=$existing")
@@ -476,6 +488,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
         statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
         statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
         statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
         statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
         missingEpisodePromptState.dismiss()
@@ -942,6 +955,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val path = manga.ntkEpisodePath ?: currentManga?.ntkEpisodePath
             pendingInitialNtkCaptchaDeferrals++
             Log.d(TAG, "reader_ntk_captcha_deferred_before_first_drawable path=$path,attempt=$pendingInitialNtkCaptchaDeferrals")
+            maybeStartDeferredNtkAckForInitialBlock(manga, "initial_captcha_before_first_drawable")
             statusHandler.postDelayed({
                 if (!destroyed && !isFinishing && !firstDrawableMetricLogged) {
                     onCaptchaRequired(manga)
@@ -1374,9 +1388,72 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         deferredNtkAckPreflightManga = null
         statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
         statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
         if (destroyed || isFinishing) return
         Log.d(TAG, "reader_ntk_ack_preflight_deferred_start reason=$reason,path=${manga.ntkEpisodePath}")
         startCurrentNtkAckPreflight(manga)
+    }
+
+    private fun maybeStartDeferredNtkAckForInitialCloudflareProbe() {
+        val deferred = deferredNtkAckPreflightManga ?: return
+        if (destroyed || isFinishing || firstDrawableMetricLogged || pagesReady) return
+        val path = deferred.ntkEpisodePath
+        val hasCloudflare = try {
+            getHttpClient().hasRecentCloudflareChallenge()
+        } catch (_: Exception) {
+            false
+        }
+        deferredNtkAckPreflightBlockProbeAttempts++
+        Log.d(
+            TAG,
+            "reader_ntk_ack_preflight_initial_cf_probe path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare"
+        )
+        if (hasCloudflare) {
+            val hasEarlyImages = try {
+                !path.isNullOrBlank() &&
+                    ReaderImageCache.earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L).isNotEmpty()
+            } catch (_: Exception) {
+                false
+            }
+            if (hasEarlyImages && pendingInitialNtkCaptchaDeferrals <= 0) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_ack_preflight_initial_cf_probe_defer_images_ready path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts"
+                )
+                return
+            }
+            if (!deferredNtkAckPreflightCfImageGraceUsed && pendingInitialNtkCaptchaDeferrals <= 0) {
+                deferredNtkAckPreflightCfImageGraceUsed = true
+                Log.d(
+                    TAG,
+                    "reader_ntk_ack_preflight_initial_cf_probe_wait_images path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts"
+                )
+                statusHandler.postDelayed(
+                    deferredNtkAckPreflightBlockProbeRunnable,
+                    NTK_ACK_PREFLIGHT_INITIAL_CF_IMAGE_GRACE_MS
+                )
+                return
+            }
+            maybeStartDeferredNtkAckForInitialBlock(deferred, "initial_cf_probe")
+            return
+        }
+        if (deferredNtkAckPreflightBlockProbeAttempts < NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS) {
+            statusHandler.postDelayed(
+                deferredNtkAckPreflightBlockProbeRunnable,
+                NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS
+            )
+        }
+    }
+
+    private fun maybeStartDeferredNtkAckForInitialBlock(manga: Manga?, reason: String) {
+        val deferred = deferredNtkAckPreflightManga ?: return
+        val deferredPath = deferred.ntkEpisodePath
+        val currentPath = manga?.ntkEpisodePath ?: currentManga?.ntkEpisodePath
+        if (!deferredPath.isNullOrBlank() && !currentPath.isNullOrBlank() && deferredPath != currentPath) {
+            Log.d(TAG, "reader_ntk_ack_preflight_initial_block_skip reason=$reason,deferredPath=$deferredPath,currentPath=$currentPath")
+            return
+        }
+        startDeferredNtkAckPreflight(reason)
     }
 
     private fun isCurrentNtkReader(): Boolean {
@@ -2157,6 +2234,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS = 45000L
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS = 450L
         private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 900L
+        private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MS = 650L
+        private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS = 450L
+        private const val NTK_ACK_PREFLIGHT_INITIAL_CF_IMAGE_GRACE_MS = 260L
+        private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS = 5
         private const val NTK_ACK_INITIAL_CONTINUOUS_PAGES = 3
         private const val NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS = 1
         private const val READER_LOADING_DESCRIPTION = "reader-loading"

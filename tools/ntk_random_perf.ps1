@@ -24,7 +24,8 @@ param(
     [switch]$NoAckAssert,
     [switch]$NoAppendProbe,
     [switch]$SkipBuild,
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    [switch]$ForceStopBeforeRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -127,6 +128,28 @@ if(-not $SkipInstall) {
     if($code -ne 0) {
         throw "Test install failed with exit code $code. Log: $installLog"
     }
+}
+
+if($ForceStopBeforeRun) {
+    $forceStopLog = Join-Path $runDir "force_stop.log"
+    $forceStopLines = @()
+    foreach($packageName in @("ml.melun.mangaview", "ml.melun.mangaview.test")) {
+        $arguments = @("-s", $DeviceSerial, "shell", "am", "force-stop", $packageName)
+        Write-Host ("> adb {0}" -f ($arguments -join " "))
+        $output = & adb @arguments 2>&1
+        $code = $LASTEXITCODE
+        $forceStopLines += "> adb $($arguments -join ' ')"
+        if($output) {
+            $forceStopLines += $output
+            $output | ForEach-Object { Write-Host $_ }
+        }
+        $forceStopLines += "exitCode=$code"
+        if($code -ne 0) {
+            $forceStopLines | Set-Content -Path $forceStopLog -Encoding UTF8
+            throw "Force-stop failed for $packageName with exit code $code. Log: $forceStopLog"
+        }
+    }
+    $forceStopLines | Set-Content -Path $forceStopLog -Encoding UTF8
 }
 
 & adb -s $DeviceSerial logcat -c | Out-Null
@@ -267,8 +290,21 @@ if(-not $NoAckAssert) {
 }
 $failureLines = @($failureLines) + @($ackFailureLines)
 
+$failurePath = ""
+$failureMode = ""
+foreach($line in $failureLines) {
+    if(-not $failurePath -and ([string]$line) -match "path=([^,\s]+)") {
+        $failurePath = $Matches[1]
+    }
+    if(-not $failureMode -and ([string]$line) -match "mode=([^,\s]+)") {
+        $failureMode = $Matches[1]
+    }
+}
+
 $firstPath = First-Value $cases "path"
 $firstMode = First-Value $cases "mode"
+$reproPath = if($failurePath) { $failurePath } elseif($firstPath) { $firstPath } else { $TargetEpisodePath }
+$reproMode = if($failureMode) { $failureMode } elseif($firstMode) { $firstMode } else { $Mode }
 $reproArgs = @(
     ".\tools\ntk_random_perf.ps1",
     "-DeviceSerial", $DeviceSerial,
@@ -276,11 +312,11 @@ $reproArgs = @(
     "-ScrollSteps", [string]$ScrollSteps,
     "-AppendSteps", [string]$AppendSteps,
     "-Seed", [string]$Seed,
-    "-Mode", ($(if($firstMode) { $firstMode } else { $Mode })),
+    "-Mode", $reproMode,
     "-ScrollInputMode", $ScrollInputMode,
     "-ScrollPattern", $ScrollPattern,
     "-HoldAfterFirstDrawableMs", [string]$HoldAfterFirstDrawableMs,
-    "-TargetEpisodePath", ($(if($firstPath) { $firstPath } else { $TargetEpisodePath }))
+    "-TargetEpisodePath", $reproPath
 )
 if($StrictFresh -or ($ClearAck -and $ClearImageCache)) {
     $reproArgs += "-StrictFresh"
@@ -293,6 +329,9 @@ if($NoAppendProbe) {
 }
 if($AssertSchedulerGap) {
     $reproArgs += "-AssertSchedulerGap"
+}
+if($ForceStopBeforeRun) {
+    $reproArgs += "-ForceStopBeforeRun"
 }
 
 $summary = [ordered]@{
@@ -307,11 +346,14 @@ $summary = [ordered]@{
     strictFresh = [bool]$StrictFresh
     clearAck = [bool]$ClearAck
     clearImageCache = [bool]$ClearImageCache
+    forceStopBeforeRun = [bool]$ForceStopBeforeRun
     mode = $Mode
     scrollInputMode = $ScrollInputMode
     scrollPattern = $ScrollPattern
     assertSchedulerGap = [bool]$AssertSchedulerGap
     targetEpisodePath = $TargetEpisodePath
+    failurePath = $failurePath
+    failureMode = $failureMode
     started = $starts
     cases = $cases
     firstDrawable = $firstDrawable

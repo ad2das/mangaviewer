@@ -46,6 +46,7 @@ object ReaderImageCache {
     private const val NTK_VERIFIED_ANCHOR_HANDOFF_DELAY_MS = 300L
     private const val FOREGROUND_STREAM_RACE_ATTEMPTS = 1
     private const val FOREGROUND_STREAM_JOIN_TIMEOUT_MS = 1800L
+    private const val FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS = 900L
     private const val FOREGROUND_STREAM_HANDOFF_TTL_MS = 2500L
     private const val FOREGROUND_STREAM_STALE_MS = 9000L
     private const val NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES = 3
@@ -382,7 +383,15 @@ object ReaderImageCache {
                 "activeStream=${!existing.isDone},doneStream=${existing.isDone}"
             )
             return try {
-                decodeForegroundBytes(existing, startedAt, autoCut, allowSplit, targetWidth, boundedWait = true)
+                decodeForegroundBytes(
+                    existing,
+                    startedAt,
+                    autoCut,
+                    allowSplit,
+                    targetWidth,
+                    boundedWait = true,
+                    waitTimeoutMs = foregroundStreamJoinTimeoutMs(image)
+                )
             } finally {
                 if (existing.isDone) {
                     foregroundStreams.remove(key, existing)
@@ -510,10 +519,11 @@ object ReaderImageCache {
         autoCut: Boolean,
         allowSplit: Boolean,
         targetWidth: Int,
-        boundedWait: Boolean
+        boundedWait: Boolean,
+        waitTimeoutMs: Long = FOREGROUND_STREAM_JOIN_TIMEOUT_MS
     ): Bitmap? {
         val bytes = try {
-            if (boundedWait) task.get(FOREGROUND_STREAM_JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS) else task.get()
+            if (boundedWait) task.get(waitTimeoutMs, TimeUnit.MILLISECONDS) else task.get()
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             return null
@@ -540,6 +550,14 @@ object ReaderImageCache {
         ViewerWarmupManager.logMetric("reader_foreground_stream_decode_ms", decodedAt - bytesAt)
         ViewerWarmupManager.logMetric("reader_foreground_stream_total_ms", decodedAt - startedAt)
         return bitmap
+    }
+
+    private fun foregroundStreamJoinTimeoutMs(image: String): Long {
+        val target = ntkGeneratedTarget(image) ?: return FOREGROUND_STREAM_JOIN_TIMEOUT_MS
+        if (target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
+            return FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS
+        }
+        return FOREGROUND_STREAM_JOIN_TIMEOUT_MS
     }
 
     private fun shouldPreferFileDecodeAfterForegroundCache(
@@ -677,6 +695,9 @@ object ReaderImageCache {
         foreground: Boolean
     ): File? {
         val stream = foregroundStreams[key] ?: return null
+        if (shouldSkipForegroundStreamWaitForInitialRecovery(key, manga, image, foreground, stream)) {
+            return null
+        }
         logCacheEvent("foreground_stream_wait", manga, image, foreground, "activeStream=true")
         ViewerWarmupManager.logMetric("reader_foreground_stream_wait", 1L)
         try {
@@ -703,6 +724,30 @@ object ReaderImageCache {
         logCacheEvent("foreground_stream_wait_hit", manga, image, foreground, "bytes=${finalFile.length()}")
         ViewerWarmupManager.logMetric("reader_foreground_stream_wait_hit", 1L)
         return finalFile
+    }
+
+    private fun shouldSkipForegroundStreamWaitForInitialRecovery(
+        key: String,
+        manga: Manga,
+        image: String,
+        foreground: Boolean,
+        stream: FutureTask<ByteArray?>
+    ): Boolean {
+        if (!foreground || stream.isDone) return false
+        val target = ntkGeneratedTarget(image) ?: return false
+        if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        val startedAt = foregroundStreamStartedAt[key] ?: return false
+        val ageMs = SystemClock.elapsedRealtime() - startedAt
+        if (ageMs < FOREGROUND_STREAM_JOIN_TIMEOUT_MS) return false
+        logCacheEvent(
+            "foreground_stream_wait_skip_initial_recovery",
+            manga,
+            image,
+            true,
+            "page=${target.page},ageMs=$ageMs"
+        )
+        ViewerWarmupManager.logMetric("reader_foreground_stream_wait_skip_initial_recovery", 1L)
+        return true
     }
 
     private fun cacheDir(context: Context): File {
