@@ -238,6 +238,7 @@ class ReaderSession(
     private val initialDeliveryFlushInProgress = AtomicBoolean(false)
     private val initialAnchorCoalesceDelayed = AtomicBoolean(false)
     private val initialPagesReadyDelivered = AtomicBoolean(false)
+    private val initialFullAppendDeferredUntilFirstBitmap = AtomicBoolean(false)
     private val structurePublishPending = AtomicInteger(0)
     private val viewportBusy = AtomicBoolean(false)
     private val deliveryResumeAtMs = AtomicLong(0L)
@@ -469,6 +470,37 @@ class ReaderSession(
                 )
                 return InitialFetchOutcome(Title.LOAD_OK, true)
             }
+            val shouldKeepPollingForEarlyUrls =
+                result != Title.LOAD_OK ||
+                    (isNtkSource(target, title) && imageRepository.imageUrls(target, appContext).isNullOrEmpty())
+            if (shouldKeepPollingForEarlyUrls) {
+                while (!cancelled.get() && SystemClock.elapsedRealtime() < deadline) {
+                    val delayedEarlyUrls = ReaderImageCache.earlyNtkImageUrls(target.ntkEpisodePath, loadStartedAt)
+                    if (delayedEarlyUrls.size >= ntkEarlyUrlMinCount() &&
+                        installEarlyNtkUrls(target, delayedEarlyUrls, loadStartedAt)
+                    ) {
+                        releaseDeferred = true
+                        finishInitialFetchAfterEarlyInstall(target, task, cancellation, loadStartedAt)
+                        logNtkRepositoryStage(
+                            target,
+                            "early_urls_after_fetch_done_late",
+                            "count=${delayedEarlyUrls.size},result=$result,ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                        )
+                        return InitialFetchOutcome(Title.LOAD_OK, true)
+                    }
+                    if (result == Title.LOAD_OK &&
+                        !imageRepository.imageUrls(target, appContext).isNullOrEmpty()
+                    ) {
+                        break
+                    }
+                    try {
+                        Thread.sleep(NTK_EARLY_URL_POLL_MS)
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw e
+                    }
+                }
+            }
             return InitialFetchOutcome(result, false)
         } catch (e: ExecutionException) {
             throw (e.cause ?: e)
@@ -493,6 +525,7 @@ class ReaderSession(
         startInitialForegroundStreamIfNeeded(target, initialUrls, startPage, loadStartedAt)
         installImagesForManga(target, initialUrls, startPage, false)
         scheduleGeneratedEarlyExpansionAfterFirstBitmap(target, initialUrls, loadStartedAt)
+        appendExpandedEarlyNtkUrlsUntilFirstBitmap(target, initialUrls.size, loadStartedAt)
         flushEarlyPreparedBitmaps()
         logNtkRepositoryStage(
             target,
@@ -533,8 +566,40 @@ class ReaderSession(
         }
     }
 
+    private fun appendExpandedEarlyNtkUrlsUntilFirstBitmap(
+        target: Manga,
+        initialInstalledCount: Int,
+        loadStartedAt: Long
+    ) {
+        if (!isNtkSource(target, title) || initialInstalledCount <= 0) return
+        control.execute {
+            var installedCount = initialInstalledCount
+            val deadline = SystemClock.elapsedRealtime() + NTK_EARLY_GENERATED_EXPAND_BEFORE_FIRST_BITMAP_WAIT_MS
+            while (!cancelled.get() && !firstBitmapLogged.get() && SystemClock.elapsedRealtime() < deadline) {
+                val earlyUrls = ReaderImageCache.earlyNtkImageUrls(target.ntkEpisodePath, loadStartedAt)
+                if (earlyUrls.size > installedCount) {
+                    appendInitialNtkUrlsAfterEarlyInstall(target, earlyUrls, loadStartedAt)
+                    installedCount = earlyUrls.size
+                    logNtkRepositoryStage(
+                        target,
+                        "early_urls_generated_expand_before_first",
+                        "count=$installedCount,ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                    )
+                    requestInitialContinuousPagesFromEarlyUrls(currentStartPage(), installedCount)
+                    requestPageForeground(currentStartPage())
+                }
+                try {
+                    Thread.sleep(NTK_EARLY_URL_POLL_MS)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return@execute
+                }
+            }
+        }
+    }
+
     private fun shouldDeferGeneratedEarlyExpansionBeforeFirstBitmap(target: Manga, urls: List<String>): Boolean {
-        if (!isNtkWebtoonSource(target, title)) return false
+        if (!isNtkSource(target, title)) return false
         if (urls.none { isNtkGeneratedImageUrl(it) }) return false
         return urls.size < NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD
     }
@@ -562,7 +627,7 @@ class ReaderSession(
 
     private fun ntkGeneratedEarlyExpandCount(target: Manga, currentCount: Int, knownCount: Int): Int {
         if (target.baseMode == MTitle.base_comic) {
-            val comicLimit = maxOf(currentCount, NTK_COMIC_GENERATED_EARLY_DISPLAY_PAGES)
+            val comicLimit = maxOf(currentCount, NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD)
             return when {
                 knownCount > currentCount -> minOf(knownCount, comicLimit)
                 else -> comicLimit
@@ -592,12 +657,13 @@ class ReaderSession(
         if (last <= startPage) return
         for (index in (startPage + 1)..last) {
             val delayMs = NTK_INITIAL_CONTINUOUS_STAGGER_MS * (index - startPage)
+            val busy = index <= startPage + NTK_INITIAL_CONTINUOUS_BUSY_PAGES
             if (delayMs <= 0L) {
-                requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
+                requestPage(index, busy = busy, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
             } else {
                 main.postDelayed({
                     if (!cancelled.get()) {
-                        requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
+                        requestPage(index, busy = busy, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
                     }
                 }, delayMs)
             }
@@ -738,11 +804,20 @@ class ReaderSession(
         }
     }
 
-    private fun appendInitialNtkUrlsAfterEarlyInstall(target: Manga, urls: List<String>, loadStartedAt: Long) {
+    private fun appendInitialNtkUrlsAfterEarlyInstall(
+        target: Manga,
+        urls: List<String>,
+        loadStartedAt: Long,
+        allowFirstBitmapDefer: Boolean = true
+    ) {
         if (cancelled.get() || urls.isEmpty()) return
         var fullRefs = pageRefsForImages(target, urls)
         if (fullRefs.isEmpty()) return
         var generatedOnlyRefs = isGeneratedOnlyNtkRefs(fullRefs)
+        if (allowFirstBitmapDefer && shouldDeferInitialFullAppendUntilFirstBitmap(fullRefs)) {
+            deferInitialFullAppendUntilFirstBitmap(target, urls, loadStartedAt)
+            return
+        }
         val startIndex: Int
         val total: Int
         var refreshedExisting = false
@@ -809,6 +884,43 @@ class ReaderSession(
         if (!posted) finishStructurePublish()
     }
 
+    private fun shouldDeferInitialFullAppendUntilFirstBitmap(fullRefs: List<PageRef>): Boolean {
+        if (firstBitmapLogged.get() || ntkFirstBitmapAtMs.get() > 0L) return false
+        if (!isNtkSource(manga, title)) return false
+        if (!isGeneratedOnlyNtkRefs(fullRefs)) return false
+        val installedCount = synchronized(pagesLock) { pages.size }
+        return installedCount > 0 && fullRefs.size > installedCount
+    }
+
+    private fun deferInitialFullAppendUntilFirstBitmap(target: Manga, urls: List<String>, loadStartedAt: Long) {
+        if (!initialFullAppendDeferredUntilFirstBitmap.compareAndSet(false, true)) return
+        control.execute {
+            val deadline = SystemClock.elapsedRealtime() + NTK_INITIAL_FULL_APPEND_AFTER_FIRST_BITMAP_WAIT_MS
+            while (!cancelled.get() &&
+                !firstBitmapLogged.get() &&
+                ntkFirstBitmapAtMs.get() <= 0L &&
+                SystemClock.elapsedRealtime() < deadline
+            ) {
+                try {
+                    Thread.sleep(NTK_EARLY_URL_POLL_MS)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    initialFullAppendDeferredUntilFirstBitmap.set(false)
+                    return@execute
+                }
+            }
+            initialFullAppendDeferredUntilFirstBitmap.set(false)
+            if (!cancelled.get()) {
+                logNtkRepositoryStage(
+                    target,
+                    "early_urls_append_full_after_first_bitmap",
+                    "firstBitmap=${firstBitmapLogged.get()},count=${urls.size},ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                )
+                appendInitialNtkUrlsAfterEarlyInstall(target, urls, loadStartedAt, allowFirstBitmapDefer = false)
+            }
+        }
+    }
+
     private fun isGeneratedOnlyNtkRefs(refs: List<PageRef>): Boolean {
         if (refs.isEmpty()) return false
         return refs.all { ref ->
@@ -819,6 +931,10 @@ class ReaderSession(
     private fun replaceNtkBoardUploadsWithGeneratedFullRefs(target: Manga, fullRefs: List<PageRef>): List<PageRef> {
         if (!isNtkSource(target, title) || fullRefs.isEmpty()) return fullRefs
         if (fullRefs.none { isNtkBoardUploadImageUrl(it.image) }) return fullRefs
+        val seed = currentNtkGeneratedSeed()
+        if (seed != null) {
+            return replaceNtkBoardUploadsWithGeneratedSeed(target, fullRefs, seed)
+        }
         logNtkRepositoryStage(
             target,
             "board_uploads_keep_original",
@@ -832,7 +948,14 @@ class ReaderSession(
         fullRefs: List<PageRef>,
         seed: String
     ): List<PageRef> {
-        val replaced = fullRefs.map { ref ->
+        val boardCount = fullRefs.count { isNtkBoardUploadImageUrl(it.image) }
+        val reportedCount = target.ntkImageCount
+        val sourceRefs = if (boardCount > 0 && fullRefs.size > NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD) {
+            fullRefs.take(NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD)
+        } else {
+            fullRefs
+        }
+        val replaced = sourceRefs.map { ref ->
             if (ref.transitionTitle != null || !isNtkBoardUploadImageUrl(ref.image)) {
                 ref
             } else {
@@ -844,7 +967,8 @@ class ReaderSession(
         Log.d(
             TAG,
             "ntk_generated_full_replace_board_uploads path=${target.ntkEpisodePath}," +
-                "count=${fullRefs.count { isNtkBoardUploadImageUrl(it.image) }},seed=${seed.substringAfter("://")}"
+                "count=$boardCount,from=${fullRefs.size},to=${replaced.size}," +
+                "reportedCount=$reportedCount,seed=${seed.substringAfter("://")}"
         )
         return replaced
     }
@@ -1475,6 +1599,8 @@ class ReaderSession(
             }
             val busyVisibleRadius = if (ntkWebtoon) {
                 NTK_WEBTOON_BUSY_VISIBLE_DECODE_RADIUS
+            } else if (generatedWindow) {
+                NTK_GENERATED_BUSY_VISIBLE_DECODE_RADIUS
             } else {
                 BUSY_VISIBLE_DECODE_RADIUS
             }
@@ -1490,6 +1616,8 @@ class ReaderSession(
                     NTK_INITIAL_PRIORITY_PAGES
                 } else if (ntkWebtoon) {
                     NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD
+                } else if (generatedWindow) {
+                    NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD
                 } else {
                     BUSY_DIRECTIONAL_DECODE_AHEAD
                 }
@@ -2641,7 +2769,9 @@ class ReaderSession(
         }
         val activeWidth = inFlightWidths[index] ?: 0
         val visiblePriority = (busy || anchor) && !hasDeliveredBitmap(index)
-        if (activeWidth >= effectiveTargetWidth && loading.contains(index)) return
+        if (activeWidth >= effectiveTargetWidth && loading.contains(index)) {
+            if (!visiblePriority || urgentLoading.contains(index)) return
+        }
         val ownsLoading = loading.add(index)
         val urgent = !ownsLoading &&
             visiblePriority &&
@@ -2997,7 +3127,11 @@ class ReaderSession(
         val refs = synchronized(pagesLock) { pages.toList() }
         if (!isGeneratedOnlyNtkRefs(refs)) return
         val anchor = currentStartPage().coerceIn(0, refs.lastIndex)
-        val defaultFirst = minOf(refs.lastIndex, anchor + ntkGeneratedInitialLimitedWarmPages() + 1)
+        if (hasUndeliveredNtkVisibleWindow(anchor, refs.lastIndex)) {
+            scheduleNtkGeneratedFullEpisodeBytePrefetchAfterDelay(NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_DELAY_MS)
+            return
+        }
+        val defaultFirst = minOf(refs.lastIndex, anchor + 1)
         if (defaultFirst > refs.lastIndex) return
         val first = ntkGeneratedFullBytePrefetchCursor.updateAndGet { current ->
             if (current < defaultFirst) defaultFirst else current
@@ -3023,6 +3157,18 @@ class ReaderSession(
         if (nextIndex <= refs.lastIndex) {
             scheduleNtkGeneratedFullEpisodeBytePrefetchAfterDelay(NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_DELAY_MS)
         }
+    }
+
+    private fun hasUndeliveredNtkVisibleWindow(anchor: Int, lastIndex: Int): Boolean {
+        if (!isNtkWebtoonSource(manga, title)) return false
+        val first = max(0, anchor - NTK_WEBTOON_IDLE_VISIBLE_DECODE_RADIUS)
+        val last = minOf(lastIndex, anchor + NTK_WEBTOON_IDLE_VISIBLE_DECODE_RADIUS)
+        for (index in first..last) {
+            val page = pageRef(index) ?: continue
+            if (page.transitionTitle != null) continue
+            if (!hasDeliveredBitmap(index)) return true
+        }
+        return false
     }
 
     private fun scheduleNtkEpisodeMetadataAfterFirstBitmap() {
@@ -3348,9 +3494,10 @@ class ReaderSession(
         if (!isNtkSource(page.manga, title)) return false
         val knownCount = page.manga.ntkImageCount
         val pastGeneratedTail = (e.message ?: "").startsWith("Generated image past tail:")
+        if (knownCount <= 0) return false
         val firstTailSourceIndex = when {
             knownCount > 0 && page.sourceIndex >= knownCount -> knownCount
-            knownCount <= 0 && pastGeneratedTail -> page.sourceIndex
+            pastGeneratedTail && page.sourceIndex >= knownCount -> page.sourceIndex
             else -> return false
         }
         if (firstTailSourceIndex < 0) return false
@@ -3510,6 +3657,7 @@ class ReaderSession(
             if (
                 current is java.net.SocketException ||
                 current is java.net.SocketTimeoutException ||
+                message.contains("Partial foreground image response is not cacheable", ignoreCase = true) ||
                 message.contains("Connection reset", ignoreCase = true) ||
                 message.contains("timed out", ignoreCase = true) ||
                 message.contains("timeout", ignoreCase = true)
@@ -3539,6 +3687,15 @@ class ReaderSession(
         return "${match.groupValues[1]}p${page.toString().padStart(3, '0')}.${match.groupValues[2]}${match.groupValues[3]}"
     }
 
+    private fun ntkGeneratedSeedPage(seed: String): Int {
+        return Regex("/p(\\d{3,})\\.").find(seed)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?.takeIf { it > 0 }
+            ?: 1
+    }
+
     private fun ntkGeneratedImageUrlForTarget(seed: String, target: Manga, page: Int): String? {
         if (page <= 0) return null
         val seedMatch = NTK_GENERATED_IMAGE_URL.matchEntire(seed) ?: return null
@@ -3546,7 +3703,9 @@ class ReaderSession(
         val segment = targetMatch.groupValues[1]
         val pathEpisodeId = targetMatch.groupValues[3]
         val imageEpisodeId = target.ntkImageEpisodeId.orEmpty().trim()
-        val episodeId = imageEpisodeId.takeIf { it.matches(Regex("\\d+")) } ?: pathEpisodeId
+        val episodeId = pathEpisodeId.takeIf { it.matches(Regex("\\d+")) }
+            ?: imageEpisodeId.takeIf { it.matches(Regex("\\d+")) }
+            ?: pathEpisodeId
         val seedPrefix = seedMatch.groupValues[1]
         val targetPrefix = when {
             seedPrefix.contains("/blacktoon/episodes/", ignoreCase = true) -> {
@@ -3571,7 +3730,8 @@ class ReaderSession(
                 "https://i.toonflix.app/$segment/$seedWorkId/$episodeId/"
             }
         }
-        return "${targetPrefix}p${page.toString().padStart(3, '0')}.${seedMatch.groupValues[2]}${seedMatch.groupValues[3]}"
+        val actualPage = ntkGeneratedSeedPage(seed) + page - 1
+        return "${targetPrefix}p${actualPage.toString().padStart(3, '0')}.${seedMatch.groupValues[2]}${seedMatch.groupValues[3]}"
     }
 
     private fun removePageStateRange(rangeStart: Int, removedCount: Int) {
@@ -4310,6 +4470,18 @@ class ReaderSession(
                 TAG,
                 "reader_initial_hold page=${currentDelivery.index},start=${currentStartPage()},width=${currentDelivery.result.width}"
             )
+            if (maybePromoteInitialGeneratedStartToHeld(currentDelivery)) {
+                val flushPromoted = Runnable {
+                    if (!cancelled.get() && !firstBitmapLogged.get()) {
+                        flushInitialHeldDeliveries("promote")
+                    }
+                }
+                if (!mainImmediate.postAtFrontOfQueue(flushPromoted)) {
+                    mainImmediate.post(flushPromoted)
+                }
+                scheduleInitialDeliveryFallback()
+                return
+            }
             flushInitialViewportIfReady()
             scheduleInitialDeliveryFallback()
             return
@@ -4551,6 +4723,20 @@ class ReaderSession(
         }
     }
 
+    private fun maybePromoteInitialGeneratedStartToHeld(delivery: Delivery): Boolean {
+        return false
+    }
+
+    private fun promoteResolvedInitialStart(oldStart: Int, newStart: Int): Boolean {
+        while (true) {
+            val resolved = resolvedInitialStartPage.get()
+            val current = if (resolved >= 0) resolved else requestedStartPage()
+            if (current != oldStart) return false
+            val expected = if (resolved >= 0) resolved else -1
+            if (resolvedInitialStartPage.compareAndSet(expected, newStart)) return true
+        }
+    }
+
     private fun scheduleInitialDeliveryFallback() {
         if (!initialDeliveryFallbackPosted.compareAndSet(false, true)) return
         mainImmediate.postDelayed({
@@ -4600,7 +4786,7 @@ class ReaderSession(
         for ((index, delivery) in prepared) {
             deliverPreparedBitmap(index, delivery.bitmap, delivery.owned, false)
         }
-        val deliverHeldNow = (reason == "anchor" || reason == "viewport" || reason == "fallback") &&
+        val deliverHeldNow = (reason == "anchor" || reason == "viewport" || reason == "fallback" || reason == "promote") &&
             Looper.myLooper() == Looper.getMainLooper()
         val immediateHeld = if (deliverHeldNow) initialViewportHeldDeliveries(held) else emptySet()
         if (deliverHeldNow) {
@@ -5373,7 +5559,18 @@ class ReaderSession(
         urgentLoading.remove(index)
         loadingPages.remove(index)
         urgentLoadingPages.remove(index)
-        val delayMs = NTK_GENERATED_TRANSIENT_RETRY_DELAY_MS * attempt
+        val generatedForegroundTransient = e.message.orEmpty().let { message ->
+            message.contains("Partial foreground image response is not cacheable", ignoreCase = true) ||
+                message.contains("Connection reset", ignoreCase = true) ||
+                message.contains("stream was reset", ignoreCase = true) ||
+                message.contains("unexpected end of stream", ignoreCase = true) ||
+                message.contains("foreground image race failed", ignoreCase = true)
+        }
+        val delayMs = if (generatedForegroundTransient) {
+            NTK_GENERATED_PARTIAL_RETRY_DELAY_MS * attempt
+        } else {
+            NTK_GENERATED_TRANSIENT_RETRY_DELAY_MS * attempt
+        }
         Log.d(
             TAG,
             "retry_transient_generated_page_error index=$index,source=${page.sourceIndex},attempt=$attempt," +
@@ -5409,6 +5606,7 @@ class ReaderSession(
         private const val NTK_EARLY_URL_POLL_MS = 16L
         private const val NTK_EARLY_URL_EXPANSION_WAIT_MS = 1200L
         private const val NTK_EARLY_GENERATED_EXPAND_AFTER_FIRST_BITMAP_WAIT_MS = 5000L
+        private const val NTK_EARLY_GENERATED_EXPAND_BEFORE_FIRST_BITMAP_WAIT_MS = 10000L
         private const val NTK_BOARD_ONLY_GENERATED_GRACE_MS = 1400L
         private fun ntkEarlyUrlMinCount(): Int = 1
         private const val STRUCTURE_PUBLISH_DRAIN_DELAY_MS = 16L
@@ -5424,9 +5622,9 @@ class ReaderSession(
         private const val NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES = 8
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 16
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
-        private const val NTK_COMIC_GENERATED_EARLY_DISPLAY_PAGES = 4
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
         private const val NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES = 10
+        private const val NTK_INITIAL_CONTINUOUS_BUSY_PAGES = 2
         private const val NTK_INITIAL_DIRECT_DELIVERY_PAGES = 2
         private const val NTK_INITIAL_ANCHOR_COALESCE_MS = 80L
         private const val NTK_INITIAL_ANCHOR_FAST_COALESCE_MS = 520L
@@ -5441,14 +5639,15 @@ class ReaderSession(
         private const val NTK_WEBTOON_INITIAL_BOOT_BACKGROUND_PAGES = 4
         private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 18
         private const val NTK_WEBTOON_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 8
-        private const val NTK_GENERATED_INITIAL_LIMITED_WARM_PAGES = 64
-        private const val NTK_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 24
-        private const val NTK_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 24
+        private const val NTK_GENERATED_INITIAL_LIMITED_WARM_PAGES = 14
+        private const val NTK_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 14
+        private const val NTK_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 2
         private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_WARM_PAGES = 4
         private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 4
         private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 4
         private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 2
         private const val NTK_INITIAL_PRIORITY_PAGES = 9
+        private const val NTK_INITIAL_GENERATED_PROMOTE_MAX_AHEAD = 4
         private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 4
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 4
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 10
@@ -5468,6 +5667,7 @@ class ReaderSession(
         private const val NTK_INITIAL_ACK_INFLIGHT_WARM_PAGES = 18
         private const val NTK_INITIAL_SOURCE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 250L
         private const val NTK_INITIAL_FULL_FETCH_AFTER_EARLY_DEFER_MS = 4200L
+        private const val NTK_INITIAL_FULL_APPEND_AFTER_FIRST_BITMAP_WAIT_MS = 3500L
         private const val NTK_GENERATED_FULL_BYTE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 1200L
         private const val NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_PAGES = 8
         private const val NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_DELAY_MS = 220L
@@ -5475,6 +5675,7 @@ class ReaderSession(
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 2600L
         private const val NTK_GENERATED_TRANSIENT_RETRY_ATTEMPTS = 3
         private const val NTK_GENERATED_TRANSIENT_RETRY_DELAY_MS = 650L
+        private const val NTK_GENERATED_PARTIAL_RETRY_DELAY_MS = 120L
         private const val NTK_TRACE_AHEAD_PAGES = 8
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 120L
         private const val NTK_BACKGROUND_PREPARE_AFTER_FIRST_BITMAP_QUIET_MS = 3500L
@@ -5488,6 +5689,8 @@ class ReaderSession(
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 8
         private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 24
         private const val BUSY_DELIVERY_SCAN_LIMIT = 64
+        private const val NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD = 3
+        private const val NTK_GENERATED_BUSY_VISIBLE_DECODE_RADIUS = 2
         private const val BUSY_DIRECTIONAL_DECODE_AHEAD = 8
         private const val BUSY_VISIBLE_DECODE_RADIUS = 5
         private const val BUSY_DELIVERY_DRAIN_LIMIT = 12
