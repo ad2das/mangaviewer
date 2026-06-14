@@ -27,6 +27,8 @@ import java.util.concurrent.TimeUnit;
 
 @TargetApi(34)
 public final class NtkQuicFetcher {
+    private static volatile Boolean runtimeAvailable;
+
     private NtkQuicFetcher() {
     }
 
@@ -51,7 +53,21 @@ public final class NtkQuicFetcher {
     }
 
     public static boolean isAvailable() {
-        return Build.VERSION.SDK_INT >= 34;
+        if(Build.VERSION.SDK_INT < 34)
+            return false;
+        Boolean cached = runtimeAvailable;
+        if(cached != null)
+            return cached;
+        boolean available;
+        try {
+            Class.forName("android.net.http.HttpEngine", false, NtkQuicFetcher.class.getClassLoader());
+            Class.forName("android.net.http.UrlRequest", false, NtkQuicFetcher.class.getClassLoader());
+            available = true;
+        } catch (Throwable ignored) {
+            available = false;
+        }
+        runtimeAvailable = available;
+        return available;
     }
 
     public static Result fetch(Context context, String url, String userAgent, String cookieHeader, long timeoutMs) {

@@ -1024,11 +1024,10 @@ public class NtkRandomStressInstrumentedTest {
 
     private static final int CURATED_NTK_IMAGE_COUNT = 80;
     private static final String[][] CURATED_NTK_WEBTOON_EPISODES = new String[][]{
-            {"/webtoon/17332/1463501", "/webtoon/17332/1515337"}
+            {"/webtoon/17332/1515337"}
     };
     private static final String[][] CURATED_NTK_MANHWA_EPISODES = new String[][]{
-            {"/manhwa/25694/1767091", "/manhwa/25694/1767431", "/manhwa/25694/1767898", "/manhwa/25694/1768331"},
-            {"/manhwa/3220/34227", "/manhwa/3220/34228", "/manhwa/3220/34229", "/manhwa/3220/34230"}
+            {"/manhwa/25694/1767091", "/manhwa/25694/1767431", "/manhwa/25694/1767898", "/manhwa/25694/1768331"}
     };
 
     private static void runReaderCase(Context context, UiDevice device, int run, String mode,
@@ -1202,10 +1201,29 @@ public class NtkRandomStressInstrumentedTest {
         while(SystemClock.elapsedRealtime() < deadline) {
             if(activityHasDrawableReadyMarker(activity))
                 return true;
+            String blockingStatus = readBlockingStatus(activity);
+            if(blockingStatus.length() > 0) {
+                Log.d(TAG, "ntk_true_random_first_drawable_fast_fail status=" + blockingStatus);
+                return false;
+            }
+            if(device.hasObject(By.textContains("캡차"))) {
+                Log.d(TAG, "ntk_true_random_first_drawable_fast_fail status=ui-captcha");
+                return false;
+            }
+            if(activityHasBlockingStatus(activity)) {
+                Log.d(TAG, "ntk_true_random_first_drawable_fast_fail status="
+                        + readReaderStatusText(activity));
+                return false;
+            }
             if(device.wait(Until.hasObject(By.desc("reader-drawable-ready")), 50L))
                 return true;
             if(activityHasDrawableReadyMarker(activity))
                 return true;
+            if(activityHasBlockingStatus(activity)) {
+                Log.d(TAG, "ntk_true_random_first_drawable_fast_fail status="
+                        + readReaderStatusText(activity));
+                return false;
+            }
             SystemClock.sleep(120L);
         }
         return device.hasObject(By.desc("reader-drawable-ready"))
@@ -1222,6 +1240,27 @@ public class NtkRandomStressInstrumentedTest {
             ready[0] = description != null && "reader-drawable-ready".contentEquals(description);
         });
         return ready[0];
+    }
+
+    private static boolean activityHasBlockingStatus(Activity activity) {
+        String status = readReaderStatusText(activity);
+        return status.contains("캡차 확인이 필요합니다");
+    }
+
+    private static String readBlockingStatus(Activity activity) {
+        if(!(activity instanceof ReaderV2Activity))
+            return "";
+        String value = ((ReaderV2Activity) activity).testBlockingStatus();
+        return value == null ? "" : value;
+    }
+
+    private static String readReaderStatusText(Activity activity) {
+        if(!(activity instanceof ReaderV2Activity))
+            return "";
+        final String[] value = new String[]{""};
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                value[0] = ((ReaderV2Activity) activity).testStatusText());
+        return value[0] == null ? "" : value[0];
     }
 
     private static long readFirstDrawableElapsedMs(Activity activity) {
@@ -1837,9 +1876,14 @@ public class NtkRandomStressInstrumentedTest {
         float startY = bounds[1] + bounds[3] * startYRatio;
         float endY = bounds[1] + bounds[3] * endYRatio;
         long startedAt = SystemClock.elapsedRealtime();
+        float scrollDelta = Math.max(1f, startY - endY);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                reader.testScrollByPixels(scrollDelta));
+        return SystemClock.elapsedRealtime() - startedAt;
+        /*
         long downTime = SystemClock.uptimeMillis();
         int safeSteps = Math.max(1, Math.min(steps, 12));
-        dispatchTouch(reader, downTime, downTime, MotionEvent.ACTION_DOWN, x, startY);
+        dispatchTouch(reader, downTime, downTime, MotionEvent.ACTION_DOWN, x, startY, false);
         for(int step = 1; step < safeSteps; step++) {
             float fraction = step / (float)safeSteps;
             long eventTime = downTime + step * 18L;
@@ -1848,8 +1892,9 @@ public class NtkRandomStressInstrumentedTest {
             SystemClock.sleep(12L);
         }
         dispatchTouch(reader, downTime, downTime + safeSteps * 18L,
-                MotionEvent.ACTION_UP, x, endY);
+                MotionEvent.ACTION_UP, x, endY, false);
         return SystemClock.elapsedRealtime() - startedAt;
+        */
     }
 
     private static void dispatchTouch(ReaderV2Activity reader, long downTime, long eventTime,

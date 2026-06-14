@@ -88,6 +88,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var progressMovedInGesture = false
     private var pendingInitialRestorePage = -1
     private var pendingInitialRestoreOffset = 0
+    @Volatile
+    private var blockingStatusForTest = ""
     private val progressHandler = Handler(Looper.getMainLooper())
     private val statusHandler = Handler(Looper.getMainLooper())
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
@@ -130,6 +132,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val pendingPageErrors = LinkedHashMap<Int, String>()
     private var deferredNtkAckPreflightManga: Manga? = null
     private var ntkAckCaptchaRequested = false
+    private var pendingInitialNtkCaptchaDeferrals = 0
     private val deferredNtkAckPreflightRunnable = Runnable {
         startDeferredNtkAckPreflight("timeout")
     }
@@ -233,10 +236,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else {
             startCurrentNtkAckPreflight(manga)
         }
-        val root = FrameLayout(this)
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+        }
         renderView = ReaderSurfaceView(this).also {
             it.id = R.id.strip
             it.isClickable = true
+            it.setBackgroundColor(Color.BLACK)
             it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             it.contentDescription = null
             it.setWindowListener(this)
@@ -894,6 +900,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onCaptchaRequired(manga: Manga) {
+        if (shouldSuppressNtkCaptchaPopupAfterPagesReady(manga, "session")) {
+            return
+        }
+        if (shouldDeferInitialNtkCaptcha(manga)) {
+            val path = manga.ntkEpisodePath ?: currentManga?.ntkEpisodePath
+            pendingInitialNtkCaptchaDeferrals++
+            Log.d(TAG, "reader_ntk_captcha_deferred_before_first_drawable path=$path,attempt=$pendingInitialNtkCaptchaDeferrals")
+            statusHandler.postDelayed({
+                if (!destroyed && !isFinishing && !firstDrawableMetricLogged) {
+                    onCaptchaRequired(manga)
+                }
+            }, NTK_INITIAL_CAPTCHA_DEFER_MS)
+            return
+        }
+        blockingStatusForTest = "captcha"
         pendingCaptchaRetryManga = manga
         pendingCaptchaRetryTitle = manga.title ?: currentTitle
         pendingCaptchaRetryStartAtFirstPage = manga !== currentManga
@@ -1132,6 +1153,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         if (resolved.result == Title.LOAD_CAPTCHA) {
+            if (shouldSuppressNtkCaptchaPopupAfterPagesReady(source, "toolbar_adjacent")) {
+                updateAdjacentButtons()
+                return
+            }
             pendingCaptchaRetryManga = source
             pendingCaptchaRetryTitle = resolved.title ?: currentTitle
             pendingCaptchaRetryStartAtFirstPage = false
@@ -1260,17 +1285,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Thread({
             try {
                 val client = getHttpClient()
-                val webViewOk = client.performNtkWebViewAckPreflight(path)
+                var webViewOk = false
+                var attempt = 0
+                while (!webViewOk && attempt < NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS && !destroyed && !isFinishing) {
+                    if (attempt > 0) Thread.sleep(2_000L)
+                    webViewOk = client.performNtkWebViewAckPreflight(path)
+                    Log.d(TAG, "reader_ntk_ack_webview_preflight_attempt path=$path,attempt=${attempt + 1},success=$webViewOk")
+                    attempt++
+                }
                 Log.d(TAG, "reader_ntk_ack_webview_preflight_done path=$path,success=$webViewOk")
                 if (!webViewOk) {
-                    if (client.hasRecentCloudflareChallenge()) {
-                        requestNtkAckCaptcha(manga, "webview_ack_cloudflare")
-                        return@Thread
-                    }
                     val nativeOk = client.performNtkNativeAckBypass(client.getUrl(path), path)
                     Log.d(TAG, "reader_ntk_ack_native_preflight_done path=$path,success=$nativeOk")
                     if (!nativeOk && client.hasRecentCloudflareChallenge()) {
-                        requestNtkAckCaptcha(manga, "native_ack_cloudflare")
+                        Log.d(TAG, "reader_ntk_ack_captcha_suppressed reason=native_ack_cloudflare,path=$path")
                     }
                 }
             } catch (e: Exception) {
@@ -1285,6 +1313,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun requestNtkAckCaptcha(manga: Manga, reason: String) {
         runOnUiThread {
+            if (shouldSuppressNtkCaptchaPopupAfterPagesReady(manga, "ack_$reason")) return@runOnUiThread
             if (destroyed || isFinishing || ntkAckCaptchaRequested) return@runOnUiThread
             ntkAckCaptchaRequested = true
             pendingCaptchaRetryManga = manga
@@ -1301,8 +1330,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun shouldDeferInitialNtkAckPreflight(manga: Manga): Boolean {
         if (!isCurrentNtkReader()) return false
-        if (viewerLaunchStartedAtMs <= 0L) return false
-        return true
+        return false
     }
 
     private fun startDeferredNtkAckPreflight(reason: String) {
@@ -1321,6 +1349,26 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             path?.startsWith("/manhwa/") == true
     }
 
+    private fun shouldSuppressNtkCaptchaPopupAfterPagesReady(manga: Manga?, reason: String): Boolean {
+        val path = manga?.ntkEpisodePath ?: currentManga?.ntkEpisodePath
+        if (!pagesReady || path.isNullOrBlank()) return false
+        if (!isCurrentNtkReader()) return false
+        if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return false
+        Log.d(TAG, "reader_ntk_captcha_popup_suppressed reason=$reason,path=$path")
+        if (::status.isInitialized && pagesReady) {
+            status.visibility = TextView.GONE
+        }
+        return true
+    }
+
+    private fun shouldDeferInitialNtkCaptcha(manga: Manga?): Boolean {
+        if (firstDrawableMetricLogged || pagesReady) return false
+        if (pendingInitialNtkCaptchaDeferrals >= NTK_INITIAL_CAPTCHA_MAX_DEFERS) return false
+        val path = manga?.ntkEpisodePath ?: currentManga?.ntkEpisodePath
+        if (path.isNullOrBlank()) return false
+        return isCurrentNtkReader() && (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"))
+    }
+
     private fun startReaderSession(
         manga: Manga,
         title: Title?,
@@ -1331,6 +1379,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pagesReady = false
         pageCount = 0
         currentPage = 0
+        pendingInitialNtkCaptchaDeferrals = 0
+        if (manga.ntkEpisodePath?.let { it.startsWith("/webtoon/") || it.startsWith("/manhwa/") } == true) {
+            getHttpClient().cancelNtkWebViewFallbacks()
+        }
         initialStartAtFirstPage = startAtFirstPage
         lastDisplayedPageText = ""
         pendingBoundaryStatus = false
@@ -1444,6 +1496,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
 
             override fun showCaptcha(episode: Manga?) {
+                if (shouldSuppressNtkCaptchaPopupAfterPagesReady(episode ?: currentManga, "missing_episode")) {
+                    return
+                }
                 status.visibility = TextView.VISIBLE
                 status.text = "캡차 확인이 필요합니다"
                 Utils.showCaptchaPopup(Manga.safeUrl(episode ?: currentManga), this@ReaderV2Activity, REQUEST_CAPTCHA, p)
@@ -1965,6 +2020,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return renderView.currentScrollPositionSnapshot()
     }
 
+    fun testScrollByPixels(deltaPx: Float) {
+        renderView.testScrollByPixels(deltaPx)
+    }
+
     fun testFirstDrawableElapsedMs(): Long {
         return firstDrawableElapsedMsForTest
     }
@@ -1998,6 +2057,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     fun testCurrentPage(): Int {
         return currentPage
+    }
+
+    fun testStatusText(): String {
+        return if (::status.isInitialized) status.text?.toString().orEmpty() else ""
+    }
+
+    fun testBlockingStatus(): String {
+        return blockingStatusForTest
     }
 
     fun testHasLoadedEpisode(episode: Manga?): Boolean {
@@ -2042,8 +2109,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
         private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_MS = 4200L
+        private const val NTK_INITIAL_CAPTCHA_DEFER_MS = 1800L
+        private const val NTK_INITIAL_CAPTCHA_MAX_DEFERS = 2
         private const val DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS = 45000L
         private const val NTK_ACK_INITIAL_CONTINUOUS_PAGES = 3
+        private const val NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS = 1
         private const val READER_LOADING_DESCRIPTION = "reader-loading"
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
         private const val DRAWABLE_READY_CHECK_INTERVAL_MS = 80L

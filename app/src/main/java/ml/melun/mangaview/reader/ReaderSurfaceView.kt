@@ -817,6 +817,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    fun testScrollByPixels(deltaPx: Float) {
+        synchronized(stateLock) {
+            rebuildLayoutLocked()
+            val maxScroll = max(0f, totalHeightLocked() - height)
+            setScrollOffsetLocked((scrollOffset + deltaPx).coerceIn(0f, maxScroll))
+            scroller.forceFinished(true)
+            lastScrollInteractionMs = SystemClock.uptimeMillis()
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+        }
+        invalidate()
+    }
+
     fun visibleCoverageSnapshot(): VisibleCoverageSnapshot? {
         return synchronized(stateLock) {
             lastVisibleCoverageSnapshot

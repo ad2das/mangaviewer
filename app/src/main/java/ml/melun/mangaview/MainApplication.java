@@ -5,6 +5,8 @@ import android.app.Application;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.webkit.WebView;
 
@@ -159,9 +161,14 @@ public class MainApplication extends MultiDexApplication implements Configuratio
         if(context == null)
             return;
         boolean debuggable = (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-        WebView.setWebContentsDebuggingEnabled(
-                shouldEnableWebViewDebuggingForTest(debuggable,
-                        preference != null && preference.isNtkSite()));
+        boolean enabled = shouldEnableWebViewDebuggingForTest(debuggable,
+                preference != null && preference.isNtkSite());
+        if(Looper.myLooper() == Looper.getMainLooper()) {
+            WebView.setWebContentsDebuggingEnabled(enabled);
+        } else {
+            new Handler(Looper.getMainLooper()).post(
+                    () -> WebView.setWebContentsDebuggingEnabled(enabled));
+        }
     }
 
     static boolean shouldEnableWebViewDebuggingForTest(boolean debuggable, boolean ntkSite) {
