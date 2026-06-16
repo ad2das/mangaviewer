@@ -26,6 +26,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import java.util.concurrent.atomic.AtomicInteger
 import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.R
@@ -123,7 +124,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchSourceSite = ""
     private var firstDrawableMetricLogged = false
     private var firstDrawableLoggedAtMs = 0L
+    private var firstDrawableLoggedElapsedAtMs = 0L
     private var firstDrawableElapsedMsForTest = -1L
+    private var initialDrawGateNtkTimeoutDeferrals = 0
     private var drawableReadyDescriptionPosted = false
     private var initialStartAtFirstPage = false
     private val launchDrawableMetricPages = HashSet<Int>()
@@ -136,6 +139,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var ntkAckCaptchaRequested = false
     private var pendingInitialNtkCaptchaDeferrals = 0
     private var deferredNtkAckPreflightBlockProbeAttempts = 0
+    private val ntkAckPreflightGeneration = AtomicInteger(0)
     private val deferredNtkAckPreflightTimeoutRunnable = Runnable {
         startDeferredNtkAckPreflight("timeout")
     }
@@ -145,14 +149,25 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val deferredNtkAckPreflightBlockProbeRunnable = Runnable {
         maybeStartDeferredNtkAckForInitialCloudflareProbe()
     }
-    private val initialDrawGateTimeoutRunnable = Runnable {
-        if (!pagesReady && !destroyed && !isFinishing) {
-            initialStatusPending = false
-            statusHandler.removeCallbacks(showInitialStatusRunnable)
-            status.visibility = TextView.VISIBLE
-            status.text = displayEpisodeTitle(currentManga, currentTitle)
+    private val initialDrawGateTimeoutRunnable: Runnable = object : Runnable {
+        override fun run() {
+            if (shouldDeferNtkInitialDrawGateTimeout()) {
+                initialDrawGateNtkTimeoutDeferrals++
+                Log.d(
+                    TAG,
+                    "initial_draw_gate_timeout_deferred reason=ntk_anchor_pending,count=$initialDrawGateNtkTimeoutDeferrals"
+                )
+                statusHandler.postDelayed(this, NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MS)
+                return
+            }
+            if (!pagesReady && !destroyed && !isFinishing) {
+                initialStatusPending = false
+                statusHandler.removeCallbacks(showInitialStatusRunnable)
+                status.visibility = TextView.VISIBLE
+                status.text = displayEpisodeTitle(currentManga, currentTitle)
+            }
+            releaseInitialDrawGate("timeout")
         }
-        releaseInitialDrawGate("timeout")
     }
     private val saveProgressRunnable = Runnable {
         saveCurrentReadingProgress()
@@ -237,6 +252,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (shouldDeferInitialNtkAckPreflight(manga)) {
             deferredNtkAckPreflightManga = manga
             deferredNtkAckPreflightBlockProbeAttempts = 0
+            Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_wait_first_drawable path=${manga.ntkEpisodePath}")
+            Log.d(TAG, "ntk_ack_blocked_before_first_drawable reason=initial_setup,path=${manga.ntkEpisodePath}")
             statusHandler.postDelayed(
                 deferredNtkAckPreflightTimeoutRunnable,
                 DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS
@@ -479,6 +496,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onDestroy() {
         destroyed = true
+        ntkAckPreflightGeneration.incrementAndGet()
+        currentManga?.ntkEpisodePath?.let { path ->
+            ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(path)
+        }
+        if (isCurrentNtkReader()) {
+            getHttpClient().cancelNtkWebViewFallbacks()
+        }
         progressHandler.removeCallbacks(saveProgressRunnable)
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
@@ -817,10 +841,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
         firstDrawableMetricLogged = true
         firstDrawableLoggedAtMs = SystemClock.uptimeMillis()
+        firstDrawableLoggedElapsedAtMs = SystemClock.elapsedRealtime()
         scheduleDrawableReadyDescription(index)
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         firstDrawableElapsedMsForTest = elapsed
         Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+        ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(currentManga?.ntkEpisodePath)
+        scheduleDeferredNtkAckAfterFirstDrawable("first_drawable")
         statusHandler.post { attachToolbarIfNeeded() }
         maybeStartDeferredNtkAckAfterInitialContinuous()
     }
@@ -874,9 +901,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (!firstDrawableMetricLogged && viewerLaunchStartedAtMs > 0L) {
             firstDrawableMetricLogged = true
             firstDrawableLoggedAtMs = SystemClock.uptimeMillis()
+            firstDrawableLoggedElapsedAtMs = SystemClock.elapsedRealtime()
             val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
             firstDrawableElapsedMsForTest = elapsed
             Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=viewport page=$currentPage ms=$elapsed")
+            ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(currentManga?.ntkEpisodePath)
+            scheduleDeferredNtkAckAfterFirstDrawable("viewport_drawable")
             statusHandler.post { attachToolbarIfNeeded() }
             maybeStartDeferredNtkAckAfterInitialContinuous()
         }
@@ -897,6 +927,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun maybeStartDeferredNtkAckAfterInitialContinuous() {
         if (deferredNtkAckPreflightManga == null) return
         if (!isInitialContinuousScrollReady()) return
+        if (!firstDrawableMetricLogged) {
+            Log.d(TAG, "reader_ntk_ack_preflight_wait_first_drawable reason=initial_continuous,path=${deferredNtkAckPreflightManga?.ntkEpisodePath}")
+            statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+            statusHandler.postDelayed(
+                deferredNtkAckPreflightQuietRunnable,
+                NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS
+            )
+            return
+        }
         val quietMs = ntkAckPreflightQuietRemainingMs()
         if (quietMs > 0L) {
             statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
@@ -906,14 +945,33 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         startDeferredNtkAckPreflight("initial_continuous")
     }
 
+    private fun scheduleDeferredNtkAckAfterFirstDrawable(reason: String) {
+        if (deferredNtkAckPreflightManga == null) return
+        val quietMs = ntkAckPreflightQuietRemainingMs()
+        statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+        if (quietMs > 0L) {
+            statusHandler.postDelayed(deferredNtkAckPreflightBlockProbeRunnable, quietMs)
+            return
+        }
+        maybeStartDeferredNtkAckForInitialBlock(currentManga, reason)
+    }
+
     private fun ntkAckPreflightQuietRemainingMs(): Long {
         val now = SystemClock.uptimeMillis()
         var remaining = 0L
         if (firstDrawableLoggedAtMs > 0L) {
             remaining = maxOf(
                 remaining,
-                firstDrawableLoggedAtMs + NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS - now
+                firstDrawableLoggedAtMs + ntkAckPreflightAfterFirstDrawableQuietMs() - now
             )
+            if (isCurrentNtkAckPath() && lastReaderInteractionMs <= firstDrawableLoggedAtMs) {
+                remaining = maxOf(
+                    remaining,
+                    firstDrawableLoggedAtMs + NTK_ACK_PREFLIGHT_INITIAL_NO_INTERACTION_QUIET_MS - now
+                )
+            }
+        } else if (firstDrawableMetricLogged && isCurrentNtkAckPath()) {
+            remaining = maxOf(remaining, ntkAckPreflightAfterFirstDrawableQuietMs())
         }
         if (readerWindowBusy) {
             remaining = maxOf(remaining, NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS)
@@ -926,6 +984,29 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             )
         }
         return remaining.coerceAtLeast(0L)
+    }
+
+    private fun ntkAckStrictAfterFirstDrawableFloorRemainingMs(manga: Manga?): Long {
+        val path = manga?.ntkEpisodePath ?: currentManga?.ntkEpisodePath ?: return 0L
+        if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return 0L
+        if (!firstDrawableMetricLogged) return 0L
+        val loggedAt = firstDrawableLoggedElapsedAtMs
+        if (loggedAt <= 0L) return NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS_STRICT_FRESH
+        return (loggedAt + NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS_STRICT_FRESH - SystemClock.elapsedRealtime())
+            .coerceAtLeast(0L)
+    }
+
+    private fun ntkAckPreflightAfterFirstDrawableQuietMs(): Long {
+        return if (isCurrentNtkAckPath()) {
+            NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS_STRICT_FRESH
+        } else {
+            NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS
+        }
+    }
+
+    private fun isCurrentNtkAckPath(): Boolean {
+        val path = currentManga?.ntkEpisodePath ?: deferredNtkAckPreflightManga?.ntkEpisodePath
+        return path?.startsWith("/webtoon/") == true || path?.startsWith("/manhwa/") == true
     }
 
     private fun shouldMarkFirstDrawable(index: Int, currentPage: Int): Boolean {
@@ -1026,6 +1107,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (busy) {
                 readerWindowBusy = true
                 lastReaderBusyMs = SystemClock.uptimeMillis()
+                ReaderImageCache.extendNtkAckRecoveryQuiet(
+                    currentManga?.ntkEpisodePath,
+                    NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS,
+                    "window_busy"
+                )
                 statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
                 pendingAnchorAfterBusy = progressPage
                 return@trace
@@ -1068,6 +1154,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 lastInteractionNoteMs = now
             }
             lastReaderInteractionMs = now
+            ReaderImageCache.extendNtkAckRecoveryQuiet(
+                currentManga?.ntkEpisodePath,
+                ntkAckPreflightAfterFirstDrawableQuietMs(),
+                "touch"
+            )
         }
         return super.dispatchTouchEvent(ev)
     }
@@ -1325,37 +1416,155 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         )
     }
 
-    private fun startCurrentNtkAckPreflight(manga: Manga) {
+    private fun startCurrentNtkAckPreflight(manga: Manga, allowBeforeFirstDrawable: Boolean = false) {
         val path = manga.ntkEpisodePath
         if (path.isNullOrBlank()) return
         if (!isCurrentNtkReader()) return
+        if (!firstDrawableMetricLogged) {
+            if (allowBeforeFirstDrawable && (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"))) {
+                ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(path)
+                Log.d(TAG, "reader_ntk_ack_preflight_before_first_drawable reason=hardblock,path=$path")
+            } else if (path.startsWith("/webtoon/") || path.startsWith("/manhwa/")) {
+                deferredNtkAckPreflightManga = manga
+                ReaderImageCache.holdNtkAckRecoveryUntilFirstDrawable(path)
+                statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+                statusHandler.postDelayed(
+                    deferredNtkAckPreflightBlockProbeRunnable,
+                    NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS
+                )
+                Log.d(TAG, "ntk_ack_blocked_before_first_drawable reason=start_current,path=$path")
+                return
+            }
+        }
+        if (!allowBeforeFirstDrawable) {
+            val strictFloorMs = ntkAckStrictAfterFirstDrawableFloorRemainingMs(manga)
+            if (strictFloorMs > 0L) {
+                deferredNtkAckPreflightManga = manga
+                statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+                statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+                statusHandler.postDelayed(deferredNtkAckPreflightBlockProbeRunnable, strictFloorMs)
+                Log.d(TAG, "reader_ntk_ack_preflight_start_wait_strict_floor quietMs=$strictFloorMs,path=$path")
+                return
+            }
+            val holdMs = ReaderImageCache.ntkAckRecoveryLaunchHoldRemainingMs(path)
+            if (holdMs > 0L) {
+                deferredNtkAckPreflightManga = manga
+                statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+                statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+                statusHandler.postDelayed(deferredNtkAckPreflightQuietRunnable, holdMs)
+                Log.d(TAG, "reader_ntk_ack_preflight_start_wait_recovery_hold quietMs=$holdMs,path=$path")
+                return
+            }
+        }
         Thread({
             try {
+                val ackGeneration = ntkAckPreflightGeneration.get()
                 val client = getHttpClient()
+                client.prepareNtkNativeAckChallengeForWebView(path)
+                if (ackGeneration != ntkAckPreflightGeneration.get() || destroyed || isFinishing) {
+                    Log.d(TAG, "reader_ntk_ack_preflight_stale_after_prepare path=$path")
+                    return@Thread
+                }
                 var webViewOk = false
                 var attempt = 0
-                while (!webViewOk && attempt < NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS && !destroyed && !isFinishing) {
+                while (!webViewOk && attempt < NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS &&
+                    ackGeneration == ntkAckPreflightGeneration.get() && !destroyed && !isFinishing) {
                     if (attempt > 0) Thread.sleep(2_000L)
+                    if (ackGeneration != ntkAckPreflightGeneration.get() || destroyed || isFinishing) {
+                        Log.d(TAG, "reader_ntk_ack_preflight_stale_before_webview path=$path,attempt=${attempt + 1}")
+                        return@Thread
+                    }
                     webViewOk = client.performNtkWebViewAckPreflight(path)
                     Log.d(TAG, "reader_ntk_ack_webview_preflight_attempt path=$path,attempt=${attempt + 1},success=$webViewOk")
                     attempt++
                 }
                 Log.d(TAG, "reader_ntk_ack_webview_preflight_done path=$path,success=$webViewOk")
-                if (!webViewOk) {
-                    val nativeOk = client.performNtkNativeAckBypass(client.getUrl(path), path)
-                    Log.d(TAG, "reader_ntk_ack_native_preflight_done path=$path,success=$nativeOk")
-                    if (!nativeOk && client.hasRecentCloudflareChallenge()) {
-                        Log.d(TAG, "reader_ntk_ack_captcha_suppressed reason=native_ack_cloudflare,path=$path")
-                    }
+                if (!webViewOk && client.hasRecentCloudflareChallenge()) {
+                    Log.d(TAG, "reader_ntk_ack_captcha_suppressed reason=webview_ack_cloudflare,path=$path")
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "reader_ntk_ack_preflight_error path=$path,$e")
+            } finally {
+                ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(path)
             }
         }, "reader-ntk-ack-preflight").apply {
             isDaemon = true
             start()
         }
         Log.d(TAG, "reader_ntk_ack_preflight_start path=$path")
+    }
+
+    private fun prepareDeferredNtkAckChallenge(manga: Manga) {
+        val path = manga.ntkEpisodePath ?: return
+        Thread({
+            try {
+                val ackGeneration = ntkAckPreflightGeneration.get()
+                if (ackGeneration != ntkAckPreflightGeneration.get() || destroyed || isFinishing) return@Thread
+                getHttpClient().prepareNtkNativeAckChallengeForWebView(path)
+                if (ackGeneration != ntkAckPreflightGeneration.get() || destroyed || isFinishing) {
+                    Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_stale path=$path")
+                    return@Thread
+                }
+                Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_done path=$path")
+            } catch (e: Exception) {
+                Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_error path=$path,$e")
+            }
+        }, "reader-ntk-ack-prepare").apply {
+            isDaemon = true
+            start()
+        }
+        Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_start path=$path")
+    }
+
+    private fun startInitialNtkWebViewAckOnlyPreflight(manga: Manga) {
+        if (!shouldDeferInitialNtkAckPreflight(manga)) return
+        val path = manga.ntkEpisodePath ?: return
+        if (!firstDrawableMetricLogged) {
+            Log.d(TAG, "ntk_ack_blocked_before_first_drawable reason=initial_webview_ack_only,path=$path")
+            return
+        }
+        Thread({
+            try {
+                val ok = getHttpClient().performNtkWebViewAckPreflight(path)
+                Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_done path=$path,success=$ok")
+            } catch (e: Exception) {
+                Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_error path=$path,$e")
+            }
+        }, "reader-ntk-initial-webview-ack").apply {
+            isDaemon = true
+            start()
+        }
+        Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_start path=$path")
+    }
+
+    private fun startPreparedNtkNativeAckPreflight(manga: Manga, reason: String): Boolean {
+        val path = manga.ntkEpisodePath ?: return false
+        if (!isCurrentNtkReader() || destroyed || isFinishing) return false
+        deferredNtkAckPreflightManga = null
+        statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+        Thread({
+            try {
+                val client = getHttpClient()
+                val ok = client.performPreparedNtkNativeAck(path)
+                val proof = client.hasRecentNtkServerAckProof(path)
+                Log.d(
+                    TAG,
+                    "reader_ntk_ack_prepared_native_preflight_done reason=$reason,path=$path,success=$ok,proof=$proof"
+                )
+                if (ok || proof) {
+                    ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(path)
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "reader_ntk_ack_prepared_native_preflight_error reason=$reason,path=$path,$e")
+            }
+        }, "reader-ntk-prepared-native-ack").apply {
+            isDaemon = true
+            start()
+        }
+        Log.d(TAG, "reader_ntk_ack_prepared_native_preflight_start reason=$reason,path=$path")
+        return true
     }
 
     private fun requestNtkAckCaptcha(manga: Manga, reason: String) {
@@ -1381,31 +1590,80 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return path.startsWith("/webtoon/") || path.startsWith("/manhwa/")
     }
 
-    private fun startDeferredNtkAckPreflight(reason: String) {
+    private fun startDeferredNtkAckPreflight(reason: String, allowBeforeFirstDrawable: Boolean = false) {
         val manga = deferredNtkAckPreflightManga ?: return
+        if (!allowBeforeFirstDrawable && !firstDrawableMetricLogged) {
+            Log.d(TAG, "reader_ntk_ack_preflight_wait_first_drawable reason=$reason,path=${manga.ntkEpisodePath}")
+            statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+            statusHandler.postDelayed(
+                deferredNtkAckPreflightBlockProbeRunnable,
+                NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS
+            )
+            return
+        }
+        if (!allowBeforeFirstDrawable) {
+            val strictFloorMs = ntkAckStrictAfterFirstDrawableFloorRemainingMs(manga)
+            if (strictFloorMs > 0L) {
+                statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+                statusHandler.postDelayed(deferredNtkAckPreflightQuietRunnable, strictFloorMs)
+                Log.d(TAG, "reader_ntk_ack_preflight_deferred_wait_strict_floor reason=$reason,quietMs=$strictFloorMs,path=${manga.ntkEpisodePath}")
+                return
+            }
+            val quietMs = ntkAckPreflightQuietRemainingMs()
+            if (quietMs > 0L) {
+                statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+                statusHandler.postDelayed(deferredNtkAckPreflightQuietRunnable, quietMs)
+                Log.d(TAG, "reader_ntk_ack_preflight_deferred_wait_quiet reason=$reason,quietMs=$quietMs,path=${manga.ntkEpisodePath}")
+                return
+            }
+            val holdMs = ReaderImageCache.ntkAckRecoveryLaunchHoldRemainingMs(manga.ntkEpisodePath)
+            if (holdMs > 0L) {
+                statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+                statusHandler.postDelayed(deferredNtkAckPreflightQuietRunnable, holdMs)
+                Log.d(TAG, "reader_ntk_ack_preflight_deferred_wait_recovery_hold reason=$reason,quietMs=$holdMs,path=${manga.ntkEpisodePath}")
+                return
+            }
+        }
         deferredNtkAckPreflightManga = null
         statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
         statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
         statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
         if (destroyed || isFinishing) return
-        Log.d(TAG, "reader_ntk_ack_preflight_deferred_start reason=$reason,path=${manga.ntkEpisodePath}")
-        startCurrentNtkAckPreflight(manga)
+        Log.d(TAG, "reader_ntk_ack_preflight_deferred_start reason=$reason,allowBeforeFirstDrawable=$allowBeforeFirstDrawable,path=${manga.ntkEpisodePath}")
+        startCurrentNtkAckPreflight(manga, allowBeforeFirstDrawable)
     }
 
     private fun maybeStartDeferredNtkAckForInitialCloudflareProbe() {
         val deferred = deferredNtkAckPreflightManga ?: return
-        if (destroyed || isFinishing || firstDrawableMetricLogged || pagesReady) return
+        if (destroyed || isFinishing) return
+        if (firstDrawableMetricLogged || pagesReady) {
+            maybeStartDeferredNtkAckForInitialBlock(deferred, "first_drawable_ready")
+            return
+        }
         val path = deferred.ntkEpisodePath
         val hasCloudflare = try {
             getHttpClient().hasRecentCloudflareChallenge()
         } catch (_: Exception) {
             false
         }
+        val preparedChallenge = try {
+            !path.isNullOrBlank() && getHttpClient().hasRecentPreparedNtkNativeAckChallenge(path)
+        } catch (_: Exception) {
+            false
+        }
+        val preparingChallenge = try {
+            !path.isNullOrBlank() && getHttpClient().isPreparedNtkNativeAckChallengeInFlight(path)
+        } catch (_: Exception) {
+            false
+        }
         deferredNtkAckPreflightBlockProbeAttempts++
         Log.d(
             TAG,
-            "reader_ntk_ack_preflight_initial_cf_probe path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare"
+            "reader_ntk_ack_preflight_initial_cf_probe path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare,prepared=$preparedChallenge,preparing=$preparingChallenge"
         )
+        if (preparedChallenge && startPreparedNtkNativeAckPreflight(deferred, "prepared_challenge")) {
+            return
+        }
         if (hasCloudflare) {
             val hasEarlyImages = try {
                 !path.isNullOrBlank() &&
@@ -1416,7 +1674,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (hasEarlyImages && pendingInitialNtkCaptchaDeferrals <= 0) {
                 Log.d(
                     TAG,
-                    "reader_ntk_ack_preflight_initial_cf_probe_defer_images_ready path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts"
+                    "reader_ntk_ack_preflight_initial_cf_probe_wait_first_drawable path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts"
+                )
+                maybeStartDeferredNtkAckForInitialBlock(
+                    deferred,
+                    "initial_cf_probe_images_ready"
                 )
                 return
             }
@@ -1436,7 +1698,33 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             maybeStartDeferredNtkAckForInitialBlock(deferred, "initial_cf_probe")
             return
         }
-        if (deferredNtkAckPreflightBlockProbeAttempts < NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS) {
+        val hasEarlyImages = try {
+            !path.isNullOrBlank() &&
+                ReaderImageCache.earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L).isNotEmpty()
+        } catch (_: Exception) {
+            false
+        }
+        if (hasEarlyImages) {
+            if (deferredNtkAckPreflightBlockProbeAttempts >= NTK_ACK_PREFLIGHT_INITIAL_IMAGES_READY_HARDBLOCK_ATTEMPTS &&
+                pendingInitialNtkCaptchaDeferrals <= 0
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_ack_preflight_initial_images_ready_wait_first_drawable path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts"
+                )
+                maybeStartDeferredNtkAckForInitialBlock(
+                    deferred,
+                    "initial_images_ready_slow_anchor"
+                )
+            } else {
+                maybeStartDeferredNtkAckForInitialBlock(deferred, "initial_images_ready")
+            }
+            return
+        }
+        if (deferredNtkAckPreflightBlockProbeAttempts < NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS ||
+            (preparingChallenge &&
+                deferredNtkAckPreflightBlockProbeAttempts < NTK_ACK_PREFLIGHT_INITIAL_CHALLENGE_WAIT_MAX_ATTEMPTS)
+        ) {
             statusHandler.postDelayed(
                 deferredNtkAckPreflightBlockProbeRunnable,
                 NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS
@@ -1444,7 +1732,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
     }
 
-    private fun maybeStartDeferredNtkAckForInitialBlock(manga: Manga?, reason: String) {
+    private fun maybeStartDeferredNtkAckForInitialBlock(
+        manga: Manga?,
+        reason: String,
+        allowBeforeFirstDrawable: Boolean = false
+    ) {
         val deferred = deferredNtkAckPreflightManga ?: return
         val deferredPath = deferred.ntkEpisodePath
         val currentPath = manga?.ntkEpisodePath ?: currentManga?.ntkEpisodePath
@@ -1452,7 +1744,32 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             Log.d(TAG, "reader_ntk_ack_preflight_initial_block_skip reason=$reason,deferredPath=$deferredPath,currentPath=$currentPath")
             return
         }
-        startDeferredNtkAckPreflight(reason)
+        if (!allowBeforeFirstDrawable && !firstDrawableMetricLogged) {
+            Log.d(TAG, "reader_ntk_ack_preflight_wait_first_drawable reason=$reason,path=$deferredPath")
+            statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+            statusHandler.postDelayed(
+                deferredNtkAckPreflightBlockProbeRunnable,
+                NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS
+            )
+            return
+        }
+        if (!allowBeforeFirstDrawable) {
+            val strictFloorMs = ntkAckStrictAfterFirstDrawableFloorRemainingMs(deferred)
+            if (strictFloorMs > 0L) {
+                Log.d(TAG, "reader_ntk_ack_preflight_initial_block_wait_strict_floor reason=$reason,quietMs=$strictFloorMs,path=$deferredPath")
+                statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+                statusHandler.postDelayed(deferredNtkAckPreflightQuietRunnable, strictFloorMs)
+                return
+            }
+            val quietMs = ntkAckPreflightQuietRemainingMs()
+            if (quietMs > 0L) {
+                Log.d(TAG, "reader_ntk_ack_preflight_initial_block_wait_quiet reason=$reason,quietMs=$quietMs,path=$deferredPath")
+                statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+                statusHandler.postDelayed(deferredNtkAckPreflightQuietRunnable, quietMs)
+                return
+            }
+        }
+        startDeferredNtkAckPreflight(reason, allowBeforeFirstDrawable)
     }
 
     private fun isCurrentNtkReader(): Boolean {
@@ -1494,7 +1811,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         currentPage = 0
         pendingInitialNtkCaptchaDeferrals = 0
         if (manga.ntkEpisodePath?.let { it.startsWith("/webtoon/") || it.startsWith("/manhwa/") } == true) {
+            ntkAckPreflightGeneration.incrementAndGet()
+            Log.d(
+                "ViewerPerf",
+                "reader_activity_start_session path=${manga.ntkEpisodePath},clear=$clearViewImmediately"
+            )
             getHttpClient().cancelNtkWebViewFallbacks()
+            ReaderImageCache.holdNtkAckRecoveryUntilFirstDrawable(manga.ntkEpisodePath)
         }
         initialStartAtFirstPage = startAtFirstPage
         lastDisplayedPageText = ""
@@ -1520,7 +1843,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         status.text = displayEpisodeTitle(manga, title)
         firstDrawableMetricLogged = false
         firstDrawableLoggedAtMs = 0L
+        firstDrawableLoggedElapsedAtMs = 0L
         firstDrawableElapsedMsForTest = -1L
+        initialDrawGateNtkTimeoutDeferrals = 0
         drawableReadyDescriptionPosted = false
         launchDrawableMetricPages.clear()
         launchDrawableElapsedMsByPage.clear()
@@ -2060,6 +2385,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun installInitialDrawGate(root: View, timeoutMs: Long) {
         initialDrawGateOpen = false
+        initialDrawGateNtkTimeoutDeferrals = 0
         initialDrawGateView = root
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
         val listener = ViewTreeObserver.OnPreDrawListener {
@@ -2074,6 +2400,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun releaseInitialDrawGate(reason: String) {
         if (initialDrawGateOpen) return
         initialDrawGateOpen = true
+        initialDrawGateNtkTimeoutDeferrals = 0
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
         val view = initialDrawGateView
         removeInitialDrawGateListener()
@@ -2090,6 +2417,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (observer.isAlive) observer.removeOnPreDrawListener(listener)
         }
         initialDrawGateView = null
+    }
+
+    private fun shouldDeferNtkInitialDrawGateTimeout(): Boolean {
+        if (destroyed || isFinishing || initialDrawGateOpen) return false
+        if (!isCurrentNtkReader() || firstDrawableMetricLogged) return false
+        if (initialDrawGateNtkTimeoutDeferrals >= NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX) return false
+        return true
     }
 
     private fun Int.dp(): Int = (this * resources.displayMetrics.density + 0.5f).toInt()
@@ -2228,14 +2562,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
         private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_MS = 4200L
+        private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MS = 700L
+        private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX = 2
         private const val NTK_INITIAL_CAPTCHA_DEFER_MS = 1800L
         private const val NTK_INITIAL_CAPTCHA_MAX_DEFERS = 2
         private const val DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS = 45000L
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS = 450L
-        private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 900L
+        private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS_STRICT_FRESH = 4_500L
+        private const val NTK_ACK_PREFLIGHT_INITIAL_NO_INTERACTION_QUIET_MS = 18_000L
+        private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 3_500L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MS = 650L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS = 450L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS = 5
+        private const val NTK_ACK_PREFLIGHT_INITIAL_CHALLENGE_WAIT_MAX_ATTEMPTS = 10
+        private const val NTK_ACK_PREFLIGHT_INITIAL_IMAGES_READY_HARDBLOCK_ATTEMPTS = 2
         private const val NTK_ACK_INITIAL_CONTINUOUS_PAGES = 3
         private const val NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS = 1
         private const val READER_LOADING_DESCRIPTION = "reader-loading"

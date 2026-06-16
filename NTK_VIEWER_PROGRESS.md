@@ -19916,6 +19916,41 @@ tk_native_ack_ack_code, strict ACK proof, and first drawable.
   - Do not wait for the full capture timeout after the spawned probe has already exited unless explicitly diagnosing late CDP events.
   - Do not treat "No WebView DevTools target" as ACK failure; it is a probe/device/CDP attach failure and should be rerun or diagnosed separately.
 
+## 2026-06-17 12:59 CDP strict ACK proof revalidated with fresh PID attach
+
+- Problem found:
+  - A `--no-force-stop` helper run attached to a stale pre-existing app PID and missed the actual probe process.
+  - The probe log for `build/ntk-ack-ux-probe/20260616_125337_sbxh7_com_0e1447` showed real direct WebView requests including:
+    - `POST https://sbxh7.com/api/ad/challenge`
+    - `POST https://sbxh7.com/api/ad/ack`
+  - But CDP summary showed zero ACK matches because it had attached to the old PID target.
+- Tool fix:
+  - `tools/ntk_webview_cdp_ack_capture.mjs` now records app PIDs present before `--run-probe`.
+  - By default it ignores those pre-existing PIDs and waits for a fresh app PID/socket.
+  - `--allow-existing-pid-target` can opt back into the old behavior when intentionally attaching to an already-running probe.
+  - Probe summary extraction was corrected to be line-based so blank `Value` fields do not swallow the next `Name` line.
+- Current strict CDP proof:
+  - No-force-stop fresh PID validation:
+    - `build/ntk-cdp-ack/strict_ack_no_forcestop_fresh_pid`
+    - Attached fresh socket `webview_devtools_remote_5324`.
+    - Captured `/api/ad/challenge` POST 200 over `h3`.
+    - Captured `/api/ad/ack` POST 200 over `h3`.
+  - Force-stop fresh validation:
+    - `build/ntk-cdp-ack/strict_ack_forcestop_fresh_pid`
+    - Attached fresh socket `webview_devtools_remote_5878`.
+    - Captured `/api/ad/challenge` POST 200 over `h3`.
+    - Captured `/api/ad/ack` POST 200 over `h3`.
+    - `ack_requests.jsonl` shows the ACK body includes `challengeToken`, `total`, `visible`, `path`, and `observationUrls`; this is the site-generated ACK, not the bad empty POST.
+    - `ack_matches.jsonl` records `/api/ad/ack` response status 200.
+- Current command:
+  - `node tools/ntk_webview_cdp_ack_capture.mjs --serial emulator-5556 --run-probe --url-match /api/ad/ack --url-match /api/ad/challenge --success-match /api/ad/ack --site-root https://sbxh7.com --target-path /webtoon/17332/1515337 --timeout-ms 95000 --max-ms 85000 --allow-root-terminal-failure --probe-exit-grace-ms 5000 --out-dir build/ntk-cdp-ack/strict_ack_forcestop_fresh_pid`
+- Interpretation:
+  - The visible UX WebView can produce a real `/api/ad/ack` 200 in strict CDP proof when the helper attaches to the correct fresh WebView process and global fetch/XHR wrappers remain non-mutating.
+  - CDP sidecar proof is now reliable enough to avoid reintroducing invasive JS fetch/XHR observers.
+- Bad/avoid:
+  - Do not attach CDP to pre-existing app PID targets during a spawned probe unless explicitly requested.
+  - Do not interpret a zero-match CDP run as ACK failure until confirming the CDP socket belongs to the same fresh app PID as the probe.
+
 ## 2026-06-17 13:04 CDP root-stage timeout false-fast fix
 
 - First run after CDP hardening: build/ntk-cdp-ack/20260616_125236_7546a4.
@@ -19947,3 +19982,878 @@ tk_native_ack_ack_code, strict ACK proof, and first drawable.
 - Next:
   - Commit the verified ACK/proof-runner fixes as one meaningful unit.
   - Then resume random image/scroll perf validation with ACK proof handled externally.
+
+## 2026-06-17 13:28 post-ACK random perf restart and current bottleneck
+
+- Context after compaction:
+  - Goal is still active. Continue from this file after every context reset.
+  - Verified ACK proof work is already committed and pushed as `aa92485f Stabilize NTK ACK proof capture`.
+  - Strict ACK success still means only real `/api/ad/ack` HTTP 200 proof. Challenge/cookie-only proof remains invalid.
+- Current uncommitted performance/test automation work:
+  - `Manga.java` now broadens generated fast path for numeric NTK viewer episodes, including manhwa, and tries metadata-backed work/episode id candidates before falling back to path ids.
+  - `ReaderSession.kt` now prioritizes `target.ntkImageEpisodeId` over the numeric path tail when expanding generated image URLs.
+  - `NtkRandomStressInstrumentedTest.java` and `tools/ntk_random_perf.ps1` now preserve/replay `imageEpisodeId`, `imageWorkId`, and `imageCount` in failure repro commands.
+- Important failed case:
+  - Artifact `build/ntk-random-perf/20260616_125906`, seed `1781582346215`, path `/manhwa/33600/1686274`.
+  - First drawable failed around 18s before metadata-candidate fix.
+  - Path-only repro was not equivalent because it lost original image metadata.
+- Current partial success:
+  - Artifact `build/ntk-random-perf/20260616_131040`, path `/manhwa/36525/1807424`, `imageEpisodeId=1807424`, `imageCount=80`.
+  - App metric `reader_open_to_first_drawable` was 2850ms with `missingPx=0`, `placeholderPx=0`, and no scroll drift.
+  - Summary was still red because live random was curated-only and slow frame signals were present.
+- Current root/live-random blocker:
+  - Artifact `build/ntk-root-probe/20260616_131201_bdbb1b`.
+  - `https://sbxh7.com` native root/API/challenge probes returned 403 across okhttp/quic/h2.
+  - Do not claim live-random coverage from native API while this hard block remains. Need resolver/WebView/browser-side discovery fallback or better current-domain discovery.
+- Current performance hypothesis:
+  - In the 13:10 random run, ACK/WebView preflight started after first drawable and ran for about 30s while scroll testing was active.
+  - Slow signals were callback scheduling stalls (`surface_jank_v3 callbackP95` hundreds of ms), while draw/total times stayed very small and visible coverage was complete.
+  - This points to ACK preflight/background WebView transport overlapping the initial scroll window, not image decode/render cost.
+- Change applied now:
+  - `ReaderV2Activity.kt`: strict-fresh ACK preflight quiet period after first drawable changed from `0L` to `4_500L`.
+  - This does not delay opening the viewer or first image display. It only prevents non-critical ACK proof transport from starting in the initial visible-scroll window.
+  - Existing scroll/busy quiet gating still extends this if the reader is active.
+- Bad/avoid:
+  - Do not use this as fake ACK success. ACK remains external/strict proof only.
+  - Do not hide image failures by waiting. If first drawable or coverage fails, fix the image pipeline.
+  - Do not replay path-only failures when the original random case had `imageEpisodeId`/`imageWorkId`; replay metadata too.
+- Next validation:
+  - Build/install.
+  - Rerun `/manhwa/36525/1807424` metadata repro and compare first drawable, visible gaps, drift, and slowSignals.
+  - Rerun `/manhwa/33600/1686274` with best-known metadata if possible.
+
+## 2026-06-17 13:35 generated initial URL handoff and p001 slow-stream diagnosis
+
+- Applied/generated-path improvement:
+  - `Manga.java` now publishes speculative generated CDN URLs immediately when structured numeric `workId`, `episodeId`, and `imageCount` are known.
+  - This is bounded to generated page URLs such as `p001..p004.jpg`; it is not a viewer-open delay and does not depend on cache warmth.
+- Validation:
+  - `/manhwa/36525/1807424`, `imageEpisodeId=1807424`, `imageCount=80`.
+  - Before speculative known-count handoff: `build/ntk-random-perf/20260616_132006`, first drawable failed at about `3836ms`; early URLs were late at about `2619ms`.
+  - After speculative known-count handoff: `build/ntk-random-perf/20260616_132220`, first drawable passed at about `2674ms`, early URLs arrived at about `38ms`, `slowSignals=0`, `missingPx=0`, `placeholderPx=0`, no scroll drift.
+- Root/live-random blocker update:
+  - `CustomHttpClient` must not treat any native/API `403` response as reachable live root.
+  - `build/ntk-root-probe/20260616_132530_899dd1` correctly reported `no-live-api-root` for `https://sbxh7.com` with CF/challenge 403.
+  - Native live-random coverage remains blocked while sbxh7 native root/API/challenge probes are 403; do not claim full live-random success from curated fallback.
+- Bad/avoid:
+  - Path-only repro for `/manhwa/33600/1686274` failed at `9498ms` because it lost `imageCount`/`imageWorkId` metadata; it is not equivalent to the original random case.
+  - Repro commands must preserve `imageEpisodeId`, `imageWorkId`, and `imageCount` whenever the random run recorded them.
+
+## 2026-06-17 13:42 p001 anchor slow-stream fix attempt
+
+- Failure being targeted:
+  - `build/ntk-random-perf/20260616_132553`, `/manhwa/35655/1778269`, `imageEpisodeId=1778269`, `imageCount=80`.
+  - Early URL handoff was fast (`earlyUrlsMs=200`, foreground request about `227ms`) but first drawable failed at about `3921ms`.
+  - p002 decoded quickly, but p001 anchor stream stalled; viewer waits for page 1 as the first visible drawable.
+- Bad experiment:
+  - Increasing `FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS` from `900ms` to `2400ms` made the same target worse: `build/ntk-random-perf/20260616_132750`, first drawable about `6092ms`.
+  - Do not fix p001 by waiting longer for the active foreground stream. It delays fallback when p001 is slow.
+- Code-level cause found:
+  - In `ReaderImageCache.getOrFetch()`, when foreground stream wait timed out, `priorityFullDownload=true` was set but `downloadAtomically(... foreground=false)` was still used.
+  - That meant the recovery full download got permit priority but bypassed foreground race/range-first behavior.
+- Current fix:
+  - Reverted the join timeout to `900ms`.
+  - Changed timeout-recovery generated full download so `priorityFullDownload` is passed as a foreground request to `downloadAtomically`.
+  - This should make p001 timeout fallback use the existing foreground/range/direct race path instead of a slow background-style request.
+
+## 2026-06-17 13:50 p001 duplicate stream and recovery queue follow-up
+
+- Validation after the first p001 recovery fix:
+  - Artifact: `build/ntk-random-perf/20260616_133141`.
+  - `/manhwa/35655/1778269` still failed first drawable at about `5824ms`.
+  - URL handoff remained fast: `earlyUrlsMs=118`, foreground request about `181ms`.
+  - p001 stream completed around `3513ms`, while anchor decode did not happen until about `5392ms`.
+- New cause found:
+  - `p001.jpg` foreground stream started twice (`page=0` and `page=-1`) and range reassembly also ran twice.
+  - `foregroundStreamKey()` used a hash key for page 1 when the extension was not yet hinted, so two equivalent generated page-1 URLs could fail to join the same active stream.
+  - The recovery full download was foreground after the previous fix, but it still queued behind duplicate p001 plus p002/p003 foreground fetches.
+- Current fix:
+  - Normalize every generated foreground stream key to `baseMode + target.path + target.page`, including page 1.
+  - Start p001 initial recovery hedge after `300ms` instead of waiting for the full `900ms` stream join timeout.
+- Bad/avoid:
+  - Do not let the same generated page consume multiple foreground stream permits because one path was "hinted" and another was "not hinted".
+  - Do not wait for p001 stream timeout before launching recovery; slow first-page streams need a bounded parallel hedge.
+
+## 2026-06-17 13:57 p001 recovery still not using foreground internals
+
+- Validation after duplicate stream key + 300ms recovery:
+  - Artifact: `build/ntk-random-perf/20260616_133410`.
+  - Same `/manhwa/35655/1778269` improved from `5824ms` to about `4484ms`, but still failed the `3500ms` first drawable budget.
+  - Duplicate p001 foreground stream was removed; only one `foreground_stream_async_start` appeared for `p001.jpg`.
+- Remaining issue:
+  - The p001 recovery hedge started at about `300ms`, but `downloadInitialGeneratedRecovery()` still called `downloadAtomically(... foreground=false)`.
+  - That made recovery try slow/background-style direct full first, hit `SocketException: Connection reset`, then start range reassembly much later.
+- Current fix:
+  - p001 `downloadInitialGeneratedRecovery()` now calls `downloadAtomically(... foreground=true)`, so the existing foreground range-first path is used immediately inside the recovery hedge.
+- Bad/avoid:
+  - Do not assume wrapping a call in `withNtkGeneratedFetchPermit(... foreground=true)` is enough; the downstream request function must also receive `foreground=true` or foreground range/race logic is bypassed.
+
+## 2026-06-17 14:03 anchor-exclusive priority widened
+
+- Validation after p001 recovery foreground fix:
+  - Artifact: `build/ntk-random-perf/20260616_133537`.
+  - Same `/manhwa/35655/1778269` improved slightly to about `4421ms`, but still failed.
+  - p001 recovery now used foreground range-first immediately, but p002/p003 foreground range requests were still started almost immediately.
+- New cause:
+  - `NtkEpisodeCoordinator` relaxed `ANCHOR_EXCLUSIVE` after only `70ms` for generated p002/p003.
+  - That allowed following pages to compete for foreground permits/bandwidth before p001 anchor bitmap was decoded.
+- Current fix:
+  - Increased `ANCHOR_EXCLUSIVE_FALLBACK_MS` from `70ms` to `1600ms`.
+  - This does not delay opening the viewer; it delays only non-anchor foreground warmup until the anchor has had a real chance to load/decode.
+- Bad/avoid:
+  - Do not let p002/p003 use foreground transport within tens of milliseconds while p001 is still the first drawable bottleneck.
+
+## 2026-06-17 14:10 anchor-exclusive follow-up before validation
+
+- Validation after `ANCHOR_EXCLUSIVE_FALLBACK_MS=1600`:
+  - Artifact: `build/ntk-random-perf/20260616_133717`.
+  - Same `/manhwa/35655/1778269`, `imageEpisodeId=1778269`, `imageCount=80`.
+  - First drawable improved from about `4421ms` to about `4013ms`, but still failed the `3500ms` budget.
+  - p001 stream/recovery were active early and decode itself was not the bottleneck; the slow part was still network/range completion.
+  - p002/p003 foreground requests were allowed when the anchor age reached about `1600ms`, while p001 anchor bitmap was not decoded yet.
+  - ACK preflight starts after first drawable in this run, so it is not the cause of this first-drawable failure.
+- Current change:
+  - Increased `ANCHOR_EXCLUSIVE_FALLBACK_MS` from `1600ms` to `3200ms` to keep non-anchor generated pages off foreground transport until p001 has a longer uninterrupted window.
+  - This is still not a delayed viewer-open path; it only protects anchor foreground network/decode before the first drawable.
+- Next validation:
+  - Build/install, then rerun the exact metadata repro for `/manhwa/35655/1778269`.
+  - If it still fails, inspect p001 range timing and consider reducing serial range latency with larger p001 first/range chunks instead of adding more wait.
+
+## 2026-06-17 14:42 p001 range latency fixed, generated gap failure found
+
+- Validation with `ANCHOR_EXCLUSIVE_FALLBACK_MS=3200` before chunk change:
+  - Artifact: `build/ntk-random-perf/20260616_134019`.
+  - First drawable worsened to about `4320ms`; p001 stream was still the bottleneck (`streamMs=3465`, range reassemble `chunks=8`).
+  - p001 was being fetched by multiple foreground/recovery paths, but every p001 path used `firstChunk=8192`, `chunk=32768`, causing 8 serial range round trips for a 235KB image.
+  - Bad/avoid: widening anchor fallback alone is not enough and can be worse; do not keep stretching that timer.
+- Current performance fix:
+  - `ReaderImageCache.kt` page-1 generated range chunk sizes changed from `8KB/32KB` to `128KB/256KB`.
+  - This targets the actual latency source, not viewer-open delay.
+- Validation after p001 chunk change:
+  - Artifact: `build/ntk-random-perf/20260616_134146`.
+  - First drawable passed: about `2794ms` vs previous `4320ms`.
+  - p001 stream improved to about `1973ms`; range reassemble used `chunks=1` instead of `8`.
+  - New failure shifted to scroll coverage: p002 was a persistent `520`/non-image generated URL, producing placeholder coverage during scroll.
+- Current correctness fix:
+  - `Manga.java` known-count speculative publish now exposes only p001 immediately; p002+ must be validated before publication.
+  - Later generated candidate creation now skips pages whose cached generated extension is known empty from validation.
+  - `ReaderImageCache.kt` now lets a smaller verified generated subset replace a larger speculative early URL list, so p001+p003 can remove p002/p004 instead of being ignored as "smaller".
+- Bad/avoid:
+  - Do not publish p001..p004 unverified just because imageCount is known. Some generated episodes have holes or server-side 520 pages.
+  - Do not let `rememberEarlyNtkImageUrls` preserve a larger speculative list when a smaller verified list proves some early pages are invalid.
+
+## 2026-06-17 14:55 sparse generated holes and visible-edge loading
+
+- Active target:
+  - `/manhwa/35655/1778269`, `imageEpisodeId=1778269`, `imageCount=80`, seed `1781583953328`, sbxh7 strict fresh.
+- Confirmed improvements:
+  - p001 first drawable improved from earlier `3921-6092ms` failures to:
+    - `20260616_135843`: `2860ms`
+    - `20260616_140108`: `2500ms`
+    - `20260616_140833`: `2611ms`
+  - p001 range chunk change (`128KB/256KB`) is effective; p001 no longer needs 8 serial range round trips.
+  - p002/p004 520 pages are now treated as generated not-found instead of persistent placeholders.
+  - `pages=78` confirms this is not the invalid `pages=1` pass shape.
+- New root cause:
+  - This episode has sparse generated pages: p001, p003, p005 are valid; p002 and p004 return 520/HTML.
+  - The old structure assumed early generated pages are contiguous. After p002/p004 are removed, the viewer must immediately request/decode the shifted visible edge.
+  - `NTK_EARLY_INITIAL_PUBLISH_PAGES` was 4, so p005 could be validated but not published early. Increased to 5.
+  - p001-only validation results were incorrectly allowed to replace p001+p003; now a smaller verified subset must contain more than one page before it can replace a larger list.
+  - `startForegroundStreamFetch()` rejected verified p005 because it had no UI permit. Verified early generated URLs are now allowed to stream without a permit; unverified p002/p004 remain blocked.
+  - Removal now re-requests the retained window after structure changes to avoid stale empty items after generated holes are removed.
+- Remaining failure:
+  - Latest `build/ntk-random-perf/20260616_140833` still fails step=1 with `loading=1`, `placeholderPx=0`, `missingPx=0`, `pages=78`.
+  - p005 is no longer the bottleneck (`foregroundRaceWin p005 generated-direct ms=928`); the remaining load is the next visible edge after p005, likely p006/p007 not yet covered by early validation/prefetch.
+- Bad/avoid:
+  - Do not collapse to p001-only just to remove placeholders; that hides the real episode.
+  - Do not let ACK retry paths run for generated 520 holes; they are not ACK failures and waste time.
+  - Do not treat p001-only validation as proof that p002+ are invalid.
+
+## 2026-06-17 15:02 permitless verified generated stream tightened
+
+- Regression being fixed:
+  - `/manhwa/36525/1807424` had previously passed around `2674ms`, but after allowing verified early generated page streams without UI permits it regressed to about `4962ms`.
+  - Logs showed p003/p005 foreground streams competing with p001 before the anchor drawable was ready.
+- Current code change:
+  - `ReaderImageCache.startForegroundStreamFetch()` no longer treats "verified early generated URL" as enough to bypass the UI permit for page>1.
+  - Permitless page>1 generated streaming is allowed only when:
+    - p001 anchor is already cached/usable, or
+    - a prior generated page is already confirmed not-found, proving this is a sparse-hole episode such as p001/p003/p005 with p002/p004 520.
+- Why this is general:
+  - Contiguous generated episodes keep p001 protected until first anchor is ready.
+  - Sparse generated episodes can still recover visible edges after holes are confirmed.
+- Bad/avoid:
+  - Do not globally unblock p003/p005 just because they are in the verified early URL list; that can steal foreground network from p001 and hurt first drawable.
+- Next validation:
+  - Build/install.
+  - Rerun contiguous `/manhwa/36525/1807424`.
+  - Rerun sparse `/manhwa/35655/1778269`.
+
+## 2026-06-17 15:28 sparse-hole follow-up and bad retry behavior
+
+- Validation:
+  - Contiguous `/manhwa/36525/1807424` recovered after permitless verified stream tightening:
+    - `build/ntk-random-perf/20260616_141613`
+    - passed, first drawable about `2939ms`, `slowSignals=0`.
+  - Sparse `/manhwa/35655/1778269` still failed in several shapes:
+    - `20260616_141657`: first drawable passed (`2718ms`) but step 0 had one loading placeholder; p005 started too late.
+    - `20260616_142027`: step 0 passed, step 1 still had one loading item at the next edge.
+    - `20260616_142239`: first drawable regressed to `3609ms` after broad retry/not-found changes.
+    - `20260616_142350`: first drawable passed (`2770ms`) but step 1 still had one loading item.
+    - `20260616_142637`: 800ms retry plus prior-not-found permit rule regressed first drawable to `4538ms`.
+- Current findings:
+  - A failed early stream start must not permanently consume the first-stream key for page>1; otherwise p005 cannot retry after p001/p002/p004 state changes.
+  - But page>1 permitless streams must not be allowed merely because a prior generated page is not-found. That can open p003/p005 before p001 is cached and steal foreground work.
+  - The safer general rule is: permitless page>1 generated streaming requires p001 anchor cached/usable.
+  - Generated 520/404/410 should abort retry chains immediately. Continuing into ACK/API/original retries delays structure removal.
+- Bad/avoid:
+  - Do not retry failed p001 stream starts; p001 returning `started=false` often means active/cached, and retrying it creates noisy cache probes.
+  - Do not use prior not-found alone as permitless-stream proof. It can regress first drawable.
+  - Do not swallow `Generated image not found` inside `retryOriginalNtkGeneratedImage`; that delays `ReaderSession` page removal.
+- Current code state:
+  - `Manga.java`: failed page>1 initial stream starts release their key and retry once after `800ms`; p001 failures no longer release/retry.
+  - `ReaderImageCache.kt`: permitless verified generated page>1 now requires p001 cached/usable, not just prior not-found.
+  - `ReaderImageCache.kt`: known generated not-found aborts fallback chains instead of continuing through ACK/API/original retry.
+  - `ReaderSession.kt`: generated NTK idle windows also extend by visible-edge extra pages after first bitmap.
+- Next validation:
+  - Build/install.
+  - Rerun sparse `/manhwa/35655/1778269`.
+  - If still edge-loading, inspect whether p006/p007 are requested after structure removal; fix request window rather than weakening assertions.
+
+## 2026-06-17 15:36 sparse/contiguous representative pass
+
+- Build/install:
+  - `.\gradlew.bat :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:installDebug`
+  - Passed.
+- Sparse generated-hole validation:
+  - Command: target `/manhwa/35655/1778269`, `imageEpisodeId=1778269`, `imageCount=80`, seed `1781583953328`, strict fresh, native-ack mode.
+  - Artifact: `build/ntk-random-perf/20260616_142754`.
+  - Passed: first drawable `3059ms`, scroll steps `3`, failures `0`.
+  - Remaining: `slowSignals=1`; ACK still not solved (`ack_only_fetch` about `24025ms`, `ackMs=24408`).
+- Contiguous generated validation:
+  - Command: target `/manhwa/36525/1807424`, `imageEpisodeId=1807424`, `imageCount=80`, seed `1781583953328`, strict fresh, native-ack mode.
+  - Artifact: `build/ntk-random-perf/20260616_142842`.
+  - Passed: first drawable `2866ms`, scroll steps `3`, failures `0`, `slowSignals=0`.
+  - Remaining: ACK still not solved (`ack_only_fetch` about `25523ms`, `ackMs=25931`).
+- Effective changes in this pass:
+  - Permitless generated page>1 streaming requires p001 cached/usable.
+  - Failed page>1 initial stream starts release their key and retry once after `800ms`; p001 is excluded from that retry path.
+  - Generated 520/404/410 not-found aborts retry chains earlier and lets `ReaderSession` remove invalid generated pages.
+  - Idle generated NTK window extends the visible edge like busy windows, so settled scroll coverage can request the next edge.
+- Current status:
+  - Image/scroll representative regressions are fixed for both sparse and contiguous generated cases.
+  - Do not claim final goal completion: live-random root/API is still hard-blocked on sbxh7 native probes, ACK is not producing real `/api/ad/ack` 200 in native path, and one sparse run still reported slowSignals.
+
+## 2026-06-16 ACK proof follow-up and p001 join tuning
+
+- Strict UX ACK probe before bridge observer fix:
+  - Artifact: `build/ntk-ack-ux-probe/20260616_143454_48bf41`.
+  - Target: `/webtoon/17332/1515337`, sbxh7 strict fresh.
+  - Result: failed strict server proof.
+  - Important signal: the normal WebView UX path eventually got `cf_clearance`, `ntk_blk_ok_sig`, `ad_guard_l`, `ad_ack`, and `ad_ack_c` after roughly `28-36s`.
+  - `/api/ad/ack` did occur in the page, but `observeNativeAck=false` meant the bridge did not record the real POST status.
+- Code change:
+  - `CaptchaActivity.java`: changed JS bridge `observeNativeAck` from `false` to `true`.
+  - This only records real `/api/ad/ack` POST 200 proof; it does not treat cookies or challenge success as ACK proof.
+- Strict UX ACK probe after observer fix:
+  - Artifact: `build/ntk-ack-ux-probe/20260616_143703_b243dc`.
+  - Result: failed strict server proof.
+  - This run got `ack=true`/clearance-like state, but no real `/api/ad/ack` POST appeared in logs, so it remains invalid as server proof.
+- Hidden ACK-only time-budget experiment:
+  - `NtkWebViewFallbackManager.java`: ACK-only caller/WebView deadline raised to about `58s`, JS ACK loop deadline to `56s`, and plain CF promotion/touch probes extended to `32-52s`.
+  - Rationale: strict UX can take about `28s+` to leave the CF/guard path; the previous hidden path failed too early for strict fresh.
+  - Bad/avoid: this alone did not solve ACK; do not record it as success.
+- Performance regression from the ACK work:
+  - Artifact: `build/ntk-random-perf/20260616_144012`.
+  - Target: `/manhwa/36525/1807424`, `imageEpisodeId=1807424`, `imageCount=80`, seed `1781583953328`.
+  - Failed first drawable: about `3597ms`.
+  - p001 range/reassemble was slow again (`streamMs` about `3060ms`), so ACK was not the immediate first-drawable cause.
+- Current speed fix:
+  - `ReaderImageCache.kt`: reduced `FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS` from `900ms` to `650ms`.
+  - This lets full/race fallback engage earlier when p001 foreground range is slow.
+- Validation after join tuning:
+  - Artifact: `build/ntk-random-perf/20260616_144136`.
+  - Same contiguous target passed: first drawable about `2913ms`, scroll steps `3`, failures `0`, `slowSignals=1`.
+  - ACK still failed: `ack_only_fetch` ended around `22.1s`; challenge API returned 403 HTML and no `server_ack_success`.
+- Current ACK hypothesis:
+  - Normal UX can obtain page/guard cookies, but hidden ACK-only still does not reliably obtain a real CF/guard-ready main-frame state.
+  - The ACK-only timeouts were raised, yet the random test still ended around `22s`; inspect `CustomHttpClient.waitForNtkStrictAckProofAfterWebViewPreflight` and caller budgets next.
+  - If ACK-only is still loading a synthetic shell instead of a real page during CF, switch to a hidden real-page first stage and only run direct ACK after CF/guard readiness. This must not delay viewer opening.
+- Bad/avoid:
+  - Do not count `ad_ack`/`ad_ack_c` cookies, `ack=true`, or `/api/ad/challenge` 200 as strict ACK success.
+  - Do not keep stretching anchor timers for image speed; p001 chunk/join tuning is the proven faster path.
+
+## 2026-06-16 hidden real-page ACK and p001 hedge experiments
+
+- Hidden real-page ACK-only experiment:
+  - Code temporarily changed ACK-only WebView from `loadDataWithBaseURL(ackOnlySyntheticShellHtml)` to hidden `loadUrl(real episode page)`.
+  - Artifact: `build/ntk-random-perf/20260616_144543`.
+  - Result: failed scroll jank. Callback P95 was about `558ms`; repeated `Choreographer Skipped` logs appeared.
+  - ACK still did not succeed: the hidden page stayed on Cloudflare/guard page, no `cf_clearance`, no `server_ack_success`.
+  - Bad/avoid: hidden real-page CF WebView inside the reader path is too heavy and still does not prove ACK. Do not reintroduce it as a viewer-background fix.
+- Quiet-gate fix:
+  - `ReaderV2Activity.kt`: `startDeferredNtkAckPreflight` and `maybeStartDeferredNtkAckForInitialBlock` now re-check `ntkAckPreflightQuietRemainingMs()` before starting ACK preflight.
+  - This prevents hardblock/initial-image paths from bypassing the first-drawable/scroll quiet policy.
+  - Validation with hidden real page still had slow signals because the real page itself is heavy; then the real-page experiment was reverted.
+- p001 direct hedge experiment:
+  - Code temporarily allowed p001 generated range-first path to start a full direct hedge after `420ms`.
+  - Artifact: `build/ntk-random-perf/20260616_145056`.
+  - Result: failed first drawable badly (`6587ms`).
+  - Logs showed `generated_initial_range_first_direct_hedge_error` for p001 and foreground race transport failures; p001 range still completed late.
+  - Bad/avoid: p001 full direct hedge competes with the range path and can worsen cold first drawable. It was reverted.
+- Remaining current finding:
+  - Representative contiguous target can pass around `2488-2913ms`, but network variance can still make p001 range take `4s+`.
+  - The robust next step is not more direct hedges; inspect duplicate p001 requests, recovery cancellation, and whether a single authoritative p001 range stream can be preserved instead of being superseded/restarted.
+
+## 2026-06-16 sparse generated full-expand fix
+
+- Goal context: continue NTK viewer stability/performance work; do not mark ACK as solved without real `/api/ad/ack` POST 200 proof.
+- Regression reproduced after p001 supersede fix:
+  - Sparse target `/manhwa/35655/1778269`, `imageEpisodeId=1778269`, `imageCount=80`, seed `1781583953328`, sbxh7 strict fresh.
+  - `build/ntk-random-perf/20260616_145812` and `20260616_150345` showed p001/p003/p005 valid, p002/p004 generated 520 holes, and initial full publish could reintroduce unverified generated refs.
+- Fixes added:
+  - `ReaderImageCache.kt`: exposed `isKnownNtkGeneratedNotFound(manga, image)` so the session can filter known generated holes before structure publish.
+  - `ReaderSession.kt`: `appendInitialNtkUrlsAfterEarlyInstall()` filters known generated not-found URLs before building `PageRef`s, so p002/p004 do not stay in the layout after 520/404/410 proof.
+  - `ReaderSession.kt`: busy delivery now allows retained NTK generated visible pages outside the old retained range, covering sparse-hole index shifts where p003/p005 are decoded but would otherwise be dropped while scrolling.
+  - `ReaderSession.kt`: `ntkGeneratedEarlyExpandCount()` no longer expands manhwa/webtoon generated pages to knownCount=80 until the verified early window has grown past `NTK_GENERATED_INITIAL_RECOVERY_PAGES`. This prevents p001..p080 from being published before p002/p004 missing status is known.
+- Bad/avoid:
+  - Do not expand generated manhwa/webtoon to reported full `imageCount` immediately after first bitmap when only p001..p004 are present; sparse episodes can have 520 holes in that range.
+  - Do not rely on delivery retention alone; if full publish reintroduces unverified pages early, it creates scroll placeholders and late structure churn.
+- Validation:
+  - Build/install: `./gradlew.bat :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:installDebug` passed.
+  - Sparse target artifact: `build/ntk-random-perf/20260616_150801`.
+    - Passed: first drawable `3180ms`, scroll steps `3`, slowSignals `0`, failures `0`.
+  - Contiguous target `/manhwa/36525/1807424` artifact: `build/ntk-random-perf/20260616_150841`.
+    - Passed: first drawable `2590ms`, scroll steps `3`, failures `0`.
+    - Remaining: slowSignals `1` due ACK-only fetch about `22s`; ACK still has no real server proof.
+- Next:
+  - ACK path remains unresolved. Continue investigating why normal UX can sometimes cause `/api/ad/ack` while hidden ACK-only synthetic path does not.
+  - Run broader random mixed after ACK-side next change or after one more structural guard, then commit/push only if the improvement remains clean.
+
+## 2026-06-17 active-scroll generated decode fanout mitigation
+
+- Latest active target remains NTK strict fresh random viewer stability/performance; ACK is still unsolved unless real /api/ad/ack POST 200 proof is recorded.
+- Recent representative contiguous run after p001 recovery skip improved first drawable from about 3617ms to about 1804ms, but failed scroll step 1 with callbackP95 about 485ms and missedFrames about 225.
+- That failing run had webViewAckPreflightDone=null and no ACK preflight stages, so this jank is not ACK-caused.
+- Logs showed active scroll overlapped generated page decode/foreground permits for pages around p005-p014. Root suspect: busy generated directional decode ahead was too wide for active scroll.
+- Current small structural change: reduce NTK generated/webtoon busy directional decode ahead from 5/4 to 2 and busy visible radius from 2 to 1. Byte/source prefetch remains available, but far-ahead urgent decode is delayed until closer/idle.
+- Bad/avoid: do not solve this by delaying viewer open or hiding jank with waits; do not re-enable ACK preflight during active scroll.
+
+### Validation after active-scroll decode fanout mitigation
+
+- Build/install passed after reducing generated/webtoon active-scroll decode ahead/radius.
+- Contiguous representative validation: build/ntk-random-perf/20260616_152629 passed, firstDrawable=2782ms, scroll=3, failures=0.
+- This confirms the reduced busy generated decode window did not break the representative contiguous case and removed the prior scroll jank failure shape.
+- Remaining slowSignals=3 are ACK-only path related: ack_only_fetch about 6507ms, ackMs about 6979ms. This is still not strict ACK success.
+
+- Sparse-hole representative validation after active-scroll decode fanout mitigation: build/ntk-random-perf/20260616_152720 failed firstDrawable=3687ms, streamMs=3189, decodeMs=2764.
+- This failure happened before scroll and therefore is separate from the active-scroll fanout patch; inspect p001 range/recovery logs next before changing decode window again.
+
+## 2026-06-17 p001 anchor join budget split
+
+- Sparse-hole failure build/ntk-random-perf/20260616_152720: p001 unowned foreground stream started from Manga.java at about 0.36s after open with page=-1/permit=null. ReaderSession joined it, waited 650ms, then started a priority range/full cache flight; first drawable missed by ~187ms (3687ms).
+- The second p001 range/cache flight won in about 2111ms after it started, while the original unowned stream finished later at 3189ms. Waiting 650ms before starting the winning flight is therefore wasted critical-path time for p001.
+- Current change: split p001 anchor foreground stream join timeout to 220ms while leaving p002-p004 initial transient join at 650ms. This is p001-specific and targets unowned stream variance; it does not delay viewer opening or weaken tests.
+- Bad/avoid: do not add p001 direct full hedge again; prior p001 full direct hedge regressed first drawable badly. Use the existing authoritative range/cache flight earlier instead.
+
+### Failed p001 join split experiment reverted
+
+- Experiment: split p001 anchor foreground stream join timeout from 650ms to 220ms.
+- Validation: build/ntk-random-perf/20260616_153012 failed worse, firstDrawable=4209ms, streamMs=3621, decodeMs=3641.
+- Decision: reverted immediately. Bad/avoid: do not shorten p001 join to force earlier duplicate range/cache flight; it can increase p001 contention and worsen cold sparse first drawable.
+- Keep the active-scroll decode fanout mitigation for now; the failure happened before scrolling and does not invalidate that scroll-specific change.
+
+## 2026-06-17 p001 initial range chunk expansion
+
+- Observation: even after 128KB/256KB chunk fix, p001 logs for sparse /manhwa/35655/1778269 and contiguous /manhwa/36525/1807424 usually show chunks=1, meaning the first image still needs one extra range round trip.
+- The p001 sizes observed are about 171KB and 235KB, so a 384KB first range should often finish with ange_reassemble_full_hit in one request instead of first+tail reassembly.
+- Current change: increase NTK_GENERATED_RANGE_INITIAL_FIRST_CHUNK_BYTES from 128KB to 384KB. This targets p001 network round-trip variance directly; adjacent p002-p004 chunk sizes remain unchanged.
+
+### Validation after p001 384KB first range
+
+- Sparse-hole representative /manhwa/35655/1778269: build/ntk-random-perf/20260616_153200 passed, firstDrawable=2778ms, scroll=3, slowSignals=0, failures=0.
+- Compared to immediate prior sparse failures: 3687ms and 4209ms first drawable. p001 first range expansion plus reverted join experiment restored headroom.
+- Need verify contiguous /manhwa/36525/1807424 next for regression.
+
+### Contiguous validation after p001 384KB first range
+
+- Contiguous representative /manhwa/36525/1807424: build/ntk-random-perf/20260616_153244 passed, firstDrawable=2126ms, scroll=3, failures=0.
+- This is better than prior 2782ms/2448-3067ms representative runs and did not reintroduce the active-scroll jank failure.
+- Remaining slowSignals=1 comes from ACK-only preflight (ck_only_fetch about 4786ms, ackMs about 5225ms); still no strict /api/ad/ack 200 proof.
+
+## 2026-06-17 normal UX ACK proof succeeds on sbxh7
+
+- ACK UX probe: build/ntk-ack-ux-probe/20260616_153342_81c493 stopped after marker 
+tk_server_ack_success_recorded.
+- Real proof line: 
+tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webview-ack-200.
+- Probe done: ack=true, clearance=true, serverProof=true, ms=40160.
+- This confirms normal UX WebView can obtain real /api/ad/ack 200 proof on sbxh7. Hidden ACK-only still fails/fast-fails and must not be treated as solved.
+- Bad/avoid: do not run two Android instrumentation tests concurrently on the same emulator. A random mixed run launched in parallel with ACK UX probe crashed with cases=0 and no useful viewer data; rerun random tests serially or use separate devices.
+
+## 2026-06-17 live-random webtoon/naver first-drawable failure
+
+- Serial random mixed after ACK UX proof: build/ntk-random-perf/20260616_153453 failed live-random case.
+- Failure case: path=/webtoon/837998/naver-837998-32, imageEpisodeId=1121174, imageWorkId=18047, imageCount=75, seed=1781591600001.
+- Failure: first drawable absent/too late, elapsedMs=13601. Repro command recorded by runner:
+   .\\tools\\ntk_random_perf.ps1 -DeviceSerial emulator-5556 -Runs 1 -ScrollSteps 3 -AppendSteps 4 -ScreenshotEvery 0 -Seed 1781591600001 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -TargetEpisodePath /webtoon/837998/naver-837998-32 -TargetImageEpisodeId 1121174 -TargetImageWorkId 18047 -TargetImageCount 75 -NtkSiteRoot https://sbxh7.com -NtkLockSiteRoot -StrictFresh -NoAckAssert -ForceStopBeforeRun 
+- Next: inspect whether this is wrong URL construction/advert-only image list/API root hard block/ACK wait, not apply manhwa generated-only fixes blindly.
+
+## 2026-06-17 15:58 live-random naver protected path investigation
+
+- Continued from the `/webtoon/837998/naver-837998-32` live-random failure.
+- Added a generic metadata fast path in `Manga.java` for nonnumeric slug episodes with numeric `ntkImageWorkId`, `ntkImageEpisodeId`, and positive `ntkImageCount`.
+- Corrected `addNtkGeneratedPathImageCandidates` to parse `/webtoon/{numericTitleId}/{slugEpisode}` instead of numeric episode-only paths.
+- Validation:
+  - `build/ntk-random-perf/20260616_154317` showed the metadata path executed:
+    - `ntk_slug_metadata_generated_probe path=/webtoon/837998/naver-837998-32,segment=webtoon,imageWorkId=18047,imageEpisodeId=1121174,imageCount=75,pageCount=75`
+  - But `blacktoon/episodes/{workId}/{imageEpisodeId}/p001.*` failed with 520/unreachable and the old slug fallback also failed.
+- Added and tested a generic `naver-{titleId}-{no}` -> `nv-{titleId}-{no}` protected webtoon CDN candidate:
+  - `https://i.toonflix.app/webtoon/{titleId}/nv-{titleId}-{no}/pNNN.ext`
+  - Unit test passed: `MangaTest.ntkNaverProtectedWebtoonPathNormalizesToNvCdnEpisode`.
+  - Build/install passed.
+- Repro after this candidate:
+  - `build/ntk-random-perf/20260616_155043`
+  - Still failed first drawable, elapsed `20118ms`, status captcha.
+  - Log: `ntk_protected_webtoon_extension_probe ... workId=837998,episodeId=nv-837998-32,extension=,page=1,ms=1260`.
+- Important diagnosis:
+  - This protected naver family does not expose predictable CDN page URLs from title/episode metadata alone.
+  - Prior protected `nv-*` successes returned `fvcdn3.com/webtoon_uploads/<hash>.jpg` from `/api/webtoon-images` after real ACK proof and `imagesToken`.
+  - In both original live-random (`20260616_153453`) and repro, no `imagesToken` or direct RSC payload was reached because sbxh7 page/RSC/API returned CF 403 before token extraction.
+- Bad/avoid:
+  - Do not treat `naver-* -> nv-*` CDN URL generation as a solved path. It is a safe candidate probe but not sufficient for this family.
+  - Do not use Naver/pstatic originals as NTK content; existing filters intentionally reject them.
+  - Do not add board/ad upload fallback unless viewer context proves it is actual content; user already reported ad-only image risk.
+- Next:
+  - The real blocker is sbxh7 hard block before RSC/token extraction. Fix ACK/CF access or find a token-bearing API/list endpoint; image decode/render work is not on the critical path for this failure.
+
+## 2026-06-17 16:14 protected naver cleanup and payload-hint handoff
+
+- Cleaned up the failed `naver-* -> nv-*` direct CDN experiment:
+  - Removed the predictable protected webtoon CDN prober/generator from `Manga.java`.
+  - Removed the unit test that encoded `https://i.toonflix.app/webtoon/{titleId}/nv-{titleId}-{no}/pNNN.ext` as trusted.
+  - Added a protected-source classifier so `/webtoon/.../naver-*` and `/webtoon/.../nv-*` do not enter the slug metadata generated fast path.
+- Rationale:
+  - `build/ntk-random-perf/20260616_155043` proved the generated `nv-*` CDN path is not reachable for `/webtoon/837998/naver-837998-32`.
+  - Keeping that probe added about `1.2s` of failed work before the real page/RSC/API path.
+- Added token/direct payload preservation plumbing:
+  - `Manga` now carries `ntkViewerPayloadHint`.
+  - `NtkEpisodeParser` stores a bounded per-episode title-payload window only if it contains `imagesToken`+`imageMetas` or real content upload URLs.
+  - Viewer JSON and `ReaderSession` episode snapshot copies preserve this hint.
+  - `Manga.fetch` tries preserved payload before episode page fetch; direct preserved URLs are limited to `webtoon_uploads`, `manhwa_uploads`, and `comic_uploads` to avoid board/ad-only images.
+  - Unit test added: token/content hint is preserved; board-only hint is not.
+- Validation:
+  - `.\gradlew.bat :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.MangaTest.ntkEpisodeParserPreservesTokenHintButNotBoardOnlyHint --tests ml.melun.mangaview.mangaview.MangaTest.ntkPrimaryImageTrustRejectsMetricAndAdApiUrls :app:compileDebugKotlin :app:compileDebugJavaWithJavac` passed.
+  - `.\gradlew.bat :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.MangaTest.ntkEpisodeParserPreservesTokenHintButNotBoardOnlyHint :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:installDebug` passed.
+- Live-random follow-up:
+  - Re-running seed `1781591600001` on sbxh7 no longer reproduced `/webtoon/837998/naver-837998-32`; title RSC hard-blocked with 403 and the harness fell back to curated `/webtoon/3774/176692`.
+  - Artifact: `build/ntk-random-perf/20260616_160431`.
+  - Failure: curated generated webtoon p001 full stream took about `7091ms`, first drawable `8505ms`.
+- Failed experiment immediately reverted:
+  - Tried skipping first-image full foreground stream for generated synthetic URLs so ReaderSession range-first would own p001.
+  - Artifact: `build/ntk-random-perf/20260616_160634`.
+  - Result was worse: first drawable absent at `9506ms`; p001 range/retry never completed before test failure.
+- Bad/avoid:
+  - Do not reintroduce the `naver-* -> nv-*` predictable CDN probe.
+  - Do not globally skip generated p001 full stream; for `/webtoon/3774/176692` it is slow but still the only path that completed p001 in the observed run.
+  - Do not use `board_uploads` from preserved title payload as immediate viewer content; this risks ad-only images.
+- Next:
+  - Run root probe for sbxh7/sbxh6/toonflix candidates because current sbxh7 is hard-blocking title RSC and forcing curated fallback.
+  - For `/webtoon/3774/176692`, investigate why p001 range-first returns null/retries while full stream eventually succeeds; fix that specifically in the range transport, not by disabling full stream.
+
+## 2026-06-17 16:24 p001 range and pre-anchor gate experiments
+
+- Continued from `/webtoon/3774/176692` curated fallback first-drawable failure.
+- Subagent log review confirmed ACK was not the cause in this target: ACK stayed gated until first drawable; no `/api/ad/ack` attempt/proof happened before teardown.
+- Failed/avoid:
+  - Increasing generated pre-anchor fallback timer from 3200ms to 5600ms did not solve first drawable. Artifact `build/ntk-random-perf/20260616_161209` still failed at `8612ms`, with p001 stream about `7879ms`. Reverted timer change.
+  - Skipping NTK initial draw gate made Activity display earlier but worsened this target under network variance. Artifact `build/ntk-random-perf/20260616_161734` failed at `6163ms`; reverted gate skip. Do not treat draw-gate removal as a proven fix.
+- Effective partial improvement:
+  - Added real anchor-asset gate for p002/p003 pre-anchor fallback: non-anchor generated initial pages can be retried by timer, but they are not allowed to consume foreground decode/stream before p001 anchor asset is actually cached.
+  - Raised p001 generated first range from 384KB to 768KB. For the 733951-byte p001 in `/webtoon/3774/176692`, this targets one fewer range round trip when the server returns enough bytes.
+  - Artifact `build/ntk-random-perf/20260616_161452` improved from `8505ms/8612ms` to `4977ms`, but still failed 3500ms. Logs showed p001 bytes ready around `3149-3907ms`, decode ready `3982ms`, then about 1s delivery/window delay.
+- Current interpretation:
+  - This case is dominated by p001 transport variance plus Android/display delivery delay. The anchor gate prevents p002/p003 from competing before p001 bytes, but p001 itself still has duplicate range ownership and variable 3.1-4.2s byte readiness.
+  - The duplicate p001 priority recovery can sometimes win earlier than the original foreground stream, so blindly removing it may regress. Need consolidate p001 range ownership carefully, not just delete the second path.
+- Next:
+  - Rebuild with gate restored and retest `/webtoon/3774/176692` to isolate the retained changes: p001 768KB first range + anchor asset gate.
+  - If still >3500ms, inspect p001 range owner consolidation or direct API/token route; do not use draw-delay/gate hacks.
+
+## 2026-06-17 16:28 extension probe and draw-gate follow-up
+
+- Tested NTK initial draw gate timeout reduction from `4200ms` to `1600ms` on `/webtoon/3774/176692`.
+  - Artifact `build/ntk-random-perf/20260616_162020` still failed at `6009ms`, with p001 decode ready about `4939ms`.
+  - This is not enough to solve first drawable; do not claim gate timeout as the fix by itself.
+- Added jpg-primary generated extension probing:
+  - `NTK_GENERATED_IMAGE_EXTENSIONS` now tries `jpg` first.
+  - `reachableEarlyNtkGeneratedImageExtensionForPageUnshared` now probes `jpg` first and returns immediately if reachable, avoiding parallel jpeg/webp/png probes on jpg episodes.
+  - Rationale: failing logs showed p001.jpg was valid but jpeg/webp/png probes continued and competed with the same CDN during first-image critical path.
+- Validation after jpg-primary probe:
+  - Build/install passed.
+  - Artifact `build/ntk-random-perf/20260616_162201` improved vs prior `6009ms` to `5019ms`, but still failed the `3500ms` first-drawable budget.
+  - Pipeline: earlyUrls about `373ms`, p001 stream about `3905ms`, decode about `4016ms`, first drawable `5019ms`.
+- Current retained candidate changes:
+  - p001 generated first range `384KB -> 768KB`.
+  - p002/p003 pre-anchor foreground fallback gated on actual p001 anchor asset availability.
+  - jpg-primary extension probe to avoid non-winning extension competition.
+  - NTK draw gate timeout `4200ms -> 1600ms` is still experimental and not proven sufficient.
+- Remaining bottleneck:
+  - p001 bytes still often arrive around `3.9-4.2s`, and delivery/window adds about `1s` in some runs.
+  - Need either reduce p001 transport below ~2.5s or cut delivery delay; avoid hiding with viewer delay or status screens.
+
+## 2026-06-17 16:30 p001 pre-anchor leakage and speculative-stream experiments
+
+- Retested `/webtoon/3774/176692` after deferring page-count probes.
+  - Artifact `build/ntk-random-perf/20260616_162548`: failed firstDrawable `5112ms`; p020/p040/p060/p080 pre-first probes were gone, so page-count deferral worked, but p001 bytes/decode still landed around `4.4s`.
+  - Logs showed p002/p003 pre-anchor retry spam and Manga-side `ntk_first_api_image_stream_start` attempts before p001 anchor asset. This is noisy but not the primary first-drawable bottleneck.
+- Failed/avoid:
+  - Limiting generated early stream to p001 and making pre-anchor retry wait for coordinator fallback worsened the target. Artifact `build/ntk-random-perf/20260616_162808`: firstDrawable `5718ms`. Reverted this experiment.
+  - Making p001 anchor request immediately bypass an active speculative stream also worsened under this target. Artifact `build/ntk-random-perf/20260616_163001`: firstDrawable `5984ms`, decode `4818ms`. This indicates the speculative stream/range race is not the simple fix; do not keep this patch unless a later broader test proves otherwise.
+- Current narrowed bottleneck:
+  - ACK is still not involved in this target (`webViewAckPreflightDone=null`, no ACK stages before first drawable).
+  - The dominant problem is p001 generated image transport variance from `i.toonflix.app`: p001 range/reassemble or stream often reaches bytes after ~3.6-4.8s, then UI delivery adds several hundred ms.
+  - Page-count probe deferral is still useful because it removed non-critical p020/p040/p060/p080 checks from the first-image window, but it is insufficient alone.
+- Next:
+  - Revert the p001 speculative-stream bypass experiment.
+  - Investigate the actual range transport for p001: why first 768KB request still logs `chunks=3` and why `requestGeneratedFirstRangeChunk` sometimes returns null/slow despite 733951-byte images. Prefer a single fast OkHttp range/full path over QUIC/fallback races that timeout.
+
+## 2026-06-17 16:33 direct range experiment failed
+
+- Experiment: changed `CustomHttpClient.fetchNtkGeneratedImageRange` to bypass the existing `get()` path and call `ntkPageFastClient` directly for generated image range requests.
+- Validation: `build/ntk-random-perf/20260616_163208` on `/webtoon/3774/176692` failed severely: first drawable never appeared before timeout (`elapsedMs=23965`). ACK preflight later appeared only because first drawable was absent long enough for timeout paths to run; this is not an ACK-caused first-image failure.
+- Decision: reverted immediately.
+- Bad/avoid: do not replace `fetchNtkGeneratedImageRange` with naive direct OkHttp. The existing `get()` path likely carries required NTK image transport/session behavior despite overhead.
+
+## 2026-06-17 16:38 webtoon validation and pre-anchor retry experiments
+
+- Experiment: for generated `webtoon` paths, reduced synchronous pre-first validation count to p001 only while leaving manhwa validation unchanged.
+  - Artifact `build/ntk-random-perf/20260616_163610`: p002-p005 header validation before first drawable was reduced; `ntk_generated_page_count_probe_deferred ... validated=1` appeared.
+  - Result still failed: firstDrawable `5170ms`, p001 download `3874ms`, decode `4252ms`. Useful for reducing noise but not sufficient as a speed fix.
+- Experiment: kept early streams unchanged but delayed p002/p003 pre-anchor retry until coordinator fallback/anchor asset instead of 60ms loop.
+  - Artifact `build/ntk-random-perf/20260616_163739`: failed firstDrawable `5687ms`; p001 stream was `3542ms` but decode/draw got worse.
+  - Decision: revert this retry-delay experiment. Bad/avoid: do not delay pre-anchor retry as a standalone fix; it does not improve first drawable and can worsen delivery timing.
+- Current main bottleneck remains p001 generated transport/decode delivery. ACK is not active before first drawable in these runs.
+
+## 2026-06-17 16:41 p001 winner-adoption experiment failed
+
+- Experiment: while the p001 priority range flight is running after foreground stream timeout, poll for an anchor asset/disk hit produced by the speculative p001 stream and return it immediately if available.
+- Validation: `build/ntk-random-perf/20260616_164036` failed firstDrawable `5541ms`, decode `4909ms`.
+- No useful speed win was observed. This suggests p001 byte readiness and post-download decode scheduling are still dominated by transport/main-thread contention, not simply by waiting on the wrong duplicate flight.
+- Decision: revert this experiment. Bad/avoid: do not keep `anchor_asset_hit_during_priority_range` winner-adoption path as-is; it did not improve the target.
+
+## 2026-06-17 16:59 p001 shared range and delivery bottleneck
+
+- Added p001 generated initial page-level shared range flight in `ReaderImageCache`.
+  - Key: `baseMode|path|page`, not concrete URL, so async stream and visible p001 request can share one generated range reassemble.
+  - Shared result is an immutable byte snapshot; each caller receives a fresh `Response`.
+- Build/install passed after the change.
+- Validation `build/ntk-random-perf/20260616_165359` on `/webtoon/3774/176692`:
+  - Still failed the 3500ms budget, but improved firstDrawable to `4014ms`.
+  - p001 range bytes were ready around `1910ms`, foreground stream done `1972ms`, decode ready `2057ms`.
+  - Remaining blocker shifted to `reader_anchor_delivery_queue_delay ms=1409` and `Choreographer skipped 97 frames`.
+- Root probe `build/ntk-root-probe/20260616_165101_93516b`:
+  - No live API root was usable.
+  - `sbxh7` and `toonflix.app` hit CF 403, `sbxh6` reset, `sbxh5` redirected/timed out.
+  - Live-random is currently hard-blocked and may fall back to curated targets; do not treat this as fixed ACK/root access.
+- Failed/avoid:
+  - Pre-anchor retry minimum `240ms` before an anchor asset reduced retry spam but worsened the target.
+  - Validation `build/ntk-random-perf/20260616_165652`: firstDrawable `5360ms`, delivery queue `2564ms`.
+  - Reverted. Do not repeat this as a standalone delivery fix.
+- Next:
+  - Inspect the main-thread/initial anchor delivery gap between `decodeReady` and `deliverAnchor`.
+  - On this target p001 transport is no longer the only primary blocker after shared range; delivery/main-thread work now dominates the remaining miss.
+
+## 2026-06-17 17:12 p001 anchor-first path passed target repro
+
+- Continued `/webtoon/3774/176692` strict fresh target repro with `-NoAckAssert`.
+- Reverted the bad standalone `240ms` pre-anchor retry coalescing experiment and kept the useful p001 shared range flight.
+- Added a broader generated-anchor gate in `ReaderSession`:
+  - Before the p001 anchor asset exists, generated non-anchor pages p002/p003/p004 no longer schedule repeated 60ms pre-anchor retry loops.
+  - This removed retry spam from the first-image main queue and avoids competing foreground page work until p001 is actually cached/decoded.
+- Restored NTK initial draw gate timeout to `4200ms`:
+  - Purpose is not to delay a ready bitmap; `releaseInitialDrawGate("tiles")` still opens immediately when p001 is applied.
+  - It prevented the earlier `1600ms` empty-SurfaceView timeout traversal from competing with p001 delivery.
+- Added p001 shared range tail parallelization in `ReaderImageCache`.
+  - On this target it had little effect because the first p001 range request usually already returns the full `733951` bytes; the old `chunks=3` log is a byte/chunk-size calculation, not actual tail request count.
+  - Keep cautiously, but do not over-credit it for the observed win.
+- Main structural win:
+  - `finishInitialFetchAfterEarlyInstall` now cancels the in-flight full page/RSC fetch during the p001 anchor window when generated URLs and `ntkImageCount` are already sufficient.
+  - The full fetch is restarted only after first bitmap.
+  - This stops page/RSC/header/extension probes from competing with p001 range in the first-image critical path.
+- Validation:
+  - Build/install passed.
+  - `build/ntk-random-perf/20260616_171146` passed on the target repro:
+    - firstDrawable `2844ms` under the `3500ms` budget.
+    - p001 range hit `2196ms`, foreground stream `2269ms`, decodeReady `2318ms`.
+    - no first-drawable failure and no scroll-position drift in the 3 touch scroll steps.
+- Remaining issues:
+  - This run used `-NoAckAssert`. ACK did not get real server proof; `webViewAckPreflightDone success=false ms=9803` and `/api/ad/challenge` stayed CF 403. Do not mark ACK solved.
+  - Slow/jank signals still appeared after first drawable, largely during post-first image/ACK/WebView and subsequent generated page work:
+    - `reader_slow_frame ... totalMs=25.31`
+    - `surface_jank_v3 ... missedFrames=202`
+  - Need follow-up to keep post-first ACK/WebView and p002+ generated retries from causing scroll jank.
+
+## 2026-06-17 17:22 target repro repeat failed and bad metadata-only seed reverted
+
+- Repeated `/webtoon/3774/176692`, `imageEpisodeId=176692`, `imageCount=80`, seed `1781591600001`, strict fresh, `-NoAckAssert`.
+- Result: `build/ntk-random-perf/20260616_171542` failed first drawable at `4168ms`.
+  - The previous p001 anchor-first structure still helped, but this repeat showed network variance:
+    - early URLs `379ms`
+    - p001 foreground stream `3459ms`
+    - decode ready `3511ms`
+    - first drawable `4168ms`
+  - `fetch_initial_after_early_cancel_for_anchor` did log, but the already-started direct/RSC fetch still overlapped p001 range. The cancellation avoids later publish/append contention, but it does not fully prevent all pre-existing fetch transport work.
+- Failed experiment:
+  - Tried installing generated early URLs from metadata before starting `fetchViewerInitial`, with URL shape `https://i.toonflix.app/{segment}/{workId}/{episodeId}/p001.jpg`.
+  - Artifact: `build/ntk-random-perf/20260616_171844`.
+  - Result was severe failure: first drawable absent at `9501ms`.
+  - Cause: for `/webtoon/3774/176692`, the metadata-only URL `/webtoon/3774/176692/p001.jpg` returned 520 and was removed as generated not-found. The later full fetch/extension probe found a reachable p001 shape, so the naive path construction was wrong for this class of generated episodes.
+  - Reverted immediately.
+- Bad/avoid:
+  - Do not construct generated CDN URLs from `segment/workId/episodeId` alone unless the actual seed prefix has been learned from the site payload or validated. Some webtoon generated paths use different prefixes such as `wt/episodes/...`; metadata-only construction can mark the real anchor as not-found and remove it.
+  - Do not treat a 520 from an unvalidated speculative generated URL as proof that the episode anchor is invalid.
+- ACK analysis sidecar result:
+  - Visible UX/CDP ACK proof succeeds because a real focused `CaptchaActivity` WebView loads the root bootstrap and real episode URL, then the site runtime posts `/api/ad/challenge` and `/api/ad/ack`.
+  - Hidden/native ACK still differs structurally: `__ack_only__` synthetic shell fabricates guard readiness, `__ntkAckOnlyDirectAdApi=1` bypasses `/api/ad/*` bridge paths, and pure native ACK sends empty `tp` even though the site WebView computes it in `ad_guard.js`.
+  - Direction: stop extending synthetic/native ACK proof as the primary path. Add a non-blocking real-page ACK proof session after first drawable/quiet gating, and record success only from real `/api/ad/ack` HTTP 200. Do not count challenge 200, `ad_ack`, `acked=true`, or synthetic sentinels.
+- Next:
+  - Rebuild after revert and continue from the retained p001 anchor-first changes.
+  - For first drawable variance, reduce p001/full-fetch overlap without inventing CDN URLs: either make existing `fetchViewerInitial` cancellation effective earlier in `Manga.fetch`, or make p001 range/stream robust against simultaneous RSC/header probes.
+  - For ACK, implement the real-page proof path after first drawable so normal UX semantics are used without blocking image display.
+
+## 2026-06-17 17:30 ACK-only real-page load experiments failed
+
+- Goal:
+  - Check whether the current hidden ACK-only WebView can be made closer to the successful visible UX proof by loading the real episode URL instead of the synthetic ACK shell.
+- Experiment 1:
+  - Temporarily changed `NtkWebViewFallbackManager` so ACK-only frames called `view.loadUrl(shellUrl, headers)` instead of `loadDataWithBaseURL(... ackOnlySyntheticShellHtml(...))`.
+  - Validation: `build/ntk-random-perf/20260616_172301`, `/webtoon/3774/176692`, `FirstDrawableMaxMs=10000`, `HoldAfterFirstDrawableMs=65000`.
+  - Result:
+    - first drawable `3547ms` under the widened ACK-only budget.
+    - ACK preflight ran for `57568ms` and failed: no strict `/api/ad/ack` 200 proof.
+    - Real page loaded, but hidden WebView state was still `hasFocus=false`, `focusable=false`, `alpha=0.01`.
+- Experiment 2:
+  - Enabled existing debug prop `debug.ntk.ack_visible_webview=true` so ACK-only real-page WebView became visible/focusable.
+  - Validation: `build/ntk-random-perf/20260616_172522`.
+  - Result:
+    - first drawable `3080ms`.
+    - ACK still failed, though faster (`webViewAckPreflightDone success=false ms=9937`).
+    - Logs showed repeated bridge-driven `POST /api/ad/challenge` returning CF `403` and `ackOnlyHardBlock`.
+- Interpretation:
+  - Focus/visibility alone is not the missing piece.
+  - The existing fallback manager ACK-only path still injects ACK proof wrappers and routes `/api/ad/challenge` through `NtkQuicBridge`/native bridge. That differs from the previously successful CDP proof, which observed the real page runtime's own `/api/ad/challenge` and `/api/ad/ack` requests.
+- Reverted:
+  - The ACK-only real-page load code change was reverted.
+  - Debug prop was reset to false after the probe command.
+- Bad/avoid:
+  - Do not simply change ACK-only synthetic shell to `loadUrl(real episode)` inside `NtkWebViewFallbackManager`; it still uses the wrong bridge path and produces CF 403.
+  - Do not rely on visible/focusable ACK-only WebView as the fix; it still failed when bridge-driven challenge was used.
+  - Do not count the shortened failure time as improvement; strict proof remained false.
+- Next ACK direction:
+  - Implement a separate post-first-drawable proof session modeled on `CaptchaActivity`/CDP success semantics: load root bootstrap/real episode, avoid synthetic ACK-only bridge mutation, and record success only when the actual WebView network path receives `/api/ad/ack` HTTP 200.
+  - Keep this session after first drawable/quiet gating so it does not block image display.
+
+## 2026-06-17 17:55 p001 range tail and ACK pre-first gating follow-up
+
+- Continued strict fresh target repro:
+  - `/webtoon/3774/176692`, `imageEpisodeId=176692`, `imageCount=80`, seed `1781591600001`, `-NoAckAssert`.
+- Latest retained useful context before this block:
+  - p001 shared generated range can pass around `2.0-3.2s` in good runs, but has severe tail variance where the first `768KB` range chunk returns null only after about `5s`, and reassembly/first drawable can drift to `8-11s`.
+  - ACK bridge is still not valid proof; `/api/ad/challenge` remains CF `403` in hidden/synthetic path.
+- Failed/avoid:
+  - Added a p001 shared-range soft deadline plus direct foreground hedge after `2100ms`.
+  - Artifact: `build/ntk-random-perf/20260616_174857`.
+  - Result was worse: first drawable `11759ms`; the p001 direct hedge failed twice with `Foreground image race failed`, and the range path completed later at `10768ms`.
+  - Decision: reverted. Do not reintroduce p001 direct hedge on top of shared range unless the direct transport itself is fixed first.
+- Failed/avoid:
+  - Tried preserving `X-MangaViewer-No-Quic` through `CustomHttpClient.fetchNtkGeneratedImageRange`.
+  - Artifact: `build/ntk-random-perf/20260616_175210`.
+  - Result was worse: first drawable absent at `13750ms`; every p001 range attempt (`786432`, `2048`, `512`, `32`) returned null quickly. This proves the generated CDN range path currently depends on the existing image/QUIC-intercepted path despite the misleading no-quic header set by `ReaderImageCache`.
+  - Decision: reverted. Bad/avoid: do not preserve No-Quic for generated range on `i.toonflix.app` without a replacement transport that is proven to return image bytes.
+- New confirmed bug:
+  - ACK/WebView preflight could start before first drawable when `pagesReady=true`, even though `firstDrawableMetricLogged=false`.
+  - In `build/ntk-random-perf/20260616_175210`, ACK preflight began around `8.8s` while no first drawable existed, producing CF bridge work and jank during an already-failing p001 load.
+  - Fix retained: `ReaderV2Activity.startDeferredNtkAckPreflight` and `maybeStartDeferredNtkAckForInitialBlock` now re-wait whenever `!firstDrawableMetricLogged`, regardless of `pagesReady`, unless explicitly allowed.
+- Next:
+  - Rebuild and rerun target repro to confirm ACK no longer starts before first drawable.
+  - Continue investigating p001 range transport variance. The next likely fix is not direct hedge or No-Quic; inspect why generated foreground/range calls repeatedly hit `ntk_quic_image_result transport=fallback code=0 bytes=0 ms~1800` and whether the range path can share or reuse the successful QUIC image flight rather than launching duplicate failing foreground races.
+
+## 2026-06-16 18:10 p001 2KB-first retained, post-first direct hedge reduced, 1MB tail failed
+
+- Re-read this progress file after context compaction and continued from the strict fresh target repro:
+  - `/webtoon/3774/176692`, `imageEpisodeId=176692`, `imageCount=80`, seed `1781591600001`, `-NoAckAssert`.
+- Retained/confirmed:
+  - `requestGeneratedFirstRangeChunk(... page=1)` still tries p001 first chunk attempts as `2048, preferredBytes, 512, 32`.
+  - Logs that say `firstChunk=786432` are the preferred/reassemble setting, not proof that the first actual p001 attempt used 768KB.
+- Validation before new edits:
+  - `build/ntk-random-perf/20260616_175607` passed target repro:
+    - firstDrawable `2136ms`, p001 stream `1562ms`, decode `1605ms`.
+    - ACK started only after first drawable, but still failed strict proof: `/api/ad/challenge` bridge CF `403`, `webViewAckPreflightDone success=false ms=12405`.
+    - Visible coverage during scroll was good: `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, `pages=80`.
+  - `build/ntk-random-perf/20260616_175719` failed on scroll jank, not first drawable:
+    - firstDrawable `3173ms` under budget.
+    - Scroll frame stats failed with callbackP95 about `542ms` and missedFrames `215`.
+    - Timeline showed immediate post-first ACK WebView, direct page/RSC fetch, and p002/p003/p004 foreground direct hedges competing during scroll.
+- New retained experiment:
+  - Disabled generated direct hedge for webtoon p002-p004 (`page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES`) while preserving p001 shared range.
+  - Rationale: p002-p004 direct hedge repeatedly failed with foreground race timeouts and caused post-first frame skips. Range/reassemble remains available for these pages.
+  - Build/install passed.
+  - First validation `build/ntk-random-perf/20260616_180112` still failed firstDrawable `4627ms`, but this was p001 transport variance:
+    - p001 range reassemble `3458ms`, stream `3513ms`, decode `3577ms`, drawable `4627ms`.
+    - p002-p004 direct hedges were skipped as intended; this patch did not cause the p001 first failure.
+  - Keep cautiously pending a run where first drawable passes and scroll jank can be measured.
+- Failed/avoid:
+  - Increased p001 tail chunk size from `256KB` to `1MB` to make the post-2KB tail a single large range request.
+  - Artifact `build/ntk-random-perf/20260616_180454` failed badly: firstDrawable `7184ms`.
+  - p001 reassemble took `4225ms`, stream `4300ms`, decode `4395ms`, then `reader_anchor_delivery_queue_delay ms=1226` after the draw gate timed out before the bitmap.
+  - Decision: reverted p001 tail chunk back to `256KB`. Do not use single huge p001 tail as a speed fix.
+- Current active bottlenecks:
+  - p001 CDN/generated range transport variance remains the first-drawable blocker. Good runs are ~1.5-2.2s p001 bytes; bad runs are 3.5-4.3s+ before decode.
+  - Post-first jank remains likely from ACK synthetic WebView + direct/RSC fetch + p002-p004 generated range/decode work. The p002-p004 direct hedge skip should reduce one part, but needs validation on a first-drawable pass.
+  - Hidden/native ACK is still not solved; strict ACK success still requires real `/api/ad/ack` 200 proof.
+- Parallel analysis:
+  - Spawned explorer `019ecfae-daa3-7c63-a4f9-e3b0481e2bb9` to inspect p001 first-drawable variance and recommend high-confidence fixes.
+  - Spawned explorer `019ecfaf-200d-75f0-b0c6-b29145c902ed` to inspect normal UX/CDP ACK success vs hidden/native ACK failure and recommend a real post-first proof path.
+
+## 2026-06-16 18:48 ACK/RSC quiet hold and p001 preferred-first rollback
+
+- Re-read this progress file after context compaction and continued from the target repro:
+  - `/webtoon/3774/176692`, `imageEpisodeId=176692`, `imageCount=80`, seed `1781591600001`, strict fresh, native-ack, usually `-NoAckAssert` while isolating image/scroll.
+- ACK/RSC contention fix retained:
+  - Added first-drawable elapsed timestamp tracking in `ReaderV2Activity`.
+  - Added a strict post-first-drawable ACK floor for NTK webtoon/manhwa paths.
+  - Added a final start gate inside `startCurrentNtkAckPreflight`; ACK preflight now re-defers if first drawable has not been logged or the post-first floor has not elapsed.
+  - Changed `ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable` from removing the hold to extending it for `4500ms`.
+  - Added `ReaderImageCache.extendNtkAckRecoveryQuiet(path, quietMs, reason)` and wired it to touch events and busy reader-window updates so ACK/RSC preflight stays out of active initial scrolling.
+  - Changed `releaseNtkAckRecoveryAfterAckProofFailure` to retain an active unexpired hold instead of releasing it just because strict ACK proof is still required.
+- Why this matters:
+  - Before this, `pagesReady=true` and ACK proof failure paths could start RSC/WebView ACK before first drawable or immediately during first scroll.
+  - This produced visible jank and sometimes contributed to missing first-drawable budgets, even when p001 image bytes were otherwise close.
+- p001 transport experiments:
+  - Removed the p001 direct full hedge call from the shared generated range path. Prior validation showed the direct hedge did not win and could worsen failures.
+  - Tried p001 preferred `768KB` first attempt ordering. It was unstable: artifact `build/ntk-random-perf/20260616_183921` failed first drawable at `9511ms` because the `786432` first chunk returned null after about `5s`, then fallback recovered too late.
+  - Reverted p001 first-attempt ordering back to `2048, preferredBytes, 512, 32`.
+- Bad/avoid:
+  - Do not switch p001 generated first range to preferred `768KB` first. It can be good in one run but has severe null/timeout variance.
+  - Do not release the ACK recovery hold on strict ACK proof failure while first drawable/initial scroll is still in progress; that reintroduces ACK/RSC contention.
+- Validations:
+  - `build/ntk-random-perf/20260616_182619`: firstDrawable `3244ms`, but ACK still started about `16ms` after first drawable through a non-deferred path.
+  - `build/ntk-random-perf/20260616_182837`: firstDrawable `3225ms`, but RSC/WebView ACK still started immediately after first drawable because the first-drawable release removed the hold.
+  - `build/ntk-random-perf/20260616_183137`: ACK no longer started early, but firstDrawable failed at `4033ms` due p001 transport/decode timing.
+  - `build/ntk-random-perf/20260616_183702`: firstDrawable `3120ms`, but scroll step 2 failed from post-first jank; ACK/RSC started after the fixed hold expired during the scroll window.
+  - `build/ntk-random-perf/20260616_184049`: first drawable absent at `17438ms`; ACK preflight still started before first because `releaseNtkAckRecoveryAfterAckProofFailure` removed the hold. Fixed afterward.
+  - `build/ntk-random-perf/20260616_184230`: passed the target 1-run repro:
+    - firstDrawable `3220ms`.
+    - p001 stream `2601ms`, decode `2625ms`.
+    - 3 touch scroll steps passed.
+    - ACK/RSC preflight started only after touch/window holds expired, not before first drawable or during the initial scroll.
+    - `webViewAckPreflightDone success=false ms=2498`; strict ACK proof is still unresolved.
+- Remaining risks:
+  - ACK is still false. Do not claim normal strict ACK solved until real `/api/ad/ack` HTTP 200 is captured by the server proof path.
+  - p001 CDN/generated transport variance still exists.
+  - `surface_jank_v3` / callback stall signals remain even in the passing run; the next step is broader repeated validation and then reducing post-first generated/decode fanout if slow signals persist.
+
+## 2026-06-16 19:05 target repro repeat, initial fanout clamp, and p001 range experiments
+
+- Repeated strict fresh target repro:
+  - `/webtoon/3774/176692`, `imageEpisodeId=176692`, `imageCount=80`, seed `1781591600001`, native-ack, `-NoAckAssert`.
+- Validation after ACK/RSC quiet hold:
+  - `build/ntk-random-perf/20260616_184557` failed run=1 first drawable at `12386ms`.
+  - Run=0 passed first drawable `2259ms`, but run=1 showed a different shape:
+    - `early_urls_initial_continuous_allow_anchor_fallback count=80`.
+    - p002-p014 pre-anchor requests were generated before the p001 anchor asset.
+    - p001 shared range never produced a hit before the test failed, and foreground fallback races for p001 repeatedly returned empty fallback results.
+  - Root cause: when metadata already knew `imageCount=80`, the second run could expose/request too much of the generated list before the first anchor bitmap. This recreated the pre-anchor fanout problem.
+- Retained fix:
+  - `ReaderSession.requestInitialContinuousPagesFromEarlyUrls()` now clamps effective pre-first NTK webtoon/manhwa early URL count to `NTK_GENERATED_INITIAL_RECOVERY_PAGES`.
+  - `requestInitialWindow()` similarly limits NTK webtoon/manhwa pre-first window to p001-p004.
+  - This is not a viewer delay; it prevents non-anchor pages from competing before p001 is decoded.
+- Validation after initial fanout clamp:
+  - `build/ntk-random-perf/20260616_185039` passed first drawable (`2446ms`) but failed scroll step=1 with dropped frame:
+    - `callbackP95=571.90`, `droppedFrames=1`.
+    - Logs showed p005 generated foreground direct races during scroll while the viewport was still effectively within p001.
+  - Retained scroll/fanout reduction:
+    - `NTK_WEBTOON_GENERATED_INITIAL_LIMITED_WARM_PAGES 4 -> 3`.
+    - `NTK_WEBTOON_WINDOW_AFTER 64 -> 8`.
+    - `NTK_WEBTOON_BUSY_WINDOW_AFTER 16 -> 6`.
+    - `NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD 4 -> 2`.
+    - `NTK_WEBTOON_BUSY_VISIBLE_DECODE_RADIUS 2 -> 1`.
+    - `NTK_WEBTOON_IDLE_DECODE_AHEAD 4 -> 2`.
+  - `build/ntk-random-perf/20260616_185358` passed 1-run:
+    - firstDrawable `3046ms`.
+    - 3 scroll steps passed.
+    - slowSignals still `1`.
+- Remaining first-drawable variance:
+  - `build/ntk-random-perf/20260616_185454` failed firstDrawable `5647ms`.
+    - p001 range reassemble `4122ms`, stream `4191ms`, decode `4174ms`.
+    - ACK was still waiting for first drawable, so this was not ACK-caused.
+- p001 full-range hedge experiment:
+  - Added a p001 full-range hedge during tail reassembly while preserving the 2KB-first normal path.
+  - Immediate hedge validation `build/ntk-random-perf/20260616_185727` failed firstDrawable `3694ms`; no `full_range_hedge_hit` was logged.
+  - Delayed hedge validation `build/ntk-random-perf/20260616_185936` failed firstDrawable `4326ms`; no hedge hit.
+  - Current interpretation: full-range hedge is not proving useful on this target and may add contention. Treat as unproven; do not commit unless later logs show real hedge wins.
+- p001 256KB-first experiment:
+  - Tried page=1 first range attempt order `262144, 2048, preferredBytes, 512, 32`.
+  - `build/ntk-random-perf/20260616_190207` passed 1-run:
+    - firstDrawable `2962ms`, stream `2415ms`, decode `2440ms`, scroll 3 passed, slowSignals `2`.
+  - Repeat `build/ntk-random-perf/20260616_190306` failed firstDrawable `4408ms`:
+    - p001 chunks reduced to `2`, but range reassemble still `3021ms`, stream `3204ms`, decode `3415ms`.
+  - Current interpretation: 256KB-first reduces chunk count but does not solve transport variance. Keep only if broader data proves it is better than 2KB-first; otherwise revert before commit.
+- Bad/avoid added:
+  - Do not assume known `imageCount=80` means it is safe to open/request all 80 generated refs before p001 anchor bitmap.
+  - Do not let p005+ foreground direct/generated races run during the initial p001-only scroll window.
+  - Do not commit p001 full-range hedge or 256KB-first based on one passing run; both failed repeat validation.
+- Parallel help:
+  - Could not spawn a new agent because the thread agent limit was reached.
+  - Reused existing Kepler agent `019ecfae-daa3-7c63-a4f9-e3b0481e2bb9` to inspect p001 transport variance and recommend small code-change candidates.
+
+## 2026-06-16 19:20 p001 shared-range wait and initial webtoon fanout follow-up
+
+- Re-read goal and progress after context compaction; goal remains active.
+- Removed unproven p001 full-range hedge and 256KB-first experiment before any commit:
+  - `full_range_hedge_hit` never appeared in repeat validation and prior direct/full hedge variants worsened p001.
+  - `262144` first attempt reduced chunks in one pass but failed repeat; restored p001 first attempt order to `2048, preferredBytes, 512, 32`.
+- Validation after cleanup and retained ACK/RSC quiet hold:
+  - `build/ntk-random-perf/20260616_191121` passed 1-run but was marginal: firstDrawable `3484ms`, p001 stream `2917ms`, decode `2951ms`, slowSignals `2`.
+  - ACK still false: `webViewAckPreflightDone success=false ms=21216`; challenge remained CF 403. Do not mark native/hidden ACK solved.
+  - Scroll position/coverage were good (`missingPx=0`, `placeholderPx=0`, no drift), but callback stall remained (`callbackP95` about 514-584ms).
+- Cause found in passing run:
+  - p002-p004 generated range requests start immediately after first drawable, while the viewport is still inside the very tall p001 image.
+  - ACK preflight can also enter the initial scroll window if a previously scheduled start is not re-gated by the recovery hold.
+- Retained follow-up patch:
+  - Added `ReaderImageCache.ntkAckRecoveryLaunchHoldRemainingMs(path)` and made `ReaderV2Activity` re-check it before starting ACK preflight.
+  - Tightened webtoon initial-anchor window so after p001 first drawable, initial urgent decode/prefetch does not fan out to p002+ until actual window movement.
+  - Set webtoon initial generated warm/foreground/busy pages and initial byte/decode ahead to `0` for the initial anchor state.
+- Validation after fanout tightening:
+  - `build/ntk-random-perf/20260616_191636` failed firstDrawable `5100ms` because p001 shared range itself took `4057ms`, stream `4116ms`, decode `4148ms`.
+  - This run was not ACK-caused and not p002 fanout-caused; p002-p004 started only after first drawable.
+- Subagent Kepler result:
+  - Confirmed bottleneck is p001 shared range variance, not URL discovery or ACK.
+  - Recommended removing full-range hedge (done) and reducing p001 initial foreground stream join wait from `650ms` to `120-200ms` when a shared range flight is already active.
+- New active experiment:
+  - Reduced `FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS` from `650ms` to `180ms` so p001 recovery joins the existing shared range faster instead of burning fixed wait budget.
+- Bad/avoid reinforced:
+  - Do not re-add p001 direct full/generated full hedge without proof; prior direct/full hedge variants lost or added contention.
+  - Do not treat p002+ webtoon warmup as harmless during initial scroll; p001 is often tall enough that p002 is not actually visible yet.
+
+## 2026-06-16 19:28 p001 handoff delay removed and target repro repeat passed
+
+- Applied after the 180ms join-timeout experiment:
+  - Removed `NTK_VERIFIED_ANCHOR_HANDOFF_DELAY_MS=300ms`; p001 foreground stream now starts immediately after verified early URL handoff.
+  - Reason: logs showed `early_urls_ready` at `38ms` but p001 `foreground_stream_async_start` around `544ms`; the fixed handoff delay was directly burning first-drawable budget.
+- Validation:
+  - `build/ntk-random-perf/20260616_192349` passed 1-run:
+    - firstDrawable `2918ms`.
+    - p001 stream `2343ms`, decode `2395ms`.
+    - 3 touch scroll steps passed.
+    - `slowSignals=0`, `missingPx=0`, `placeholderPx=0`, no post-stop drift.
+  - `build/ntk-random-perf/20260616_192435` passed 2-run repeat:
+    - firstDrawable `2/2`, scroll `6/6`, `slowSignals=0`, failures `0`.
+    - Summary pipeline latest run: earlyUrls `35ms`, stream `2334ms`, decode `2370ms`, drawable `2195ms`.
+- Current interpretation:
+  - Removing the fixed anchor handoff delay is the first clearly repeat-validated improvement on this hard webtoon repro after the p001 variance work.
+  - The ACK/RSC quiet hold plus initial webtoon fanout clamp keeps ACK and p002+ work from producing initial scroll jank in this target repeat.
+- Remaining:
+  - This validation used `-NoAckAssert`; native/hidden ACK proof is still not solved.
+  - ACK preflight still reports false in native path; visible UX/CDP proof remains the known strict ACK success route.
+  - Need wider random coverage once the current target change set is cleaned up and committed.
