@@ -3119,10 +3119,6 @@ public class CustomHttpClient {
     }
 
     private String reachableNtkRoot(String currentRoot, List<String> resolvedRoots, Map<String, String> headers) {
-        String trustedResolved = firstTrustedResolvedNtkRoot(resolvedRoots);
-        String normalizedCurrent = NtkDomainResolver.normalizeRoot(currentRoot);
-        if(trustedResolved != null && !trustedResolved.equals(normalizedCurrent))
-            return trustedResolved;
         ArrayList<String> candidates = new ArrayList<>();
         if(resolvedRoots != null)
             for(String root : resolvedRoots)
@@ -3232,7 +3228,7 @@ public class CustomHttpClient {
             return false;
         if(code <= 0 || code >= 500)
             return false;
-        if(code == 403 && isCloudflareChallenge(code, body))
+        if(code == 403)
             return false;
         return true;
     }
@@ -4711,7 +4707,18 @@ public class CustomHttpClient {
                     + ",url=" + safeLogUrl(url), e);
         }
         if(foregroundPriority && isNtkGeneratedImageCdnUrl(url)) {
-            throw new IOException("NTK generated foreground image transport failed");
+            Log.d(TAG, "ntk_quic_image_foreground_fallback_okhttp"
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",url=" + safeLogUrl(url));
+            Request.Builder fallbackRequest = request.newBuilder()
+                    .removeHeader("X-MangaViewer-Foreground")
+                    .removeHeader("X-MangaViewer-Anchor-Hedge")
+                    .removeHeader(NTK_NO_QUIC_HEADER);
+            if(request.header("Cookie") == null && cookieHeader != null && cookieHeader.length() > 0)
+                fallbackRequest.header("Cookie", cookieHeader);
+            if(request.header("User-Agent") == null && agent != null && agent.length() > 0)
+                fallbackRequest.header("User-Agent", agent);
+            return chain.proceed(fallbackRequest.build());
         }
         return chain.proceed(request);
     }
@@ -6924,11 +6931,8 @@ public class CustomHttpClient {
             Log.d(TAG, "ntk_images_api_skip_hardblock path=" + path);
             return urls;
         }
-        if(isModernNtkGuardRoot(baseUrl) && isNumericNtkGeneratedEpisode(kind, workId, episodeId, path)) {
-            Log.d(TAG, "ntk_images_api_skip_modern_numeric_generated_direct path=" + path);
-            cacheNtkViewerImageUrlMiss(cacheKey);
-            return urls;
-        }
+        if(isModernNtkGuardRoot(baseUrl) && isNumericNtkGeneratedEpisode(kind, workId, episodeId, path))
+            Log.d(TAG, "ntk_images_api_allow_modern_numeric_probe path=" + path);
         Log.d(TAG, "ntk_images_api_start path=" + path
                 + ",ackPath=" + cookiePath
                 + ",endpoint=" + endpoint
@@ -7380,15 +7384,13 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_images_api_pre_ack_miss path=" + path
                         + ",code=" + (result == null ? 0 : result.code)
                         + ",ackRequired=" + ntkViewerImagesAckRequired(result));
-                if(tryModernNumericBeforeAck) {
-                    Log.d(TAG, "ntk_images_api_modern_numeric_keep_generated_direct path=" + path);
-                    return urls;
-                }
+                if(tryModernNumericBeforeAck)
+                    Log.d(TAG, "ntk_images_api_modern_numeric_continue_after_pre_ack_miss path=" + path);
                 if(Thread.currentThread().isInterrupted())
                     return urls;
             }
 
-            if(context != null && !modernGuardRoot && !webViewAckInFlight) {
+            if(context != null && !webViewAckInFlight) {
                 webViewRace = new FutureTask<>(() -> NtkWebViewFallbackManager.get(context)
                         .fetchViewerImageUrls(agent, baseUrl, path, cookiePath, headers, kind,
                                 workId, episodeId, imagesToken, getCookieHeaderForNtkPath(cookiePath),
@@ -8571,6 +8573,7 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_native_ack_prepare_skip_missing_guard_bootstrap path=" + path
                         + ",adGuardL=" + (getCookie("ad_guard_l") != null)
                         + ",adAckC=" + (getCookie("ad_ack_c") != null)
+                        + ",cfClearance=" + hasCloudflareClearance()
                         + ",nv=" + isNtkNvValid(getCookie("nv"))
                         + ",ms=" + (System.currentTimeMillis() - startedMs));
                 return;
@@ -8872,6 +8875,7 @@ public class CustomHttpClient {
                 Log.d(TAG, "ntk_native_ack_skip_missing_guard_bootstrap path=" + path
                         + ",adGuardL=" + (getCookie("ad_guard_l") != null)
                         + ",adAckC=" + (getCookie("ad_ack_c") != null)
+                        + ",cfClearance=" + hasCloudflareClearance()
                         + ",nv=" + isNtkNvValid(getCookie("nv"))
                         + ",ms=" + (System.currentTimeMillis() - startedMs));
                 return false;
@@ -8990,6 +8994,10 @@ public class CustomHttpClient {
             String cookiesAfterChallenge = getCookieHeader();
             String nvAfterChallenge = getCookie("nv");
             Log.d(TAG, "ntk_native_ack_cookies_after_challenge nv=" + (nvAfterChallenge == null ? "null" : nvAfterChallenge.substring(0, Math.min(60, nvAfterChallenge.length()))) + " cookies_len=" + (cookiesAfterChallenge == null ? 0 : cookiesAfterChallenge.length()));
+            if(hasNtkAdAckCookieForPath(challengePath)) {
+                NtkWebViewFallbackManager.rememberExternalServerAckSuccess(
+                        challengePath, "native-challenge-ad-ack-cookie-200");
+            }
             Map<String, String> h2 = new HashMap<>(h);
             h2.put("referer", baseUrl + ntkNativeAckScopePath(challengePath));
 
@@ -9172,6 +9180,7 @@ public class CustomHttpClient {
     private boolean hasNtkAckGuardBootstrapForNativeChallenge(String path) {
         return getCookie("ad_guard_l") != null
                 || getCookie("ad_ack_c") != null
+                || hasCloudflareClearance()
                 || hasNtkAdAckCookieForPath(path);
     }
 

@@ -20950,3 +20950,307 @@ tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webvie
 - Still open:
   - Native/hidden ACK is still false against this hard target because its direct `/api/ad/challenge` path still receives CF `403`.
   - Wider random coverage remains required.
+
+## 2026-06-16 22:55 screen/log ACK proof re-check and false-negative automation fix
+
+- User correctly pushed to verify the actual captcha screen instead of guessing. Current ACK diagnosis now uses all three signals together:
+  - visible WebView/DevTools page state,
+  - app log proof marker,
+  - CDP network capture when the request is a direct WebView request.
+- Latest long proof run:
+  - Output: `build/ntk-live-ack-screen/ack_root_quic_native_long_20260616_225155`
+  - Probe: `build/ntk-ack-ux-probe/20260616_225157_sbxh7_com_1f388e`
+  - Probe stopped after marker: `STOPPED_AFTER_MARKER=ntk_server_ack_success_recorded`
+  - Strict server proof line:
+    - `ntk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-bridge-challenge-ad-ack-cookie-200`
+    - `NTK JS bridge challenge ACK proof recorded status=200,scope=/webtoon/17332/1515337,url=https://sbxh7.com/api/ad/challenge`
+  - Cookie transition:
+    - root QUIC flow produced `cf_clearance`.
+    - target episode then posted `/api/ad/challenge`.
+    - server returned `200` and `Set-Cookie: ad_ack_c`.
+- Screen/log interpretation:
+  - The WebView first showed real Cloudflare verification text: `Performing security verification`, later `Why is this verification taking long`.
+  - Root direct WebView transport hit reset/403, but QUIC fallback rendered the challenge and eventually obtained clearance.
+  - After clearance the target episode page loaded normally and the page JS bridge issued the current sbxh7 ACK proof request.
+- Automation issue found:
+  - `tools/ntk_webview_cdp_ack_capture.mjs` reported `success=false` even when the probe stopped after `ntk_server_ack_success_recorded`.
+  - Cause: CDP only sees browser network requests; bridge/native `/api/ad/challenge` requests do not appear in CDP Network.
+  - Fix: if `--success-match ntk_server_ack_success_recorded` is satisfied by the probe stop marker, summary now sets `success=true` with `successSource=probeStoppedAfterMarker`.
+- Code cleanup:
+  - Removed the unused `continueNtkRootBootstrapAfterRootFailure` helper from `CaptchaActivity`.
+- Bad/avoid:
+  - Do not route root `403` or root `ERR_CONNECTION_RESET` directly to the target episode. The screen/log evidence showed this can leave the target on the h/b Turnstile/error path and prevent reliable ACK.
+  - Do not require CDP request visibility for bridge/native ACK proof. For bridge/native requests, `ntk_server_ack_success_recorded` is the authoritative app-side proof marker.
+  - Do not call cookie-only success ACK. The strict current proof is still `/api/ad/challenge` POST `200` with response `Set-Cookie: ad_ack_c` for the concrete episode path.
+
+## 2026-06-16 23:06 ACK proof repeat and viewer sanity split
+
+- ACK proof repeat after installing the current debug APK once, then rerunning without reinstall:
+  - Output: `build/ntk-live-ack-screen/ack_proof_after_marker_fix_skipinstall_20260616_225906`
+  - Probe: `build/ntk-ack-ux-probe/20260616_225908_sbxh7_com_fc9ed2`
+  - Capture summary: `success=true`, `successSource=probeStoppedAfterMarker`, `probeExitCode=0`
+  - Strict server proof:
+    - `ntk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-bridge-challenge-ad-ack-cookie-200`
+    - `NTK JS bridge challenge ACK proof recorded status=200,scope=/webtoon/17332/1515337,url=https://sbxh7.com/api/ad/challenge`
+    - `NTK QUIC set-cookie names: count=1,hasClearance=false,names=[ad_ack_c]`
+- Important automation note:
+  - The first install-included rerun timed out before probe summary was written. Reusing the installed APK avoided that harness overhead and finished with the correct marker.
+- Viewer sanity after ACK proof:
+  - `build/ntk-random-perf/20260616_230122` failed first drawable at `12585ms` on `/webtoon/3774/176692`.
+  - Pipeline had early URLs at `1943ms` and p001 foreground stream started, but no stream/decode/drawable completion before timeout.
+  - This is p001/generated transport variance, not the ACK proof path. Do not mix this failure into the ACK commit as solved.
+
+## 2026-06-16 23:15 staged APK ACK proof after extended Turnstile loop
+
+- Staged-only APK proof initially failed twice at the root Cloudflare page:
+  - `build/ntk-live-ack-screen/ack_proof_staged_install_20260616_230404`
+  - `build/ntk-live-ack-screen/ack_proof_staged_retry_skipinstall_20260616_230729`
+  - Both stayed on `Just a moment...` with `serverProof=false`.
+  - Logs showed `Turnstile iframe found` and `Turnstile touch sequence completed`, then `Turnstile max wait exceeded`.
+- Root cause:
+  - The Turnstile auto-touch loop stopped after `30s`.
+  - Previous successful proof also logged `Turnstile max wait exceeded` shortly before `cf_clearance`, so 30s was too short for current sbxh7 challenge variance.
+- Retained fix:
+  - `TURNSTILE_MAX_WAIT_MS` increased from `30_000` to `120_000`.
+  - `TURNSTILE_MAX_TOUCHES_PER_WIDGET` increased from `6` to `18`.
+  - Unit tests updated to keep touch spacing bounded while allowing longer root challenge variance.
+- Validation after fix:
+  - Unit/build: `:app:testDebugUnitTest --tests ml.melun.mangaview.activity.CaptchaActivityTest :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Install-included ACK proof: `build/ntk-live-ack-screen/ack_proof_turnstile_extended_20260616_231245`
+  - Probe: `build/ntk-ack-ux-probe/20260616_231247_sbxh7_com_024f73`
+  - Result: `success=true`, `successSource=probeStoppedAfterMarker`, `probeExitCode=0`, `STOPPED_AFTER_MARKER=ntk_server_ack_success_recorded`.
+- Bad/avoid:
+  - Do not restore the 30s Turnstile cap. It is too short for current sbxh7 root clearance variance.
+  - Do not treat `Turnstile max wait exceeded` alone as failure; the old log could appear just before delayed clearance. The actual failure is absence of `cf_clearance` and `ntk_server_ack_success_recorded` by probe end.
+
+## 2026-06-16 23:30 visual ACK stuck diagnosis
+
+- User challenged whether ACK was being judged without looking at the captcha screen. Re-ran visible ACK with periodic emulator screenshots.
+- Artifact: cleancheck `build/ntk-live-ack-screen/ack_screen_visual_recheck_20260616_232508`
+- Screen evidence:
+  - `screen_06.png`: real Cloudflare `Performing security verification` page, app footer `CAPTCHA 인증중..`.
+  - `screen_13.png`: Turnstile widget stuck at `Verifying...`.
+- Log evidence:
+  - Auto touch was finding the Turnstile iframe and dispatching touches.
+  - `cf_clearance` arrived very late, around 159s.
+  - Target episode loaded after clearance, but strict ACK proof did not arrive before probe timeout.
+- Root cause found:
+  - `startNtkNativeAdAckAfterClearance()` tried to run, but `CustomHttpClient` skipped the native challenge call because `hasNtkAckGuardBootstrapForNativeChallenge()` did not accept `cf_clearance` alone.
+- Fix in progress:
+  - Treat valid `cf_clearance` as sufficient bootstrap to attempt the real `/api/ad/challenge` proof. This still requires actual server `200` + proof cookie/marker; it does not convert cookie-only state into success.
+- Bad/avoid:
+  - Do not diagnose this class from log markers only. Keep screen capture with ACK proof when Cloudflare/Turnstile behavior is suspected.
+  - Do not increase only the outer probe timeout as the primary fix; the app should attempt server ACK immediately after clearance instead of waiting for target JS to eventually fire.
+
+## 2026-06-16 23:40 Turnstile visual stuck recovery
+
+- Re-ran visual ACK after allowing native challenge with `cf_clearance`.
+- Artifact: cleancheck `build/ntk-live-ack-screen/ack_screen_cf_bootstrap_fix_20260616_233527`
+- Result: still failed, but now because `cf_clearance` never arrived within 220s.
+- Screen/log evidence:
+  - Cloudflare `Performing security verification`, Turnstile `Verifying...`, QR shown, same Ray stayed active for more than 200s.
+  - Repeated touches were dispatched but cookies stayed empty.
+- Fix in progress:
+  - `CaptchaActivity` no longer just stops at `TURNSTILE_MAX_WAIT_MS`; for NTK it reloads a stuck Turnstile challenge to get a fresh Ray, bounded by `TURNSTILE_MAX_STUCK_RELOADS=2`.
+  - Manual reload resets the stuck reload counter.
+- Bad/avoid:
+  - Do not keep waiting indefinitely on one Ray. Screen evidence shows a real stuck Turnstile state.
+  - Do not mark this as ACK failure after `/api/ad/challenge`; this run never reached clearance/ACK.
+
+## 2026-06-16 23:48 ACK visual proof after stuck recovery fix
+
+- Validation command used a visible ACK probe with screenshots and a 360s max window to allow one stuck-Ray recovery cycle.
+- Artifact: cleancheck `build/ntk-live-ack-screen/ack_screen_stuck_reload_fix_20260616_234332`
+- Probe run: cleancheck `build/ntk-ack-ux-probe/20260616_234334_sbxh7_com_03b80c`
+- Result:
+  - `success=true`
+  - `successSource=probeStoppedAfterMarker`
+  - `STOPPED_AFTER_MARKER=ntk_server_ack_success_recorded`
+- Important proof line:
+  - `ntk_server_ack_success_recorded path=/webtoon/17332/1515337,source=native-challenge-ad-ack-cookie-200`
+- Recovery evidence:
+  - The first Ray stuck long enough to hit the bounded recovery path.
+  - `Reloading stuck NTK Turnstile challenge waitMs=121126,reload=1,url=https://sbxh7.com/webtoon/17332/1515337`
+  - After the reload path, native `/api/ad/challenge` proof recorded the strict server ACK marker.
+- Remaining caveat:
+  - CDP Network still does not see bridge/native `/api/ad/challenge` requests, so `ntk_server_ack_success_recorded` remains the authoritative proof marker for these paths.
+
+## 2026-06-17 03:10 hardcase image transport vs ACK split
+
+- Re-read this file after context continuation and analyzed the latest hard target run in the main workspace.
+- Hardcase command:
+  - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5556 -Runs 1 -ScrollSteps 2 -AppendSteps 0 -ScreenshotEvery 0 -Seed 1781591600001 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -FirstDrawableMaxMs 30000 -TargetEpisodePath /webtoon/3774/176692 -TargetImageWorkId 3774 -TargetImageEpisodeId 176692 -TargetImageCount 80 -NtkSiteRoot https://sbxh7.com -NtkLockSiteRoot -NoAckAssert -NoAppendProbe`
+- Artifact: `build/ntk-random-perf/20260617_030142`
+- Result:
+  - Failed first drawable after `43653ms`.
+  - Early generated CDN URLs were available quickly: `earlyUrlsReady count=4, raw=1, ms=85`.
+  - Foreground p001 started, but never reached `foregroundRaceWin`, `foregroundStreamDone`, or `decodeReady`.
+- Diagnosis:
+  - This run is not proof that ACK itself regressed.
+  - ACK preflight was repeatedly deferred by `reader_ntk_ack_preflight_wait_first_drawable`, then timed out because the first image never drew.
+  - Generated image host probe proved the resource was reachable: `ntk_image_header_probe_okhttp code=206,reachable=true,bytes=32,ms=4926`.
+  - Foreground image transport then repeatedly returned zero bytes/resets around the short race path and threw `NTK generated foreground image transport failed`.
+- Fix applied:
+  - `CustomHttpClient.interceptNtkImageWithQuic()` no longer throws when generated CDN foreground QUIC/race transport fails.
+  - It now logs `ntk_quic_image_foreground_fallback_okhttp`, strips internal viewer headers, preserves cookie/user-agent headers, and lets the normal OkHttp path fetch the image.
+- Bad/avoid:
+  - Do not treat first drawable timeout from generated CDN p001 as an ACK failure.
+  - Do not reintroduce the foreground generated CDN throw; it prevents the app from using the same ordinary network fallback that the web path can use.
+  - Keep visual ACK probes with screenshots for actual Cloudflare/Turnstile diagnosis instead of judging captcha state from markers alone.
+
+## 2026-06-17 03:24 hardcase same-URL fallback loop
+
+- Re-ran the same hardcase after allowing generated foreground OkHttp fallback:
+  - Artifact: `build/ntk-random-perf/20260617_030546`
+  - Result: still failed first drawable after `56129ms`.
+- Screen evidence:
+  - Direct emulator capture after test showed the device had already returned to the launcher, so the failure screen was not retained by the instrumentation harness.
+  - Log evidence for this run contains no Turnstile/captcha page markers; the failure is image transport.
+- Network evidence:
+  - Host PC `curl.exe --http1.1 --range 0-31 https://i.toonflix.app/blacktoon/episodes/3774/176692/p001.jpg` also failed with `Recv failure: Connection was reset`.
+  - This reinforces that the app must not block on one generated CDN URL when that transport resets.
+- Code/log root cause:
+  - `ntk_generated_image_race_api_ready page=1,sameUrl=true,images=13`
+  - `generated_api_retry_request ... page=1,sameUrl=true`
+  - `generated_api_retry_error ... Connection reset`
+  - Therefore the fallback loop was not a real fallback; it repeatedly retried the same generated CDN URL.
+- Fix applied:
+  - `retryNtkGeneratedViaApiFallback()` now skips same-URL foreground retries and returns control to later fallback paths.
+  - `requestForegroundGeneratedRace()` now skips API results that are the same URL regardless of direct retry mode.
+  - `CustomHttpClient.fetchNtkViewerImageUrls()` no longer exits early for modern numeric generated episodes. The uncached modern numeric image API/WebView path can now run.
+  - After a modern numeric pre-ACK API miss, the flow continues to WebView/API fallback instead of immediately preserving generated direct URLs.
+- Bad/avoid:
+  - Do not call same generated URL retry a fallback.
+  - Do not restore `ntk_images_api_skip_modern_numeric_generated_direct`; it blocks the rescue path needed for generated CDN reset cases.
+
+## 2026-06-17 03:31 ACK/image dependency split
+
+- Re-ran the hardcase with reader image cache cleared:
+  - Artifact: `build/ntk-random-perf/20260617_031624`
+  - Result: first drawable still failed, but ACK reached the real server endpoint.
+- ACK proof evidence from log:
+  - `ntk_viewer_quic_bridge_request method=POST,url=https://sbxh7.com/api/ad/challenge,...scope=/webtoon/3774/176692,hasCfClearance=true`
+  - `ntk_viewer_ad_bridge_quic_first code=200,error=null,elapsedMs=2165,session=true,url=https://sbxh7.com/api/ad/challenge`
+  - `ntk_viewer_ad_ack_c_scoped_store path=/webtoon/3774/176692`
+  - `ntk_viewer_ad_bridge_response method=POST,path=/api/ad/challenge,code=200,...cookieNames=ad_ack_c`
+- Remaining issue:
+  - ACK is still starting too late because reader ACK preflight waits for first drawable when early generated URLs exist.
+  - If `i.toonflix.app/p001.jpg` resets, first drawable never happens and ACK starts only after timeout.
+- Fix applied:
+  - `ReaderV2Activity` now allows deferred ACK preflight before first drawable after the initial-images-ready hardblock probe threshold.
+  - The Cloudflare/early-image branch also switches to before-first-drawable ACK after the same threshold.
+- Bad/avoid:
+  - Do not make ACK depend indefinitely on first drawable. Image transport failure and ACK proof are separate concerns.
+
+## 2026-06-17 03:38 bridge challenge ACK marker fix
+
+- Re-read this progress file after context continuation and resumed the ACK-first goal.
+- User specifically challenged whether captcha screen state was being inspected. Current evidence split:
+  - Previous visual ACK proof did inspect the screen and showed real Cloudflare/Turnstile stuck states before bounded reload recovery.
+  - The latest hardcase `/webtoon/3774/176692` is not currently a captcha-screen stuck case; it reaches `/api/ad/challenge` through the bridge.
+- Latest hardcase evidence before this fix:
+  - `/api/ad/challenge` bridge request returned `200`.
+  - Response set `ad_ack_c`.
+  - Log recorded `ntk_viewer_ad_ack_c_scoped_store path=/webtoon/3774/176692`.
+  - But `ntk_server_ack_success_recorded` was missing, so the harness treated ACK as failed/unfinished.
+- Fix applied:
+  - `NtkWebViewFallbackManager.rememberScopedAdAckC()` now records strict server ACK success when the same `/api/ad/challenge` POST response is HTTP 2xx and includes `Set-Cookie: ad_ack_c`.
+  - Source label: `bridge-challenge-ad-ack-cookie-200`.
+  - This is not cookie-only success; the marker is recorded only from the actual challenge response that returned from the server.
+- Bad/avoid:
+  - Do not rely on scoped `ad_ack_c` storage alone. It restores cookies for later requests but does not by itself satisfy the ACK success cache.
+
+## 2026-06-17 03:50 visible strict fresh captcha diagnosis
+
+- Re-checked the active goal and inspected actual emulator screen captures instead of relying only on log markers.
+- Screen artifact: `build/ntk-live-ack-screen/visible_probe_required_20260617_033038`
+  - `screen_06.png` shows the real sbxh7 Cloudflare page: `Performing security verification`, Turnstile `Verifying...`, and the app footer `CAPTCHA 인증중..`.
+- Long visible probe artifact: `build/ntk-ack-ux-probe/20260617_033308_sbxh7_com_f4fd90`
+- Key diagnosis:
+  - This is not only a generic ACK timeout. Fresh visible captcha can eventually receive `cf_clearance`.
+  - After `cf_clearance` arrived, the app verified the bootstrap/current page path `/manhwa` instead of the target episode `/webtoon/3774/176692`.
+  - That wrong-path verification returned 403, then the app rejected and aggressively cleared the newly acquired valid Cloudflare cookie before `/api/ad/challenge` could complete.
+- Fix applied:
+  - `CaptchaActivity.verifyNtkAccess()` now prefers the original target episode path from `captchaLoadUrl`/`purl` over the current bootstrap page when verifying NTK access.
+  - Added a unit test so `https://sbxh7.com/webtoon/3774/176692` is verified as `/webtoon/3774/176692` even when the current WebView URL is `https://sbxh7.com/manhwa`.
+- Bad/avoid:
+  - Do not diagnose Cloudflare/Turnstile state from logs alone; keep visual screen capture evidence for strict fresh ACK failures.
+  - Do not verify `/manhwa` or another bootstrap/listing page when a concrete episode target is known.
+  - Do not clear a just-acquired `cf_clearance` after a wrong-path verification failure.
+
+## 2026-06-17 04:00 Turnstile fallback transport diagnosis
+
+- Re-ran strict fresh visible probes with screenshots/logcat after the target-path verification fix.
+- Current screen evidence:
+  - `build/current_ack_screen.png` showed the real sbxh7 Cloudflare checkbox page, `Verify you are human`, with app footer `CAPTCHA 인증중..`.
+- Latest failed probes:
+  - `build/ntk-ack-ux-probe/20260617_034045_sbxh7_com_a64a6a`
+  - `build/ntk-ack-ux-probe/20260617_034704_sbxh7_com_1f3440`
+  - `build/ntk-ack-ux-probe/20260617_035020_sbxh7_com_061739`
+- Findings:
+  - Root/direct WebView loads hit `net::ERR_CONNECTION_RESET`.
+  - The app then falls back to QUIC-served Cloudflare HTML, which displays a Turnstile screen but does not produce `cf_clearance`.
+  - Raw WebView UA did not fix it.
+  - The failing screen repeatedly logs Turnstile iframe/touch activity, but cookie summaries remain empty.
+- Fix in progress:
+  - `CaptchaActivity.onReceivedError()` now tries the local CONNECT proxy before QUIC HTML fallback.
+  - Rationale: the proxy keeps WebView doing the TLS/HTTP/Web platform work itself; QUIC HTML fallback should be a later rescue path because it can display a challenge without being a fully normal browser navigation.
+- Bad/avoid:
+  - Do not treat “Cloudflare page is visible” as proof the challenge flow is healthy. The visible fallback can still be unable to mint `cf_clearance`.
+  - Do not prefer QUIC HTML fallback before WebView/proxy transport for Cloudflare challenge pages unless direct/proxy are proven impossible.
+
+## 2026-06-17 04:36 strict fresh native ACK proof restored
+
+- Re-read this progress file after context continuation and kept the ACK-first goal active.
+- User challenged whether the actual captcha screen was being inspected. That criticism was valid:
+  - A previous ad-hoc screenshot (`build/proxy_first_late.png`) showed Chrome first-run UI, not the app captcha flow, so it must not be used as ACK/captcha evidence.
+  - `tools/ntk_ack_ux_probe.ps1` now captures `window_focus.txt`, `activity_top.txt`, and `screen_final.png` on every run so future ACK results are tied to the actual foreground app/activity and final screen state.
+- Root causes found in the regression from the earlier successful ACK structure:
+  - Turnstile recovery had effectively regressed to a short 30s / 6-touch cap, while the previously successful strict-fresh path needed a longer bounded challenge window and stuck reload recovery.
+  - After Cloudflare clearance, verification could still use a bootstrap/listing page instead of the concrete target episode, causing valid clearance to be rejected.
+  - Native ACK before finishing was missing; waiting for the target WebView reload made the ACK path late and fragile.
+  - Native `/api/ad/challenge` skipped when `cf_clearance` existed but `ad_guard_l` / `ad_ack_c` / valid `nv` did not exist yet.
+  - Native challenge 200 + `ad_ack_c` was not recording the strict `ntk_server_ack_success_recorded` marker, even though the real server ACK had completed.
+- Fixes applied:
+  - Restored bounded Turnstile recovery to 120s max wait, 18 repeat touches, and up to 2 stuck NTK Turnstile reloads.
+  - Kept proxy transport before QUIC HTML fallback for Cloudflare challenge recovery.
+  - `CaptchaActivity.verifyNtkAccess()` now prefers the original concrete episode path from `captchaLoadUrl`/`purl` over bootstrap pages like `/manhwa`.
+  - `CaptchaActivity` starts native NTK ACK before the final target WebView wait and finishes only after native proof/cookie completion or falls back to the old wait path.
+  - `CustomHttpClient.hasNtkAckGuardBootstrapForNativeChallenge()` now treats `cf_clearance` as enough bootstrap state to attempt the native challenge.
+  - Native `/api/ad/challenge` now records `ntk_server_ack_success_recorded` when the challenge response is HTTP 200 and the scoped `ad_ack_c` cookie exists.
+- Validation:
+  - Unit/build command passed:
+    - `.\gradlew.bat :app:testDebugUnitTest --tests ml.melun.mangaview.activity.CaptchaActivityTest :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Strict fresh emulator proof passed on API35 `emulator-5556`:
+    - Artifact: `build/ntk-ack-ux-probe/20260617_043335_sbxh7_com_5a68f9`
+    - Target: `https://sbxh7.com/webtoon/3774/176692`
+    - Marker: `STOPPED_AFTER_MARKER=ntk_server_ack_success_recorded`
+    - Proof log: `ntk_server_ack_success_recorded path=/webtoon/3774/176692,source=native-challenge-ad-ack-cookie-200`
+    - Probe summary: `ack=true,serverProof=true,ms=96779`
+    - Foreground evidence: `windowFocus=ml.melun.mangaview/ml.melun.mangaview.activity.CaptchaActivity`
+    - Final screen artifact: `build/ntk-ack-ux-probe/20260617_043335_sbxh7_com_5a68f9/screen_final.png`
+- Bad/avoid:
+  - Do not diagnose ACK/captcha success from logs alone; keep foreground/activity/screenshot evidence.
+  - Do not use Chrome, launcher, or unrelated app screenshots as captcha proof.
+  - Do not restore the 30s / 6-touch Turnstile cap for strict fresh sbxh7.
+  - Do not make native ACK depend on the target WebView reload after Cloudflare clearance.
+  - Do not skip native challenge when `cf_clearance` exists but guard cookies are not minted yet.
+  - Do not treat `ad_ack_c` alone as success unless it is tied to a real `/api/ad/challenge` HTTP 200 response.
+
+## 2026-06-17 04:42 CI follow-up after ACK proof push
+
+- Pushed ACK proof recovery to `origin/codex/ntk-strict-ack-proof` because direct `origin/main` push was rejected as non-fast-forward.
+- GitHub Actions run `27643211539` failed in `:app:compileDebugKotlin`.
+- CI failure:
+  - `ReaderImageCache.kt`: unresolved `ntkImageWorkId`.
+  - `ReaderSession.kt`: unresolved `ntkImageWorkId` and `ntkViewerPayloadHint`.
+- Root cause:
+  - Earlier reader/image stability work had committed references to new `Manga` metadata, but the matching `Manga.java` accessors/fields were still local and unstaged.
+  - Local builds hid this because the dirty worktree contained the missing `Manga.java` changes.
+- Fix direction:
+  - Include `Manga.java` in the ACK/image stability commit set so CI builds the same API surface that local validation used.
+- Follow-up:
+  - Amended commit `e629b554` includes `Manga.java`.
+  - GitHub Actions run `27643390822` passed: `Build APK Artifact` on `codex/ntk-strict-ack-proof`.
+- Bad/avoid:
+  - Do not trust a local green build while the worktree contains unstaged API-surface changes used by committed Kotlin code.
