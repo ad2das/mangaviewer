@@ -4811,9 +4811,11 @@ final class NtkWebViewFallbackManager {
                 }
                 if(adAckC.length() == 0)
                     return;
+                rememberServerAckSuccess(path, "bridge-challenge-ad-ack-cookie-200");
                 adAckCByChallenge.put(adAckChallengeKey(path, token), adAckC);
                 adAckCByPath.put(path, adAckC);
-                Log.d(TAG, "ntk_viewer_ad_ack_c_scoped_store path=" + path);
+                Log.d(TAG, "ntk_viewer_ad_ack_c_scoped_store path=" + path
+                        + ",serverProof=true");
             } catch (Exception ignored) {
             }
         }

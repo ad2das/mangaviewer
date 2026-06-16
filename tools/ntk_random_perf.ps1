@@ -11,6 +11,7 @@ param(
     [string]$TargetEpisodePath = "",
     [string]$TargetImageEpisodeId = "",
     [string]$TargetImageWorkId = "",
+    [int]$TargetImageCount = 0,
     [string]$NtkSiteRoot = "",
     [switch]$NtkLockSiteRoot,
     [long]$Seed = 0,
@@ -350,6 +351,9 @@ if($TargetEpisodePath -and $TargetEpisodePath.Trim().Length -gt 0) {
     if($TargetImageWorkId -and $TargetImageWorkId.Trim().Length -gt 0) {
         $argsList += @("-e", "ntkTargetImageWorkId", $TargetImageWorkId.Trim())
     }
+    if($TargetImageCount -gt 0) {
+        $argsList += @("-e", "ntkTargetImageCount", [string]$TargetImageCount)
+    }
 }
 
 $argsList += @(
@@ -609,6 +613,9 @@ if($TargetImageEpisodeId -and $TargetImageEpisodeId.Trim().Length -gt 0) {
 }
 if($TargetImageWorkId -and $TargetImageWorkId.Trim().Length -gt 0) {
     $reproArgs += @("-TargetImageWorkId", $TargetImageWorkId.Trim())
+}
+if($TargetImageCount -gt 0) {
+    $reproArgs += @("-TargetImageCount", [string]$TargetImageCount)
 }
 if($NtkSiteRoot -and $NtkSiteRoot.Trim().Length -gt 0) {
     $reproArgs += @("-NtkSiteRoot", $NtkSiteRoot.Trim())

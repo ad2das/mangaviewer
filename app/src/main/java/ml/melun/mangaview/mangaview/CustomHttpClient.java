@@ -8626,6 +8626,15 @@ public class CustomHttpClient {
             if(challenge == null || challenge.error != null || challenge.code != 200
                     || challenge.body == null || !looksLikeJsonObject(challenge.body))
                 return;
+            if(ntkChallengeIssuedAdAckCookie(challenge)) {
+                NtkWebViewFallbackManager.rememberExternalServerAckSuccess(
+                        path, "native-prepare-challenge-ad-ack-cookie-200");
+                markNtkAckChallengeOk(baseUrl + ntkNativeAckScopePath(path),
+                        ntkNativeAckFlightKey(path));
+                Log.d(TAG, "ntk_native_ack_prepare_challenge_cookie_success path=" + path
+                        + ",ms=" + (System.currentTimeMillis() - startedMs));
+                return;
+            }
             JSONObject challengeJson = new JSONObject(challenge.body);
             if(!challengeJson.optBoolean("ok", false))
                 return;
@@ -8954,6 +8963,14 @@ public class CustomHttpClient {
             }
             if(challenge == null || challenge.error != null || challenge.code != 200 || challenge.body == null)
                 return false;
+            if(ntkChallengeIssuedAdAckCookie(challenge)) {
+                NTK_ACK_CACHE.put(cacheKey, System.currentTimeMillis());
+                NtkWebViewFallbackManager.rememberExternalServerAckSuccess(
+                        path, "native-challenge-ad-ack-cookie-200");
+                Log.d(TAG, "ntk_native_ack_challenge_cookie_success path=" + path
+                        + ",totalMs=" + (System.currentTimeMillis() - startedMs));
+                return true;
+            }
             if(!looksLikeJsonObject(challenge.body)) {
                 Log.d(TAG, "ntk_native_ack_challenge_non_json path=" + path
                         + ",body=" + challenge.body.substring(0, Math.min(120, challenge.body.length())));
@@ -9126,6 +9143,33 @@ public class CustomHttpClient {
             }
             return false;
         }
+    }
+
+    private static boolean ntkChallengeIssuedAdAckCookie(NtkQuicFetcher.Result result) {
+        if(result == null || result.error != null || result.code != 200)
+            return false;
+        if(result.body == null || !looksLikeJsonObject(result.body))
+            return false;
+        try {
+            JSONObject json = new JSONObject(result.body);
+            if(!json.optBoolean("ok", false))
+                return false;
+        } catch (Exception e) {
+            return false;
+        }
+        for(String cookie : result.setCookies()) {
+            if(cookie == null)
+                continue;
+            int eq = cookie.indexOf('=');
+            if(eq <= 0)
+                continue;
+            String name = cookie.substring(0, eq).trim();
+            int end = cookie.indexOf(';', eq + 1);
+            String value = cookie.substring(eq + 1, end >= 0 ? end : cookie.length()).trim();
+            if("ad_ack_c".equals(name) && value.length() > 0)
+                return true;
+        }
+        return false;
     }
 
     private boolean isNtkAckHardBlocked(NtkQuicFetcher.Result result) {

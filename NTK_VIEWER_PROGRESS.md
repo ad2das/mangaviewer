@@ -20970,3 +20970,58 @@ tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webvie
   - Clean worktree `:app:assembleDebug` passed.
 - Scope decision:
   - This is a CI/build consistency fix only. It does not claim native/hidden ACK is solved.
+
+## 2026-06-16 23:06 screen/log ACK proof re-check and false-negative automation fix
+
+- User correctly pushed to verify the actual captcha screen instead of guessing. Current ACK diagnosis now uses all three signals together:
+  - visible WebView/DevTools page state,
+  - app log proof marker,
+  - CDP network capture when the request is a direct WebView request.
+- ACK proof validation:
+  - Output: `build/ntk-live-ack-screen/ack_proof_after_marker_fix_skipinstall_20260616_225906`
+  - Probe: `build/ntk-ack-ux-probe/20260616_225908_sbxh7_com_fc9ed2`
+  - Capture summary: `success=true`, `successSource=probeStoppedAfterMarker`, `probeExitCode=0`
+  - Strict server proof:
+    - `ntk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-bridge-challenge-ad-ack-cookie-200`
+    - `NTK JS bridge challenge ACK proof recorded status=200,scope=/webtoon/17332/1515337,url=https://sbxh7.com/api/ad/challenge`
+    - `NTK QUIC set-cookie names: count=1,hasClearance=false,names=[ad_ack_c]`
+- Screen/log interpretation:
+  - The WebView first showed real Cloudflare verification text: `Performing security verification`, later `Why is this verification taking long`.
+  - Root direct WebView transport hit reset/403, but QUIC fallback rendered the challenge and eventually obtained `cf_clearance`.
+  - After clearance the target episode page loaded normally and page JS issued the current sbxh7 ACK proof request.
+- Code changes retained for ACK:
+  - Recognize current sbxh7 native `/api/ad/challenge` `200` + `Set-Cookie: ad_ack_c` as strict ACK proof when the response JSON says `ok`.
+  - Record bridge `/api/ad/challenge` `ad_ack_c` as server proof via `ntk_server_ack_success_recorded`.
+  - Keep target ACK loading on QUIC/injected bridge after clearance instead of direct WebView/proxy retry.
+  - Update `tools/ntk_webview_cdp_ack_capture.mjs` so a probe stop marker for `ntk_server_ack_success_recorded` sets summary `success=true`.
+- Bad/avoid:
+  - Do not route root `403` or root `ERR_CONNECTION_RESET` directly to the target episode. Screen/log evidence showed this can leave the target on the h/b Turnstile/error path and prevent reliable ACK.
+  - Do not require CDP request visibility for bridge/native ACK proof. For bridge/native requests, `ntk_server_ack_success_recorded` is the authoritative app-side proof marker.
+  - Do not call cookie-only success ACK. The strict current proof is still `/api/ad/challenge` POST `200` with response `Set-Cookie: ad_ack_c` for the concrete episode path.
+- Viewer sanity after ACK proof:
+  - `build/ntk-random-perf/20260616_230122` failed first drawable at `12585ms` on `/webtoon/3774/176692`.
+  - Pipeline had early URLs at `1943ms` and p001 foreground stream started, but no stream/decode/drawable completion before timeout.
+  - This is p001/generated transport variance, not the ACK proof path. Do not mix this failure into the ACK commit as solved.
+
+## 2026-06-16 23:15 staged APK ACK proof after extended Turnstile loop
+
+- Staged-only APK proof initially failed twice at the root Cloudflare page:
+  - `build/ntk-live-ack-screen/ack_proof_staged_install_20260616_230404`
+  - `build/ntk-live-ack-screen/ack_proof_staged_retry_skipinstall_20260616_230729`
+  - Both stayed on `Just a moment...` with `serverProof=false`.
+  - Logs showed `Turnstile iframe found` and `Turnstile touch sequence completed`, then `Turnstile max wait exceeded`.
+- Root cause:
+  - The Turnstile auto-touch loop stopped after `30s`.
+  - Previous successful proof also logged `Turnstile max wait exceeded` shortly before `cf_clearance`, so 30s was too short for current sbxh7 challenge variance.
+- Retained fix:
+  - `TURNSTILE_MAX_WAIT_MS` increased from `30_000` to `120_000`.
+  - `TURNSTILE_MAX_TOUCHES_PER_WIDGET` increased from `6` to `18`.
+  - Unit tests updated to keep touch spacing bounded while allowing longer root challenge variance.
+- Validation after fix:
+  - Unit/build: `:app:testDebugUnitTest --tests ml.melun.mangaview.activity.CaptchaActivityTest :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Install-included ACK proof: `build/ntk-live-ack-screen/ack_proof_turnstile_extended_20260616_231245`
+  - Probe: `build/ntk-ack-ux-probe/20260616_231247_sbxh7_com_024f73`
+  - Result: `success=true`, `successSource=probeStoppedAfterMarker`, `probeExitCode=0`, `STOPPED_AFTER_MARKER=ntk_server_ack_success_recorded`.
+- Bad/avoid:
+  - Do not restore the 30s Turnstile cap. It is too short for current sbxh7 root clearance variance.
+  - Do not treat `Turnstile max wait exceeded` alone as failure; the old log could appear just before delayed clearance. The actual failure is absence of `cf_clearance` and `ntk_server_ack_success_recorded` by probe end.

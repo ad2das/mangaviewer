@@ -178,7 +178,8 @@ public class CaptchaActivityTest {
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(2400L, 0L, 1));
         assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(2500L, 0L, 1));
         assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(5000L, 2500L, 5));
-        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(7500L, 5000L, 6));
+        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(7500L, 5000L, 6));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(45_000L, 42_500L, 18));
     }
 
     @Test
@@ -187,7 +188,8 @@ public class CaptchaActivityTest {
         assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "", 0, 1000L, 0L));
         assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 1, 2000L, 0L));
         assertEquals(1500L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 2, 1000L, 0L));
-        assertEquals(2000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 6, 9000L, 0L));
+        assertEquals(1000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 6, 9000L, 0L));
+        assertEquals(2000L, CaptchaActivity.nextTurnstileCheckDelayForTest(false, "widget", 18, 9000L, 0L));
     }
 
     @Test

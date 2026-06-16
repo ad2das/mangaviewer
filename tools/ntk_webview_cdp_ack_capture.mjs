@@ -637,7 +637,14 @@ async function main() {
       summary.probeKilled = true;
     }
     summary.probeExitCode = probe.exitCode;
-    Object.assign(summary, extractProbeResult(probeLogPath));
+    const probeResult = extractProbeResult(probeLogPath);
+    Object.assign(summary, probeResult);
+    if (!summary.success && probeResult.probeStoppedAfterMarker && String(probeResult.probeStoppedAfterMarker).includes(opts.successMatch)) {
+      summary.success = true;
+      summary.successSource = "probeStoppedAfterMarker";
+      summary.failureReason = undefined;
+      exitCode = 0;
+    }
   }
 
   run("adb", ["-s", opts.serial, "forward", "--remove", `tcp:${opts.port}`], { timeout: opts.adbCommandTimeoutMs });

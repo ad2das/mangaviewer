@@ -173,6 +173,7 @@ public class NtkRandomStressInstrumentedTest {
         String targetTitlePath = arg(args, "ntkTargetTitlePath", "").trim();
         String targetImageEpisodeId = arg(args, "ntkTargetImageEpisodeId", "").trim();
         String targetImageWorkId = arg(args, "ntkTargetImageWorkId", "").trim();
+        int targetImageCount = parseNonNegativeInt(arg(args, "ntkTargetImageCount", "0"), 0);
         int targetEpisodeNumber = parseNonNegativeInt(arg(args, "ntkTargetEpisodeNumber", "0"), 0);
         boolean directTargetEpisode = Boolean.parseBoolean(arg(args, "ntkDirectTargetEpisode", "false"));
         boolean ensureAccessBefore = Boolean.parseBoolean(arg(args, "ntkEnsureAccessBefore", "false"));
@@ -223,7 +224,7 @@ public class NtkRandomStressInstrumentedTest {
         if(targetEpisodePath.length() > 0 || targetEpisodeNumber > 0) {
             TargetEpisode target = loadTargetEpisode(context, client, targetTitlePath, targetEpisodePath,
                     targetEpisodeNumber, fixedBaseMode, directTargetEpisode, targetImageEpisodeId,
-                    targetImageWorkId);
+                    targetImageWorkId, targetImageCount);
             for(int run = 0; run < runs; run++) {
                 String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
                 prepareFreshNtkMeasurementState(context, client, clearAckBeforeRun,
@@ -1173,7 +1174,8 @@ public class NtkRandomStressInstrumentedTest {
                                                    String episodePath, int targetEpisodeNumber,
                                                    int fixedBaseMode, boolean directTargetEpisode,
                                                    String targetImageEpisodeId,
-                                                   String targetImageWorkId) {
+                                                   String targetImageWorkId,
+                                                   int targetImageCount) {
         String normalizedEpisodePath = normalizeTargetPath(episodePath);
         int baseMode = fixedBaseMode > 0 ? fixedBaseMode : baseModeForTargetPath(
                 normalizedEpisodePath.length() > 0 ? normalizedEpisodePath : titlePath);
@@ -1202,7 +1204,8 @@ public class NtkRandomStressInstrumentedTest {
                     + ",titlePath=" + resolvedTitlePath
                     + ",titleId=" + titleId
                     + ",baseMode=" + baseMode
-                    + ",imageWorkId=" + resolvedImageWorkId);
+                    + ",imageWorkId=" + resolvedImageWorkId
+                    + ",imageCount=" + targetImageCount);
             return new TargetEpisode(title, episode);
         }
         int result = title.fetchEps(client);

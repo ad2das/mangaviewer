@@ -29,6 +29,17 @@ public final class NtkDeviceIdentityManager {
         return newAgent;
     }
 
+    public static String resetDeviceInfo(Context context, boolean restartApp) {
+        String defaultAgent = defaultUserAgent(context);
+        getHttpClient().resetCookie();
+        getHttpClient().clearAllWebViewData();
+        getHttpClient().setNtkDeviceIdentityUserAgent(defaultAgent);
+        Log.d("NtkDeviceIdentity", "resetUserAgent=" + defaultAgent + ",restart=" + restartApp);
+        if(restartApp)
+            restartApp(context);
+        return defaultAgent;
+    }
+
     public static boolean isTrash0607Block(String body) {
         return body != null && body.toLowerCase(Locale.ROOT).contains("trash0607");
     }
@@ -70,5 +81,20 @@ public final class NtkDeviceIdentityManager {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
         return "Mozilla/5.0 (Linux; Android 13; " + model + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
+    }
+
+    private static String defaultUserAgent(Context context) {
+        try {
+            if(context != null) {
+                WebView webView = new WebView(context);
+                String defaultUA = webView.getSettings().getUserAgentString();
+                webView.destroy();
+                if(defaultUA != null && defaultUA.trim().length() > 0)
+                    return defaultUA.trim();
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        return "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36";
     }
 }

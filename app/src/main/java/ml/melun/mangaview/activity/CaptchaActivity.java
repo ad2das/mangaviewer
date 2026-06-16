@@ -82,7 +82,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
     private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
-    private static final long TURNSTILE_MAX_WAIT_MS = 30000;
+    private static final long TURNSTILE_MAX_WAIT_MS = 120000;
     private static final long COOKIE_READ_THROTTLE_MS = 350;
     private static final String NTK_ACCESS_VERIFY_PATH = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
     private static final String NTK_SEARCH_VERIFY_PATH = "/search?q=%EC%9B%90%ED%94%BC%EC%8A%A4&kind=manhwa";
@@ -277,7 +277,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private static final long TURNSTILE_EVALUATION_MIN_INTERVAL_MS = 600L;
     private static final long TURNSTILE_IDLE_RECHECK_MS = 1_000L;
     private static final long TURNSTILE_REPEAT_TOUCH_INTERVAL_MS = 2_500L;
-    private static final int TURNSTILE_MAX_TOUCHES_PER_WIDGET = 6;
+    private static final int TURNSTILE_MAX_TOUCHES_PER_WIDGET = 18;
     private boolean isFirstAttempt = true;
     private boolean isFinishing = false;
     private Set<String> initialClearanceValues = new HashSet<>();
@@ -2634,6 +2634,7 @@ public class CaptchaActivity extends AppCompatActivity {
                             waitingForNtkAdAckBeforeFinish = true;
                             android.util.Log.d("CaptchaActivity",
                                     "NTK document access verified; waiting for ad guard ack before finish");
+                            startNtkNativeAdAckAfterClearance(ntkAckTargetUrlForFinish(purl, currentUrl));
                             waitForNtkAdAckAndFinish(purl, currentUrl, 0);
                         }
                     } else {
@@ -2675,6 +2676,45 @@ public class CaptchaActivity extends AppCompatActivity {
         return wait;
     }
 
+    private void startNtkNativeAdAckAfterClearance(String targetUrl) {
+        if(targetUrl == null || targetUrl.length() == 0 || !isNtkEpisodeUrl(targetUrl))
+            return;
+        final String baseUrl;
+        final String path;
+        try {
+            URI uri = URI.create(targetUrl);
+            baseUrl = uri.getScheme() + "://" + uri.getHost();
+            path = uri.getRawPath();
+        } catch (Exception e) {
+            android.util.Log.d("CaptchaActivity", "NTK native ad ack target parse failed: " + targetUrl, e);
+            return;
+        }
+        if(baseUrl == null || path == null || path.length() == 0)
+            return;
+        AppDispatchers.runIo(() -> {
+            boolean ok = false;
+            try {
+                ok = getHttpClient().performNtkNativeAckBypassIgnoringWebViewInFlight(baseUrl, path, path);
+            } catch (Exception e) {
+                android.util.Log.d("CaptchaActivity", "NTK native ad ack after clearance failed: " + path, e);
+            }
+            boolean success = ok;
+            android.util.Log.d("CaptchaActivity", "NTK native ad ack after clearance done path="
+                    + path + ",success=" + success);
+            if(!success)
+                return;
+            AppDispatchers.runOnMain(() -> {
+                if(isFinishing || !waitingForNtkAdAckBeforeFinish)
+                    return;
+                if(hasNtkAdAckCookie(baseUrl + path, targetUrl)) {
+                    android.util.Log.d("CaptchaActivity", "NTK native ad ack verified before finish: " + path);
+                    waitingForNtkAdAckBeforeFinish = false;
+                    finishWithVerifiedClearance();
+                }
+            });
+        });
+    }
+
     private boolean hasNtkAdAckCookie(String purl, String currentUrl) {
         syncCaptchaCookiesToHttpClient(purl, currentUrl);
         String targetUrl = ntkAckTargetUrlForFinish(purl, currentUrl);
@@ -2691,7 +2731,16 @@ public class CaptchaActivity extends AppCompatActivity {
             ntkRootBootstrapReturnUrl = null;
             ntkRootBootstrapStartedAt = 0L;
             ntkRootBootstrapMainFrameError = false;
+            retriedCaptchaWithQuic = false;
+            retriedCaptchaWithProxy = false;
+            retriedCaptchaWithoutProxy = false;
+            clearWebViewProxy();
+            quicCaptchaHtmlActive = true;
             webView.loadUrl(targetUrl);
+            handler.postDelayed(() -> {
+                if(!isFinishing && !isDestroyed() && webView != null)
+                    installShadowHookIfAllowed();
+            }, 250L);
             handler.postDelayed(() -> waitForNtkAdAckAndFinish(purl, webView == null ? currentUrl : webView.getUrl(), attempt + 1), 500L);
             return;
         }
