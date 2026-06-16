@@ -3,13 +3,17 @@ package ml.melun.mangaview.activity;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Bundle;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
+import androidx.test.runner.lifecycle.Stage;
 
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -18,6 +22,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.util.Collection;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -133,27 +138,292 @@ public class NtkCaptchaLiveInstrumentedTest {
         }
     }
 
+    @Test
+    public void captchaActivityAttemptsAdAckWhenRequested() throws Exception {
+        Bundle args = InstrumentationRegistry.getArguments();
+        Assume.assumeTrue("ACK UX probe requires -e ntkAckUxProbe true",
+                "true".equalsIgnoreCase(args.getString("ntkAckUxProbe")));
+
+        String siteRoot = args.getString("ntkSiteRoot", NTK_ROOT);
+        String path = normalizedCaptchaPath(args.getString("ntkCaptchaPath",
+                "/webtoon/17332/1515337"));
+        long maxMs = parseNonNegativeLong(args.getString("ntkAckProbeMaxMs"), 22000L);
+        long rearmIntervalMs = parseNonNegativeLong(args.getString("ntkAckProbeRearmIntervalMs"), 0L);
+        boolean requireAck = !"false".equalsIgnoreCase(args.getString("ntkRequireAck", "true"));
+
+        Intent intent = prepareNtkCaptchaIntent();
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        CaptchaActivity activity = null;
+        PageState last = new PageState();
+        long startedAt;
+        try {
+            ApplicationProvider.getApplicationContext().startActivity(intent);
+            activity = waitForCaptchaActivity(10_000L);
+            assertTrue("Expected CaptchaActivity to start for ACK UX probe", activity != null);
+            startedAt = System.currentTimeMillis();
+            CustomHttpClient client = MainApplication.getHttpClient();
+            long deadline = startedAt + maxMs;
+            long nextRearmAt = rearmIntervalMs > 0L ? 0L : Long.MAX_VALUE;
+            long nextFocusAt = 0L;
+            long nextLogAt = 0L;
+            while(System.currentTimeMillis() < deadline) {
+                client.syncCookiesFromWebView(siteRoot, true);
+                client.syncCookiesFromWebView(siteRoot + path, true);
+                if(client.hasUsableNtkAdAckCookieForPath(path)
+                        && client.hasRecentNtkServerAckProof(path))
+                    break;
+                PageState state = readPageState(activity);
+                if(state != null)
+                    last = state;
+                long now = System.currentTimeMillis();
+                if(now >= nextFocusAt || !last.hasFocus) {
+                    ensureCaptchaFocused(activity);
+                    nextFocusAt = now + 2_000L;
+                }
+                if(rearmIntervalMs > 0L && now >= nextRearmAt) {
+                    triggerAckRearm(activity);
+                    nextRearmAt = now + rearmIntervalMs;
+                }
+                if(now >= nextLogAt) {
+                    android.util.Log.d("NtkCaptchaLiveTest", "ntk_captcha_ack_probe_progress path="
+                            + path
+                            + ",ack=" + client.hasUsableNtkAdAckCookieForPath(path)
+                            + ",clearance=" + client.hasCloudflareClearance()
+                            + ",serverProof=" + client.hasRecentNtkServerAckProof(path)
+                            + ",accessProof=" + client.hasNtkAccessProof()
+                            + ",ms=" + (now - startedAt)
+                            + ",page=" + last.summary());
+                    nextLogAt = now + 1000L;
+                }
+                if(activity.isDestroyed() && !client.hasUsableNtkAdAckCookieForPath(path))
+                    break;
+                Thread.sleep(250L);
+            }
+            boolean ack = client.hasUsableNtkAdAckCookieForPath(path);
+            boolean serverProof = client.hasRecentNtkServerAckProof(path);
+            android.util.Log.d("NtkCaptchaLiveTest", "ntk_captcha_ack_probe_done path=" + path
+                    + ",ack=" + ack
+                    + ",clearance=" + client.hasCloudflareClearance()
+                    + ",serverProof=" + serverProof
+                    + ",accessProof=" + client.hasNtkAccessProof()
+                    + ",ms=" + (System.currentTimeMillis() - startedAt)
+                    + ",page=" + last.summary());
+            if(requireAck)
+                assertTrue("Expected normal UX probe to record strict NTK ACK 200 proof for " + path
+                        + ", ack=" + ack + ", serverProof=" + serverProof
+                        + ", last=" + last.summary(), ack && serverProof);
+            else
+                assertTrue("Expected ACK probe to reach a challenge or normal NTK page, last="
+                                + last.summary(),
+                        ack || last.looksLikeChallengeOrNormal()
+                                || client.hasCloudflareClearance()
+                                || client.hasRecentCloudflareChallenge());
+        } finally {
+            finishCaptchaActivity(activity, 3_000L);
+        }
+    }
+
+    private void finishCaptchaActivity(CaptchaActivity activity, long maxMs) throws InterruptedException {
+        if(activity == null || activity.isDestroyed())
+            return;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            if(activity.isDestroyed())
+                return;
+            activity.finishAndRemoveTask();
+        });
+        long deadline = System.currentTimeMillis() + maxMs;
+        while(System.currentTimeMillis() < deadline && !activity.isDestroyed()) {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            if(activity.isDestroyed())
+                break;
+            Thread.sleep(100L);
+        }
+    }
+
+    private CaptchaActivity waitForCaptchaActivity(long maxMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + maxMs;
+        AtomicReference<CaptchaActivity> found = new AtomicReference<>();
+        while(System.currentTimeMillis() < deadline && found.get() == null) {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                CaptchaActivity activity = findCaptchaActivityInStage(Stage.RESUMED);
+                if(activity == null)
+                    activity = findCaptchaActivityInStage(Stage.STARTED);
+                if(activity == null)
+                    activity = findCaptchaActivityInStage(Stage.CREATED);
+                found.set(activity);
+            });
+            if(found.get() != null)
+                break;
+            Thread.sleep(100L);
+        }
+        return found.get();
+    }
+
+    private CaptchaActivity findCaptchaActivityInStage(Stage stage) {
+        Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                .getActivitiesInStage(stage);
+        for(Activity activity : activities) {
+            if(activity instanceof CaptchaActivity)
+                return (CaptchaActivity) activity;
+        }
+        return null;
+    }
+
+    @Test
+    public void nativeAdAckProbeWhenRequested() throws Exception {
+        Bundle args = InstrumentationRegistry.getArguments();
+        Assume.assumeTrue("Native ACK probe requires -e ntkNativeAckProbe true",
+                "true".equalsIgnoreCase(args.getString("ntkNativeAckProbe")));
+
+        String siteRoot = args.getString("ntkSiteRoot", NTK_ROOT);
+        String path = normalizedCaptchaPath(args.getString("ntkCaptchaPath",
+                "/webtoon/17332/1515337"));
+        long maxMs = parseNonNegativeLong(args.getString("ntkAckProbeMaxMs"), 12000L);
+        long prepareMaxMs = parseNonNegativeLong(args.getString("ntkAckPrepareMaxMs"), 4500L);
+        boolean usePrepared = !"false".equalsIgnoreCase(args.getString("ntkAckUsePrepared", "true"));
+        boolean requireAck = !"false".equalsIgnoreCase(args.getString("ntkRequireAck", "true"));
+
+        prepareNtkCaptchaIntent();
+        CustomHttpClient client = MainApplication.getHttpClient();
+        long startedAt = System.currentTimeMillis();
+        boolean prepared = false;
+        if(usePrepared) {
+            client.prepareNtkNativeAckChallengeForWebView(path);
+            long prepareDeadline = startedAt + Math.min(prepareMaxMs, maxMs);
+            while(System.currentTimeMillis() < prepareDeadline) {
+                prepared = client.hasRecentPreparedNtkNativeAckChallenge(path);
+                if(prepared || !client.isPreparedNtkNativeAckChallengeInFlight(path))
+                    break;
+                Thread.sleep(40L);
+            }
+        }
+        boolean ok = prepared && client.performPreparedNtkNativeAck(path);
+        if(!ok && System.currentTimeMillis() - startedAt < maxMs) {
+            ok = client.performNtkNativeAckBypassIgnoringWebViewInFlight(siteRoot, path, path);
+        }
+        boolean cookie = client.hasUsableNtkAdAckCookieForPath(path);
+        boolean proof = client.hasRecentNtkServerAckProof(path);
+        long elapsedMs = System.currentTimeMillis() - startedAt;
+        android.util.Log.d("NtkCaptchaLiveTest", "ntk_native_ack_probe_done path=" + path
+                + ",ok=" + ok
+                + ",cookie=" + cookie
+                + ",proof=" + proof
+                + ",prepared=" + prepared
+                + ",usePrepared=" + usePrepared
+                + ",ms=" + elapsedMs);
+        if(requireAck)
+            assertTrue("Expected native ACK probe to record strict NTK ACK for " + path
+                    + ", ok=" + ok
+                    + ", cookie=" + cookie
+                    + ", proof=" + proof
+                    + ", ms=" + elapsedMs, ok && proof);
+    }
+
     private Intent prepareNtkCaptchaIntent() {
         Context context = ApplicationProvider.getApplicationContext();
         String siteRoot = InstrumentationRegistry.getArguments().getString("ntkSiteRoot", NTK_ROOT);
-        context.getSharedPreferences("mangaView", Context.MODE_PRIVATE).edit().clear().commit();
+        boolean strictFresh = !"false".equalsIgnoreCase(
+                InstrumentationRegistry.getArguments().getString("ntkCaptchaStrictFresh", "true"));
+        boolean clearWebViewCookies = !"false".equalsIgnoreCase(
+                InstrumentationRegistry.getArguments().getString("ntkClearWebViewCookies", "true"));
+        if(strictFresh)
+            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE).edit().clear().commit();
+        String path = normalizedCaptchaPath(
+                InstrumentationRegistry.getArguments().getString("ntkCaptchaPath", "/"));
         MainApplication.p.init(context);
         MainApplication.p.setNtkSitePreset(siteRoot);
         MainApplication.p.setBaseMode(MTitle.base_comic);
-        MainApplication.getHttpClient().resetCookie();
+        if(strictFresh) {
+            MainApplication.getHttpClient().resetCookie();
+            if(clearWebViewCookies) {
+                MainApplication.getHttpClient().clearCloudflareWebViewCookiesAggressively(
+                        siteRoot + path,
+                        siteRoot,
+                        CustomHttpClient.NTK_WEBTOON_URL,
+                        CustomHttpClient.NTK_COMIC_URL,
+                        "https://toonflix.app");
+            }
+        }
 
         Intent intent = new Intent(context, CaptchaActivity.class);
-        String path = InstrumentationRegistry.getArguments().getString("ntkCaptchaPath", "/");
-        if(path == null || path.trim().length() == 0)
-            path = "/";
-        path = path.trim();
-        if(!path.startsWith("/"))
-            path = "/" + path;
+        if(strictFresh)
+            MainApplication.getHttpClient().clearNtkAckStateForTest(siteRoot + path, false);
         intent.putExtra("url", siteRoot + path);
         String userAgent = InstrumentationRegistry.getArguments().getString("ntkCaptchaUserAgent", "");
         if(userAgent != null && userAgent.trim().length() > 0)
             intent.putExtra("ntkCaptchaUserAgent", userAgent.trim());
+        if("true".equalsIgnoreCase(InstrumentationRegistry.getArguments()
+                .getString("ntkEnableWebViewDebuggingForDiagnostics", "false"))) {
+            intent.putExtra("ntkEnableWebViewDebuggingForDiagnostics", true);
+        }
+        if("true".equalsIgnoreCase(InstrumentationRegistry.getArguments()
+                .getString("ntkDisableTurnstileAutomationForDiagnostics", "false"))) {
+            intent.putExtra("ntkDisableTurnstileAutomationForDiagnostics", true);
+        }
+        if("true".equalsIgnoreCase(InstrumentationRegistry.getArguments()
+                .getString("ntkUseRawWebViewUserAgentForDiagnostics", "false"))) {
+            intent.putExtra("ntkUseRawWebViewUserAgentForDiagnostics", true);
+        }
+        if("true".equalsIgnoreCase(InstrumentationRegistry.getArguments()
+                .getString("ntkDisableRootBootstrapForDiagnostics", "false"))) {
+            intent.putExtra("ntkDisableRootBootstrapForDiagnostics", true);
+        }
+        if("true".equalsIgnoreCase(InstrumentationRegistry.getArguments()
+                .getString("ntkRelaxWindowSettingsForDiagnostics", "false"))) {
+            intent.putExtra("ntkRelaxWindowSettingsForDiagnostics", true);
+        }
+        if("true".equalsIgnoreCase(InstrumentationRegistry.getArguments()
+                .getString("ntkUseChromeUaMetadataForDiagnostics", "false"))) {
+            intent.putExtra("ntkUseChromeUaMetadataForDiagnostics", true);
+        }
         return intent;
+    }
+
+    private static String normalizedCaptchaPath(String path) {
+        if(path == null || path.trim().length() == 0)
+            return "/";
+        String normalized = path.trim();
+        return normalized.startsWith("/") ? normalized : "/" + normalized;
+    }
+
+    private static long parseNonNegativeLong(String value, long fallback) {
+        try {
+            long parsed = Long.parseLong(value == null ? "" : value.trim());
+            return parsed >= 0L ? parsed : fallback;
+        } catch(Exception e) {
+            return fallback;
+        }
+    }
+
+    private void triggerAckRearm(CaptchaActivity activity) {
+        try {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                if(activity.webView == null)
+                    return;
+                activity.webView.evaluateJavascript(
+                        "(function(){try{window.dispatchEvent(new CustomEvent('ntk-ack-rearm',{detail:{source:'instrumented-probe'}}));"
+                                + "}catch(e){}})()",
+                        null);
+            });
+        } catch(Exception ignored) {
+        }
+    }
+
+    private void ensureCaptchaFocused(CaptchaActivity activity) {
+        try {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                if(activity == null || activity.isDestroyed() || activity.webView == null)
+                    return;
+                if(activity.getWindow() != null && activity.getWindow().getDecorView() != null)
+                    activity.getWindow().getDecorView().requestFocus();
+                activity.webView.requestFocus();
+                activity.webView.evaluateJavascript(
+                        "(function(){try{window.focus&&window.focus();document.body&&document.body.focus&&document.body.focus();return document.hasFocus?String(document.hasFocus()):'unknown';}catch(e){return String(e);}})()",
+                        value -> android.util.Log.d("NtkCaptchaLiveTest",
+                                "ntk_captcha_focus_probe result=" + value));
+            });
+        } catch(Exception ignored) {
+        }
     }
 
     private PageState readPageState(ActivityScenario<CaptchaActivity> scenario) throws Exception {
@@ -209,7 +479,8 @@ public class NtkCaptchaLiveInstrumentedTest {
                             + "var visible=/verify you are human|performing security verification|checking your browser|just a moment/i.test(text);"
                             + "var normal=!!document.querySelector('a[href^=\"/manhwa\"],a[href^=\"/webtoon\"],a[href*=\"/manhwa/\"],a[href*=\"/webtoon/\"],img[src*=\"/webtoon_uploads/\"],img[data-src*=\"/webtoon_uploads/\"],img[src*=\"/manhwa_uploads/\"],img[data-src*=\"/manhwa_uploads/\"]');"
                             + "var links=document.querySelectorAll('a[href]').length;var imgs=document.querySelectorAll('img[src],img[data-src]').length;if(links>=8||imgs>=4)normal=true;"
-                            + "return JSON.stringify({url:location.href,title:document.title||'',text:text.slice(0,2000),html:html.slice(0,4000),cookie:cookie,hasChallengeFrame:hasFrame,hasChallengeElement:hasElement,hasShadowChallenge:hasShadow,hasVisibleChallengeText:visible,hasNormalPage:normal});"
+                            + "var focus=document.hasFocus?document.hasFocus():false;"
+                            + "return JSON.stringify({url:location.href,title:document.title||'',text:text.slice(0,2000),html:html.slice(0,4000),cookie:cookie,hasChallengeFrame:hasFrame,hasChallengeElement:hasElement,hasShadowChallenge:hasShadow,hasVisibleChallengeText:visible,hasNormalPage:normal,hasFocus:focus});"
                             + "})()",
                     value -> {
                         out.set(PageState.fromJavascript(value));
@@ -231,16 +502,17 @@ public class NtkCaptchaLiveInstrumentedTest {
         final boolean hasShadowChallenge;
         final boolean hasVisibleChallengeText;
         final boolean hasNormalPage;
+        final boolean hasFocus;
         final boolean closed;
 
         PageState() {
-            this("", "", "", "", "", false, false, false, false, false, false);
+            this("", "", "", "", "", false, false, false, false, false, false, false);
         }
 
         PageState(String url, String title, String text, String html, String cookie,
                   boolean hasChallengeFrame, boolean hasChallengeElement,
                   boolean hasShadowChallenge, boolean hasVisibleChallengeText,
-                  boolean hasNormalPage, boolean closed) {
+                  boolean hasNormalPage, boolean hasFocus, boolean closed) {
             this.url = url == null ? "" : url;
             this.title = title == null ? "" : title;
             this.text = text == null ? "" : text;
@@ -251,11 +523,12 @@ public class NtkCaptchaLiveInstrumentedTest {
             this.hasShadowChallenge = hasShadowChallenge;
             this.hasVisibleChallengeText = hasVisibleChallengeText;
             this.hasNormalPage = hasNormalPage;
+            this.hasFocus = hasFocus;
             this.closed = closed;
         }
 
         static PageState closed() {
-            return new PageState("", "", "closed", "", "", false, false, false, false, true, true);
+            return new PageState("", "", "closed", "", "", false, false, false, false, true, false, true);
         }
 
         static PageState fromJavascript(String value) {
@@ -274,9 +547,10 @@ public class NtkCaptchaLiveInstrumentedTest {
                         object.optBoolean("hasShadowChallenge"),
                         object.optBoolean("hasVisibleChallengeText"),
                         object.optBoolean("hasNormalPage"),
+                        object.optBoolean("hasFocus"),
                         false);
             } catch (Exception e) {
-                return new PageState("", "", value, value, "", false, false, false, false, false, false);
+                return new PageState("", "", value, value, "", false, false, false, false, false, false, false);
             }
         }
 
@@ -309,6 +583,7 @@ public class NtkCaptchaLiveInstrumentedTest {
                     + ",shadow=" + hasShadowChallenge
                     + ",visibleText=" + hasVisibleChallengeText
                     + ",normal=" + hasNormalPage
+                    + ",focus=" + hasFocus
                     + ",closed=" + closed
                     + " " + clipped;
         }
