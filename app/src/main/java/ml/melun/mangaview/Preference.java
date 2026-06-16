@@ -790,6 +790,17 @@ public class Preference {
         String defaultRoot = ntkRoot(NTK_WEBTOON_URL);
         if(isLegacyNtkRedirectRoot(root))
             root = defaultRoot;
+        setNtkSitePresetRoot(root);
+    }
+
+    public void setNtkSitePresetForDiagnostics(String rootUrl) {
+        String root = normalizeNtkRoot(rootUrl);
+        if(root.length() == 0)
+            root = ntkRoot(NTK_WEBTOON_URL);
+        setNtkSitePresetRoot(root);
+    }
+
+    private void setNtkSitePresetRoot(String root) {
         ntkResolvedRoot = root;
         defUrl = root + "/manhwa";
         url = defUrl;

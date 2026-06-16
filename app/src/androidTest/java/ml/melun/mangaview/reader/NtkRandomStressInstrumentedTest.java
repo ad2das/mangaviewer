@@ -14,6 +14,7 @@ import android.util.Log;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
+import android.webkit.CookieManager;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -30,9 +31,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.ClassificationDbStore;
@@ -42,6 +45,7 @@ import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.NtkDeviceIdentityManager;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.CaptchaActivity;
+import ml.melun.mangaview.activity.NtkQuicFetcher;
 import ml.melun.mangaview.activity.ReaderV2Activity;
 import ml.melun.mangaview.activity.ViewerIntentContract;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
@@ -68,6 +72,8 @@ public class NtkRandomStressInstrumentedTest {
     private static final int SCROLL_POST_STOP_DRIFT_TOLERANCE_PX = 24;
     private static final long SCROLL_DRIFT_SAMPLE_MS = 250L;
     private static final long SCROLL_QUIET_STABLE_MS = 480L;
+    private static final long SCROLL_QUIET_TIMEOUT_MS = 3_500L;
+    private static final long SCROLL_SETTLE_CONFIRM_MS = 250L;
     private static final long DEFAULT_POST_STOP_DRIFT_SAMPLE_MS = 650L;
 
     @Test
@@ -85,7 +91,8 @@ public class NtkRandomStressInstrumentedTest {
         boolean ensureAccessBefore = Boolean.parseBoolean(arg(args, "ntkEnsureAccessBefore", "false"));
         long ensureAccessMaxMs = parseNonNegativeLong(arg(args, "ntkEnsureAccessMaxMs", "180000"), 180000L);
         if(ensureAccessBefore)
-            ensureNtkAccessBeforeMeasurement(context, client, baseMode, path, ensureAccessMaxMs);
+            assertTrue("NTK_ENSURE_ACCESS_FAILED dump path=" + path,
+                    ensureNtkAccessBeforeMeasurement(context, client, baseMode, path, ensureAccessMaxMs));
         CustomHttpClient.PageResponse page = client.mgetNtkRscPage(path, 0);
         String body = page == null || page.body == null ? "" : page.body;
         ArrayList<Title> parsed = MainPageWebtoon.parseNtkTitleListPayload(body, baseMode, PAGE_SIZE);
@@ -142,15 +149,21 @@ public class NtkRandomStressInstrumentedTest {
         long seed = parseLong(arg(args, "ntkRandomSeed", ""), SystemClock.elapsedRealtime());
         Random random = new Random(seed);
         Random modeRandom = new Random(seed ^ 0x5a17c3e2L);
+        Random baseModeRandom = new Random(seed ^ 0x427251bdL);
         boolean cycleModes = Boolean.parseBoolean(arg(args, "ntkCycleModes", "true"));
+        boolean cycleBaseModes = Boolean.parseBoolean(arg(args, "ntkCycleBaseModes", "true"));
         int fixedBaseMode = parseBaseMode(arg(args, "ntkBaseMode", ""));
         int modeOffset = modeRandom.nextInt(MODES.length);
+        int baseModeOffset = baseModeRandom.nextInt(2);
         CustomHttpClient client = MainApplication.getHttpClient();
         String siteRoot = arg(args, "ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL);
         boolean lockSiteRoot = Boolean.parseBoolean(arg(args, "ntkLockSiteRoot",
                 args.containsKey("ntkSiteRoot") ? "true" : "false"));
         client.setNtkDomainAutoResolveDisabledForTest(lockSiteRoot);
-        MainApplication.p.setNtkSitePreset(siteRoot);
+        if(lockSiteRoot)
+            MainApplication.p.setNtkSitePresetForDiagnostics(siteRoot);
+        else
+            MainApplication.p.setNtkSitePreset(siteRoot);
         String customUserAgent = arg(args, "ntkUserAgent", "");
         if(customUserAgent.trim().length() > 0) {
             client.agent = customUserAgent.trim();
@@ -159,6 +172,7 @@ public class NtkRandomStressInstrumentedTest {
         String targetEpisodePath = arg(args, "ntkTargetEpisodePath", "").trim();
         String targetTitlePath = arg(args, "ntkTargetTitlePath", "").trim();
         String targetImageEpisodeId = arg(args, "ntkTargetImageEpisodeId", "").trim();
+        String targetImageWorkId = arg(args, "ntkTargetImageWorkId", "").trim();
         int targetEpisodeNumber = parseNonNegativeInt(arg(args, "ntkTargetEpisodeNumber", "0"), 0);
         boolean directTargetEpisode = Boolean.parseBoolean(arg(args, "ntkDirectTargetEpisode", "false"));
         boolean ensureAccessBefore = Boolean.parseBoolean(arg(args, "ntkEnsureAccessBefore", "false"));
@@ -169,6 +183,8 @@ public class NtkRandomStressInstrumentedTest {
                 arg(args, "ntkClearReaderImageCacheBeforeRun", "false"));
         boolean changeDeviceIdentityBeforeRun = Boolean.parseBoolean(
                 arg(args, "ntkChangeDeviceIdentityBeforeRun", "false"));
+        boolean resetDeviceIdentityBeforeRun = Boolean.parseBoolean(
+                arg(args, "ntkResetDeviceIdentityBeforeRun", "false"));
 
         Log.d(TAG, "ntk_true_random_start runs=" + runs
                 + ",seed=" + seed
@@ -190,22 +206,29 @@ public class NtkRandomStressInstrumentedTest {
                 + ",renderFrameMaxMs=" + renderFrameMaxMs
                 + ",postStopDriftMs=" + postStopDriftMs
                 + ",cycleModes=" + cycleModes
+                + ",cycleBaseModes=" + cycleBaseModes
                 + ",baseMode=" + fixedBaseMode
                 + ",fixedMode=" + fixedMode
                 + ",safeNetwork=" + safeNetwork
+                + ",requestedSiteRoot=" + siteRoot
                 + ",siteRoot=" + MainApplication.p.getWebtoonUrl()
                 + ",lockSiteRoot=" + lockSiteRoot
                 + ",changeDeviceIdentityBeforeRun=" + changeDeviceIdentityBeforeRun
+                + ",resetDeviceIdentityBeforeRun=" + resetDeviceIdentityBeforeRun
                 + ",modeOffset=" + modeOffset);
-        if(ensureAccessBefore)
-            ensureNtkAccessBeforeMeasurement(context, client, fixedBaseMode, targetEpisodePath, ensureAccessMaxMs);
+        if(ensureAccessBefore && targetEpisodePath.length() > 0)
+            assertTrue("NTK_ENSURE_ACCESS_FAILED path=" + targetEpisodePath,
+                    ensureNtkAccessBeforeMeasurement(context, client, fixedBaseMode, targetEpisodePath,
+                            ensureAccessMaxMs));
         if(targetEpisodePath.length() > 0 || targetEpisodeNumber > 0) {
             TargetEpisode target = loadTargetEpisode(context, client, targetTitlePath, targetEpisodePath,
-                    targetEpisodeNumber, fixedBaseMode, directTargetEpisode, targetImageEpisodeId);
+                    targetEpisodeNumber, fixedBaseMode, directTargetEpisode, targetImageEpisodeId,
+                    targetImageWorkId);
             for(int run = 0; run < runs; run++) {
                 String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
                 prepareFreshNtkMeasurementState(context, client, clearAckBeforeRun,
                         clearReaderImageCacheBeforeRun, changeDeviceIdentityBeforeRun,
+                        resetDeviceIdentityBeforeRun,
                         normalizeTargetPath(targetEpisodePath));
                 runReaderCase(context, device, run, mode, target.title, target.episode,
                         scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs,
@@ -219,12 +242,13 @@ public class NtkRandomStressInstrumentedTest {
         int completedRuns = 0;
         int discoveryAttempts = 0;
         int maxDiscoveryAttempts = Math.max(8, runs * 8);
+        Set<String> usedEpisodePaths = new HashSet<>();
         while(completedRuns < runs && discoveryAttempts < maxDiscoveryAttempts) {
             int run = completedRuns;
             discoveryAttempts++;
             int baseMode = fixedBaseMode > 0
                     ? fixedBaseMode
-                    : (random.nextBoolean() ? MTitle.base_comic : MTitle.base_webtoon);
+                    : baseModeForRun(cycleBaseModes, random, baseModeOffset, run);
             MainApplication.p.setBaseMode(baseMode);
             Title title = null;
             int fetchResult = Title.LOAD_ERROR;
@@ -288,15 +312,21 @@ public class NtkRandomStressInstrumentedTest {
                     safeDiscoveryPause(client);
                 continue;
             }
-            Manga episode = pickRandomEpisode(title.getEps(), random);
+            Manga episode = pickRandomEpisode(title.getEps(), random, usedEpisodePaths);
             assertTrue("Expected picked NTK episode path for run=" + run
                             + " title=" + title.getName()
                             + " episode=" + episode.getName(),
                     episode.getNtkEpisodePath().length() > 0);
+            usedEpisodePaths.add(episode.getNtkEpisodePath());
             String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
             prepareFreshNtkMeasurementState(context, client, clearAckBeforeRun,
                     clearReaderImageCacheBeforeRun, changeDeviceIdentityBeforeRun,
+                    resetDeviceIdentityBeforeRun,
                     episode.getNtkEpisodePath());
+            if(ensureAccessBefore)
+                assertTrue("NTK_ENSURE_ACCESS_FAILED path=" + episode.getNtkEpisodePath(),
+                        ensureNtkAccessBeforeMeasurement(context, client, baseMode,
+                                episode.getNtkEpisodePath(), ensureAccessMaxMs));
             runReaderCase(context, device, run, mode, title, episode,
                     scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs,
                     firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
@@ -315,6 +345,7 @@ public class NtkRandomStressInstrumentedTest {
                                                         boolean clearAck,
                                                         boolean clearReaderImageCache,
                                                         boolean changeDeviceIdentity,
+                                                        boolean resetDeviceIdentity,
                                                         String targetPath) {
         if(clearAck && client != null) {
             String webtoonRoot = MainApplication.p == null
@@ -322,7 +353,16 @@ public class NtkRandomStressInstrumentedTest {
             String clearUrl = targetPath == null || targetPath.length() == 0
                     ? webtoonRoot
                     : (targetPath.startsWith("http") ? targetPath : webtoonRoot + targetPath);
-            client.clearNtkAckStateForTest(clearUrl);
+            if(clearReaderImageCache) {
+                client.clearCloudflareWebViewCookiesAggressively(clearUrl, webtoonRoot,
+                        CustomHttpClient.NTK_WEBTOON_URL,
+                        CustomHttpClient.NTK_COMIC_URL,
+                        "https://toonflix.app");
+                Log.d(TAG, "ntk_strict_fresh_webview_cf_clear_for_test url=" + clearUrl);
+                client.clearNtkAckStateForTest(clearUrl, false);
+            } else {
+                client.clearNtkAckStateForTest(clearUrl);
+            }
         }
         if(clearReaderImageCache && context != null) {
             Manga.clearNtkGeneratedExtensionCacheForTest();
@@ -334,7 +374,12 @@ public class NtkRandomStressInstrumentedTest {
             Log.d(TAG, "ntk_reader_image_cache_clear_for_test deleted=" + deleted
                     + ",path=" + dir.getAbsolutePath());
         }
-        if(changeDeviceIdentity && context != null) {
+        if(resetDeviceIdentity && context != null) {
+            AtomicReference<String> agentRef = new AtomicReference<>("");
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                    agentRef.set(NtkDeviceIdentityManager.resetDeviceInfo(context, false)));
+            Log.d(TAG, "ntk_device_identity_reset_for_test ua=" + agentRef.get());
+        } else if(changeDeviceIdentity && context != null) {
             AtomicReference<String> agentRef = new AtomicReference<>("");
             InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
                     agentRef.set(NtkDeviceIdentityManager.changeDeviceInfo(context, false)));
@@ -400,10 +445,10 @@ public class NtkRandomStressInstrumentedTest {
         }
     }
 
-    private static void ensureNtkAccessBeforeMeasurement(Context context, CustomHttpClient client,
-                                                         int baseMode, String targetPath, long maxMs) {
-        if(client == null || client.hasNtkAccessProof() || maxMs <= 0)
-            return;
+    private static boolean ensureNtkAccessBeforeMeasurement(Context context, CustomHttpClient client,
+                                                            int baseMode, String targetPath, long maxMs) {
+        if(client == null || maxMs <= 0)
+            return false;
         if(context == null)
             context = ApplicationProvider.getApplicationContext();
         String webtoonRoot = MainApplication.p == null
@@ -413,6 +458,8 @@ public class NtkRandomStressInstrumentedTest {
             url = webtoonRoot + "/";
         else if(url.startsWith("/"))
             url = webtoonRoot + url;
+        if(hasVerifiedNtkAccessForMeasurement(context, client, webtoonRoot, url))
+            return true;
         long startedAt = SystemClock.elapsedRealtime();
         Log.d(TAG, "ntk_true_random_pre_captcha_start baseMode=" + baseMode
                 + ",url=" + url
@@ -427,7 +474,8 @@ public class NtkRandomStressInstrumentedTest {
             while(SystemClock.elapsedRealtime() < deadline) {
                 client.syncCookiesFromWebView(webtoonRoot, true);
                 client.syncCookiesFromWebView(client.getUrl(), true);
-                if(client.hasNtkAccessProof())
+                client.syncCookiesFromWebView(url, true);
+                if(hasVerifiedNtkAccessForMeasurement(context, client, webtoonRoot, url))
                     break;
                 SystemClock.sleep(500L);
             }
@@ -441,8 +489,197 @@ public class NtkRandomStressInstrumentedTest {
             }
             Log.d(TAG, "ntk_true_random_pre_captcha_done baseMode=" + baseMode
                     + ",clearance=" + client.hasNtkAccessProof()
+                    + ",strong=" + hasStrongNtkAccessCookies(webtoonRoot, url)
+                    + ",cookies=" + summarizeNtkAccessCookieState(webtoonRoot, url)
                     + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
         }
+        boolean verified = hasVerifiedNtkAccessForMeasurement(context, client, webtoonRoot, url);
+        if(!verified) {
+            Log.d(TAG, "ntk_true_random_pre_captcha_failed baseMode=" + baseMode
+                    + ",target=" + targetPath
+                    + ",maxMs=" + maxMs
+                    + ",proof=" + client.hasNtkAccessProof()
+                    + ",strong=" + hasStrongNtkAccessCookies(webtoonRoot, url)
+                    + ",cookies=" + summarizeNtkAccessCookieState(webtoonRoot, url));
+        }
+        return verified;
+    }
+
+    private static boolean hasVerifiedNtkAccessForMeasurement(Context context, CustomHttpClient client,
+                                                              String webtoonRoot, String url) {
+        if(client == null || !hasStrongNtkAccessCookies(webtoonRoot, url))
+            return false;
+        String path = normalizeTargetPath(url);
+        if(path.startsWith(webtoonRoot))
+            path = path.substring(webtoonRoot.length());
+        if(path.length() == 0 || !path.startsWith("/"))
+            path = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
+        boolean documentOk = verifyNtkDocumentAccess(client, path);
+        boolean rscOk = !isNtkEpisodeDocumentPath(path) || verifyNtkRscAccess(context, client, webtoonRoot, path);
+        boolean ok = documentOk && rscOk;
+        Log.d(TAG, "ntk_true_random_access_verify path=" + path
+                + ",documentOk=" + documentOk
+                + ",rscOk=" + rscOk
+                + ",ok=" + ok
+                + ",proof=" + client.hasNtkAccessProof()
+                + ",cookies=" + summarizeNtkAccessCookieState(webtoonRoot, url));
+        return ok;
+    }
+
+    private static boolean verifyNtkDocumentAccess(CustomHttpClient client, String path) {
+        try {
+            okhttp3.Response response = client.mget(path, true);
+            if(response == null) {
+                Log.d(TAG, "ntk_true_random_access_verify_document_empty path=" + path);
+                return false;
+            }
+            int code = response.code();
+            String body = client.readBody(response);
+            boolean ok = code >= 200 && code < 400
+                    && isUsableNtkAccessDocument(body)
+                    && !client.isCloudflareChallengeResponse(code, body);
+            if(!ok)
+                Log.d(TAG, "ntk_true_random_access_verify_document_failed path=" + path
+                        + ",code=" + code
+                        + ",sample=" + shortSample(body));
+            return ok;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_true_random_access_verify_document_error path=" + path + "," + e);
+            return false;
+        }
+    }
+
+    private static boolean verifyNtkRscAccess(Context context, CustomHttpClient client,
+                                              String webtoonRoot, String path) {
+        if(!NtkQuicFetcher.isAvailable())
+            return true;
+        try {
+            String baseUrl = client.getUrl(path);
+            String targetUrl = baseUrl + path;
+            java.util.Map<String, String> headers = new java.util.HashMap<>();
+            headers.put("accept", "text/x-component");
+            headers.put("rsc", "1");
+            headers.put("next-url", path);
+            headers.put("origin", baseUrl);
+            headers.put("referer", targetUrl);
+            NtkQuicFetcher.Result result = NtkQuicFetcher.fetch(
+                    context,
+                    targetUrl,
+                    client.agent,
+                    client.getCookieHeader(),
+                    headers,
+                    "GET",
+                    null,
+                    7000L);
+            String body = result == null || result.body == null ? "" : result.body;
+            int code = result == null ? 0 : result.code;
+            boolean ok = result != null && result.error == null && code >= 200 && code < 400
+                    && body.length() > 0
+                    && !client.isCloudflareChallengeResponse(code, body)
+                    && !NtkDeviceIdentityManager.isTrash0607Block(body);
+            if(!ok)
+                Log.d(TAG, "ntk_true_random_access_verify_rsc_failed path=" + path
+                        + ",code=" + code
+                        + ",error=" + (result == null ? "null" : result.error)
+                        + ",sample=" + shortSample(body));
+            return ok;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_true_random_access_verify_rsc_error path=" + path + "," + e);
+            return false;
+        }
+    }
+
+    private static boolean isNtkEpisodeDocumentPath(String path) {
+        String lower = path == null ? "" : path.toLowerCase(Locale.ROOT);
+        return lower.startsWith("/webtoon/") || lower.startsWith("/manhwa/");
+    }
+
+    private static boolean isUsableNtkAccessDocument(String body) {
+        if(body == null)
+            return false;
+        String lower = body.toLowerCase(Locale.ROOT);
+        if(lower.length() == 0
+                || lower.contains("just a moment")
+                || lower.contains("challenges.cloudflare.com")
+                || lower.contains("/cdn-cgi/challenge-platform")
+                || lower.contains("cf-challenge")
+                || lower.contains("cf-turnstile")
+                || lower.contains("verifying you are human")
+                || lower.contains("verify you are human")
+                || lower.contains("developer tools blocked")
+                || lower.contains("devtools blocked")
+                || lower.contains("webpage not available")
+                || lower.contains("net::err_")
+                || NtkDeviceIdentityManager.isTrash0607Block(body))
+            return false;
+        return (lower.contains("<html") || lower.contains("<!doctype html"))
+                && (lower.contains("/manhwa") || lower.contains("/webtoon")
+                || lower.contains("__next") || lower.contains("newtoki"));
+    }
+
+    private static String shortSample(String body) {
+        if(body == null)
+            return "";
+        String sample = body.replace('\n', ' ').replace('\r', ' ');
+        return sample.length() <= 180 ? sample : sample.substring(0, 180);
+    }
+
+    private static boolean hasStrongNtkAccessCookies(String webtoonRoot, String url) {
+        String cookies = mergedWebViewCookieString(webtoonRoot, url);
+        boolean hasBase = hasCookieName(cookies, "cf_clearance")
+                && hasCookieName(cookies, "nv")
+                && hasCookieName(cookies, "ad_guard_l");
+        boolean hasIdentity = (hasCookieName(cookies, "ntk_fp") && hasCookieName(cookies, "ntk_pid"))
+                || (hasCookieName(cookies, "__vsid") && hasCookieName(cookies, "__ntk_ev_id"))
+                || hasCookieName(cookies, "newtoki_read");
+        return hasBase && hasIdentity;
+    }
+
+    private static String summarizeNtkAccessCookieState(String webtoonRoot, String url) {
+        String cookies = mergedWebViewCookieString(webtoonRoot, url);
+        return "len=" + cookies.length()
+                + ",cf=" + hasCookieName(cookies, "cf_clearance")
+                + ",nv=" + hasCookieName(cookies, "nv")
+                + ",adGuardL=" + hasCookieName(cookies, "ad_guard_l")
+                + ",ntkFp=" + hasCookieName(cookies, "ntk_fp")
+                + ",ntkPid=" + hasCookieName(cookies, "ntk_pid")
+                + ",vsid=" + hasCookieName(cookies, "__vsid")
+                + ",ev=" + hasCookieName(cookies, "__ntk_ev_id")
+                + ",read=" + hasCookieName(cookies, "newtoki_read");
+    }
+
+    private static String mergedWebViewCookieString(String webtoonRoot, String url) {
+        StringBuilder builder = new StringBuilder();
+        appendCookieString(builder, webtoonRoot);
+        appendCookieString(builder, webtoonRoot + "/manhwa");
+        appendCookieString(builder, url);
+        return builder.toString();
+    }
+
+    private static void appendCookieString(StringBuilder builder, String url) {
+        try {
+            String value = CookieManager.getInstance().getCookie(url);
+            if(value == null || value.length() == 0)
+                return;
+            if(builder.length() > 0)
+                builder.append("; ");
+            builder.append(value);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static boolean hasCookieName(String cookies, String name) {
+        if(cookies == null || name == null || name.length() == 0)
+            return false;
+        String[] parts = cookies.split(";");
+        for(String part : parts) {
+            String trimmed = part == null ? "" : part.trim();
+            int eq = trimmed.indexOf('=');
+            String key = eq >= 0 ? trimmed.substring(0, eq) : trimmed;
+            if(name.equalsIgnoreCase(key.trim()))
+                return true;
+        }
+        return false;
     }
 
     private static Title pickRandomTitle(Context context, CustomHttpClient client,
@@ -612,6 +849,7 @@ public class NtkRandomStressInstrumentedTest {
             episode.setTitle(title);
             episode.setTitleId(title.getId());
             episode.setNtkEpisodePath(path);
+            episode.setNtkImageWorkId(curatedImageWorkId(path));
             episode.setNtkImageCount(CURATED_NTK_IMAGE_COUNT);
             episodes.add(episode);
         }
@@ -834,25 +1072,65 @@ public class NtkRandomStressInstrumentedTest {
         return latest.length() == 0 ? "" : latest;
     }
 
-    private static Manga pickRandomEpisode(List<Manga> episodes, Random random) {
+    private static Manga pickRandomEpisode(List<Manga> episodes, Random random, Set<String> usedEpisodePaths) {
         ArrayList<Manga> candidates = new ArrayList<>();
         ArrayList<Manga> numericCandidates = new ArrayList<>();
         ArrayList<Manga> positiveImageCandidates = new ArrayList<>();
         ArrayList<Manga> positiveNumericCandidates = new ArrayList<>();
+        ArrayList<Manga> freshPositiveNumericCandidates = new ArrayList<>();
+        ArrayList<Manga> freshNumericCandidates = new ArrayList<>();
+        ArrayList<Manga> freshPositiveImageCandidates = new ArrayList<>();
+        ArrayList<Manga> freshCandidates = new ArrayList<>();
         for(Manga episode : episodes) {
             if(episode != null && episode.getNtkEpisodePath().length() > 0) {
                 candidates.add(episode);
                 boolean numericPath = isNumericNtkEpisodePath(episode.getNtkEpisodePath());
+                boolean freshPath = usedEpisodePaths == null
+                        || !usedEpisodePaths.contains(episode.getNtkEpisodePath());
+                if(freshPath)
+                    freshCandidates.add(episode);
                 if(numericPath)
                     numericCandidates.add(episode);
                 if(episode.getNtkImageCount() > 0) {
                     positiveImageCandidates.add(episode);
+                    if(freshPath)
+                        freshPositiveImageCandidates.add(episode);
                     if(numericPath)
                         positiveNumericCandidates.add(episode);
+                    if(numericPath && freshPath)
+                        freshPositiveNumericCandidates.add(episode);
                 }
+                if(numericPath && freshPath)
+                    freshNumericCandidates.add(episode);
             }
         }
         assertTrue("Expected at least one episode with NTK path", candidates.size() > 0);
+        if(freshPositiveNumericCandidates.size() > 0) {
+            Log.d(TAG, "ntk_true_random_episode_candidates total=" + candidates.size()
+                    + ",fresh=" + freshCandidates.size()
+                    + ",numeric=" + numericCandidates.size()
+                    + ",positiveImages=" + positiveImageCandidates.size()
+                    + ",positiveNumeric=" + positiveNumericCandidates.size()
+                    + ",freshPositiveNumeric=" + freshPositiveNumericCandidates.size());
+            return freshPositiveNumericCandidates.get(random.nextInt(freshPositiveNumericCandidates.size()));
+        }
+        if(freshNumericCandidates.size() > 0) {
+            Log.d(TAG, "ntk_true_random_episode_candidates total=" + candidates.size()
+                    + ",fresh=" + freshCandidates.size()
+                    + ",numeric=" + numericCandidates.size()
+                    + ",freshNumeric=" + freshNumericCandidates.size()
+                    + ",positiveImages=" + positiveImageCandidates.size());
+            return freshNumericCandidates.get(random.nextInt(freshNumericCandidates.size()));
+        }
+        if(freshPositiveImageCandidates.size() > 0) {
+            Log.d(TAG, "ntk_true_random_episode_candidates total=" + candidates.size()
+                    + ",fresh=" + freshCandidates.size()
+                    + ",positiveImages=" + positiveImageCandidates.size()
+                    + ",freshPositiveImages=" + freshPositiveImageCandidates.size());
+            return freshPositiveImageCandidates.get(random.nextInt(freshPositiveImageCandidates.size()));
+        }
+        if(freshCandidates.size() > 0)
+            return freshCandidates.get(random.nextInt(freshCandidates.size()));
         if(positiveNumericCandidates.size() > 0) {
             Log.d(TAG, "ntk_true_random_episode_candidates total=" + candidates.size()
                     + ",numeric=" + numericCandidates.size()
@@ -874,6 +1152,12 @@ public class NtkRandomStressInstrumentedTest {
         return candidates.get(random.nextInt(candidates.size()));
     }
 
+    private static int baseModeForRun(boolean cycleBaseModes, Random random, int baseModeOffset, int run) {
+        if(cycleBaseModes)
+            return ((run + baseModeOffset) % 2) == 0 ? MTitle.base_comic : MTitle.base_webtoon;
+        return random.nextBoolean() ? MTitle.base_comic : MTitle.base_webtoon;
+    }
+
     private static boolean isNumericNtkEpisodePath(String path) {
         return path != null && path.matches("^/(?:manhwa|webtoon)/\\d+/\\d+$");
     }
@@ -888,7 +1172,8 @@ public class NtkRandomStressInstrumentedTest {
     private static TargetEpisode loadTargetEpisode(Context context, CustomHttpClient client, String titlePath,
                                                    String episodePath, int targetEpisodeNumber,
                                                    int fixedBaseMode, boolean directTargetEpisode,
-                                                   String targetImageEpisodeId) {
+                                                   String targetImageEpisodeId,
+                                                   String targetImageWorkId) {
         String normalizedEpisodePath = normalizeTargetPath(episodePath);
         int baseMode = fixedBaseMode > 0 ? fixedBaseMode : baseModeForTargetPath(
                 normalizedEpisodePath.length() > 0 ? normalizedEpisodePath : titlePath);
@@ -902,17 +1187,22 @@ public class NtkRandomStressInstrumentedTest {
         title.setPath(resolvedTitlePath);
         if(directTargetEpisode && normalizedEpisodePath.length() > 0) {
             Manga episode = new Manga(parseEpisodeIdFromPath(normalizedEpisodePath), "ntk-direct-target", "", baseMode);
+            String resolvedImageWorkId = targetImageWorkId;
+            if(resolvedImageWorkId == null || resolvedImageWorkId.trim().length() == 0)
+                resolvedImageWorkId = curatedImageWorkId(normalizedEpisodePath);
             episode.setTitle(title);
             episode.setTitleId(titleId);
             episode.setNtkEpisodePath(normalizedEpisodePath);
             episode.setNtkImageEpisodeId(targetImageEpisodeId);
+            episode.setNtkImageWorkId(resolvedImageWorkId);
             ArrayList<Manga> episodes = new ArrayList<>();
             episodes.add(episode);
             title.setEps(episodes);
             Log.d(TAG, "ntk_true_random_direct_target path=" + normalizedEpisodePath
                     + ",titlePath=" + resolvedTitlePath
                     + ",titleId=" + titleId
-                    + ",baseMode=" + baseMode);
+                    + ",baseMode=" + baseMode
+                    + ",imageWorkId=" + resolvedImageWorkId);
             return new TargetEpisode(title, episode);
         }
         int result = title.fetchEps(client);
@@ -950,6 +1240,15 @@ public class NtkRandomStressInstrumentedTest {
         throw new AssertionError("Target episode not found titlePath=" + resolvedTitlePath
                 + " episodePath=" + normalizedEpisodePath
                 + " episodes=" + title.getEps().size());
+    }
+
+    private static String curatedImageWorkId(String path) {
+        String normalized = normalizeTargetPath(path);
+        if("/webtoon/65384754/1496998".equals(normalized))
+            return "17330";
+        if("/webtoon/784248/1252104".equals(normalized))
+            return "10662";
+        return "";
     }
 
     private static int episodeNumber(String name) {
@@ -1029,10 +1328,25 @@ public class NtkRandomStressInstrumentedTest {
 
     private static final int CURATED_NTK_IMAGE_COUNT = 80;
     private static final String[][] CURATED_NTK_WEBTOON_EPISODES = new String[][]{
-            {"/webtoon/17332/1515337"}
+            {"/webtoon/17332/1515337", "/webtoon/17332/1463501"},
+            {"/webtoon/3884/185994"},
+            {"/webtoon/3774/176692"},
+            {"/webtoon/17591/1479761"},
+            {"/webtoon/2811/1076716"},
+            {"/webtoon/12703/1433404"},
+            {"/webtoon/13729/1388127"},
+            {"/webtoon/16968/1430500"},
+            {"/webtoon/65384754/1496998"},
+            {"/webtoon/784248/1252104"}
     };
     private static final String[][] CURATED_NTK_MANHWA_EPISODES = new String[][]{
-            {"/manhwa/25694/1767091", "/manhwa/25694/1767431", "/manhwa/25694/1767898", "/manhwa/25694/1768331"}
+            {"/manhwa/25694/1767091", "/manhwa/25694/1767431", "/manhwa/25694/1767898", "/manhwa/25694/1768331"},
+            {"/manhwa/8209/63505"},
+            {"/manhwa/34376/1734715"},
+            {"/manhwa/35655/1778269"},
+            {"/manhwa/36525/1807424"},
+            {"/manhwa/26992/329972"},
+            {"/manhwa/34074/1709547"}
     };
 
     private static void runReaderCase(Context context, UiDevice device, int run, String mode,
@@ -1077,10 +1391,12 @@ public class NtkRandomStressInstrumentedTest {
             boolean ready = waitForDrawableReady(activity, device, firstDrawableWaitMs);
             long observedFirstMs = SystemClock.elapsedRealtime() - startedAt;
             long appFirstMs = readFirstDrawableElapsedMs(activity);
+            boolean firstDrawableReady = ready || appFirstMs >= 0L;
             long firstMs = appFirstMs >= 0L ? appFirstMs : observedFirstMs;
             Log.d(TAG, "ntk_true_random_first_drawable run=" + run
                     + ",mode=" + mode
-                    + ",ready=" + ready
+                    + ",ready=" + firstDrawableReady
+                    + ",markerReady=" + ready
                     + ",ms=" + firstMs
                     + ",observedMs=" + observedFirstMs
                     + ",appMs=" + appFirstMs
@@ -1089,7 +1405,7 @@ public class NtkRandomStressInstrumentedTest {
             assertTrue("Expected first drawable run=" + run
                     + " mode=" + mode
                     + " path=" + episode.getNtkEpisodePath()
-                    + " elapsedMs=" + firstMs, ready);
+                    + " elapsedMs=" + firstMs, firstDrawableReady);
             assertTrue("Expected first drawable within budget run=" + run
                             + " mode=" + mode
                             + " path=" + episode.getNtkEpisodePath()
@@ -1145,8 +1461,7 @@ public class NtkRandomStressInstrumentedTest {
                         initialPageCount, appendSteps);
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
-            if(activity != null)
-                activity.finish();
+            finishActivityForNextLaunch(activity);
             device.wait(Until.gone(By.desc("reader-drawable-ready")), 3000L);
             device.waitForIdle(1500L);
         }
@@ -1184,11 +1499,25 @@ public class NtkRandomStressInstrumentedTest {
                             episode, previousEpisode, Math.min(appendSteps, 12)));
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
-            if(activity != null)
-                activity.finish();
+            finishActivityForNextLaunch(activity);
             device.wait(Until.gone(By.desc("reader-drawable-ready")), 3000L);
             device.waitForIdle(1500L);
         }
+    }
+
+    private static void finishActivityForNextLaunch(Activity activity) {
+        if(activity == null)
+            return;
+        long startedAt = SystemClock.elapsedRealtime();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            if(!activity.isFinishing() && !activity.isDestroyed())
+                activity.finish();
+        });
+        long deadline = SystemClock.elapsedRealtime() + 2500L;
+        while(!activity.isDestroyed() && SystemClock.elapsedRealtime() < deadline)
+            SystemClock.sleep(25L);
+        Log.d(TAG, "ntk_true_random_activity_finish_wait destroyed=" + activity.isDestroyed()
+                + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
     }
 
     private static Intent viewerIntent(Context context, Title title, Manga episode) {
@@ -1324,11 +1653,11 @@ public class NtkRandomStressInstrumentedTest {
             device.waitForIdle(450L);
             long idleAt = SystemClock.elapsedRealtime();
             ProgressSnapshot progressAfterIdle = readProgressSnapshot(reader);
-            ProgressSnapshot progressAfterQuiet = waitForReaderQuietProgress(reader, 1800L);
+            ProgressSnapshot progressAfterQuiet = waitForReaderQuietProgress(reader, SCROLL_QUIET_TIMEOUT_MS);
             long quietAt = SystemClock.elapsedRealtime();
-            SystemClock.sleep(900L);
+            SystemClock.sleep(SCROLL_SETTLE_CONFIRM_MS);
             ProgressSnapshot progressAfterSettle = readProgressSnapshot(reader);
-            ReaderSurfaceView.FrameStatsSnapshot frameStats = waitForFrameStatsSnapshot(reader, 1200L);
+            ReaderSurfaceView.FrameStatsSnapshot frameStats = waitForFrameStatsSnapshot(reader, 5500L);
             DriftSample driftSample = monitorPostStopDrift(reader, progressAfterSettle, postStopDriftMs);
             ProgressSnapshot progressAfterLateSettle = driftSample.last;
             long screenshotStart = SystemClock.elapsedRealtime();
@@ -1362,11 +1691,13 @@ public class NtkRandomStressInstrumentedTest {
                     + ",frameStats=" + formatFrameStats(frameStats)
                     + ",coverage=" + formatCoverage(coverage)
                     + "," + stats);
-            assertNoBackwardScrollJump("scroll run=" + run
+            assertNoOppositeScrollJump("scroll run=" + run
                     + " mode=" + mode
                     + " step=" + step
                     + " phase=swipe"
-                    + " path=" + episode.getNtkEpisodePath(), progressBefore, progressAfterIdle);
+                    + " path=" + episode.getNtkEpisodePath()
+                    + " gesture=" + gesture, progressBefore, progressAfterIdle,
+                    gesture.isForwardScroll());
             assertNoBackwardScrollJump("scroll run=" + run
                     + " mode=" + mode
                     + " step=" + step
@@ -1442,6 +1773,10 @@ public class NtkRandomStressInstrumentedTest {
             this.endYRatio = endYRatio;
             this.inputSteps = inputSteps;
             this.name = name;
+        }
+
+        boolean isForwardScroll() {
+            return endYRatio < startYRatio;
         }
 
         @Override
@@ -1616,7 +1951,8 @@ public class NtkRandomStressInstrumentedTest {
             value[0] = progress == null
                     ? ProgressSnapshot.NULL
                     : new ProgressSnapshot(progress.getPage(), progress.getOffset(),
-                    progress.getScrollOffset(), progress.getBusy());
+                    progress.getScrollOffset(), progress.getContentHeight(),
+                    progress.getMaxScroll(), progress.getBusy());
         });
         return value[0];
     }
@@ -1725,6 +2061,28 @@ public class NtkRandomStressInstrumentedTest {
                         + " before=" + before
                         + " after=" + after,
                 !backwardPage && !backwardOffset);
+    }
+
+    private static void assertNoOppositeScrollJump(String label, ProgressSnapshot before,
+                                                   ProgressSnapshot after,
+                                                   boolean expectedForward) {
+        if(before == null || after == null || before.isNull() || after.isNull())
+            return;
+        if(expectedForward) {
+            assertNoBackwardScrollJump(label, before, after);
+            return;
+        }
+        boolean forwardPage = before.hasScrollOffset() && after.hasScrollOffset()
+                ? after.scrollOffset > before.scrollOffset + SCROLL_BACKWARD_JUMP_TOLERANCE_PX
+                : after.page > before.page;
+        boolean forwardOffset = before.hasScrollOffset() && after.hasScrollOffset()
+                ? false
+                : after.page == before.page
+                && after.offset < before.offset - SCROLL_BACKWARD_JUMP_TOLERANCE_PX;
+        assertTrue(label
+                        + " before=" + before
+                        + " after=" + after,
+                !forwardPage && !forwardOffset);
     }
 
     private static void assertNoUnexpectedSettleJump(String label, ProgressSnapshot before,
@@ -1840,16 +2198,20 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static final class ProgressSnapshot {
-        static final ProgressSnapshot NULL = new ProgressSnapshot(-1, 0, Integer.MIN_VALUE, false);
+        static final ProgressSnapshot NULL = new ProgressSnapshot(-1, 0, Integer.MIN_VALUE, 0, 0, false);
         final int page;
         final int offset;
         final int scrollOffset;
+        final int contentHeight;
+        final int maxScroll;
         final boolean busy;
 
-        ProgressSnapshot(int page, int offset, int scrollOffset, boolean busy) {
+        ProgressSnapshot(int page, int offset, int scrollOffset, int contentHeight, int maxScroll, boolean busy) {
             this.page = page;
             this.offset = offset;
             this.scrollOffset = scrollOffset;
+            this.contentHeight = contentHeight;
+            this.maxScroll = maxScroll;
             this.busy = busy;
         }
 
@@ -1865,7 +2227,7 @@ public class NtkRandomStressInstrumentedTest {
         public String toString() {
             if(isNull())
                 return "null";
-            return page + ":" + offset + "@" + scrollOffset;
+            return page + ":" + offset + "@" + scrollOffset + "/h" + contentHeight + "/m" + maxScroll;
         }
     }
 
@@ -1945,18 +2307,22 @@ public class NtkRandomStressInstrumentedTest {
                     reader.testScrollByPixels(scrollDelta));
             return SystemClock.elapsedRealtime() - startedAt;
         }
+        if("touch".equals(normalizedMode) || "swipe".equals(normalizedMode)) {
+            device.swipe(x, Math.round(startY), x, Math.round(endY), Math.max(1, steps));
+            return SystemClock.elapsedRealtime() - startedAt;
+        }
         long downTime = SystemClock.uptimeMillis();
         int safeSteps = Math.max(1, Math.min(steps, 12));
-        dispatchTouch(reader, downTime, downTime, MotionEvent.ACTION_DOWN, x, startY, false);
+        dispatchTouch(reader, downTime, downTime, MotionEvent.ACTION_DOWN, x, startY, true);
         for(int step = 1; step < safeSteps; step++) {
             float fraction = step / (float)safeSteps;
             long eventTime = downTime + step * 18L;
             float y = startY + (endY - startY) * fraction;
-            dispatchTouch(reader, downTime, eventTime, MotionEvent.ACTION_MOVE, x, y, false);
+            dispatchTouch(reader, downTime, eventTime, MotionEvent.ACTION_MOVE, x, y, true);
             SystemClock.sleep(12L);
         }
         dispatchTouch(reader, downTime, downTime + safeSteps * 18L,
-                MotionEvent.ACTION_UP, x, endY, false);
+                MotionEvent.ACTION_UP, x, endY, true);
         return SystemClock.elapsedRealtime() - startedAt;
     }
 

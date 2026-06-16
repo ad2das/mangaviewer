@@ -9,6 +9,10 @@ param(
     [string]$ScrollInputMode = "touch",
     [string]$ScrollPattern = "mixed",
     [string]$TargetEpisodePath = "",
+    [string]$TargetImageEpisodeId = "",
+    [string]$TargetImageWorkId = "",
+    [string]$NtkSiteRoot = "",
+    [switch]$NtkLockSiteRoot,
     [long]$Seed = 0,
     [int]$FirstDrawableMaxMs = 3500,
     [int]$InitialContinuousPages = 0,
@@ -35,6 +39,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if(Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 function Require-Command($Name) {
     if(-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -85,9 +92,129 @@ function Read-MetricLines($LogText, $Marker) {
             continue
         }
         $payload = $line.Substring($idx + $Marker.Length).Trim()
-        $items += [pscustomobject](Parse-Kv $payload)
+        $kv = Parse-Kv $payload
+        $kv["_raw"] = $payload
+        $items += [pscustomobject]$kv
     }
     return $items
+}
+
+function First-MetricLine($LogText, $Marker) {
+    $items = @(Read-MetricLines $LogText $Marker)
+    if($items.Count -eq 0) {
+        return $null
+    }
+    return $items[0]
+}
+
+function Last-MetricLine($LogText, $Marker) {
+    $items = @(Read-MetricLines $LogText $Marker)
+    if($items.Count -eq 0) {
+        return $null
+    }
+    return $items[$items.Count - 1]
+}
+
+function Metric-Value($Item, $Key) {
+    if($null -eq $Item) {
+        return ""
+    }
+    if($Item.PSObject.Properties.Name -contains $Key) {
+        $value = [string]$Item.$Key
+        if(-not [string]::IsNullOrWhiteSpace($value) -and $value -notmatch "\s+[A-Za-z0-9_]+=") {
+            return $value
+        }
+    }
+    if($Item.PSObject.Properties.Name -contains "_raw") {
+        $raw = [string]$Item._raw
+        $match = [regex]::Match($raw, "(?:^|[,\s])$([regex]::Escape($Key))=([^,\s]+)")
+        if($match.Success) {
+            return $match.Groups[1].Value
+        }
+    }
+    return ""
+}
+
+function First-RawLine($LogText, $Marker) {
+    foreach($line in ($LogText -split "`r?`n")) {
+        if($line.IndexOf($Marker) -ge 0) {
+            return [string]$line
+        }
+    }
+    return ""
+}
+
+function Last-RawLine($LogText, $Marker) {
+    $last = ""
+    foreach($line in ($LogText -split "`r?`n")) {
+        if($line.IndexOf($Marker) -ge 0) {
+            $last = [string]$line
+        }
+    }
+    return $last
+}
+
+function RawLine-TimeMs($Line) {
+    if([string]::IsNullOrWhiteSpace($Line)) {
+        return $null
+    }
+    $match = [regex]::Match($Line, "^\d{2}-\d{2}\s+(\d{2}):(\d{2}):(\d{2})\.(\d{3})")
+    if(-not $match.Success) {
+        return $null
+    }
+    return ([int64]$match.Groups[1].Value * 3600000L) +
+        ([int64]$match.Groups[2].Value * 60000L) +
+        ([int64]$match.Groups[3].Value * 1000L) +
+        [int64]$match.Groups[4].Value
+}
+
+function RawLine-DeltaMs($StartLine, $EndLine) {
+    $startMs = RawLine-TimeMs $StartLine
+    $endMs = RawLine-TimeMs $EndLine
+    if($null -eq $startMs -or $null -eq $endMs) {
+        return ""
+    }
+    $delta = [int64]$endMs - [int64]$startMs
+    if($delta -lt 0) {
+        $delta += 86400000L
+    }
+    return [string]$delta
+}
+
+function RawLine-Value($Line, $Key) {
+    if([string]::IsNullOrWhiteSpace($Line)) {
+        return ""
+    }
+    $escaped = [regex]::Escape($Key)
+    $match = [regex]::Match($Line, "(?:^|[,\s])$escaped=([^,\s]+)")
+    if($match.Success) {
+        return $match.Groups[1].Value
+    }
+    $match = [regex]::Match($Line, '"' + $escaped + '"\s*:\s*"?([^",}\s]+)"?')
+    if($match.Success) {
+        return $match.Groups[1].Value
+    }
+    return ""
+}
+
+function Ack-Phase($Name, $Line, $BaseLine) {
+    if([string]::IsNullOrWhiteSpace($Line)) {
+        return $null
+    }
+    $snippet = $Line
+    $marker = "ViewerPerf"
+    $idx = $snippet.IndexOf($marker)
+    if($idx -ge 0) {
+        $snippet = $snippet.Substring($idx + $marker.Length).Trim()
+    }
+    return [pscustomobject][ordered]@{
+        name = $Name
+        sinceAckStartMs = RawLine-DeltaMs $BaseLine $Line
+        ms = RawLine-Value $Line "ms"
+        elapsedMs = RawLine-Value $Line "elapsedMs"
+        code = RawLine-Value $Line "code"
+        raw = $snippet
+    }
 }
 
 function First-Value($Items, $Key) {
@@ -205,11 +332,23 @@ $argsList = @(
 if($Mode -and $Mode.Trim().Length -gt 0 -and $Mode -ne "mixed") {
     $argsList += @("-e", "ntkMode", $Mode.Trim())
 }
+if($NtkSiteRoot -and $NtkSiteRoot.Trim().Length -gt 0) {
+    $argsList += @("-e", "ntkSiteRoot", $NtkSiteRoot.Trim())
+}
+if($NtkLockSiteRoot) {
+    $argsList += @("-e", "ntkLockSiteRoot", "true")
+}
 if($TargetEpisodePath -and $TargetEpisodePath.Trim().Length -gt 0) {
     $argsList += @(
         "-e", "ntkTargetEpisodePath", $TargetEpisodePath.Trim(),
         "-e", "ntkDirectTargetEpisode", "true"
     )
+    if($TargetImageEpisodeId -and $TargetImageEpisodeId.Trim().Length -gt 0) {
+        $argsList += @("-e", "ntkTargetImageEpisodeId", $TargetImageEpisodeId.Trim())
+    }
+    if($TargetImageWorkId -and $TargetImageWorkId.Trim().Length -gt 0) {
+        $argsList += @("-e", "ntkTargetImageWorkId", $TargetImageWorkId.Trim())
+    }
 }
 
 $argsList += @(
@@ -267,10 +406,48 @@ $logText = Get-Content -Path $logcatPath -Raw
 $instrumentText = Get-Content -Path $instrumentLog -Raw
 $starts = @(Read-MetricLines $logText "ntk_true_random_start")
 $cases = @(Read-MetricLines $logText "ntk_true_random_case_start")
+$titleSourceApi = @(Read-MetricLines $logText "ntk_true_random_title baseMode=")
+$titleSourceDb = @(Read-MetricLines $logText "ntk_true_random_title_db")
+$titleSourceCurated = @(Read-MetricLines $logText "ntk_true_random_title_curated")
+$titleSourceRsc = @(Read-MetricLines $logText "ntk_true_random_title_rsc")
+$titleSourceNumericProbe = @(Read-MetricLines $logText "ntk_true_random_numeric_probe" | Where-Object {
+    $episodesText = Metric-Value $_ "episodes"
+    (Metric-Value $_ "result") -eq "0" -and $episodesText -match "^\d+$" -and [int]$episodesText -gt 0
+})
 $firstDrawable = @(Read-MetricLines $logText "ntk_true_random_first_drawable")
 $scroll = @(Read-MetricLines $logText "ntk_true_random_scroll")
 $appendNext = @(Read-MetricLines $logText "ntk_true_random_append_next")
 $appendPrev = @(Read-MetricLines $logText "ntk_true_random_append_previous")
+$pipeline = [ordered]@{
+    webViewAckPreflightDone = Last-MetricLine $logText "ntk_webview_ack_preflight_done"
+    imageApiAfterAckProof = Last-MetricLine $logText "ntk_images_api_after_ack_proof_success"
+    firstUrlPartial = First-MetricLine $logText "ntk_images_api_first_url_partial"
+    firstUrlEarly = First-MetricLine $logText "ntk_images_api_first_url_early"
+    earlyUrlsReady = First-MetricLine $logText "reader_repository_stage stage=early_urls_ready"
+    requestForeground = First-MetricLine $logText "reader_repository_stage stage=request_foreground"
+    foregroundStreamStart = First-MetricLine $logText "foreground_stream_async_start"
+    foregroundStreamJoin = First-MetricLine $logText "foreground_stream_join"
+    foregroundRaceWin = First-MetricLine $logText "foreground_race_win"
+    foregroundStreamDone = First-MetricLine $logText "foreground_stream_async_done"
+    decodeReady = First-MetricLine $logText "stage=decode_ready"
+    openToFirstDrawable = Last-MetricLine $logText "reader_open_to_first_drawable"
+}
+$ackStartLine = First-RawLine $logText "directAckProofFirstFast3Start"
+$ackPhases = @(
+    Ack-Phase "ackStart" $ackStartLine $ackStartLine
+    Ack-Phase "nativeChallenge" (First-RawLine $logText "directAckProofFirstFast3NativeChallenge") $ackStartLine
+    Ack-Phase "challengeSelected" (First-RawLine $logText "directAckProofFirstFast3Challenge") $ackStartLine
+    Ack-Phase "guardFirstStart" (First-RawLine $logText "directAckProofFirstFast3GuardFirstStart") $ackStartLine
+    Ack-Phase "preGuardCanaryStart" (First-RawLine $logText "guardNativePreGuardCanaryStart") $ackStartLine
+    Ack-Phase "bridgeCanaryFirst" (First-RawLine $logText "ntk_viewer_ad_bridge_quic_first code=") $ackStartLine
+    Ack-Phase "guardModule" (First-RawLine $logText "ackOnlySyncGuardModule") $ackStartLine
+    Ack-Phase "guardInitSync" (First-RawLine $logText "ackOnlySyncGuardInitSync") $ackStartLine
+    Ack-Phase "bridgeCanaryLast" (Last-RawLine $logText "ntk_viewer_ad_bridge_quic_first code=") $ackStartLine
+    Ack-Phase "canaryBeforeAck" (First-RawLine $logText "ntk_viewer_ad_bridge_canary_before_ack") $ackStartLine
+    Ack-Phase "nativeSubmit" (First-RawLine $logText "ntk_viewer_ad_bridge_native_submit") $ackStartLine
+    Ack-Phase "guardFirstDone" (First-RawLine $logText "directAckProofFirstFast3GuardFirstDone") $ackStartLine
+) | Where-Object { $null -ne $_ }
+$ackPreflightStages = @(Read-MetricLines $logText "ntk_webview_ack_preflight_stage")
 $slowFrames = ($logText -split "`r?`n") | Where-Object { $_ -match "reader_slow_frame|surface_jank_v3|reader_visible_gap|reader_visible_loading=true" }
 $failureLines = (($instrumentText + "`n" + $logText) -split "`r?`n") |
     Where-Object { $_ -match "FAILURES!!!|AssertionError|INSTRUMENTATION_STATUS: stack|Process crashed|ntk_true_random_first_drawable_fast_fail|reader_scroll_jump" }
@@ -279,6 +456,32 @@ $uniqueCasePaths = @($casePaths | Select-Object -Unique)
 $uniqueTitlePaths = @($casePaths | ForEach-Object {
     if($_ -match "^/(?:manhwa|webtoon)/\d+") { $Matches[0] }
 } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+$caseCuratedCount = @($cases | Where-Object { ([string]$_.title).StartsWith("ntk-curated-") }).Count
+$caseTargetCount = @($cases | Where-Object {
+    ([string]$_.title).StartsWith("ntk-target-") -or
+        ([string]$_.title).StartsWith("ntk-direct-target")
+}).Count
+$caseSourceCoverage = if($cases.Count -eq 0) {
+    "none"
+} elseif(-not [string]::IsNullOrWhiteSpace($TargetEpisodePath)) {
+    "target-repro"
+} elseif($caseCuratedCount -eq $cases.Count) {
+    "curated-only"
+} elseif($caseCuratedCount -gt 0) {
+    "mixed-with-curated"
+} else {
+    "live-random"
+}
+$titleSourceCounts = [ordered]@{
+    api = $titleSourceApi.Count
+    db = $titleSourceDb.Count
+    rsc = $titleSourceRsc.Count
+    numericProbe = $titleSourceNumericProbe.Count
+    curated = $titleSourceCurated.Count
+    caseCurated = $caseCuratedCount
+    caseTarget = $caseTargetCount
+    coverage = $caseSourceCoverage
+}
 if(-not $NoDiversityAssert -and [string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $Runs -gt 1 -and $cases.Count -gt 1) {
     $requiredEpisodePaths = [Math]::Min([int]$Runs, 2)
     $requiredTitlePaths = if($Runs -ge 4) { 2 } else { 1 }
@@ -389,6 +592,18 @@ $reproArgs = @(
     "-HoldAfterFirstDrawableMs", [string]$HoldAfterFirstDrawableMs,
     "-TargetEpisodePath", $reproPath
 )
+if($TargetImageEpisodeId -and $TargetImageEpisodeId.Trim().Length -gt 0) {
+    $reproArgs += @("-TargetImageEpisodeId", $TargetImageEpisodeId.Trim())
+}
+if($TargetImageWorkId -and $TargetImageWorkId.Trim().Length -gt 0) {
+    $reproArgs += @("-TargetImageWorkId", $TargetImageWorkId.Trim())
+}
+if($NtkSiteRoot -and $NtkSiteRoot.Trim().Length -gt 0) {
+    $reproArgs += @("-NtkSiteRoot", $NtkSiteRoot.Trim())
+}
+if($NtkLockSiteRoot) {
+    $reproArgs += "-NtkLockSiteRoot"
+}
 if($StrictFresh -or ($ClearAck -and $ClearImageCache)) {
     $reproArgs += "-StrictFresh"
 } else {
@@ -434,15 +649,21 @@ $summary = [ordered]@{
     scrollPattern = $ScrollPattern
     assertSchedulerGap = [bool]$AssertSchedulerGap
     targetEpisodePath = $TargetEpisodePath
+    ntkSiteRoot = $NtkSiteRoot
+    ntkLockSiteRoot = [bool]$NtkLockSiteRoot
     uniqueEpisodePathCount = $uniqueCasePaths.Count
     uniqueEpisodePaths = $uniqueCasePaths
     uniqueTitlePathCount = $uniqueTitlePaths.Count
     uniqueTitlePaths = $uniqueTitlePaths
+    titleSourceCounts = $titleSourceCounts
     failurePath = $failurePath
     failureMode = $failureMode
     started = $starts
     cases = $cases
     firstDrawable = $firstDrawable
+    pipeline = $pipeline
+    ackPhases = $ackPhases
+    ackPreflightStages = $ackPreflightStages
     scroll = $scroll
     appendNext = $appendNext
     appendPrevious = $appendPrev
@@ -463,7 +684,46 @@ Write-Host ""
 Write-Host "NTK random perf summary"
 Write-Host ("  passed={0} exitCode={1} seed={2}" -f $summary.passed, $exitCode, $Seed)
 Write-Host ("  cases={0} firstDrawable={1} scroll={2} slowSignals={3} failures={4}" -f $cases.Count, $firstDrawable.Count, $scroll.Count, $slowFrames.Count, $failureLines.Count)
+Write-Host ("  pipeline ackMs={0} apiMs={1} earlyUrlsMs={2} fgStart={3} join={4} fgMs={5} streamMs={6} decodeMs={7} drawableMs={8}" -f `
+    (Metric-Value $pipeline.webViewAckPreflightDone "ms"), `
+    (Metric-Value $pipeline.imageApiAfterAckProof "ms"), `
+    (Metric-Value $pipeline.earlyUrlsReady "ms"), `
+    (Metric-Value $pipeline.foregroundStreamStart "ms"), `
+    (Metric-Value $pipeline.foregroundStreamJoin "ms"), `
+    (Metric-Value $pipeline.foregroundRaceWin "ms"), `
+    (Metric-Value $pipeline.foregroundStreamDone "ms"), `
+    (Metric-Value $pipeline.decodeReady "ms"), `
+    (Metric-Value $pipeline.openToFirstDrawable "ms"))
+if($ackPhases.Count -gt 0) {
+    $ackPhaseSummary = @($ackPhases | ForEach-Object {
+        $extra = ""
+        if(-not [string]::IsNullOrWhiteSpace([string]$_.ms)) {
+            $extra = "/ms=$($_.ms)"
+        } elseif(-not [string]::IsNullOrWhiteSpace([string]$_.elapsedMs)) {
+            $extra = "/elapsed=$($_.elapsedMs)"
+        } elseif(-not [string]::IsNullOrWhiteSpace([string]$_.code)) {
+            $extra = "/code=$($_.code)"
+        }
+        "{0}@{1}{2}" -f $_.name, $_.sinceAckStartMs, $extra
+    }) -join " "
+    Write-Host "  ackPhases $ackPhaseSummary"
+}
+if($ackPreflightStages.Count -gt 0) {
+    $stageSummary = @($ackPreflightStages | ForEach-Object {
+        "{0}={1}/{2}" -f (Metric-Value $_ "stage"), (Metric-Value $_ "ms"), (Metric-Value $_ "totalMs")
+    }) -join " "
+    Write-Host "  ackPreflightStages $stageSummary"
+}
 Write-Host ("  uniqueEpisodePaths={0} uniqueTitlePaths={1}" -f $uniqueCasePaths.Count, $uniqueTitlePaths.Count)
+Write-Host ("  titleSources api={0} db={1} rsc={2} numeric={3} curated={4} caseCurated={5}/{6} coverage={7}" -f `
+    $titleSourceCounts.api, `
+    $titleSourceCounts.db, `
+    $titleSourceCounts.rsc, `
+    $titleSourceCounts.numericProbe, `
+    $titleSourceCounts.curated, `
+    $titleSourceCounts.caseCurated, `
+    $cases.Count, `
+    $titleSourceCounts.coverage)
 Write-Host "  summary=$summaryPath"
 Write-Host "  logcat=$logcatPath"
 if($screenshotFiles.Count -gt 0) {

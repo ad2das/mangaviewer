@@ -40,6 +40,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val page: Int,
         val offset: Int,
         val scrollOffset: Int,
+        val contentHeight: Int,
+        val maxScroll: Int,
         val busy: Boolean
     )
 
@@ -226,6 +228,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pageTopDeltas = RangeAddPointQuery(0)
     private var contentHeight = 0f
     private var statsActive = false
+    private var programmaticScrollStatsUntilMs = 0L
     private var statsLastCallbackStartNs = 0L
     private var statsLastPostEndNs = 0L
     private var lastPostedFrameEndNs = 0L
@@ -727,6 +730,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setPageError(index: Int, message: String) {
         val request = synchronized(stateLock) {
             val page = pages.getOrNull(index) ?: return
+            if (page.bitmap != null || page.tiles.isNotEmpty() || page.pendingBitmap != null || page.pendingTiles.isNotEmpty()) {
+                Log.d(TAG, "reader_page_error_skip_drawable index=$index message=$message")
+                return@synchronized null
+            }
             rebuildLayoutLocked()
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
@@ -815,22 +822,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return synchronized(stateLock) {
             val progress = progressPositionLocked() ?: return@synchronized null
             val busy = lastBusy || pointerDown || dragging || !scroller.isFinished
-            ScrollPositionSnapshot(progress.page, progress.offset, scrollOffset.toInt(), busy)
+            val maxScroll = max(0f, totalHeightLocked() - height).toInt()
+            ScrollPositionSnapshot(progress.page, progress.offset, scrollOffset.toInt(), contentHeight.toInt(), maxScroll, busy)
         }
     }
 
     fun testScrollByPixels(deltaPx: Float) {
-        synchronized(stateLock) {
+        val request = synchronized(stateLock) {
             rebuildLayoutLocked()
             val maxScroll = max(0f, totalHeightLocked() - height)
             setScrollOffsetLocked((scrollOffset + deltaPx).coerceIn(0f, maxScroll))
             scroller.forceFinished(true)
             lastScrollInteractionMs = SystemClock.uptimeMillis()
+            programmaticScrollStatsUntilMs = lastScrollInteractionMs + PROGRAMMATIC_SCROLL_STATS_ACTIVE_MS
             renderRequested = true
             scheduleFrameLocked()
+            Log.d(
+                TAG,
+                "reader_test_scroll delta=${fmt(deltaPx)} scroll=${fmt(scrollOffset)} max=${fmt(maxScroll)} " +
+                    "pages=${pages.size} frameScheduled=$frameScheduled renderRunning=$renderRunning"
+            )
             stateLock.notifyAll()
+            windowRequestLocked(true)
         }
+        dispatchWindowRequest(request)
         invalidate()
+        mainHandler.postDelayed({ forceProgrammaticScrollRenderForTest() }, 32L)
+        mainHandler.postDelayed({ forceProgrammaticScrollRenderForTest() }, 160L)
+        mainHandler.postDelayed({ forceProgrammaticScrollRenderForTest() }, PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS)
     }
 
     fun visibleCoverageSnapshot(): VisibleCoverageSnapshot? {
@@ -841,6 +860,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     fun frameStatsSnapshot(): FrameStatsSnapshot? {
         return synchronized(stateLock) {
+            if (lastFrameStatsSnapshot == null && statsActive) {
+                finalizeActiveFrameStatsLocked(log = false)
+            }
             lastFrameStatsSnapshot
         }
     }
@@ -1124,15 +1146,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (!busyNow) applyPendingPageResolvesLocked()
             val animateScroll = dragging || scrolling || !scroller.isFinished
             val shouldDraw = (renderRequested || animateScroll) && pages.isNotEmpty()
-            val state = if (shouldDraw && !shouldDeferInitialEmptyDrawLocked()) buildDrawStateLocked(busyNow) else null
+            val deferInitialEmptyDraw = shouldDeferInitialEmptyDrawLocked()
+            val state = if (shouldDraw && !deferInitialEmptyDraw) buildDrawStateLocked(busyNow) else null
+            if (state == null && SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
+                Log.d(
+                    TAG,
+                    "reader_test_scroll_state_null shouldDraw=$shouldDraw renderRequested=$renderRequested " +
+                        "animateScroll=$animateScroll pages=${pages.size} defer=$deferInitialEmptyDraw " +
+                        "busy=$busyNow scroll=${fmt(scrollOffset)}"
+                )
+            }
             if (renderRequested && pages.isEmpty()) renderRequested = false
             if (shouldDraw) renderRequested = false
-            if (animateScroll) scheduleFrameLocked(preferImmediate = pointerDown || dragging)
+            if (animateScroll) scheduleFrameLocked()
             RenderWork(request, boundary, state)
         }
         dispatchWindowRequest(work.request)
         dispatchBoundaryRequest(work.boundary)
-        val state = work.state ?: return
+        val state = work.state ?: run {
+            if (SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
+                Log.d(TAG, "reader_test_scroll_draw_skipped state=null")
+            }
+            return
+        }
         val timing = drawState(frameTimeNanos, callbackStartNs, state, canvas)
         val nowMs = SystemClock.uptimeMillis()
         if (timing.totalMs > frameBudgetMs() && nowMs - lastSlowFrameLogMs >= SLOW_FRAME_LOG_INTERVAL_MS) {
@@ -1156,7 +1192,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         logCoverageIfNeeded(state, force = false)
         if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
         updateVisibleCoverageSnapshot(state)
-        recordFrameStats(timing, state.busy)
+        val nowForStats = SystemClock.uptimeMillis()
+        val statsActive = state.busy ||
+            nowForStats <= programmaticScrollStatsUntilMs ||
+            (nowForStats - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS)
+        recordFrameStats(timing, statsActive)
     }
 
     private fun drawState(frameTimeNs: Long, callbackStartNs: Long, state: DrawState, canvas: Canvas): DrawTiming {
@@ -1503,7 +1543,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (!hasDrawnContentFrame && (state.visibleLoading == 0 || !shouldHoldInitialViewportRenderLocked())) {
             clearInitialRenderHoldLocked()
         }
-        if (hasDrawnContentFrame && !state.hasDrawableContent) {
+        val nowMs = SystemClock.uptimeMillis()
+        val recentScroll = nowMs <= programmaticScrollStatsUntilMs ||
+            nowMs - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS
+        if (hasDrawnContentFrame && !state.hasDrawableContent && !recentScroll) {
             renderRequested = true
             scheduleFrameLocked()
             return null
@@ -1685,9 +1728,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return
             }
             renderRequested = true
-            scheduleFrameLocked(preferImmediate = pointerDown || dragging)
+            scheduleFrameLocked()
             stateLock.notifyAll()
         }
+    }
+
+    private fun forceProgrammaticScrollRenderForTest() {
+        synchronized(stateLock) {
+            val nowMs = SystemClock.uptimeMillis()
+            if (nowMs > programmaticScrollStatsUntilMs || pages.isEmpty()) {
+                Log.d(
+                    TAG,
+                    "reader_test_scroll_force_skip now=$nowMs until=$programmaticScrollStatsUntilMs pages=${pages.size}"
+                )
+                return
+            }
+            frameScheduled = false
+            renderRequested = true
+            scheduleFrameLocked()
+            Log.d(
+                TAG,
+                "reader_test_scroll_force_render now=$nowMs until=$programmaticScrollStatsUntilMs " +
+                    "scroll=${fmt(scrollOffset)} frameScheduled=$frameScheduled renderRunning=$renderRunning"
+            )
+            stateLock.notifyAll()
+        }
+        invalidate()
     }
 
     private fun isEmpty(): Boolean = synchronized(stateLock) { pages.isEmpty() }
@@ -1708,7 +1774,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return windowRequestLocked(busy)
     }
 
-    private fun scheduleFrameLocked(preferImmediate: Boolean = false) {
+    private fun scheduleFrameLocked() {
         if (!renderRunning) return
         if (shouldBlockInitialEmptyFrameLocked()) {
             renderRequested = false
@@ -1721,7 +1787,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         frameToken++
         frameScheduled = true
         val firstDrawableFrame = !hasDrawnContentFrame && hasAnyDrawableContentLocked()
-        if (preferImmediate || firstDrawableFrame) {
+        if (firstDrawableFrame) {
             if (Looper.myLooper() == Looper.getMainLooper()) {
                 invalidate()
             } else {
@@ -2360,7 +2426,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 statsLastCallbackStartNs = timing.callbackStartNs
                 statsLastPostEndNs = if (timing.posted) timing.postEndNs else 0L
                 clearStatsSamples()
-                if (!timing.posted) statsNoCanvasFrames++
+                if (timing.posted) {
+                    statsLockWaitMs.add(timing.lockWaitMs)
+                    statsDrawMs.add(timing.drawMs)
+                    statsPostMs.add(timing.postMs)
+                    statsTotalMs.add(timing.totalMs)
+                    pendingInput?.let {
+                        statsInputOldestMs.add(nsToMs(timing.postEndNs - it.oldestNs))
+                        statsInputNewestMs.add(nsToMs(timing.postEndNs - it.newestNs))
+                    }
+                } else {
+                    statsNoCanvasFrames++
+                }
                 return
             }
             if (statsLastCallbackStartNs > 0L && timing.callbackStartNs > statsLastCallbackStartNs) {
@@ -2390,6 +2467,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return
         }
         if (!statsActive) return
+        val snapshot = synchronized(stateLock) {
+            finalizeActiveFrameStatsLocked(log = true)
+        } ?: return
+        logFrameStatsSnapshot(snapshot)
+    }
+
+    private fun finalizeActiveFrameStatsLocked(log: Boolean): FrameStatsSnapshot? {
+        if (!statsActive) return lastFrameStatsSnapshot
         val callbackIntervals = ArrayList(statsCallbackSpacingMs)
         val postIntervals = ArrayList(statsPostSpacingMs)
         val lockWait = ArrayList(statsLockWaitMs)
@@ -2404,7 +2489,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         statsLastCallbackStartNs = 0L
         statsLastPostEndNs = 0L
         clearStatsSamples()
-        if (callbackIntervals.isEmpty() && postIntervals.isEmpty() && total.isEmpty()) return
+        if (callbackIntervals.isEmpty() && postIntervals.isEmpty() && total.isEmpty()) return null
         callbackIntervals.sort()
         postIntervals.sort()
         lockWait.sort()
@@ -2440,35 +2525,40 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val drawP95 = percentile(draw, 0.95f)
         val totalP95 = percentile(total, 0.95f)
         val totalMax = maxOrZero(total)
-        synchronized(stateLock) {
-            lastFrameStatsSnapshot = FrameStatsSnapshot(
-                samples = frameSamples.size,
-                strictOverBudget = strictOverBudget,
-                missedIntervals = missedIntervals,
-                missedFrames = missedFrames,
-                droppedFrames = droppedFrames,
-                droppedFrameDebt = droppedFrameDebt,
-                callbackP95 = callbackP95,
-                callbackMax = callbackMax,
-                drawP95 = drawP95,
-                totalP95 = totalP95,
-                totalMax = totalMax,
-                noCanvas = noCanvas,
-                coalesced = coalesced
-            )
-        }
+        val snapshot = FrameStatsSnapshot(
+            samples = frameSamples.size,
+            strictOverBudget = strictOverBudget,
+            missedIntervals = missedIntervals,
+            missedFrames = missedFrames,
+            droppedFrames = droppedFrames,
+            droppedFrameDebt = droppedFrameDebt,
+            callbackP95 = callbackP95,
+            callbackMax = callbackMax,
+            drawP95 = drawP95,
+            totalP95 = totalP95,
+            totalMax = totalMax,
+            noCanvas = noCanvas,
+            coalesced = coalesced
+        )
+        lastFrameStatsSnapshot = snapshot
+        if (log) return snapshot
+        return snapshot
+    }
+
+    private fun logFrameStatsSnapshot(snapshot: FrameStatsSnapshot) {
+        val nominalBudget = frameBudgetMs()
+        val strictPercent = if (snapshot.samples == 0) 0f else snapshot.strictOverBudget * 100f / snapshot.samples
+        val missedPercent = if (snapshot.samples == 0) 0f else snapshot.missedIntervals * 100f / snapshot.samples
+        val droppedPercent = if (snapshot.samples == 0) 0f else snapshot.droppedFrames * 100f / snapshot.samples
         Log.i(
             TAG,
-            "surface_jank_v3 samples=${frameSamples.size} nominalBudget=${fmt(nominalBudget)} measuredBudget=${fmt(measuredBudget)} " +
-                "strictOverBudget=$strictOverBudget strictPct=${fmt(strictPercent)} " +
-                "missedIntervals=$missedIntervals missedFrames=$missedFrames missedPct=${fmt(missedPercent)} " +
-                "droppedFrames=$droppedFrames droppedFrameDebt=$droppedFrameDebt droppedPct=${fmt(droppedPercent)} " +
-                "callbackP95=${fmt(callbackP95)} callbackMax=${fmt(callbackMax)} " +
-                "postP95=${fmt(percentile(postIntervals, 0.95f))} postMax=${fmt(maxOrZero(postIntervals))} " +
-                "lockP95=${fmt(percentile(lockWait, 0.95f))} drawP95=${fmt(drawP95)} " +
-                "unlockP95=${fmt(percentile(post, 0.95f))} totalP95=${fmt(totalP95)} totalMax=${fmt(totalMax)} " +
-                "inputOldestP95=${fmt(percentile(inputOldest, 0.95f))} inputNewestP95=${fmt(percentile(inputNewest, 0.95f))} " +
-                "noCanvas=$noCanvas coalesced=$coalesced"
+            "surface_jank_v3 samples=${snapshot.samples} nominalBudget=${fmt(nominalBudget)} measuredBudget=${fmt(nominalBudget)} " +
+                "strictOverBudget=${snapshot.strictOverBudget} strictPct=${fmt(strictPercent)} " +
+                "missedIntervals=${snapshot.missedIntervals} missedFrames=${snapshot.missedFrames} missedPct=${fmt(missedPercent)} " +
+                "droppedFrames=${snapshot.droppedFrames} droppedFrameDebt=${snapshot.droppedFrameDebt} droppedPct=${fmt(droppedPercent)} " +
+                "callbackP95=${fmt(snapshot.callbackP95)} callbackMax=${fmt(snapshot.callbackMax)} " +
+                "drawP95=${fmt(snapshot.drawP95)} totalP95=${fmt(snapshot.totalP95)} totalMax=${fmt(snapshot.totalMax)} " +
+                "noCanvas=${snapshot.noCanvas} coalesced=${snapshot.coalesced}"
         )
     }
 
@@ -2620,6 +2710,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_WINDOW_MIN_DISPATCH_MS = 48L
         private const val BUSY_COVERAGE_LOG_INTERVAL_MS = 250L
         private const val SLOW_FRAME_LOG_INTERVAL_MS = 500L
+        private const val PROGRAMMATIC_SCROLL_STATS_RECENT_MS = 700L
+        private const val PROGRAMMATIC_SCROLL_STATS_ACTIVE_MS = 6500L
+        private const val PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS = 820L
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
         private const val SCROLLBAR_TOUCH_WIDTH_PX = 96f
