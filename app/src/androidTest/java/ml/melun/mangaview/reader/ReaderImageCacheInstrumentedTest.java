@@ -45,4 +45,23 @@ public class ReaderImageCacheInstrumentedTest {
         assertEquals(1, candidates.size());
         assertEquals("https://i.toonflix.app/webtoon_uploads/page001.jpg", candidates.get(0));
     }
+
+    @Test
+    public void ntkHtmlFallbackRejectsAdChromeImagesBeforePageImages() {
+        String source = "https://i.toonflix.app/3c161e656f947bc5bce35f9c73a7b8f1.jpg";
+        String html = "<html><body>"
+                + "<img src=\"https://i.toonflix.app/data/banner/header.jpg\">"
+                + "<img src=\"https://i.toonflix.app/webtoon_uploads/banner-page001.jpg\">"
+                + "<img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\">"
+                + "<img src=\"https://i.toonflix.app/ads/promo.webp\">"
+                + "</body></html>";
+
+        List<String> candidates = ReaderImageCache.extractImageCandidatesForTest(
+                html,
+                source,
+                MTitle.base_webtoon);
+
+        assertEquals(1, candidates.size());
+        assertEquals("https://i.toonflix.app/webtoon_uploads/page001.jpg", candidates.get(0));
+    }
 }

@@ -30,6 +30,7 @@ param(
     [switch]$ClearImageCache,
     [switch]$NoAckAssert,
     [switch]$NoDiversityAssert,
+    [switch]$RequireLiveRandom,
     [switch]$NoAppendProbe,
     [switch]$ChangeDeviceIdentityBeforeRun,
     [switch]$ResetDeviceIdentityBeforeRun,
@@ -490,6 +491,17 @@ if(-not $NoDiversityAssert -and [string]::IsNullOrWhiteSpace($TargetEpisodePath)
                 $uniqueCasePaths.Count, $requiredEpisodePaths, $uniqueTitlePaths.Count, $requiredTitlePaths, ($uniqueCasePaths -join "|"))
     }
 }
+if($RequireLiveRandom -and [string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $caseSourceCoverage -ne "live-random") {
+    $failureLines += ("NTK_LIVE_RANDOM_ASSERT coverage={0},api={1},db={2},rsc={3},numeric={4},curated={5},caseCurated={6}/{7}" -f `
+            $caseSourceCoverage, `
+            $titleSourceApi.Count, `
+            $titleSourceDb.Count, `
+            $titleSourceRsc.Count, `
+            $titleSourceNumericProbe.Count, `
+            $titleSourceCurated.Count, `
+            $caseCuratedCount, `
+            $cases.Count)
+}
 
 $ackChecks = @()
 $ackFailureLines = @()
@@ -619,6 +631,9 @@ if($AssertSchedulerGap) {
 if($NoDiversityAssert) {
     $reproArgs += "-NoDiversityAssert"
 }
+if($RequireLiveRandom) {
+    $reproArgs += "-RequireLiveRandom"
+}
 if($ForceStopBeforeRun) {
     $reproArgs += "-ForceStopBeforeRun"
 }
@@ -648,6 +663,7 @@ $summary = [ordered]@{
     scrollInputMode = $ScrollInputMode
     scrollPattern = $ScrollPattern
     assertSchedulerGap = [bool]$AssertSchedulerGap
+    requireLiveRandom = [bool]$RequireLiveRandom
     targetEpisodePath = $TargetEpisodePath
     ntkSiteRoot = $NtkSiteRoot
     ntkLockSiteRoot = [bool]$NtkLockSiteRoot

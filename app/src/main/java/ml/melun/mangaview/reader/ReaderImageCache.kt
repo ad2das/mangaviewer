@@ -5313,6 +5313,7 @@ object ReaderImageCache {
         if (lower.contains("sprite")
             || lower.contains("logo")
             || lower.contains("favicon")
+            || isLikelyAdChromeImageCandidate(candidate)
             || isDisallowedNtkImageAssetUrl(lower)
             || lower.contains("/thumb")
             || lower.contains("/data/member/")
@@ -5330,6 +5331,34 @@ object ReaderImageCache {
             || lower.contains("/webtoon/")
             || lower.contains("/manhwa/")
             || lower.contains("/comic/")
+    }
+
+    private fun isLikelyAdChromeImageCandidate(url: String): Boolean {
+        val path = try {
+            Uri.parse(url).path.orEmpty().lowercase()
+        } catch (_: Exception) {
+            url.lowercase()
+        }
+        if (path.contains("/data/banner/")
+            || path.contains("/banner/")
+            || path.contains("/banners/")
+            || path.contains("/advert/")
+            || path.contains("/advertise/")
+            || path.contains("/advertisement/")
+            || path.contains("/ads/")
+            || path.contains("/popup/")
+            || path.contains("/popups/")
+            || path.contains("/sponsor/")
+            || path.contains("/promotion/")
+            || path.contains("/promotions/")
+        ) return true
+        val name = path.substringAfterLast('/')
+        return name.startsWith("ad_")
+            || name.startsWith("ad-")
+            || name.startsWith("banner_")
+            || name.startsWith("banner-")
+            || name.startsWith("popup_")
+            || name.startsWith("popup-")
     }
 
     private fun isNtkProtectedImageUrl(url: String): Boolean {
