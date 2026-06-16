@@ -5,6 +5,7 @@ param(
     [int]$TimeoutMs = 3500,
     [int]$MaxRoots = 16,
     [switch]$IncludeResolvedRoots,
+    [switch]$RequireApiJsonRoot,
     [switch]$SkipBuild,
     [switch]$SkipInstall,
     [switch]$ForceStopBeforeRun
@@ -196,6 +197,31 @@ $logcatPath = Join-Path $runDir "logcat.txt"
 $logText = Get-Content -Path $logcatPath -Raw
 $probeRecords = @(Read-RootProbeRecords $logText)
 $rootClasses = @(Classify-RootProbe $probeRecords)
+$apiJsonRoots = @($rootClasses | Where-Object { $_.class -eq "api-json-ok" } | ForEach-Object { [string]$_.root })
+$rootClassCounts = [ordered]@{}
+foreach($classGroup in @($rootClasses | Group-Object class)) {
+    $rootClassCounts[$classGroup.Name] = $classGroup.Count
+}
+$rootProbeVerdict = if($apiJsonRoots.Count -gt 0) {
+    "live-api-root-available"
+} else {
+    "no-live-api-root"
+}
+$ackBlockedReason = if($apiJsonRoots.Count -gt 0) {
+    ""
+} elseif($rootClasses.Count -gt 0) {
+    "No api-json-ok root. classes=" + (($rootClassCounts.GetEnumerator() | ForEach-Object {
+        "$($_.Key):$($_.Value)"
+    }) -join ",")
+} else {
+    "No ntk_root_probe records were captured."
+}
+$nextLiveRandomCommand = ""
+if($apiJsonRoots.Count -gt 0) {
+    $liveRoot = $apiJsonRoots[0]
+    $nextLiveRandomCommand = ".\tools\ntk_random_perf.ps1 -DeviceSerial $DeviceSerial -Runs 6 -ScrollSteps 10 -AppendSteps 0 -ScreenshotEvery 0 -Mode native-ack -ScrollInputMode programmatic -ScrollPattern mixed -StrictFresh -NoAppendProbe -RequireLiveRandom -NtkSiteRoot `"$liveRoot`" -NtkLockSiteRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
+}
+$nextRootProbeCommand = ".\tools\ntk_root_probe.ps1 -DeviceSerial $DeviceSerial -Roots `"$Roots`" -TimeoutMs $TimeoutMs -MaxRoots $MaxRoots -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
 
 $summary = [ordered]@{
     runDir = $runDir
@@ -203,6 +229,13 @@ $summary = [ordered]@{
     roots = $Roots
     timeoutMs = $TimeoutMs
     maxRoots = $MaxRoots
+    requireApiJsonRoot = [bool]$RequireApiJsonRoot
+    verdict = $rootProbeVerdict
+    ackBlockedReason = $ackBlockedReason
+    rootClassCounts = $rootClassCounts
+    apiJsonRoots = $apiJsonRoots
+    nextLiveRandomCommand = $nextLiveRandomCommand
+    nextRootProbeCommand = $nextRootProbeCommand
     rootClasses = $rootClasses
     probes = Marker-Lines $logText "ntk_root_probe root="
     started = Marker-Lines $logText "ntk_root_probe_start" 4
@@ -212,10 +245,20 @@ $summary = [ordered]@{
 
 $summaryPath = Join-Path $runDir "summary.json"
 ($summary | ConvertTo-Json -Depth 4) | Set-Content -Path $summaryPath -Encoding UTF8
+[string]::Join("`n", $apiJsonRoots) | Set-Content -Path (Join-Path $runDir "api_json_roots.txt") -Encoding UTF8
+[string]$nextLiveRandomCommand | Set-Content -Path (Join-Path $runDir "next_live_random_command.txt") -Encoding UTF8
+[string]$nextRootProbeCommand | Set-Content -Path (Join-Path $runDir "next_root_probe_command.txt") -Encoding UTF8
 $summary | Format-List | Out-String | Write-Host
 if($rootClasses.Count -gt 0) {
     Write-Host "Root classes"
     $rootClasses | Format-Table -AutoSize | Out-String | Write-Host
+}
+Write-Host ("Root probe verdict: {0}" -f $rootProbeVerdict)
+if($ackBlockedReason.Length -gt 0) {
+    Write-Host ("ACK blocked reason: {0}" -f $ackBlockedReason)
+}
+if($nextLiveRandomCommand.Length -gt 0) {
+    Write-Host ("Next live random command: {0}" -f $nextLiveRandomCommand)
 }
 
 foreach($packageName in @("ml.melun.mangaview", "ml.melun.mangaview.test")) {
@@ -224,4 +267,7 @@ foreach($packageName in @("ml.melun.mangaview", "ml.melun.mangaview.test")) {
 
 if($exitCode -ne 0 -or $instrumentText -match "FAILURES!!!|Process crashed|INSTRUMENTATION_STATUS_CODE: -2") {
     throw "NTK root probe failed with exit code $exitCode. Summary: $summaryPath"
+}
+if($RequireApiJsonRoot -and $apiJsonRoots.Count -eq 0) {
+    throw "No api-json-ok NTK root found. Summary: $summaryPath"
 }
