@@ -229,6 +229,9 @@ public class CaptchaActivity extends AppCompatActivity {
             "function chromeMajor(){var m=String(navigator.userAgent||'').match(/Chrome\\/(\\d+)/);return m?m[1]:'116';}" +
             "function isMobileUa(){return /Android|Mobile/i.test(String(navigator.userAgent||''));}" +
             "function addDefaultHeaders(h){try{if(!h['Origin']&&!h['origin'])h['Origin']=location.origin;if(!h['Referer']&&!h['referer'])h['Referer']=location.href;if(!h['Accept']&&!h['accept'])h['Accept']='*/*';if(!h['Sec-Fetch-Dest']&&!h['sec-fetch-dest'])h['Sec-Fetch-Dest']='empty';if(!h['Sec-Fetch-Mode']&&!h['sec-fetch-mode'])h['Sec-Fetch-Mode']='cors';if(!h['Sec-Fetch-Site']&&!h['sec-fetch-site'])h['Sec-Fetch-Site']='same-origin';var v=chromeMajor(),mobile=isMobileUa();if(!h['sec-ch-ua'])h['sec-ch-ua']=mobile?'\\\"Chromium\\\";v=\\\"'+v+'\\\", \\\"Android WebView\\\";v=\\\"'+v+'\\\", \\\"Not A(Brand\\\";v=\\\"24\\\"':'\\\"Chromium\\\";v=\\\"'+v+'\\\", \\\"Google Chrome\\\";v=\\\"'+v+'\\\", \\\"Not_A Brand\\\";v=\\\"24\\\"';if(!h['sec-ch-ua-mobile'])h['sec-ch-ua-mobile']=mobile?'?1':'?0';if(!h['sec-ch-ua-platform'])h['sec-ch-ua-platform']=mobile?'\\\"Android\\\"':'\\\"Windows\\\"';}catch(e){}return h;}" +
+            "function textFromBase64(b){try{return new TextDecoder().decode(bytesFromBase64(b));}catch(e){try{return decodeURIComponent(escape(atob(b||'')));}catch(_){try{return atob(b||'');}catch(__){return '';}}}}" +
+            "function sameRootChallengePost(a,m){try{return a&&a.protocol==='https:'&&a.host===location.host&&a.pathname.indexOf('/cdn-cgi/challenge-platform/')===0&&String(m||'GET').toUpperCase()==='POST';}catch(e){return false;}}" +
+            "function sameRootAdApiPost(a,m){try{return a&&a.protocol==='https:'&&a.host===location.host&&(a.pathname==='/api/ad/challenge'||a.pathname==='/api/ad/canary'||a.pathname==='/api/ad/ack')&&String(m||'GET').toUpperCase()==='POST';}catch(e){return false;}}" +
             "window.__ntkBridgeFetch=function(input,init){" +
             "var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';" +
             "var method=(init&&init.method)||(input&&input.method)||'GET';" +
@@ -242,11 +245,13 @@ public class CaptchaActivity extends AppCompatActivity {
             "}catch(e){reject(e);}});" +
             "};" +
             "if(window.fetch&&(!window.__ntkNativeFetch||window.fetch.__ntkBridgeWrapped!==1))window.__ntkNativeFetch=window.fetch;" +
-            "var observeNativeAck=false;" +
+            "var observeNativeAck=true;" +
             "var nativeFetch=window.__ntkNativeFetch;" +
             "if(observeNativeAck&&nativeFetch&&(!window.fetch||window.fetch.__ntkBridgeWrapped!==1)){var wrappedFetch=function(input,init){" +
             "try{var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';var absolute=new URL(url,location.href);var method=(init&&init.method)||(input&&input.method)||'GET';" +
-            "if(absolute.protocol==='https:'&&absolute.host===location.host&&(absolute.pathname==='/api/ad/ack'||absolute.pathname==='/api/ad/challenge')&&String(method).toUpperCase()==='POST'){return nativeFetch.apply(this,arguments).then(function(r){try{window.NtkQuicBridge.recordAckStatus(absolute.href,'POST',r.status||0);}catch(e){}return r;});}" +
+            "if(sameRootChallengePost(absolute,method))return window.__ntkBridgeFetch(absolute.href,init||{});" +
+            "if(sameRootAdApiPost(absolute,method))return window.__ntkBridgeFetch(absolute.href,init||{});" +
+            "if(absolute.protocol==='https:'&&absolute.host===location.host&&(absolute.pathname==='/api/ad/ack'||absolute.pathname==='/api/ad/challenge')&&String(method).toUpperCase()==='POST'){var reqBody=init&&init.body,fetchArgs=arguments,self=this;return bodyBase64Async(reqBody).then(function(req64){return nativeFetch.apply(self,fetchArgs).then(function(r){try{window.NtkQuicBridge.recordAckStatus(absolute.href,'POST',r.status||0);}catch(e){}try{var rc=r.clone();rc.text().then(function(txt){try{window.NtkQuicBridge.recordAckExchange(absolute.href,'POST',r.status||0,req64||'',txt||'','fetch');}catch(e){}});}catch(e){}return r;});});}" +
             "}catch(e){}" +
             "return nativeFetch.apply(this,arguments);" +
             "};try{wrappedFetch.__ntkBridgeWrapped=1;}catch(e){}window.fetch=wrappedFetch;}" +
@@ -257,8 +262,10 @@ public class CaptchaActivity extends AppCompatActivity {
             "if(xp.open.__ntkBridgeWrapped!==1){var wrappedOpen=function(m,u,a,user,pw){try{this.__ntkq={method:m||'GET',url:u||'',headers:{}};}catch(e){}return xo.apply(this,arguments);};try{wrappedOpen.__ntkBridgeWrapped=1;}catch(e){}xp.open=wrappedOpen;}" +
             "if(xh&&xp.setRequestHeader.__ntkBridgeWrapped!==1){var wrappedSetHeader=function(k,v){try{if(this.__ntkq&&k)this.__ntkq.headers[String(k)]=String(v);}catch(e){}return xh.apply(this,arguments);};try{wrappedSetHeader.__ntkBridgeWrapped=1;}catch(e){}xp.setRequestHeader=wrappedSetHeader;}" +
             "if(xp.send.__ntkBridgeWrapped!==1){var wrappedSend=function(body){var meta=this.__ntkq||{},absolute;try{absolute=new URL(meta.url||'',location.href);}catch(e){}" +
+            "if(sameRootChallengePost(absolute,meta.method)){try{var xhr=this,h=addDefaultHeaders(meta.headers||{}),raw=window.NtkQuicBridge.request(absolute.href,String(meta.method||'POST'),JSON.stringify(addBodyContentType(h,body)),bodyBase64(body));var res=JSON.parse(raw||'{}');if(!res.ok)throw new Error(res.error||'NTK QUIC bridge failed');var txt=textFromBase64(res.bodyBase64||'');try{Object.defineProperty(xhr,'readyState',{value:4,configurable:true});Object.defineProperty(xhr,'status',{value:res.status||0,configurable:true});Object.defineProperty(xhr,'statusText',{value:res.statusText||'',configurable:true});Object.defineProperty(xhr,'responseText',{value:txt,configurable:true});Object.defineProperty(xhr,'response',{value:txt,configurable:true});}catch(_){try{xhr.__ntkqResponseText=txt;}catch(__){}}fireXhr(xhr,'readystatechange');fireXhr(xhr,'load');fireXhr(xhr,'loadend');}catch(e){try{Object.defineProperty(this,'readyState',{value:4,configurable:true});Object.defineProperty(this,'status',{value:0,configurable:true});}catch(_){}fireXhr(this,'readystatechange');fireXhr(this,'error');fireXhr(this,'loadend');}return;}" +
+            "if(sameRootAdApiPost(absolute,meta.method)){try{var xhr2=this,h2=addDefaultHeaders(meta.headers||{}),raw2=window.NtkQuicBridge.request(absolute.href,String(meta.method||'POST'),JSON.stringify(addBodyContentType(h2,body)),bodyBase64(body));var res2=JSON.parse(raw2||'{}');if(!res2.ok)throw new Error(res2.error||'NTK QUIC bridge failed');var txt2=textFromBase64(res2.bodyBase64||'');try{Object.defineProperty(xhr2,'readyState',{value:4,configurable:true});Object.defineProperty(xhr2,'status',{value:res2.status||0,configurable:true});Object.defineProperty(xhr2,'statusText',{value:res2.statusText||'',configurable:true});Object.defineProperty(xhr2,'responseText',{value:txt2,configurable:true});Object.defineProperty(xhr2,'response',{value:txt2,configurable:true});}catch(_){try{xhr2.__ntkqResponseText=txt2;}catch(__){}}fireXhr(xhr2,'readystatechange');fireXhr(xhr2,'load');fireXhr(xhr2,'loadend');}catch(e){try{Object.defineProperty(this,'readyState',{value:4,configurable:true});Object.defineProperty(this,'status',{value:0,configurable:true});}catch(_){}fireXhr(this,'readystatechange');fireXhr(this,'error');fireXhr(this,'loadend');}return;}" +
             "if(absolute&&absolute.protocol==='https:'&&absolute.host===location.host&&(absolute.pathname==='/api/ad/ack'||absolute.pathname==='/api/ad/challenge')&&String(meta.method||'GET').toUpperCase()==='POST'){" +
-            "try{var xhr=this;var ackUrl=absolute.href;var ackMethod=String(meta.method||'POST');xhr.addEventListener('loadend',function(){try{window.NtkQuicBridge.recordAckStatus(ackUrl,ackMethod,xhr.status||0);}catch(e){}});}catch(e){}}" +
+            "try{var xhr=this;var ackUrl=absolute.href;var ackMethod=String(meta.method||'POST'),reqBody=bodyBase64(body);xhr.addEventListener('loadend',function(){try{window.NtkQuicBridge.recordAckStatus(ackUrl,ackMethod,xhr.status||0);}catch(e){}try{window.NtkQuicBridge.recordAckExchange(ackUrl,ackMethod,xhr.status||0,reqBody||'',String(xhr.responseText||''),'xhr');}catch(e){}});}catch(e){}}" +
             "return xs.apply(this,arguments);};try{wrappedSend.__ntkBridgeWrapped=1;}catch(e){}xp.send=wrappedSend;}}" +
             "if(!window.__ntkBridgeFetchReadyLogged){window.__ntkBridgeFetchReadyLogged=1;try{console.log('__NTK_BRIDGE_FETCH_READY__');}catch(e){}}" +
             "})();";
@@ -306,6 +313,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private String ntkRootBootstrapReturnUrl = null;
     private long ntkRootBootstrapStartedAt = 0L;
     private volatile boolean ntkRootBootstrapMainFrameError = false;
+    private boolean ntkReloadedAckTargetAfterStaleRootError = false;
     private static final long NTK_ROOT_BOOTSTRAP_STAGE_LOG_MS = 8_000L;
 
     @Override
@@ -503,6 +511,24 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(isCurrentNtkRootBootstrapUrl(failingUrl)) {
                     ntkRootBootstrapMainFrameError = true;
                     android.util.Log.d("CaptchaActivity", "NTK root bootstrap main-frame error: " + failingUrl);
+                }
+                if(shouldSuppressStaleNtkRootErrorAfterClearanceForTest(
+                        p != null && p.isNtkSite(),
+                        failingUrl,
+                        captchaLoadUrl,
+                        getHttpClient().hasCloudflareClearance(),
+                        waitingForNtkAdAckBeforeFinish)) {
+                    android.util.Log.d("CaptchaActivity",
+                            "Ignoring stale NTK root bootstrap error after clearance: " + failingUrl);
+                    ntkRootBootstrapReturnUrl = null;
+                    ntkRootBootstrapStartedAt = 0L;
+                    if(!ntkReloadedAckTargetAfterStaleRootError && webView != null
+                            && captchaLoadUrl != null && captchaLoadUrl.length() > 0) {
+                        ntkReloadedAckTargetAfterStaleRootError = true;
+                        webView.loadUrl(captchaLoadUrl);
+                        installShadowHookIfAllowed();
+                    }
+                    return;
                 }
                 if(retryNtkCaptchaWithRootBootstrapIfNeeded(failingUrl))
                     return;
@@ -912,6 +938,7 @@ public class CaptchaActivity extends AppCompatActivity {
         ntkRootBootstrapReturnUrl = url;
         ntkRootBootstrapStartedAt = SystemClock.elapsedRealtime();
         ntkRootBootstrapMainFrameError = false;
+        ntkReloadedAckTargetAfterStaleRootError = false;
         hideCaptchaLoadError();
         quicCaptchaHtmlActive = false;
         android.util.Log.d("CaptchaActivity", "Starting NTK captcha via root bootstrap: root="
@@ -949,6 +976,7 @@ public class CaptchaActivity extends AppCompatActivity {
         ntkRootBootstrapReturnUrl = target;
         ntkRootBootstrapStartedAt = SystemClock.elapsedRealtime();
         ntkRootBootstrapMainFrameError = false;
+        ntkReloadedAckTargetAfterStaleRootError = false;
         hideCaptchaLoadError();
         quicCaptchaHtmlActive = false;
         android.util.Log.d("CaptchaActivity", "Retrying NTK captcha via root bootstrap: root="
@@ -1035,6 +1063,22 @@ public class CaptchaActivity extends AppCompatActivity {
             return false;
         String rootUrl = ntkRootBootstrapUrl(ntkRootBootstrapReturnUrl);
         return rootUrl != null && sameUrlIgnoringTrailingSlash(rootUrl, url);
+    }
+
+    static boolean shouldSuppressStaleNtkRootErrorAfterClearanceForTest(
+            boolean ntkSite,
+            String failingUrl,
+            String targetUrl,
+            boolean hasClearance,
+            boolean waitingForAck) {
+        if(!ntkSite || failingUrl == null || targetUrl == null)
+            return false;
+        if(!hasClearance && !waitingForAck)
+            return false;
+        if(!isNtkEpisodeDeepLink(targetUrl))
+            return false;
+        String rootUrl = ntkRootBootstrapUrl(targetUrl);
+        return rootUrl != null && sameUrlIgnoringTrailingSlash(rootUrl, failingUrl);
     }
 
     private boolean retryCaptchaLoadWithQuicIfNeeded(String failingUrl) {
@@ -1213,6 +1257,37 @@ public class CaptchaActivity extends AppCompatActivity {
                         + status + ",scope=" + scope + ",url=" + url);
             } catch (Exception e) {
                 android.util.Log.d("CaptchaActivity", "NTK WebView ACK proof record failed: " + url, e);
+            }
+        }
+
+        @JavascriptInterface
+        public void recordAckExchange(String url, String method, int status,
+                                      String requestBodyBase64, String responseBody,
+                                      String transport) {
+            if(method == null || !"POST".equalsIgnoreCase(method))
+                return;
+            try {
+                URI uri = URI.create(url);
+                String path = uri.getPath();
+                if(!"/api/ad/ack".equals(path) && !"/api/ad/challenge".equals(path))
+                    return;
+                String requestPreview = "";
+                if(requestBodyBase64 != null && requestBodyBase64.length() > 0) {
+                    try {
+                        byte[] requestBody = Base64.decode(requestBodyBase64, Base64.DEFAULT);
+                        requestPreview = previewBridgeBodyForLog(requestBody);
+                    } catch (Exception ignored) {
+                    }
+                }
+                String responsePreview = responseBody == null ? "" : responseBody;
+                if(responsePreview.length() > 360)
+                    responsePreview = responsePreview.substring(0, 360);
+                android.util.Log.d("CaptchaActivity", "NTK WebView ACK exchange observed path="
+                        + path + ",status=" + status + ",transport=" + transport
+                        + ",request=" + requestPreview + ",response=" + responsePreview);
+            } catch (Exception e) {
+                android.util.Log.d("CaptchaActivity", "NTK WebView ACK exchange record failed: "
+                        + url, e);
             }
         }
 
@@ -1617,14 +1692,30 @@ public class CaptchaActivity extends AppCompatActivity {
             return;
         if(method == null || !"POST".equalsIgnoreCase(method))
             return;
+        String path;
         try {
             URI uri = URI.create(url);
-            if(!"/api/ad/ack".equals(uri.getPath()))
+            path = uri.getPath();
+            if(!"/api/ad/ack".equals(path) && !"/api/ad/challenge".equals(path))
                 return;
         } catch (Exception e) {
             return;
         }
         try {
+            String scope = bridgeAckRequestScope(requestBody);
+            if(scope == null || scope.length() == 0)
+                scope = ntkVerificationUrl(captchaLoadUrl, captchaLoadUrl);
+            if(scope == null || scope.length() == 0)
+                return;
+            if("/api/ad/challenge".equals(path) && resultSetCookiesContainName(result, "ad_ack_c")) {
+                getHttpClient().rememberExternalNtkServerAckSuccess(
+                        scope, "captcha-bridge-challenge-ad-ack-cookie-200");
+                android.util.Log.d("CaptchaActivity", "NTK JS bridge challenge ACK proof recorded status="
+                        + result.code + ",scope=" + scope + ",url=" + url);
+                return;
+            }
+            if(!"/api/ad/ack".equals(path))
+                return;
             String responseText = result.body == null ? "" : result.body;
             org.json.JSONObject response = new org.json.JSONObject(responseText);
             boolean ok = response.optBoolean("ok", false)
@@ -1633,23 +1724,33 @@ public class CaptchaActivity extends AppCompatActivity {
                     || "acked".equalsIgnoreCase(response.optString("status", ""));
             if(!ok)
                 return;
-            String scope = "";
-            if(requestBody != null && requestBody.length > 0) {
-                try {
-                    org.json.JSONObject request = new org.json.JSONObject(
-                            new String(requestBody, java.nio.charset.StandardCharsets.UTF_8));
-                    scope = request.optString("path", "");
-                } catch (Exception ignored) {
-                }
-            }
-            if(scope == null || scope.length() == 0)
-                scope = ntkVerificationUrl(captchaLoadUrl, captchaLoadUrl);
-            if(scope == null || scope.length() == 0)
-                return;
             getHttpClient().rememberExternalNtkServerAckSuccess(scope, "captcha-bridge-ack-200");
         } catch (Exception e) {
             android.util.Log.d("CaptchaActivity", "NTK JS bridge ACK proof parse failed: " + url, e);
         }
+    }
+
+    private static String bridgeAckRequestScope(byte[] requestBody) {
+        if(requestBody == null || requestBody.length == 0)
+            return "";
+        try {
+            org.json.JSONObject request = new org.json.JSONObject(
+                    new String(requestBody, java.nio.charset.StandardCharsets.UTF_8));
+            return request.optString("path", "");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static boolean resultSetCookiesContainName(NtkQuicFetcher.Result result, String name) {
+        if(result == null || name == null)
+            return false;
+        for(String cookie : result.setCookies()) {
+            String value = extractCookieValueForTest(cookie, name);
+            if(value != null && value.length() > 0)
+                return true;
+        }
+        return false;
     }
 
     private void cacheNtkGuardModule(String url, byte[] bytes) {
@@ -1833,7 +1934,7 @@ public class CaptchaActivity extends AppCompatActivity {
         if(isNtkGuardModulePath(url))
             return isNtkProtectedHttpsUrl(url);
         if(isNtkCloudflareChallengeResource(url))
-            return false;
+            return quicHtmlActive && isNtkProtectedHttpsUrl(url);
         if(!quicHtmlActive)
             return false;
         return isNtkProtectedHttpsUrl(url);
@@ -2587,6 +2688,9 @@ public class CaptchaActivity extends AppCompatActivity {
         String targetUrl = ntkAckTargetUrlForFinish(purl, currentUrl);
         if(attempt == 0 && shouldLoadNtkAckTargetBeforeFinish(targetUrl)) {
             android.util.Log.d("CaptchaActivity", "NTK ad guard ack loading target before finish: " + targetUrl);
+            ntkRootBootstrapReturnUrl = null;
+            ntkRootBootstrapStartedAt = 0L;
+            ntkRootBootstrapMainFrameError = false;
             webView.loadUrl(targetUrl);
             handler.postDelayed(() -> waitForNtkAdAckAndFinish(purl, webView == null ? currentUrl : webView.getUrl(), attempt + 1), 500L);
             return;

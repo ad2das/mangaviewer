@@ -20857,3 +20857,96 @@ tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webvie
   - This validation used `-NoAckAssert`; native/hidden ACK proof is still not solved.
   - ACK preflight still reports false in native path; visible UX/CDP proof remains the known strict ACK success route.
   - Need wider random coverage once the current target change set is cleaned up and committed.
+
+## 2026-06-16 19:31 commit and push
+
+- Committed and pushed the validated initial webtoon image/scroll stability unit:
+  - Commit message: `Improve NTK webtoon initial image and scroll stability`
+  - Remote: `origin/main`
+- Verification before commit:
+  - Compile/install passed.
+  - Target 1-run `build/ntk-random-perf/20260616_192349` passed: firstDrawable `2918ms`, scroll `3/3`, `slowSignals=0`.
+  - Target 2-run `build/ntk-random-perf/20260616_192435` passed: firstDrawable `2/2`, scroll `6/6`, `slowSignals=0`.
+- Still open after commit:
+  - Native/hidden ACK remains false. Do not treat this commit as ACK solved.
+  - Wider random coverage is still needed after ACK-side follow-up.
+
+## 2026-06-16 19:33 ACK visible/CDP proof currently hard-blocked on sbxh7 root
+
+- Re-ran visible UX/CDP strict ACK proof after the initial webtoon image/scroll commit:
+  - Output: `build/ntk-cdp-ack/strict_ack_after_65282d0e_20260616_192837`
+  - Probe: `build/ntk-ack-ux-probe/20260616_192838_sbxh7_com_bd3da1`
+- Result:
+  - CDP captured zero `/api/ad/challenge` or `/api/ad/ack` requests.
+  - Probe did not produce `serverProof`; final marker was `ack=false,clearance=false,serverProof=false`.
+  - Root bootstrap hit main-frame error/reset, QUIC fallback got root `403`, and the visible WebView stayed on `Just a moment... Enable JavaScript and cookies to continue`.
+- Interpretation:
+  - This is not the earlier stale-CDP-target false negative. The probe itself is hard-blocked at current `https://sbxh7.com/` root.
+  - Normal UX/CDP ACK success was previously proven, but current domain/root state became blocked. Do not claim visible ACK works on sbxh7 until server proof is re-captured.
+
+## 2026-06-16 20:06 sbxh7 ACK proof path changed: challenge POST sets `ad_ack_c`
+
+- Continued from the sbxh7 root hard-block after context restore.
+- Current ACK/root findings:
+  - Same-root Cloudflare challenge JS GET must be served through the QUIC WebView intercept while root fallback is active. Direct WebView fetch resets.
+  - Same-root Cloudflare challenge flow POST must be routed through the JS QUIC bridge. `shouldInterceptRequest` cannot solve POST because the body is unavailable there.
+  - After these two fixes, Cloudflare can set `cf_clearance` and the WebView can reach `/webtoon/17332/1515337`.
+  - A stale root-bootstrap main-frame error can arrive after clearance while the target page is loading. If not suppressed, it retries root via proxy/no-proxy and overwrites the target with `chrome-error://chromewebdata`.
+  - Added stale-root suppression after clearance / ACK wait, and clear root-bootstrap state before loading the ACK target.
+- Site behavior change observed on `sbxh7.com`:
+  - The page now sends `POST /api/ad/challenge` with body `{"path":"/webtoon/17332/1515337","force":false}`.
+  - The server responds `200` and sets `ad_ack_c`.
+  - The page later calls `/api/ad/ack` as `GET`, which returns `405`. The old proof rule "`/api/ad/ack` POST 200 only" no longer matches current visible UX on sbxh7.
+- Retained strict proof adaptation:
+  - Only record server proof from `/api/ad/challenge` when all are true:
+    - same-root bridge request,
+    - method is `POST`,
+    - HTTP status is `200`,
+    - response Set-Cookie includes `ad_ack_c`,
+    - request body contains the concrete episode `path`.
+  - This is not cookie-only success and not synthetic ACK. It records the server response that currently issues the usable ACK cookie.
+- Validation:
+  - Unit: `.\gradlew.bat :app:testDebugUnitTest --tests ml.melun.mangaview.activity.CaptchaActivityTest` passed.
+  - Install: `.\gradlew.bat :app:installDebug` passed.
+  - Visible probe: `build/ntk-cdp-ack/strict_ack_challenge_cookie_proof_20260616_200342`
+  - Probe run: `build/ntk-ack-ux-probe/20260616_200344_sbxh7_com_f7fb33`
+  - Result:
+    - `ntk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-bridge-challenge-ad-ack-cookie-200`
+    - `NTK JS bridge challenge ACK proof recorded status=200,scope=/webtoon/17332/1515337,url=https://sbxh7.com/api/ad/challenge`
+    - Probe stopped after marker `ntk_server_ack_success_recorded` and connector exit was successful.
+- Caveat:
+  - CDP Network did not see `/api/ad/challenge` because the request was intentionally native-bridged from injected JS. For this path, app log/serverProof is the authoritative proof. Keep CDP useful for direct WebView requests, but do not require it for bridge-native requests.
+- Bad/avoid:
+  - Do not treat `ad_ack_c` cookie presence alone as success.
+  - Do not keep retrying root/proxy fallback after clearance when the target ACK page is loading.
+  - Do not chase `/api/ad/ack` GET 405 as a successful ACK endpoint; current sbxh7 visible flow uses challenge POST to issue `ad_ack_c`.
+
+## 2026-06-16 20:09 ACK repeat proof and viewer sanity
+
+- Repeated visible proof:
+  - Output: `build/ntk-cdp-ack/strict_ack_challenge_cookie_proof_repeat_20260616_200619`
+  - Probe: `build/ntk-ack-ux-probe/20260616_200620_sbxh7_com_802d4d`
+  - Result again stopped after `ntk_server_ack_success_recorded`.
+- Ran hard target viewer sanity:
+  - Command:
+    - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5556 -Runs 1 -ScrollSteps 3 -AppendSteps 4 -ScreenshotEvery 0 -Seed 1781591600001 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -TargetEpisodePath /webtoon/3774/176692 -TargetImageEpisodeId 176692 -TargetImageCount 80 -NtkSiteRoot https://sbxh7.com -NtkLockSiteRoot -StrictFresh -NoAckAssert -ForceStopBeforeRun -SkipBuild -SkipInstall`
+  - Artifact: `build/ntk-random-perf/20260616_200732`
+  - Result: passed, firstDrawable `3054ms`, scroll `3/3`, `slowSignals=0`, no coverage gap or post-stop drift.
+  - Important: native/hidden ACK still false in this target run:
+    - `webViewAckPreflightDone success=false ms=1464`
+    - `/api/ad/challenge` native path got Cloudflare `403`
+  - Therefore the current ACK improvement is for visible captcha/WebView proof under sbxh7, not a native hidden ACK fix.
+
+## 2026-06-16 20:11 commit and push
+
+- Committed and pushed the sbxh7 visible ACK/root-bootstrap unit:
+  - Commit message: `Restore NTK captcha ACK proof on sbxh7`
+  - Remote: `origin/main`
+- Verification before commit:
+  - `.\gradlew.bat :app:testDebugUnitTest --tests ml.melun.mangaview.activity.CaptchaActivityTest` passed.
+  - Visible proof `build/ntk-cdp-ack/strict_ack_challenge_cookie_proof_20260616_200342` passed via `ntk_server_ack_success_recorded`.
+  - Repeat visible proof `build/ntk-cdp-ack/strict_ack_challenge_cookie_proof_repeat_20260616_200619` also passed via `ntk_server_ack_success_recorded`.
+  - Viewer target sanity `build/ntk-random-perf/20260616_200732` passed: firstDrawable `3054ms`, scroll `3/3`, `slowSignals=0`.
+- Still open:
+  - Native/hidden ACK is still false against this hard target because its direct `/api/ad/challenge` path still receives CF `403`.
+  - Wider random coverage remains required.

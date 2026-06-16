@@ -108,6 +108,8 @@ public class CaptchaActivityTest {
         assertFalse(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(false, true));
         assertTrue(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(true, false));
         assertFalse(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(false, false));
+        assertTrue(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(true, true, true));
+        assertFalse(CaptchaActivity.shouldEnableWebContentsDebuggingForTest(false, true, true));
     }
 
     @Test
@@ -134,6 +136,40 @@ public class CaptchaActivityTest {
                 true, false, false, "https://sbxh3.com/", false));
         assertFalse(CaptchaActivity.shouldRetryCaptchaLoadWithQuicForTest(
                 false, false, false, "https://sbxh3.com/", true));
+    }
+
+    @Test
+    public void ntkRootBootstrapSuppressesStaleRootErrorsAfterClearance() {
+        assertTrue(CaptchaActivity.shouldSuppressStaleNtkRootErrorAfterClearanceForTest(
+                true,
+                "https://sbxh7.com/",
+                "https://sbxh7.com/webtoon/17332/1515337",
+                true,
+                false));
+        assertTrue(CaptchaActivity.shouldSuppressStaleNtkRootErrorAfterClearanceForTest(
+                true,
+                "https://sbxh7.com",
+                "https://sbxh7.com/webtoon/17332/1515337",
+                false,
+                true));
+        assertFalse(CaptchaActivity.shouldSuppressStaleNtkRootErrorAfterClearanceForTest(
+                true,
+                "https://sbxh7.com/webtoon/17332/1515337",
+                "https://sbxh7.com/webtoon/17332/1515337",
+                true,
+                true));
+        assertFalse(CaptchaActivity.shouldSuppressStaleNtkRootErrorAfterClearanceForTest(
+                true,
+                "https://sbxh7.com/",
+                "https://sbxh7.com/board/free",
+                true,
+                true));
+        assertFalse(CaptchaActivity.shouldSuppressStaleNtkRootErrorAfterClearanceForTest(
+                false,
+                "https://sbxh7.com/",
+                "https://sbxh7.com/webtoon/17332/1515337",
+                true,
+                true));
     }
 
     @Test
@@ -186,7 +222,7 @@ public class CaptchaActivityTest {
     }
 
     @Test
-    public void ntkQuicInterceptKeepsGeneralResourcesInsideFallbackButCachesGuardModules() {
+    public void ntkQuicInterceptServesSameRootCloudflareChallengeResourcesWhenFallbackActive() {
         String root = CustomHttpClient.NTK_WEBTOON_URL;
         String imgRoot = root.replace("https://", "https://img.");
         assertTrue(CaptchaActivity.shouldInterceptNtkQuicRequestForTest(
@@ -212,21 +248,27 @@ public class CaptchaActivityTest {
     }
 
     @Test
-    public void ntkCaptchaBridgeReplaysChallengePostsWithBrowserFetchHeaders() {
+    public void ntkCaptchaBridgeRoutesSameRootChallengeAndAdPosts() {
         String script = CaptchaActivity.ntkQuicBridgeJavascriptForTest();
 
         assertTrue(script.contains("window.__ntkBridgeFetch=function(input,init)"));
-        assertTrue(script.contains("window.fetch=function"));
+        assertTrue(script.contains("window.fetch=wrappedFetch"));
         assertTrue(script.contains("XMLHttpRequest"));
-        assertTrue(script.contains("xp.open=function"));
-        assertTrue(script.contains("absolute.pathname.indexOf('/cdn-cgi/challenge-platform/')===0"));
+        assertTrue(script.contains("xp.open=wrappedOpen"));
         assertTrue(script.contains("return nativeFetch.apply(this,arguments)"));
+        assertTrue(script.contains("sameRootChallengePost"));
+        assertTrue(script.contains("sameRootAdApiPost"));
+        assertTrue(script.contains("window.__ntkBridgeFetch(absolute.href"));
+        assertTrue(script.contains("window.NtkQuicBridge.request(absolute.href"));
         assertTrue(script.contains("Sec-Fetch-Dest"));
         assertTrue(script.contains("Sec-Fetch-Mode"));
         assertTrue(script.contains("Sec-Fetch-Site"));
         assertTrue(script.contains("sec-ch-ua"));
         assertTrue(script.contains("navigator.userAgent"));
-        assertFalse(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')!==0)return false;return false;"));
+        assertTrue(script.contains("a.pathname.indexOf('/cdn-cgi/challenge-platform/')===0"));
+        assertTrue(script.contains("a.pathname==='/api/ad/challenge'"));
+        assertTrue(script.contains("a.pathname==='/api/ad/ack'"));
+        assertTrue(script.contains("String(m||'GET').toUpperCase()==='POST'"));
     }
 
     @Test
