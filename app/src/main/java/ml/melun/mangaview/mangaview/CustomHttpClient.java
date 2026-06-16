@@ -8879,6 +8879,7 @@ public class CustomHttpClient {
             if((preparedChallengeBody == null || preparedChallengeBody.length() == 0)
                     && !hasNtkAckGuardBootstrapForNativeChallenge(path)) {
                 Log.d(TAG, "ntk_native_ack_skip_missing_guard_bootstrap path=" + path
+                        + ",cf=" + hasCloudflareClearance()
                         + ",adGuardL=" + (getCookie("ad_guard_l") != null)
                         + ",adAckC=" + (getCookie("ad_ack_c") != null)
                         + ",nv=" + isNtkNvValid(getCookie("nv"))
@@ -9214,7 +9215,8 @@ public class CustomHttpClient {
     }
 
     private boolean hasNtkAckGuardBootstrapForNativeChallenge(String path) {
-        return getCookie("ad_guard_l") != null
+        return hasCloudflareClearance()
+                || getCookie("ad_guard_l") != null
                 || getCookie("ad_ack_c") != null
                 || hasNtkAdAckCookieForPath(path);
     }

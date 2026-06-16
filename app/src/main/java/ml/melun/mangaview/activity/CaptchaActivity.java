@@ -83,6 +83,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
     private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
     private static final long TURNSTILE_MAX_WAIT_MS = 120000;
+    private static final int TURNSTILE_MAX_STUCK_RELOADS = 2;
     private static final long COOKIE_READ_THROTTLE_MS = 350;
     private static final String NTK_ACCESS_VERIFY_PATH = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
     private static final String NTK_SEARCH_VERIFY_PATH = "/search?q=%EC%9B%90%ED%94%BC%EC%8A%A4&kind=manhwa";
@@ -295,6 +296,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private String lastTurnstileClickSignature = "";
     private long lastTurnstileRepeatTouchAt = 0;
     private int turnstileRepeatTouchCount = 0;
+    private int turnstileStuckReloadCount = 0;
     private final Set<String> rejectedClearanceValues = new HashSet<>();
     private String lastVerificationClearanceValue = null;
     private long lastClearanceVerificationAt = 0;
@@ -715,6 +717,7 @@ public class CaptchaActivity extends AppCompatActivity {
         View close = findViewById(R.id.captchaClose);
         if(reload != null)
             reload.setOnClickListener(v -> {
+                turnstileStuckReloadCount = 0;
                 retriedCaptchaWithQuic = false;
                 quicCaptchaLoadInFlight = false;
                 quicCaptchaHtmlActive = false;
@@ -2125,7 +2128,10 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(isFinishing || isDestroyed() || captchaLoadErrorVisible) return;
 
                 // Check if we've been waiting too long
-                if(System.currentTimeMillis() - pageFinishedTime > TURNSTILE_MAX_WAIT_MS) {
+                long turnstileWaitMs = System.currentTimeMillis() - pageFinishedTime;
+                if(turnstileWaitMs > TURNSTILE_MAX_WAIT_MS) {
+                    if(reloadStuckNtkTurnstileChallenge(turnstileWaitMs))
+                        return;
                     android.util.Log.w("CaptchaActivity", "Turnstile max wait exceeded");
                     return;
                 }
@@ -2140,6 +2146,37 @@ public class CaptchaActivity extends AppCompatActivity {
                 handler.postDelayed(this, nextTurnstileCheckDelay());
             }
         }, TURNSTILE_CHECK_DELAY_MS);
+    }
+
+    private boolean reloadStuckNtkTurnstileChallenge(long waitMs) {
+        if(p == null || !p.isNtkSite() || webView == null
+                || captchaLoadUrl == null || captchaLoadUrl.length() == 0)
+            return false;
+        if(turnstileStuckReloadCount >= TURNSTILE_MAX_STUCK_RELOADS)
+            return false;
+        turnstileStuckReloadCount++;
+        android.util.Log.w("CaptchaActivity", "Reloading stuck NTK Turnstile challenge waitMs="
+                + waitMs
+                + ",reload=" + turnstileStuckReloadCount
+                + ",url=" + captchaLoadUrl);
+        retriedCaptchaWithNtkRootBootstrap = false;
+        retriedCaptchaWithQuic = false;
+        retriedCaptchaWithProxy = false;
+        retriedCaptchaWithoutProxy = false;
+        quicCaptchaLoadInFlight = false;
+        quicCaptchaHtmlActive = false;
+        ntkRootBootstrapReturnUrl = null;
+        ntkRootBootstrapStartedAt = 0L;
+        ntkRootBootstrapMainFrameError = false;
+        ntkReloadedAckTargetAfterStaleRootError = false;
+        hideCaptchaLoadError();
+        clearWebViewProxy();
+        handler.postDelayed(() -> {
+            if(isFinishing || isDestroyed() || webView == null)
+                return;
+            loadCaptchaUrl(captchaLoadUrl);
+        }, 150L);
+        return true;
     }
 
     private void attemptTurnstileClick() {
