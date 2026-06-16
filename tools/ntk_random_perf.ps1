@@ -631,6 +631,9 @@ if($AssertSchedulerGap) {
 if($NoDiversityAssert) {
     $reproArgs += "-NoDiversityAssert"
 }
+if($NoAckAssert) {
+    $reproArgs += "-NoAckAssert"
+}
 if($RequireLiveRandom) {
     $reproArgs += "-RequireLiveRandom"
 }
@@ -641,6 +644,18 @@ if($EnsureAccessBefore) {
     $reproArgs += "-EnsureAccessBefore"
     $reproArgs += "-EnsureAccessMaxMs"
     $reproArgs += [string]$EnsureAccessMaxMs
+}
+
+$liveRandomBlockedReason = ""
+$nextRootProbeCommand = ""
+if([string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $caseSourceCoverage -ne "live-random") {
+    $probeRoots = if($NtkSiteRoot -and $NtkSiteRoot.Trim().Length -gt 0) {
+        $NtkSiteRoot.Trim()
+    } else {
+        "https://sbxh5.com,https://sbxh6.com,https://toonflix.app,https://sbxh4.com"
+    }
+    $liveRandomBlockedReason = ("caseSourceCoverage={0}; run root probe before claiming final live-random proof" -f $caseSourceCoverage)
+    $nextRootProbeCommand = ".\tools\ntk_root_probe.ps1 -DeviceSerial $DeviceSerial -Roots `"$probeRoots`" -TimeoutMs 5000 -MaxRoots 12 -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
 }
 
 $summary = [ordered]@{
@@ -672,6 +687,8 @@ $summary = [ordered]@{
     uniqueTitlePathCount = $uniqueTitlePaths.Count
     uniqueTitlePaths = $uniqueTitlePaths
     titleSourceCounts = $titleSourceCounts
+    liveRandomBlockedReason = $liveRandomBlockedReason
+    nextRootProbeCommand = $nextRootProbeCommand
     failurePath = $failurePath
     failureMode = $failureMode
     started = $starts
@@ -695,6 +712,7 @@ $summary = [ordered]@{
 $summaryPath = Join-Path $runDir "summary.json"
 $summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding UTF8
 ($reproArgs -join " ") | Set-Content -Path (Join-Path $runDir "repro_command.txt") -Encoding UTF8
+[string]$nextRootProbeCommand | Set-Content -Path (Join-Path $runDir "next_root_probe_command.txt") -Encoding UTF8
 
 Write-Host ""
 Write-Host "NTK random perf summary"
@@ -740,6 +758,10 @@ Write-Host ("  titleSources api={0} db={1} rsc={2} numeric={3} curated={4} caseC
     $titleSourceCounts.caseCurated, `
     $cases.Count, `
     $titleSourceCounts.coverage)
+if($liveRandomBlockedReason.Length -gt 0) {
+    Write-Host "  liveRandomBlockedReason=$liveRandomBlockedReason"
+    Write-Host "  nextRootProbe=$nextRootProbeCommand"
+}
 Write-Host "  summary=$summaryPath"
 Write-Host "  logcat=$logcatPath"
 if($screenshotFiles.Count -gt 0) {
