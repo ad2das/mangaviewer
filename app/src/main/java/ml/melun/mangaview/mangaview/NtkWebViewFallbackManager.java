@@ -69,6 +69,7 @@ final class NtkWebViewFallbackManager {
     private static final ConcurrentHashMap<String, Long> SERVER_ACK_SUCCESS_BY_SCOPE = new ConcurrentHashMap<>();
     private static final long NATIVE_ACK_CHALLENGE_TTL_MS = 45_000L;
     private static final ConcurrentHashMap<String, NativeAckChallenge> NATIVE_ACK_CHALLENGE_BY_SCOPE = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, String> REQUEST_KEY_BY_SCOPE = new ConcurrentHashMap<>();
     private static final boolean ACK_ONLY_CLOUDFLARE_NATIVE_FLOW_ONLY = true;
     private static final String ACK_ONLY_PLAIN_CF_TAG = "ntk_ack_plain_cf";
     private static final String ACK_ONLY_PLAIN_CF_PROMOTED_TAG = "ntk_ack_plain_cf_promoted";
@@ -317,6 +318,22 @@ final class NtkWebViewFallbackManager {
                                            String ackScopePath, Map<String, String> headers, String kind,
                                            String workId, String episodeId, String imagesToken,
                                            String fallbackCookieHeader, String shellHtml) {
+        return fetchViewerImageUrls(userAgent, baseUrl, path, ackScopePath, headers, kind,
+                workId, episodeId, imagesToken, fallbackCookieHeader, shellHtml, null);
+    }
+
+    ArrayList<String> fetchViewerImageUrls(String userAgent, String baseUrl, String path,
+                                           String ackScopePath, Map<String, String> headers, String kind,
+                                           String workId, String episodeId, String imagesToken,
+                                           String fallbackCookieHeader, String shellHtml,
+                                           Runnable afterMainPost) {
+        if(afterMainPost != null) {
+            try {
+                afterMainPost.run();
+            } catch (Exception e) {
+                Log.d(TAG, "ntk_webview_after_main_post_error path=" + path + "," + e);
+            }
+        }
         boolean ackOnly = "__ack_only__".equals(imagesToken);
         if(ackOnly) {
             Log.d(TAG, "ntk_webview_ack_only_flight path=" + path);
@@ -1396,6 +1413,10 @@ final class NtkWebViewFallbackManager {
                 + ",source=" + source);
     }
 
+    static void rememberExternalServerAckSuccess(String scope, String source) {
+        rememberServerAckSuccess(scope, source == null || source.length() == 0 ? "external" : source);
+    }
+
     static void clearRecentServerAckSuccessForTest(String scope) {
         String normalized = normalizeAckSuccessScope(scope);
         if(normalized.length() == 0)
@@ -1423,7 +1444,37 @@ final class NtkWebViewFallbackManager {
                 + ",bytes=" + challengeBody.length());
     }
 
-    private static String getRecentNativeAckChallenge(String scope) {
+    static String recentRequestKeyIdForScope(String scope) {
+        String normalized = normalizeAckSuccessScope(scope);
+        if(normalized.length() == 0)
+            return "";
+        String key = REQUEST_KEY_BY_SCOPE.get(normalized);
+        if(key != null && key.length() > 0)
+            return key;
+        String decoded = decodeAckSuccessScope(normalized);
+        return decoded.length() == 0 ? "" : REQUEST_KEY_BY_SCOPE.getOrDefault(decoded, "");
+    }
+
+    static void rememberRecentRequestKeyId(String scope, String keyId, String source) {
+        String normalized = normalizeAckSuccessScope(scope);
+        if(normalized.length() == 0 || keyId == null || keyId.length() == 0)
+            return;
+        REQUEST_KEY_BY_SCOPE.put(normalized, keyId);
+        String decoded = decodeAckSuccessScope(normalized);
+        if(decoded.length() > 0)
+            REQUEST_KEY_BY_SCOPE.put(decoded, keyId);
+        Log.d(TAG, "ntk_request_key_recorded path=" + normalized
+                + ",source=" + source
+                + ",keyId=" + summarizeKeyId(keyId));
+    }
+
+    private static String summarizeKeyId(String keyId) {
+        if(keyId == null || keyId.length() == 0)
+            return "";
+        return keyId.length() <= 12 ? keyId : keyId.substring(0, 8) + "...";
+    }
+
+    static String getRecentNativeAckChallenge(String scope) {
         String normalized = normalizeAckSuccessScope(scope);
         if(normalized.length() == 0)
             return "";

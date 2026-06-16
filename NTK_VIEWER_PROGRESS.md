@@ -20950,3 +20950,23 @@ tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webvie
 - Still open:
   - Native/hidden ACK is still false against this hard target because its direct `/api/ad/challenge` path still receives CF `403`.
   - Wider random coverage remains required.
+
+## 2026-06-16 20:38 GitHub Actions release build repair
+
+- User redirected priority to fixing the GitHub Actions failure after the latest push.
+- Latest `Release APK` run for `dae1db8c` failed in `Release latest signed APK` during `:app:compileDebugKotlin`:
+  - `ReaderImageCache.kt` and `ReaderSession.kt` referenced `Manga.ntkImageWorkId` and `Manga.ntkViewerPayloadHint`.
+  - Those model fields/accessors existed only in the local dirty worktree, not in the pushed commit.
+- Clean worktree validation then exposed the next missing companion API:
+  - `CustomHttpClient` called newer `NtkWebViewFallbackManager` methods/overloads not present in the pushed commit.
+- Applied minimal CI repair in a separate clean worktree to avoid mixing the large dirty experiment set:
+  - Added `Manga` fields/accessors for `ntkImageWorkId` and `ntkViewerPayloadHint`, plus copy preservation.
+  - Added `NtkWebViewFallbackManager` compatibility APIs used by current `CustomHttpClient`:
+    - `fetchViewerImageUrls(..., Runnable afterMainPost)`.
+    - `rememberExternalServerAckSuccess`.
+    - `recentRequestKeyIdForScope`.
+    - package-visible `getRecentNativeAckChallenge`.
+- Verification:
+  - Clean worktree `:app:assembleDebug` passed.
+- Scope decision:
+  - This is a CI/build consistency fix only. It does not claim native/hidden ACK is solved.

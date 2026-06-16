@@ -189,6 +189,8 @@ public class Manga {
     int titleId = -1;
     private String ntkEpisodePath = "";
     private String ntkImageEpisodeId = "";
+    private String ntkImageWorkId = "";
+    private String ntkViewerPayloadHint = "";
     private String ntkViewerParseReason = "";
     private int ntkImageCount;
     private volatile boolean fetchInProgress;
@@ -266,6 +268,40 @@ public class Manga {
 
     public void setNtkImageEpisodeId(String ntkImageEpisodeId) {
         this.ntkImageEpisodeId = ntkImageEpisodeId == null ? "" : ntkImageEpisodeId.trim();
+    }
+
+    public String getNtkImageWorkId() {
+        String id = ntkImageWorkId == null ? "" : ntkImageWorkId.trim();
+        if(id.length() > 0)
+            return id;
+        Title currentTitle = getTitle();
+        if(currentTitle != null) {
+            id = ntkViewerThumbWorkId(currentTitle.getThumb());
+            if(id.length() > 0)
+                return id;
+        }
+        return "";
+    }
+
+    public void setNtkImageWorkId(String ntkImageWorkId) {
+        this.ntkImageWorkId = ntkImageWorkId == null ? "" : ntkImageWorkId.trim();
+    }
+
+    public String getNtkViewerPayloadHint() {
+        return ntkViewerPayloadHint == null ? "" : ntkViewerPayloadHint;
+    }
+
+    public void setNtkViewerPayloadHint(String ntkViewerPayloadHint) {
+        if(ntkViewerPayloadHint == null) {
+            this.ntkViewerPayloadHint = "";
+            return;
+        }
+        String value = ntkViewerPayloadHint.trim();
+        this.ntkViewerPayloadHint = value.length() > 120_000 ? value.substring(0, 120_000) : value;
+    }
+
+    public boolean hasNtkViewerPayloadHint() {
+        return getNtkViewerPayloadHint().length() > 0;
     }
 
     public int getNtkImageCount() {
@@ -375,6 +411,8 @@ public class Manga {
                 setTitleId(sourceTitleId);
             setNtkEpisodePath(sourceNtkEpisodePath);
             setNtkImageEpisodeId(source.getNtkImageEpisodeId());
+            setNtkImageWorkId(source.getNtkImageWorkId());
+            setNtkViewerPayloadHint(source.getNtkViewerPayloadHint());
             setNtkImageCount(source.getNtkImageCount());
             return true;
         }
