@@ -5077,7 +5077,9 @@ public class CustomHttpClient {
             return false;
         if(isDisallowedNtkPrimaryImagePath(path))
             return false;
-        return (host.matches("fvcdn\\d*\\.com") || host.matches("flysky\\d*m\\.com"))
+        return (host.matches("fvcdn\\d*\\.com")
+                || host.matches("flysky\\d*m\\.com")
+                || host.matches("aws-cdn\\d*\\.site"))
                 && (isTrustedNtkPrimaryImagePath(path) || looksLikeRootHashImage(path));
     }
 
@@ -8734,6 +8736,9 @@ public class CustomHttpClient {
         String trimmed = src.trim();
         if(trimmed.length() == 0)
             return "";
+        String stableCdn = normalizeNtkVolatileCdnImageSrc(trimmed);
+        if(stableCdn.length() > 0)
+            return stableCdn;
         if(isTrustedNtkPrimaryImageUrl(trimmed))
             return trimmed;
         Matcher pageMatcher = Pattern.compile("(?i)^p(\\d{3})\\.(jpg|jpeg|png|webp)$")
@@ -8750,6 +8755,22 @@ public class CustomHttpClient {
         return String.format(Locale.ROOT,
                 "https://flysky3m.com/manhwa/%s/%s/%s",
                 workId, episodeId, pageFile);
+    }
+
+    private static String normalizeNtkVolatileCdnImageSrc(String src) {
+        if(src == null || src.length() == 0)
+            return "";
+        HttpUrl parsed = HttpUrl.parse(src);
+        if(parsed == null || !"https".equals(parsed.scheme()))
+            return "";
+        String host = parsed.host() == null ? "" : parsed.host().toLowerCase(Locale.ROOT);
+        if(!host.matches("aws-cdn\\d*\\.site"))
+            return "";
+        String path = parsed.encodedPath() == null ? "" : parsed.encodedPath();
+        if(!isTrustedNtkPrimaryImagePath(path.toLowerCase(Locale.ROOT)))
+            return "";
+        String query = parsed.encodedQuery();
+        return "https://flysky3m.com" + path + (query == null || query.length() == 0 ? "" : "?" + query);
     }
 
     private static String firstNtkViewerImageUrlFromPartialApiBody(String body) {
@@ -10546,6 +10567,9 @@ public class CustomHttpClient {
                 return;
             JSONObject firstImage = images.optJSONObject(0);
             String first = firstImage == null ? "" : firstImage.optString("src", "");
+            String stableFirst = normalizeNtkVolatileCdnImageSrc(first);
+            if(stableFirst.length() > 0)
+                first = stableFirst;
             if(first.length() == 0 || !isTrustedNtkPrimaryImageUrl(first))
                 return;
             Log.d(TAG, "ntk_images_api_first_url_early path=" + refererPath
@@ -10601,11 +10625,44 @@ public class CustomHttpClient {
         if(urls == null || urls.isEmpty())
             return false;
         int validationCount = ntkViewerImageInitialValidationCount(urls.size());
+        if(areInitialNtkViewerImageUrlsTrustedCdn(urls, validationCount)) {
+            Log.d(TAG, "ntk_images_api_trusted_cdn_urls path=" + refererPath
+                    + ",count=" + urls.size()
+                    + ",validated=" + validationCount);
+            return true;
+        }
         for(int i = 0; i < validationCount; i++) {
             if(!isNtkViewerImageUrlReachable(urls.get(i), baseUrl, refererPath, i))
                 return false;
         }
         return true;
+    }
+
+    private static boolean areInitialNtkViewerImageUrlsTrustedCdn(List<String> urls, int validationCount) {
+        if(urls == null || urls.isEmpty() || validationCount <= 0)
+            return false;
+        for(int i = 0; i < validationCount; i++) {
+            if(i >= urls.size() || !isTrustedNtkViewerApiCdnImageUrl(urls.get(i)))
+                return false;
+        }
+        return true;
+    }
+
+    private static boolean isTrustedNtkViewerApiCdnImageUrl(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        HttpUrl parsed = HttpUrl.parse(url);
+        if(parsed == null || !"https".equals(parsed.scheme()))
+            return false;
+        String host = parsed.host() == null ? "" : parsed.host().toLowerCase(Locale.ROOT);
+        String path = parsed.encodedPath() == null ? "" : parsed.encodedPath().toLowerCase(Locale.ROOT);
+        if(isDisallowedNtkPrimaryImagePath(path))
+            return false;
+        return (host.matches("aws-cdn\\d*\\.site")
+                || host.matches("flysky\\d*m\\.com")
+                || host.matches("fvcdn\\d*\\.com")
+                || host.matches("\\d{5,10}\\.com"))
+                && (isTrustedNtkPrimaryImagePath(path) || looksLikeRootHashImage(path));
     }
 
     static int ntkViewerImageInitialValidationCountForTest(int imageCount) {
@@ -12365,7 +12422,10 @@ public class CustomHttpClient {
     }
 
     private static OkHttpClient.Builder imageClient(OkHttpClient.Builder builder) {
-        return configureDispatcher(baseClient(builder), MAX_IMAGE_HTTP_REQUESTS, MAX_IMAGE_HTTP_REQUESTS_PER_HOST);
+        return configureDispatcher(baseClient(builder)
+                .followRedirects(true)
+                .followSslRedirects(true),
+                MAX_IMAGE_HTTP_REQUESTS, MAX_IMAGE_HTTP_REQUESTS_PER_HOST);
     }
 
     private static OkHttpClient.Builder fastNtkPageClient(OkHttpClient.Builder builder) {

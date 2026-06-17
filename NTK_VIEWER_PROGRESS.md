@@ -24249,3 +24249,59 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Some generated fallback logs still show `foreground_stream_missing_permit` for p002/p003 in cases where real CDN images are already being used; this is now noise, not the visible image path failure, but it should be cleaned later to reduce wasted background work.
   - OkHttp reported leaked `aws-cdn8.site` response bodies during the 8-run. The run passed and images were visible, but this should be audited before a broader memory-focused pass.
   - Cold ACK still costs roughly 6.7-10.2s in this 8-run sample; first drawable is now mostly 8.2-15.2s instead of the previous 18-36s/timeout range.
+
+## 2026-06-18 06:32:00 +09:00 Actual UX aws-cdn canonicalization and ACK/image closeout
+
+- User priority in this loop:
+  - Test like a real user by selecting comic/webtoon through the actual app UX path.
+  - Stop treating speed as the main blocker; finish ACK 200 proof and image stability.
+  - Keep `NTK_VIEWER_PROGRESS.md` updated with both successful and bad approaches so context compaction can continue cleanly.
+- Failures found after the previous `aws-cdn` host admission:
+  - Actual UX direct selection still exposed cases where images did not appear even though ACK succeeded.
+  - Direct probe showed `https://aws-cdn8.site/blacktoon/episodes/16968/1463195/p001.jpg` with the NTK referer returned `302 Location: https://www.cloudflare-terms-of-service-abuse.com/stream.jpeg`, then final 404.
+  - The same path on `https://flysky3m.com/blacktoon/episodes/16968/1463195/p001.jpg` returned 200 JPEG quickly.
+  - So the web UX feeling instant was not proof that the app should use raw `aws-cdn` as the final stable image origin. The app had to canonicalize volatile CDN URLs to the stable image CDN before foreground image fetch.
+  - A second actual comic UX failure showed p004 visible loading even after canonicalization because the pre-anchor verified-near guard compared raw and normalized URLs inconsistently and still required `FOREGROUND_PRIME_WARM_GENERATION`. In real UX the generation was `-2147483647`, so verified near images were wrongly deferred until the anchor asset.
+  - Previous random pass also reported OkHttp response leak warnings from foreground image race losers.
+- Fixes applied:
+  - `CustomHttpClient.normalizeNtkViewerApiImageSrc(...)` now rewrites safe `aws-cdn\d*.site` NTK page-image URLs to `https://flysky3m.com` while preserving path/query.
+  - `CustomHttpClient.notifyFirstNtkViewerImageUrl(...)` canonicalizes the first API image before publishing early image hints.
+  - Initial API image validation now trusts structurally valid known CDN page-image URLs instead of dropping the whole ACK-proven API image list because a range/reachability probe false-negatives.
+  - `Utils.normalizeImageUrl(...)` now applies the same volatile CDN canonicalization for safe NTK page-image paths.
+  - The canonicalizer rejects API, `cdn-cgi`, challenge, turnstile, Cloudflare, verification, captcha, banner, advert, sponsor, popup, `/ads/`, and `/ad/` paths so ad/challenge images are not mixed into reader pages.
+  - `ReaderSession.shouldAllowVerifiedNearGeneratedBeforeAnchorAsset(...)` now compares normalized image URLs and no longer requires one specific foreground-prime generation. It is still limited to verified early URLs and the near-page window, so broad pre-anchor fanout remains blocked.
+  - `ReaderImageCache` now closes foreground-race responses that complete after another lane already won, and closes already-completed loser responses after a winner is selected. This removes the response-body leak path seen in the previous 8-run.
+- Bad approaches recorded:
+  - Do not rely on raw `aws-cdn\d*.site` as a stable final content origin. It can redirect to a Cloudflare terms/abuse asset and end in 404.
+  - Do not solve raw `aws-cdn` by enabling redirects alone. Redirect following reached the abuse URL and still failed content loading.
+  - Do not drop ACK-proven `/api/*-images` payloads solely because direct reachability probes fail for trusted CDN page-image URLs; that recreates stale/generated fallback failures.
+  - Do not require `FOREGROUND_PRIME_WARM_GENERATION` for verified near pre-anchor image allowance in actual UX. Actual selection can use a different generation while still having verified early API URLs.
+  - Do not broaden canonicalization to arbitrary `.site` or arbitrary `aws-*` URLs; only safe NTK page-image paths are canonicalized.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat --no-daemon :app:assembleDebug :app:installDebug` passed.
+  - Actual UX direct selection, combined comic+webtoon:
+    - Artifact: `build/ntk-ux-select/20260618_goal_actual_ux_combined_after_preanchor_generation_relax`.
+    - Command selected comic and webtoon through `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200` and `#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+    - Result: passed, `OK (2 tests)` in `89.504s`.
+    - Webtoon proof in final logcat: `/api/ad/ack` 200, `bridge-ack-200`, `reader_visible_loading=0`, `ntk_actual_ux_select_success`, first drawable `38240ms`.
+  - Actual UX direct comic rerun:
+    - Artifact: `build/ntk-ux-select/20260618_goal_actual_ux_comic_after_preanchor_generation_relax`.
+    - Result: passed, `OK (1 test)` in `32.957s`.
+    - Proof: `/api/ad/ack` 200, `bridge-ack-200`, strict ACK true, first drawable page 4 at `17309ms`, `reader_visible_loading=0`.
+    - Log proof showed p004/p005/p006 allowed by `reader_ntk_pre_anchor_request_allowed_before_anchor_asset`; p007+ stayed deferred.
+  - Strict fresh live-random smoke:
+    - Artifact: `build/ntk-random-perf/20260618_goal_random_2_after_actual_ux_fix/20260618_062307`.
+    - Seed: `1781731600001`.
+    - Result: passed, 2/2 cases, 12 mixed programmatic scroll steps, `slowSignals=0`, failures 0.
+    - Live-random coverage: `titleSourceCounts api=2 db=0 rsc=0 numericProbe=0 curated=0`.
+    - Cases:
+      - `/manhwa/36898/1813183`, episode id `32166`, image count 30.
+      - `/webtoon/14531/1394678`.
+    - ACK proof: native `/api/ad/ack` 200 and bridge ACK success for both cases.
+  - Log sanity:
+    - No `reader_visible_loading=1`, nonzero placeholder/missing-pixel failure, or OkHttp response leak warnings were found in the final actual UX/random artifacts checked.
+- Remaining risk:
+  - Speed is now accepted as secondary, but cold actual UX can still be slow: the combined webtoon run first drawable was `38240ms`.
+  - Random logs still include wasted extension-lane 404 misses such as `.jpeg`/`.png` attempts. They did not cause visible loading failures in the validation, but they are extra work to remove in a later speed pass.
+  - ACK can still dominate open time, but current pass confirms real ACK 200 proof instead of false success.

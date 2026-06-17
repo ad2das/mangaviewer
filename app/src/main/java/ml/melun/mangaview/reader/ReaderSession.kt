@@ -3361,7 +3361,6 @@ class ReaderSession(
         generation: Int
     ): Boolean {
         if (anchor) return false
-        if (generation != FOREGROUND_PRIME_WARM_GENERATION) return false
         if (index <= start || index > start + NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD) return false
         val image = page.image.orEmpty()
         if (!isNtkGeneratedImageUrl(image)) return false
@@ -3372,7 +3371,10 @@ class ReaderSession(
             page.manga.ntkEpisodePath,
             SystemClock.elapsedRealtime() - 30000L
         )
-        return earlyUrls.any { it == image }
+        val normalizedImage = Utils.viewerImageRequestUrl(image, page.manga.baseMode)
+        return earlyUrls.any {
+            it == image || Utils.viewerImageRequestUrl(it, page.manga.baseMode) == normalizedImage
+        }
     }
 
     private fun schedulePreAnchorFallbackRetry(index: Int, page: PageRef, generation: Int) {

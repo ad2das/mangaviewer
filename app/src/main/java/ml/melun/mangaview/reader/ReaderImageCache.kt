@@ -5157,7 +5157,12 @@ object ReaderImageCache {
                 cancellation?.track(call)
                 calls.add(call)
                 try {
-                    ForegroundRaceResult(attempt, call, call.execute())
+                    val response = call.execute()
+                    if (completed.get()) {
+                        response.close()
+                        throw IOException("Foreground image race already completed")
+                    }
+                    ForegroundRaceResult(attempt, call, response)
                 } catch (t: Throwable) {
                     logCacheEvent(
                         "foreground_race_call_error",
@@ -5178,6 +5183,10 @@ object ReaderImageCache {
                 if (completed.get()) throw IOException("Foreground image race already completed")
                 val response = requestGeneratedDirectOriginal(context, manga, image, cancellation)
                     ?: throw IOException("Foreground generated direct race failed")
+                if (completed.get()) {
+                    response.close()
+                    throw IOException("Foreground image race already completed")
+                }
                 ForegroundRaceResult(
                     ForegroundRaceAttempt("generated-direct", getHttpClient().imageClient, foregroundRequest),
                     null,
@@ -5264,6 +5273,7 @@ object ReaderImageCache {
                     for (call in calls) {
                         if (call !== result.call) call.cancel()
                     }
+                    closeCompletedForegroundRaceLosers(completion, result.response)
                     logCacheEvent(
                         "foreground_race_win",
                         manga,
@@ -5313,6 +5323,22 @@ object ReaderImageCache {
         }
         for (call in calls) call.cancel()
         throw IOException("Foreground image race failed", failure)
+    }
+
+    private fun closeCompletedForegroundRaceLosers(
+        completion: ExecutorCompletionService<ForegroundRaceResult>,
+        winningResponse: Response
+    ) {
+        while (true) {
+            val future = completion.poll() ?: return
+            try {
+                val response = future.get().response
+                if (response !== winningResponse) {
+                    response.close()
+                }
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     private fun requestGeneratedDirectOriginal(
