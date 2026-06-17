@@ -3305,6 +3305,18 @@ class ReaderSession(
         if (isNtkGeneratedImageUrl(page.image.orEmpty()) &&
             !ReaderImageCache.hasNtkAnchorAssetForEpisode(page.manga)
         ) {
+            if (shouldAllowVerifiedNearGeneratedBeforeAnchorAsset(index, page, start, anchor, generation)) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_pre_anchor_request_allowed_before_anchor_asset page=$index,start=$start," +
+                        "anchor=$anchor,generation=$generation,image=${page.image?.substringAfterLast('/')}"
+                )
+                ViewerWarmupManager.logMetric(
+                    "reader_ntk_pre_anchor_request_allowed_before_anchor_asset",
+                    index.toLong()
+                )
+                return false
+            }
             Log.d(
                 TAG,
                 "reader_ntk_pre_anchor_request_deferred_until_anchor_asset page=$index,start=$start," +
@@ -3339,6 +3351,28 @@ class ReaderSession(
         )
         ViewerWarmupManager.logMetric("reader_ntk_pre_anchor_request_deferred", index.toLong())
         return true
+    }
+
+    private fun shouldAllowVerifiedNearGeneratedBeforeAnchorAsset(
+        index: Int,
+        page: PageRef,
+        start: Int,
+        anchor: Boolean,
+        generation: Int
+    ): Boolean {
+        if (anchor) return false
+        if (generation != FOREGROUND_PRIME_WARM_GENERATION) return false
+        if (index <= start || index > start + NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD) return false
+        val image = page.image.orEmpty()
+        if (!isNtkGeneratedImageUrl(image)) return false
+        if (ntkCoordinator?.allowsPreAnchorFallback(index, page.image, "verifiedNearGeneratedBeforeAnchorAsset") != true) {
+            return false
+        }
+        val earlyUrls = ReaderImageCache.earlyNtkImageUrls(
+            page.manga.ntkEpisodePath,
+            SystemClock.elapsedRealtime() - 30000L
+        )
+        return earlyUrls.any { it == image }
     }
 
     private fun schedulePreAnchorFallbackRetry(index: Int, page: PageRef, generation: Int) {
@@ -6533,6 +6567,7 @@ class ReaderSession(
         private const val NTK_VISIBLE_GENERATED_BYTE_HEDGE_DELAY_MS = 0L
         private const val NTK_PRE_ANCHOR_FALLBACK_RETRY_MS = 60L
         private const val NTK_PRE_ANCHOR_FALLBACK_MAX_AHEAD = 8
+        private const val NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD = 3
         private const val NTK_EARLY_URL_HANDOFF_WAIT_MS = 4200L
         private const val NTK_EARLY_URL_LATE_HANDOFF_WAIT_MS = 30000L
         private const val NTK_EARLY_URL_POLL_MS = 16L

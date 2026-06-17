@@ -24135,3 +24135,56 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Decision:
   - Do not keep chasing scroll micro-jank in this commit because the user narrowed scope to finish ACK/image stability and speed can be traded off.
   - Keep the jank artifact as residual risk and reproduction material for a later performance pass.
+
+## 2026-06-18 05:24:00 +09:00 Verified near generated pre-anchor scheduling
+
+- User priority in this loop:
+  - Test like real UX by selecting comic/webtoon through the app path, not just by synthetic target URLs.
+  - Continue toward stabilization because the previous broad random run still had a first-scroll jank/placeholder-adjacent failure even though ACK and image API were already correct.
+- Failure root:
+  - Artifact: `build/ntk-random-perf/20260618_goal_live_random_6run_scroll12_after_blacktoon_seed_fix/20260618_050016`.
+  - Repro target: `/manhwa/21247/183396`, seed `1781726416581`.
+  - ACK was healthy: strict proof true, `bridge-ack-200`, `/api/manhwa-images` returned 16 images.
+  - Actual issue: p002/p003 were installed as verified generated early URLs, but `requestPage()` deferred non-anchor generated pages until the anchor asset existed. p002/p003 only started after p001 completed, so the first fast scroll briefly exposed page 2 as `:load` and logged `reader_slow_frame ... visibleLoading=1`.
+- Fix:
+  - `ReaderSession.shouldDeferNtkPreAnchorPageRequest(...)` now allows only verified near generated early URLs before the anchor asset exists.
+  - The allowance is tightly scoped:
+    - only NTK generated image URLs already present in `ReaderImageCache.earlyNtkImageUrls(...)`;
+    - only foreground-prime initial requests;
+    - only pages `start+1` through `start+3`;
+    - still requires the NTK coordinator pre-anchor fallback to allow the page;
+    - p005 and later still defer until anchor asset, so broad pre-anchor network fanout is avoided.
+- Bad approaches recorded:
+  - Do not fix this by merely raising `INITIAL_READY_MANHWA_AHEAD_PAGES`; that waits longer but does not address why p002/p003 started late.
+  - Do not let all generated pages bypass the anchor-asset guard; the bypass must be limited to verified near pages so ad/banner/board or untrusted generated guesses cannot enter the foreground stream.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat --no-daemon :app:assembleDebug :app:installDebug` passed.
+  - Focused repro:
+    - Artifact: `build/ntk-random-perf/20260618_goal_repro_21247_preanchor_verified_near/20260618_051006`.
+    - Result: passed, 1/1 case, 12 mixed programmatic scroll steps, `slowSignals=0`, failures 0.
+    - ACK: `bridge-ack-200`, strict proof true; `ack_only_fetch=13126ms`.
+    - First drawable improved from the previous failed run's `23184ms` to `17397ms`.
+    - Log proof: `reader_ntk_pre_anchor_request_allowed_before_anchor_asset` for p002/p003/p004; p005+ still logged `deferred_until_anchor_asset`.
+    - Coverage stayed `missingPx=0`, `placeholderPx=0`; the first-scroll transient changed from `:load` placeholder coverage to no placeholder/missing pixels and no slow-frame signal.
+  - Actual UX direct selection:
+    - Combined comic+webtoon artifact: `build/ntk-ux-select/20260618_goal_actual_ux_after_preanchor_verified_near`, passed `OK (2 tests)`.
+    - Webtoon `/webtoon/16968/1463195`: `bridge-ack-200`, `/api/webtoon-images` 200 with 62 images, first drawable `12513ms`, visible coverage `missingPx=0`, `placeholderPx=0`.
+    - Comic was rerun alone because combined instrumentation clears logcat before each method.
+    - Comic artifact: `build/ntk-ux-select/20260618_goal_actual_ux_comic_after_preanchor_verified_near`, passed `OK (1 test)`.
+    - Comic `/manhwa/36525/1807424`: `bridge-ack-200`, `/api/manhwa-images` 200 with 24 images, first drawable `21750ms`, visible coverage `missingPx=0`, `placeholderPx=0`.
+  - Strict fresh live-random:
+    - Artifact: `build/ntk-random-perf/20260618_goal_live_random_4run_after_preanchor_verified_near/20260618_051305`.
+    - Seed: `1781728000001`.
+    - Result: passed, 4/4 cases, 48 mixed scroll steps, `slowSignals=0`, failures 0.
+    - Live-random coverage: `titleSourceCounts api=4 db=0 rsc=0 numericProbe=0 curated=0`.
+    - Cases:
+      - `/manhwa/2669/5106`, 12 images, first drawable `18659ms`.
+      - `/webtoon/14839/1279090`, 108 images, first drawable `17371ms`.
+      - `/manhwa/36003/1790827`, 42 images, first drawable `18794ms`.
+      - `/webtoon/68441459/1056191`, 45 images, first drawable `9768ms`.
+    - All four ACK checks passed with `strictProof=true`, `nativeBridgeAck200=true`, `falseDone=false`.
+    - Scroll coverage stayed `missingPx=0`, `placeholderPx=0`, `loading=0`; post-stop drift stayed `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Remaining risk:
+  - Cold ACK still dominates total open time in some runs, around 7-16s for the ACK fetch stage in this sample.
+  - The frame stats still report missed intervals from instrumentation callback timing, but `droppedFrames=0`, `droppedFrameDebt=0`, `slowSignals=0`, no blank/placeholder coverage, and no post-stop scroll drift were observed in this validation.
