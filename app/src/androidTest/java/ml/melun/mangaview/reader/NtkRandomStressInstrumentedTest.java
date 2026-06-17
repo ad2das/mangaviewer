@@ -57,6 +57,7 @@ import ml.melun.mangaview.mangaview.Title;
 public class NtkRandomStressInstrumentedTest {
     private static final String TAG = "ViewerPerf";
     private static final int PAGE_SIZE = 30;
+    private static final int API_RANDOM_PAGE_SIZE = 1;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final String[] MODES = new String[]{"generated", "native-ack", "api-fallback"};
     private static final long NTK_CAPTCHA_PROBE_WAIT_MS = 8_000L;
@@ -114,6 +115,7 @@ public class NtkRandomStressInstrumentedTest {
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         Bundle args = InstrumentationRegistry.getArguments();
         boolean safeNetwork = Boolean.parseBoolean(arg(args, "ntkSafeNetwork", "true"));
+        boolean requireLiveRandom = Boolean.parseBoolean(arg(args, "ntkRequireLiveRandom", "false"));
         int runs = parsePositiveInt(arg(args, "ntkRandomRuns",
                 Integer.toString(safeNetwork ? SAFE_RANDOM_RUNS : 12)), safeNetwork ? SAFE_RANDOM_RUNS : 12);
         int scrollSteps = parseNonNegativeInt(arg(args, "ntkScrollSteps",
@@ -173,6 +175,7 @@ public class NtkRandomStressInstrumentedTest {
         String targetTitlePath = arg(args, "ntkTargetTitlePath", "").trim();
         String targetImageEpisodeId = arg(args, "ntkTargetImageEpisodeId", "").trim();
         String targetImageWorkId = arg(args, "ntkTargetImageWorkId", "").trim();
+        int targetImageCount = parseNonNegativeInt(arg(args, "ntkTargetImageCount", "0"), 0);
         int targetEpisodeNumber = parseNonNegativeInt(arg(args, "ntkTargetEpisodeNumber", "0"), 0);
         boolean directTargetEpisode = Boolean.parseBoolean(arg(args, "ntkDirectTargetEpisode", "false"));
         boolean ensureAccessBefore = Boolean.parseBoolean(arg(args, "ntkEnsureAccessBefore", "false"));
@@ -210,26 +213,27 @@ public class NtkRandomStressInstrumentedTest {
                 + ",baseMode=" + fixedBaseMode
                 + ",fixedMode=" + fixedMode
                 + ",safeNetwork=" + safeNetwork
+                + ",requireLiveRandom=" + requireLiveRandom
                 + ",requestedSiteRoot=" + siteRoot
                 + ",siteRoot=" + MainApplication.p.getWebtoonUrl()
                 + ",lockSiteRoot=" + lockSiteRoot
                 + ",changeDeviceIdentityBeforeRun=" + changeDeviceIdentityBeforeRun
                 + ",resetDeviceIdentityBeforeRun=" + resetDeviceIdentityBeforeRun
                 + ",modeOffset=" + modeOffset);
-        if(ensureAccessBefore && targetEpisodePath.length() > 0)
-            assertTrue("NTK_ENSURE_ACCESS_FAILED path=" + targetEpisodePath,
-                    ensureNtkAccessBeforeMeasurement(context, client, fixedBaseMode, targetEpisodePath,
-                            ensureAccessMaxMs));
         if(targetEpisodePath.length() > 0 || targetEpisodeNumber > 0) {
             TargetEpisode target = loadTargetEpisode(context, client, targetTitlePath, targetEpisodePath,
                     targetEpisodeNumber, fixedBaseMode, directTargetEpisode, targetImageEpisodeId,
-                    targetImageWorkId);
+                    targetImageWorkId, targetImageCount);
             for(int run = 0; run < runs; run++) {
                 String mode = modeForRun(fixedMode, cycleModes, random, modeOffset, run);
                 prepareFreshNtkMeasurementState(context, client, clearAckBeforeRun,
                         clearReaderImageCacheBeforeRun, changeDeviceIdentityBeforeRun,
                         resetDeviceIdentityBeforeRun,
                         normalizeTargetPath(targetEpisodePath));
+                if(ensureAccessBefore)
+                    assertTrue("NTK_ENSURE_ACCESS_FAILED path=" + targetEpisodePath,
+                            ensureNtkAccessBeforeMeasurement(context, client, fixedBaseMode, targetEpisodePath,
+                                    ensureAccessMaxMs));
                 runReaderCase(context, device, run, mode, target.title, target.episode,
                         scrollSteps, appendProbe, appendSteps, screenshotEvery, postStopDriftMs,
                         firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
@@ -255,7 +259,8 @@ public class NtkRandomStressInstrumentedTest {
             for(int titleAttempt = 0; titleAttempt < 6; titleAttempt++) {
                 Title candidate;
                 try {
-                    candidate = pickRandomTitle(context, client, random, baseMode, safeNetwork);
+                    candidate = pickRandomTitle(context, client, random, baseMode, safeNetwork,
+                            requireLiveRandom);
                 } catch (Throwable e) {
                     Log.d(TAG, "ntk_true_random_title_discovery_error run=" + run
                             + ",discoveryAttempt=" + discoveryAttempts
@@ -468,6 +473,7 @@ public class NtkRandomStressInstrumentedTest {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         intent.putExtra("url", url);
         Activity activity = null;
+        boolean verified = false;
         try {
             activity = InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
             long deadline = SystemClock.elapsedRealtime() + maxMs;
@@ -475,8 +481,10 @@ public class NtkRandomStressInstrumentedTest {
                 client.syncCookiesFromWebView(webtoonRoot, true);
                 client.syncCookiesFromWebView(client.getUrl(), true);
                 client.syncCookiesFromWebView(url, true);
-                if(hasVerifiedNtkAccessForMeasurement(context, client, webtoonRoot, url))
+                if(hasVerifiedNtkAccessForMeasurement(context, client, webtoonRoot, url)) {
+                    verified = true;
                     break;
+                }
                 SystemClock.sleep(500L);
             }
         } finally {
@@ -493,7 +501,8 @@ public class NtkRandomStressInstrumentedTest {
                     + ",cookies=" + summarizeNtkAccessCookieState(webtoonRoot, url)
                     + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
         }
-        boolean verified = hasVerifiedNtkAccessForMeasurement(context, client, webtoonRoot, url);
+        if(!verified)
+            verified = hasVerifiedNtkAccessForMeasurement(context, client, webtoonRoot, url);
         if(!verified) {
             Log.d(TAG, "ntk_true_random_pre_captcha_failed baseMode=" + baseMode
                     + ",target=" + targetPath
@@ -507,21 +516,28 @@ public class NtkRandomStressInstrumentedTest {
 
     private static boolean hasVerifiedNtkAccessForMeasurement(Context context, CustomHttpClient client,
                                                               String webtoonRoot, String url) {
-        if(client == null || !hasStrongNtkAccessCookies(webtoonRoot, url))
+        if(client == null)
             return false;
         String path = normalizeTargetPath(url);
         if(path.startsWith(webtoonRoot))
             path = path.substring(webtoonRoot.length());
         if(path.length() == 0 || !path.startsWith("/"))
             path = "/api/manhwa-list?page=1&pageSize=1&withTotal=1";
+        boolean strongCookies = hasStrongNtkAccessCookies(webtoonRoot, url);
+        boolean accessProof = client.hasNtkAccessProof();
+        boolean serverAckProof = isNtkEpisodeDocumentPath(path) && client.hasRecentNtkServerAckProof(path);
+        if(!strongCookies && !accessProof && !serverAckProof)
+            return false;
         boolean documentOk = verifyNtkDocumentAccess(client, path);
         boolean rscOk = !isNtkEpisodeDocumentPath(path) || verifyNtkRscAccess(context, client, webtoonRoot, path);
-        boolean ok = documentOk && rscOk;
+        boolean ok = documentOk;
         Log.d(TAG, "ntk_true_random_access_verify path=" + path
                 + ",documentOk=" + documentOk
                 + ",rscOk=" + rscOk
                 + ",ok=" + ok
-                + ",proof=" + client.hasNtkAccessProof()
+                + ",proof=" + accessProof
+                + ",serverAckProof=" + serverAckProof
+                + ",strongCookies=" + strongCookies
                 + ",cookies=" + summarizeNtkAccessCookieState(webtoonRoot, url));
         return ok;
     }
@@ -626,13 +642,15 @@ public class NtkRandomStressInstrumentedTest {
 
     private static boolean hasStrongNtkAccessCookies(String webtoonRoot, String url) {
         String cookies = mergedWebViewCookieString(webtoonRoot, url);
-        boolean hasBase = hasCookieName(cookies, "cf_clearance")
+        boolean hasLegacyBase = hasCookieName(cookies, "cf_clearance")
                 && hasCookieName(cookies, "nv")
                 && hasCookieName(cookies, "ad_guard_l");
+        boolean hasCurrentBase = hasCookieName(cookies, "cf_clearance")
+                && hasCookieName(cookies, "ad_ack_c");
         boolean hasIdentity = (hasCookieName(cookies, "ntk_fp") && hasCookieName(cookies, "ntk_pid"))
                 || (hasCookieName(cookies, "__vsid") && hasCookieName(cookies, "__ntk_ev_id"))
                 || hasCookieName(cookies, "newtoki_read");
-        return hasBase && hasIdentity;
+        return (hasLegacyBase || hasCurrentBase) && hasIdentity;
     }
 
     private static String summarizeNtkAccessCookieState(String webtoonRoot, String url) {
@@ -641,6 +659,7 @@ public class NtkRandomStressInstrumentedTest {
                 + ",cf=" + hasCookieName(cookies, "cf_clearance")
                 + ",nv=" + hasCookieName(cookies, "nv")
                 + ",adGuardL=" + hasCookieName(cookies, "ad_guard_l")
+                + ",adAck=" + hasCookieName(cookies, "ad_ack_c")
                 + ",ntkFp=" + hasCookieName(cookies, "ntk_fp")
                 + ",ntkPid=" + hasCookieName(cookies, "ntk_pid")
                 + ",vsid=" + hasCookieName(cookies, "__vsid")
@@ -683,9 +702,13 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static Title pickRandomTitle(Context context, CustomHttpClient client,
-                                         Random random, int baseMode, boolean safeNetwork) throws Exception {
+                                         Random random, int baseMode, boolean safeNetwork,
+                                         boolean requireLiveRandom) throws Exception {
         Exception apiError = null;
         if(safeNetwork && ntkBlockedWithoutProof(client)) {
+            if(requireLiveRandom)
+                throw new AssertionError("Live-random title discovery requires API/RSC source, but NTK access is blocked"
+                        + " baseMode=" + baseMode);
             Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
             if(dbTitle != null)
                 return dbTitle;
@@ -719,6 +742,11 @@ public class NtkRandomStressInstrumentedTest {
                             + ",apiType=" + apiError.getClass().getSimpleName()
                             + ",apiMessage=" + apiError.getMessage());
                 }
+                if(requireLiveRandom)
+                    throw new AssertionError("Live-random API title discovery failed; refusing DB/curated fallback"
+                            + " baseMode=" + baseMode
+                            + " apiType=" + apiError.getClass().getSimpleName()
+                            + " apiMessage=" + apiError.getMessage(), apiError);
                 Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
                 if(dbTitle != null)
                     return dbTitle;
@@ -733,6 +761,9 @@ public class NtkRandomStressInstrumentedTest {
             }
         }
         if(safeNetwork && ntkBlockedWithoutProof(client)) {
+            if(requireLiveRandom)
+                throw new AssertionError("Live-random title discovery requires verified NTK access"
+                        + " baseMode=" + baseMode, apiError);
             Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
             if(dbTitle != null)
                 return dbTitle;
@@ -745,6 +776,11 @@ public class NtkRandomStressInstrumentedTest {
         Title htmlTitle = pickRandomTitleFromHtmlSections(client, random, baseMode, safeNetwork);
         if(htmlTitle != null)
             return htmlTitle;
+        if(requireLiveRandom)
+            throw new AssertionError("Live-random title discovery failed after API and RSC sources"
+                    + " baseMode=" + baseMode
+                    + (apiError == null ? "" : " apiType=" + apiError.getClass().getSimpleName()
+                    + " apiMessage=" + apiError.getMessage()), apiError);
         Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
         if(dbTitle != null)
             return dbTitle;
@@ -913,7 +949,7 @@ public class NtkRandomStressInstrumentedTest {
         CustomHttpClient.PageResponse first = fetchRandomApiPage(client, listPath);
         JSONObject firstJson = new JSONObject(first.body == null ? "{}" : first.body);
         int total = Math.max(0, firstJson.optInt("total", 0));
-        int maxPage = Math.max(1, total <= 0 ? 80 : (int)Math.ceil(total / (double)PAGE_SIZE));
+        int maxPage = Math.max(1, total <= 0 ? 80 : (int)Math.ceil(total / (double)API_RANDOM_PAGE_SIZE));
         int attempts = safeNetwork ? 3 : 8;
         for(int attempt = 0; attempt < attempts; attempt++) {
             if(safeNetwork && attempt > 0)
@@ -1038,7 +1074,7 @@ public class NtkRandomStressInstrumentedTest {
 
     private static String listPath(int baseMode, int page) {
         String api = baseMode == MTitle.base_webtoon ? "/api/works" : "/api/manhwa-list";
-        return api + "?page=" + page + "&pageSize=" + PAGE_SIZE + "&withTotal=1";
+        return api + "?page=" + page + "&pageSize=" + API_RANDOM_PAGE_SIZE + "&withTotal=1";
     }
 
     private static Title titleFromWork(JSONObject work, int baseMode) {
@@ -1173,7 +1209,8 @@ public class NtkRandomStressInstrumentedTest {
                                                    String episodePath, int targetEpisodeNumber,
                                                    int fixedBaseMode, boolean directTargetEpisode,
                                                    String targetImageEpisodeId,
-                                                   String targetImageWorkId) {
+                                                   String targetImageWorkId,
+                                                   int targetImageCount) {
         String normalizedEpisodePath = normalizeTargetPath(episodePath);
         int baseMode = fixedBaseMode > 0 ? fixedBaseMode : baseModeForTargetPath(
                 normalizedEpisodePath.length() > 0 ? normalizedEpisodePath : titlePath);
@@ -1186,6 +1223,11 @@ public class NtkRandomStressInstrumentedTest {
         title.setSourceSite("ntk");
         title.setPath(resolvedTitlePath);
         if(directTargetEpisode && normalizedEpisodePath.length() > 0) {
+            TargetEpisode resolved = tryLoadTargetEpisodeMetadata(context, client, title,
+                    normalizedEpisodePath, resolvedTitlePath, baseMode, targetImageEpisodeId,
+                    targetImageWorkId, targetImageCount);
+            if(resolved != null)
+                return resolved;
             Manga episode = new Manga(parseEpisodeIdFromPath(normalizedEpisodePath), "ntk-direct-target", "", baseMode);
             String resolvedImageWorkId = targetImageWorkId;
             if(resolvedImageWorkId == null || resolvedImageWorkId.trim().length() == 0)
@@ -1195,6 +1237,7 @@ public class NtkRandomStressInstrumentedTest {
             episode.setNtkEpisodePath(normalizedEpisodePath);
             episode.setNtkImageEpisodeId(targetImageEpisodeId);
             episode.setNtkImageWorkId(resolvedImageWorkId);
+            episode.setNtkImageCount(targetImageCount);
             ArrayList<Manga> episodes = new ArrayList<>();
             episodes.add(episode);
             title.setEps(episodes);
@@ -1202,7 +1245,9 @@ public class NtkRandomStressInstrumentedTest {
                     + ",titlePath=" + resolvedTitlePath
                     + ",titleId=" + titleId
                     + ",baseMode=" + baseMode
-                    + ",imageWorkId=" + resolvedImageWorkId);
+                    + ",imageEpisodeId=" + episode.getNtkImageEpisodeId()
+                    + ",imageWorkId=" + resolvedImageWorkId
+                    + ",imageCount=" + episode.getNtkImageCount());
             return new TargetEpisode(title, episode);
         }
         int result = title.fetchEps(client);
@@ -1242,13 +1287,70 @@ public class NtkRandomStressInstrumentedTest {
                 + " episodes=" + title.getEps().size());
     }
 
+    private static TargetEpisode tryLoadTargetEpisodeMetadata(Context context, CustomHttpClient client,
+                                                              Title title, String episodePath,
+                                                              String titlePath, int baseMode,
+                                                              String targetImageEpisodeId,
+                                                              String targetImageWorkId,
+                                                              int targetImageCount) {
+        if(client == null || title == null || episodePath == null || episodePath.length() == 0)
+            return null;
+        long startedAt = SystemClock.elapsedRealtime();
+        int result = title.fetchEps(client);
+        if(result == Title.LOAD_CAPTCHA || result == Title.LOAD_ERROR && client.hasRecentCloudflareChallenge()) {
+            Log.d(TAG, "ntk_true_random_direct_target_metadata_captcha_skip path=" + episodePath
+                    + ",titlePath=" + titlePath
+                    + ",result=" + result
+                    + ",recentChallenge=" + (client != null && client.hasRecentCloudflareChallenge())
+                    + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+            return null;
+        }
+        if(result != Title.LOAD_OK || title.getEps() == null || title.getEps().size() == 0) {
+            Log.d(TAG, "ntk_true_random_direct_target_metadata_miss path=" + episodePath
+                    + ",titlePath=" + titlePath
+                    + ",result=" + result
+                    + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+            return null;
+        }
+        for(Manga episode : title.getEps()) {
+            if(episode == null || !episodePath.equals(episode.getNtkEpisodePath()))
+                continue;
+            episode.setTitle(title);
+            episode.setTitleId(title.getId());
+            if(targetImageEpisodeId != null && targetImageEpisodeId.trim().length() > 0)
+                episode.setNtkImageEpisodeId(targetImageEpisodeId.trim());
+            if(targetImageWorkId != null && targetImageWorkId.trim().length() > 0)
+                episode.setNtkImageWorkId(targetImageWorkId.trim());
+            if(targetImageCount > 0)
+                episode.setNtkImageCount(targetImageCount);
+            Log.d(TAG, "ntk_true_random_direct_target_metadata_hit path=" + episodePath
+                    + ",titlePath=" + titlePath
+                    + ",episodes=" + title.getEps().size()
+                    + ",name=" + episode.getName()
+                    + ",imageEpisodeId=" + episode.getNtkImageEpisodeId()
+                    + ",imageWorkId=" + episode.getNtkImageWorkId()
+                    + ",imageCount=" + episode.getNtkImageCount()
+                    + ",hint=" + episode.hasNtkViewerPayloadHint()
+                    + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+            return new TargetEpisode(title, episode);
+        }
+        Log.d(TAG, "ntk_true_random_direct_target_metadata_not_found path=" + episodePath
+                + ",titlePath=" + titlePath
+                + ",episodes=" + title.getEps().size()
+                + ",sample=" + episodeSample(title.getEps())
+                + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+        return null;
+    }
+
     private static String curatedImageWorkId(String path) {
         String normalized = normalizeTargetPath(path);
         if("/webtoon/65384754/1496998".equals(normalized))
             return "17330";
         if("/webtoon/784248/1252104".equals(normalized))
             return "10662";
-        return "";
+        String titlePath = titlePathFromEpisodePath(normalized, baseModeForTargetPath(normalized));
+        int titleId = titleIdFromPath(titlePath);
+        return titleId > 0 ? String.valueOf(titleId) : "";
     }
 
     private static int episodeNumber(String name) {
@@ -1376,6 +1478,9 @@ public class NtkRandomStressInstrumentedTest {
                     + ",titleId=" + title.getId()
                     + ",episodeId=" + episode.getId()
                     + ",path=" + episode.getNtkEpisodePath()
+                    + ",imageEpisodeId=" + episode.getNtkImageEpisodeId()
+                    + ",imageWorkId=" + episode.getNtkImageWorkId()
+                    + ",imageCount=" + episode.getNtkImageCount()
                     + ",title=" + title.getName()
                     + ",episode=" + episode.getName()
                     + ",scrollInputMode=" + scrollInputMode

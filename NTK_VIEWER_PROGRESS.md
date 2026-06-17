@@ -6402,7 +6402,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\ntk_random_perf.ps1 `
   - ACK-only fast guard wait after __i4 increased from 650ms to 1500ms, within the existing bounded wait cap, so real /api/ad/ack 200 is not missed.
   - direct proof-first fast guard timeout increased from 2600ms to 3600ms to include key readiness + guard load + signed ACK response on slower random cases.
 - strict success remains unchanged:
-  - only real /api/ad/ack 200 recorded by 
+  - only real /api/ad/ack 200 recorded by
 tk_server_ack_success_recorded counts.
   - no success is inferred from cookie presence, challenge 200, or synthetic rows alone.
 - next validation:
@@ -6445,7 +6445,7 @@ tk_server_ack_success_recorded counts.
   - on /webtoon/10147/954731, NtkQuicBridge.request for guard-created /api/ad/ack returns status 0 with no Java bridge response log.
   - Cronet terminated-executor errors are present around the same window, so the shared bridge transport may fail before the normal response logging path.
 - applied diagnostic hardening:
-  - Java NtkQuicBridge.request(...) catch now logs 
+  - Java NtkQuicBridge.request(...) catch now logs
 tk_viewer_quic_bridge_error with method/url/error before returning bridge error JSON.
   - JS guardBridgeSignedAckPreferred log now includes rror:o.error||'' so status 0 is not opaque.
 - next validation:
@@ -6458,7 +6458,7 @@ tk_viewer_quic_bridge_error with method/url/error before returning bridge error 
   - first drawable 682ms and image coverage remained stable.
   - challenge started quickly after bootstrap removal.
   - NtkQuicBridge.request for guard-created /api/ad/ack failed before network response with:
-    - 
+    -
 tk_viewer_quic_bridge_error ... error=java.lang.IllegalArgumentException: bad base-64
   - JS-side ACK log now showed the same error in guardBridgeSignedAckPreferred.
 - generic root cause:
@@ -6477,8 +6477,9 @@ tk_viewer_quic_bridge_error ... error=java.lang.IllegalArgumentException: bad ba
   - command: 	ools/ntk_random_perf.ps1 ... -Seed 1781466685231 -TargetEpisodePath /webtoon/10147/954731 -StrictFresh.
   - result: passed.
   - first drawable 933ms.
-  - strict ACK passed: started=true, webViewDone=true, eaderDone=true, strictProof=true.
-  - real proof log: 
+  - strict ACK passed: started=true, webViewDone=true,
+eaderDone=true, strictProof=true.
+  - real proof log:
 tk_server_ack_success_recorded path=/webtoon/10147/954731,source=bridge-ack-200.
   - a later duplicate /api/ad/ack returned 409 challenge_used, but strict proof had already been recorded correctly.
   - coverage: missingPx=0, placeholderPx=0, loading=0, pages=64.
@@ -6727,7 +6728,7 @@ tk_server_ack_success_recorded path=/webtoon/10147/954731,source=bridge-ack-200.
   - New failures should not be fixed one case at a time.
   - Fix needs to apply broadly across NTK modes.
 - current generic diagnosis:
-  - numeric generated CDN episodes and protected 
+  - numeric generated CDN episodes and protected
 v-*/API episodes use different image-source paths.
   - /webtoon/849277/nv-849277-2 proved ACK was not broken: strict /api/ad/ack 200 was recorded, but image API retry was serialized behind hidden image WebView and missed first drawable budget.
   - hidden image WebView is unreliable as an image source for synthetic ACK shells; it can return count 0 even after ACK proof.
@@ -6753,7 +6754,7 @@ tk_server_ack_success_recorded / ad_ack cookie) and immediately retries /api/web
   - strict ACK proof still succeeded via real /api/ad/ack 200.
   - ACK-proof native API retry started at ms=4750, but /api/webtoon-images still returned 403 Forbidden.
 - updated generic diagnosis:
-  - ACK proof is necessary but not sufficient for protected 
+  - ACK proof is necessary but not sufficient for protected
 v-* image APIs.
   - Native API calls are unsigned and lack browser/site x-ntk-key-id, so they can still 403 after ACK.
   - The signed WebView API script already knows how to discover the site signer and attach x-ntk-key-id, but pre-ACK hidden image WebView race can lock __ntkViewerImageFetchLock and delay the useful post-ACK signed attempt.
@@ -6770,14 +6771,17 @@ v-* image APIs.
   - first drawable still failed (8977ms).
   - pre-ACK hidden image WebView lock was removed, but post-ACK signed WebView still returned count=0 after first drawable budget.
   - ACK shell successfully registered/stored a browser request key:
-    - 
+    -
 tk_viewer_request_key_store keyId=zJpmRPplIVRA...
-    - ACK body contained equestKeyId.
+    - ACK body contained
+equestKeyId.
   - native /api/webtoon-images still returned 403 Forbidden after ACK because it was unsigned/no browser key context.
 - applied generic experiment:
-  - NtkWebViewFallbackManager now records recent equestKeyId by NTK viewer scope from /api/client-key/register and /api/ad/ack bridge traffic.
+  - NtkWebViewFallbackManager now records recent
+equestKeyId by NTK viewer scope from /api/client-key/register and /api/ad/ack bridge traffic.
   - strict fresh clear also removes the scoped request key.
-  - CustomHttpClient.fetchNtkViewerImagesApi(...) now attaches the recent scoped key to image API payload as equestKeyId and to headers as x-ntk-key-id when available.
+  - CustomHttpClient.fetchNtkViewerImagesApi(...) now attaches the recent scoped key to image API payload as
+equestKeyId and to headers as x-ntk-key-id when available.
 - expected result:
   - if the protected image API only needs the browser key id bound to ACK proof, post-ACK native API should return image URLs without waiting for signed WebView.
   - if a full cryptographic signer header is required, the response should remain 403/428 and the next fix must reuse the WebView-held private key/signing path directly.
@@ -6792,20 +6796,21 @@ tk_viewer_request_key_store keyId=zJpmRPplIVRA...
   - result: failed first drawable at 9457ms.
 - important proof:
   - ACK itself is still successful and strict:
-    - 
+    -
 tk_native_ack_bridge_submit code=200,path=/webtoon/849277/nv-849277-2
-    - 
+    -
 tk_server_ack_success_recorded path=/webtoon/849277/nv-849277-2,source=bridge-ack-200
   - ACK shell recorded a request key:
-    - 
+    -
 tk_request_key_recorded path=/webtoon/849277/nv-849277-2,source=client-key-register,keyId=2-7awSvhM5yY...
   - post-ACK native image API attached the key:
-    - 
+    -
 tk_images_api_request_key_attached path=/webtoon/849277/nv-849277-2,keyId=2-7awSvhM5yY...
   - native /api/webtoon-images still returned 403 Forbidden.
 - generic diagnosis:
-  - protected 
-v-* image API requires more than strict /api/ad/ack 200 and equestKeyId/x-ntk-key-id.
+  - protected
+v-* image API requires more than strict /api/ad/ack 200 and
+equestKeyId/x-ntk-key-id.
   - It likely requires the browser-held signer/private-key/guard context used by the site when calling /api/webtoon-images.
   - Therefore the generic fix must run or reuse the signed image API path inside the ACK/viewer WebView context, not merely replay a native request with key id.
 - next action:
@@ -6822,7 +6827,7 @@ v-* image API requires more than strict /api/ad/ack 200 and equestKeyId/x-ntk-k
 - generic fix:
   - uildViewerImageApiOnlyScript(...) now does an unsigned browser etch first with the same minimal viewer-style headers.
   - Signer/key discovery is deferred to retry attempts only if the unsigned browser fetch/bridge path remains retryable.
-  - This avoids coupling protected 
+  - This avoids coupling protected
 v-* image delivery to a webpack signer module that is often unavailable in synthetic contexts.
 - strictness retained:
   - ACK proof still requires real /api/ad/ack 200.
@@ -6843,7 +6848,7 @@ v-* image delivery to a webpack signer module that is often unavailable in synth
   - API-only browser fetch now uses AbortController timeout (1100ms + retry*700ms) so it cannot hang until first drawable failure.
   - After timeout/error, the script immediately attempts the existing bridge path and then retry logic.
 - purpose:
-  - keep protected 
+  - keep protected
 v-* image API from being serialized behind hidden WebView startup delay or a hanging browser fetch.
   - no test relaxation and no path-specific exception.
 
@@ -6855,12 +6860,14 @@ v-* image API from being serialized behind hidden WebView startup delay or a han
   - bridge fallback then returned 403 Forbidden even though ACK cookies matched.
 - generic diagnosis:
   - The real NTK viewer uses same-origin relative etch('/api/webtoon-images', ...) with minimal headers.
-  - Our API-only browser fetch used absolute URL and included bridge-oriented origin/eferer headers, which can make WebView treat it like a CORS/preflight path and fail before the API response.
+  - Our API-only browser fetch used absolute URL and included bridge-oriented origin/
+eferer headers, which can make WebView treat it like a CORS/preflight path and fail before the API response.
 - generic fix:
   - API-only browser fetch now calls etch(endpoint, ...) as a relative same-origin request.
-  - Browser fetch headers now strip origin, eferer, host, cookie, and content-length; bridge retry still receives the full bridge headers.
+  - Browser fetch headers now strip origin,
+eferer, host, cookie, and content-length; bridge retry still receives the full bridge headers.
 - expected effect:
-  - Avoid OPTIONS preflight/Failed to fetch in protected 
+  - Avoid OPTIONS preflight/Failed to fetch in protected
 v-* hidden WebView image fetch.
   - If the server accepts the real viewer-style browser request, content URLs should arrive before the fallback bridge 403 path.
 
@@ -6872,7 +6879,8 @@ v-* hidden WebView image fetch.
   - bridge retry still returned 403 with no content URLs.
 - adjustment:
   - API-only browser fetch now uses etch(abs(endpoint), ...) to avoid Android WebView relative URL parsing failure.
-  - The cleaned browser headers remain in place, excluding origin/eferer/host/cookie/content-length from the browser fetch path.
+  - The cleaned browser headers remain in place, excluding origin/
+eferer/host/cookie/content-length from the browser fetch path.
 - next validation:
   - rerun the same strict fresh target and check whether OPTIONS/preflight disappears and whether browser fetch returns 200/images.
 
@@ -12811,7 +12819,7 @@ tk-browser-request-key / manhwa-v1) but did not read them on the next strict-fre
   - Bad/weak approaches must be written into this file too, otherwise they get retried after context compaction.
 - Current focused failure from 20260615_153918:
   - Strict ACK 200 proof recovered (
-tk_viewer_ad_bridge_native_submit code=200, 
+tk_viewer_ad_bridge_native_submit code=200,
 tk_server_ack_success_recorded).
   - Visible p002/p003 still failed because recovery kept retrying the same generated CDN URLs after repeated SocketException/IOException.
   - API fallback returned a full 35-image list but logged sameUrl=true; current race skipped that path when direct retries were included, and later foreground retry still went through the noisy foreground direct race.
@@ -12824,7 +12832,7 @@ tk_server_ack_success_recorded).
 
 - Changed ReaderImageCache.retryNtkGeneratedAfterNativeAck() so after real ACK/cookie proof it calls API fallback with plainRequest=true.
 - This keeps sameUrl API fallback useful after ACK but avoids re-entering foreground race lanes that repeatedly hit the same failing generated CDN URL.
-- Added logs: generated_api_retry_request, generated_api_retry_hit, generated_api_retry_miss, generated_api_retry_error, and 
+- Added logs: generated_api_retry_request, generated_api_retry_hit, generated_api_retry_miss, generated_api_retry_error, and
 tk_generated_image_race_api_error.
 - Expected validation: focused seed must show strict ACK 200 proof and visible coverage without p002/p003 placeholders. If it fails, logs should now distinguish API sameUrl retry failure from missing fallback data.
 
@@ -12907,7 +12915,7 @@ tk_generated_image_race_api_error.
 
 - Validation: same focused strict-fresh seed/path after p002 foreground recovery change.
 - Result summary:
-  - Strict ACK proof recovered again: 
+  - Strict ACK proof recovered again:
 ativeSubmit@5752/code=200, ad_ack_cckMs=17057.
   - First drawable stayed acceptable: 2060ms.
   - Test still failed with missing frame stats; need inspect whether rameStats=null or samples=0 and whether visible coverage passed.
@@ -13049,9 +13057,9 @@ ativeSubmit@5752/code=200, ad_ack_cckMs=17057.
 - Result:
   - Failed.
   - Strict ACK proof succeeded; this is not an ACK regression:
-    - 
+    -
 tk_viewer_ad_bridge_native_submit code=200
-    - 
+    -
 tk_server_ack_success_recorded ... source=bridge-ack-200 and guard-fetch-ack-200
     - summary had strict proof true, with native submit around 4134ms and ad_ack_cckMs=14269.
   - First drawable was within budget but slower than the best runs: about 2736ms.
@@ -16984,9 +16992,9 @@ tk_server_ack_success_recorded ... source=bridge-ack-200 and guard-fetch-ack-200
 
 ## 2026-06-16 02:17 Patch applied: stop unverified speculative generated foreground stream
 
-- Applied code change in Manga.java so 
+- Applied code change in Manga.java so
 tkSpeculativeGeneratedStreamExtensions(...) returns no extension when page-1 generated extension is not cached/proven.
-- startSpeculativeNtkGeneratedInitialStreams(...) now logs 
+- startSpeculativeNtkGeneratedInitialStreams(...) now logs
 tk_generated_speculative_stream_skip_unverified_extension instead of starting an unverified p001.jpg foreground fetch.
 - Goal: remove the broad wrong-extension first-visible lane, not tune one episode. Validation next: build/install and fixed replay seed 1781541134619 path /manhwa/35212/1761599.
 
@@ -17002,7 +17010,8 @@ tk_generated_speculative_stream_skip_unverified_extension instead of starting an
 ## 2026-06-16 02:23 Patch applied: do not hardblock first drawable on NTK ACK preflight
 
 - Latest replay uild\ntk-random-perf\20260616_022117 did not validate image lane changes because ACK-only WebView preflight opened CaptchaActivity before first drawable and blocked the reader.
-- Evidence: eader_ntk_ack_preflight_before_first_drawable reason=hardblock, 
+- Evidence:
+eader_ntk_ack_preflight_before_first_drawable reason=hardblock,
 tk_true_random_first_drawable_fast_fail status=captcha, ad_ack_cck_only_fetch=30124ms, no image pipeline metrics.
 - Changed ReaderV2Activity.kt so initial CF/images-ready probes wait for first drawable instead of starting WebView ACK preflight with ad_ack_cllowBeforeFirstDrawable=true.
 - This does not mark ACK successful. Strict /api/ad/ack 200 remains required. It only prevents ACK work from hiding/breaking first-image UX measurement.
@@ -17012,7 +17021,7 @@ tk_true_random_first_drawable_fast_fail status=captcha, ad_ack_cck_only_fetch=30
 ## 2026-06-16 02:26 Patch applied: prioritize jpeg and shorten generated extension confirm wait
 
 - Fixed replay after ACK hardblock removal still failed at 17063ms; captcha fast-fail was gone, but extension detection burned several seconds before verified p001.jpeg publish.
-- Evidence: first extension flight logged 
+- Evidence: first extension flight logged
 tk_generated_direct_extension_confirm extension= ms=3562 and probe ms=4858; later p001.jpeg header probe succeeded quickly (ms=179) and published verified URLs.
 - Changed generated extension order from jpg,jpeg,webp,png to jpeg,jpg,webp,png and reduced confirm wait from 3500ms to 1600ms.
 - Intent: reduce slow-failure time and stop jpg-first bias while still requiring actual reachability proof before publishing/streaming generated URLs.
@@ -17031,14 +17040,14 @@ tk_generated_direct_extension_confirm extension= ms=3562 and probe ms=4858; late
 ## 2026-06-16 02:31 Patch applied: fallback ACK impressions when shared HttpEngine throws
 
 - Replay uild\ntk-random-perf\20260616_022930 improved to 15803ms but still failed.
-- Evidence: native ACK challenge was prepared (challenge code=200), but impression fetches failed with IllegalStateException: Engine is shut down, resulting in 
-tk_native_ack_imp_seen seen=0 and 
+- Evidence: native ACK challenge was prepared (challenge code=200), but impression fetches failed with IllegalStateException: Engine is shut down, resulting in
+tk_native_ack_imp_seen seen=0 and
 tk_native_ack_skip_ack_without_impression.
 - Root bug: submitNtkAckImpression(...) wrapped shared-engine fetch and fallback fetch in one try block, so a thrown shared-engine exception skipped the fallback request.
-- Patch: catch shared-engine impression errors locally, log 
+- Patch: catch shared-engine impression errors locally, log
 tk_native_ack_imp_shared_engine_error, then continue to fresh NtkQuicFetcher.fetch(...) fallback.
-- Next validation: build/install/replay and check 
-tk_native_ack_imp_seen, 
+- Next validation: build/install/replay and check
+tk_native_ack_imp_seen,
 tk_native_ack_ack_code, strict ACK proof, and first drawable.
 
 
@@ -20366,7 +20375,8 @@ tk_native_ack_ack_code, strict ACK proof, and first drawable.
 ## 2026-06-17 p001 initial range chunk expansion
 
 - Observation: even after 128KB/256KB chunk fix, p001 logs for sparse /manhwa/35655/1778269 and contiguous /manhwa/36525/1807424 usually show chunks=1, meaning the first image still needs one extra range round trip.
-- The p001 sizes observed are about 171KB and 235KB, so a 384KB first range should often finish with ange_reassemble_full_hit in one request instead of first+tail reassembly.
+- The p001 sizes observed are about 171KB and 235KB, so a 384KB first range should often finish with
+ange_reassemble_full_hit in one request instead of first+tail reassembly.
 - Current change: increase NTK_GENERATED_RANGE_INITIAL_FIRST_CHUNK_BYTES from 128KB to 384KB. This targets p001 network round-trip variance directly; adjacent p002-p004 chunk sizes remain unchanged.
 
 ### Validation after p001 384KB first range
@@ -20383,9 +20393,9 @@ tk_native_ack_ack_code, strict ACK proof, and first drawable.
 
 ## 2026-06-17 normal UX ACK proof succeeds on sbxh7
 
-- ACK UX probe: build/ntk-ack-ux-probe/20260616_153342_81c493 stopped after marker 
+- ACK UX probe: build/ntk-ack-ux-probe/20260616_153342_81c493 stopped after marker
 tk_server_ack_success_recorded.
-- Real proof line: 
+- Real proof line:
 tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webview-ack-200.
 - Probe done: ack=true, clearance=true, serverProof=true, ms=40160.
 - This confirms normal UX WebView can obtain real /api/ad/ack 200 proof on sbxh7. Hidden ACK-only still fails/fast-fails and must not be treated as solved.
@@ -20396,7 +20406,7 @@ tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webvie
 - Serial random mixed after ACK UX proof: build/ntk-random-perf/20260616_153453 failed live-random case.
 - Failure case: path=/webtoon/837998/naver-837998-32, imageEpisodeId=1121174, imageWorkId=18047, imageCount=75, seed=1781591600001.
 - Failure: first drawable absent/too late, elapsedMs=13601. Repro command recorded by runner:
-   .\\tools\\ntk_random_perf.ps1 -DeviceSerial emulator-5556 -Runs 1 -ScrollSteps 3 -AppendSteps 4 -ScreenshotEvery 0 -Seed 1781591600001 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -TargetEpisodePath /webtoon/837998/naver-837998-32 -TargetImageEpisodeId 1121174 -TargetImageWorkId 18047 -TargetImageCount 75 -NtkSiteRoot https://sbxh7.com -NtkLockSiteRoot -StrictFresh -NoAckAssert -ForceStopBeforeRun 
+   .\\tools\\ntk_random_perf.ps1 -DeviceSerial emulator-5556 -Runs 1 -ScrollSteps 3 -AppendSteps 4 -ScreenshotEvery 0 -Seed 1781591600001 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -TargetEpisodePath /webtoon/837998/naver-837998-32 -TargetImageEpisodeId 1121174 -TargetImageWorkId 18047 -TargetImageCount 75 -NtkSiteRoot https://sbxh7.com -NtkLockSiteRoot -StrictFresh -NoAckAssert -ForceStopBeforeRun
 - Next: inspect whether this is wrong URL construction/advert-only image list/API root hard block/ACK wait, not apply manhwa generated-only fixes blindly.
 
 ## 2026-06-17 15:58 live-random naver protected path investigation
@@ -21329,7 +21339,7 @@ tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webvie
 - MangaView process logs still show a real app-side failure for /manhwa/8329/65787:
   - Captcha/root correctly uses https://sbxh7.com and has cf_clearance plus ad_ack_c cookies.
   - Target image API returns Cloudflare HTML 403 for /api/manhwa-images with imageCount=0.
-  - ACK path logs can still report 
+  - ACK path logs can still report
 tk_images_api_native_ack ... success=true because cookie/recent proof is accepted too broadly.
   - The reader then falls through to unverified generated p001.jpg; i.toonflix.app/p001.jpg returns 520, so the page remains blank/missing.
 - Root cause:
@@ -21358,11 +21368,13 @@ tk_images_api_native_ack ... success=true because cookie/recent proof is accepte
   - /manhwa/8329 fetched, 335 episodes found.
   - Target /manhwa/8329/65787 opened as real metadata episode.
   - Generated early publish is now skipped because no verified generated extension exists:
-    - 
+    -
 tk_generated_speculative_urls_skip_unverified_count_hint
-    - no early eader_early_ntk_urls_remember for bad p001.jpg.
-  - First drawable still failed because Reader kept logging eader_ntk_ack_preflight_wait_first_drawable while no image could appear without ACK/API access.
-  - Native challenge 200 and 
+    - no early
+eader_early_ntk_urls_remember for bad p001.jpg.
+  - First drawable still failed because Reader kept logging
+eader_ntk_ack_preflight_wait_first_drawable while no image could appear without ACK/API access.
+  - Native challenge 200 and
 tk_server_ack_success_recorded happened only after the test had already failed.
 - Root cause:
   - prepareDeferredNtkAckChallenge(manga) existed but was not called during initial deferred ACK setup.
@@ -21374,9 +21386,9 @@ tk_server_ack_success_recorded happened only after the test had already failed.
 
 - Repro after immediate ACK prepare:
   - /api/ad/challenge returned 200 for /manhwa/8329/65787 within ~0.3s from reader start.
-  - 
+  -
 tk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200 was recorded before the first drawable timeout.
-  - Direct RSC page fetch then hit Cloudflare 403 and logged 
+  - Direct RSC page fetch then hit Cloudflare 403 and logged
 tk_rsc_payload_cloudflare_clearance_reset.
 - Bad/avoid:
   - Background RSC/page fetch must not clear WebView Cloudflare cookies on a 403 challenge. That can erase a valid or in-progress clearance and force the reader back into captcha.
@@ -23896,3 +23908,47 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - This closes the current actual UX comic/webtoon ACK+image stability path on API35 emulator.
   - Broad random corpus, throttled network/CPU, and long scroll memory sweeps remain separate work.
   - First drawable is now stable but still not instant in cold actual UX; current accepted tradeoff was stability over raw speed.
+
+## 2026-06-18 03:15:19 +09:00 Live-random ACK proof and stale image-id candidate cleanup
+
+- User priority in this loop:
+  - Test like actual UX by selecting NTK comic/webtoon episodes directly in the app.
+  - Raw speed is acceptable for now; finish ACK 200 stability and real image display stability.
+- Failure found before the fix:
+  - Artifact: `build/ntk-random-perf/20260618_goal_live_random_after_runner_fix/20260618_025608`.
+  - `RequireLiveRandom` was not being forwarded into instrumentation, so an earlier timeout accidentally fell back to curated data. This is a bad test path; strict live-random must fail instead of silently using DB/curated fallbacks.
+  - After forwarding `ntkRequireLiveRandom=true`, live random selected `/manhwa/33029/1667148` (`플라나리아내 단편`) from the live API.
+  - ACK strict proof succeeded: `bridge-ack-200`, `strictAdAck=true`.
+  - The viewer still failed first drawable because `/api/manhwa-images` initially returned empty/403 while token/path episode id `1667148` and metadata image episode id `198888` were being treated too rigidly.
+- Fixes applied:
+  - `tools/ntk_random_perf.ps1` now forwards `-RequireLiveRandom` as instrumentation arg `ntkRequireLiveRandom`.
+  - `NtkRandomStressInstrumentedTest` now treats `RequireLiveRandom` as a hard requirement and fails instead of falling back to DB/numeric/curated title sources.
+  - Random API title picking now uses page size 1 with random page index, which keeps randomness while reducing flaky large API payloads.
+  - `Manga.shouldRetryNtkKnownImageEpisodeId(...)` now allows a known metadata image episode id as a second API candidate only when image metadata includes a positive image count. This preserves the stale `48388` block for primary success paths but lets live metadata rescue split path/image-id episodes.
+  - Generated-image speculative candidates now drop stale known/embedded ids when token/path are the same numeric episode id. This removed stale generated probes like `manhwa/36525/48388`; the id remains visible in logs as metadata only, not as an active generated candidate.
+- Bad approaches recorded:
+  - Do not let `RequireLiveRandom` exist only in wrapper post-processing; it must be passed into instrumentation so fallback sources are impossible under strict live-random.
+  - Do not interpret ACK success as image success. `/api/ad/ack` 200 can succeed while image episode-id selection still fails.
+  - Do not use broad stale-id blocking that also prevents trusted live metadata recovery.
+  - Do not allow stale embedded/known ids into generated probes when token/path already agree on a numeric episode id.
+- Validation:
+  - Unit: clean PATH `:app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.MangaTest` passed.
+  - Build/install: `:app:assembleDebug :app:assembleDebugAndroidTest :app:installDebug :app:installDebugAndroidTest` passed.
+  - Repro target: `build/ntk-random-perf/20260618_goal_repro_33029_known_image_retry/20260618_030256` passed.
+    - `/manhwa/33029/1667148`, target image id `198888`, 59 images.
+    - strict ACK: `bridge-ack-200`, `/api/manhwa-images` 200, `reader_visible_loading=0`, `missingPx=0`, first drawable 24752 ms.
+  - Live random: `build/ntk-random-perf/20260618_goal_live_random_after_embedded_stale_block/20260618_031304` passed.
+    - `coverage=live-random`, API title source 1, curated 0.
+    - strict ACK 200, image pipeline 24 images, `reader_visible_loading=0`, first drawable 25277 ms.
+  - Actual UX comic: `build/ntk-ux-select/20260618_goal_actual_ux_comic_embedded_stale_block` passed.
+    - selected `/manhwa/36525/1807424` from the app episode list.
+    - strict ACK `bridge-ack-200`, `/api/manhwa-images` 200 with 24 images.
+    - generated candidate list is now `episodeIds=[1807424]`; stale `48388` is no longer an active generated probe.
+    - `reader_visible_loading=0`, `missingPx=0`, first drawable 26226 ms.
+  - Actual UX webtoon: `build/ntk-ux-select/20260618_goal_actual_ux_webtoon_embedded_stale_block` passed.
+    - selected `/webtoon/16968/1463195` from the app episode list.
+    - strict ACK `bridge-ack-200`, `/api/webtoon-images` 200 with 62 images.
+    - `reader_visible_loading=0`, `missingPx=0`, first drawable 24548 ms.
+- Remaining risk:
+  - Cold first drawable is still around 24-26 seconds in this strict ACK path. Current user-approved scope is stability/ACK correctness first, not raw speed.
+  - Broader multi-run random corpus, throttled network/CPU, and long-scroll memory sweeps remain separate validation work.

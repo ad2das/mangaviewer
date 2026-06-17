@@ -1739,7 +1739,7 @@ public class Manga {
                 && knownImageEpisodeId.length() > 0
                 && !knownImageEpisodeId.equals(apiEpisodeId)
                 && shouldRetryNtkKnownImageEpisodeId(tokenEpisodeId, pathEpisodeId,
-                apiEpisodeId, knownImageEpisodeId)
+                apiEpisodeId, knownImageEpisodeId, getNtkImageCount())
                 && workId.matches("\\d+")) {
             Log.d(TAG, "ntk_viewer_api_prefetch_known_image_episode_retry path=" + path
                     + ",apiEpisodeId=" + apiEpisodeId
@@ -2828,7 +2828,7 @@ public class Manga {
                 && knownImageEpisodeId.length() > 0
                 && !knownImageEpisodeId.equals(apiEpisodeId)
                 && shouldRetryNtkKnownImageEpisodeId(tokenEpisodeId, pathEpisodeId,
-                apiEpisodeId, knownImageEpisodeId)
+                apiEpisodeId, knownImageEpisodeId, getNtkImageCount())
                 && workId.matches("\\d+")) {
             Log.d(TAG, "ntk_viewer_api_known_image_episode_retry path=" + path
                     + ",apiEpisodeId=" + apiEpisodeId
@@ -3139,15 +3139,18 @@ public class Manga {
         String embeddedEpisodeId = ntkViewerEmbeddedImageEpisodeId(normalized, pathEpisodeId);
         String tokenEpisodeId = ntkViewerImagesTokenField(token, "e");
         LinkedHashSet<String> episodeIds = new LinkedHashSet<>();
+        String generatedKnownEpisodeId = ntkKnownImageEpisodeIdForGeneratedCandidate(tokenEpisodeId, pathEpisodeId);
         if(shouldPreferNtkApiForCanonicalWebtoonPath(path)) {
             addNtkCandidateIfNumeric(episodeIds, tokenEpisodeId);
-            addNtkCandidateIfNumeric(episodeIds, getNtkImageEpisodeId());
+            addNtkCandidateIfNumeric(episodeIds, generatedKnownEpisodeId);
             addNtkCandidateIfNumeric(episodeIds, pathEpisodeId);
-            addNtkCandidateIfNumeric(episodeIds, embeddedEpisodeId);
+            addNtkCandidateIfNumeric(episodeIds,
+                    ntkMetadataImageEpisodeIdForGeneratedCandidate(embeddedEpisodeId, tokenEpisodeId, pathEpisodeId));
         } else {
             addNtkCandidateIfNumeric(episodeIds, tokenEpisodeId);
-            addNtkCandidateIfNumeric(episodeIds, getNtkImageEpisodeId());
-            addNtkCandidateIfNumeric(episodeIds, embeddedEpisodeId);
+            addNtkCandidateIfNumeric(episodeIds, generatedKnownEpisodeId);
+            addNtkCandidateIfNumeric(episodeIds,
+                    ntkMetadataImageEpisodeIdForGeneratedCandidate(embeddedEpisodeId, tokenEpisodeId, pathEpisodeId));
             addNtkCandidateIfNumeric(episodeIds, pathEpisodeId);
         }
         for(String episodeId : episodeIds)
@@ -4534,15 +4537,21 @@ public class Manga {
         addNtkCandidateIfNumeric(numericWorkIds, thumbWorkId);
 
         LinkedHashSet<String> episodeIds = new LinkedHashSet<>();
-        addNtkCandidateIfNumeric(episodeIds, ntkViewerImagesTokenField(token, "e"));
-        addNtkCandidateIfNumeric(episodeIds, getNtkImageEpisodeId());
+        String tokenEpisodeId = ntkViewerImagesTokenField(token, "e");
+        addNtkCandidateIfNumeric(episodeIds, tokenEpisodeId);
+        addNtkCandidateIfNumeric(episodeIds,
+                ntkKnownImageEpisodeIdForGeneratedCandidate(tokenEpisodeId, pathEpisodeId));
         addNtkCandidateIfNumeric(episodeIds, pathEpisodeId);
-        addNtkCandidateIfNumeric(episodeIds, ntkViewerEmbeddedImageEpisodeId(normalized, pathEpisodeId));
+        String embeddedEpisodeId = ntkViewerEmbeddedImageEpisodeId(normalized, pathEpisodeId);
+        addNtkCandidateIfNumeric(episodeIds,
+                ntkMetadataImageEpisodeIdForGeneratedCandidate(embeddedEpisodeId, tokenEpisodeId, pathEpisodeId));
         LinkedHashSet<String> slugEpisodeIds = new LinkedHashSet<>(episodeIds);
-        addNtkEpisodeCandidate(slugEpisodeIds, ntkViewerImagesTokenField(token, "e"));
-        addNtkEpisodeCandidate(slugEpisodeIds, getNtkImageEpisodeId());
+        addNtkEpisodeCandidate(slugEpisodeIds, tokenEpisodeId);
+        addNtkEpisodeCandidate(slugEpisodeIds,
+                ntkKnownImageEpisodeIdForGeneratedCandidate(tokenEpisodeId, pathEpisodeId));
         addNtkEpisodeCandidate(slugEpisodeIds, pathEpisodeId);
-        addNtkEpisodeCandidate(slugEpisodeIds, ntkViewerEmbeddedImageEpisodeId(normalized, pathEpisodeId));
+        addNtkEpisodeCandidate(slugEpisodeIds,
+                ntkMetadataImageEpisodeIdForGeneratedCandidate(embeddedEpisodeId, tokenEpisodeId, pathEpisodeId));
 
         LinkedHashSet<String> slugs = new LinkedHashSet<>();
         addNtkSlugCandidate(slugs, pathWorkId);
@@ -4820,18 +4829,23 @@ public class Manga {
     private static boolean shouldRetryNtkKnownImageEpisodeId(String tokenEpisodeId,
                                                              String pathEpisodeId,
                                                              String apiEpisodeId,
-                                                             String knownImageEpisodeId) {
+                                                             String knownImageEpisodeId,
+                                                             int knownImageCount) {
         String tokenImageEpisode = ntkApiEpisodeIdForPath(tokenEpisodeId);
         String pathImageEpisode = ntkApiEpisodeIdForPath(pathEpisodeId);
         String apiImageEpisode = ntkApiEpisodeIdForPath(apiEpisodeId);
         String knownImageEpisode = ntkApiEpisodeIdForPath(knownImageEpisodeId);
         if(knownImageEpisode.length() == 0 || knownImageEpisode.equals(apiImageEpisode))
             return false;
-        if(isNumericNtkId(tokenImageEpisode) && !knownImageEpisode.equals(tokenImageEpisode))
+        boolean trustedKnownImageMetadata = knownImageCount > 0;
+        if(isNumericNtkId(tokenImageEpisode)
+                && !knownImageEpisode.equals(tokenImageEpisode)
+                && !trustedKnownImageMetadata)
             return false;
         if(isNumericNtkId(pathImageEpisode)
                 && pathImageEpisode.equals(apiImageEpisode)
-                && !knownImageEpisode.equals(pathImageEpisode))
+                && !knownImageEpisode.equals(pathImageEpisode)
+                && !trustedKnownImageMetadata)
             return false;
         return true;
     }
@@ -4881,10 +4895,31 @@ public class Manga {
 
     private LinkedHashSet<String> ntkGeneratedEpisodeIdCandidatesForPath(String path, String pathEpisodeId) {
         LinkedHashSet<String> episodeIds = new LinkedHashSet<>();
-        addNtkCandidateIfNumeric(episodeIds, getNtkImageEpisodeId());
+        addNtkCandidateIfNumeric(episodeIds,
+                ntkKnownImageEpisodeIdForGeneratedCandidate("", pathEpisodeId));
         addNtkCandidateIfNumeric(episodeIds, ntkGeneratedEpisodeIdForPath(path));
         addNtkCandidateIfNumeric(episodeIds, pathEpisodeId);
         return episodeIds;
+    }
+
+    private String ntkKnownImageEpisodeIdForGeneratedCandidate(String tokenEpisodeId, String pathEpisodeId) {
+        return ntkMetadataImageEpisodeIdForGeneratedCandidate(
+                getNtkImageEpisodeId(), tokenEpisodeId, pathEpisodeId);
+    }
+
+    private static String ntkMetadataImageEpisodeIdForGeneratedCandidate(String candidateEpisodeId,
+                                                                         String tokenEpisodeId,
+                                                                         String pathEpisodeId) {
+        String candidateEpisode = ntkApiEpisodeIdForPath(candidateEpisodeId);
+        if(candidateEpisode.length() == 0)
+            return "";
+        String tokenImageEpisode = ntkApiEpisodeIdForPath(tokenEpisodeId);
+        String pathImageEpisode = ntkApiEpisodeIdForPath(pathEpisodeId);
+        if(isNumericNtkId(tokenImageEpisode) && !candidateEpisode.equals(tokenImageEpisode))
+            return "";
+        if(isNumericNtkId(pathImageEpisode) && !candidateEpisode.equals(pathImageEpisode))
+            return "";
+        return candidateEpisode;
     }
 
     private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
@@ -6578,7 +6613,14 @@ public class Manga {
     static boolean shouldRetryNtkKnownImageEpisodeIdForTest(String tokenEpisodeId, String pathEpisodeId,
                                                             String apiEpisodeId, String knownImageEpisodeId) {
         return shouldRetryNtkKnownImageEpisodeId(tokenEpisodeId, pathEpisodeId,
-                apiEpisodeId, knownImageEpisodeId);
+                apiEpisodeId, knownImageEpisodeId, 0);
+    }
+
+    static boolean shouldRetryNtkKnownImageEpisodeIdForTest(String tokenEpisodeId, String pathEpisodeId,
+                                                            String apiEpisodeId, String knownImageEpisodeId,
+                                                            int knownImageCount) {
+        return shouldRetryNtkKnownImageEpisodeId(tokenEpisodeId, pathEpisodeId,
+                apiEpisodeId, knownImageEpisodeId, knownImageCount);
     }
 
     static boolean isNtkViewerImageMetasExplicitlyEmptyForTest(String body) {

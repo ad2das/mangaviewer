@@ -311,6 +311,7 @@ $assertSchedulerGapArg = if($AssertSchedulerGap) { "true" } else { "false" }
 $ensureAccessBeforeArg = if($EnsureAccessBefore) { "true" } else { "false" }
 $changeDeviceIdentityArg = if($ChangeDeviceIdentityBeforeRun) { "true" } else { "false" }
 $resetDeviceIdentityArg = if($ResetDeviceIdentityBeforeRun) { "true" } else { "false" }
+$requireLiveRandomArg = if($RequireLiveRandom) { "true" } else { "false" }
 
 $argsList = @(
     "-s", $DeviceSerial,
@@ -339,6 +340,7 @@ $argsList = @(
     "-e", "ntkScrollPattern", $ScrollPattern,
     "-e", "ntkClearAckBeforeRun", $clearAckArg,
     "-e", "ntkClearReaderImageCacheBeforeRun", $clearImageCacheArg,
+    "-e", "ntkRequireLiveRandom", $requireLiveRandomArg,
     "-e", "ntkChangeDeviceIdentityBeforeRun", $changeDeviceIdentityArg,
     "-e", "ntkResetDeviceIdentityBeforeRun", $resetDeviceIdentityArg
 )
