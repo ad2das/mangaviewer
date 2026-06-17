@@ -23698,3 +23698,201 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - Full live random root discovery is still not proven because direct root probes can remain CF-blocked.
   - Current validation is actual UX selected comic/webtoon paths on API35 emulator, not a broad random corpus sweep.
+
+## 2026-06-18 01:38:00 +09:00 Commit/push and GitHub Actions status
+
+- Commit:
+  - `b063dc0f Stabilize NTK actual UX ACK and initial draw`
+  - Branch: `codex/ntk-strict-ack-proof`.
+  - Pushed to `origin/codex/ntk-strict-ack-proof`.
+- Staged/committed scope:
+  - `NTK_VIEWER_PROGRESS.md`
+  - `EpisodeActivityNetworkTest.java`
+  - `ReaderV2Activity.kt`
+  - `CustomHttpClient.java`
+  - `Manga.java`
+  - `NtkWebViewFallbackManager.java`
+  - `ReaderImageCache.kt`
+  - `ReaderSurfaceView.kt`
+- Local validation before commit:
+  - `.\gradlew.bat :app:assembleDebug :app:installDebug` passed.
+  - Actual UX comic selection passed:
+    - `build/ntk-ux-select/20260618_012231-comic-timeout-continuous-gate`.
+  - Actual UX webtoon selection passed:
+    - `build/ntk-ux-select/20260618_012322-webtoon-timeout-continuous-gate`.
+- GitHub Actions:
+  - Run `27703911891`, job `81947306032`.
+  - Workflow `Build APK Artifact`.
+  - Result: success.
+- Note:
+  - This commit/CI note is written after `b063dc0f`, so it is intentionally uncommitted until the next meaningful code/test change.
+
+## 2026-06-18 02:05:00 +09:00 Actual UX repeat exposed selected-path contention and error-card false readiness
+
+- User priority:
+  - Test like real UX: open NTK current comic/webtoon, directly select a real episode row, and verify the reader in that same path.
+  - Speed can be compromised now; ACK/image stability is the finish criterion.
+- Bad test approach recorded:
+  - Do not run comic and webtoon actual-UX methods in one instrumentation command when each test clears logcat.
+  - The combined run erased the earlier failing method's logs, so failures must be captured one method/run directory at a time.
+- Single actual UX checks before the new change:
+  - Comic selected `/manhwa/36525/1807424`: passed, strict selected ACK 200, image API 24, initial visible loading 0.
+  - Webtoon selected `/webtoon/16968/1463195`: passed, strict selected ACK 200, image API 62, initial visible loading 0.
+- Repeat actual UX loop before the new change:
+  - Artifact: `build/ntk-ux-select/20260618_014335-actual-ux-repeat`.
+  - Runs 1-3 passed.
+  - Run 4 webtoon failed.
+  - Failure cause:
+    - Background NTK episode-list warmups were ACKing/fetching adjacent older webtoon episodes while the selected episode was opening.
+    - Selected `/webtoon/16968/1463195` stayed unacked too long and logged `ntk_images_api_skip_unacked`.
+    - Adjacent `/webtoon/16968/1430474` and `/webtoon/16968/1430469` got strict ACK/image success instead.
+  - Interpretation:
+    - NTK ACK is scoped per episode path.
+    - Episode-list speculative viewer warmup can steal the ACK/WebView/image pipeline from the user-selected episode.
+- Code change in progress:
+  - Disable NTK episode-list direct viewer warmup.
+  - Skip NTK source viewer prefetch from `PrefetchCoordinator`; keep `wfwf` behavior unchanged.
+  - This is not delaying the viewer or hiding with a loading screen; it removes competing non-selected viewer work so the selected UX path owns ACK/image resources.
+- Local validation:
+  - `.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest :app:installDebug :app:installDebugAndroidTest` passed.
+  - Unit test command compiled but failed in the Gradle test executor with a Windows PATH/env `ClassNotFoundException: Files\nodejs...`; treat as environment/test-runner issue, not validation pass.
+- Repeat actual UX loop after disabling background NTK warmup:
+  - Artifact: `build/ntk-ux-select/20260618_015014-actual-ux-repeat-after-prefetch-skip`.
+  - Run 1 comic passed.
+  - Run 2 webtoon failed differently.
+  - Positive: selected `/webtoon/16968/1463195` strict ACK succeeded:
+    - `ntk_native_ack_bridge_submit code=200,path=/webtoon/16968/1463195`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+  - Remaining failure:
+    - ACK 200 did not produce real image URLs.
+    - Direct page ended as `ntk_viewer_parse reason=missing ... code=403 ... images=0`.
+    - Generated fallback candidates to `i.toonflix.app/p001.*` all timed out or returned 520.
+    - `ReaderV2Activity` treated `kind=error` as a near drawable, released `initial_continuous`, then `ReaderSurfaceView` counted the error card as drawable:
+      - `reader_open_to_near_drawable source=ntk kind=error page=0`.
+      - `reader_open_to_first_drawable source=ntk kind=initial_continuous page=0`.
+      - `reader_visible_gap ... content=168.0 pages=1`.
+- Bad approach recorded:
+  - Do not count an error card as a successful NTK first drawable.
+  - Do not use background warmup as the selected episode's image/API provider; it made one run pass but caused scoped ACK failures in another run.
+- Next fix:
+  - Make NTK initial readiness require real bitmap/tile image pages, not error cards.
+  - Keep selected-path ACK 200, then make selected-path image URL recovery retry from the ACK-proven path instead of falling through to generated URLs and final error.
+
+## 2026-06-18 02:18:00 +09:00 Actual UX ACK/image recovery stabilized after selected-path proof
+
+- User priority:
+  - Test like a real user by selecting the NTK current comic/webtoon episode row, not only direct/deeplink paths.
+  - Finish ACK/image stability first; raw speed can be tolerated.
+- Fixes applied in this loop:
+  - NTK episode-list background warmup/prefetch is disabled for NTK sources so adjacent episodes cannot steal scoped ACK/image work from the user-selected episode.
+    - `PrefetchCoordinator` now skips NTK viewer prefetch.
+    - `EpisodeWarmupPolicy` no longer direct-warms NTK viewer pages from the list.
+  - NTK launch hold no longer cancels selected page fetch when no cached payload exists.
+    - Previous bad behavior: `ntk_page_fetch_launch_hold_cancelled` killed the fetch that needed to create the token/payload.
+    - New behavior: wait briefly, log `ntk_page_fetch_launch_hold_bypass_no_payload`, then continue selected page fetch.
+  - Error cards no longer satisfy NTK initial readiness.
+    - `ReaderV2Activity` no longer releases the NTK initial draw gate for `kind=error`.
+    - `ReaderSurfaceView` no longer counts `errorText` as drawable coverage.
+  - ACK-only hidden WebView now probes DOM images before and after ACK proof.
+    - This records that the shell path has no real comic images when the page is only ACK shell; useful negative evidence.
+  - Missing/403 modern NTK page recovery now runs whenever selected path has recent server ACK proof, not only under `nativeAckMode`.
+    - This fixed the actual failing path: initial page returned 403 shell, strict ACK 200 completed, then fresh proof recovery fetched a 200 viewer payload and `/api/webtoon-images`.
+- Bad approaches recorded:
+  - Do not count error cards as successful image readiness.
+  - Do not let list-level warmup/prefetch compete with a user-selected NTK episode path.
+  - Do not cancel selected page payload fetch just because ACK launch hold is active and no payload exists; that creates a starvation loop.
+  - Do not rely on ACK-only DOM discovery as the primary image source; in the failure it was an ACK shell with zero real images. It is only diagnostic/fallback.
+- Webtoon single validation after proof recovery:
+  - Artifact: `build/ntk-ux-select/20260618_020834-actual-ux-webtoon-proof-recovery`.
+  - Result: `OK (1 test)`, `Time: 28.389`.
+  - Selected path: `/webtoon/16968/1463195`.
+  - Strict ACK: `ntk_server_ack_success_recorded ... source=bridge-ack-200,strictAdAck=true`.
+  - Recovery: `ntk_modern_ack_proof_recovery ... recovered=true,code=200,bodyLen=92112,images=62,ms=1288`.
+  - Parse: `reason=api-missing-modern-proof-recovered`, first image `https://flysky3m.com/blacktoon/episodes/16968/1463195/p001.jpg`.
+  - Initial visible frame: `reader_open_to_first_drawable ... ms=18872`, `reader_visible_loading=0`, `missingPx=0`.
+- Comic single validation after proof recovery:
+  - Artifact: `build/ntk-ux-select/20260618_020925-actual-ux-comic-proof-recovery`.
+  - Result: `OK (1 test)`, `Time: 27.127`.
+  - Selected path: `/manhwa/36525/1807424`.
+  - Strict ACK: `ntk_server_ack_success_recorded ... source=bridge-ack-200,strictAdAck=true`.
+  - Image API: `/api/manhwa-images`, fetched/normalized 24.
+  - Initial visible frame: `reader_open_to_first_drawable ... ms=18919`, `reader_visible_loading=0`, `missingPx=0`.
+- Actual UX repeat validation:
+  - Artifact: `build/ntk-ux-select/20260618_021021-actual-ux-repeat-proof-recovery`.
+  - Runs: comic, webtoon, comic, webtoon.
+  - Result: 4/4 passed.
+  - Run 1 comic: strict ACK 200, 24 images, first drawable 19273 ms, visible loading 0, missingPx 0.
+  - Run 2 webtoon: strict ACK 200, 62 images via `api-missing-modern-proof-recovered`, first drawable 17415 ms, visible loading 0, missingPx 0.
+  - Run 3 comic: strict ACK 200, 24 images, first drawable 18684 ms, visible loading 0, missingPx 0.
+  - Run 4 webtoon: strict ACK 200, 62 images, first drawable 17055 ms, visible loading 0, missingPx 0.
+- Build validation:
+  - `.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest :app:installDebug :app:installDebugAndroidTest` passed before the proof-recovery changes.
+  - `.\gradlew.bat :app:assembleDebug :app:installDebug` passed after proof-recovery changes.
+- Remaining risk:
+  - Speed is still around 17-19s to first drawable in these actual UX tests; current user-approved tradeoff was to finish ACK/image stability first.
+  - Broad random corpus and throttled-device sweeps are not complete in this loop.
+  - Unit test runner still has a Windows PATH/env `ClassNotFoundException: Files\nodejs...` failure unrelated to app compilation.
+
+## 2026-06-18 02:45:00 +09:00 sbxh8 root move and actual UX token episode fix
+
+- User priority:
+  - Test the real UX path: select the current NTK comic/webtoon episode from the app, then verify that the reader gets strict ACK 200 and real images.
+  - Finish ACK/image stability first; speed is acceptable if stability is correct.
+- Site/root change:
+  - `sbxh7.com` became stale/address-guide content. It can return HTTP 200 HTML such as "뉴토끼 공식 주소안내" and Telegram/address guide material, so treating root HTML 200 as a usable NTK root is wrong.
+  - Root probe found the current API JSON root at `https://sbxh8.com`.
+  - Bad approach recorded:
+    - Do not classify Cloudflare/HTML/address-guide 200 responses as reachable NTK API roots.
+    - Do not hard-code actual UX tests to stale `sbxh7.com`.
+- Root fix:
+  - Default NTK comic/webtoon roots moved to `sbxh8.com`.
+  - Domain resolver seed now tries `sbxh8.com` before stale roots.
+  - Root reachability now probes `/api/manhwa-list?page=1&pageSize=1&withTotal=1` and requires JSON containing `works`.
+- New actual UX failure found after root fix:
+  - Combined comic+webtoon instrumentation passed once, but comic-alone failed and exposed the real cause.
+  - Selected comic path: `/manhwa/36525/1807424`.
+  - ACK proof eventually succeeded, but image API fallback retried with stale internal `episodeId=48388` while the token/path episode was `1807424`.
+  - Failing request shape:
+    - `workId=36525`
+    - `episodeId=48388`
+    - token payload contained `e=1807424`
+    - `/api/manhwa-images` returned 403.
+  - Bad approach recorded:
+    - Do not retry image API with stale known/internal episode id when a numeric token/path episode id is already authoritative.
+    - Do not judge combined instrumentation alone as sufficient when one method clears logcat; run single-method captures for proof.
+- Fix:
+  - Added `shouldRetryNtkKnownImageEpisodeId(...)`.
+  - If token `e` is numeric, or the numeric path episode equals the chosen API episode, stale known-id retries are blocked.
+  - Added unit coverage so token/path `1807424` prevents fallback retry to `48388`.
+  - Restored canonical webtoon API-first threshold so legacy numeric webtoon paths keep generated behavior, while large canonical work IDs still prefer API.
+  - Updated generated validation tests to match current stability policy: validate first 5 generated pages rather than 2.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest :app:installDebug :app:installDebugAndroidTest` passed.
+  - Unit tests:
+    - `.\gradlew.bat --no-daemon :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.MangaTest --tests ml.melun.mangaview.mangaview.CustomHttpClientTest --tests ml.melun.mangaview.runtime.PrefetchCoordinatorTest --tests ml.melun.mangaview.activity.EpisodeWarmupPolicyTest` passed.
+    - Note: required stopping/restarting Gradle with a clean PATH because the desktop environment PATH can poison Gradle Test Executor.
+  - Actual UX single capture after token episode fix:
+    - Comic: `build/ntk-ux-select/20260618_ux_comic_sbxh8_token_episode_fix_pass.logcat`.
+      - strict selected ACK: `bridge-ack-200`, `strictAdAck=true`.
+      - `/api/manhwa-images` returned 200 with 24 images.
+      - Image API body used `episodeId=1807424`; no `episodeId=48388` retry.
+      - `reader_open_to_first_drawable ... ms=23187`, `reader_visible_loading=0`, `missingPx=0`.
+    - Webtoon: `build/ntk-ux-select/20260618_ux_webtoon_sbxh8_token_episode_fix_pass.logcat`.
+      - strict selected ACK: `bridge-ack-200`, `strictAdAck=true`.
+      - `/api/webtoon-images` returned 200 with 62 images.
+      - `reader_open_to_first_drawable ... ms=12691`, `reader_visible_loading=0`, `missingPx=0`.
+  - Actual UX repeat:
+    - Artifact dir: `build/ntk-ux-select/20260618_ux_repeat_sbxh8_token_episode_fix`.
+    - Runs: comic, webtoon, comic, webtoon.
+    - Result: 4/4 passed.
+    - First drawable times: comic 17344 ms, webtoon 11215 ms, comic 14454 ms, webtoon 10576 ms.
+    - All had strict ACK proof, image API 200, and no stale known episode retry.
+  - Final actual UX after threshold/unit cleanup:
+    - Artifact dir: `build/ntk-ux-select/20260618_ux_final_sbxh8_ack_image`.
+    - Comic final: passed, strict ACK 200, image API 200, first drawable 14281 ms, visible loading 0, missingPx 0.
+    - Webtoon final: passed, strict ACK 200, image API 200, first drawable 10754 ms, visible loading 0, missingPx 0.
+- Remaining risk:
+  - This closes the current actual UX comic/webtoon ACK+image stability path on API35 emulator.
+  - Broad random corpus, throttled network/CPU, and long scroll memory sweeps remain separate work.
+  - First drawable is now stable but still not instant in cold actual UX; current accepted tradeoff was stability over raw speed.

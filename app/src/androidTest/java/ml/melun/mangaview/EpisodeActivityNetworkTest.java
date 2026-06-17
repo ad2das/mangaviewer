@@ -155,13 +155,13 @@ public class EpisodeActivityNetworkTest {
     public void ntkCurrentComicUxSelectionOpensReaderWithAck200() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         CustomHttpClient client = MainApplication.getHttpClient();
-        client.clearNtkAckStateForTest("https://sbxh7.com/manhwa/36525/1807424", true);
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/manhwa/36525/1807424", true);
         clearColdReaderState(context);
         launchNtkCurrentComicTitle();
 
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         UiObject2 episodeRow = waitForEpisodeRowThroughAutoCaptcha(device, "NTK current comic UX episode list");
-        client.clearNtkAckStateForTest("https://sbxh7.com/manhwa/36525/1807424", true);
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/manhwa/36525/1807424", true);
         executeShell("logcat -c");
         Log.d("ViewerPerf", "ntk_actual_ux_select_start source=ntk,type=comic,titlePath=/manhwa/36525");
         clickFreshEpisodeRow(device, episodeRow);
@@ -180,13 +180,13 @@ public class EpisodeActivityNetworkTest {
     public void ntkCurrentWebtoonUxSelectionOpensReaderWithAck200() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         CustomHttpClient client = MainApplication.getHttpClient();
-        client.clearNtkAckStateForTest("https://sbxh7.com/webtoon/16968/1430500", true);
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/webtoon/16968/1430500", true);
         clearColdReaderState(context);
         launchNtkCurrentWebtoonTitle();
 
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         UiObject2 episodeRow = waitForEpisodeRowThroughAutoCaptcha(device, "NTK current webtoon UX episode list");
-        client.clearNtkAckStateForTest("https://sbxh7.com/webtoon/16968/1430500", true);
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/webtoon/16968/1430500", true);
         executeShell("logcat -c");
         Log.d("ViewerPerf", "ntk_actual_ux_select_start source=ntk,type=webtoon,titlePath=/webtoon/16968");
         clickFreshEpisodeRow(device, episodeRow);
@@ -991,7 +991,7 @@ public class EpisodeActivityNetworkTest {
 
     private void launchNtkCurrentComicTitle() {
         Context context = ApplicationProvider.getApplicationContext();
-        MainApplication.p.setNtkSitePreset("https://sbxh7.com");
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_comic);
 
         Title title = new Title(
@@ -1015,7 +1015,7 @@ public class EpisodeActivityNetworkTest {
 
     private void launchNtkCurrentWebtoonTitle() {
         Context context = ApplicationProvider.getApplicationContext();
-        MainApplication.p.setNtkSitePreset("https://sbxh7.com");
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_webtoon);
 
         Title title = new Title(

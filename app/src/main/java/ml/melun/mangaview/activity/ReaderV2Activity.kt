@@ -835,7 +835,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.setPageError(index, message)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         logLaunchDrawableMetric(index, "error")
-        if (visibleInitialDrawable) releaseInitialDrawGate("error")
+        if (visibleInitialDrawable && !isCurrentNtkReader()) releaseInitialDrawGate("error")
     }
 
     private fun applyPendingInitialRestoreIfReady() {
@@ -947,8 +947,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (viewerLaunchStartedAtMs <= 0L) return
         val first = currentPage
         if (index < first || index > first + 2) return
-        if (!launchDrawableMetricPages.add(index)) return
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
+        if (kind == "error" && isCurrentNtkReader()) {
+            Log.d("ViewerPerf", "reader_open_to_near_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+            return
+        }
+        if (!launchDrawableMetricPages.add(index)) return
         launchDrawableElapsedMsByPage[index] = elapsed
         Log.d("ViewerPerf", "reader_open_to_near_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
         maybeStartDeferredNtkAckAfterInitialContinuous()

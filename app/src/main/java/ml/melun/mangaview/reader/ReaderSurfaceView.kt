@@ -1671,7 +1671,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun itemHasDrawable(item: DrawItem): Boolean {
         if (item.cardText != null) return true
-        if (item.errorText != null) return true
         val bitmap = item.bitmap
         if (bitmap != null && !bitmap.isRecycled) return true
         return item.tiles.any { !it.bitmap.isRecycled }

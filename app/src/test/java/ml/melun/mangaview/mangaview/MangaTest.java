@@ -196,6 +196,12 @@ public class MangaTest {
                 "<div class=\"banner\"><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"></div>"));
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
                 "<div class=\"bn-r\" data-br=\"1\"><a class=\"bn-s\" rel=\"noopener noreferrer nofollow\" href=\"https://ad.example\"><img src=\"https://i.toonflix.app/webtoon_uploads/page001.jpg\" alt=\"page 1\"></a></div>"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<img src=\"https://sbxh6.com/api/m/i?a=token&i=0&t=metric.gif\">"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<img src=\"https://sbxh6.com/api/ad/challenge?p=1.gif\">"));
+        org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
+                "<img src=\"https://i.toonflix.app/cdn-cgi/challenge-platform/h/g/page001.jpg\">"));
     }
 
     @Test
@@ -211,6 +217,21 @@ public class MangaTest {
                 "<div class=\"banner\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\"></div>"));
         org.junit.Assert.assertFalse(Manga.isNtkFallbackBoardPageImageForTest(
                 "<div class=\"bn-r\" data-br=\"1\"><a class=\"bn-s\" rel=\"noopener noreferrer nofollow\" href=\"https://ad.example\"><img src=\"https://i.toonflix.app/board_uploads/2026/05/15/ad.png\" alt=\"https://ad.example\"></a></div>"));
+    }
+
+    @Test
+    public void ntkPrimaryImageTrustRejectsMetricAndAdApiUrls() {
+        assertTrue(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
+                "https://fvcdn3.com/6bf01a3f532d20c6ab5d5899adde24af.jpg"));
+        assertTrue(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
+                "https://i.toonflix.app/webtoon/849277/nv-849277-2/p001.jpg"));
+
+        org.junit.Assert.assertFalse(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
+                "https://sbxh6.com/api/m/i?a=token&i=0&t=metric.gif"));
+        org.junit.Assert.assertFalse(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
+                "https://sbxh6.com/api/ad/challenge?scope=/webtoon/1/2"));
+        org.junit.Assert.assertFalse(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
+                "https://i.toonflix.app/banner/page001.jpg"));
     }
 
     @Test
@@ -291,6 +312,28 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkEpisodeParserPreservesTokenHintButNotBoardOnlyHint() {
+        String html = "<script>{\"episodes\":[{\"id\":\"1121174\","
+                + "\"sourceEpisodeId\":\"naver-837998-32\",\"epNo\":32,\"imageCount\":75}],"
+                + "\"imagesToken\":\"token-value\",\"imageMetas\":[{\"page\":1}],"
+                + "\"src\":\"https://i.toonflix.app/webtoon_uploads/page001.jpg\"}</script>";
+
+        List<Manga> episodes = NtkEpisodeParser.parseForTest(html, "webtoon", "837998", MTitle.base_webtoon);
+
+        assertEquals(1, episodes.size());
+        assertTrue(episodes.get(0).getNtkViewerPayloadHint().contains("imagesToken"));
+        assertTrue(episodes.get(0).getNtkViewerPayloadHint().contains("webtoon_uploads"));
+
+        String boardOnly = "<script>{\"episodes\":[{\"id\":\"1121174\","
+                + "\"sourceEpisodeId\":\"naver-837998-32\",\"epNo\":32,\"imageCount\":75}],"
+                + "\"src\":\"https://i.toonflix.app/board_uploads/2026/01/ad.jpg\"}</script>";
+        List<Manga> boardEpisodes = NtkEpisodeParser.parseForTest(boardOnly, "webtoon", "837998", MTitle.base_webtoon);
+
+        assertEquals(1, boardEpisodes.size());
+        assertEquals("", boardEpisodes.get(0).getNtkViewerPayloadHint());
+    }
+
+    @Test
     public void ntkNextImageProxyAttributesAreParsed() {
         List<String> images = Manga.ntkDocumentPageImagesForTest(
                 "<div class=\"vw-imgs\">"
@@ -347,7 +390,7 @@ public class MangaTest {
     public void ntkGeneratedFastPathValidatesFirstVisiblePages() {
         assertEquals(1, Manga.ntkGeneratedInitialValidationPageCountForTest(1));
         assertEquals(2, Manga.ntkGeneratedInitialValidationPageCountForTest(2));
-        assertEquals(2, Manga.ntkGeneratedInitialValidationPageCountForTest(64));
+        assertEquals(5, Manga.ntkGeneratedInitialValidationPageCountForTest(64));
     }
 
     @Test
@@ -360,7 +403,7 @@ public class MangaTest {
                 MTitle.base_webtoon, "/webtoon/18768/u-mp3wtr15-sxjg", 37));
         assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
                 MTitle.base_webtoon, "/webtoon/18768/1586173", 0));
-        assertFalse(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
+        assertTrue(Manga.shouldUseImmediateNtkGeneratedFastPathForTest(
                 MTitle.base_comic, "/manhwa/18768/1586173", 37));
     }
 
@@ -383,7 +426,7 @@ public class MangaTest {
                 "/webtoon/최강-매니저", "ignored"));
         assertEquals("최강-매니저", Manga.ntkCanonicalWebtoonSlugCandidateForTest(
                 "/webtoon/840894", "최강 매니저"));
-        assertEquals("https://toonflix.app/wt/episodes/최강-매니저/1073395/p001.webp",
+        assertEquals("https://i.toonflix.app/wt/episodes/최강-매니저/1073395/p001.webp",
                 Manga.ntkSlugWebtoonImageUrlForTest("최강-매니저", "1073395", 1, "webp"));
     }
 
@@ -464,6 +507,19 @@ public class MangaTest {
     }
 
     @Test
+    public void ntkGeneratedShellIdentityWinsOverTokenOnlyDirectPage() {
+        String direct = "1:\"$Sreact.fragment\" {\"imagesToken\":\"token\","
+                + "\"imageMetas\":[{\"page\":1}],\"episodePath\":\"/webtoon/13708/1245755\"}";
+        String fallback = "<html><body><script>self.__next_f.push([1,\"{"
+                + "\\\"sourceWorkId\\\":\\\"13708\\\","
+                + "\\\"imageMetas\\\":[{\\\"page\\\":1},{\\\"page\\\":2}],"
+                + "\\\"imagesToken\\\":\\\"viewer-token\\\"}\"])</script></body></html>";
+
+        assertTrue(Manga.shouldPreferNtkHtmlImagePageForTest(
+                direct, fallback, "/webtoon/13708/1245755"));
+    }
+
+    @Test
     public void ntkViewerImageApiPrefersTokenEpisodeOverViewPingEpisode() {
         assertEquals("1542544", Manga.ntkViewerApiImageEpisodeIdForTest(
                 "1542544", "", "1542544", "140318"));
@@ -475,6 +531,16 @@ public class MangaTest {
                 "nv-849864-7", "1165013", "nv-849864-7", ""));
         assertEquals("1165013", Manga.ntkViewerApiImageEpisodeIdForTest(
                 "nv-849864-7", "", "nv-849864-7", "1165013"));
+    }
+
+    @Test
+    public void ntkViewerImageApiDoesNotRetryStaleKnownEpisodeWhenTokenIsAuthoritative() {
+        assertFalse(Manga.shouldRetryNtkKnownImageEpisodeIdForTest(
+                "1807424", "1807424", "1807424", "48388"));
+        assertFalse(Manga.shouldRetryNtkKnownImageEpisodeIdForTest(
+                "", "1807424", "1807424", "48388"));
+        assertTrue(Manga.shouldRetryNtkKnownImageEpisodeIdForTest(
+                "", "ntk-slug", "140318", "48388"));
     }
 
     @Test
@@ -603,12 +669,12 @@ public class MangaTest {
     }
 
     @Test
-    public void ntkGeneratedModeUsesApiFirstForCanonicalWebtoonEpisodes() {
+    public void ntkGeneratedModeDoesNotProbeBeforeApi() {
         assertFalse(Manga.shouldProbeGeneratedModeBeforeApiForTest(
                 "/webtoon/68864262/1587238", 101));
-        assertTrue(Manga.shouldProbeGeneratedModeBeforeApiForTest(
+        assertFalse(Manga.shouldProbeGeneratedModeBeforeApiForTest(
                 "/webtoon/9713/916314", 43));
-        assertTrue(Manga.shouldProbeGeneratedModeBeforeApiForTest(
+        assertFalse(Manga.shouldProbeGeneratedModeBeforeApiForTest(
                 "/manhwa/36404/1801301", 34));
     }
 

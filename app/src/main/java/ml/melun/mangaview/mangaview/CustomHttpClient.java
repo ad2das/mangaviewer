@@ -107,13 +107,13 @@ public class CustomHttpClient {
     private static final java.math.BigInteger P256_HALF_ORDER = P256_ORDER.shiftRight(1);
     public static final String DEFAULT_COMIC_URL = "https://wfwf455.com/cm";
     public static final String WEBTOON_URL = "https://wfwf455.com";
-    public static final String NTK_COMIC_URL = "https://sbxh7.com/manhwa";
-    public static final String NTK_WEBTOON_URL = "https://sbxh7.com";
+    public static final String NTK_COMIC_URL = "https://sbxh8.com/manhwa";
+    public static final String NTK_WEBTOON_URL = "https://sbxh8.com";
     public static final String NTK_REACHABLE_FALLBACK_URL = "https://ntk01.com";
-    private static final String NTK_HOST = "sbxh7.com";
-    private static final String PREVIOUS_NTK_HOST = "sbxh6.com";
-    private static final String OLDER_NTK_HOST = "sbxh5.com";
-    private static final String OLDEST_NTK_HOST = "sbxh4.com";
+    private static final String NTK_HOST = "sbxh8.com";
+    private static final String PREVIOUS_NTK_HOST = "sbxh7.com";
+    private static final String OLDER_NTK_HOST = "sbxh6.com";
+    private static final String OLDEST_NTK_HOST = "sbxh5.com";
     private static final String LEGACY_NTK_HOST = "ntk01.com";
     private static final long WFWF_DOMAIN_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L;
     private static final long WFWF_DOMAIN_FORCE_RETRY_INTERVAL_MS = 5 * 1000L;
@@ -3248,25 +3248,38 @@ public class CustomHttpClient {
                     .connectTimeout(2, TimeUnit.SECONDS)
                     .readTimeout(2, TimeUnit.SECONDS)
                     .callTimeout(3, TimeUnit.SECONDS)
+                    .followRedirects(false)
+                    .followSslRedirects(false)
                     .build();
-            Request.Builder builder = new Request.Builder().url(trimTrailingSlash(root) + "/").get();
-            if(headers != null)
-                for(String key : headers.keySet())
-                    builder.addHeader(key, headers.get(key));
+            String normalizedRoot = trimTrailingSlash(root);
+            Request.Builder builder = new Request.Builder()
+                    .url(normalizedRoot + "/api/manhwa-list?page=1&pageSize=1&withTotal=1")
+                    .get()
+                    .header("Accept", "application/json,text/plain,*/*")
+                    .header("Referer", normalizedRoot + "/");
+            if(headers != null) {
+                for(String key : headers.keySet()) {
+                    if(key == null)
+                        continue;
+                    String lower = key.toLowerCase(Locale.ROOT);
+                    if("accept".equals(lower) || "referer".equals(lower))
+                        continue;
+                    builder.header(key, headers.get(key));
+                }
+            }
             call = probeClient.newCall(builder.build());
             response = call.execute();
             if(response == null)
                 return false;
             int code = response.code();
             String location = response.header("location", "");
+            String contentType = response.header("content-type", "");
             String body = "";
-            if(code == 403 || code >= 500) {
-                try {
-                    body = response.peekBody(256 * 1024L).string();
-                } catch (Exception ignored) {
-                }
+            try {
+                body = response.peekBody(256 * 1024L).string();
+            } catch (Exception ignored) {
             }
-            return isReachableNtkProbeResponse(code, location, body);
+            return isReachableNtkProbeResponse(code, location, contentType, body);
         } catch (Exception e) {
             return false;
         } finally {
@@ -3278,13 +3291,19 @@ public class CustomHttpClient {
     }
 
     private static boolean isReachableNtkProbeResponse(int code, String location, String body) {
+        return isReachableNtkProbeResponse(code, location, "", body);
+    }
+
+    private static boolean isReachableNtkProbeResponse(int code, String location, String contentType, String body) {
         if(location != null && location.toLowerCase(Locale.ROOT).contains("t.me/"))
             return false;
-        if(code <= 0 || code >= 500)
+        if(code != 200)
             return false;
-        if(code == 403)
-            return isCloudflareChallenge(code, body);
-        return true;
+        String sample = body == null ? "" : body.trim();
+        String type = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+        if(type.contains("application/json") && sample.startsWith("{") && sample.contains("\"works\""))
+            return true;
+        return sample.startsWith("{") && sample.contains("\"works\"");
     }
 
     static boolean isReachableNtkProbeResponseForTest(int code, String location, String body) {

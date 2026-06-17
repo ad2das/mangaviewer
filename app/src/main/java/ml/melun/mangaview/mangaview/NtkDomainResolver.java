@@ -19,6 +19,8 @@ import okhttp3.Response;
 public class NtkDomainResolver {
     public static final String CHANNEL_URL = "https://t.me/s/newtoki_url";
     private static final String[] CHANNEL_URLS = new String[]{
+            "https://sbxh8.com",
+            "https://sbxh7.com",
             CHANNEL_URL
     };
     private static final long RESOLVE_TIMEOUT_MS = 8_000L;
@@ -42,6 +44,8 @@ public class NtkDomainResolver {
                     .connectTimeout(3, TimeUnit.SECONDS)
                     .readTimeout(5, TimeUnit.SECONDS)
                     .callTimeout(RESOLVE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .followRedirects(true)
+                    .followSslRedirects(true)
                     .build();
             for(String channelUrl : CHANNEL_URLS) {
                 Request.Builder builder = new Request.Builder().url(channelUrl).get();
