@@ -238,6 +238,7 @@ class ReaderSession(
     private val deliveryDrainPosted = AtomicBoolean(false)
     private val initialDeliveryFallbackPosted = AtomicBoolean(false)
     private val initialDeliveryFlushInProgress = AtomicBoolean(false)
+    private val currentViewportAnchor = AtomicInteger(-1)
     private val initialAnchorCoalesceDelayed = AtomicBoolean(false)
     private val initialPagesReadyDelivered = AtomicBoolean(false)
     private val initialFullAppendDeferredUntilFirstBitmap = AtomicBoolean(false)
@@ -1830,6 +1831,7 @@ class ReaderSession(
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
         val windowAnchor = anchor.coerceIn(0, count - 1)
+        currentViewportAnchor.set(windowAnchor)
         val windowFirstInput: Int
         val windowLastInput: Int
         val ntkWebtoon = isNtkWebtoonSource(manga, title)
@@ -3133,7 +3135,7 @@ class ReaderSession(
         if (urgent) {
             urgentLoadingPages[index] = page
         }
-        if (ownsLoading) {
+        if (ownsLoading && shouldPostPageLoadingState(index, page, busy, anchor, generation)) {
             main.post { if (!cancelled.get()) listener.onPageLoading(index) }
         }
         if (visiblePriority) {
@@ -5687,7 +5689,18 @@ class ReaderSession(
                 generation == FOREGROUND_PRIME_WARM_GENERATION &&
                 ntkCoordinator?.allowsPreAnchorFallback(index, page.image, "shouldUseForegroundFetch") == true
         }
-        if (urgent) return true
+        if (urgent) {
+            if (ntk && firstBitmapLogged.get() && busy && generation >= 0) {
+                val viewportAnchor = currentViewportAnchor.get().takeIf { it >= 0 } ?: current
+                val radius = if (isNtkWebtoonSource(page.manga, title)) {
+                    NTK_WEBTOON_ACTIVE_SCROLL_FOREGROUND_RADIUS
+                } else {
+                    NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS
+                }
+                return index in max(0, viewportAnchor - radius)..(viewportAnchor + radius)
+            }
+            return true
+        }
         val foregroundAhead = if (ntk && isNtkWebtoonSource(page.manga, title)) {
             NTK_WEBTOON_FOREGROUND_STREAM_AHEAD_PAGES
         } else {
@@ -5708,6 +5721,20 @@ class ReaderSession(
         val image = page.image
         val requestImage = image ?: return false
         return !ReaderImageCache.hasActiveFetch(page.manga, requestImage)
+    }
+
+    private fun shouldPostPageLoadingState(
+        index: Int,
+        page: PageRef,
+        busy: Boolean,
+        anchor: Boolean,
+        generation: Int
+    ): Boolean {
+        if (!isNtkSource(page.manga, title)) return true
+        if (!firstBitmapLogged.get()) return true
+        if (!busy || generation < 0) return true
+        if (anchor) return true
+        return index == currentViewportAnchor.get()
     }
 
     private fun hasDeliveredAtLeast(delivery: Delivery, width: Int): Boolean {
@@ -6472,12 +6499,13 @@ class ReaderSession(
         private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 2
         private const val NTK_INITIAL_PRIORITY_PAGES = 9
         private const val NTK_INITIAL_GENERATED_PROMOTE_MAX_AHEAD = 4
-        private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 16
+        private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 6
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 8
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 18
         private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 4
         private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 0
         private const val NTK_WEBTOON_FOREGROUND_STREAM_AHEAD_PAGES = 2
+        private const val NTK_WEBTOON_ACTIVE_SCROLL_FOREGROUND_RADIUS = 0
         private const val NTK_WEBTOON_WINDOW_AFTER = 8
         private const val NTK_WEBTOON_BUSY_WINDOW_AFTER = 6
         private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 2
@@ -6516,8 +6544,9 @@ class ReaderSession(
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 8
         private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 24
         private const val BUSY_DELIVERY_SCAN_LIMIT = 64
-        private const val NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD = 5
+        private const val NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD = 3
         private const val NTK_GENERATED_BUSY_VISIBLE_DECODE_RADIUS = 2
+        private const val NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS = 0
         private const val BUSY_DIRECTIONAL_DECODE_AHEAD = 8
         private const val BUSY_VISIBLE_DECODE_RADIUS = 5
         private const val BUSY_DELIVERY_DRAIN_LIMIT = 12

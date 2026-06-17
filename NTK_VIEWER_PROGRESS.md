@@ -22838,3 +22838,175 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Webtoon first drawable is still slow under strict fresh (`14837ms`) because CF clearance + ACK + early URL handoff dominate cold entry.
   - Current user-approved priority is stability/ACK correctness over speed; do not hide this as "instant" yet.
   - Targeted repros passed; broad live-random is still constrained by current sbxh7 root probing/Cloudflare behavior and needs separate longer regression.
+
+## 2026-06-18 23:45:00 +09:00 Commit/push and GitHub Actions
+
+- Commit:
+  - `389eb06d Stabilize NTK strict ACK and initial reader delivery`
+  - Branch: `codex/ntk-strict-ack-proof`
+  - Pushed to `origin/codex/ntk-strict-ack-proof`.
+- Committed files:
+  - `NTK_VIEWER_PROGRESS.md`
+  - `CustomHttpClient.java`
+  - `NtkWebViewFallbackManager.java`
+  - `ReaderSession.kt`
+  - `ReaderSurfaceView.kt`
+- Explicitly excluded unrelated staged work:
+  - `Preference.java`
+  - `PreferenceTest.java`
+- GitHub Actions:
+  - Run `27693349727` / job `81909923137`
+  - `Build APK Artifact` passed in `1m41s`.
+  - Only annotation: GitHub Actions Node.js 20 deprecation warning; no build failure.
+
+## 2026-06-18 23:49:00 +09:00 Random runner ACK assert false negative
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_224425`
+- Command:
+  - target-free `Runs 2`, strict fresh, native-ack, mixed touch scroll.
+- Actual viewer result:
+  - Both curated fallback cases opened and scrolled:
+    - `/manhwa/36525/1807424`: first drawable `6929ms`, 3 scroll steps with `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - `/webtoon/13729/1388127`: first drawable `5302ms`, 3 scroll steps with `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+  - Both cases had actual strict ACK 200:
+    - `ntk_native_ack_bridge_submit code=200,path=...`
+    - `/api/ad/ack code=200`.
+- Why summary was `passed=false`:
+  - Coverage was `curated-only`, so it cannot be final live-random proof.
+  - `tools/ntk_random_perf.ps1` ACK assertion still required old `reader_ntk_ack_preflight_start`/reader done markers.
+  - Fast5 can complete strict ACK via WebView/native bridge proof without those old reader markers, producing false `started=False,readerDone=False`.
+- Patch applied, pending validation:
+  - ACK assert now treats `ntk_native_ack_bridge_submit code=200,path=...` as actual strict proof and ACK start evidence.
+  - Pass condition is now strict proof plus one of WebView done, reader done, or native bridge ACK 200.
+- Bad/avoid:
+  - Do not fail ACK proof just because an older reader-thread marker is absent.
+  - Do not claim final broad live-random proof from a `curated-only` run; use it only as viewer/ACK regression signal.
+
+## 2026-06-18 23:54:00 +09:00 Scroll jank from over-wide foreground ahead window
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_224729`
+- Repro:
+  - target-free seed `1781704000001`, first curated case `/manhwa/36525/1807424`
+  - focused repro command is in the summary.
+- Result:
+  - ACK was correct:
+    - `webViewAckPreflightDone success=true ms=4915`
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/36525/1807424`
+    - `ackChecks passed=true` after runner ACK assertion patch.
+  - Image display was correct:
+    - first drawable `7642ms`
+    - visible coverage `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+  - Scroll failed strict jank:
+    - step 1 slow-down: `droppedFrames=1`, `callbackMax=102.98`, `totalMax=19.70`, `drawP95=0.38`.
+- Root cause:
+  - The earlier widened foreground ahead window made pages far outside the viewport behave as foreground work during active scroll.
+  - While visible pages were around page 2/3, logs show active foreground/direct race and cache alias work for `p010`/`p011`.
+  - Draw cost itself was low, so the dropped frame was scheduling/callback pressure from too much near-priority image work.
+- Patch applied, pending validation:
+  - Reduce `NTK_FOREGROUND_STREAM_AHEAD_PAGES` from 16 to 6.
+  - Reduce `NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD` from 5 to 3.
+- Bad/avoid:
+  - Do not keep expanding foreground/ahead windows as the default fix for blank gaps; it can turn image loading into active-scroll jank.
+  - Prefer viewport-near delivery and keep far-ahead work background priority after first drawable.
+
+## 2026-06-18 23:59:00 +09:00 Focused repro still fails after only reducing ahead constants
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_224946`
+- Repro:
+  - `/manhwa/36525/1807424`
+  - seed `1781704000001`
+  - `TargetImageWorkId=36525`, `TargetImageEpisodeId=1807424`, `TargetImageCount=80`
+  - strict fresh, native-ack, mixed touch scroll, emulator-only.
+- Result:
+  - ACK is correct:
+    - `webViewAckPreflightDone success=true ms=7347`
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/36525/1807424`
+    - `ackChecks passed=true`, `nativeBridgeAck200=true`, `readerDone=true`
+  - First drawable:
+    - `10039ms`
+  - Coverage after settle:
+    - `drawablePx=2276`, `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, `pages=24`
+  - Failure:
+    - step 0 fast-down strict jank failed with `droppedFrames=1`, `totalMax=19.52`, `callbackMax=334.48`.
+    - Slow frame showed visible pages `13` and `14` still loading: `reader_slow_frame busy=true items=2 visibleLoading=2 drawMs=2.21 totalMs=19.52`.
+- Updated root cause:
+  - Reducing `NTK_FOREGROUND_STREAM_AHEAD_PAGES` and generated directional decode ahead helps the earlier far-ahead case, but does not solve the structural problem.
+  - During fast active scroll, any newly visible NTK page can become urgent foreground fetch because `shouldUseForegroundFetch()` returns true for `urgent` before applying an anchor/window distance cap.
+  - `onPageLoading` is also posted to the main thread for every newly requested visible page, even when the surface can already represent missing drawable coverage without the loading flag.
+- Patch direction:
+  - Track current viewport anchor in `ReaderSession`.
+  - Limit active-scroll NTK foreground fetch to the current viewport anchor and a tiny radius instead of making every urgent visible request foreground.
+  - Suppress nonessential NTK loading UI posts during active scroll after first drawable; real drawable/error delivery still posts normally.
+- Bad/avoid:
+  - Do not rely on only lowering ahead constants; fast scroll can jump the anchor and still create many urgent foreground requests.
+  - Do not relax the jank assertion to allow one dropped frame. The frame was real and must be reduced.
+
+## 2026-06-19 00:10:00 +09:00 Active-scroll foreground throttle validation
+
+- Code changes:
+  - `ReaderSession` now tracks the current viewport anchor for window requests.
+  - After first drawable, busy NTK urgent foreground fetch is limited to the current viewport anchor only.
+  - Nonessential `onPageLoading` UI posts are suppressed for non-anchor NTK pages during active scroll after first drawable.
+  - The earlier constant reductions remain:
+    - `NTK_FOREGROUND_STREAM_AHEAD_PAGES`: `16 -> 6`
+    - `NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD`: `5 -> 3`
+- Runner changes:
+  - ACK assertion accepts actual native bridge `/api/ad/ack` 200 proof.
+  - Failure repro command now records `TargetImageEpisodeId`, `TargetImageWorkId`, and `TargetImageCount` when available.
+  - If curated case metadata omits `imageWorkId`, the repro command falls back to `titleId`.
+  - Default root probe order starts with `https://sbxh7.com`.
+- Build:
+  - `.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Result: `BUILD SUCCESSFUL in 7s`.
+  - Only existing deprecation warnings.
+- Focused repro after patch:
+  - Artifact: `build/ntk-random-perf/20260617_225836`
+  - Path: `/manhwa/36525/1807424`
+  - Seed: `1781704000001`
+  - Result: pass.
+  - ACK:
+    - `webViewAckPreflightDone success=true ms=11832`
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/36525/1807424`
+    - `/api/ad/ack code=200`, `setCookies=1`, `cookieNames=ad_ack`
+  - First drawable: `14696ms`.
+  - Scroll: 3 mixed touch steps passed, `slowSignals=0`, failures `0`.
+  - Coverage stayed clean: `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+- External emulator noise observed:
+  - Previous run `build/ntk-random-perf/20260617_225601` also passed but first drawable was `42925ms`.
+  - Logs show emulator/system stall, not normal app delivery:
+    - `Choreographer skipped 2161 frames`
+    - `EGL app_time_stats max=36630.74ms`
+    - GMS Chimera/module update logs in the same gap.
+  - Treat this as emulator environment noise, but keep it recorded because it can distort first-drawable timing.
+- Webtoon regression:
+  - Artifact: `build/ntk-random-perf/20260617_225942`
+  - Path: `/webtoon/16968/1430500`
+  - Seed: `1781701481889`
+  - Result: pass.
+  - ACK:
+    - `webViewAckPreflightDone success=true ms=5473`
+    - `ntk_native_ack_bridge_submit code=200,path=/webtoon/16968/1430500`
+    - `/api/ad/ack code=200`, `setCookies=1`, `cookieNames=ad_ack`
+  - First drawable: `8521ms`.
+  - Scroll: 3 mixed touch steps passed with failures `0`.
+  - Slow signal was callback spacing only:
+    - `droppedFrames=0`, `droppedFrameDebt=0`, `totalMax=6.67`, `drawP95=0.20`
+  - Coverage clean: `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+- Target-free runner validation:
+  - Artifact: `build/ntk-random-perf/20260617_230052`
+  - Seed: `1781704000001`
+  - Runs: `2`, strict fresh, native-ack, mixed touch scroll.
+  - Result: pass.
+  - Cases:
+    - `/manhwa/36525/1807424`: first drawable `10264ms`
+    - `/webtoon/13729/1388127`: first drawable `6170ms`
+  - Scroll: 6 total steps, failures `0`, coverage clean.
+  - ACK proof present for both cases through native bridge `/api/ad/ack` 200.
+  - Coverage label is still `curated-only`; do not claim this as final broad live-random proof.
+- Remaining risk:
+  - ACK is stable in these emulator repros, but strict fresh first-drawable remains dominated by CF/ACK + early URL path, commonly 6-15s.
+  - True live-random remains blocked by curated-only case source in this runner path; run root probe/live case source before claiming full random coverage.
+  - Surface stats still report callback spacing missed frames on some touch gestures, but render total/dropped frames are now clean in validated runs.
