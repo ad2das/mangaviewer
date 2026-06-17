@@ -24062,3 +24062,76 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Cold strict ACK still dominates first-open time; this loop fixed the missed early URL handoff and gate timeout waste, not the underlying Cloudflare/ACK latency.
   - Some strict paths can still take 15-21s in actual UX and 11-19s in the 4-run random sample.
   - Longer corpus, throttled network/CPU, and memory-growth sweeps remain unclosed.
+
+## 2026-06-18 05:03:00 +09:00 Verified generated seed host/episode preservation
+
+- User priority in this loop:
+  - Test like real UX by directly selecting NTK comic/webtoon inside the app.
+  - Treat speed as secondary now; finish ACK 200 and real image display stability.
+  - Keep recording both fixes and bad approaches in this file so context compaction does not lose the thread.
+- Fixes applied:
+  - `tools/ntk_random_perf.ps1` now treats instrumentation ANR/shortMsg/longMsg, `INSTRUMENTATION_CODE: 0`, missing `OK (...)`, too-few executed cases, and missing first-drawable counts as failures. This prevents false green results after a partial run.
+  - `CaptchaActivity` now detaches and destroys the hidden ACK WebView immediately after verified clearance/ACK completion, and ignores late bridge callbacks while finishing. This fixed a post-ACK `keyDispatchingTimedOut` ANR path.
+  - `Manga`/`ReaderImageCache`/`ReaderSession` now preserve verified generated image host/episode identity instead of blindly rewriting to `i.toonflix.app` or to `ntkImageEpisodeId`.
+  - `ReaderImageCache` accepts a verified response URL when the actual generated URL is the current NTK episode path and the requested page matches, which avoids rejecting good CDN redirects.
+  - `ReaderSession.ntkGeneratedImageUrlForTarget(...)` now keeps the verified seed URL as the sibling source when:
+    - the seed path is already the active NTK episode path; or
+    - a `blacktoon/episodes/<sourceWorkId>/<episodeId>` seed uses a different work id than the NTK title id but the same active episode id.
+- Bad approaches recorded:
+  - Do not treat ACK 200 as image success. `/manhwa/2859/10011` had strict ACK 200 but still failed because p002 was generated from a bad host/episode.
+  - Do not assume `ntkImageEpisodeId` is the CDN episode id. In `/manhwa/2859/10011`, `93788` was not reachable while current path episode `10011` was valid.
+  - Do not assume `sourceWorkId` must equal NTK title id. In `/webtoon/843430/1554373`, valid images used `blacktoon/episodes/18750/1554373`, while title id was `843430`.
+  - Do not fix this by only lowering the initial draw gate. The visible marker must be released because real image pages are drawable, not because a placeholder timeout was accepted.
+  - Do not allow ad/banner/board_upload URLs as content. These fixes only preserve trusted generated CDN URLs and same-page current-path redirects.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat --no-daemon :app:assembleDebug :app:installDebug` passed after each ReaderSession patch.
+    - `.\gradlew.bat --no-daemon :app:installDebugAndroidTest` passed before actual UX direct selection.
+  - Repro `/manhwa/2859/10011`:
+    - Artifact: `build/ntk-random-perf/20260618_goal_repro_2859_preserve_api_generated_host/20260618_044830`.
+    - Result: passed, strict ACK proof true, `bridge-ack-200`, first drawable `25233ms`.
+    - `/api/manhwa-images` returned 107 images; first URL partial was `flysky3m.com/.../10011/p001.jpg`, 2048-byte partial in 285ms.
+    - `foreground_stream_async_done ... p001.jpg ... bytes=119076`, decode ready in 1015ms, visible coverage `missingPx=0`, `placeholderPx=0`, `drawableItems=2`.
+    - 12 mixed scroll steps completed with no post-stop drift; coverage stayed drawable with `loading=0`.
+  - Actual UX direct selection:
+    - Artifact: `build/ntk-ux-select/20260618_goal_actual_ux_after_2859_host_preserve`.
+    - Combined comic+webtoon instrumentation passed `OK (2 tests)`.
+    - Comic direct selection `/manhwa/36525/1807424`: strict `bridge-ack-200`, first drawable `28495ms`, visible coverage `missingPx=0`, `placeholderPx=0`, `drawableItems=2`.
+    - Webtoon direct selection `/webtoon/16968/1463195`: strict `bridge-ack-200`, first drawable `22274ms`, visible coverage `missingPx=0`, `placeholderPx=0`.
+  - Broader random found a new failure:
+    - Artifact: `build/ntk-random-perf/20260618_goal_live_random_6run_scroll12_after_2859_host_preserve/20260618_045222`.
+    - Seed: `1781725942257`.
+    - Failure path: `/webtoon/843430/1554373`, imageEpisodeId `666808`, imageWorkId `18750`, image count `103`.
+    - ACK was not the failure: strict proof and native bridge ACK 200 were true; ack preflight was about `6794ms`.
+    - Root cause: first API image was valid at `flysky3m.com/blacktoon/episodes/18750/1554373/p001.jpg`, but the early sibling expansion saw `18750 != 843430` and rewrote to `.../666808/pNNN.jpg`, which returned 404 for the first pages.
+  - Repro `/webtoon/843430/1554373` after blacktoon seed episode preservation:
+    - Artifact: `build/ntk-random-perf/20260618_goal_repro_843430_blacktoon_seed_episode_preserve/20260618_045815`.
+    - Result: passed, failures 0, slowSignals 0, 12 mixed scroll steps.
+    - Strict ACK proof true, native bridge ACK 200 true; ack preflight `18606ms`.
+    - `/api/webtoon-images` returned 146 raw images, capped to 103 verified display pages.
+    - `foreground_stream_async_done ... p001.jpg ... bytes=162238`, decode ready in 1432ms, first drawable `32566ms`.
+    - Scroll coverage stayed `missingPx=0`, `placeholderPx=0`, `loading=0`; post-stop drift stayed `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Remaining risk:
+  - Cold ACK still dominates first drawable time in strict fresh mode, commonly 18-32s in these target/UX runs.
+  - The broad 6-run validation after the blacktoon seed fix no longer failed on ACK or image readiness, but it did fail on a strict scroll-jank assertion in the first run. The user has explicitly narrowed the finish scope to ACK/image stability and accepted speed/performance tradeoff for now.
+  - Some early probes still touch `i.toonflix.app` and can waste time, but the final reader page list now uses verified generated CDN seeds.
+
+## 2026-06-18 05:06:00 +09:00 Latest UX confirmation and residual scroll-jank risk
+
+- Latest actual UX direct selection on the final APK:
+  - Artifact: `build/ntk-ux-select/20260618_goal_actual_ux_after_blacktoon_seed_fix`.
+  - Result: passed `OK (2 tests)`.
+  - Comic `/manhwa/36525/1807424`: `bridge-ack-200`, first drawable `25750ms`, visible coverage `missingPx=0`, `placeholderPx=0`, `drawableItems=2`.
+  - Webtoon `/webtoon/16968/1463195`: `bridge-ack-200`, first drawable `17061ms`, visible coverage `missingPx=0`, `placeholderPx=0`, `drawableItems=1`.
+- Broad random recheck after blacktoon seed fix:
+  - Artifact: `build/ntk-random-perf/20260618_goal_live_random_6run_scroll12_after_blacktoon_seed_fix/20260618_050016`.
+  - Seed: `1781726416581`.
+  - First case `/manhwa/21247/183396` passed ACK and image readiness:
+    - strict ACK proof true, native bridge ACK 200 true.
+    - first drawable `23184ms`.
+    - `/api/manhwa-images` returned early URLs and first image streamed/decode-ready.
+  - Failure was scroll performance only: step 0 had `droppedFrames=1`, `droppedFrameDebt=2`, `maxDroppedFrames=0`.
+  - No image blank/placeholder failure was recorded in the summary before this jank assertion stopped the run.
+- Decision:
+  - Do not keep chasing scroll micro-jank in this commit because the user narrowed scope to finish ACK/image stability and speed can be traded off.
+  - Keep the jank artifact as residual risk and reproduction material for a later performance pass.

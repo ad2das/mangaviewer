@@ -1785,6 +1785,7 @@ object ReaderImageCache {
             actualTarget != null &&
                 (
                     isCompatibleNtkGeneratedPage(requestedTarget, actualTarget) ||
+                        isCurrentNtkPathGeneratedPage(manga, requestedTarget, actualTarget) ||
                         (
                             approvedReplacement &&
                                 isCompatibleNtkGeneratedEpisode(requestedTarget, actualTarget) &&
@@ -5080,6 +5081,17 @@ object ReaderImageCache {
         return isCompatibleNtkGeneratedEpisode(expected, actual) && actual.page == expected.page
     }
 
+    private fun isCurrentNtkPathGeneratedPage(
+        manga: Manga,
+        expected: NtkGeneratedTarget,
+        actual: NtkGeneratedTarget
+    ): Boolean {
+        if (actual.page != expected.page) return false
+        val currentPath = manga.ntkEpisodePath?.trim().orEmpty()
+        if (currentPath.isBlank()) return false
+        return actual.path.trimEnd('/').equals(currentPath.trimEnd('/'), ignoreCase = true)
+    }
+
     private fun isCompatibleNtkGeneratedEpisode(
         expected: NtkGeneratedTarget,
         actual: NtkGeneratedTarget
@@ -5314,7 +5326,7 @@ object ReaderImageCache {
         val fullAttempt = ForegroundRaceAttempt("image-full", httpClient.imageClient, fullRequest)
         val generatedTarget = ntkGeneratedTarget(foregroundRequest.url.toString())
         if (generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
-            return foregroundAttempts
+            return listOf(fullAttempt) + foregroundAttempts
         }
         if (firstEarlyNtkImage || generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
             return listOf(fullAttempt) + foregroundAttempts

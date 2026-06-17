@@ -2845,6 +2845,24 @@ public class Manga {
         }
         int fetchedUrlCount = urls.size();
         urls = normalizeNtkApiViewerImageUrls(urls);
+        if(shouldReplaceStaleNtkApiGeneratedUrls(urls, segment, path, pathEpisodeId,
+                apiEpisodeId, knownImageEpisodeId)) {
+            int pageCount = urls.size();
+            if(pageCount <= 0)
+                pageCount = ntkViewerMetaPageCount(normalized);
+            if(pageCount <= 0)
+                pageCount = ntkGeneratedImageCandidateCount();
+            Log.d(TAG, "ntk_viewer_api_stale_generated_replace path=" + path
+                    + ",apiEpisodeId=" + apiEpisodeId
+                    + ",knownImageEpisodeId=" + knownImageEpisodeId
+                    + ",pageCount=" + pageCount
+                    + ",first=" + (urls.isEmpty() ? "" : safeLogImage(urls.get(0))));
+            if(addNtkGeneratedPathImageCandidates(client, path, seenImages, pageCount, true))
+                return true;
+            Log.d(TAG, "ntk_viewer_api_stale_generated_replace_miss path=" + path
+                    + ",apiEpisodeId=" + apiEpisodeId
+                    + ",knownImageEpisodeId=" + knownImageEpisodeId);
+        }
         Log.d(TAG, "ntk_viewer_api_urls path=" + path
                 + ",fetched=" + fetchedUrlCount
                 + ",normalized=" + urls.size()
@@ -2885,6 +2903,52 @@ public class Manga {
         }
         compactNtkImageCandidates(normalized, seenImages);
         return imgs != null && imgs.size() > before;
+    }
+
+    private boolean shouldReplaceStaleNtkApiGeneratedUrls(List<String> urls, String segment, String path,
+                                                          String pathEpisodeId, String apiEpisodeId,
+                                                          String knownImageEpisodeId) {
+        if(urls == null || urls.isEmpty() || segment == null || path == null)
+            return false;
+        String known = ntkApiEpisodeIdForPath(knownImageEpisodeId);
+        String pathEpisode = ntkApiEpisodeIdForPath(pathEpisodeId);
+        String apiEpisode = ntkApiEpisodeIdForPath(apiEpisodeId);
+        if(!isNumericNtkId(known) || known.equals(pathEpisode) || known.equals(apiEpisode))
+            return false;
+        Matcher pathMatcher = Pattern.compile("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)").matcher(path);
+        if(!pathMatcher.find())
+            return false;
+        String workId = pathMatcher.group(2);
+        NtkGeneratedUrlIdentity identity = ntkGeneratedUrlIdentity(urls.get(0));
+        if(identity == null || !segment.equalsIgnoreCase(identity.segment))
+            return false;
+        if(!workId.equals(identity.workId))
+            return false;
+        return identity.episodeId.equals(pathEpisode) || identity.episodeId.equals(apiEpisode);
+    }
+
+    private static NtkGeneratedUrlIdentity ntkGeneratedUrlIdentity(String url) {
+        if(url == null)
+            return null;
+        Matcher matcher = Pattern.compile(
+                "^https?://[^/]+/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p\\d{3}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$",
+                Pattern.CASE_INSENSITIVE).matcher(url);
+        if(!matcher.find())
+            return null;
+        return new NtkGeneratedUrlIdentity(matcher.group(1).toLowerCase(Locale.ROOT),
+                matcher.group(2), matcher.group(3));
+    }
+
+    private static final class NtkGeneratedUrlIdentity {
+        final String segment;
+        final String workId;
+        final String episodeId;
+
+        NtkGeneratedUrlIdentity(String segment, String workId, String episodeId) {
+            this.segment = segment;
+            this.workId = workId;
+            this.episodeId = episodeId;
+        }
     }
 
     private void startFirstNtkApiImageStream(CustomHttpClient client, String path, List<String> urls) {
@@ -4913,6 +4977,8 @@ public class Manga {
         String candidateEpisode = ntkApiEpisodeIdForPath(candidateEpisodeId);
         if(candidateEpisode.length() == 0)
             return "";
+        if(isNumericNtkId(candidateEpisode))
+            return candidateEpisode;
         String tokenImageEpisode = ntkApiEpisodeIdForPath(tokenEpisodeId);
         String pathImageEpisode = ntkApiEpisodeIdForPath(pathEpisodeId);
         if(isNumericNtkId(tokenImageEpisode) && !candidateEpisode.equals(tokenImageEpisode))

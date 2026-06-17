@@ -469,7 +469,17 @@ $ackPhases = @(
 $ackPreflightStages = @(Read-MetricLines $logText "ntk_webview_ack_preflight_stage")
 $slowFrames = ($logText -split "`r?`n") | Where-Object { $_ -match "reader_slow_frame|surface_jank_v3|reader_visible_gap|reader_visible_loading=true" }
 $failureLines = (($instrumentText + "`n" + $logText) -split "`r?`n") |
-    Where-Object { $_ -match "FAILURES!!!|AssertionError|INSTRUMENTATION_STATUS: stack|Process crashed|ntk_true_random_first_drawable_fast_fail|reader_scroll_jump" }
+    Where-Object { $_ -match "FAILURES!!!|AssertionError|INSTRUMENTATION_STATUS: stack|Process crashed|keyDispatchingTimedOut|Input dispatching timed out|ntk_true_random_first_drawable_fast_fail|reader_scroll_jump" }
+if($instrumentText -match "INSTRUMENTATION_RESULT:\s+shortMsg=" -or
+    $instrumentText -match "INSTRUMENTATION_RESULT:\s+longMsg=") {
+    $failureLines += "NTK_INSTRUMENTATION_RESULT_ASSERT instrumentation_result_failure=true"
+}
+if($instrumentText -match "INSTRUMENTATION_CODE:\s+0(\r?\n|$)") {
+    $failureLines += "NTK_INSTRUMENTATION_CODE_ASSERT code=0"
+}
+if($instrumentText -notmatch "OK\s+\(\d+\s+tests?\)") {
+    $failureLines += "NTK_INSTRUMENTATION_OK_ASSERT okMarker=false"
+}
 $casePaths = @($cases | ForEach-Object { [string]$_.path } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $uniqueCasePaths = @($casePaths | Select-Object -Unique)
 $uniqueTitlePaths = @($casePaths | ForEach-Object {
@@ -519,6 +529,12 @@ if($RequireLiveRandom -and [string]::IsNullOrWhiteSpace($TargetEpisodePath) -and
             $titleSourceCurated.Count, `
             $caseCuratedCount, `
             $cases.Count)
+}
+if([string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $Runs -gt 0 -and $cases.Count -lt $Runs) {
+    $failureLines += ("NTK_RUN_COUNT_ASSERT cases={0},requested={1}" -f $cases.Count, $Runs)
+}
+if($cases.Count -gt 0 -and $firstDrawable.Count -lt $cases.Count) {
+    $failureLines += ("NTK_FIRST_DRAWABLE_COUNT_ASSERT firstDrawable={0},cases={1}" -f $firstDrawable.Count, $cases.Count)
 }
 
 $ackChecks = @()

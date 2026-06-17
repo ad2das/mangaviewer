@@ -4285,7 +4285,18 @@ class ReaderSession(
                 val anchor = retainedAnchorPage.coerceIn(first, last)
                 Triple(first, last, anchor)
             }
-        } ?: return
+        } ?: run {
+            if (isNtkSource(manga, title) && !firstBitmapLogged.get()) {
+                val anchor = currentStartPage()
+                Log.d(
+                    TAG,
+                    "reader_structure_anchor_re_request page=$anchor,busy=${viewportBusy.get()}"
+                )
+                requestPageForeground(anchor)
+                requestInitialContinuousPagesFromEarlyUrls(anchor, synchronized(pagesLock) { pages.size })
+            }
+            return
+        }
         Log.d(
             TAG,
             "reader_structure_window_re_request first=${snapshot.first},last=${snapshot.second},anchor=${snapshot.third}," +
@@ -4332,13 +4343,7 @@ class ReaderSession(
     }
 
     private fun isNtkGeneratedImageUrl(image: String): Boolean {
-        val lower = image.lowercase()
-        return lower.contains("://i.toonflix.app/") &&
-            (
-                Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
-                    Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
-                    Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
-                )
+        return NTK_GENERATED_IMAGE_URL.matchEntire(image) != null
     }
 
     private fun isNtkBoardUploadImageUrl(image: String?): Boolean {
@@ -4372,6 +4377,12 @@ class ReaderSession(
         if (page <= 0) return null
         val seedMatch = NTK_GENERATED_IMAGE_URL.matchEntire(seed) ?: return null
         val targetMatch = NTK_EPISODE_PATH.matchEntire(target.ntkEpisodePath.orEmpty()) ?: return ntkGeneratedSiblingImageUrl(seed, page)
+        val seedTargetPath = ntkGeneratedPathFromPrefix(seedMatch.groupValues[1])
+        if ((seedTargetPath != null && seedTargetPath.equals(target.ntkEpisodePath.orEmpty(), ignoreCase = true)) ||
+            ntkGeneratedPrefixEpisodeMatchesTarget(seedMatch.groupValues[1], targetMatch)
+        ) {
+            return ntkGeneratedSiblingImageUrl(seed, page)
+        }
         val segment = targetMatch.groupValues[1]
         val pathEpisodeId = targetMatch.groupValues[3]
         val imageEpisodeId = target.ntkImageEpisodeId.orEmpty().trim()
@@ -4385,25 +4396,70 @@ class ReaderSession(
                     ?.groupValues
                     ?.getOrNull(1)
                     ?: return ntkGeneratedSiblingImageUrl(seed, page)
-                "https://i.toonflix.app/blacktoon/episodes/$seedWorkId/$episodeId/"
+                ntkGeneratedPrefixOrigin(seedPrefix) + "/blacktoon/episodes/$seedWorkId/$episodeId/"
             }
             seedPrefix.contains("/wt/episodes/", ignoreCase = true) -> {
                 val seedWorkId = Regex("/wt/episodes/([^/]+)/").find(seedPrefix)
                     ?.groupValues
                     ?.getOrNull(1)
                     ?: return ntkGeneratedSiblingImageUrl(seed, page)
-                "https://i.toonflix.app/wt/episodes/$seedWorkId/$episodeId/"
+                ntkGeneratedPrefixOrigin(seedPrefix) + "/wt/episodes/$seedWorkId/$episodeId/"
             }
             else -> {
                 val seedWorkId = Regex("/(?:manhwa|webtoon)/([^/]+)/").find(seedPrefix)
                     ?.groupValues
                     ?.getOrNull(1)
                     ?: targetMatch.groupValues[2]
-                "https://i.toonflix.app/$segment/$seedWorkId/$episodeId/"
+                ntkGeneratedPrefixOrigin(seedPrefix) + "/$segment/$seedWorkId/$episodeId/"
             }
         }
         val actualPage = ntkGeneratedSeedPage(seed) + page - 1
         return "${targetPrefix}p${actualPage.toString().padStart(3, '0')}.${seedMatch.groupValues[2]}${seedMatch.groupValues[3]}"
+    }
+
+    private fun ntkGeneratedPrefixOrigin(prefix: String): String {
+        val match = Regex("^(https?://[^/]+)", RegexOption.IGNORE_CASE).find(prefix)
+        return match?.groupValues?.getOrNull(1) ?: "https://i.toonflix.app"
+    }
+
+    private fun ntkGeneratedPathFromPrefix(prefix: String): String? {
+        Regex("^https?://[^/]+/(manhwa|webtoon)/(\\d+)/([^/?#]+)/$", RegexOption.IGNORE_CASE)
+            .find(prefix)
+            ?.let { return "/${it.groupValues[1]}/${it.groupValues[2]}/${it.groupValues[3]}" }
+        Regex("^https?://[^/]+/blacktoon/episodes/(\\d+)/([^/?#]+)/$", RegexOption.IGNORE_CASE)
+            .find(prefix)
+            ?.let { return "/webtoon/${it.groupValues[1]}/${it.groupValues[2]}" }
+        Regex("^https?://[^/]+/wt/episodes/([^/?#]+)/([^/?#]+)/$", RegexOption.IGNORE_CASE)
+            .find(prefix)
+            ?.let { return "/webtoon/${it.groupValues[1]}/${it.groupValues[2]}" }
+        return null
+    }
+
+    private fun ntkGeneratedPrefixEpisodeMatchesTarget(
+        prefix: String,
+        targetMatch: MatchResult
+    ): Boolean {
+        val targetSegment = targetMatch.groupValues[1]
+        val targetEpisode = targetMatch.groupValues[3]
+        val seedEpisode = when {
+            prefix.contains("/blacktoon/episodes/", ignoreCase = true) ->
+                Regex("^https?://[^/]+/blacktoon/episodes/[^/]+/([^/?#]+)/$", RegexOption.IGNORE_CASE)
+                    .find(prefix)
+                    ?.groupValues
+                    ?.getOrNull(1)
+            prefix.contains("/wt/episodes/", ignoreCase = true) ->
+                Regex("^https?://[^/]+/wt/episodes/[^/]+/([^/?#]+)/$", RegexOption.IGNORE_CASE)
+                    .find(prefix)
+                    ?.groupValues
+                    ?.getOrNull(1)
+            else ->
+                Regex("^https?://[^/]+/(manhwa|webtoon)/[^/]+/([^/?#]+)/$", RegexOption.IGNORE_CASE)
+                    .find(prefix)
+                    ?.takeIf { it.groupValues[1].equals(targetSegment, ignoreCase = true) }
+                    ?.groupValues
+                    ?.getOrNull(2)
+        }
+        return !seedEpisode.isNullOrBlank() && seedEpisode == targetEpisode
     }
 
     private fun removePageStateRange(rangeStart: Int, removedCount: Int) {
@@ -6610,7 +6666,7 @@ class ReaderSession(
         private val NTK_GENERATED_PAGE_URL = Regex("/p(\\d{3})\\.(jpg|jpeg|png|webp)(?:[?#].*)?$")
         private val NTK_EPISODE_PATH = Regex("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)$", RegexOption.IGNORE_CASE)
         private val NTK_GENERATED_IMAGE_URL = Regex(
-            "^(https?://i\\.toonflix\\.app/(?:blacktoon/episodes/\\d+/[^/?#]+|(?:manhwa|webtoon)/\\d+/[^/?#]+|wt/episodes/[^/?#]+/[^/?#]+)/)p\\d{3}\\.(jpg|jpeg|png|webp)([?#].*)?$",
+            "^(https?://[^/]+/(?:blacktoon/episodes/\\d+/[^/?#]+|(?:manhwa|webtoon)/\\d+/[^/?#]+|wt/episodes/[^/?#]+/[^/?#]+)/)p\\d{3}\\.(jpg|jpeg|png|webp)([?#].*)?$",
             RegexOption.IGNORE_CASE
         )
 
