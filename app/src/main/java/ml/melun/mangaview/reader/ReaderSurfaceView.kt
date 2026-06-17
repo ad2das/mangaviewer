@@ -80,6 +80,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         fun onNearBoundary(direction: Int, anchorPage: Int)
         fun onBoundaryReached(direction: Int, anchorPage: Int)
         fun onTap()
+        fun onVisibleCoverageChanged(snapshot: VisibleCoverageSnapshot) {}
     }
 
     private data class Page(
@@ -1591,20 +1592,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (item.errorText != null) visibleErrors++
             if (item.cardText != null) visibleCards++
         }
+        val snapshot = VisibleCoverageSnapshot(
+            viewportPx = state.height,
+            drawablePx = coverage.drawablePx,
+            missingPx = coverage.missingPx,
+            placeholderPx = coverage.placeholderPx,
+            drawableItems = coverage.drawableItems,
+            totalItems = coverage.totalItems,
+            visibleLoading = state.visibleLoading,
+            visibleErrors = visibleErrors,
+            visibleCards = visibleCards,
+            busy = state.busy,
+            pageCount = state.pageCount
+        )
         synchronized(stateLock) {
-            lastVisibleCoverageSnapshot = VisibleCoverageSnapshot(
-                viewportPx = state.height,
-                drawablePx = coverage.drawablePx,
-                missingPx = coverage.missingPx,
-                placeholderPx = coverage.placeholderPx,
-                drawableItems = coverage.drawableItems,
-                totalItems = coverage.totalItems,
-                visibleLoading = state.visibleLoading,
-                visibleErrors = visibleErrors,
-                visibleCards = visibleCards,
-                busy = state.busy,
-                pageCount = state.pageCount
-            )
+            lastVisibleCoverageSnapshot = snapshot
+        }
+        if (
+            snapshot.drawablePx > 0 &&
+            snapshot.visibleLoading == 0 &&
+            snapshot.missingPx == 0 &&
+            snapshot.placeholderPx == 0
+        ) {
+            mainHandler.post { listener?.onVisibleCoverageChanged(snapshot) }
         }
     }
 

@@ -382,6 +382,15 @@ object ReaderImageCache {
     }
 
     @JvmStatic
+    fun clearNtkAckRecoveryLaunchHold(path: String?, reason: String) {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return
+        if (ntkAckRecoveryLaunchHolds.remove(key) != null) {
+            Log.d(TAG, "reader_ntk_ack_recovery_launch_hold_clear path=$key,reason=$reason")
+        }
+    }
+
+    @JvmStatic
     fun extendNtkAckRecoveryQuiet(path: String?, quietMs: Long, reason: String) {
         val key = earlyNtkPathKey(path)
         if (key.isEmpty() || quietMs <= 0L) return
@@ -2300,12 +2309,15 @@ object ReaderImageCache {
         val lower = value.lowercase()
         if (isDisallowedNtkImageAssetUrl(lower)) return false
         if (lower.startsWith("toonflix.app/") || lower.startsWith("//toonflix.app/")) return true
-        if (Regex("^fvcdn\\d*\\.com/").containsMatchIn(lower) ||
+        if (Regex("^flysky\\d*m\\.com/").containsMatchIn(lower) ||
+            Regex("^//flysky\\d*m\\.com/").containsMatchIn(lower) ||
+            Regex("^fvcdn\\d*\\.com/").containsMatchIn(lower) ||
             Regex("^//fvcdn\\d*\\.com/").containsMatchIn(lower)
         ) return true
         return try {
             val host = Uri.parse(value).host?.lowercase().orEmpty()
             host == "toonflix.app" || host.endsWith(".toonflix.app") ||
+                Regex("^flysky\\d*m\\.com$").matches(host) ||
                 Regex("^fvcdn\\d*\\.com$").matches(host)
         } catch (_: Exception) {
             false
@@ -4280,7 +4292,7 @@ object ReaderImageCache {
                 TAG,
                 "ntk_generated_image_race_api_ready page=${target.page},sameUrl=$sameUrl,images=${images.size},ms=${SystemClock.elapsedRealtime() - startedAt}"
             )
-            if (sameUrl && includeDirectRetries) {
+            if (sameUrl) {
                 Log.d(
                     TAG,
                     "ntk_generated_image_race_api_skip_same_url page=${target.page},ms=${SystemClock.elapsedRealtime() - startedAt}"
@@ -4782,6 +4794,17 @@ object ReaderImageCache {
         ) ?: return null
         val replacement = images.getOrNull(target.page - 1) ?: image
         val replacementTarget = ntkGeneratedTarget(replacement)
+        if (replacement == image && foreground) {
+            ntkApiFallbackImages.remove("${target.baseUrl}${ntkFallbackKeyPath(manga, target)}")
+            logCacheEvent(
+                "generated_api_retry_skip_same_url",
+                manga,
+                image,
+                true,
+                "page=${target.page},plain=$plainRequest"
+            )
+            return null
+        }
         if (replacement != image &&
             (replacementTarget == null || !isCompatibleNtkGeneratedPage(target, replacementTarget))
         ) {
@@ -5757,6 +5780,7 @@ object ReaderImageCache {
         if (isDisallowedNtkImageAssetUrl(url)) return false
         return host == "toonflix.app" ||
             host.endsWith(".toonflix.app") ||
+            Regex("^flysky\\d*m\\.com$").matches(host) ||
             Regex("^fvcdn\\d*\\.com$").matches(host) ||
             host.startsWith("img.") ||
             Regex("^(www\\.)?pl\\d+\\.com$").matches(host)

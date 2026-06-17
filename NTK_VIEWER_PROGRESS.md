@@ -23010,3 +23010,691 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - ACK is stable in these emulator repros, but strict fresh first-drawable remains dominated by CF/ACK + early URL path, commonly 6-15s.
   - True live-random remains blocked by curated-only case source in this runner path; run root probe/live case source before claiming full random coverage.
   - Surface stats still report callback spacing missed frames on some touch gestures, but render total/dropped frames are now clean in validated runs.
+
+## 2026-06-19 00:18:00 +09:00 Commit/push after active-scroll ACK stabilization
+
+- Commit:
+  - `9a7833cd Stabilize NTK ACK proof and active scroll fetch`
+  - Branch: `codex/ntk-strict-ack-proof`
+  - Pushed to `origin/codex/ntk-strict-ack-proof`.
+- Committed files:
+  - `NTK_VIEWER_PROGRESS.md`
+  - `ReaderSession.kt`
+  - `tools/ntk_random_perf.ps1`
+- GitHub Actions:
+  - Run `27694815307` / job `81915052661`
+  - `Build APK Artifact` passed in `2m20s`.
+  - Only annotation: GitHub Actions Node.js 20 deprecation warning; no build failure.
+- Note:
+  - This entry was written after the commit/push, so it is not included in `9a7833cd`.
+  - Keep it for the next meaningful commit instead of making a log-only commit.
+
+## 2026-06-19 00:25:00 +09:00 Curated repro metadata and root probe status
+
+- Root probe:
+  - Command:
+    - `.\tools\ntk_root_probe.ps1 -DeviceSerial emulator-5554 -Roots "https://sbxh7.com" -TimeoutMs 5000 -MaxRoots 12 -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall`
+  - Artifact:
+    - `build/ntk-root-probe/20260617_230734_97fb82`
+  - Result:
+    - `verdict=no-live-api-root`
+    - `rootClassCounts={cf-block:1}`
+    - `ackBlockedReason=No api-json-ok root. classes=cf-block:1`
+    - `quic_root` and `quic_challenge` returned Cloudflare `403` "Just a moment".
+    - OkHttp/Cronet h2 paths hit connection reset.
+  - Interpretation:
+    - Targeted viewer ACK/image paths are working through WebView/native bridge proof.
+    - The root probe is still a direct transport probe without viewer ACK/session preparation, so it remains CF-blocked.
+    - Therefore target-free random still falls back to curated-only and must not be called full live-random coverage yet.
+- Test automation patch:
+  - `NtkRandomStressInstrumentedTest.curatedImageWorkId()` now falls back to title ID when there is no special-case work ID.
+  - This makes curated fallback failure repro commands include `TargetImageWorkId`.
+- Validation:
+  - Build:
+    - `.\gradlew.bat :app:assembleDebugAndroidTest`
+    - Result: `BUILD SUCCESSFUL in 2s`.
+  - Short runner validation:
+    - Artifact: `build/ntk-random-perf/20260617_230837`
+    - Runs: `1`, scroll steps `1`, strict fresh, native-ack, mixed touch.
+    - Result: pass, failures `0`, slowSignals `0`.
+    - ACK: native bridge `/api/ad/ack` 200.
+    - First drawable: `8831ms`.
+    - Repro command now includes:
+      - `-TargetImageEpisodeId 1807424`
+      - `-TargetImageWorkId 36525`
+      - `-TargetImageCount 80`
+- Next direction:
+  - To get actual live-random coverage, add a root/live-random discovery path that reuses the viewer ACK/WebView session or classification DB, rather than relying on direct root transport probes that CF blocks.
+
+## 2026-06-19 00:55:00 +09:00 Actual UX selection failure and image API signing fix attempt
+
+- User requested testing through the real UX, not only direct target runners.
+- Added actual UX instrumentation entry points:
+  - `ntkCurrentComicUxSelectionOpensReaderWithAck200`
+  - `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
+  - These launch an NTK title page, click a visible actual episode row, require reader open, first drawable, ACK 200 proof, and clean coverage.
+- Actual comic UX test before the signing fix:
+  - Artifact: `build/ntk-ux-select/20260617_231546-comic`
+  - Result: fail, first reader image not rendered.
+  - ACK itself succeeded in the actual UX path:
+    - `ntk_native_ack_challenge_code=200`
+    - `ntk_server_ack_success_recorded ... source=native-challenge-ad-ack-cookie-200`
+    - `ntk_viewer_ad_bridge_native_submit code=200`
+  - Image failure:
+    - `/api/manhwa-images` returned `403`.
+    - Fresh HTML fetch returned `200` and contained `imageMetas`/`imagesToken`.
+    - Parser found only ad/banner fallback `<img>` candidates and filtered them correctly, leaving `images=0`.
+  - Interpretation:
+    - This was not an ACK/captcha-screen failure.
+    - It was an image API signing/context failure after actual UX navigation.
+- Bad approach recorded:
+  - Tried trusting matching `imageMetas + imagesToken` numeric IDs as generated `https://i.toonflix.app/manhwa/{work}/{episode}/pNNN.jpg`.
+  - Artifact: `build/ntk-ux-select/20260617_232323-comic-meta-trust`
+  - Result: fail.
+  - Generated URLs returned `520`/HTML and no bitmap.
+  - This approach is now disabled. Do not reintroduce unverified `imageMetas -> pNNN.jpg` publishing for current sbxh numeric manhwa payloads.
+- Root cause narrowed:
+  - Hidden image WebView API-only path produced `viewerImagesSignerMissing cacheModules=0` in shell contexts or `viewerImagesBrowserKeySiteIdNoPrivate`.
+  - API calls were signed with key IDs that lacked JS private material or with native direct signer scope/body mismatches, then `/api/manhwa-images` stayed `403`.
+  - The bridge already exposes native private-key signing through `NtkQuicBridge.signViewerRequestFormat`, but the API-only image script was not using it.
+- Code change:
+  - `NtkWebViewFallbackManager.buildViewerImageApiOnlyScript` now prefers native bridge signing:
+    - ensures a bridge browser key for the current page/user-agent,
+    - injects `requestKeyId` into image API payload before signing,
+    - signs `POST` image API requests through `NtkQuicBridge.signViewerRequestFormat(..., "p1363")`,
+    - carries the signed body text into both fetch and bridge fallback.
+  - Disabled the unverified trusted-meta generated URL early publish path in `Manga`.
+- Build:
+  - `.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Result: `BUILD SUCCESSFUL in 12s`.
+- Next validation:
+  - Reinstall app/test APKs on emulator and rerun actual UX comic/webtoon tests.
+
+## 2026-06-19 01:20:00 +09:00 Actual UX comic failure root cause narrowed
+
+- Reran actual UX comic selection after the native image API signing patch:
+  - Artifact: `build/ntk-ux-select/20260617_233326-comic-native-sign-live`
+  - Test: `ntkCurrentComicUxSelectionOpensReaderWithAck200`
+  - Result: fail, first reader image did not render.
+- Important distinction:
+  - ACK proof for the selected reader path `/manhwa/36525/1807424` did succeed.
+  - Evidence:
+    - `ntk_native_ack_challenge_recorded path=/manhwa/36525/1807424`
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=native-challenge-ad-ack-cookie-200`
+    - later bridge/native key registration also succeeded.
+  - So this run was not a captcha-screen/ACK-200 failure.
+- Image failure cause:
+  - HTML page fetch for `/manhwa/36525/1807424` returned `200` and included `imageMetas`/`imagesToken`.
+  - Parser saw `imgTags=26,fallbackImages=26,images=0`.
+  - All fallback `<img>` candidates were ad/banner `board_uploads` images and were rejected by `ntk_non_page_image_rejected`.
+  - This is the correct behavior: do not mix ad images into reader pages.
+- Actual blocking bug:
+  - Earlier adjacent/prefetch episode attempts (`/1803387`, `/1803388`) hit 403/hardblock while the user-selected episode was still opening.
+  - That global/recent hardblock state then blocked the selected episode image API:
+    - `ntk_viewer_api_embedded_episode_id path=/manhwa/36525/1807424...`
+    - `ntk_images_api_skip_hardblock path=/manhwa/36525/1807424`
+    - `ntk_viewer_api_urls path=/manhwa/36525/1807424,fetched=0,normalized=0`
+  - The native signed image WebView/API path was therefore not exercised for the selected episode after ACK proof.
+- Code change:
+  - `CustomHttpClient.fetchNtkViewerImageUrls` now bypasses viewer image miss/hardblock caches when the same selected path already has recent server ACK proof or strict WebView ACK proof.
+  - It also allows an in-flight WebView ACK proof for the same modern guard path to continue instead of letting an adjacent prefetch hardblock kill the current reader fetch.
+- Bad path retained as forbidden:
+  - Do not re-enable unverified `imageMetas -> pNNN.jpg` generated URL publication for current sbxh numeric payloads; it produced 520/HTML and no bitmap.
+- Next validation:
+  - Build, install, rerun actual UX comic selection.
+  - If ACK-proof bypass reaches image API but still returns 403, inspect native/bridge signed payload and compare with successful direct-target runs.
+
+## 2026-06-18 00:06:21 +09:00 Actual UX selected ACK cookie pollution root cause
+
+- Latest actual UX comic artifact:
+  - uild/ntk-ux-select/20260618_000134-comic-native-proof-ready
+  - Test still failed first reader image, but selected ACK 200 proof existed.
+- Root cause now narrowed:
+  - Selected path `/manhwa/36525/1807424` recorded `ntk_native_ack_challenge_code=200` and `ntk_server_ack_success_recorded`.
+  - Later adjacent/prefetch path /manhwa/36525/1803388 stored its own d_ack_c and overwrote the process/global cookie jar.
+  - Image API requests for selected /1807424 then logged hasAdAckC=true but dAckCMatches=false and returned 403/428 browser_key_required.
+  - Previous successful artifact 20260617_234619-comic-keyid-align had image API request cookies with hasAdAck=true, hasAdAckC=true, dAckMatches=true, dAckCMatches=true, and native primary /api/manhwa-images returned 200 imageCount=24.
+- Interpretation:
+  - This is not an ACK-screen/captcha failure; ACK 200 is present.
+  - Actual UX has concurrent adjacent episode guard/API work, so scoped ACK cookies must be restored per requested reader path before image API calls.
+- Bad approach to avoid:
+  - Do not chase only hidden WebView API signing while native primary has wrong scoped ACK cookie; that masks the real selected-vs-adjacent cookie pollution.
+  - Do not publish ad/banner fallback images; current filtering correctly rejects board_uploads ads.
+- Next fix:
+  - Add a scoped d_ack_c restore path usable by CustomHttpClient native image API requests before etchNtkViewerImagesApiRace.
+
+## 2026-06-18 00:18:00 +09:00 Actual UX requires strict scoped ad_ack, not challenge-only ad_ack_c
+
+- Latest actual UX comic artifact:
+  - `build/ntk-ux-select/20260618_000856-comic-scoped-ack-cookie`
+  - Test: `ntkCurrentComicUxSelectionOpensReaderWithAck200`
+  - Result: fail, first reader image did not render.
+- What improved:
+  - Scoped `ad_ack_c` restore worked for selected `/manhwa/36525/1807424`.
+  - Image API bridge logs changed from `adAckCMatches=false` to `adAckCMatches=true`.
+  - `/api/ad/challenge`/metric guard requests also carried the selected scoped `ad_ack_c`.
+- Remaining blocker:
+  - `/api/manhwa-images` still returned 403.
+  - Selected image API bridge requests logged `hasAdAck=false,hasAdAckC=true,adAckCMatches=true`.
+  - Only `bridge-challenge-ad-ack-cookie-200,strictAdAck=false` was recorded before image API. No selected `bridge-ack-200`/`native-ack-200` strict proof was present in this failing run.
+- Interpretation:
+  - Current sbxh actual UX image API requires strict scoped `ad_ack`, not merely challenge `ad_ack_c`.
+  - Treating challenge-only server proof as image API ready is too broad and causes early 403 loops.
+  - Adjacent/prefetch work can still pollute global cookies, so both `ad_ack` and `ad_ack_c` must be path-scoped and restored for selected image API requests.
+- Code change in progress:
+  - Added scoped `ad_ack` store alongside scoped `ad_ack_c` in `NtkWebViewFallbackManager`.
+  - Bridge `/api/ad/ack` success now records scoped `ad_ack`/`ad_ack_c` from Set-Cookie before marking strict ACK success.
+  - Native ACK success now records scoped `ad_ack`/`ad_ack_c` if the cookie matches the selected path.
+  - `CustomHttpClient.getMergedNtkCookieHeaderForUrl` restores scoped `ad_ack` and `ad_ack_c` before image API calls.
+  - `hasNtkViewerImagesAckReady` on modern NTK no longer treats challenge-only `hasRecentServerAckSuccess` as image API ready; it requires WebView preflight strict proof or strict ACK success.
+  - Disabled modern numeric image API pre-ACK try to avoid manufacturing 403/hardblock before strict proof.
+- Bad approach recorded:
+  - Do not consider `/api/ad/challenge` 200 + `ad_ack_c` sufficient for image API success on sbxh.
+  - Do not re-enable pre-ACK image API tries for modern numeric sbxh episodes unless later evidence proves the endpoint accepts them without strict `ad_ack`.
+- Next validation:
+  - Build/install and rerun actual UX comic selection on emulator.
+  - Passing evidence must include image API request with `hasAdAck=true`, `adAckMatches=true`, `hasAdAckC=true`, `adAckCMatches=true`, `/api/manhwa-images` 200, first drawable visible, and test ACK 200 proof.
+
+## 2026-06-18 00:26:00 +09:00 Actual UX image API 200 found; Custom trust rejected flysky CDN
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_001524-comic-strict-scoped-adack`
+  - Test still failed first reader image.
+- Important improvement:
+  - Selected path `/manhwa/36525/1807424` reached strict ACK:
+    - `ntk_viewer_ad_bridge_native_submit code=200`
+    - `ntk_scoped_ad_ack_recorded path=/manhwa/36525/1807424,source=bridge-ack`
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=bridge-ack-200,strictAdAck=true`
+  - `/api/manhwa-images` returned `200,imageCount=24`.
+  - This means ACK itself is no longer the immediate blocker for this actual UX comic case.
+- New blocker:
+  - `NtkWebViewFallbackManager` normalized the API response and remembered 24 URLs.
+  - `CustomHttpClient.appendNtkViewerImages` still returned false because `isTrustedNtkPrimaryImageUrl` only accepted `fvcdn*`/numeric protected hosts and rejected the normalized `flysky3m.com` generated image CDN.
+  - Symptom:
+    - `ntk_webview_viewer_images_api_remember ... count=24`
+    - then `ntk_images_api_after_webview_ack_miss path=/manhwa/36525/1807424,code=200`
+    - reader stayed without first drawable.
+- Code change:
+  - Added `flysky\\d*m\\.com` to `CustomHttpClient` trusted NTK primary image URL and QUIC primary URL checks.
+- Bad approach recorded:
+  - Do not treat image API 200 as enough unless `appendNtkViewerImages` accepts and publishes the normalized CDN URLs.
+  - Do not widen trust to all hosts; keep board/banner/ad path rejection intact.
+- Next validation:
+  - Build/install and rerun actual UX comic selection.
+  - Expected evidence: `ntk_images_api_trusted_result count=24`, early image stream on `flysky3m.com`, first reader drawable, and ACK 200 proof.
+
+## 2026-06-18 00:38:00 +09:00 Actual UX image visible; test marker missed SurfaceView coverage
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_001957-comic-flysky-trust`
+  - Manual screenshot after instrumentation timeout: `after-timeout2.png`
+- Important result:
+  - The selected actual UX comic path `/manhwa/36525/1807424` rendered real manga panels on screen.
+  - This confirms the latest strict scoped `ad_ack` + `ad_ack_c` restore and `flysky3m.com` trust path can deliver visible reader images in actual UX selection.
+- Log proof:
+  - Strict ACK proof:
+    - `ntk_scoped_ad_ack_recorded path=/manhwa/36525/1807424,source=bridge-ack`
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=bridge-ack-200,strictAdAck=true`
+  - Image API proof:
+    - `ntk_images_api_primary endpoint=/api/manhwa-images,attempt=0,signed=true,recentKey=false,code=200,error=null,imageCount=24,ackRequired=false`
+    - `ntk_images_api_trusted_result path=/manhwa/36525/1807424,code=200,count=24`
+    - `ntk_viewer_api_urls path=/manhwa/36525/1807424,fetched=24,normalized=24,canonicalWebtoon=false`
+    - `ntk_viewer_parse ... images=24,firstImage=https://flysky3m.com/manhwa/36525/1807424/p001.jpg`
+  - Foreground image proof:
+    - `ntk_first_api_image_stream_start ... image=p001.jpg`
+    - `reader_image_cache_event stage=foreground_stream_async_done ... bytes=171358`
+    - `reader_ntk_page_perf ... stage=foreground_stream_hit`
+    - `reader_visible_coverage drawablePx=2275 missingPx=0 placeholderPx=0 drawableItems=3 items=3`
+- New issue:
+  - UIAutomator kept waiting for `By.desc("reader-drawable-ready")` and failed even while `ReaderSurfaceStats` showed a fully drawn viewport.
+  - The first drawable marker was coupled to Activity page callbacks/check polling, while the most reliable actual UX signal now comes from `ReaderSurfaceView` coverage after drawing.
+- Code change:
+  - Added `ReaderSurfaceView.WindowListener.onVisibleCoverageChanged`.
+  - `ReaderSurfaceView.updateVisibleCoverageSnapshot` now notifies the Activity when the viewport has drawable pixels with no visible loading, no missing pixels, and no placeholder pixels.
+  - `ReaderV2Activity.onVisibleCoverageChanged` calls the existing `logVisibleViewportReadyMetric`, which emits `reader_open_to_first_drawable` and sets `reader-drawable-ready`.
+- Bad approach recorded:
+  - Do not weaken actual UX tests to pass only because the screenshot looks good; the app must expose the same first-drawable proof that the test waits for.
+  - Do not treat UIAutomator marker failure as ACK/image API failure when logs show strict ACK 200, image API 200, and full visible coverage.
+- Next validation:
+  - Build/install and rerun actual UX comic selection.
+  - Then run actual UX webtoon selection with the same strict ACK/image/coverage proof requirements.
+
+## 2026-06-18 00:58:00 +09:00 Actual UX selected comic passed in logs; ACK helper was too narrow
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_002656-comic-coverage-marker`
+- Test result:
+  - Instrumentation failed, but failure was in the test helper, not the UX path.
+  - The helper only accepted `ntk_native_ack_bridge_submit code=200` or `ntk_native_ack_final_success=true`.
+  - Actual selected path strict ACK succeeded via WebView/native bridge and was logged as:
+    - `ntk_scoped_ad_ack_recorded path=/manhwa/36525/1807424,source=bridge-ack`
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=bridge-ack-200,strictAdAck=true`
+- Selected image proof:
+  - `/api/manhwa-images` returned `code=200,imageCount=24`.
+  - `ntk_images_api_trusted_result path=/manhwa/36525/1807424,code=200,count=24`.
+  - `ntk_viewer_api_urls path=/manhwa/36525/1807424,fetched=24,normalized=24`.
+  - `ntk_first_api_image_stream_start path=/manhwa/36525/1807424,started=true,index=0`.
+  - `reader_image_cache_event stage=foreground_stream_async_done ... bytes=171358`.
+  - `reader_open_to_first_drawable source=ntk kind=bitmap page=0 ms=29791`.
+- Interpretation:
+  - ACK was not missing; the test was still checking an older native-only proof string.
+  - For actual UX validation, the proof must be selected path scoped and strict: `ntk_server_ack_success_recorded path=<readerPath>,strictAdAck=true`.
+- Code change:
+  - Added `ReaderV2Activity.testCurrentNtkEpisodePath()` for instrumentation.
+  - Actual UX tests now read the opened reader path and wait for strict ACK 200 proof for that exact path.
+- Bad approach recorded:
+  - Do not treat native-only success strings as the only valid ACK proof. Bridge `/api/ad/ack` 200 with scoped `ad_ack` and `strictAdAck=true` is the actual proof needed for sbxh.
+  - Do not accept adjacent episode ACK as selected episode ACK; the helper must match the currently opened reader path.
+- Next validation:
+  - Rebuild/install and rerun actual UX comic.
+  - Then run actual UX webtoon.
+
+## 2026-06-18 01:12:00 +09:00 Actual UX ACK succeeds late; image API proof gate was too short
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_003410-comic-strict-ack-helper`
+- Test result:
+  - Actual UX comic selection still failed first drawable, but the selected path strict ACK did eventually succeed.
+  - Selected path: `/manhwa/36525/1807424`.
+- Key evidence:
+  - Early WebView ACK preflight attempts ended false at roughly 1-3s.
+  - Image API strict proof waits timed out at roughly 5s:
+    - `ntk_images_api_ack_proof_wait_timeout path=/manhwa/36525/1807424`.
+  - The selected strict ACK proof arrived later, around 12s:
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/36525/1807424`.
+    - `ntk_scoped_ad_ack_recorded path=/manhwa/36525/1807424,source=bridge-ack`.
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_webview_ack_preflight_done path=/manhwa/36525/1807424,success=true,ms=11969`.
+- Interpretation:
+  - This was not a fresh ACK impossibility; the app had a false-negative timing gate.
+  - The selected actual UX path can produce strict ACK 200, but the image API path was allowed to give up before that proof arrived.
+- Code change:
+  - Added `NTK_WEBVIEW_ACK_STRICT_PROOF_WAIT_MS = 16000`.
+  - `waitForNtkStrictAckProofAfterWebViewPreflight` now polls selected path scoped strict proof for that window instead of 350ms.
+  - Modern image API strict proof waits now use the same selected path scoped proof window instead of 3600ms/1800ms.
+- Bad approach recorded:
+  - Do not interpret a 3-5s proof wait timeout as ACK failure on sbxh actual UX when the selected bridge ACK may arrive at 10-12s.
+  - Do not add blind sleeps; wait specifically for selected path strict ACK proof (`strictAdAck=true` or native final success) and immediately retry image API when it appears.
+- Next validation:
+  - Rebuild/install and rerun actual UX comic selection.
+  - Then run actual UX webtoon selection if comic passes.
+
+## 2026-06-18 01:32:00 +09:00 GuardAck-first shell can stall; switch ACK-only bridge to proof-first
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_003841-comic-strict-proof-wait16s`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+  - The selected path `/manhwa/36525/1807424` produced challenge/canary success but not strict `/api/ad/ack` 200.
+- Key evidence:
+  - WebView ACK-only shell started:
+    - `directAckProofFirstFast5Start`.
+    - `/api/ad/challenge` returned 200.
+    - `/api/ad/canary` returned 200.
+  - Then no `directAckProofFirstFast5GuardDone` or `/api/ad/ack` bridge response appeared before timeout.
+  - Renderer crash lines also appeared during hidden WebView work.
+  - Native ACK tried `/api/ad/ack`, saw 428/connection reset/403 patterns, and `ntk_native_ack_final_success=false`.
+- Interpretation:
+  - In ACK-only shell, `guardAck(ch)` can synchronously stall the JS path enough that the Promise timeout does not rescue it.
+  - The successful structure seen earlier was not “guardAck first”; it was challenge/canary plus explicit proof (`tp`) bridge submit.
+- Code change:
+  - ACK-only WebView bridge now skips `guardAck(ch)` and goes directly to `fireGuardImpressions(ch)` + `guardProof(token)` + `/api/ad/ack`.
+  - `guardProof` timeout was set to 1800ms and success still requires selected path `/api/ad/ack` 200.
+  - Native ACK fallback no longer treats proactive canary as enough to skip the explicit canary fallback; this keeps 428/missing_canary recovery deterministic.
+- Bad approach recorded:
+  - Do not use `guardAck(ch)` as the first ACK-only path in hidden/shell WebView. It can stall without delivering strict proof.
+  - Do not count `ad_ack_c`/canary cookies as strict ACK success, even if logs label generic `adAck=true`; strict success is selected path `ad_ack` or `/api/ad/ack` 200.
+- Next validation:
+  - Rebuild/install and rerun actual UX comic selection.
+  - If strict ACK 200 appears and image API succeeds, run actual UX webtoon selection.
+
+## 2026-06-18 00:47:38 +09:00 Proof-first ACK shell produced no `tp`; use compact ACK proof path
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_004328-comic-proof-first-ack`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+  - Selected path `/manhwa/36525/1807424` did not get selected strict `/api/ad/ack` 200 in this run.
+- Key evidence:
+  - ACK-only shell did reach challenge and canary:
+    - `directAckProofFirstFast5Challenge status=200 ok=true hasChallenge=true`.
+    - `directAckProofFirstFast5PreCanary status=200 body={"ok":true,"guardLoaded":true}`.
+  - Guard module loaded successfully:
+    - `ackOnlySyncGuardModule exports=["__i0","__i1","__i2","__i3","__i4","__i5","__i6","_hk","_vc","default","initSync"]`.
+    - `ackOnlySyncGuardInitSync loaded=true`.
+  - But proof-first fallback never produced a usable proof:
+    - `directAckProofFirstFast5FallbackProof tpLen=0,seen=0,acked=false,proofed=false`.
+  - Native ACK also failed strict proof even after canary fallback:
+    - `ntk_native_ack_canary_fallback ok=true`.
+    - `ntk_native_ack_final_success=false,path=/manhwa/36525/1807424,cookieOk=true`.
+- Interpretation:
+  - The current proof-first override avoids the `guardAck` stall, but it also skips enough of the real guard path that `_vc`/proof state remains empty.
+  - `ad_ack_c`/canary is present, but strict scoped `ad_ack` is not present, so `/api/manhwa-images` correctly continues to return 403.
+- Code change:
+  - ACK-only `evaluateViewerImageFetchScriptNow` now uses the existing compact ACK proof script directly instead of the large viewer image fetch script.
+  - The compact script creates its own visible guard rows, loads guard JS/WASM through the bridge, logs `_vc` proof attempts, submits canary, and only marks success after selected-path `/api/ad/ack` 200.
+- Bad approach recorded:
+  - Do not use proof-first by only doing `ensureGuardRows -> canary -> fireGuardImpressions/guardProof` when it logs `tpLen=0`; that path does not reproduce the successful bridge ACK structure.
+  - Do not treat `cookieOk=true` in native final logs as strict success unless selected scoped `ad_ack` or bridge `/api/ad/ack` 200 is recorded.
+- Next validation:
+  - Rebuild/install and rerun actual UX comic selection.
+  - Passing evidence must include compact proof logs with nonzero `tpLen`, `/api/ad/ack` 200, selected strict ACK proof, `/api/manhwa-images` 200, and visible first drawable.
+
+## 2026-06-18 00:52:00 +09:00 Compact ACK shows `_vc` is boolean; bridge guard `__i4` ACK instead
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_004836-comic-compact-ack`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+- New evidence:
+  - Compact ACK path ran for selected `/manhwa/36525/1807424`.
+  - Guard module loaded and initialized correctly.
+  - `_vc` returned length 4 with value `true`, not a token/proof string.
+  - Therefore `tpLen=0` was expected with the current proof extraction logic.
+- Interpretation:
+  - For this guard version, `_vc` is a boolean verifier, not the `/api/ad/ack` proof payload source.
+  - The site-like flow likely relies on `__i4(challenge, scope)` to perform its own fetch/beacon ACK submission.
+- Code change:
+  - Compact ACK script now installs a `fetch`/`sendBeacon` bridge for `/api/ad/canary`, `/api/ad/ack`, and `/api/m/ev`.
+  - It calls guard `__i4(JSON.stringify(challenge), scope)` and waits for selected-path strict ACK proof.
+  - If `__i4` produces `/api/ad/ack` 200, the bridge records it through `onAckProof`.
+- Bad approach recorded:
+  - Do not keep trying to use `_vc` as a `tp` string when it logs `value=true`; that is not the proof payload for this guard build.
+  - Do not manually submit `/api/ad/ack` with empty `tp`; native logs already show that produces 400/403/428 and no strict proof.
+- Next validation:
+  - Rebuild/install and rerun actual UX comic selection.
+  - Passing evidence now centers on `compactAckGuardPost path=/api/ad/ack status=200` and selected `ntk_server_ack_success_recorded strictAdAck=true`.
+
+## 2026-06-18 00:56:00 +09:00 `__i4` runs but does not emit ACK; wrapper native spoof needed
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_005233-comic-compact-i4-ack`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+- Evidence:
+  - Compact script called guard `__i4`:
+    - `compactAckI4Start argLen=1860`.
+    - `compactAckI4Done proofed=false`.
+  - No `compactAckGuardPost path=/api/ad/ack` appeared.
+  - `_vc` still returned `value=true`; no string `tp` existed.
+- Interpretation:
+  - The guard function executed but did not use the wrapped `fetch`/`sendBeacon` path.
+  - The guard JS contains native-code checks for `Function.prototype.toString` on `fetch`; a visible JavaScript wrapper is likely rejected.
+- Bad approach recorded:
+  - Calling `__i4` without native-looking bridge wrappers is not enough; it silently avoids strict ACK emission.
+- Next fix:
+  - Add `Function.prototype.toString` spoof and native-looking `fetch`/`sendBeacon` strings to the compact ACK bridge, then rerun actual UX comic.
+
+## 2026-06-18 00:59:32 +09:00 Compact/synthetic ACK shell remains a dead end; return to real page runtime
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_005536-comic-compact-i4-spoof`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+- Evidence:
+  - Compact ACK bridge installed native-looking wrappers:
+    - `compactAckGuardBridgeInstalled fetch=true beacon=true toStringSpoof=true`.
+  - Guard `__i4` ran:
+    - `compactAckI4Start argLen=1860`.
+    - `compactAckI4Done proofed=false`.
+  - No selected-path `/api/ad/ack` bridge submit appeared:
+    - No `compactAckGuardPost path=/api/ad/ack`.
+    - No selected strict `ntk_server_ack_success_recorded ... strictAdAck=true`.
+  - `_vc` continued to return boolean `true`, not a reusable proof payload:
+    - `compactAckProofTry ... value="true"`.
+- Interpretation:
+  - The isolated compact/synthetic shell can load challenge/canary and guard exports, but it still does not reproduce the site runtime conditions needed for guard ACK emission.
+  - Prior actual success came from the real page/big bridge path, not this isolated shell.
+- Bad approach recorded:
+  - Stop pursuing compact/synthetic ACK shell variants as the primary fix.
+  - Stop using `_vc` as a token source for this guard build; it is a boolean verifier in these runs.
+  - Stop proof-first fast5 paths that skip real `guardAck` when they end in `tpLen=0`.
+- Code direction:
+  - ACK-only plain Cloudflare mode now loads the real episode URL instead of replacing the main frame with synthetic HTML.
+  - ACK-only evaluation is restored to the full viewer image fetch script so the real page runtime can provide the bridge ACK path that previously produced `/api/ad/ack` 200.
+- Next validation:
+  - Rebuild/install and run actual UX comic selection.
+  - If logs still show `directAckProofFirstFast5... tpLen=0`, disable that override and fall back to the real `guardAck`/bridge path.
+  - Passing evidence must be selected-path `/api/ad/ack` 200, `/api/manhwa-images` 200, visible real manga panels, and no ad-only image result.
+
+## 2026-06-18 01:00:00 +09:00 Disabled proven-bad `directAckProofFirstFast5` override
+
+- Code change:
+  - The `directAckProofFirstFast5` ACK-only override is now short-circuited before it replaces the stable direct ACK function.
+- Reason:
+  - Multiple actual UX runs showed this override reaches challenge/canary but ends with `tpLen=0` and no selected `/api/ad/ack` 200.
+  - Keeping it active risks overriding the previously successful real guard/bridge ACK path.
+- Expected effect:
+  - ACK-only real-page runs should use the normal full bridge path, including real `guardAck` behavior, instead of the failed proof-first shortcut.
+- Next validation:
+  - Rebuild/install.
+  - Run actual UX comic selection and check whether selected strict ACK 200 and real panels return.
+
+## 2026-06-18 01:05:00 +09:00 Actual UX comic still failed because fast3/fast4 ACK overrides remained active
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_010057-comic-realpage-ack`
+- Test result:
+  - Actual UX comic selection failed first drawable.
+  - Screenshot ended on launcher after instrumentation failure; no reader panel proof.
+- Selected path:
+  - `/manhwa/36525/1807424`.
+- Evidence:
+  - Only non-strict challenge cookie records appeared:
+    - `ntk_server_ack_success_recorded ... source=bridge-challenge-ad-ack-cookie-200,strictAdAck=false`.
+  - Strict selected ACK never appeared:
+    - No selected `ntk_scoped_ad_ack_recorded ... source=bridge-ack`.
+    - No selected `ntk_server_ack_success_recorded ... strictAdAck=true`.
+  - Image API remained blocked:
+    - `/api/manhwa-images` returned 403/428.
+    - `ntk_viewer_api_urls path=/manhwa/36525/1807424,fetched=0,normalized=0`.
+  - ACK-only full script was still being overridden by fast ACK variants:
+    - `directAckProofFirstFast3Enabled=true`.
+    - `directAckProofFirstFast4Enabled=true`.
+    - Repeated `directAckProofFirstFast4Ready ... tpLen=0 ... acked=false`.
+  - Main-frame retry in plain CF mode still fell back to synthetic shell:
+    - `ntk_ack_only_plain_cf_shell_reload`.
+- Interpretation:
+  - Disabling fast5 was not enough; fast3/fast4 are the same failed shortcut family and still override the real successful bridge path.
+  - Plain CF retry must keep the real page URL loaded; switching back to synthetic shell loses the runtime conditions needed for ACK.
+- Code change:
+  - Disabled `directAckProofFirstFast3` and `directAckProofFirstFast4` overrides with early return.
+  - Changed plain CF main-frame retry from synthetic shell reload to real URL reload.
+- Bad approach recorded:
+  - Do not keep any fast proof-first ACK override that ends with `tpLen=0`; it blocks strict ACK rather than speeding it up.
+  - Do not reload synthetic shell after a plain CF real-page load error.
+- Next validation:
+  - Rebuild/install.
+  - Rerun actual UX comic selection.
+  - Expected logs should not contain `directAckProofFirstFast3Enabled`, `directAckProofFirstFast4Enabled`, or `directAckProofFirstFast4Start`.
+
+## 2026-06-18 01:08:00 +09:00 Fast3/4 gone, but generic fast/fast2 overrides still existed; disable all proof-first fast ACK variants
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_010359-comic-no-fast-ack-real-retry`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+- Progress:
+  - Logs no longer showed `directAckProofFirstFast3Enabled`, `directAckProofFirstFast4Enabled`, or fast4 start loops.
+  - Plain CF retry stayed on real URL:
+    - `ntk_ack_only_plain_cf_real_reload`.
+- Remaining failure:
+  - Selected `/manhwa/36525/1807424` still did not get strict `/api/ad/ack` 200.
+  - Image API still returned 403.
+  - Page parse saw only ad/fallback images:
+    - `imgTags=26,fallbackImages=26,images=0`.
+  - Only non-strict `ad_ack_c` records appeared.
+- Interpretation:
+  - Removing fast3/4 helped but did not fully restore the previous success path.
+  - Generic `directAckProofFirstFast` and `directAckProofFirstFast2` overrides still existed in the JS bundle and could continue replacing the stable ACK flow.
+- Code change:
+  - Disabled the generic fast guard/direct override block.
+  - Disabled `directAckProofFirstFast2`.
+- Bad approach recorded:
+  - Do not keep any proof-first fast override as a fallback while debugging strict ACK. The whole fast family is now suspect because it repeatedly produces challenge/canary and impressions without selected strict ACK.
+- Next validation:
+  - Rebuild/install.
+  - Rerun actual UX comic selection.
+  - Expected logs: no `directAckProofFirstFast*` start/enabled logs; normal `directAckStart`, `guardAckTry`, or selected bridge ACK proof should appear.
+
+## 2026-06-18 01:12:00 +09:00 No-fast run still used proof-first selection; make ACK-only loop prefer `directAck`
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_010710-comic-no-fast-family`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+- Evidence:
+  - Fast family logs disappeared.
+  - Full script installed:
+    - `directAckProofFirstEnabled=true`.
+    - `ackProofStrictInstalled=true`.
+  - But expected normal execution logs did not appear:
+    - No `directAckStart`.
+    - No `directAckChallenge`.
+    - No `guardAckTry`.
+  - Only `ad_ack_c` challenge cookie records appeared, still `strictAdAck=false`.
+  - Image API stayed 403.
+- Interpretation:
+  - The ACK-only main loop still preferred `window.__ntkDirectAckStable`/`directAckProofFirst`, so the normal `directAck` path with detailed guard/bridge proof was not being exercised.
+- Code change:
+  - ACK-only main loop now selects `directAck` first, falling back to stable/proof-first only if `directAck` is absent.
+- Expected effect:
+  - Next actual UX run should show `directAckStart`, `directAckChallenge`, and either `guardAckTry`/bridge ACK proof or the precise guard failure point.
+
+## 2026-06-18 01:15:00 +09:00 Real URL hidden ACK frame falls into `chrome-error`; use base synthetic document with full ACK script
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_010956-comic-directack-first`
+- Test result:
+  - Actual UX comic selection still failed first drawable.
+- New evidence:
+  - ACK-only main entry reported:
+    - `href="chrome-error://chromewebdata/"`.
+  - Because the hidden WebView document was a Chrome error page, direct ACK did not reach normal logs:
+    - No `directAckStart`.
+    - No `guardAckTry`.
+  - The run still only recorded non-strict `ad_ack_c` challenge cookies.
+  - Image API remained 403 and selected page parse only exposed ad/fallback images:
+    - `imgTags=26,fallbackImages=26,images=0`.
+- Interpretation:
+  - Loading the actual episode URL as the hidden ACK main frame is unreliable on emulator WebView for current `sbxh7.com`; it can fall into `chrome-error://chromewebdata/`, where cookie/document access and ACK runtime execution are not valid.
+  - The actual user-facing UX path is still tested by selecting the item in the app. The hidden ACK helper should use a controlled base document with `loadDataWithBaseURL` so scripts run in the site origin instead of an error document.
+- Code change:
+  - ACK-only hidden WebView now always loads `ackOnlySyntheticShellHtml(path)` with `loadDataWithBaseURL(shellUrl, ...)`.
+  - ACK-only main-frame error retry also reloads the synthetic base document, not the real URL.
+  - This is not the failed compact ACK script path; evaluation remains the full viewer ACK/image script with `directAck` preferred.
+- Bad approach recorded:
+  - Do not use real URL main-frame load for hidden ACK on this emulator/WebView when logs show `chrome-error://chromewebdata/`.
+- Next validation:
+  - Rebuild/install.
+  - Rerun actual UX comic selection.
+  - Expected ACK logs: `ackOnlyMainEntry` href should be `https://sbxh7.com/...` or a valid base URL, followed by `directAckStart`.
+
+## 2026-06-18 01:23:00 +09:00 Actual UX comic selected ACK 200 restored; remaining issue is transient second-page blank
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_011255-comic-base-doc-directack`
+- Test route:
+  - Actual UX comic selection, not a direct reader URL.
+- Selected path:
+  - `/manhwa/36525/1807424`.
+- Positive evidence:
+  - Strict selected server ACK succeeded:
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/36525/1807424,tpLen=16,apLen=20,bridgeCookies=true`.
+    - `ntk_viewer_ad_bridge_native_submit code=200,error=null,url=https://sbxh7.com/api/ad/ack`.
+    - `ntk_scoped_ad_ack_recorded path=/manhwa/36525/1807424,source=bridge-ack`.
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=bridge-ack-200,strictAdAck=true`.
+  - ACK-only preflight finished true:
+    - `ntk_webview_ack_preflight_done path=/manhwa/36525/1807424,success=true`.
+  - Image API and real image stream succeeded:
+    - `/api/manhwa-images ... code=200,imageCount=24`.
+    - `ntk_viewer_api_urls path=/manhwa/36525/1807424,fetched=24,normalized=24`.
+    - First real image host was `flysky3m.com/p001.jpg`.
+- Remaining failure:
+  - Instrumentation failed because initial visible coverage briefly contained one empty page:
+    - `reader_visible_loading=1 ... visibleItems=0:...:draw|1:...:empty`.
+  - About 0.59s later both visible pages were drawable:
+    - `reader_visible_loading=0 ... visibleItems=0:...:draw|1:...:draw`.
+- Interpretation:
+  - The ACK regression is fixed for this actual UX comic path.
+  - The remaining failure is first-frame readiness: p001 opens the initial draw gate before p002 is drawable, so users can see a short blank strip on tall/continuous viewports.
+- Code change:
+  - For NTK first-page initial entry, do not mark first drawable or release the initial draw gate on p001 alone.
+  - Release only after the initial continuous ready set is drawable (`currentPage..currentPage+ahead`), using existing near-drawable callbacks.
+- Bad approach recorded:
+  - Do not solve this by relaxing the visible-loading assertion or adding an arbitrary sleep. The fix must make the first exposed frame actually complete.
+- Next validation:
+  - Rebuild/install.
+  - Rerun actual UX comic selection and verify strict ACK remains 200 and `reader_visible_loading=1` no longer appears after ready.
+
+## 2026-06-18 01:28:00 +09:00 Initial continuous gate alone was bypassed by NTK timeout release
+
+- Artifact:
+  - `build/ntk-ux-select/20260618_012014-comic-initial-continuous-gate`
+- Test result:
+  - Actual UX comic selection still failed on transient visible loading.
+- Positive evidence:
+  - Strict selected ACK remained restored:
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/36525/1807424,tpLen=16,apLen=20`.
+    - `ntk_viewer_ad_bridge_native_submit code=200,error=null,url=https://sbxh7.com/api/ad/ack`.
+    - `ntk_server_ack_success_recorded ... source=bridge-ack-200,strictAdAck=true`.
+- Failure sequence:
+  - `initial_draw_gate_released reason=timeout` happened before ACK/image API and before p001/p002 were drawable.
+  - p001 became drawable, then the surface logged:
+    - `reader_visible_loading=1 ... visibleItems=0:...:draw|1:...:empty`.
+  - p002 became drawable about 0.47s later.
+- Interpretation:
+  - The p001-only gate fix was bypassed because the NTK timeout fallback opened the initial draw gate while the selected ACK/image pipeline was still pending.
+  - The real fix must prevent timeout from exposing an incomplete NTK first viewport.
+- Code change:
+  - Increased the NTK initial draw timeout deferral cap so the timeout does not open a known-incomplete first viewport during normal ACK/image recovery.
+  - Removed the `initialDrawGateOpen` dependency from the NTK continuous-ready check so p001 alone cannot mark first drawable even if some fallback already opened the gate.
+- Bad approach recorded:
+  - Do not let the timeout release a blank/incomplete NTK first viewport just to avoid waiting; it produces exactly the visible loading regression the UX test is designed to catch.
+
+## 2026-06-18 01:34:00 +09:00 Actual UX comic and webtoon selection passed with strict selected ACK 200
+
+- Comic artifact:
+  - `build/ntk-ux-select/20260618_012231-comic-timeout-continuous-gate`
+  - Test: `ntkCurrentComicUxSelectionOpensReaderWithAck200`
+  - Result: `OK (1 test)`, `Time: 29.56`.
+  - Selected path: `/manhwa/36525/1807424`.
+- Comic proof:
+  - Strict selected ACK:
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/36525/1807424,tpLen=16,apLen=20`.
+    - `ntk_viewer_ad_bridge_native_submit code=200,error=null,url=https://sbxh7.com/api/ad/ack`.
+    - `ntk_scoped_ad_ack_recorded path=/manhwa/36525/1807424,source=bridge-ack`.
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=bridge-ack-200,strictAdAck=true`.
+  - Image API:
+    - `/api/manhwa-images ... code=200,imageCount=24`.
+    - `ntk_viewer_api_urls path=/manhwa/36525/1807424,fetched=24,normalized=24`.
+  - Initial visible frame:
+    - p0/p1/p2 near drawables logged at the same timestamp.
+    - `reader_open_to_first_drawable source=ntk kind=initial_continuous page=0 ms=18654`.
+    - `initial_draw_gate_released reason=initial_continuous`.
+    - `reader_visible_loading=0 ... visibleItems=0:...:draw|1:...:draw`.
+- Webtoon artifact:
+  - `build/ntk-ux-select/20260618_012322-webtoon-timeout-continuous-gate`
+  - Test: `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
+  - Result: `OK (1 test)`, `Time: 28.169`.
+  - Selected path: `/webtoon/16968/1463195`.
+- Webtoon proof:
+  - Strict selected ACK:
+    - `ntk_native_ack_bridge_submit code=200,path=/webtoon/16968/1463195,tpLen=16,apLen=20`.
+    - `ntk_viewer_ad_bridge_native_submit code=200,error=null,url=https://sbxh7.com/api/ad/ack`.
+    - `ntk_scoped_ad_ack_recorded path=/webtoon/16968/1463195,source=bridge-ack`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+  - Image API:
+    - `/api/webtoon-images ... code=200,imageCount=62`.
+    - `ntk_viewer_api_urls path=/webtoon/16968/1463195,fetched=62,normalized=62`.
+  - Initial visible frame:
+    - p0/p1/p2 near drawables became ready before release.
+    - `reader_open_to_first_drawable source=ntk kind=initial_continuous page=0 ms=16772`.
+    - `initial_draw_gate_released reason=initial_continuous`.
+    - `reader_visible_loading=0 ... visibleItems=0:...:draw`.
+- Current status:
+  - Actual UX comic and actual UX webtoon selected paths both pass strict selected ACK 200 and no visible loading at ready.
+  - Speed is still slow (`~16.8s` to `~18.7s` first drawable), but the user's current priority was to finish ACK/stability first and tolerate speed.
+- Remaining risk:
+  - Full live random root discovery is still not proven because direct root probes can remain CF-blocked.
+  - Current validation is actual UX selected comic/webtoon paths on API35 emulator, not a broad random corpus sweep.
