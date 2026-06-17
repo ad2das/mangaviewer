@@ -24002,3 +24002,63 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - First drawable is stable but still cold-slow: roughly 12-21s in this loop.
   - The random scroll metrics still show missed frame intervals in some gesture windows, although no dropped-frame debt, no post-stop drift, and no blank/placeholder coverage failures were recorded.
   - Long memory sweeps and CPU/network throttling remain separate validation work.
+
+## 2026-06-18 04:05:00 +09:00 Late early-url handoff and initial gate anchor fix
+
+- User priority in this loop:
+  - Test on emulator like real UX, with direct comic/webtoon selection as well as strict fresh live-random.
+  - Raw speed can be traded off, but ACK 200 and real image display stability must be real; no fake success from fallback, loading delay, or timeout masking.
+- Failure found:
+  - Broader strict fresh live-random failed on run 0.
+  - Artifact: `build/ntk-random-perf/20260618_goal_live_random_6run_scroll10_broaden/20260618_034320`.
+  - Seed: `1781721800749`.
+  - Repro target: `/manhwa/32691/1656795`, title `VROOM!!!`, episode `VROOM!!! 단편`, image episode id `207535`, image count `43`.
+  - ACK was not the failure:
+    - strict ACK proof succeeded with `bridge-ack-200` and `guard-fetch-ack-200`.
+    - First image bytes were fetched and cached quickly: `foreground_stream_async_done ... image=p001.jpeg ... ms=1451`.
+  - Actual failure:
+    - The reader did not install/show the one verified early image while `fetchViewerInitial()` kept retrying `/api/manhwa-images`.
+    - The first verified URL arrived around 11-13s after open, but the reader only polled early URL handoff for `4200ms`, then blocked on the full fetch until about 28s.
+    - `ReaderImageCache` early URL TTL is `6000ms`, so by the time the full fetch returned the verified URL had expired.
+    - The initial draw gate then stayed closed until timeout, and the old failing run ended with `items=0:0.0-168.0:empty`.
+- Bad approaches recorded:
+  - Do not treat ACK 200 as enough. ACK can be correct while the reader still fails to install any image pages.
+  - Do not let a verified/cached first image sit only in `ReaderImageCache` while the page list remains empty.
+  - Do not fix this by raising first drawable timeouts; the right fix is to hand off verified early URLs while the full fetch is still in flight.
+  - Do not base the initial NTK draw gate on mutable `currentPage` during first render; pre-draw/scroll movement can make the gate wait for non-visible pages.
+  - Do not require manhwa page 2 for the initial gate when page 0/page 1 already cover the visible viewport.
+- Fixes applied:
+  - `ReaderSession.fetchInitialAllowingEarlyNtkUrls(...)` now keeps polling for late early URLs while the full initial fetch is still in flight, up to `NTK_EARLY_URL_LATE_HANDOFF_WAIT_MS=30000`.
+  - When a late verified early URL appears, it installs immediately via `installEarlyNtkUrls(...)`, logs `early_urls_before_fetch_done_late`, and continues the full fetch in the background.
+  - `ReaderV2Activity.isInitialContinuousScrollReady()` now evaluates the initial first-page gate from the original anchor page `0` while first drawable has not been logged, instead of the mutable `currentPage`.
+  - Manhwa initial ready-ahead was reduced from 2 to 1 because page 0/page 1 cover the first visible viewport in tested manhwa cases, while waiting for page 2 caused unnecessary gate timeout.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+    - `.\gradlew.bat --no-daemon :app:installDebug :app:installDebugAndroidTest` passed.
+    - After Activity gate updates, `.\gradlew.bat --no-daemon :app:assembleDebug :app:installDebug` passed.
+  - Repro target:
+    - `build/ntk-random-perf/20260618_goal_repro_32691_late_handoff_gate_ahead1/20260618_035550` passed.
+    - strict ACK: `bridge-ack-200` and `guard-fetch-ack-200`.
+    - late early URL handoff logged: `early_urls_before_fetch_done_late ... count=1`.
+    - `/api/manhwa-images` returned 200 with 43 images after ACK.
+    - first drawable: `34171ms`, `kind=initial_continuous`, `initial_draw_gate_released reason=initial_continuous`.
+    - visible coverage at gate release: `reader_visible_loading=0`, page 0/page 1 draw; no empty 168px page.
+  - Live random broaden:
+    - Artifact: `build/ntk-random-perf/20260618_goal_live_random_4run_after_late_handoff/20260618_035727`.
+    - Result: passed, 4/4 cases, 32 mixed scroll steps, failures 0, slowSignals 0.
+    - Coverage: `titleSourceCounts api=4 db=0 rsc=0 numericProbe=0 curated=0`, `coverage=live-random`.
+    - Cases:
+      - `/webtoon/12220/1210615`, 113 images, first drawable 13893ms.
+      - `/manhwa/24133/1809456`, 22 images, first drawable 19024ms.
+      - `/webtoon/17604/1497553`, 111 images, first drawable 11209ms.
+      - `/manhwa/33296/1680235`, 14 images, first drawable 15057ms.
+  - Actual UX direct selection:
+    - Combined comic+webtoon instrumentation: `build/ntk-ux-select/20260618_goal_actual_ux_after_late_handoff`, passed `OK (2 tests)`.
+    - Webtoon direct selection `/webtoon/16968/1463195`: strict ACK `bridge-ack-200`, `/api/webtoon-images` 200 with 62 images, first drawable 15256ms, `visible_loading=0`.
+    - Comic direct selection rerun alone for log capture: `build/ntk-ux-select/20260618_goal_actual_ux_comic_after_late_handoff`, passed.
+    - Comic direct selection `/manhwa/36525/1807424`: strict ACK `bridge-ack-200` plus `guard-fetch-ack-200`, `/api/manhwa-images` 200 with 24 images, first drawable 21046ms, `visible_loading=0`.
+- Remaining risk:
+  - Cold strict ACK still dominates first-open time; this loop fixed the missed early URL handoff and gate timeout waste, not the underlying Cloudflare/ACK latency.
+  - Some strict paths can still take 15-21s in actual UX and 11-19s in the 4-run random sample.
+  - Longer corpus, throttled network/CPU, and memory-growth sweeps remain unclosed.

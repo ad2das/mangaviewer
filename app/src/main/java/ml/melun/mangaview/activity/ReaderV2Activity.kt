@@ -897,8 +897,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else {
             INITIAL_READY_MANHWA_AHEAD_PAGES
         }
-        val lastRequired = minOf(pageCount - 1, currentPage + readyAhead)
-        for (page in currentPage..lastRequired) {
+        val firstRequired = if (!firstDrawableMetricLogged && initialStartAtFirstPage) 0 else currentPage
+        val lastRequired = minOf(pageCount - 1, firstRequired + readyAhead)
+        for (page in firstRequired..lastRequired) {
             if (!launchDrawableMetricPages.contains(page)) return false
         }
         return true
@@ -915,7 +916,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (!isCurrentNtkReader() || firstDrawableMetricLogged) return
         if (!initialStartAtFirstPage) return
         if (!isInitialContinuousScrollReady()) return
-        logFirstDrawableMetric(currentPage, reason)
+        val firstDrawablePage = if (initialStartAtFirstPage) 0 else currentPage
+        logFirstDrawableMetric(firstDrawablePage, reason)
         releaseInitialDrawGate(reason)
     }
 
@@ -2706,7 +2708,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
         private const val DRAWABLE_READY_CHECK_INTERVAL_MS = 80L
         private const val INITIAL_READY_WEBTOON_AHEAD_PAGES = 2
-        private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 2
+        private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 1
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1
         private const val CAPTCHA_RETRY_BOUNDARY = 2

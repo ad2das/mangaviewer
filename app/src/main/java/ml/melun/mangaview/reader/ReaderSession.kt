@@ -472,6 +472,30 @@ class ReaderSession(
                     throw e
                 }
             }
+            if (isNtkSource(target, title) && !task.isDone) {
+                val lateDeadline = loadStartedAt + NTK_EARLY_URL_LATE_HANDOFF_WAIT_MS
+                while (!cancelled.get() && !task.isDone && SystemClock.elapsedRealtime() < lateDeadline) {
+                    val earlyUrls = ReaderImageCache.earlyNtkImageUrls(target.ntkEpisodePath, loadStartedAt)
+                    if (earlyUrls.size >= ntkEarlyUrlMinCount() &&
+                        installEarlyNtkUrls(target, earlyUrls, loadStartedAt)
+                    ) {
+                        releaseDeferred = true
+                        finishInitialFetchAfterEarlyInstall(target, task, cancellation, loadStartedAt)
+                        logNtkRepositoryStage(
+                            target,
+                            "early_urls_before_fetch_done_late",
+                            "count=${earlyUrls.size},ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                        )
+                        return InitialFetchOutcome(Title.LOAD_OK, true)
+                    }
+                    try {
+                        Thread.sleep(NTK_EARLY_URL_POLL_MS)
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw e
+                    }
+                }
+            }
             val result = task.get()
             val earlyUrls = ReaderImageCache.earlyNtkImageUrls(target.ntkEpisodePath, loadStartedAt)
             if (earlyUrls.size >= ntkEarlyUrlMinCount() && installEarlyNtkUrls(target, earlyUrls, loadStartedAt)) {
@@ -6454,6 +6478,7 @@ class ReaderSession(
         private const val NTK_PRE_ANCHOR_FALLBACK_RETRY_MS = 60L
         private const val NTK_PRE_ANCHOR_FALLBACK_MAX_AHEAD = 8
         private const val NTK_EARLY_URL_HANDOFF_WAIT_MS = 4200L
+        private const val NTK_EARLY_URL_LATE_HANDOFF_WAIT_MS = 30000L
         private const val NTK_EARLY_URL_POLL_MS = 16L
         private const val NTK_EARLY_URL_EXPANSION_WAIT_MS = 1200L
         private const val NTK_EARLY_GENERATED_EXPAND_AFTER_FIRST_BITMAP_WAIT_MS = 5000L
