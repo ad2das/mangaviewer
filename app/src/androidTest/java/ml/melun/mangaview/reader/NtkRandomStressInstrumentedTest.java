@@ -273,7 +273,7 @@ public class NtkRandomStressInstrumentedTest {
                 fetchResult = candidate.getEps() != null && candidate.getEps().size() > 0
                         ? Title.LOAD_OK : candidate.fetchEps(client);
                 if(fetchResult != Title.LOAD_OK || candidate.getEps() == null || candidate.getEps().size() == 0) {
-                    if(safeNetwork && ntkBlockedWithoutProof(client)) {
+                    if(safeNetwork && ntkBlockedWithoutProof(client) && !requireLiveRandom) {
                         Log.d(TAG, "ntk_true_random_title_fetch_blocked_safe run=" + run
                                 + ",attempt=" + titleAttempt
                                 + ",result=" + fetchResult
@@ -705,10 +705,7 @@ public class NtkRandomStressInstrumentedTest {
                                          Random random, int baseMode, boolean safeNetwork,
                                          boolean requireLiveRandom) throws Exception {
         Exception apiError = null;
-        if(safeNetwork && ntkBlockedWithoutProof(client)) {
-            if(requireLiveRandom)
-                throw new AssertionError("Live-random title discovery requires API/RSC source, but NTK access is blocked"
-                        + " baseMode=" + baseMode);
+        if(safeNetwork && ntkBlockedWithoutProof(client) && !requireLiveRandom) {
             Title dbTitle = pickRandomTitleFromClassificationDb(context, random, baseMode);
             if(dbTitle != null)
                 return dbTitle;
@@ -724,7 +721,7 @@ public class NtkRandomStressInstrumentedTest {
                     + ",type=" + e.getClass().getSimpleName()
                     + ",message=" + e.getMessage());
             if(isCloudflareFailure(e)) {
-                if(!safeNetwork) {
+                if(!safeNetwork || requireLiveRandom) {
                     ensureNtkAccessAfterChallenge(context, client, baseMode);
                     try {
                         return pickRandomTitleFromApi(client, random, baseMode, safeNetwork);

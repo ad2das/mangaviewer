@@ -608,8 +608,12 @@ foreach($line in $failureLines) {
     if(-not $failurePath -and ([string]$line) -match "path=([^,\s]+)") {
         $failurePath = $Matches[1]
     }
-    if(-not $failureMode -and ([string]$line) -match "mode=([^,\s]+)") {
-        $failureMode = $Matches[1]
+    if(-not $failureMode -and ([string]$line) -match "(^|[,\s])mode=([^,\s]+)") {
+        $candidateMode = $Matches[2]
+        if($candidateMode -match "^\d+$") {
+            continue
+        }
+        $failureMode = $candidateMode
     }
 }
 

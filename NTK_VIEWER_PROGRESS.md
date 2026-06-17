@@ -23952,3 +23952,53 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - Cold first drawable is still around 24-26 seconds in this strict ACK path. Current user-approved scope is stability/ACK correctness first, not raw speed.
   - Broader multi-run random corpus, throttled network/CPU, and long-scroll memory sweeps remain separate validation work.
+
+## 2026-06-18 03:40:00 +09:00 Strict live-random challenge recovery and actual UX recheck
+
+- User priority in this loop:
+  - Use the emulator and verify the app behaves like real UX: actual NTK comic/webtoon selection must open the reader, show real images, and record strict `/api/ad/ack` 200.
+  - Raw speed is now a tradeoff; finish ACK/image stability and avoid hiding failures with fallback cases.
+- Failure found:
+  - Artifact: `build/ntk-random-perf/20260618_goal_live_random_4run_scroll8_after_discovery_gate/20260618_032431`.
+  - After two successful live-random runs, strict fresh run 3 started failing during title discovery.
+  - Root cause: in `RequireLiveRandom` mode, the test correctly refused DB/curated fallback, but `safeNetwork` also suppressed the Cloudflare recovery path. Once an API title page hit Cloudflare challenge, later attempts failed instead of revalidating NTK access and retrying the live API/RSC path.
+  - Bad approach recorded:
+    - Do not let `RequireLiveRandom` immediately fail on stale challenge state before trying the live API.
+    - Do not use DB/curated fallback under strict live-random.
+    - Do not just increase sleeps/discovery attempts; the missing piece was challenge recovery on the strict live path.
+- Fix:
+  - `NtkRandomStressInstrumentedTest` now allows Cloudflare recovery when `RequireLiveRandom` is true, even under `safeNetwork`.
+  - Episode-list fetch recovery also avoids the old `safeNetwork` early break for strict live-random.
+  - Fallback behavior remains unchanged for non-strict safe runs.
+  - `tools/ntk_random_perf.ps1` no longer parses `baseMode=1` as `-Mode 1` in repro commands.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat :app:assembleDebugAndroidTest :app:installDebugAndroidTest` passed.
+  - Live-random 4-run strict fresh:
+    - Command output artifact: `build/ntk-random-perf/20260618_goal_live_random_4run_scroll8_after_challenge_recovery/20260618_033009`.
+    - Result: passed, 4/4 cases, `titleSourceCounts api=4 db=0 rsc=0 numericProbe=0 curated=0`, `coverage=live-random`.
+    - Random seed: `1781721009728`.
+    - Cases:
+      - `/webtoon/9646/940802`, 42 images, strict ACK 200, first drawable 20266 ms, visible loading 0, missingPx 0, placeholderPx 0.
+      - `/manhwa/24351/247106`, 13 images, strict ACK 200, first drawable 14034 ms, visible loading 0, missingPx 0, placeholderPx 0.
+      - `/webtoon/13220/1202586`, 117 images, strict ACK 200, first drawable 12205 ms, visible loading 0, missingPx 0, placeholderPx 0.
+      - `/manhwa/35962/1789899`, 29 images, strict ACK 200, first drawable 15599 ms, visible loading 0, missingPx 0, placeholderPx 0.
+    - Scroll:
+      - 32 mixed programmatic scroll steps completed.
+      - Coverage stayed `missingPx=0`, `placeholderPx=0`, `loading=0` on recorded scroll coverage.
+      - Post-stop drift stayed `maxPageDelta=0`, `maxOffsetDelta=0` on recorded scroll samples.
+    - Challenge recovery proof:
+      - API title discovery hit Cloudflare challenge before later runs.
+      - Recovery launched (`ntk_true_random_captcha_start`) and live API title selection still resumed without fallback.
+      - Some recovery probes recorded `clearance=false`, but subsequent live API selection and per-episode strict ACK 200 still succeeded; keep this distinction in mind.
+  - Actual UX direct selection:
+    - Combined comic+webtoon instrumentation passed: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200,ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+    - Combined artifact: `build/ntk-ux-select/20260618_goal_actual_ux_after_discovery_recovery/logcat.txt`.
+    - Webtoon direct selection `/webtoon/16968/1463195`: strict ACK `bridge-ack-200`, first drawable 12295 ms, visible loading 0, missingPx 0, placeholderPx 0.
+    - Comic direct selection was rerun alone because the combined test clears logcat before each method.
+    - Comic artifact: `build/ntk-ux-select/20260618_goal_actual_ux_comic_after_discovery_recovery/logcat.txt`.
+    - Comic direct selection `/manhwa/36525/1807424`: `/api/manhwa-images` 200 with 24 images, strict ACK `bridge-ack-200`, first drawable 21151 ms, visible loading 0, missingPx 0, placeholderPx 0.
+- Remaining risk:
+  - First drawable is stable but still cold-slow: roughly 12-21s in this loop.
+  - The random scroll metrics still show missed frame intervals in some gesture windows, although no dropped-frame debt, no post-stop drift, and no blank/placeholder coverage failures were recorded.
+  - Long memory sweeps and CPU/network throttling remain separate validation work.
