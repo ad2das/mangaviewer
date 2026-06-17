@@ -237,6 +237,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
     private var hasDrawnContentFrame = false
+    private var fastBitmapRefineScheduled = false
     private var lastVisibleLoading = -1
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
     private val statsPostSpacingMs = ArrayList<Float>(240)
@@ -1209,8 +1210,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             Trace.beginSection("RSV.draw")
             canvas.drawColor(PAGE_PLACEHOLDER_COLOR)
             if (!state.empty) {
-                val fastInitialBitmapDraw = !hasDrawnContentFrame && state.hasDrawableContent
-                for (item in state.items) drawItem(canvas, state, item, fastInitialBitmapDraw)
+                val fastBitmapDraw = shouldUseFastBitmapDraw(state)
+                for (item in state.items) drawItem(canvas, state, item, fastBitmapDraw)
+                if (fastBitmapDraw && hasDrawnContentFrame && !state.busy) scheduleFilteredBitmapRefineFrame()
             }
             drawScrollbar(canvas, state)
             if (state.hasDrawableContent) hasDrawnContentFrame = true
@@ -1229,6 +1231,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
             postEndNs = postEndNs,
             posted = true
         )
+    }
+
+    private fun shouldUseFastBitmapDraw(state: DrawState): Boolean {
+        if (!state.hasDrawableContent) return false
+        if (!hasDrawnContentFrame) return true
+        if (state.busy) return true
+        val now = SystemClock.uptimeMillis()
+        return now <= programmaticScrollStatsUntilMs ||
+            (lastScrollInteractionMs > 0L && now - lastScrollInteractionMs <= SCROLL_FAST_BITMAP_DRAW_MS)
+    }
+
+    private fun scheduleFilteredBitmapRefineFrame() {
+        synchronized(stateLock) {
+            if (fastBitmapRefineScheduled) return
+            fastBitmapRefineScheduled = true
+        }
+        mainHandler.postDelayed({
+            synchronized(stateLock) {
+                fastBitmapRefineScheduled = false
+                if (!renderRunning || pages.isEmpty()) return@synchronized
+                if (lastBusy || pointerDown || dragging || !scroller.isFinished) return@synchronized
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+            }
+        }, SCROLL_FAST_BITMAP_REFINE_DELAY_MS)
     }
 
     private fun drawItem(canvas: Canvas, state: DrawState, item: DrawItem, fastBitmapDraw: Boolean) {
@@ -2756,6 +2784,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
+        private const val SCROLL_FAST_BITMAP_DRAW_MS = 900L
+        private const val SCROLL_FAST_BITMAP_REFINE_DELAY_MS = 950L
         private const val PENDING_NONE = 0
         private const val PENDING_BITMAP = 1
         private const val PENDING_TILES = 2

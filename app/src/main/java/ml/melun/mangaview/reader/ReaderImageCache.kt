@@ -663,7 +663,7 @@ object ReaderImageCache {
         val path = manga.ntkEpisodePath?.takeIf { it.isNotBlank() } ?: return false
         if (target.path != path) return false
         return earlyNtkImageUrls(path, 0L)
-            .any { normalizedNtkImageIdentity(it) == normalizedNtkImageIdentity(image) }
+            .any { sameNtkGeneratedPage(it, target) }
     }
 
     private fun canStreamVerifiedEarlyGeneratedWithoutPermit(
@@ -672,13 +672,30 @@ object ReaderImageCache {
         image: String,
         target: NtkGeneratedTarget?
     ): Boolean {
-        if (!isVerifiedEarlyNtkGeneratedUrl(manga, image, target)) return false
         val page = target?.page ?: return false
         if (page <= 1) return false
+        if (!isVerifiedEarlyNtkGeneratedUrl(manga, image, target) &&
+            !isActiveNearGeneratedPageWithVerifiedAnchor(manga, target)
+        ) {
+            return false
+        }
         ntkGeneratedPageImage(image, 1)?.let { anchor ->
             if (cachedImageFile(context, manga, anchor) != null) return true
         }
         return false
+    }
+
+    private fun isActiveNearGeneratedPageWithVerifiedAnchor(
+        manga: Manga,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        if (target.page !in 2..4) return false
+        val path = manga.ntkEpisodePath?.takeIf { it.isNotBlank() } ?: return false
+        if (target.path != path) return false
+        return earlyNtkImageUrls(path, 0L).any { candidate ->
+            val candidateTarget = ntkGeneratedTarget(candidate)
+            candidateTarget?.path == target.path && candidateTarget.page == 1
+        }
     }
 
     @JvmOverloads
@@ -2313,13 +2330,16 @@ object ReaderImageCache {
         if (Regex("^flysky\\d*m\\.com/").containsMatchIn(lower) ||
             Regex("^//flysky\\d*m\\.com/").containsMatchIn(lower) ||
             Regex("^fvcdn\\d*\\.com/").containsMatchIn(lower) ||
-            Regex("^//fvcdn\\d*\\.com/").containsMatchIn(lower)
+            Regex("^//fvcdn\\d*\\.com/").containsMatchIn(lower) ||
+            Regex("^aws-cdn\\d*\\.site/").containsMatchIn(lower) ||
+            Regex("^//aws-cdn\\d*\\.site/").containsMatchIn(lower)
         ) return true
         return try {
             val host = Uri.parse(value).host?.lowercase().orEmpty()
             host == "toonflix.app" || host.endsWith(".toonflix.app") ||
                 Regex("^flysky\\d*m\\.com$").matches(host) ||
-                Regex("^fvcdn\\d*\\.com$").matches(host)
+                Regex("^fvcdn\\d*\\.com$").matches(host) ||
+                Regex("^aws-cdn\\d*\\.site$").matches(host)
         } catch (_: Exception) {
             false
         }
@@ -5337,7 +5357,13 @@ object ReaderImageCache {
     private fun isFirstEarlyNtkImage(manga: Manga, image: String): Boolean {
         val path = manga.ntkEpisodePath ?: return false
         val first = earlyNtkImageUrls(path, 0L).firstOrNull() ?: return false
-        return normalizedNtkImageIdentity(first) == normalizedNtkImageIdentity(image)
+        val target = ntkGeneratedTarget(image) ?: return normalizedNtkImageIdentity(first) == normalizedNtkImageIdentity(image)
+        return sameNtkGeneratedPage(first, target)
+    }
+
+    private fun sameNtkGeneratedPage(candidate: String, target: NtkGeneratedTarget): Boolean {
+        val candidateTarget = ntkGeneratedTarget(candidate) ?: return false
+        return candidateTarget.path == target.path && candidateTarget.page == target.page
     }
 
     private fun normalizedNtkImageIdentity(image: String): String {
@@ -5794,6 +5820,7 @@ object ReaderImageCache {
             host.endsWith(".toonflix.app") ||
             Regex("^flysky\\d*m\\.com$").matches(host) ||
             Regex("^fvcdn\\d*\\.com$").matches(host) ||
+            Regex("^aws-cdn\\d*\\.site$").matches(host) ||
             host.startsWith("img.") ||
             Regex("^(www\\.)?pl\\d+\\.com$").matches(host)
     }

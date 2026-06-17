@@ -24188,3 +24188,64 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - Cold ACK still dominates total open time in some runs, around 7-16s for the ACK fetch stage in this sample.
   - The frame stats still report missed intervals from instrumentation callback timing, but `droppedFrames=0`, `droppedFrameDebt=0`, `slowSignals=0`, no blank/placeholder coverage, and no post-stop scroll drift were observed in this validation.
+
+## 2026-06-18 05:58:00 +09:00 Actual CDN host unblock and scroll draw smoothing
+
+- User priority in this loop:
+  - Test the real UX path by directly selecting comic/webtoon in the app, not only synthetic target episodes.
+  - Keep ACK as a real server proof: `/api/ad/challenge` and `/api/ad/ack` must return 200 and `bridge-ack-200`/scoped `ad_ack_c` proof must be present.
+  - Speed can be traded off somewhat, but image/ACK stability must be reliable.
+- Failures found:
+  - Artifact: `build/ntk-random-perf/20260618_goal_live_random_8run_fast_bitmap_scroll/20260618_053002`.
+  - Seed: `1781730500001`.
+  - Run 1 `/manhwa/25384/1769730` timed out first drawable at `97701ms`.
+  - ACK was not the failure: strict proof true, native bridge ACK 200 true, `ack_only_fetch=6972ms`.
+  - The reader repeatedly logged `foreground_stream_missing_permit` for p002/p003 and then wasted time on generated `i.toonflix.app` p005/p006 requests returning 520.
+  - Artifact: `build/ntk-random-perf/20260618_goal_live_random_8run_verified_page_permit/20260618_053510`.
+  - Run 0 `/webtoon/16648/1400576` failed at scroll step 1 with `placeholderPx=888`, `loading=1`.
+  - Root cause after log inspection: `/api/webtoon-images` returned actual content images on `https://aws-cdn8.site/blacktoon/episodes/.../pNNN.jpg`, but the app rejected `aws-cdn8.site` as a non-page host and fell back to generated `i.toonflix.app`, which returned 520 for this case.
+- Fixes applied:
+  - `Manga.NTK_IMAGE_HOST_PATTERN` now accepts `aws-cdn\d*.site`.
+  - `ReaderImageCache.isTrustedNtkImageUrl(...)` and protected-image host checks now accept `aws-cdn\d*.site`.
+  - Existing ad/captcha/banner rejection remains in place; this is only host admission for real page-image paths such as `/blacktoon/episodes/.../pNNN.jpg` and `/manhwa/.../pNNN.jpg`.
+  - `ReaderImageCache` now compares verified generated early URLs by `target.path + page`, not full host/extension identity, so `.jpg/.jpeg/.webp` or host variants do not prevent near-page matching.
+  - Near generated p002-p004 can stream without an explicit permit only when the active episode path matches and the verified p001 anchor is already known/cached. p005+ still needs the normal guard.
+  - `ReaderSurfaceView` now uses non-filtered bitmap drawing during active/programmatic scroll and schedules a delayed filtered refine frame after scrolling settles. This targets the intermittent draw-cost jank without delaying viewer open or hiding loading with timers.
+- Bad approaches recorded:
+  - Do not solve the `/webtoon/16648/1400576` failure by accepting generated `i.toonflix.app` 520 retries as normal. The real fix is to admit the actual API CDN host when it is a valid page-image path.
+  - Do not broaden host acceptance to arbitrary `aws-*` or all `.site` hosts. The current change is limited to the observed CDN pattern and still requires normal page-image path checks elsewhere.
+  - Do not mark ACK false as success. All passing validations below have `nativeBridgeAck200=true` and strict proof true.
+  - Do not weaken the placeholder/no-loading assertions to make this pass; the failing placeholder came from rejecting the actual image host.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat --no-daemon :app:assembleDebug :app:installDebug` passed after the ReaderImageCache/Manga/ReaderSurfaceView changes.
+  - Focused repro `/manhwa/25384/1769730` after scroll fast bitmap draw:
+    - Artifact: `build/ntk-random-perf/20260618_goal_repro_25384_fast_bitmap_scroll/20260618_052900`.
+    - Result: passed, 1/1 case, 12 mixed scroll steps, `slowSignals=0`, failures 0.
+    - ACK: `bridge-ack-200`, strict proof true; `ack_only_fetch=10196ms`.
+    - First drawable: `19518ms`.
+  - Strict fresh live-random after allowing `aws-cdn`:
+    - Artifact: `build/ntk-random-perf/20260618_goal_live_random_8run_allow_aws_cdn/20260618_054019`.
+    - Seed: `1781730500001`.
+    - Result: passed, 8/8 cases, 96 mixed scroll steps, failures 0.
+    - Live-random coverage: `titleSourceCounts api=8 db=0 rsc=0 numericProbe=0 curated=0`.
+    - Cases and first drawable:
+      - `/webtoon/16648/1400576`, 39 images, `15236ms`.
+      - `/manhwa/25384/1769730`, 13 images, `9470ms`.
+      - `/webtoon/65938140/1511424`, 107 images, `9378ms`.
+      - `/manhwa/33711/1691856`, 60 images, `8213ms`.
+      - `/webtoon/13869/1217349`, 111 images, `11876ms`.
+      - `/manhwa/24663/251207`, 22 images, `10888ms`.
+      - `/webtoon/11077/1080016`, 71 images, `10557ms`.
+      - `/manhwa/7701/335910`, 12 images, `8847ms`.
+    - All eight ACK checks passed: `strictProof=true`, `nativeBridgeAck200=true`, `falseDone=false`.
+    - Scroll coverage passed across all 96 steps; no placeholder/missing failure and no post-stop drift failure.
+    - Residual note: one `reader_slow_frame` signal remained (`totalMs=18.82`) but did not produce dropped frame debt or a test failure.
+  - Actual UX direct selection:
+    - Artifact: `build/ntk-ux-select/20260618_goal_actual_ux_after_aws_cdn_allow`.
+    - Combined comic+webtoon instrumentation passed `OK (2 tests)`.
+    - Log proof includes `/api/ad/ack` 200, `bridge-ack-200`, scoped `ad_ack_c` sync, and reader ACK preflight success.
+- Remaining risk:
+  - Some generated fallback logs still show `foreground_stream_missing_permit` for p002/p003 in cases where real CDN images are already being used; this is now noise, not the visible image path failure, but it should be cleaned later to reduce wasted background work.
+  - OkHttp reported leaked `aws-cdn8.site` response bodies during the 8-run. The run passed and images were visible, but this should be audited before a broader memory-focused pass.
+  - Cold ACK still costs roughly 6.7-10.2s in this 8-run sample; first drawable is now mostly 8.2-15.2s instead of the previous 18-36s/timeout range.
