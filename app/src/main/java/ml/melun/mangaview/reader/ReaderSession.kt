@@ -3083,7 +3083,13 @@ class ReaderSession(
             !firstBitmapLogged.get() &&
             isNtkSource(page.manga, title) &&
             ntkCoordinator?.allowsPreAnchorFallback(index, page.image, "requestPage.visiblePriority") == true
-        val actualWindowVisible = anchor || (busy && generation >= 0) || preAnchorFallbackVisible
+        val ntkInitialNearPrimeVisible = busy &&
+            generation == FOREGROUND_PRIME_WARM_GENERATION &&
+            firstBitmapLogged.get() &&
+            isNtkSource(page.manga, title) &&
+            index <= currentStartPage() + NTK_FOREGROUND_STREAM_AHEAD_PAGES
+        val actualWindowVisible = anchor || (busy && generation >= 0) ||
+            preAnchorFallbackVisible || ntkInitialNearPrimeVisible
         val visiblePriority = actualWindowVisible && !hasDeliveredBitmap(index)
         val pendingWidth = pendingDeliveryWidths[index] ?: 0
         if (pendingWidth >= effectiveTargetWidth) {
@@ -6419,7 +6425,7 @@ class ReaderSession(
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val NTK_VISIBLE_GENERATED_BYTE_HEDGE_DELAY_MS = 0L
         private const val NTK_PRE_ANCHOR_FALLBACK_RETRY_MS = 60L
-        private const val NTK_PRE_ANCHOR_FALLBACK_MAX_AHEAD = 2
+        private const val NTK_PRE_ANCHOR_FALLBACK_MAX_AHEAD = 8
         private const val NTK_EARLY_URL_HANDOFF_WAIT_MS = 4200L
         private const val NTK_EARLY_URL_POLL_MS = 16L
         private const val NTK_EARLY_URL_EXPANSION_WAIT_MS = 1200L
@@ -6441,34 +6447,34 @@ class ReaderSession(
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 16
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
-        private const val NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES = 14
-        private const val NTK_INITIAL_CONTINUOUS_BUSY_PAGES = 4
-        private const val NTK_INITIAL_DIRECT_DELIVERY_PAGES = 2
+        private const val NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES = 18
+        private const val NTK_INITIAL_CONTINUOUS_BUSY_PAGES = 16
+        private const val NTK_INITIAL_DIRECT_DELIVERY_PAGES = 10
         private const val NTK_INITIAL_ANCHOR_COALESCE_MS = 80L
         private const val NTK_INITIAL_ANCHOR_FAST_COALESCE_MS = 520L
         private const val NTK_INITIAL_ANCHOR_FAST_COALESCE_MAX_DECODE_MS = 700L
-        private const val NTK_INITIAL_CONTINUOUS_DIRECT_WINDOW_MS = 2200L
+        private const val NTK_INITIAL_CONTINUOUS_DIRECT_WINDOW_MS = 5200L
         private const val NTK_INITIAL_CONTINUOUS_STAGGER_MS = 24L
-        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 9
-        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 9
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 9
+        private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 16
+        private const val NTK_INITIAL_BOOT_URGENT_PAGES = 16
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 18
         private const val NTK_WEBTOON_INITIAL_BOOT_PRIORITY_PAGES = 4
         private const val NTK_WEBTOON_INITIAL_BOOT_URGENT_PAGES = 4
         private const val NTK_WEBTOON_INITIAL_BOOT_BACKGROUND_PAGES = 4
-        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 18
+        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 24
         private const val NTK_WEBTOON_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 0
-        private const val NTK_GENERATED_INITIAL_LIMITED_WARM_PAGES = 14
-        private const val NTK_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 14
-        private const val NTK_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 2
+        private const val NTK_GENERATED_INITIAL_LIMITED_WARM_PAGES = 18
+        private const val NTK_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 18
+        private const val NTK_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 8
         private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_WARM_PAGES = 0
         private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 0
         private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 0
         private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 2
         private const val NTK_INITIAL_PRIORITY_PAGES = 9
         private const val NTK_INITIAL_GENERATED_PROMOTE_MAX_AHEAD = 4
-        private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 4
-        private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 4
-        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 10
+        private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 16
+        private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 8
+        private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 18
         private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 4
         private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 0
         private const val NTK_WEBTOON_FOREGROUND_STREAM_AHEAD_PAGES = 2
@@ -6488,15 +6494,15 @@ class ReaderSession(
         private const val NTK_INITIAL_FULL_APPEND_AFTER_FIRST_BITMAP_WAIT_MS = 3500L
         private const val NTK_INITIAL_FULL_APPEND_PUBLISH_AFTER_FIRST_BITMAP_WAIT_MS = 1800L
         private const val NTK_GENERATED_FULL_BYTE_PREFETCH_AFTER_FIRST_BITMAP_DELAY_MS = 420L
-        private const val NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_PAGES = 4
-        private const val NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_DELAY_MS = 120L
+        private const val NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_PAGES = 12
+        private const val NTK_GENERATED_FULL_BYTE_PREFETCH_BATCH_DELAY_MS = 60L
         private const val NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS = 300L
         private const val NTK_INITIAL_DELIVERY_HOLD_FALLBACK_MS = 2600L
         private const val NTK_GENERATED_TRANSIENT_RETRY_ATTEMPTS = 3
         private const val NTK_GENERATED_TRANSIENT_RETRY_DELAY_MS = 650L
         private const val NTK_GENERATED_PARTIAL_RETRY_DELAY_MS = 120L
         private const val NTK_GENERATED_ACTIVE_FETCH_RETRY_DELAY_MS = 900L
-        private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 4
+        private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 12
         private const val NTK_TRACE_AHEAD_PAGES = 8
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 120L
         private const val NTK_BACKGROUND_PREPARE_AFTER_FIRST_BITMAP_QUIET_MS = 3500L
@@ -6510,8 +6516,8 @@ class ReaderSession(
         private const val BOUNDARY_BUSY_DECODE_AHEAD_PAGES = 8
         private const val BOUNDARY_BUSY_BYTE_AHEAD_PAGES = 24
         private const val BUSY_DELIVERY_SCAN_LIMIT = 64
-        private const val NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD = 2
-        private const val NTK_GENERATED_BUSY_VISIBLE_DECODE_RADIUS = 1
+        private const val NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD = 5
+        private const val NTK_GENERATED_BUSY_VISIBLE_DECODE_RADIUS = 2
         private const val BUSY_DIRECTIONAL_DECODE_AHEAD = 8
         private const val BUSY_VISIBLE_DECODE_RADIUS = 5
         private const val BUSY_DELIVERY_DRAIN_LIMIT = 12

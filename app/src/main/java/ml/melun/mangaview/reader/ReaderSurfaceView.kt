@@ -1161,15 +1161,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (animateScroll) scheduleFrameLocked()
             RenderWork(request, boundary, state)
         }
-        dispatchWindowRequest(work.request)
-        dispatchBoundaryRequest(work.boundary)
         val state = work.state ?: run {
+            dispatchWindowRequest(work.request)
+            dispatchBoundaryRequest(work.boundary)
             if (SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
                 Log.d(TAG, "reader_test_scroll_draw_skipped state=null")
             }
             return
         }
         val timing = drawState(frameTimeNanos, callbackStartNs, state, canvas)
+        dispatchWindowRequest(work.request)
+        dispatchBoundaryRequest(work.boundary)
         val nowMs = SystemClock.uptimeMillis()
         if (timing.totalMs > frameBudgetMs() && nowMs - lastSlowFrameLogMs >= SLOW_FRAME_LOG_INTERVAL_MS) {
             lastSlowFrameLogMs = nowMs

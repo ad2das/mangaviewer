@@ -6500,9 +6500,9 @@ tk_server_ack_success_recorded path=/webtoon/10147/954731,source=bridge-ack-200.
 ## 2026-06-15 05:17:12 +09:00 Commit / Push
 
 - committed selected NTK-related files only:
-  - pp/src/main/java/ml/melun/mangaview/mangaview/NtkWebViewFallbackManager.java
-  - pp/src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt
-  - pp/src/main/java/ml/melun/mangaview/reader/ReaderSession.kt
+  - ad_ack_cpp/src/main/java/ml/melun/mangaview/mangaview/NtkWebViewFallbackManager.java
+  - ad_ack_cpp/src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt
+  - ad_ack_cpp/src/main/java/ml/melun/mangaview/reader/ReaderSession.kt
   - 	ools/ntk_random_perf.ps1
 - commit:
   - 4e2cb38 Stabilize NTK ACK and generated image loading
@@ -6818,7 +6818,7 @@ v-* image API requires more than strict /api/ad/ack 200 and equestKeyId/x-ntk-k
 - generic issue:
   - The API-only hidden WebView script waited for Next signer discovery before issuing the first /api/webtoon-images request.
   - On synthetic/hidden contexts the signer module can be absent (iewerImagesWebpackModError id=47760), causing a multi-second stall before the first real browser fetch.
-  - The real NTK viewer bundle performs the image API fetch directly with credentials:'same-origin', content-type, and x-images-client, then handles d_ack_required/retry.
+  - The real NTK viewer bundle performs the image API fetch directly with credentials:'same-origin', content-type, and x-images-client, then handles ad_ack_cd_ack_required/retry.
 - generic fix:
   - uildViewerImageApiOnlyScript(...) now does an unsigned browser etch first with the same minimal viewer-style headers.
   - Signer/key discovery is deferred to retry attempts only if the unsigned browser fetch/bridge path remains retryable.
@@ -12908,7 +12908,7 @@ tk_generated_image_race_api_error.
 - Validation: same focused strict-fresh seed/path after p002 foreground recovery change.
 - Result summary:
   - Strict ACK proof recovered again: 
-ativeSubmit@5752/code=200, ckMs=17057.
+ativeSubmit@5752/code=200, ad_ack_cckMs=17057.
   - First drawable stayed acceptable: 2060ms.
   - Test still failed with missing frame stats; need inspect whether rameStats=null or samples=0 and whether visible coverage passed.
 - Current decision:
@@ -13053,7 +13053,7 @@ ativeSubmit@5752/code=200, ckMs=17057.
 tk_viewer_ad_bridge_native_submit code=200
     - 
 tk_server_ack_success_recorded ... source=bridge-ack-200 and guard-fetch-ack-200
-    - summary had strict proof true, with native submit around 4134ms and ckMs=14269.
+    - summary had strict proof true, with native submit around 4134ms and ad_ack_cckMs=14269.
   - First drawable was within budget but slower than the best runs: about 2736ms.
   - Scroll snapshot still failed visible readiness:
     - rameStats=null
@@ -17003,8 +17003,8 @@ tk_generated_speculative_stream_skip_unverified_extension instead of starting an
 
 - Latest replay uild\ntk-random-perf\20260616_022117 did not validate image lane changes because ACK-only WebView preflight opened CaptchaActivity before first drawable and blocked the reader.
 - Evidence: eader_ntk_ack_preflight_before_first_drawable reason=hardblock, 
-tk_true_random_first_drawable_fast_fail status=captcha, ck_only_fetch=30124ms, no image pipeline metrics.
-- Changed ReaderV2Activity.kt so initial CF/images-ready probes wait for first drawable instead of starting WebView ACK preflight with llowBeforeFirstDrawable=true.
+tk_true_random_first_drawable_fast_fail status=captcha, ad_ack_cck_only_fetch=30124ms, no image pipeline metrics.
+- Changed ReaderV2Activity.kt so initial CF/images-ready probes wait for first drawable instead of starting WebView ACK preflight with ad_ack_cllowBeforeFirstDrawable=true.
 - This does not mark ACK successful. Strict /api/ad/ack 200 remains required. It only prevents ACK work from hiding/breaking first-image UX measurement.
 - Next validation: build/install and rerun fixed replay; expect Reader image pipeline to execute instead of captcha fast-fail.
 
@@ -20379,7 +20379,7 @@ tk_native_ack_ack_code, strict ACK proof, and first drawable.
 
 - Contiguous representative /manhwa/36525/1807424: build/ntk-random-perf/20260616_153244 passed, firstDrawable=2126ms, scroll=3, failures=0.
 - This is better than prior 2782ms/2448-3067ms representative runs and did not reintroduce the active-scroll jank failure.
-- Remaining slowSignals=1 comes from ACK-only preflight (ck_only_fetch about 4786ms, ackMs about 5225ms); still no strict /api/ad/ack 200 proof.
+- Remaining slowSignals=1 comes from ACK-only preflight (ad_ack_cck_only_fetch about 4786ms, ackMs about 5225ms); still no strict /api/ad/ack 200 proof.
 
 ## 2026-06-17 normal UX ACK proof succeeds on sbxh7
 
@@ -21254,3 +21254,1587 @@ tk_server_ack_success_recorded path=/webtoon/17332/1515337,source=captcha-webvie
   - GitHub Actions run `27643390822` passed: `Build APK Artifact` on `codex/ntk-strict-ack-proof`.
 - Bad/avoid:
   - Do not trust a local green build while the worktree contains unstaged API-surface changes used by committed Kotlin code.
+
+## 2026-06-17 phone ADB stale-domain diagnosis
+
+- User connected a real phone over remote ADB:
+  - Serial: `adb-R3CY10CRAMP-iw1xR7._adb-tls-connect._tcp`
+  - Model: `SM_S938N`
+- Important screen evidence:
+  - `build/phone-debug-20260617_073939/screen.png` showed the Android recent-apps screen, not MangaView foreground.
+  - Current focus at inspection time was `com.openai.chatgpt/.MainActivity`.
+- Install/version evidence:
+  - Phone initially had a newer local debug version than the CI artifact, so plain install failed with `INSTALL_FAILED_VERSION_DOWNGRADE`.
+  - Installed the known green branch CI artifact with `adb install -r -d`.
+  - Installed version after downgrade: `versionCode=2113261669`, `versionName=4.6-2113261669`.
+- Failure evidence after installing the branch APK:
+  - MangaView briefly foregrounded `CaptchaActivity`, then the device moved to recents/another app.
+  - Logs still showed root/captcha attempts against `https://sbxh6.com/` and episode WebView attempts like `https://sbxh6.com/manhwa/10001`.
+  - Errors were `net::ERR_CONNECTION_RESET`; cookies for both `sbxh6` and `sbxh7` stayed empty.
+- Root cause direction:
+  - This phone failure is not proof that the previously restored `sbxh7` native ACK structure regressed.
+  - The app was choosing or retaining stale `sbxh6` before the ACK proof path could run.
+  - `canReachNtkRoot()` treated HTTP 403 Cloudflare/Turnstile as an unreachable domain, which can incorrectly reject the real current root and keep probing/using stale roots.
+  - `reachableNtkRoot()` also checked the current stored root before the built-in current default root, allowing stale local state to win when official resolver output is missing or stale.
+- Fix applied:
+  - `canReachNtkRoot()` now treats `403` with Cloudflare challenge markers as a live NTK domain instead of a domain failure.
+  - `reachableNtkRoot()` now probes trusted official resolver roots first, then the built-in current `NTK_WEBTOON_URL` (`sbxh7`), then the locally stored current root, then legacy fallback.
+  - Added a unit test that accepts `403` Turnstile/Cloudflare as reachable while still rejecting plain 403.
+- Bad/avoid:
+  - Do not diagnose phone ACK from `adb` without `-s` when emulator and phone are both connected.
+  - Do not trust screenshots unless `mCurrentFocus`/activity evidence shows MangaView is foreground.
+  - Do not treat Cloudflare 403 as a dead domain; it means the domain is alive but clearance is required.
+  - Do not let stale stored NTK roots outrank the build's current canonical root unless a trusted resolver explicitly points there.
+
+## 2026-06-17 phone ACK proof restored on sbxh7
+
+- Additional phone diagnosis:
+  - After the first stale-domain fix, local phone run still logged:
+    - `resolve NTK captcha path=https://sbxh6.com purl=https://sbxh6.com/manhwa resolved=https://sbxh6.com`
+  - `Preference.isLegacyNtkRedirectRoot()` only treated `sbxh1` through `sbxh5` as stale legacy redirect roots.
+  - Because the live site moved to `sbxh7`, stored `sbxh6` was stale but still accepted as an active NTK root.
+- Fix applied:
+  - `Preference.isLegacyNtkRedirectRoot()` now treats `sbxh1` through `sbxh6` as stale and normalizes them to the current default NTK root.
+  - Added `PreferenceTest` coverage so `https://sbxh6.com/manhwa` normalizes to `NTK_COMIC_URL` / `NTK_WEBTOON_URL`.
+- Phone validation:
+  - Rebuilt and installed debug APK on phone.
+  - Artifact: `build/phone-debug-20260617_074903`
+  - Start URL changed correctly:
+    - `resolve NTK captcha path=https://sbxh7.com purl=https://sbxh7.com/manhwa resolved=https://sbxh7.com`
+  - `cf_clearance` minted around 7 seconds after captcha launch:
+    - `NTK QUIC set-cookie names: count=1,hasClearance=true,names=[cf_clearance]`
+- ACK proof validation:
+  - Rebuilt/installed fresh AndroidTest APK because the old phone test package returned `OK (0 tests)`.
+  - Probe artifact: `build/ntk-ack-ux-probe/20260617_075047_sbxh7_com_1a9626`
+  - Device: `SM_S938N` over `adb-R3CY10CRAMP-iw1xR7._adb-tls-connect._tcp`
+  - Target: `/webtoon/3774/176692`
+  - Result:
+    - `STOPPED_AFTER_MARKER=ntk_captcha_ack_probe_done`
+    - `ntk_captcha_ack_probe_done path=/webtoon/3774/176692,ack=true,clearance=true,serverProof=true,accessProof=false,ms=10261`
+    - `ntk_server_ack_success_recorded path=/webtoon/3774/176692,source=native-challenge-ad-ack-cookie-200`
+  - This proves the real phone can complete strict fresh ACK server proof on `sbxh7`.
+- Build/test status:
+  - `.\gradlew.bat --no-daemon :app:assembleDebug` passed.
+  - `.\gradlew.bat --no-daemon :app:assembleDebugAndroidTest` passed.
+  - `.\gradlew.bat --no-daemon :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.CustomHttpClientTest` failed before assertions because Gradle Test Executor crashed with a local environment/classpath-style `ClassNotFoundException: Files\nodejs;...`; not treated as a code assertion failure.
+- Bad/avoid:
+  - Do not leave only `sbxh1-5` as stale when the current canonical host advances to `sbxh7`; immediately stale `sbxh6` must normalize too.
+  - Do not trust an installed AndroidTest package after app rebuilds if instrumentation reports `OK (0 tests)`.
+  - Do not use normal `am start` phone runs as final ACK proof when the user/phone foreground switches to ChatGPT/browser/launcher mid-run; use the ACK probe marker and saved artifacts.
+
+## 2026-06-17 07:59:24 +09:00 phone manga missing root cause
+
+- User reported manga not showing on phone.
+- Current device foreground at capture time was `com.openai.chatgpt/.MainActivity`, not MangaView, so screen-only diagnosis is unreliable.
+- MangaView process logs still show a real app-side failure for /manhwa/8329/65787:
+  - Captcha/root correctly uses https://sbxh7.com and has cf_clearance plus ad_ack_c cookies.
+  - Target image API returns Cloudflare HTML 403 for /api/manhwa-images with imageCount=0.
+  - ACK path logs can still report 
+tk_images_api_native_ack ... success=true because cookie/recent proof is accepted too broadly.
+  - The reader then falls through to unverified generated p001.jpg; i.toonflix.app/p001.jpg returns 520, so the page remains blank/missing.
+- Root cause:
+  - Modern NTK viewer image flow must not treat a scoped ad_ack_c cookie or recent generic ACK marker as sufficient proof of image API availability when the actual image API response is Cloudflare 403.
+  - Unverified generated first-page URLs must not be early-published as visible content after image API/access is blocked.
+- Bad/avoid:
+  - Do not mark image fetch success just because ACK/cookie exists; verify API or reachable image URLs.
+  - Do not publish unverified generated p001.jpg to the reader as a visible early URL when API access is blocked.
+  - Do not diagnose from phone screenshots without checking mCurrentFocus.
+
+## 2026-06-17 08:00:27 +09:00 ACK/API gate fix in progress
+
+- Code change started for phone blank manga case /manhwa/8329/65787.
+- CustomHttpClient.fetchNtkViewerImageUrlsUncached() now uses a stricter hasNtkViewerImagesAckReady(baseUrl, path) helper:
+  - Modern NTK guard roots require NtkWebViewFallbackManager.hasRecentServerAckSuccess(path).
+  - Older/non-modern paths keep existing cookie-based behavior.
+- Replaced modern image API readiness checks that previously accepted hasNtkAdAckCookieForPath(cookiePath) too broadly.
+- Manga.startSpeculativeNtkGeneratedInitialStreams() no longer early-publishes count-hint generated jpg URLs unless page 1 has a verified cached generated extension.
+- Expected effect:
+  - Cloudflare 403 image API responses should not be masked by cookie-only ACK success.
+  - Wrong generated first pages such as i.toonflix.app/p001.jpg should not be shown as visible content without validation.
+
+## 2026-06-17 08:10:59 +09:00 Reader ACK circular wait fix
+
+- Target metadata reproduction after unlocking phone:
+  - /manhwa/8329 fetched, 335 episodes found.
+  - Target /manhwa/8329/65787 opened as real metadata episode.
+  - Generated early publish is now skipped because no verified generated extension exists:
+    - 
+tk_generated_speculative_urls_skip_unverified_count_hint
+    - no early eader_early_ntk_urls_remember for bad p001.jpg.
+  - First drawable still failed because Reader kept logging eader_ntk_ack_preflight_wait_first_drawable while no image could appear without ACK/API access.
+  - Native challenge 200 and 
+tk_server_ack_success_recorded happened only after the test had already failed.
+- Root cause:
+  - prepareDeferredNtkAckChallenge(manga) existed but was not called during initial deferred ACK setup.
+  - This created a circular wait: first drawable needed ACK/API access, but ACK was deferred until after first drawable.
+- Fix applied:
+  - ReaderV2Activity.onCreate() now starts prepareDeferredNtkAckChallenge(manga) immediately when NTK ACK preflight is deferred.
+
+## 2026-06-17 08:14:42 +09:00 RSC Cloudflare cookie reset removed
+
+- Repro after immediate ACK prepare:
+  - /api/ad/challenge returned 200 for /manhwa/8329/65787 within ~0.3s from reader start.
+  - 
+tk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200 was recorded before the first drawable timeout.
+  - Direct RSC page fetch then hit Cloudflare 403 and logged 
+tk_rsc_payload_cloudflare_clearance_reset.
+- Bad/avoid:
+  - Background RSC/page fetch must not clear WebView Cloudflare cookies on a 403 challenge. That can erase a valid or in-progress clearance and force the reader back into captcha.
+- Fix applied:
+  - mgetNtkViewerPayloadPage() now marks the Cloudflare challenge but does not call clearCloudflareWebViewCookies() for RSC 403.
+
+## 2026-06-17 08:17:32 +09:00 Initial captcha deferral tightened
+
+- Remaining target failure after RSC cookie reset fix:
+  - ACK server proof starts quickly and succeeds by challenge-cookie proof.
+  - RSC still returns Cloudflare 403 for /manhwa/8329/65787.
+  - Reader deferred initial captcha twice before first drawable, extending blank time while the failure was already known.
+- Fix applied:
+  - ReaderV2Activity.shouldDeferInitialNtkCaptcha() now does not defer if the HTTP client has a recent Cloudflare challenge or recent server ACK proof for the path.
+- Intent:
+  - Do not hide a real Cloudflare clearance requirement behind blank/idle waiting.
+  - Move to clearance UI immediately when page fetch is blocked.
+
+## 2026-06-17 08:48:56 +09:00 Phone ACK/access proof passes, first drawable race remains
+
+- User reported manga not showing on the remote phone.
+- Phone focus before reproduction was not MangaView; screen-only diagnosis was unreliable.
+- Rebuilt and installed latest debug/test APK on phone, then reran target `/manhwa/8329/65787`.
+- ACK/access findings:
+  - ACK UX/server proof had already been restored before this segment:
+    - `ntk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200`
+    - `finished with verified NTK clearance proof=true recent=true`
+  - Test access gate was stale:
+    - It required legacy `nv` + `ad_guard_l` cookies before attempting document verification.
+    - Current sbxh7 success can be `cf_clearance` + `ad_ack_c` + NTK identity cookies, or app-level access proof.
+  - Fix applied in `NtkRandomStressInstrumentedTest`:
+    - Strong cookie check accepts current `cf_clearance` + `ad_ack_c` + identity combination.
+    - If `hasNtkAccessProof()` or `hasRecentNtkServerAckProof(path)` exists, the test now performs actual document verification instead of rejecting early by cookie names.
+  - Validation artifact:
+    - `build/ntk-random-perf/20260617_084150`
+    - `ntk_true_random_access_verify path=/manhwa/8329/65787,documentOk=true,rscOk=true,ok=true,...strongCookies=true`
+- Remaining viewer failure:
+  - Same run moved past access proof and failed at first drawable:
+    - `Expected first drawable run=0 mode=native-ack path=/manhwa/8329/65787 elapsedMs=8092`
+  - Root cause from log:
+    - Reader opened `/manhwa/8329/65787` with direct target metadata: `imageWorkId=`, `imageCount=0`.
+    - Initial repository fetch returned `result=1` (`LOAD_CAPTCHA`) at about 7.9s.
+    - Almost simultaneously, ACK/WebView preflight succeeded:
+      - `/api/ad/challenge` 200 via bridge.
+      - `ad_ack_c` scoped to `/manhwa/8329/65787`.
+      - `/api/m/i` image token requests were generated and intercepted.
+    - Reader still launched `CaptchaActivity` because the initial `LOAD_CAPTCHA` result was treated as final and was not retried after proof arrived.
+  - Fix applied in `ReaderV2Activity`:
+    - On initial NTK captcha request, if recent server ACK/access proof exists before first drawable, retry the reader session instead of opening captcha.
+    - Retry is capped to two attempts per path to avoid loops.
+    - Initial captcha deferral now does not abort merely because a Cloudflare challenge flag is present while deferred ACK preflight is still alive.
+- Bad/avoid:
+  - Do not require legacy `nv`/`ad_guard_l` as the only valid access-proof cookie shape on sbxh7.
+  - Do not treat first `LOAD_CAPTCHA` as final when ACK/access proof is arriving concurrently before first drawable.
+  - Do not judge real image display from a direct target with `imageWorkId=""` and `imageCount=0` unless the test is explicitly targeting ACK/captcha flow.
+- Current blocker:
+  - Phone ADB disconnected during reinstall after the `ReaderV2Activity` retry fix:
+    - `adb.exe: device 'adb-R3CY10CRAMP-iw1xR7._adb-tls-connect._tcp' not found`
+  - `adb devices -l` currently shows only `emulator-5556`; `adb mdns services` returns no phone service.
+- Next step when phone reconnects:
+  - Install current APK/test APK on `adb-R3CY10CRAMP-iw1xR7._adb-tls-connect._tcp`.
+  - Rerun:
+    - `.\tools\ntk_random_perf.ps1 -DeviceSerial 'adb-R3CY10CRAMP-iw1xR7._adb-tls-connect._tcp' -NtkSiteRoot 'https://sbxh7.com' -NtkLockSiteRoot -TargetEpisodePath '/manhwa/8329/65787' -Runs 1 -ScrollSteps 0 -AppendSteps 0 -FirstDrawableMaxMs 45000 -EnsureAccessBefore -EnsureAccessMaxMs 130000 -ClearImageCache -SkipBuild -SkipInstall -ForceStopBeforeRun -NoDiversityAssert -NoAppendProbe -NoAckAssert`
+
+## 2026-06-17 09:32:00 +09:00 Emulator-only ACK/image recovery follow-up
+
+- User requested testing on emulator, not phone.
+- Active device:
+  - `emulator-5556 product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64`
+- Latest emulator target validation before this segment:
+  - Artifact: `build/ntk-random-perf/20260617_090712`
+  - Command target: `/manhwa/8329/65787`
+  - ACK/access status:
+    - `webViewAckPreflightDone success=true ms=8284`
+    - `/api/ad/challenge` returned 200 twice via bridge canary:
+      - `elapsedMs=634`
+      - `elapsedMs=1130`
+    - `ntk_server_ack_success_recorded path=/manhwa/8329/65787,source=bridge-challenge-ad-ack-cookie-200`
+    - Cookies included `cf_clearance`, identity cookies, and scoped `ad_ack_c`.
+  - Viewer status:
+    - First drawable failed at `52689ms`.
+    - `reader_repository_stage stage=fetch_initial_done,result=1`
+    - `ntk_modern_ack_proof_recovery recovered=false,code=403,bodyLen=18307,images=0`
+    - Direct target metadata was empty: `imageWorkId=""`, `imageCount=0`.
+    - App repeatedly probed unverified `i.toonflix.app/p001.*`, which returned 520 or timed out.
+- Root cause refinement:
+  - ACK 200 is not the current emulator blocker.
+  - The blocker is that a direct target can enter the reader without the real episode image metadata/payload hint, causing the app to infer generated image identity from the route path and waste time on bad `p001.*` probes after the server proof is already present.
+- Fix applied:
+  - `NtkRandomStressInstrumentedTest` direct target mode now first fetches the real title episode list and uses the matching episode metadata when available.
+  - `NtkEpisodeParser` now preserves `sourceWorkId` as `ntkImageWorkId` when it can find it near the episode metadata, so image identity can travel from title/list payload into the reader.
+- Bad/avoid:
+  - Do not call ACK broken when `/api/ad/challenge` 200 and scoped `ad_ack_c` proof are present; separate ACK from image metadata/API recovery.
+  - Do not validate actual image display using a direct target with `imageWorkId=""` and `imageCount=0` unless the test is explicitly about metadata-less deep-link behavior.
+  - Do not allow unverified `p001.*` generated probes to mask the real failure path after modern ACK proof.
+
+## 2026-06-17 09:45:00 +09:00 Emulator target shows ACK/access OK, reader cache handoff blocker
+
+- User explicitly requested emulator-only validation; phone is ignored for this pass.
+- Latest emulator target artifact:
+  - `build/ntk-random-perf/20260617_091359`
+  - Target: `/manhwa/8329/65787`
+  - Device: `emulator-5556`
+- ACK/access facts:
+  - `/api/ad/challenge` 200 bridge/native proof succeeded quickly:
+    - first bridge canary elapsed about `1321ms`
+    - last bridge canary elapsed about `1049ms`
+  - `ntk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200`
+  - Access verification before reader succeeded:
+    - `ntk_true_random_access_verify path=/manhwa/8329/65787,documentOk=true,rscOk=true,ok=true,proof=true,serverAckProof=true,strongCookies=true`
+  - Captcha/access phase fetched actual document 200:
+    - `NTK document verification direct path=/manhwa/8329/65787,code=200`
+    - `Intercepted NTK WebView request through QUIC: https://sbxh7.com/manhwa/8329/65787,code=200`
+- Image/display failure:
+  - First drawable still failed after `57220ms`.
+  - Direct target metadata is now better:
+    - `imageEpisodeId=1570427`
+    - `imageCount=39`
+    - `imageWorkId=""`
+  - Reader later re-fetched the tokenized viewer page and got 403:
+    - `ntk_mget_fallback_decision ... code=403`
+    - `ntk_modern_ack_proof_recovery recovered=false,code=403,images=0`
+  - Metric/image token hits existed:
+    - `ntk_viewer_quic_intercept_image_hit code=200,metric=true,type=image/gif,len=42`
+  - App still wasted time on unverified generated `p001.*` probes to `i.toonflix.app`, returning 520/timeouts.
+- Root cause refinement:
+  - ACK is not the current blocker in this emulator run.
+  - The current blocker is the handoff from successful access/captcha phase to Reader image parsing: fresh 200 tokenized viewer content exists, but `mgetCachedPage()` skipped tokenized viewer cache and Reader re-requested into 403.
+- Fix applied, pending build/test:
+  - `CustomHttpClient.mgetCachedPage()` and `waitForCachedPage()` now allow fresh tokenized NTK viewer cache only when `hasNtkAccessProof()`, recent access verification, or recent server ACK proof exists.
+  - Added `ntk_tokenized_viewer_fresh_cache_hit` logging to prove whether Reader consumes the fresh 200 cached page.
+- Bad/avoid:
+  - Do not keep reclassifying this as "ACK failed" when challenge 200 + access document 200 are present.
+  - Do not bypass tokenized viewer cache after proof; that recreates a 403 race and hides the real successful fetch.
+  - Do not rely on generated `p001.*` probes as the primary path for current sbxh7 viewer display.
+
+## 2026-06-17 09:58:00 +09:00 Emulator-only: ACK 200 is stable, payload handoff is the live blocker
+
+- User explicitly requested emulator-only testing; phone/remote ADB is ignored for this pass.
+- Active goal remains ACK actual server proof plus image display stability on emulator.
+- Latest emulator artifacts:
+  - `build/ntk-random-perf/20260617_092120`
+  - `build/ntk-random-perf/20260617_092604`
+  - `build/ntk-random-perf/20260617_093144`
+- ACK/access facts on emulator:
+  - `/api/ad/challenge` bridge/native canary repeatedly returned 200.
+  - `ntk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200`
+  - Access verification reached real document 200:
+    - `NTK document verification direct path=/manhwa/8329/65787,code=200`
+    - `Intercepted NTK WebView request through QUIC: https://sbxh7.com/manhwa/8329/65787,code=200,len=139249`
+- Current image/display blocker:
+  - First drawable still times out.
+  - Reader later makes a separate RSC/native payload request and gets 403:
+    - `ntk_rsc_payload path=/manhwa/8329/65787,code=403,usable=false`
+  - Current sbxh7 viewer chunk proves image URL resolution uses `/api/manhwa-images` with `workId`, `episodeId`, `imagesToken`, `nonce`, `proof`, and site/browser-key headers.
+  - The app never reaches `ntk_viewer_api_urls` / `ntk_images_api_*` in the failing run because the reader never receives `imagesToken/imageMetas`.
+- Fix direction now:
+  - Cache/handoff the successful WebView QUIC main-frame body for `/manhwa/{work}/{episode}` into `CustomHttpClient` before the reader retries and hits 403.
+  - Instrument whether the WebView 200 body contains `imagesToken/imageMetas`; if it does, use it as the reader payload source.
+- Bad/avoid:
+  - Do not call this an ACK failure while `/api/ad/challenge` 200 and scoped server proof exist.
+  - Do not keep spending time on unverified generated `p001.*` probes for modern sbxh7 when the real viewer API path is `/api/manhwa-images`.
+  - Do not rely on phone logs for this phase; use `emulator-5556` only.
+
+## 2026-06-17 10:22:00 +09:00 Emulator-only: ACK/payload handoff fixed, image API signer is the live blocker
+
+- User requested emulator-only testing; phone/remote ADB is ignored.
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_100933`
+  - Device: `emulator-5556`
+  - Target: `/manhwa/8329/65787`
+- ACK/access facts:
+  - `/api/ad/challenge` succeeded with actual server proof:
+    - `ntk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200`
+  - This is not an ACK failure in the latest run.
+- Payload handoff facts:
+  - Captcha/access WebView/direct phase now caches the usable tokenized viewer payload.
+  - Reader consumes it immediately:
+    - `ntk_tokenized_viewer_payload_cached path=/manhwa/8329/65787,code=200,bytes=119955`
+    - `ntk_rsc_payload_shared_cache_first path=/manhwa/8329/65787,code=200,bytes=119955,ms=7`
+    - `ntk_page_fetch_done mode=direct,code=200,bodyLen=119955,ms=207`
+- Current blocker:
+  - Parser reaches the current sbxh7 image API:
+    - `ntk_images_api_start path=/manhwa/8329/65787,endpoint=/api/manhwa-images,tokenLen=120`
+  - Native/shared API requests get Cloudflare 403.
+  - Hidden WebView starts with server ACK proof, but the first API request is deliberately unsigned:
+    - `viewerImagesUnsignedFirst`
+    - bridge request headers only include `x-images-client=viewer-v1`
+    - no `x-ntk-key-id` / site signer header is present.
+  - `/api/manhwa-images` then returns `403 Forbidden`, image URL count stays 0, and first drawable times out.
+- Fix direction:
+  - Remove unsigned-first behavior for modern `/api/manhwa-images` and `/api/webtoon-images`.
+  - Ensure the hidden WebView obtains browser key / site signer headers before the first image API POST.
+  - Next validation should prove `viewerImagesSiteSigned` plus `x-ntk-key-id` in the bridge/fetch header summary before judging image display.
+- Bad/avoid:
+  - Do not call the latest failure "ACK failed"; ACK 200 proof exists.
+  - Do not spend more time on unverified generated `p001.*` probes for current sbxh7 when `/api/manhwa-images` is the real path.
+  - Do not treat generic shell cache validity as viewer payload validity; tokenized payload handoff needs payload-specific checks.
+
+## 2026-06-17 11:05:00 +09:00 Emulator-only: image API signer narrowed to canonical P-256 signature validation
+
+- User requested emulator-only validation; phone/remote ADB is ignored.
+- Latest emulator artifacts before this patch:
+  - `build/ntk-random-perf/20260617_104805`
+  - `build/ntk-random-perf/20260617_105145`
+- Current facts:
+  - ACK/access/payload handoff are not the latest blockers:
+    - `/api/ad/challenge` actual server ACK is 200 and records `native-challenge-ad-ack-cookie-200`.
+    - Reader consumes cached tokenized viewer payload via `ntk_rsc_payload_shared_cache_first`.
+  - Native `/api/client-key/register` now succeeds after merging WebView cookies:
+    - `ntk_images_api_native_key_register ... code=200 ... ok=true`.
+  - `/api/manhwa-images` response by signature format:
+    - P1363: request carries `x-ntk-key-id`, `x-ntk-ts`, `x-ntk-nonce`, `x-ntk-sig`, but server returns `403 Forbidden`.
+    - DER: server returns `428 browser_key_required`, so DER is not the expected signature format.
+- Patch applied:
+  - Keep the direct native signer and hidden WebView bridge signer, but normalize P-256 ECDSA P1363 signatures to low-S form before sending.
+  - Log signature length, encoded signature length, body length, and whether low-S normalization changed the signature for both direct and bridge paths.
+- Hypothesis being tested:
+  - Server may enforce canonical low-S ECDSA like the browser/BoringSSL signer output. Android/JCA raw P1363 signatures can be high-S depending on provider.
+- Bad/avoid:
+  - Do not retry DER as a likely fix; latest evidence shows DER is treated as missing/invalid browser key (`428`), while P1363 reaches signature validation (`403`).
+  - Do not call this ACK failure unless `/api/ad/challenge` stops returning 200; latest blocker is image API browser-key signature verification.
+
+## 2026-06-17 11:14:00 +09:00 Emulator-only: current site signer changed to serverNow timestamp offset
+
+- Latest emulator artifacts:
+  - `build/ntk-random-perf/20260617_105844`
+  - `build/ntk-random-perf/20260617_110332`
+- Result after low-S and P1363-first experiments:
+  - Low-S normalization did not resolve `/api/manhwa-images`; P1363 still returns `403 Forbidden`.
+  - DER still returns `428 browser_key_required`, so DER remains a bad path.
+  - ACK 200 and tokenized viewer payload handoff remain good.
+- New root-cause candidate found from pulled static JS:
+  - Current `build/ntk-debug-pulled/static/cd4c1425.js` signer module uses `/api/client-key/register` response `serverNow` and stores `serverTimeOffsetMs`.
+  - It signs `x-ntk-ts` with `Math.floor(Date.now() + serverTimeOffsetMs)`, not raw local `Date.now()`.
+  - Native direct/bridge signer was still using local emulator time only.
+- Fix applied:
+  - Direct native image signer now stores `serverNow - localNow` from key registration and signs with server-adjusted timestamp.
+  - Hidden WebView native bridge signer now does the same.
+  - Key expiry checks now compare against server-adjusted time.
+  - Signature logs now include `serverOffsetMs`.
+- Bad/avoid:
+  - Do not use old signer assumptions from earlier sbxh builds without checking current static chunk; signer semantics changed from raw `Date.now()` to server-adjusted time.
+  - Do not spend more time on low-S as the primary fix unless server-adjusted timestamp still fails.
+
+## 2026-06-17 11:35:00 +09:00 Emulator-only: ACK/payload proven; image API hidden WebView was blocked before fetch
+
+- User explicitly requested emulator-only testing; phone/remote ADB is ignored.
+- Captured current emulator log into:
+  - `build/ntk-random-perf/manual_20260617_current_emulator.logcat`
+- Current proven good path:
+  - `/api/ad/challenge` actual server proof succeeds:
+    - `ntk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200`
+  - Reader consumes the shared tokenized viewer payload:
+    - `ntk_rsc_payload_shared_cache_first path=/manhwa/8329/65787,code=200,bytes=119896,ms=10`
+- Current blocker:
+  - Direct/native `/api/manhwa-images` remains `403 Forbidden` even with P1363, low-S, and serverNow offset.
+  - Hidden WebView image API still loaded a real main frame:
+    - `ntk_images_api_hidden_document ... realMainFrame=true`
+  - Webpack signer modules never loaded:
+    - `viewerImagesSignerMissing cacheModules=0,defModules=0`
+  - API-only script did not reach `viewerImagesApiOnlyFetch` or `viewerImagesApiOnlyBridge`; evaluation returned `url=null,value=null` after the WebView was effectively gone.
+- Fix applied, pending emulator validation:
+  - Non-ACK image API hidden WebView no longer uses a real guarded main frame; real main frame remains reserved for ACK-only work.
+  - API-only signer no longer waits through repeated missing webpack module polls. If the site signer is absent, it immediately uses native P1363 signing and proceeds to browser fetch/bridge.
+- Bad/avoid:
+  - Do not keep waiting for webpack modules in image API hidden WebView when logs show `cacheModules=0,defModules=0`; that only burns seconds and never reaches fetch.
+  - Do not merge ACK-only and image API hidden WebView behavior. ACK may need the real guarded frame, but image API should avoid renderer/SSL/challenge instability once ACK proof and payload are already present.
+  - Do not treat known image episode ID fallback as a fix; both token episode and known image episode still returned 403.
+
+## 2026-06-17 11:48:00 +09:00 Emulator-only: image API 403 narrowed to missing ad_guard_l
+
+- Rebooted broken API35 emulator; old `emulator-5556` had no `activity/package` binder service. Relaunched `MangaViewerApi35`, now serial is `emulator-5554`. This is still emulator-only, not phone.
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_114019`
+  - Result: first drawable failed at `32238ms`.
+- Progress:
+  - Hidden image API path now reaches the API attempts:
+    - `ntk_images_api_hidden_document ... realMainFrame=false`
+    - `viewerImagesNativeSigned ... sigFormat=p1363`
+    - `viewerImagesApiOnlyFetchError ... keyHeader=true,nativeSigned=true`
+    - `viewerImagesApiOnlyBridge ... status=403,keyHeader=true`
+  - This proves the previous blocked-before-fetch WebView issue is improved.
+- New root-cause refinement:
+  - Current image API requests carry `ad_ack_c=true` and `cf_clearance=true`, but `ad_guard_l=false`.
+  - The old successful sbxh6 flow produced `/api/ad/canary` 200 and `ad_guard_l=true` before image API 200.
+  - Current native canary failed with Cloudflare 403:
+    - `ntk_native_ack_canary_code=403`
+    - `ntk_native_ack_canary_body=Just a moment...`
+  - Native canary payload was missing `adGuardLoaded:true`, while the WebView/site canary body includes it.
+- Fix applied, pending emulator validation:
+  - Native canary payload now includes `adGuardLoaded:true`.
+  - Low-S signature normalization is disabled because the current site signer module uses raw WebCrypto ECDSA output and does not normalize S.
+- Bad/avoid:
+  - Do not chase ACK 200 again for this failure; challenge proof is present, but image API needs guard bootstrap cookies too.
+  - Do not send native canary payloads that differ from the site/WebView shape; missing `adGuardLoaded` can keep `ad_guard_l` absent and make image API look like a signature failure.
+  - Do not keep low-S normalization as a speculative fix when the active site signer does not do it.
+
+## 2026-06-17 12:02:00 +09:00 Emulator-only: canary payload/low-S did not fix missing guard
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_114432`
+  - Device: `emulator-5554` only.
+  - Result: first drawable still failed at `32286ms`.
+- Confirmed good:
+  - `/api/ad/challenge` actual server proof still succeeds:
+    - `ntk_server_ack_success_recorded path=/manhwa/8329/65787,source=native-challenge-ad-ack-cookie-200`
+  - Tokenized viewer payload still reaches reader immediately:
+    - `ntk_rsc_payload_shared_cache_first ... code=200`
+- Confirmed blocker:
+  - Native `/api/ad/canary` still returns Cloudflare 403 HTML even after adding `adGuardLoaded:true`.
+  - Direct native image API still returns 403 with `lowSAdjusted=false`.
+  - Hidden WebView image API now sometimes reaches the real site signer:
+    - `viewerImagesSiteSigned=true`
+  - Even site-signed image API bridge returns `403 Forbidden` while request cookies show:
+    - `hasAdAckC=true`
+    - `hasCfClearance=true`
+    - `hasAdGuardL=false`
+- Root-cause refinement:
+  - The image API failure is not just native signer drift. A site-signed request also fails if `ad_guard_l` is missing.
+  - Current modern ACK readiness is too weak for image API: actual ACK 200 proof proves `/api/ad/challenge`, but does not prove guard bootstrap/canary state.
+- Next fix direction:
+  - Treat modern image API readiness as ACK proof plus guard bootstrap, or explicitly run a guard-preflight/retry path when image API returns 403 with `ad_guard_l=false`.
+  - Prefer a scoped WebView guard path over more signature experiments; signature-only fixes cannot set `ad_guard_l`.
+- Bad/avoid:
+  - Do not treat canary body shape alone as sufficient; current canary is Cloudflare-blocked before it can set guard.
+  - Do not keep retrying signer variants as the primary path when `viewerImagesSiteSigned=true` still 403s without `ad_guard_l`.
+  - Do not call the current failure an ACK 200 regression unless `/api/ad/challenge` proof disappears.
+
+## 2026-06-17 12:17:00 +09:00 Emulator-only: guard bootstrap succeeded but image API raced ahead
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_114909`
+  - Device: `emulator-5554` only.
+  - Result: first drawable failed at `32172ms`.
+- Important improvement:
+  - ACK-only WebView guard preflight finally produced the missing guard cookie:
+    - `/api/ad/canary` returned 200.
+    - `cookieNames=ad_guard_l`.
+    - bridge request later showed `hasAdGuardL=true`.
+  - `/api/ad/ack` also reached 200:
+    - `ntk_server_ack_success_recorded ... source=bridge-ack-200`.
+- Current bug:
+  - Image API retries fire before the guard/ack preflight completes.
+  - The first hard-forbidden `/api/manhwa-images` failures are recorded while `hasAdGuardL=false` or before bridge ACK 200 finishes.
+  - By the time `ad_guard_l=true` and bridge ACK 200 are available, the reader path has already returned zero image URLs.
+- Fix applied, pending validation:
+  - Modern image API hard-403 now waits for the in-flight guard/ACK preflight before treating 403 as final.
+  - After preflight completion it syncs WebView cookies and retries `/api/manhwa-images`.
+- Bad/avoid:
+  - Do not mark hard 403 final while `ntk_images_api_webview_ack_preflight_race_pending` or an ACK-only guard preflight is still in flight.
+  - Do not cache image URL miss before the guard/ACK preflight has had a chance to set `ad_guard_l`.
+
+## 2026-06-17 12:31:00 +09:00 Emulator-only: ACK/guard fixed; image API transport/signature remains
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_115204`
+  - Device: `emulator-5554` only.
+  - Result: first drawable failed at `42134ms`.
+- Confirmed fixed compared with the previous blocker:
+  - ACK-only preflight completed quickly:
+    - `ack_only_fetch=3254ms`
+    - `success=true,ms=3303`
+  - `/api/ad/challenge` reached actual server 200.
+  - `/api/ad/canary` reached 200 and set `ad_guard_l`.
+  - `/api/ad/ack` reached 200 and set ACK cookies.
+  - Image bridge requests now show all important cookies present:
+    - `hasAdAck=true`
+    - `hasAdAckC=true`
+    - `hasAdGuardL=true`
+    - `hasCfClearance=true`
+    - ACK cookie scope matches.
+- Current blocker:
+  - `/api/manhwa-images` still returns 428/403 after cookies are correct.
+  - Native/direct path first returns `428 browser_key_required`, then `403 Forbidden`.
+  - Hidden WebView site signer sometimes succeeds (`viewerImagesSiteSigned=true`), but bridge transport still returns `403 Forbidden`.
+  - Actual browser fetch in the synthetic shell hits `TypeError: Failed to fetch`, then bridge fallback gets 403.
+- Site JS contract confirmed from `build/ntk-debug-pulled/static_latest/e57ce460.js`:
+  - Image body is exactly `{workId, episodeId, token, nonce, proof}`.
+  - `requestKeyId` is not included in the image API body.
+  - `x-ntk-*` headers are produced by the site signer with scope `/manhwa/{workId}/{episodeId}`.
+- Next fix direction:
+  - Stop treating this as an ACK/canary issue; ACK and guard are now proven.
+  - Use real same-origin WebView execution after guard is ready, then harvest either the actual API response or the rendered viewer DOM page images.
+  - Keep image extraction scoped to viewer page images only so banner/advertisement images cannot be cached as manga pages.
+- Bad/avoid:
+  - Do not keep chasing ACK as the primary failure while challenge/canary/ack are all 200.
+  - Do not add `requestKeyId` to the image API body; current site JS does not send it.
+  - Do not cache DOM image URLs from banners or ad slots.
+
+## 2026-06-17 21:20:00 +09:00 Emulator-only: strict ACK proof split from weak challenge proof
+
+- User explicitly requested emulator-only validation; phone/remote ADB is ignored.
+- Current device list shows only:
+  - `emulator-5554 device`
+- Regression source found:
+  - The shared `SERVER_ACK_SUCCESS_BY_SCOPE` cache was used for both weak challenge proof and actual `/api/ad/ack` 200 proof.
+  - Source `native-challenge-ad-ack-cookie-200` could make modern image readiness look satisfied even when the latest `/api/ad/ack` POST/canary flow was not freshly proven.
+  - This explains why older logs could contain real ACK 200 success, while later runs still raced or skipped into image API with stale/partial proof.
+- Patch applied, pending emulator validation:
+  - Added a separate strict `/api/ad/ack` success cache in `NtkWebViewFallbackManager`.
+  - Only real `/api/ad/ack` success sources such as `bridge-ack-200`, `guard-fetch-ack-200`, `direct-bridge-ack-200`, and `native-ack-200` populate the strict cache.
+  - Modern `sbxh*` ACK readiness now requires both:
+    - `ad_guard_l` cookie present.
+    - recent strict `/api/ad/ack` 200 proof.
+  - Image WebView script readiness and preflight join checks now use strict proof for modern roots instead of generic server ACK proof.
+- Bad/avoid:
+  - Do not use `native-challenge-ad-ack-cookie-200` as sufficient image API readiness on modern sbxh/toonflix roots.
+  - Do not let ACK-only retry stop just because challenge proof was recorded.
+  - Do not treat generated probe logs with empty extension as valid image success.
+  - Do not re-enable real image main-frame WebView for image API until the `about:blank` JS-context issue is understood; it made Java `view.getUrl()` look correct while page JS still saw `location.href=about:blank`.
+
+## 2026-06-17 21:33:00 +09:00 Emulator-only: ACK actual 200 restored; image API 403 narrowed to bridge UA/proof mismatch
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_121130`
+  - Device: `emulator-5554` only.
+  - Result: first drawable failed at `52111ms`.
+- Confirmed good:
+  - `/api/ad/challenge` returned 200.
+  - `/api/ad/canary` returned 200 and set `ad_guard_l`.
+  - `/api/ad/ack` returned 200:
+    - `ntk_viewer_ad_bridge_native_submit code=200`
+    - `ntk_viewer_ad_bridge_response method=POST,path=/api/ad/ack,code=200`
+    - strict records:
+      - `source=bridge-ack-200,strictAdAck=true`
+      - `source=guard-fetch-ack-200,strictAdAck=true`
+  - Bridge image API requests later had all relevant cookies:
+    - `hasAdAck=true`
+    - `hasAdAckC=true`
+    - `hasAdGuardL=true`
+    - `hasCfClearance=true`
+- Current blocker:
+  - `/api/manhwa-images` still returns 403 after strict ACK and guard are present.
+  - Site JS contract in `static_latest/e57ce460.js` computes image proof as:
+    - `HMAC(nv, token + "." + nonce + "." + navigator.userAgent)`
+  - Hidden WebView generated proof with WebView `navigator.userAgent`, while `NtkQuicBridge` sent requests using its Java-side `userAgent`.
+  - This can make bridge requests fail even when cookies, browser key signature, and body shape are otherwise correct.
+- Patch applied, pending emulator validation:
+  - API-only bridge requests now include `user-agent=navigator.userAgent` in the bridge headers.
+  - `NtkQuicBridge` now prefers a caller-provided `user-agent` header as the actual `NtkQuicFetcher` UA argument, then removes the header to avoid duplicate UA headers.
+- Bad/avoid:
+  - Do not judge signed image API 403 as an ACK failure when strict ad ack and `ad_guard_l` are present.
+  - Do not mix WebView-generated HMAC proof with a different native HTTP User-Agent.
+  - Do not prioritize known image episode `1570427` as the canonical API `episodeId` when the viewer token `e` and route scope are `65787`; use it only as a fallback/probe candidate.
+
+## 2026-06-17 21:28:00 +09:00 Emulator-only: ACK stable, image API failure moved to hidden WebView transport/shell
+
+- Latest emulator artifacts:
+  - `build/ntk-random-perf/20260617_122226`
+  - `build/ntk-random-perf/20260617_122507`
+  - Device: `emulator-5554` only.
+- Confirmed good:
+  - `/api/ad/challenge` 200 remains stable.
+  - `/api/ad/canary` 200 sets `ad_guard_l`.
+  - `/api/ad/ack` actual POST returns 200; latest preflight `success=true,ms=3304`.
+- Fixes applied in this round:
+  - Strict ACK proof now distinguishes weak challenge proof from actual `/api/ad/ack` 200.
+  - Native browser-key registration is now keyed by WebView `navigator.userAgent` and uses that UA for `/api/client-key/register`.
+  - Image API bridge request also uses the WebView UA.
+  - Global fetch bridge no longer captures `/api/manhwa-images`, `/api/webtoon-images`, `/api/manga-images`, or `/api/nv-issue`.
+  - Modern image hidden frame now uses the real site main frame instead of feeding malformed RSC/viewer body as HTML.
+- Current blocker before the real-frame patch:
+  - Browser-like image fetch still failed with `TypeError: Failed to fetch`.
+  - Native bridge remained `403 Forbidden` even with `hasAdAck=true`, `hasAdAckC=true`, `hasAdGuardL=true`, and strict ACK proof.
+  - Log showed repeated Chromium `ERR_CONNECTION_RESET` and hidden WebView renderer crashes.
+- Bad/avoid:
+  - Do not feed raw RSC/viewer payload fragments as a main-frame HTML document; it creates SyntaxError storms and renderer instability.
+  - Do not let global fetch bridge intercept image APIs; that prevents real WebView network behavior and falls back to the known-403 native bridge.
+  - Do not call this an ACK regression while strict `/api/ad/ack` 200 continues to pass.
+
+## 2026-06-17 21:45:00 +09:00 Emulator-only: ACK still good; image API failure is not DER or loadUrl shell
+
+- Latest emulator artifacts:
+  - `build/ntk-random-perf/20260617_123651`
+  - `build/ntk-random-perf/20260617_124224`
+  - `build/ntk-random-perf/20260617_124457`
+  - Device: `emulator-5554` only.
+- Confirmed good:
+  - `/api/ad/challenge` 200, `/api/ad/canary` 200, and actual `/api/ad/ack` 200 are stable.
+  - After reverting the bad DER/loadUrl experiment, ACK preflight returned to `3675ms`.
+- Current blocker:
+  - `/api/manhwa-images` still fails after strict ACK:
+    - WebView direct fetch: `TypeError: Failed to fetch`.
+    - Native bridge: `403 Forbidden`.
+    - HTTP/2 retry: `ERR_CONNECTION_RESET`.
+  - Synthetic image shell has no webpack module, so site signer is not available there (`viewerImagesBrowserKeyNoModule=true`) and native P1363 signing is used.
+  - Hidden image WebView still hits `tile memory limits` and renderer crashes before first drawable.
+- Experiments that did not solve it:
+  - Native DER signature trial made responses worse (`428 browser_key_required`) and was reverted to P1363.
+  - Loading the synthetic shell through `loadUrl` with intercepted main-frame response did not fix WebView `fetch`; it also made ACK timing unstable and was reverted.
+- Patch now under test:
+  - Hidden non-ACK image WebView is reduced to `1x1` and network images are disabled because it only needs to run API JS, not render any visual content.
+  - Metric image requests still hit the server, but the hidden renderer receives a tiny GIF to reduce tile pressure.
+- Bad/avoid:
+  - Do not retry DER signing as a primary path; server classified it as browser-key failure.
+  - Do not switch image API synthetic shell back to `loadUrl` unless there is a new reason; it did not remove `TypeError: Failed to fetch` and destabilized ACK timing.
+  - Do not treat the current image failure as ACK failure while strict `/api/ad/ack` 200 remains present.
+
+## 2026-06-17 21:58:00 +09:00 Emulator-only: ACK stable; switch image URL collection to real 1x1 site context
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_124715`
+  - Device: `emulator-5554` only.
+- Confirmed good:
+  - ACK actual server proof remains stable: latest preflight `ackMs=3160`.
+  - This is not an ACK regression.
+- Current blocker:
+  - First drawable still failed at `52212ms`.
+  - Hidden image API shell still had no webpack signer module:
+    - `viewerImagesBrowserKeyNoModule=true`
+  - Direct WebView fetch still failed:
+    - `viewerImagesApiOnlyFetchError=TypeError: Failed to fetch`
+  - Native bridge stayed at:
+    - `/api/manhwa-images 403 Forbidden`
+  - Renderer tile pressure/crashes still appeared around the ACK-only hidden frame and later image shell attempts.
+- Site signer comparison:
+  - Actual site module `47760` still signs `ntk-brsig-v1\nMETHOD\npath\nscope\nkeyId\nts\nnonce\nbodyHash` with P-256/P1363 WebCrypto output.
+  - Native P1363 signature shape matches the module, so repeated 403 is more likely browser/WebView execution context, cookies, CORS/fetch transport, or renderer instability rather than DER/signature-format mismatch.
+- Patch applied, pending emulator validation:
+  - Non-ACK image URL collection now loads the real site document in a hidden `1x1` WebView instead of a synthetic empty shell.
+  - Decorative/heavy resources are still blocked: CDN images, banners/ads, fonts, CSS, media.
+  - Goal is to run the actual Next/webpack runtime and signer module while avoiding visual tile pressure and ad image harvesting.
+- Bad/avoid:
+  - Do not reuse the earlier `loadUrl` synthetic-shell experiment as evidence against this patch; that test still had no real site scripts and made ACK slow.
+  - Do not use native bridge 403 as final proof of image API impossibility while a real same-origin WebView fetch has not been isolated.
+  - Do not relax DOM image filtering; banner/ad URLs must remain excluded.
+
+## 2026-06-17 22:02:00 +09:00 Emulator-only: real 1x1 site context still crashes before signer
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_125206`
+  - Device: `emulator-5554` only.
+- Confirmed good:
+  - ACK actual server proof remained stable: `ackMs=3284`, `nativeSubmit code=200`, `guardFirstDone acked=true`.
+- Result:
+  - First drawable still failed at `52176ms`.
+  - Real 1x1 non-ACK image WebView started with `realMainFrame=true,realImageFrame=true`, but crashed before any `viewerImagesSignerFound` or `viewerImagesSiteSigned` log.
+  - Therefore the real-site-context idea has not been disproved; the renderer died before the signer could run.
+- Patch applied, pending emulator validation:
+  - Hidden NTK WebViews now disable `offscreenPreRaster`.
+  - Non-visible hidden WebViews now use software layer to avoid Chromium tile memory/GPU pressure.
+- Bad/avoid:
+  - Do not increase image WebView size to make scripts run; the current failure is renderer stability, not viewport availability.
+  - Do not mark real-site-context fetch as failed until it survives long enough to log signer/module state.
+
+## 2026-06-17 22:10:00 +09:00 Emulator-only: ACK 200 remains stable, but ACK-only full hidden WebView blocks image stage
+
+- Latest emulator artifacts:
+  - `build/ntk-random-perf/20260617_125625`: invalid for viewer; failed at `EnsureAccess`.
+  - `build/ntk-random-perf/20260617_125755`: invalid image metadata; `TargetImageEpisodeId` missing, image count 0.
+  - `build/ntk-random-perf/20260617_125934`: valid target image metadata.
+- Confirmed good:
+  - Valid run `20260617_125934` kept strict ACK actual 200 stable:
+    - `ackMs=3061`
+    - `nativeSubmit code=200`
+    - `guardFirstDone acked=true`
+- Current blocker:
+  - The ACK-only hidden WebView still logs tile memory warnings and renderer crashes.
+  - The image collection stage does not reach signer/module logs in the valid run.
+  - This means image API is being starved/poisoned by hidden WebView renderer instability before URL discovery.
+- Patch applied, pending emulator validation:
+  - ACK-only hidden WebView is now also attached as `1x1` unless a visible ACK probe is explicitly enabled.
+  - Rationale: ACK success is already proven by native bridge/canary/ack 200; the hidden frame should not consume full-screen tile memory.
+- Bad/avoid:
+  - Do not keep full-screen hidden ACK-only WebView as the default; it repeatedly produces Chromium tile-memory warnings and renderer crashes.
+  - Do not count `20260617_125410` as a valid patch test; it used the previous APK after a compile failure.
+
+## 2026-06-17 22:18:00 +09:00 Emulator-only: ACK proof is stable; first drawable is blocked by launch-hold state
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_130228`
+  - Device: `emulator-5554` only.
+- Confirmed good:
+  - Strict ACK actual server proof remains stable:
+    - `ackMs=3126`
+    - `/api/ad/ack` native submit `code=200`
+    - `strictAdAck=true`
+  - Valid target image metadata was found:
+    - `imageEpisodeId=1570427`
+    - `imageCount=39`
+- Current blocker:
+  - First drawable still failed at `51952ms`.
+  - Metadata discovery itself took about `51127ms` before `ntk_true_random_case_start`, so the first visible image path is starting too late.
+  - After ACK success, the reader still logs `reader_ntk_ack_recovery_launch_hold_after_first_drawable` even though first drawable has not happened.
+  - This keeps generated image ACK/image recovery paths in `launch_first_drawable_hold`, creating a circular wait: first drawable waits for image recovery, image recovery waits for first drawable.
+  - ACK-only 1x1 WebView reduced scope but did not eliminate Chromium tile-memory/renderer crash logs.
+- Patch applied, pending emulator validation:
+  - Added explicit `clearNtkAckRecoveryLaunchHold(path, reason)` instead of reusing the misleading first-drawable quiet hold for ACK success.
+  - Added strict ACK proof accessor on `CustomHttpClient`.
+  - Hardblock-before-first-drawable and actual strict ACK success now clear the launch hold instead of adding another quiet hold.
+- Bad/avoid:
+  - Do not use `releaseNtkAckRecoveryAfterFirstDrawable` for ACK success before first drawable; it sets another hold and can deadlock image recovery.
+  - Do not claim ACK regressed in this run; actual `/api/ad/ack` 200 is present.
+  - Do not treat `EnsureAccess` failures as viewer image failures unless the reader actually reaches the target image case.
+
+## 2026-06-17 22:28:00 +09:00 Emulator-only: ACK restored; image API is now the blocker
+
+- Latest emulator artifacts:
+  - `build/ntk-random-perf/20260617_130814`: weak proof/captcha retry path; `/api/ad/ack` failed with `428`/reset and weak `ad_ack_c` was incorrectly treated as proof.
+  - `build/ntk-random-perf/20260617_131108`: strict ACK restored; `ackMs=3150`, native submit `/api/ad/ack code=200`, but first drawable failed at `39053ms`.
+  - `build/ntk-random-perf/20260617_131300`: strict ACK stable; `ackMs=3232`, native submit `/api/ad/ack code=200`, first drawable failed at `52018ms`.
+- Fixes applied:
+  - Prepared native ACK now logs and branches on strict `/api/ad/ack` proof, not weak challenge-cookie proof.
+  - If prepared native ACK fails, WebView ACK preflight is launched before first drawable instead of treating weak proof as enough.
+  - Strict ACK proof now clears initial/retry launch hold so ACK success does not re-enter a 30s image hold.
+- Current blocker:
+  - `/api/manhwa-images` native signed request still returns `403 Forbidden`.
+  - Non-ACK real-site WebView image fallback starts, but renderer repeatedly crashes and JS eval sees `about:blank`, returning zero URLs.
+  - Direct episode page fetch succeeds (`code=200`, `bodyLen=37755`), but early generated image URL derivation did not publish URLs.
+- Patch applied, pending emulator validation:
+  - `earlyGeneratedNtkImageUrlsFromPartial` now falls back to known `getNtkImageCount()`/generated candidate count if the HTML/RSC page-count marker is absent.
+  - Known `getNtkImageEpisodeId()` is prioritized before embedded/path episode IDs for non-canonical generated candidates.
+- Bad/avoid:
+  - Do not accept weak `native-challenge-ad-ack-cookie-200`/`ad_ack_c` as ACK completion.
+  - Do not keep retrying hidden WebView as the only image fallback; renderer crashes are repeatable on emulator.
+  - Do not derive generated image URLs only from path episode ID when `ntkImageEpisodeId` metadata exists.
+
+## 2026-06-17 22:45:00 +09:00 Emulator-only: ACK is stable; generated CDN identity extraction is the active fix
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_131709`
+  - Device: `emulator-5554` only.
+- Confirmed good:
+  - Strict ACK actual server proof is still stable:
+    - `ackMs=3073`
+    - native `/api/ad/ack code=200`
+  - Direct episode page fetch succeeds:
+    - `ntk_page_fetch_done mode=direct,code=200,bodyLen=45836,ms=388,path=/manhwa/8329/65787`
+- Current blocker:
+  - First drawable failed at `52060ms`.
+  - `/api/manhwa-images` native signed requests return `403 Forbidden` or `428 {"ok":false,"error":"browser_key_required"}`.
+  - Non-ACK real-site WebView image fallback still evaluates in `about:blank` despite the requested URL being `/manhwa/8329/65787`, so it returns zero images.
+  - Generated URL probing currently only tries `workId=8329` with `episodeId=1570427`/`65787`; both miss extensions.
+- Working hypothesis:
+  - The page has a valid image episode id (`1570427`) and count (`39`), but the CDN image work id may not equal the route work id (`8329`).
+  - Need to extract actual generated CDN identity from direct page/RSC text before relying on hidden WebView or native image API.
+- Patch applied, pending emulator validation:
+  - `sourceWorkId` parser now accepts numeric JSON values in addition to quoted strings.
+  - `earlyGeneratedNtkImageUrlsFromPartial` now adds work id candidates from direct `i.toonflix.app/.../{workId}/{imageEpisodeId}/pNNN.*` references and from metadata near the known image episode id.
+  - Added concise `ntk_generated_partial_candidates` / `ntk_generated_text_work_candidates` diagnostics to verify candidate coverage.
+- Bad/avoid:
+  - Do not globally map manhwa to `blacktoon/episodes`; historical successful manhwa logs use `https://i.toonflix.app/manhwa/{workId}/{episodeId}/p001.jpg`.
+  - Do not keep chasing ACK for this case unless `/api/ad/ack` stops returning 200; the current failure occurs after ACK proof.
+  - Do not accept ad/banner images as content. Candidate extraction must stay restricted to page/generated CDN image patterns.
+
+## 2026-06-17 22:58:00 +09:00 Emulator-only: this manhwa requires image API, not generated CDN guessing
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_132704`
+- Confirmed good:
+  - ACK remains actual `/api/ad/ack code=200`:
+    - `ackMs=3109`
+    - native submit `code=200`
+- Current blocker:
+  - First drawable still failed at `51921ms`.
+  - Direct RSC/page body has `imageMetas` and `imagesToken`, but no final image URLs:
+    - `srcIndex=16647`
+    - `imageMetasIndex=35153`
+    - `imagesTokenIndex=36680`
+    - `sourceWorkId=8329`
+    - `episodeId=65787`
+    - `imageMetas` only contains page/width/height entries.
+  - Therefore `/manhwa/8329/65787` is not solved by generated CDN guessing; `/api/manhwa-images` must succeed.
+- Fix hypothesis:
+  - Historical successful image API logs show `ntk_images_api_request_key_attached` before first URL partial success.
+  - Current native signed requests add `x-ntk-key-id` but did not put `requestKeyId` into the JSON body before signing.
+  - Server returns `428 browser_key_required` or `403`, matching a key/body binding problem.
+- Patch applied, pending emulator validation:
+  - Native signed image API now writes `requestKeyId=keyId` into the payload before computing the body hash/signature.
+  - `ntk_images_api_native_signed` now logs `bodyKey=true`.
+- Bad/avoid:
+  - Do not keep expanding generated CDN work-id probes for this case; the authoritative body contains no CDN URLs.
+  - Do not treat `sourceWorkId=8329` plus `episodeId=65787` as proof that `i.toonflix.app/manhwa/8329/65787/p001.*` exists; probes already disprove it.
+
+## 2026-06-17 23:40:00 +09:00 Emulator-only: ACK/RSC are good; image API needs browser-key site signing
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_133950`
+- Confirmed good:
+  - ACK actual server proof is stable on `emulator-5554`:
+    - `ackMs=3332`
+    - native submit `/api/ad/ack code=200`
+  - Direct RSC/page payload now succeeds and is usable:
+    - `ntk_rsc_payload path=/manhwa/8329/65787,code=200,bytes=37067,usable=true,ms=445`
+    - `ntk_page_fetch_done mode=direct,code=200,bodyLen=37067,ms=451,path=/manhwa/8329/65787`
+- Current blocker:
+  - First drawable still fails at about `52s`.
+  - Native app-generated image API signature is rejected:
+    - `ntk_images_api_native_signed ... keyId=jcX_JcPoUyYI ... bodyKey=true`
+    - `/api/manhwa-images code=403`
+  - ACK WebView request key is recorded:
+    - `ntk_request_key_recorded ... keyId=1b9eXuweENLl`
+  - Attaching only that recent ACK request key reaches the intended server-side validation path but fails:
+    - `/api/manhwa-images code=428`
+    - body `{"ok":false,"error":"browser_key_required"}`
+  - This proves the image API needs a request signed by the browser/site key, not the app-native key and not a key id alone.
+- Patch applied, pending emulator validation:
+  - Non-ACK hidden WebView image fallback now detects `about:blank` eval context, reloads the real viewer URL, and retries the signer/API script shortly after `onPageFinished`.
+  - This is meant to let the existing `viewerImagesSiteSigned` JS path actually run inside `https://sbxh7.com/manhwa/8329/65787`.
+- Bad/avoid:
+  - Do not chase ACK again unless `/api/ad/ack` stops returning 200; the active failure is post-ACK image URL acquisition.
+  - Do not keep using the app-native image signature as the primary proof; server rejects that key family with `403`.
+  - Do not accept `requestKeyId` without matching browser signature; server explicitly returns `browser_key_required`.
+  - Do not claim image success until first drawable succeeds and content images, not ad images, are visible.
+
+## 2026-06-17 23:58:00 +09:00 Emulator-only: ACK/image API proof fixed; title-path false captcha is active blocker
+
+- Current device policy:
+  - Use `emulator-5554` only. Do not use the user's phone for this validation loop.
+- Confirmed good from latest successful no-scroll artifact:
+  - `build/ntk-random-perf/20260617_140259`
+  - Actual `/api/ad/ack` server proof succeeds:
+    - `nativeSubmit@3201/code=200`
+    - `guardFirstDone@3211`
+  - Browser request key continuity is fixed:
+    - ACK WebView records `requestKeyId=rto8S0jnWCmy...`
+    - image WebView loads the matching local JWK and signs `/api/manhwa-images`
+  - `/api/manhwa-images` returns `200` and 39 content images from `flysky3m.com`.
+  - First drawable succeeds, proving the ACK-to-image API signing path works end to end.
+- Current blocker:
+  - Scroll validation after CDN host acceptance hit a false `CaptchaActivity` launch for title path `/manhwa/8329`.
+  - The episode path has strict ACK proof, but title path proof lookup was exact-scope only, so `/manhwa/8329` could still be treated as unverified after a stale/recent challenge.
+  - This is not an ACK regression unless `/api/ad/ack` stops returning 200.
+- Patch applied, pending emulator validation:
+  - Added strict child-scope ACK proof lookup for title paths in `NtkWebViewFallbackManager`.
+  - `CustomHttpClient` now treats a strict episode ACK under a title path as NTK viewer access proof for that title document.
+  - Added a unit assertion that a title 403 must not skip fallback/captcha flow when access proof is present.
+- Bad/avoid:
+  - Do not launch `CaptchaActivity` for title-path 403 when the same title already has a recent strict episode ACK proof.
+  - Do not weaken viewer ACK success to weak `ad_ack_c`; actual `/api/ad/ack` 200 remains required.
+  - Do not reintroduce generated/i.toonflix guessing for the `/manhwa/8329/65787` case; the authoritative image API now returns `flysky3m.com` content URLs.
+
+## 2026-06-17 23:18:00 +09:00 Emulator-only: target repro passes after preserving ACK-bound image key
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_141734`
+  - Device: `emulator-5554` only.
+- Fixes applied after the previous failure:
+  - Image API retry no longer force-registers a new browser key when an ACK-bound private key is already loaded.
+  - This prevents the sequence `ACK key A succeeds -> image retry registers key B -> /api/manhwa-images 403`.
+  - Title-path false captcha patch remains in place and did not regress this run.
+- Confirmed good:
+  - Actual `/api/ad/ack` 200:
+    - `nativeSubmit@3143/code=200`
+    - `guardFirstDone@3153`
+    - total ACK preflight `3604ms`
+  - Image API succeeded with the ACK-bound browser key:
+    - `viewerImagesLocalJwkLoad keyId=t5CDhhXScndy`
+    - `viewerImagesStandaloneSigned keyId=t5CDhhXScndy`
+    - `/api/manhwa-images code=200`
+    - 39 images from `https://flysky3m.com/manhwa/8329/65787/p001.jpg` through `p039.jpg`
+  - Parser accepted the real content CDN:
+    - `ntk_viewer_parse ... images=39,firstImage=https://flysky3m.com/.../p001.jpg`
+  - First drawable:
+    - `reader_open_to_first_drawable source=ntk kind=bitmap page=0 ms=10896`
+  - Scroll:
+    - 5 mixed touch scroll steps passed.
+    - Every checked viewport had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, `pages=39`.
+    - Screenshot `ntk-random-scroll-0.png` visually shows real manga content, not ads or blank placeholders.
+  - Position stability:
+    - Each scroll step reported `maxPageDelta=0`, `maxOffsetDelta=0`, `changedSamples=0`.
+- Remaining caveat:
+  - `slowSignals=1` is only the summary parser picking up a zero-sample `surface_jank_v3` diagnostic; per-step scroll assertions passed and dropped frames were `0`.
+  - First drawable still takes about 10.9s on strict target repro. User said speed can be partly tolerated now; ACK and stability are the current finish criteria.
+- Bad/avoid:
+  - Do not force-register a new viewer image browser key after ACK success unless the existing private key is absent. New un-ACKed keys produce 403.
+  - Do not run Gradle unit test and assemble in parallel; generated Glide AP output can race and fail the unit executor.
+
+## 2026-06-18 00:25:00 +09:00 Emulator-only: strict fresh failure isolated to direct-target metadata prefetch contamination
+
+- Current device policy:
+  - Use `emulator-5554` only for this loop. Do not use the user's phone.
+- Last strict fresh artifact:
+  - `build/ntk-random-perf/20260617_141922`
+- Failure shape:
+  - Strict fresh target run failed before scroll with first drawable status `captcha` at about `23677ms`.
+  - The ACK preflight did not reach native submit in this run:
+    - `webViewAckPreflightDone success=false ms=1885`
+    - `challengeSelected@1219 status=403`
+    - no `nativeSubmit`.
+  - Before the viewer path, the direct-target metadata helper tried title path `/manhwa/8329`.
+  - Title metadata fetch opened `CaptchaActivity` for `/manhwa/8329`, even though this test already had explicit target data:
+    - target episode `/manhwa/8329/65787`
+    - image episode id `1570427`
+    - image count `39`
+  - This contaminated the actual viewer ACK/image validation and turned a known-good ACK/image path into a false captcha run.
+- Patch applied, pending emulator validation:
+  - Direct target metadata lookup now treats `LOAD_CAPTCHA` or `LOAD_ERROR` with recent Cloudflare challenge as a metadata miss.
+  - In that case it does not call `ensureNtkAccessAfterChallenge` and does not open a captcha recovery path before the viewer test.
+  - The test falls back to the explicit target episode/image metadata and validates the real viewer path.
+- Bad/avoid:
+  - Do not let direct-target metadata prefetch open `CaptchaActivity`; it tests the title-list side effect, not the viewer ACK/image path.
+  - Do not interpret this strict fresh failure as an ACK regression until `/api/ad/ack` itself is attempted and fails.
+  - Do not mark strict fresh complete until the emulator run shows actual `/api/ad/ack code=200`, `/api/manhwa-images code=200`, real manga screenshots, and no ad-image mixing.
+
+## 2026-06-18 00:42:00 +09:00 Emulator-only: visible UX ACK works; target harness cleared clearance after UX
+
+- Visible ACK UX proof:
+  - Command: `tools/ntk_ack_ux_probe.ps1` on `emulator-5554`, target `/manhwa/8329/65787`, root `https://sbxh7.com`, strict fresh.
+  - Artifact: `build/ntk-ack-ux-probe/20260617_142507_sbxh7_com_6f7d16`
+  - Stopped after marker: `ntk_server_ack_success_recorded`.
+  - Probe result:
+    - `ack=true`
+    - `clearance=true`
+    - `serverProof=true`
+    - `accessProof=true`
+    - `ms=48875`
+  - This confirms the emulator can solve the normal visible UX path and produce NTK access/ACK proof for sbxh7.
+- Viewer target strict fresh with `EnsureAccessBefore` still failed:
+  - Artifact: `build/ntk-random-perf/20260617_142616`
+  - Before viewer case:
+    - `ntk_true_random_access_verify ... ok=true,proof=true,strongCookies=true,cookies=... cf=true ... adAck=true`
+  - Immediately after, target branch ran strict-fresh preparation and cleared WebView CF cookies:
+    - `ntk_cookie_expire_webview_cf ... storeReset=true ... unchecked=true`
+  - Then image/ACK bridge requests had `hasCfClearance=false` and returned Cloudflare 403.
+  - Result: no `/api/manhwa-images` 200, no first drawable.
+- Patch applied, pending emulator validation:
+  - In the target replay branch, `ensureAccessBefore` now runs after `prepareFreshNtkMeasurementState(...)`, matching the random branch order.
+  - This prevents the test harness from solving visible UX clearance and then immediately deleting it before opening the viewer.
+- Bad/avoid:
+  - Do not run target `EnsureAccessBefore` before strict-fresh clearing; that destroys the exact clearance the test just earned.
+  - Do not call image API 403 an app-content failure while bridge logs show `hasCfClearance=false` due to test ordering.
+  - Do not rely on weak `native-challenge-ad-ack-cookie-200` as strict `/api/ad/ack` completion for image readiness.
+
+## 2026-06-18 00:52:00 +09:00 Emulator-only: ensure-access helper was discarding a successful UX proof
+
+- Latest target rerun:
+  - `build/ntk-random-perf/20260617_142859`
+- Confirmed:
+  - `CaptchaActivity` solved the visible flow and produced cookies:
+    - `cf=true`
+    - `adGuard=true`
+    - `adAck=true`
+  - `/api/ad/challenge` returned 200 through the visible UX/bridge path:
+    - `ntk_viewer_ad_bridge_quic_first code=200`
+    - `ntk_server_ack_success_recorded ... source=bridge-challenge-ad-ack-cookie-200`
+- Failure was in the test helper:
+  - During the polling loop, access verification reached an acceptable state:
+    - `documentOk=true`
+    - `serverAckProof=true`
+    - `strongCookies=true`
+  - After closing `CaptchaActivity`, the helper re-ran verification and hit a transient document 403, then returned false.
+- Patch applied, pending emulator validation:
+  - `ensureNtkAccessBeforeMeasurement(...)` now preserves a successful verification observed during the polling loop.
+  - It only performs the final post-close verification if no success was observed.
+- Bad/avoid:
+  - Do not throw away a live visible-UX access success because a later post-close HTTP probe transiently returns Cloudflare 403.
+  - Keep strict final viewer validation separate: visible UX access success is only the gate to open the viewer; real image success still needs first drawable and content screenshots.
+
+## 2026-06-18 01:05:00 +09:00 Emulator-only: ACK is good; current blocker is image API browser-key signing
+
+- Latest strict fresh target artifact:
+  - `build/ntk-random-perf/20260617_143057`
+- Confirmed not an ACK regression:
+  - `webViewAckPreflightDone success=true ms=5724`
+  - `nativeSubmit@5377/code=200`
+  - `guardFirstDone@5385`
+  - strict proof passed.
+- Actual blocker:
+  - `/api/manhwa-images` did not receive browser-key headers and returned `428 browser_key_required`.
+  - Logs showed `viewerImagesBrowserKeyForceReuse keyId=...`, then `viewerImagesApiOnlyBridge ... keyHeader=false`.
+  - That means the image API-only script could carry a request key id without a usable private key/signature.
+- Patch applied, pending emulator validation:
+  - API-only `ensureBrowserKey` no longer treats key-id-only state as usable browser signing state.
+  - Added `viewerImagesBrowserKeyIdOnly` diagnostics when a key id exists without private key material.
+  - API-only `signHeaders` now explicitly retries standalone signing from local/IDB private JWK before giving up, and only force-registers a new key on retry attempts.
+- Bad/avoid:
+  - Do not keep chasing ACK if `/api/ad/ack code=200` and `guardFirstDone` are present.
+  - Do not accept `keyHeader=false` on `/api/manhwa-images`; image API success requires `x-ntk-key-id` plus signature headers.
+  - Do not force-register a new un-ACKed image key while an ACK-bound private key can still be loaded from localStorage/IDB.
+
+## 2026-06-18 01:15:00 +09:00 Emulator-only: ACK/image API fixed; remaining failure is first fast-scroll near-page decode
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_143638`
+- Confirmed good:
+  - Strict ACK actual proof succeeds again:
+    - `nativeSubmit@3017/code=200`
+    - `guardFirstDone@3026`
+    - `webViewAckPreflightDone success=true ms=3368`
+  - Image API signing patch worked:
+    - `viewerImagesLocalJwkLoad keyId=Bj1SFT1Fz_bH`
+    - `viewerImagesStandaloneSigned keyId=Bj1SFT1Fz_bH`
+    - `keyHeader=true`
+    - `/api/manhwa-images code=200`
+    - parser accepted 39 `flysky3m.com` content pages.
+  - Screenshot shows real manga content, not ad images.
+- Remaining failure:
+  - First fast downward touch scroll landed beyond the initially decoded near window.
+  - Assertion failed with `drawablePx=1021`, `placeholderPx=1254`, `loading=1`.
+  - Position drift stayed stable (`maxPageDelta=0`, `maxOffsetDelta=0`), so this is a decode/readiness gap, not scroll correction.
+- Patch applied, pending emulator validation:
+  - Increased NTK manga initial foreground stream ahead and near decode ahead from 4 pages to 8 pages.
+  - Scope is intentionally limited to NTK initial near-page rendering, not a delayed viewer open or relaxed test condition.
+- Bad/avoid:
+  - Do not relax the strict viewport assertion to hide placeholders.
+  - Do not add artificial waits before opening the viewer. The fix must make nearby pages ready earlier.
+
+## 2026-06-18 01:25:00 +09:00 Emulator-only: initial near-page decode now limited by priority class, not request count
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_144103`
+- Status:
+  - ACK and image API remain good:
+    - `nativeSubmit@3231/code=200`
+    - `guardFirstDone@3240`
+    - `webViewAckPreflightDone success=true ms=3571`
+    - `/api/manhwa-images` delivered 39 `flysky3m.com` pages with `keyHeader=true`.
+  - First drawable improved from `19284ms` to `17824ms`.
+  - First fast-scroll placeholder improved from `1254px` to `490px`, but strict viewport still failed.
+- New diagnosis:
+  - p007 was requested early as visible/warm, but actual foreground race did not start until about 2.8s later.
+  - Initial near warm pages used `FOREGROUND_PRIME_WARM_GENERATION` but were not treated as `visiblePriority`, so they could sit behind active warm work until user scroll made them urgent.
+- Patch applied, pending emulator validation:
+  - NTK first-bitmap near-prime pages within the foreground stream ahead window are now treated as actual visible-priority work.
+  - This routes them through urgent network/decode and visible cache priority without delaying viewer open or relaxing the test.
+- Bad/avoid:
+  - Do not solve this by sleeping after first bitmap; the user can scroll immediately.
+  - Do not expand the whole episode as urgent; only near-prime pages after first bitmap should get this promotion.
+
+## 2026-06-18 01:33:00 +09:00 Emulator-only: private-less site key must not overwrite ACK-bound local key
+
+- Latest emulator artifact:
+  - `build/ntk-random-perf/20260617_144403`
+- Status:
+  - ACK remained good:
+    - `nativeSubmit@3085/code=200`
+    - `guardFirstDone@3093`
+    - `webViewAckPreflightDone success=true ms=3336`
+  - Image API regressed to 403 after a key overwrite:
+    - local private JWK loaded for key `Vsh9xKpVOPtx`
+    - later site module returned key `YI2Y7QWlB4Sk` with `hasPrivate=false`
+    - global request key id was overwritten, so standalone signing no longer matched the ACK-bound key.
+- Patch applied, pending emulator validation:
+  - API-only `ensureBrowserKey` now logs `viewerImagesBrowserKeySiteIdNoPrivate` and keeps the existing ACK-bound request key when site `D()` returns a key id without private key material.
+  - Site signer can still sign via `m.X`; standalone signing keeps using the loaded private JWK.
+- Bad/avoid:
+  - Do not let private-less site key ids clobber a loaded local/IDB private key.
+  - If image API returns 403 after `keyHeader=true`, check whether the active key id changed after ACK.
+
+## 2026-06-18 01:47:00 +09:00 Emulator-only: target strict fresh ACK/image/scroll repro passed
+
+- Passing emulator artifact:
+  - `build/ntk-random-perf/20260617_144657`
+  - Device: `emulator-5554` only.
+- Confirmed:
+  - Strict fresh visible UX gate plus actual ACK proof:
+    - `webViewAckPreflightDone success=true ms=3811`
+    - `nativeSubmit@3509/code=200`
+    - `guardFirstDone@3519`
+  - Image API:
+    - `viewerImagesLocalJwkLoad keyId=PBkbW3Gw6Qaw`
+    - `viewerImagesStandaloneSigned keyId=PBkbW3Gw6Qaw`
+    - `/api/manhwa-images code=200`
+    - 39 content pages from `flysky3m.com`.
+  - Parser:
+    - `ntk_viewer_parse ... images=39,firstImage=https://flysky3m.com/manhwa/8329/65787/p001.jpg`
+  - First drawable:
+    - `reader_open_to_first_drawable ... ms=21806`
+  - Scroll:
+    - 5 mixed touch scroll steps passed.
+    - Every step had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - Position stability stayed stable with `maxPageDelta=0`, `maxOffsetDelta=0`, `changedSamples=0`.
+  - Screenshot visually shows real manga content, not ad images or blank placeholders.
+- Caveat:
+  - First drawable is still slow (~21.8s) because the strict fresh visible UX and image API bridge path dominate. User accepted speed tradeoff; current finish criterion is ACK/stability.
+  - `slowSignals=1` is a small sampled diagnostic; strict test still passed and dropped frames were 0.
+- Bad/avoid:
+  - Do not remove the private-less site key guard; it is what prevents ACK-bound key clobbering.
+  - Do not roll back near-prime visible priority unless a broader regression appears; it removed the first fast-scroll placeholder gap.
+
+## 2026-06-18 01:51:00 +09:00 Emulator-only: target strict fresh repeat passed
+
+- Repeat artifact:
+  - `build/ntk-random-perf/20260617_144905`
+- Confirmed repeat pass:
+  - `passed=True`, `failures=0`.
+  - ACK:
+    - `webViewAckPreflightDone success=true ms=3552`
+    - `nativeSubmit@3245/code=200`
+    - `guardFirstDone@3256`
+  - First drawable:
+    - `reader_open_to_first_drawable ... ms=18475`
+  - Scroll:
+    - 5 mixed touch scroll steps passed.
+    - Every step had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - Drift remained stable: `maxPageDelta=0`, `maxOffsetDelta=0`, `changedSamples=0`.
+- Current finish position:
+  - ACK and stability target repro is now passing twice on emulator.
+  - Speed remains imperfect but within the explicit compromise: first drawable ~18.5s to ~21.8s under strict fresh visible UX.
+
+## 2026-06-18 01:56:00 +09:00 Emulator-only: ACK/image fixed; first fast-scroll readiness gap isolated again
+
+- Latest failing artifacts after strict fresh reinstall/repeat:
+  - `build/ntk-random-perf/20260617_151932`
+  - `build/ntk-random-perf/20260617_152542`
+- `20260617_151932` diagnosis:
+  - Actual ACK proof succeeded:
+    - `webViewAckPreflightDone success=true ms=5674`
+    - `nativeSubmit code=200`
+  - First drawable failed because image API signing used a stale Java/native key while ACK used a different browser request key.
+  - Fix applied before next run:
+    - Store the ACK/WebView request key material in `NtkWebViewFallbackManager`.
+    - Let `CustomHttpClient.applyNtkViewerImagesSignature` sign `/api/manhwa-images` with the recent ACK-bound key for the same episode scope.
+  - Bad/avoid:
+    - Do not sign image API with a Java-native key if ACK was completed with a different browser request key.
+    - Do not let generated CDN probes run before strict ACK proof; they can compete with and obscure the ACK-only flow.
+- `20260617_152542` diagnosis:
+  - Actual ACK proof succeeded:
+    - `webViewAckPreflightDone success=true ms=5222`
+    - `nativeSubmit@2973/code=200`
+    - `guardFirstDone@2981`
+  - Image API succeeded:
+    - `/api/manhwa-images code=200`
+    - 39 real manga pages from `flysky3m.com`.
+  - First drawable succeeded at `38362ms`.
+  - Screenshot showed real manga, not ads.
+  - Scroll failed only because first fast-scroll viewport still had one near page loading:
+    - `drawablePx=2017`
+    - `missingPx=0`
+    - `placeholderPx=259`
+    - `loading=1`
+  - Scroll drift remained stable:
+    - `maxPageDelta=0`
+    - `maxOffsetDelta=0`
+    - `changedSamples=0`
+  - Root cause:
+    - `reader-drawable-ready` could be emitted after p001 only.
+    - p006/p007 started/decoded too late for immediate first fast scroll.
+    - `NtkEpisodeCoordinator` allowed only p002-p003 through anchor-exclusive fallback before first bitmap, and `ReaderSession` also capped pre-anchor fallback at 2 pages.
+- Patch applied, pending emulator validation:
+  - Expanded pre-anchor NTK near-page permit/fallback to the first fast-scroll range.
+  - Raised `NTK_PRE_ANCHOR_FALLBACK_MAX_AHEAD` from 2 to 8.
+  - Raised `NTK_INITIAL_CONTINUOUS_BUSY_PAGES` from 4 to 8.
+- Bad/avoid:
+  - Do not treat p001 first drawable as fully scroll-ready when near pages are still loading.
+  - Do not add post-draw sleeps or relax the viewport placeholder assertion.
+  - Do not broaden the whole episode as urgent; only the initial near fast-scroll range should be promoted.
+
+## 2026-06-18 02:10:00 +09:00 Emulator-only: ACK key import fixed; native image API publish gap isolated
+
+- Latest emulator artifacts:
+  - `build/ntk-random-perf/20260617_153249`
+  - `build/ntk-random-perf/20260617_153924`
+- `20260617_153249` diagnosis:
+  - Actual ACK proof succeeded:
+    - `/api/ad/challenge` native submit returned 200.
+    - `webViewAckPreflightDone success=true ms=5559`.
+  - First drawable still timed out because `/api/manhwa-images` was signed with a stale native request key while ACK had generated a different browser request key.
+- Patch applied before `20260617_153924`:
+  - WebView ACK key state now exports `keyIdFull`, `privateJwk`, `expiresAt`, and `scope` to native through `onAckState`.
+  - Native stores the browser JWK private key material as recent request-key material.
+  - Logs redact `privateJwk`; raw private key material must never be logged.
+- `20260617_153924` diagnosis:
+  - ACK actual server proof succeeded:
+    - `nativeSubmit code=200`.
+    - `webViewAckPreflightDone success=true ms=5333`.
+  - Browser JWK import worked:
+    - `ntk_request_key_material_jwk_recorded path=/manhwa/8329/65787,keyId=aXREJY8nMiuu`.
+    - `ntk_request_key_recent_signed path=/manhwa/8329/65787,keyId=aXREJY8nMiuu,signedPath=/api/manhwa-images`.
+  - Image API eventually succeeded:
+    - `/api/manhwa-images code=200`
+    - `imageCount=39`.
+  - First drawable still timed out because the successful native/direct API response did not publish image URLs to `ReaderImageCache` or the viewer image API cache.
+  - Existing cache handoff was only reliable when the WebView bridge path called `cacheViewerImageApiResponse`; direct `CustomHttpClient.fetchNtkViewerImagesApi` could return 200 without early URL publication.
+- Patch applied, pending emulator validation:
+  - Added a shared `NtkWebViewFallbackManager.rememberViewerImageApiResponse(...)` helper.
+  - `CustomHttpClient.fetchNtkViewerImagesApi(...)` now publishes every successful 2xx image API response to:
+    - `VIEWER_IMAGE_API_CACHE`
+    - `ReaderImageCache.rememberEarlyNtkImageUrls(path, urls)`
+  - `ReaderImageCache` still performs trusted NTK image URL filtering, so ad URLs must not enter the early image set.
+- Bad/avoid:
+  - Do not rely only on WebView `onViewerImages` / bridge callbacks for early image URLs.
+  - Do not treat image API `200 imageCount>0` as sufficient unless `reader_early_ntk_urls_remember` follows for the same viewer path.
+  - Do not log private JWK or full signing material while debugging ACK.
+
+## 2026-06-18 02:20:00 +09:00 Emulator-only: direct register keyId-only branch identified
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_154615`
+- Result:
+  - Failed first drawable timeout at `67177ms`.
+  - ACK actual server proof still passed:
+    - `webViewAckPreflightDone success=true ms=5642`
+    - `nativeSubmit code=200`
+- Failure details:
+  - No `browserKeyIdbStore` / `privateJwk` event appeared in this run.
+  - Native recorded only keyId:
+    - `ntk_request_key_recorded path=/manhwa/8329/65787,source=client-key-register,keyId=FXWgzQdJFdoN`
+    - `ntk_request_key_recorded path=/manhwa/8329/65787,source=ad-ack-request,keyId=FXWgzQdJFdoN`
+  - `/api/manhwa-images` stayed 403 because recent key material was absent:
+    - no `ntk_request_key_recent_signed`
+    - no `reader_early_ntk_urls_remember`
+  - This is not a captcha screen issue in this artifact; `/api/ad/ack` is 200 and the remaining block is image API signing key ownership.
+- Patch applied, pending emulator validation:
+  - In ACK-only browser key setup, prefer `NtkQuicBridge.ensureViewerBrowserKeyForUserAgent(...)` / `ensureViewerBrowserKey(...)` before the JS module direct `/api/client-key/register` path.
+  - That native bridge path generates and stores the private key material via `rememberRecentRequestKeyMaterial(...)`, then JS uses the returned keyId in the ACK body.
+  - Expected validation logs:
+    - `browserKeyNativeAckEnsure`
+    - `ntk_request_key_material_recorded`
+    - `ntk_request_key_recent_signed`
+    - `/api/manhwa-images code=200 imageCount=39`
+    - `reader_early_ntk_urls_remember path=/manhwa/8329/65787,count=39`
+- Bad/avoid:
+  - Do not let ACK-only rely on a keyId-only `/api/client-key/register` bridge response when native will later need to sign image API requests.
+  - Do not chase captcha/Cloudflare for this specific failure while ACK actual proof is already 200.
+
+## 2026-06-18 02:32:00 +09:00 Emulator-only: ACK stable; fast-scroll far placeholder remains
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_155156`
+- Result:
+  - First drawable passed.
+  - Scroll steps 0-3 passed.
+  - Scroll step 4 failed with a completely white placeholder viewport:
+    - `viewportPx=2274`
+    - `drawablePx=0`
+    - `placeholderPx=2276`
+    - `loading=3`
+    - `pages=39`
+  - Screenshot showed white placeholder, not ads.
+- ACK/image handoff proof:
+  - Native bridge key material path worked:
+    - `browserKeyNativeAckEnsure=true`
+    - `ntk_request_key_material_recorded path=/manhwa/8329/65787`
+  - Actual ACK server proof passed:
+    - `nativeSubmit code=200`
+    - `webViewAckPreflightDone success=true ms=4869`
+  - Image API signed with the ACK-bound native private key:
+    - `ntk_request_key_recent_signed path=/manhwa/8329/65787`
+  - Image API succeeded:
+    - `/api/manhwa-images code=200`
+    - `imageCount=39`
+  - Direct native API publish worked:
+    - `reader_early_ntk_urls_remember path=/manhwa/8329/65787,count=39`
+    - `ntk_webview_viewer_images_api_remember key=manhwa:8329:65787:/manhwa/8329/65787`
+- Root cause:
+  - The first fast-scroll sequence can jump from the initial pages to around page 14.
+  - Initial NTK warm/decode was still centered around p001-p009.
+  - The visible page 14 range was requested as urgent, but prior generated-page fetch/decode work was already active, causing `reader_visible_request_skip_active ... urgent=true` while the viewport stayed placeholder.
+- Patch applied, pending emulator validation:
+  - Expanded strict fresh NTK manhwa initial continuous/busy/decode/warm range toward the first fast-scroll jump range.
+  - Increased generated full-byte prefetch batch size and reduced batch delay.
+  - Increased generated busy directional decode range so a real fast-scroll anchor promotes more surrounding pages to decode, not only byte prefetch.
+- Bad/avoid:
+  - Do not add settle sleeps after scroll to hide this; the viewport really was blank.
+  - Do not broaden success criteria to ignore placeholder pixels.
+  - Do not warm only p001-p009; mixed fast-scroll can hit p014-p016 immediately after initial draw.
+
+## 2026-06-18 22:05:00 +09:00 Emulator-only: target strict fresh passed after far-scroll warm expansion
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_220229`
+- Result:
+  - `passed=True`, `failures=0`.
+  - Same target repro:
+    - path `/manhwa/8329/65787`
+    - imageEpisodeId `1570427`
+    - expected images `39`
+  - Actual ACK proof:
+    - `webViewAckPreflightDone success=true ms=6143`
+    - `nativeSubmit code=200`
+  - Request-key ownership:
+    - `browserKeyNativeAckEnsure=true`
+    - `ntk_request_key_material_recorded path=/manhwa/8329/65787,keyId=MW1OLQjwLlSj`
+    - `ntk_request_key_recent_signed path=/manhwa/8329/65787`
+  - Image API:
+    - `/api/manhwa-images code=200`
+    - `imageCount=39`
+    - `reader_early_ntk_urls_remember path=/manhwa/8329/65787,count=39`
+    - `ntk_webview_viewer_images_api_remember key=manhwa:8329:65787:/manhwa/8329/65787,count=39`
+  - First drawable:
+    - `reader_open_to_first_drawable source=ntk kind=bitmap page=0 ms=29663`
+  - Scroll:
+    - 5 mixed touch scroll steps passed.
+    - Every step had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - Step 4 jumped to around page 24 and still passed:
+      - `drawablePx=2276`
+      - `placeholderPx=0`
+      - `loading=0`
+      - `maxPageDelta=0`
+      - `maxOffsetDelta=0`
+  - Screenshot shows real manga content, not ads and not a blank placeholder.
+- Remaining caveat:
+  - First drawable remains slow under strict fresh (~29.7s). User currently accepts speed compromise; ACK and stability are the finish priority.
+  - `slowSignals=1` remains from sampled frame metrics, but dropped frames are 0 and viewport assertions passed.
+- Next validation:
+  - Run at least one non-target random strict fresh pass to check this is not target-only.
+
+## 2026-06-18 22:15:00 +09:00 Emulator-only: random webtoon jank failure isolated
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_220441`
+- Repro:
+  - Seed `1781701481889`
+  - path `/webtoon/16968/1430500`
+  - imageEpisodeId `1430500`
+  - imageCount requested `80`, canonical API installed `67`
+- Result:
+  - ACK actual proof passed:
+    - `webViewAckPreflightDone success=true ms=6378`
+    - `nativeSubmit code=200`
+  - Early URL/image display passed:
+    - `reader_early_ntk_urls_remember path=/webtoon/16968/1430500,count=67`
+    - `reader_open_to_first_drawable source=ntk kind=tiles page=0 ms=8992`
+  - Viewport coverage passed:
+    - step 0 and 1 both had `placeholderPx=0`, `loading=0`, `missingPx=0`.
+    - Screenshot shows real webtoon image, not ads or blank.
+  - Failure was strict jank only:
+    - step 1 `droppedFrames=1`, `maxDroppedFrames=0`.
+    - `ReaderSurfaceStats` slow frame: `drawMs=0.39`, `totalMs=29.69`.
+- Root cause:
+  - `ReaderSurfaceView.renderFrame()` dispatched window/prefetch work before drawing the current frame.
+  - Draw itself was cheap, but pre-draw window work inflated callback total time and tripped dropped-frame accounting.
+- Patch applied, pending emulator validation:
+  - Move `dispatchWindowRequest(...)` and `dispatchBoundaryRequest(...)` to after `drawState(...)` when a frame has drawable state.
+  - If there is no drawable state, dispatch still happens before returning.
+  - Goal: keep visible canvas work first, then issue prefetch/window work without blocking the current draw.
+- Bad/avoid:
+  - Do not relax `maxDroppedFrames=0`; this run proves real image display is fine but strict jank still matters.
+  - Do not solve this with post-scroll waits; the dropped frame occurred during active scroll.
+
+## 2026-06-18 22:09:00 +09:00 Emulator-only: webtoon jank repro passed after draw-first frame order
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_220720`
+- Repro:
+  - Seed `1781701481889`
+  - path `/webtoon/16968/1430500`
+  - imageEpisodeId `1430500`
+  - imageCount requested `80`
+- Result:
+  - `passed=True`, `failures=0`, `slowSignals=0`.
+  - ACK:
+    - `webViewAckPreflightDone success=true ms=7902`
+    - `nativeSubmit code=200`
+  - First drawable:
+    - `reader_open_to_first_drawable ... ms=10559`
+  - Scroll:
+    - 5 mixed touch steps passed.
+    - Previously failing step 1 no longer dropped frames.
+    - All viewport assertions passed with no placeholder/loading gaps.
+- Fix confirmed:
+  - Moving `dispatchWindowRequest` / `dispatchBoundaryRequest` behind `drawState` prevented pre-draw window/prefetch work from inflating the current frame callback.
+- Remaining validation:
+  - The previous non-target random run reported `coverage=curated-only`; run root probe before claiming final live-random proof.
+
+## 2026-06-18 22:11:00 +09:00 Emulator-only: root probe still hard-blocked
+
+- Artifact:
+  - `build/ntk-root-probe/20260617_220840_980623`
+- Command:
+  - `.\tools\ntk_root_probe.ps1 -DeviceSerial emulator-5554 -Roots "https://sbxh7.com" -TimeoutMs 5000 -MaxRoots 12 -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall`
+- Result:
+  - Instrumentation itself passed, but root probe verdict failed:
+    - `verdict=no-live-api-root`
+    - `ackBlockedReason=No api-json-ok root. classes=cf-block:1`
+    - `rootClassCounts cf-block=1`
+  - Root probes:
+    - OkHttp root/api/challenge: connection reset.
+    - QUIC root/challenge: 403 Cloudflare "Just a moment..." HTML.
+    - H2 root/challenge: connection reset.
+- Interpretation:
+  - This is direct root/API discovery hard-block, not current viewer ACK proof failure.
+  - Viewer strict fresh cases still succeed because the app uses visible/ACK-preflight bridge flow and scoped ACK/request-key handoff.
+  - Fully live random discovery from `sbxh7.com` cannot be claimed from this root probe artifact.
+- Bad/avoid:
+  - Do not claim final "complete live random" proof while root probe is `no-live-api-root`.
+  - Do not confuse root API discovery hard-block with `/api/ad/ack` actual proof; they are separate gates.
+
+## 2026-06-18 22:30:00 +09:00 Emulator-only: manhwa fast-scroll initial placeholder failure
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_220934`
+- Repro:
+  - Seed `1781701774416`
+  - path `/manhwa/8209/63505`
+  - imageEpisodeId `63505`
+  - requested imageCount `80`, canonical installed `39`
+- Result:
+  - ACK actual proof passed:
+    - `webViewAckPreflightDone success=true ms=6102`
+    - `/api/ad/ack nativeSubmit code=200`
+  - Early URL handoff and first drawable passed:
+    - `reader_early_ntk_urls_remember path=/manhwa/8209/63505,count=39`
+    - `reader_open_to_first_drawable source=ntk kind=bitmap page=0 ms=8939`
+  - First mixed touch fast-down step failed viewport coverage:
+    - `progressAfterQuiet=3:-497@5151`
+    - `placeholderPx=1221`, `loading=1`, `missingPx=0`, `errors=0`
+    - Screenshot is real manga plus blank lower area, not ad content.
+- Root cause:
+  - Before first bitmap, generated initial recovery limited early continuous requests to only 4 pages.
+  - The test immediately fast-scrolled into page 4/5 range; one visible page was still active/loading.
+  - Initial direct delivery was also capped at 2 pages and 2200ms, too narrow for strict fresh fast-scroll reach.
+- Patch applied, pending validation:
+  - Increase generated initial recovery pages from 4 to 12.
+  - Increase initial direct delivery pages from 2 to 10.
+  - Increase initial continuous direct delivery window from 2200ms to 5200ms.
+- Bad/avoid:
+  - Do not call this an ACK problem: ACK was 200 and scoped proof passed.
+  - Do not fix by adding post-first-draw waits to the test or viewer; the viewer must keep filling the fast-scroll range immediately.
+  - Do not hardcode `/manhwa/8209/63505`; the fix targets initial generated range coverage generally.
+
+## 2026-06-18 22:45:00 +09:00 Emulator-only: strict ACK 200 race after captcha/clearance
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_221337`
+- Repro:
+  - Seed `1781701774416`
+  - path `/manhwa/8209/63505`
+- Result:
+  - First drawable timed out because ACK preflight stalled:
+    - `webViewAckPreflightDone success=false ms=58511`
+  - Captcha/Cloudflare itself was not the blocker:
+    - `cf_clearance` appeared.
+    - document verification was `code=200`.
+    - `ad_ack_c` was present and scoped.
+  - Strict `/api/ad/ack` was the blocker:
+    - early/native bridge submit returned `400` or `428`.
+    - No final `ntk_viewer_ad_bridge_native_submit code=200` in this artifact.
+- Root cause:
+  - There is a race between challenge/canary/impression/proof and the strict ACK POST.
+  - Some code paths recorded `native-challenge-ad-ack-cookie-200` / challenge cookie as server ACK success even though it was not strict `/api/ad/ack` 200.
+  - Native ACK fallback attempted canary after a failed ACK but had only one loop attempt, so it did not retry the actual ACK after canary became OK.
+  - The ack-only JS fast path could enter `guardAck(ch)` before the ordered proof/canary/ACK sequence, creating a long false path.
+- Patch applied, pending validation:
+  - Native ACK fallback retry loop expanded from 1 to 3 attempts so canary fallback can be followed by a real ACK retry.
+  - Added an ack-only `Fast4` JS override that orders strict ACK as: challenge -> impressions -> proof -> canary -> `/api/ad/ack`, with one immediate canary retry on `missing_canary`.
+- Bad/avoid:
+  - Do not count `ad_ack_c` or challenge 200 as successful ACK. Final proof must include strict `/api/ad/ack` 200.
+  - Do not let hidden ack-only loop spin for ~58s after strict ACK failure; failed ordered ACK should retry quickly or fail fast with a clear reason.
+  - Do not confuse document/page 200 with image API/ACK success.
+
+## 2026-06-18 23:02:00 +09:00 Emulator-only: Fast4 installed but ACK loop did not enter
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_221959`
+- Repro:
+  - Seed `1781701774416`
+  - path `/manhwa/8209/63505`
+- Result:
+  - `webViewAckPreflightDone success=false ms=58500`
+  - first drawable timed out at `67346ms`.
+  - Fast4 was installed:
+    - `directAckProofFirstFast4Enabled=true`
+  - But the actual main ACK loop did not emit:
+    - no `ackOnlyLoop`
+    - no `browserKeyEarlyStarted` / `browserKeyEarlySkipped`
+    - no `directAckProofFirstFast4Start`
+  - Native fallback retried `/api/ad/ack` three times, but all strict ACK attempts were `code=0` / connection reset.
+  - Canary was OK (`/api/ad/canary` 200), so strict `/api/ad/ack` remained the blocker.
+- Root cause under test:
+  - ACK-only script could leave `__ntkAckOnlyRunning` alive and the full script had a 30s skip window plus only one script request.
+  - If the script returned/null-skipped or failed before the loop, the Java side waited nearly the whole ACK timeout with no real JS ACK work.
+- Patch applied, pending validation:
+  - Increase ACK-only script request limit from 1 to 3.
+  - Reduce ACK-only running guard to a short 2200ms duplicate guard and clear stale running state after that.
+  - Add explicit `ackOnlyMainEntry`, dynamic ACK function binding, `ackOnlyLoop`, and `ackOnlyMainExit/Error` logging.
+- Bad/avoid:
+  - Do not treat an installed override as proof it is being used; require `Fast4Start` and `/api/ad/ack` response logs.
+  - Do not trust `ackChecks passed=true` when `webViewDone=false` or `falseDone=true`; the summary can be misleading in this failure mode.
+  - Do not leave ACK-only request limit at 1 while stale in-page locks exist.
+
+## 2026-06-18 23:18:00 +09:00 Emulator-only: ACK loop enters, but direct proof path bypasses the working site guard submit
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_222602`
+- Repro:
+  - Seed `1781701774416`
+  - path `/manhwa/8209/63505`
+- Result:
+  - `ackOnlyMainEntry`, `ackOnlyLoop=1`, and `directAckProofFirstFast4Start` appeared, so stale-running/loop-entry issue is fixed.
+  - Fast4 challenge and impressions succeeded:
+    - challenge 200 with challenge present.
+    - `directAckImp` 4/4 returned 200.
+  - Guard wasm loaded quickly:
+    - module `209ms`, initSync `2ms`.
+  - But direct `guardProof()` returned only boolean/empty values:
+    - `_vc` -> `"true"`
+    - `_hk` -> empty
+    - `tpLen=0`
+  - Native fallback still failed strict ACK with 428/400/reset.
+- Comparison with prior success:
+  - `build/ntk-random-perf/20260617_220934` succeeded on the same path because the page/guard flow submitted:
+    - `ntk_native_ack_bridge_submit code=200`
+    - body included `tpLen=16`, `apLen=20`, `requestKeyId`, and `observationUrls`.
+  - That body was generated by the site guard ACK path, not by the direct `guardProof()` helper.
+- Patch applied, pending validation:
+  - Add Fast5 ACK override: challenge -> canary -> `guardAck(ch)` / site `__i4` first.
+  - Keep direct proof fallback only after the site guard submit path fails.
+- Bad/avoid:
+  - Do not bypass `guardAck/__i4` and rely only on `_vc`; `_vc` can return `"true"` without producing the server ACK proof body.
+  - Do not send `/api/ad/ack` with empty `tp`; modern strict ACK rejects it with 400/428.
+
+## 2026-06-18 23:34:00 +09:00 Emulator-only: webtoon ACK-only loop blocked by heavy key-state diagnostics
+
+- Artifact:
+  - `build/ntk-random-perf/20260617_223159`
+- Repro:
+  - Seed `1781701481889`
+  - path `/webtoon/16968/1430500`
+- Result:
+  - `webViewAckPreflightDone success=false ms=58543`
+  - first drawable timed out at `67098ms`.
+  - Fast5 override was installed and ACK-only main entered:
+    - `directAckProofFirstFast5Enabled=true`
+    - `ackOnlyMainEntry=true`
+  - But the loop never reached:
+    - no `browserKeyEarlyStarted` / `browserKeyEarlySkipped`
+    - no `ackOnlyLoop`
+    - no `directAckProofFirstFast5Start`
+    - no strict `/api/ad/ack` 200 submit
+  - Image API then repeated `/api/webtoon-images` 403 and page 0 became visible error.
+- Root cause under test:
+  - ACK-only main called `extractKeyState('start')` before browser-key and ACK loop work.
+  - `extractKeyState` enumerates storage/window key state for diagnostics; on the webtoon page it can block the ACK-only path before the real strict ACK attempt starts.
+- Patch applied, pending validation:
+  - Skip heavy `extractKeyState` calls in ACK-only mode before/during/final ACK loop.
+  - Leave lightweight `keyStateSkipped` logging so the log proves diagnostics were intentionally skipped.
+- Bad/avoid:
+  - Do not let diagnostics, window enumeration, storage dumps, or debug probes run before ACK in strict ACK-only mode.
+  - Do not interpret `ackOnlyMainEntry` as ACK attempt start; require `ackOnlyLoop`, Fast5 start, and final `/api/ad/ack` 200.
+
+## 2026-06-18 23:42:00 +09:00 Emulator-only: Fast5 + diagnostic skip validation passes webtoon and manhwa
+
+- Build:
+  - `.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Result: `BUILD SUCCESSFUL in 5s`.
+- Webtoon repro validation:
+  - Artifact: `build/ntk-random-perf/20260617_223722`
+  - path `/webtoon/16968/1430500`
+  - seed `1781701481889`
+  - Result: pass.
+  - Strict ACK proof:
+    - `webViewAckPreflightDone success=true ms=9942`
+    - `ntk_native_ack_bridge_submit code=200,path=/webtoon/16968/1430500,tpLen=16,apLen=20`
+    - `/api/ad/ack code=200`, `setCookies=1`, `cookieNames=ad_ack`
+  - Image/display:
+    - `earlyUrlsReady count=67 ms=12375`
+    - `reader_open_to_first_drawable source=ntk kind=tiles page=0 ms=14837`
+    - 5 mixed touch scroll steps passed with `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - Screenshot was a fully black webtoon panel region; not an ad/error, but visually weak evidence. Logs prove real image pages `p001.jpg`/`p005.jpg` were used.
+- Manhwa repro validation:
+  - Artifact: `build/ntk-random-perf/20260617_223853`
+  - path `/manhwa/8209/63505`
+  - seed `1781701774416`
+  - Result: pass.
+  - Strict ACK proof:
+    - `webViewAckPreflightDone success=true ms=6089`
+    - `ntk_native_ack_bridge_submit code=200,path=/manhwa/8209/63505,tpLen=16,apLen=20`
+    - `/api/ad/ack code=200`, `setCookies=1`, `cookieNames=ad_ack`
+  - Image/display:
+    - `earlyUrlsReady count=39 ms=7258`
+    - `reader_open_to_first_drawable source=ntk kind=bitmap page=0 ms=8664`
+    - 5 mixed touch scroll steps passed with `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - Screenshot visually confirmed real manga content, no ad image mixed.
+- Remaining risk:
+  - Webtoon first drawable is still slow under strict fresh (`14837ms`) because CF clearance + ACK + early URL handoff dominate cold entry.
+  - Current user-approved priority is stability/ACK correctness over speed; do not hide this as "instant" yet.
+  - Targeted repros passed; broad live-random is still constrained by current sbxh7 root probing/Cloudflare behavior and needs separate longer regression.
