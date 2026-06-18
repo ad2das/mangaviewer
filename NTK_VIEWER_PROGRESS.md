@@ -26727,3 +26727,42 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - ACK correctness is still stable, but the stale probe only reduces one class of ACK-only tail. It does not eliminate all 20s+ ACK cases.
   - Further improvement should focus on the direct ACK loop timeout path and why the first hidden ACK run sometimes waits until re-entry before producing signed proof.
+
+## 2026-06-18 23:34:00 +09:00 ACK-only timing experiments rejected
+
+- Continued on `C:\Users\Administrator\Downloads\mangaviewer-main-sync` `main`; active goal is still ACK correctness/stability first, speed second.
+- Rejected experiment 1:
+  - Added an extra ACK-only scheduled re-evaluation at `9500ms` between the existing `7000ms` and `12000ms`.
+  - Build passed.
+  - Target repro artifact: `build/ntk-random-perf/20260618_232832`.
+  - Result passed for correctness, but ACK preflight was `25377ms`, slightly worse than the prior kept stale-probe target result `24920ms`.
+  - Log showed the `9500ms` tick was processed together with the `12000ms` tick and did not clear stale state earlier.
+  - Action: reverted; do not repeat simple mid-schedule tick insertion unless scheduler coalescing is addressed.
+- Rejected experiment 2:
+  - Added `waitProof(...)` into the ACK-only `directAck()` `Promise.race` so strict proof events could end the race before the `7000ms` timeout.
+  - Build passed.
+  - Target repro artifact: `build/ntk-random-perf/20260618_233103`.
+  - Result passed for correctness, but ACK preflight worsened to `32036ms`.
+  - Log showed `directAckProofRace=true` only at the final proof moment, so it did not reduce the earlier wait; a timeout log still appeared around the same final window.
+  - Action: reverted; do not repeat proof-race watcher as a standalone fix.
+- Current interpretation:
+  - ACK 200 proof remains stable on the kept main code, but remaining tail is not solved by adding more scheduled ticks or by merely racing `directAck()` against proof detection.
+  - Next useful direction is earlier/faster native signed ACK execution itself, or more precise stale-lock cancellation before the direct ACK loop is launched.
+- Rejected follow-up experiments:
+  - Moved ACK-only DOM image proof gate so it checked `ackProofed()` before scanning DOM images.
+    - Build passed.
+    - Target repro artifact: `build/ntk-random-perf/20260618_233501`.
+    - Correctness still passed, first drawable improved to `4891ms`, but ACK preflight worsened to `30199ms`.
+    - Action: reverted. Do not keep this as an ACK improvement; at most it is a separate rendering micro-optimization candidate and needs independent validation.
+  - Lowered stale ACK-only running-lock threshold from `9000ms` to `8000ms`.
+    - Build passed.
+    - Target repro artifact: `build/ntk-random-perf/20260618_233703`.
+    - Correctness still passed, but ACK preflight worsened to `33037ms`.
+    - Action: reverted. The current `9000ms` stale threshold remains the best validated value among these runs.
+- Stability re-check after reverting experiments:
+  - Rebuilt main code: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Correct UX test class is `ml.melun.mangaview.EpisodeActivityNetworkTest`; an earlier package-qualified attempt under `.reader` failed only with `ClassNotFoundException`.
+  - Real UX webtoon selection test passed on emulator-5554:
+    - `ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
+    - Result: `OK (1 test)`, time `53.978s`.
+  - Interpretation: kept main code still proves strict ACK 200 in actual UX selection after the reverted timing experiments.
