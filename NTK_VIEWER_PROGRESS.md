@@ -26884,3 +26884,60 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Better future direction:
   - Keep fast append handoff, but validate or repair the generated work/episode ID mapping before publishing early adjacent URLs.
   - A safe fix should avoid inserting unverified URLs that 404 while still allowing append to complete within the current fast window.
+
+## 2026-06-19 00:35:00 +09:00 canonical webtoon append seed repair on main
+
+- Branch/worktree:
+  - Workspace: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Active branch: `main`.
+  - Confirmed `origin/codex/ntk-strict-ack-proof` is already an ancestor of `origin/main`; earlier confusion came from the stale `C:\Users\Administrator\Downloads\mangaviewer` worktree still being on `codex/ntk-strict-ack-proof`.
+  - GitHub Actions `Release APK` for `3516250ea` completed successfully before this change.
+- Root cause fixed:
+  - Previous random run showed append target `/webtoon/60536199/974097` seeded early generated URLs as `workId=9206,imageEpisodeId=89693`, causing early generated image 404s before the API/direct path later corrected to `workId=9206,imageEpisodeId=974097`.
+  - The rejected API-first seed skip made append too slow. The better fix keeps fast seed but repairs the generated episode id for canonical webtoon paths.
+- Code change:
+  - `ReaderSession.seedNtkAppendGeneratedUrlsFromNeighbor(...)` now treats large canonical webtoon paths as `internal imageWorkId + path episode token` when `imageWorkId` differs from the path title id.
+  - Example: `/webtoon/60536199/974097` with `imageWorkId=9206` now seeds `https://flysky3m.com/blacktoon/episodes/9206/974097/p001.jpg` instead of stale `.../9206/89693/...`.
+  - This is general for canonical webtoon path ids above the existing 800000 boundary; no title or episode hardcoding.
+- Cronet cleanup follow-up:
+  - `NtkQuicFetcher.fetchWithEngine(...)` overloads that create only a temporary executor were still shutting the executor down immediately.
+  - Added shared delayed executor shutdown for that path too and increased the callback grace from `1500ms` to `5000ms`.
+  - Target repro after this cleanup had `RejectedExecutionException` count 0.
+- Validation:
+  - Build/compile: `.\gradlew.bat --no-daemon :app:compileDebugKotlin :app:compileDebugJavaWithJavac` passed.
+  - APK reinstall: `.\gradlew.bat --no-daemon :app:installDebug :app:installDebugAndroidTest` passed before device tests.
+  - Target repro command:
+    - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 1 -ScrollSteps 2 -AppendSteps 8 -ScreenshotEvery 0 -Seed 1781794787159 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -TargetEpisodePath /webtoon/60536199/971571 -TargetImageEpisodeId 89682 -TargetImageWorkId 9206 -TargetImageCount 63 -StrictFresh -RequireLiveRandom -ForceStopBeforeRun -SkipBuild -FirstDrawableMaxMs 30000 -MaxDroppedFrames 999 -MaxMissedFrames 999 -RenderFrameMaxMs 1000`
+    - Artifact: `build\ntk-random-perf\20260619_001652`.
+    - Result: `passed=True`, `OK (1 test)`, failures `0`.
+    - Append seed proof:
+      - `append_adjacent_seed_generated_canonical_episode_fallback pathWorkId=60536199 imageWorkId=9206 recordedImageEpisodeId=89693 pathEpisodeId=974097`.
+      - `append_adjacent_seed_generated_urls ... path=/webtoon/60536199/974097 workId=9206 imageEpisodeId=974097 count=86`.
+      - No old `/9206/89693/p001.jpg` early 404 evidence in this artifact.
+    - First drawable: `7447ms`; strict ACK proof: `strictProof=true`, `/api/ad/ack` native submit code `200`.
+    - Visible coverage stayed clean: `missingPx=0`, `placeholderPx=0`; post-stop drift stayed 0 in recorded scroll samples.
+    - Cronet `RejectedExecutionException` count: 0 in this target repro.
+  - Actual UX webtoon+comic combined command via direct `adb shell am instrument`:
+    - Artifact: `build\ntk-ux-select\20260619_001816_actual_ux_after_append_seed_fix`.
+    - Result: `OK (2 tests)`, time `107.868s`.
+    - Webtoon `/webtoon/16968/1463195`: first drawable `4990ms`, visible coverage `missingPx=0`, `placeholderPx=0`, strict ACK `native-fetch-ack-200`, `/api/ad/ack` proof true, preflight `9616ms`.
+    - Captcha container lookup returned `Node not found`; no visible captcha block.
+  - Actual UX comic isolated rerun:
+    - Artifact: `build\ntk-ux-select\20260619_002040_actual_ux_comic_after_append_seed_fix`.
+    - Result: `OK (1 test)`, time `56.208s`.
+    - Comic `/manhwa/36525/1807424`: first drawable `7535ms`, visible coverage `missingPx=0`, `placeholderPx=0`, strict ACK sources `bridge-ack-200`, `guard-state-ack-200`, `guard-fetch-ack-200`, `/api/ad/ack` bridge submit code `200`, preflight `12515ms`.
+    - Captcha container lookup returned `Node not found`; no visible captcha block.
+- New failure / do not hide:
+  - Broad live-random 2-run after the code changes failed before completing run 2:
+    - Artifact: `build\ntk-random-perf\20260619_002214`.
+    - Seed: `1781796134007`.
+    - First run path: `/webtoon/12759/1135205`, imageEpisodeId `710362`, imageWorkId `12759`, imageCount `20`.
+    - First run itself passed image/ACK checks: first drawable `5396ms`, visible coverage `missingPx=0`, `placeholderPx=0`, scroll drift 0, append next/previous success, strict ACK proof true with `/api/ad/ack` native submit code `200`, preflight `27116ms`.
+    - Failure reason: Android instrumentation aborted with `Input dispatching timed out ... CaptchaActivity ... FocusEvent(hasFocus=false)` and `ANR in Window ... CaptchaActivity`.
+    - Log showed test helper `ensureNtkAccessAfterChallenge(...)` launched `CaptchaActivity` for `https://sbxh8.com/api/manhwa-list?...`; `CaptchaActivity` resolved that to `https://sbxh8.com/manhwa`, loaded the NTK root WebView, then the system reported a 5s focus timeout.
+    - This is not an image/ACK proof failure for the opened viewer, but it is a real random-run stability/test-loop failure and must be fixed next.
+    - Same broad artifact still had 2 Cronet `RejectedExecutionException` lines before increasing executor grace to `5000ms`; target repro after the increased grace had 0.
+- Next priority:
+  - Fix the `CaptchaActivity` ANR/test-loop path: random stress should not launch heavy visible captcha recovery for an API-list challenge after a viewer already proved strict `/api/ad/ack`; either avoid the redundant captcha launch or move it to a bounded non-blocking proof path.
+  - Re-run the failed seed `1781796134007` after that fix.
+  - Then rerun live-random 2+ and actual UX before the next commit.

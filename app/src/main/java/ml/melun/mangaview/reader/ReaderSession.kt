@@ -2661,7 +2661,14 @@ class ReaderSession(
         }
         val inheritedWorkId = target.ntkImageWorkId.trim()
         val imageWorkId = if (inheritedWorkId.isNotEmpty()) inheritedWorkId else pathWorkId
-        val imageEpisodeId = target.ntkImageEpisodeId.trim()
+        val recordedImageEpisodeId = target.ntkImageEpisodeId.trim()
+        val imageEpisodeId = canonicalWebtoonAppendImageEpisodeId(
+            segment,
+            pathWorkId,
+            pathEpisodeToken,
+            imageWorkId,
+            recordedImageEpisodeId
+        )
         val count = target.ntkImageCount
         if (imageWorkId.isEmpty() || !imageEpisodeId.matches(Regex("\\d{1,12}")) || count <= 0) return 0
         val urls = ArrayList<String>(count)
@@ -2683,6 +2690,28 @@ class ReaderSession(
                 "extension=$extension sourcePath=${source.ntkEpisodePath}"
         )
         return urls.size
+    }
+
+    private fun canonicalWebtoonAppendImageEpisodeId(
+        segment: String,
+        pathWorkId: String,
+        pathEpisodeToken: String,
+        imageWorkId: String,
+        recordedImageEpisodeId: String
+    ): String {
+        if (segment != "webtoon") return recordedImageEpisodeId
+        val pathWork = pathWorkId.toLongOrNull() ?: return recordedImageEpisodeId
+        if (pathWork < NTK_CANONICAL_WEBTOON_APPEND_MIN_WORK_ID) return recordedImageEpisodeId
+        if (imageWorkId == pathWorkId) return recordedImageEpisodeId
+        if (!pathEpisodeToken.matches(Regex("\\d{1,12}"))) return recordedImageEpisodeId
+        if (recordedImageEpisodeId == pathEpisodeToken) return recordedImageEpisodeId
+        Log.d(
+            TAG,
+            "append_adjacent_seed_generated_canonical_episode_fallback pathWorkId=$pathWorkId " +
+                "imageWorkId=$imageWorkId recordedImageEpisodeId=$recordedImageEpisodeId " +
+                "pathEpisodeId=$pathEpisodeToken"
+        )
+        return pathEpisodeToken
     }
 
     private fun generatedExtensionForAppendNeighbor(source: Manga): String {
@@ -7069,6 +7098,7 @@ class ReaderSession(
         private const val NTK_EARLY_GENERATED_EXPAND_AFTER_FIRST_BITMAP_WAIT_MS = 5000L
         private const val NTK_EARLY_GENERATED_EXPAND_BEFORE_FIRST_BITMAP_WAIT_MS = 10000L
         private const val NTK_BOARD_ONLY_GENERATED_GRACE_MS = 1400L
+        private const val NTK_CANONICAL_WEBTOON_APPEND_MIN_WORK_ID = 800000L
         private fun ntkEarlyUrlMinCount(): Int = 1
         private const val STRUCTURE_PUBLISH_DRAIN_DELAY_MS = 16L
         private const val PRIME_FORWARD_EPISODES = 8

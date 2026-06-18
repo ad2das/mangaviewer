@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit;
 @TargetApi(34)
 public final class NtkQuicFetcher {
     private static volatile Boolean runtimeAvailable;
-    private static final long EXECUTOR_SHUTDOWN_GRACE_MS = 1_500L;
+    private static final long EXECUTOR_SHUTDOWN_GRACE_MS = 5_000L;
     private static final ScheduledExecutorService EXECUTOR_CLOSER =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "ntk-quic-executor-closer");
@@ -202,6 +202,10 @@ public final class NtkQuicFetcher {
             engine.shutdown();
         } catch (Throwable ignored) {
         }
+        shutdownExecutorAfterGrace(executor);
+    }
+
+    private static void shutdownExecutorAfterGrace(ExecutorService executor) {
         EXECUTOR_CLOSER.schedule(() -> {
             executor.shutdown();
             try {
@@ -228,8 +232,7 @@ public final class NtkQuicFetcher {
             return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                     method, body, timeoutMs, partialTextObserver);
         } finally {
-            executor.shutdown();
-            executor.awaitTermination(2_500, TimeUnit.MILLISECONDS);
+            shutdownExecutorAfterGrace(executor);
         }
     }
 
