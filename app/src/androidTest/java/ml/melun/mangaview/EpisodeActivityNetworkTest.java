@@ -172,6 +172,9 @@ public class EpisodeActivityNetworkTest {
         String ack200 = waitForNtkStrictAck200Metric(readerPath, 120000L);
         assertInitialVisibleCoverageSettles("NTK current comic UX");
         assertNoVisibleLoadingLogged("NTK current comic UX");
+        File screenshot = new File(context.getCacheDir(), "ntk_actual_ux_comic_reader.png");
+        assertTrue("Expected NTK current comic UX reader screenshot", device.takeScreenshot(screenshot));
+        Log.d("ViewerPerf", "ntk_actual_ux_screenshot type=comic,path=" + screenshot.getAbsolutePath());
         Log.d("ViewerPerf", "ntk_actual_ux_select_success source=ntk,type=comic,firstDrawable="
                 + sanitizeForMetric(firstDrawable) + ",ack=" + sanitizeForMetric(ack200));
     }
@@ -197,6 +200,9 @@ public class EpisodeActivityNetworkTest {
         String ack200 = waitForNtkStrictAck200Metric(readerPath, 120000L);
         assertInitialVisibleCoverageSettles("NTK current webtoon UX");
         assertNoVisibleLoadingLogged("NTK current webtoon UX");
+        File screenshot = new File(context.getCacheDir(), "ntk_actual_ux_webtoon_reader.png");
+        assertTrue("Expected NTK current webtoon UX reader screenshot", device.takeScreenshot(screenshot));
+        Log.d("ViewerPerf", "ntk_actual_ux_screenshot type=webtoon,path=" + screenshot.getAbsolutePath());
         Log.d("ViewerPerf", "ntk_actual_ux_select_success source=ntk,type=webtoon,firstDrawable="
                 + sanitizeForMetric(firstDrawable) + ",ack=" + sanitizeForMetric(ack200));
     }
@@ -1801,10 +1807,51 @@ public class EpisodeActivityNetworkTest {
                 if(line.contains("ntk_native_ack_final_success=true,path=" + targetPath))
                     return line;
             }
+            if(isNtkAckRootTransportUnavailable(latestOutput, targetPath))
+                fail("NTK ACK root transport unavailable before strict /api/ad/ack 200 for "
+                        + targetPath + ": " + latestOutput);
             Thread.sleep(100L);
         }
         fail("Expected strict NTK /api/ad/ack 200 proof for " + targetPath + ": " + latestOutput);
         return "";
+    }
+
+    private static boolean isNtkAckRootTransportUnavailable(String output, String targetPath) {
+        if(output == null || targetPath == null)
+            return false;
+        int challengeTimeouts = 0;
+        boolean nativeExhausted = false;
+        boolean bridgeExhausted = false;
+        boolean noReachableRoot = false;
+        boolean challengeSucceeded = false;
+        for(String line : output.split("\\R")) {
+            if(line.contains("ntk_domain_reachable_none"))
+                noReachableRoot = true;
+            if(line.contains("/api/ad/challenge")
+                    && line.contains("code=200")
+                    && (!line.contains("path=") || line.contains("path=" + targetPath)))
+                challengeSucceeded = true;
+            if(line.contains("ntk_native_ack_challenge_race_done")
+                    && line.contains("code=200")
+                    && line.contains("valid=true")
+                    && line.contains("path=" + targetPath))
+                challengeSucceeded = true;
+            if(line.contains("/api/ad/challenge")
+                    && line.contains("SocketTimeoutException"))
+                challengeTimeouts++;
+            if(line.contains("ntk_native_ack_prepare_challenge_code=0")
+                    && line.contains("attempt=2")
+                    && line.contains("path=" + targetPath))
+                nativeExhausted = true;
+            if(line.contains("ntk_webview_preack_done")
+                    && line.contains("ok=false")
+                    && line.contains("SocketTimeoutException")
+                    && line.contains("path=" + targetPath))
+                bridgeExhausted = true;
+        }
+        if(challengeSucceeded)
+            return false;
+        return noReachableRoot || (challengeTimeouts >= 4 && (nativeExhausted || bridgeExhausted));
     }
 
     private static String sanitizeForMetric(String line) {

@@ -84,7 +84,7 @@ object ReaderImageCache {
     private const val NTK_GENERATED_RANGE_ADJACENT_CHUNK_BYTES = 256 * 1024
     private const val NTK_GENERATED_RANGE_MAX_BYTES = 24L * 1024L * 1024L
     private const val NTK_GENERATED_BACKGROUND_FETCH_PARALLELISM = 1
-    private const val NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM = 4
+    private const val NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM = 6
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
     private val foregroundStreams = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
     private val initialGeneratedRangeFlights = ConcurrentHashMap<String, FutureTask<GeneratedRangeSnapshot?>>()
@@ -2367,7 +2367,11 @@ object ReaderImageCache {
 
     private fun isNtkGeneratedImageUrl(value: String): Boolean {
         val lower = value.lowercase()
-        return lower.contains("://i.toonflix.app/") &&
+        return (lower.contains("://toonflix.app/") ||
+            lower.contains("://i.toonflix.app/") ||
+            Regex("://flysky\\d*m\\.com/").containsMatchIn(lower) ||
+            Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower) ||
+            Regex("://aws-cdn\\d*\\.site/").containsMatchIn(lower)) &&
             (
                 Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
@@ -5407,6 +5411,7 @@ object ReaderImageCache {
         val lower = image.lowercase()
         return (lower.contains("://toonflix.app/")
                 || lower.contains("://i.toonflix.app/")
+                || Regex("://flysky\\d*m\\.com/").containsMatchIn(lower)
                 || Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower))
             && (
                 Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||

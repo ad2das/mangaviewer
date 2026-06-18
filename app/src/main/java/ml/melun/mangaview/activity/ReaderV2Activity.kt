@@ -799,11 +799,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.setPageBitmap(index, bitmap)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         logLaunchDrawableMetric(index, "bitmap")
-        val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable)
+        val coversInitialViewport = visibleInitialDrawable &&
+            drawableCoversInitialViewport(bitmap.width, bitmap.height)
+        val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
+            !coversInitialViewport
         if (visibleInitialDrawable && !waitForContinuous) logFirstDrawableMetric(index, "bitmap")
         if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
         if (waitForContinuous) {
-            maybeReleaseInitialNtkContinuousGate("initial_continuous")
+            maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
         } else if (visibleInitialDrawable) {
             releaseInitialDrawGate("page")
         }
@@ -814,11 +817,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         logLaunchDrawableMetric(index, "tiles")
-        val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable)
+        val coversInitialViewport = visibleInitialDrawable &&
+            drawableCoversInitialViewport(pageWidth, pageHeight)
+        val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
+            !coversInitialViewport
         if (visibleInitialDrawable && !waitForContinuous) logFirstDrawableMetric(index, "tiles")
         if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
         if (waitForContinuous) {
-            maybeReleaseInitialNtkContinuousGate("initial_continuous")
+            maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
         } else if (visibleInitialDrawable) {
             releaseInitialDrawGate("tiles")
         }
@@ -891,6 +897,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return false
     }
 
+    private fun drawableCoversInitialViewport(pageWidth: Int, pageHeight: Int): Boolean {
+        if (!isCurrentNtkReader()) return false
+        if (pageWidth <= 0 || pageHeight <= 0) return false
+        val viewWidth = renderView.width
+        val viewHeight = renderView.height
+        if (viewWidth <= 0 || viewHeight <= 0) return false
+        val drawHeight = viewWidth * (pageHeight / pageWidth.toFloat())
+        return drawHeight >= viewHeight - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX
+    }
+
     private fun isInitialContinuousScrollReady(): Boolean {
         if (pageCount <= 0) return launchDrawableMetricPages.isNotEmpty()
         val readyAhead = if (currentManga?.baseMode == MTitle.base_webtoon) {
@@ -898,7 +914,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else {
             INITIAL_READY_MANHWA_AHEAD_PAGES
         }
-        val firstRequired = if (!firstDrawableMetricLogged && initialStartAtFirstPage) 0 else currentPage
+        val firstRequired = if (!firstDrawableMetricLogged && initialStartAtFirstPage && currentPage == 0) 0 else currentPage
         val lastRequired = minOf(pageCount - 1, firstRequired + readyAhead)
         for (page in firstRequired..lastRequired) {
             if (!launchDrawableMetricPages.contains(page)) return false
@@ -909,17 +925,26 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable: Boolean): Boolean {
         return visibleInitialDrawable &&
             isCurrentNtkReader() &&
-            initialStartAtFirstPage &&
+            !initialDrawGateOpen &&
             !isInitialContinuousScrollReady()
     }
 
     private fun maybeReleaseInitialNtkContinuousGate(reason: String) {
         if (!isCurrentNtkReader() || firstDrawableMetricLogged) return
-        if (!initialStartAtFirstPage) return
         if (!isInitialContinuousScrollReady()) return
-        val firstDrawablePage = if (initialStartAtFirstPage) 0 else currentPage
+        val firstDrawablePage = if (initialStartAtFirstPage && currentPage == 0) 0 else currentPage
         logFirstDrawableMetric(firstDrawablePage, reason)
         releaseInitialDrawGate(reason)
+    }
+
+    private fun maybeReleaseInitialNtkContinuousGateOrViewport(reason: String) {
+        if (!isCurrentNtkReader() || firstDrawableMetricLogged) return
+        if (isVisibleViewportReady()) {
+            logVisibleViewportReadyMetric()
+            releaseInitialDrawGate("viewport")
+            return
+        }
+        maybeReleaseInitialNtkContinuousGate(reason)
     }
 
     private fun postDrawableReadyDescription() {
@@ -2710,6 +2735,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val DRAWABLE_READY_CHECK_INTERVAL_MS = 80L
         private const val INITIAL_READY_WEBTOON_AHEAD_PAGES = 2
         private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 1
+        private const val INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX = 2
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1
         private const val CAPTCHA_RETRY_BOUNDARY = 2

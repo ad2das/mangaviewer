@@ -25007,3 +25007,113 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - The final scope proves actual UX comic/webtoon selection for the current live paths, visible images, no visible loading, and strict ACK 200.
   - It does not prove broad randomized long-run scroll stability yet; that remains a separate broader regression target if the goal expands again.
+
+## 2026-06-18 12:10:00 +09:00 Actual UX screenshot proof added; random scroll placeholder still open
+
+- Context:
+  - Continued after compaction by reading this file and checking active goal.
+  - Emulator: API35 `emulator-5554`.
+  - User asked to test like real UX by directly selecting manga/webtoon.
+- Fix:
+  - `ReaderV2Activity` now releases the initial NTK draw gate immediately only when the current decoded page's scaled height covers the viewport.
+  - If a manga/comic page is shorter than the viewport, the gate waits for initial continuous pages again so an adjacent empty page is not shown.
+  - Actual UX instrumentation now saves reader screenshots:
+    - `ntk_actual_ux_webtoon_reader.png`
+    - `ntk_actual_ux_comic_reader.png`
+- Actual UX validation:
+  - Webtoon actual UX artifact:
+    - `build/ntk-ux-select/20260618_ux_webtoon_screenshot_proof_retry`
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
+    - Result: `OK (1 test)`.
+    - `reader_open_to_first_drawable source=ntk kind=tiles page=6 ms=3400`.
+    - `reader_visible_loading=0`.
+    - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0 drawableItems=1 items=1`.
+    - Strict ACK proof: `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`.
+    - Screenshot `reader.png` shows actual webtoon art, not home/black/ad-only.
+  - Comic actual UX artifact:
+    - `build/ntk-ux-select/20260618_ux_comic_screenshot_proof_retry`
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`
+    - Result: `OK (1 test)`.
+    - `reader_open_to_first_drawable source=ntk kind=initial_continuous page=1 ms=3235`.
+    - `reader_visible_loading=0`.
+    - `reader_visible_coverage drawablePx=2275 missingPx=0 placeholderPx=0 drawableItems=2 items=2`.
+    - Strict ACK proof: bridge `/api/ad/ack` 200 and native-fetch ACK 200.
+    - Screenshot `reader.png` shows actual manga pages, not home/black/ad-only.
+- Random strict fresh regression status:
+  - Original failing seed/path:
+    - Seed `1781751104533`
+    - Path `/webtoon/11628/1064707`
+    - Image episode id `109537`, work id `11628`, image count `31`.
+  - Before gate fix:
+    - Artifact `build/ntk-random-perf/20260618_115237`.
+    - First drawable was delayed to `36245ms` because Activity pre-draw gate kept deferring on `ntk_anchor_pending` even after ReaderSession reached `FIRST_DRAWABLE_COMMITTED`.
+  - After viewport-cover gate fix:
+    - First drawable improved to roughly `4.1-4.3s`, and one run reached `3517ms`.
+    - ACK proof is stable; latest random run had native submit code `200`.
+    - However, strict 3.5s random budget can still fail, and with a 5s budget the same path still fails during scroll:
+      - Artifact `build/ntk-random-perf/20260618_120558`.
+      - Step 1: `placeholderPx=1358`, `loading=1`.
+      - Screenshot `ntk-random-scroll-0.png` shows a real page with a large blank/placeholder region after a fast scroll.
+      - Artifact `build/ntk-random-perf/20260618_120917`.
+      - Step 0: `placeholderPx=218`, `loading=3`.
+  - Meaning:
+    - Actual UX direct selection is now proven for current webtoon/comic paths with screenshot + ACK 200.
+    - Broad random fast-scroll stability is not complete. The next root cause is visible page requests skipping/being blocked while active foreground/generated fetches are still too slow for immediate scroll.
+- Bad approach recorded:
+  - Removing and re-adding `visibleGeneratedByteHedges` on active-skip was tried and reverted.
+  - It did not remove scroll placeholder and worsened one run (`placeholderPx=218`, `loading=3` at step 0).
+  - Do not reapply that approach without a deeper active request/visible decode design change.
+
+## 2026-06-18 12:23:00 +09:00 Actual UX and target random repro passed after strict coverage correction
+
+- Context:
+  - Continued from compaction by reading this file and checking the active goal.
+  - Emulator: API35 `emulator-5554`.
+  - User explicitly asked to test like real UX by directly selecting manga/webtoon, because that path matters more than synthetic-only launch.
+- Fixes in this slice:
+  - `ReaderSurfaceView.coverageStats()` now counts every visible non-drawable item as `placeholderPx`, matching `drawItem()` which draws a placeholder for any bitmap/tiles/card/error-missing item regardless of `loading`.
+  - This removes a false-good metric path where visible empty pages could be reported as `drawablePx=viewport` and `placeholderPx=0`.
+  - `ReaderImageCache` generated foreground full-fetch parallelism is currently `6`, which improved the target repro first drawable and settle coverage.
+- Bad measurement bug recorded:
+  - Before this fix, random target logs could show `visibleLoading=1..3` and `visibleItems=...:empty` while `reader_visible_coverage` still claimed `drawablePx=2274 placeholderPx=0`.
+  - That was not trustworthy. Do not use old `placeholderPx=0` from runs before this correction as proof if `visibleItems` contained `empty`.
+- Target random repro validation:
+  - Command:
+    - `tools/ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 1 -ScrollSteps 4 -AppendSteps 8 -ScreenshotEvery 1 -Seed 1781751104533 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -FirstDrawableMaxMs 5000 -TargetEpisodePath /webtoon/11628/1064707 -TargetImageEpisodeId 109537 -TargetImageWorkId 11628 -TargetImageCount 31 -StrictFresh -RequireLiveRandom -ForceStopBeforeRun -SkipBuild -SkipInstall`
+  - Artifact: `build/ntk-random-perf/20260618_121756`.
+  - Result: `OK (1 test)`, `passed=True`, `failures=0`.
+  - First drawable: `3134ms` app, `3516ms` observed, budget `5000ms`.
+  - Strict ACK proof:
+    - `ntk_ack_proof={"scope":"/webtoon/11628/1064707","tp":"","source":"native-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`.
+    - A later/parallel bridge `/api/ad/ack` `409 challenge_used` can occur after strict native success and must not be treated as final failure.
+  - Scroll result:
+    - 4 touch scroll steps passed.
+    - Final per-step coverage after settle: `missingPx=0`, `placeholderPx=0`, `visibleLoading=0`.
+    - Post-stop drift: `maxPageDelta=0`, `maxOffsetDelta=0`.
+    - Screenshot `ntk-random-scroll-0.png` shows real webtoon art, not black/ad-only/placeholder.
+  - Performance note:
+    - There are transient placeholder frames during fast busy scroll while pages are still fetching, but the settled validation now clears to full drawable coverage.
+    - Several slow-frame diagnostics remain around ~18-26ms draw time; this is a remaining performance risk if the goal returns to strict 60fps/jank elimination.
+- Actual UX direct selection validation:
+  - Webtoon artifact: `build/ntk-ux-select/20260618_actual_ux_webtoon_after_coverage_fix`.
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+    - Result: `OK (1 test)`.
+    - `reader_open_to_first_drawable source=ntk kind=tiles page=6 ms=4179`.
+    - `reader_visible_loading=0`.
+    - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0 drawableItems=1 items=1`.
+    - `/api/ad/challenge` bridge `200`.
+    - `/api/ad/ack` bridge `200`, plus `native-fetch-ack-200`, both strict success recorded.
+    - Screenshot `webtoon_reader.png` shows actual webtoon art.
+  - Comic artifact: `build/ntk-ux-select/20260618_actual_ux_after_coverage_fix`.
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+    - Result: `OK (1 test)`.
+    - `reader_open_to_first_drawable source=ntk kind=initial_continuous page=1 ms=5490`.
+    - `reader_visible_loading=0`.
+    - `reader_visible_coverage drawablePx=2275 missingPx=0 placeholderPx=0 drawableItems=2 items=2`.
+    - Final strict ACK: `native-fetch-ack-200`.
+    - Screenshot `comic_reader.png` shows actual manga pages.
+- Current status:
+  - The specific actual UX request is satisfied for direct comic/webtoon selection.
+  - The known target random repro now passes with stricter placeholder accounting and 5s first-draw budget.
+  - Speed is being treated as a compromise per user direction; ACK stability and no settled blank/placeholder are the priority.

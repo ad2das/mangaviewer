@@ -1678,7 +1678,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (itemHasDrawable(item)) {
                 drawablePx += px
                 drawableItems++
-            } else if (item.loading) {
+            } else {
                 placeholderPx += px
             }
         }
