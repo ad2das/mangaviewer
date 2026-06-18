@@ -25450,3 +25450,65 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Actual MainActivity home continue selection, direct webtoon selection, and direct comic selection all reach real NTK reader content and strict ACK 200 on `emulator-5554`.
   - Speed is acceptable under the current compromise: webtoon/home path is fast, direct comic remains slower but stable.
   - Strict jank/never-transient-placeholder perfection remains outside this close-out slice; ACK and stability are the focus now.
+
+## 2026-06-18 15:48:00 +09:00 Synthetic NTK `nv-*` adjacent append fixed without blank generated insertion
+
+- Continued from compaction by reading this file and checking the active goal.
+- User asked to test in real UX-like selection, not only direct reader launches.
+- New random failure found before this fix:
+  - Artifact: `build/ntk-random-perf/20260618_152131_runs3_after_home_ack_stability`.
+  - Command accidentally run once with a wrong method name produced `OK (0 tests)`; that is invalid evidence and must not be trusted.
+  - Correct 3-run strict fresh random failed at run 2:
+    - Current path: `/webtoon/849089/1589072`.
+    - Adjacent next path: `/webtoon/849089/nv-849089-2`.
+    - Current reader was good: strict ACK 200 was recorded for `/webtoon/849089/1589072`, settled scroll coverage had `missingPx=0`, `placeholderPx=0`, `loading=0`.
+    - Failure was append-only: `Next append did not load adjacent episode ... start=STARTED before=73 after=73`.
+- Root cause:
+  - NTK title episode lists can expose synthetic source episode IDs like `nv-849089-2`.
+  - Those pages are real UX-selectable episodes, but their image delivery is API-backed (`/api/webtoon-images` and `webtoon_uploads` images) rather than generated CDN folders.
+  - Reusing neighbor generated-extension hints for `nv-*` made the append test pass by inserting pages, but the inserted generated URLs 404'd. That would be a blank/failed real UX case, so this approach is explicitly rejected.
+- Fix:
+  - `ReaderSession.seedNtkAppendGeneratedUrlsFromNeighbor(...)` now skips synthetic nonnumeric episode tokens and logs `append_adjacent_seed_generated_skip_synthetic`.
+  - Synthetic NTK append targets that first return `LOAD_CAPTCHA` are not treated as final hard failure; they flow into the existing retry path so strict ACK/API image fetch can complete.
+  - Numeric adjacent episodes still use the fast generated URL seeding path when metadata is complete.
+- Validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Direct UX-like `nv-*` target:
+    - Artifact: `build/ntk-random-perf/20260618_153324_direct_nv849089_2`.
+    - Target: `/webtoon/849089/nv-849089-2`, imageEpisodeId `1164966`, imageWorkId `849089`, imageCount `72`.
+    - Result: `OK (1 test)`.
+    - Strict ACK: `bridge-ack-200` and `guard-fetch-ack-200`, `strictAdAck=true`.
+    - API proof: `ntk_images_api_trusted_result ... code=200,count=72`.
+    - Actual images: `foreground_race_win ... code=200` on `webtoon_uploads` images.
+    - First drawable: `7134ms`; settled coverage `missingPx=0`, `placeholderPx=0`, `loading=0`; scroll drift remained `maxPageDelta=0`, `maxOffsetDelta=0`.
+  - Random strict fresh 3-run after fix:
+    - Artifact: `build/ntk-random-perf/20260618_153533_runs3_synthetic_append_api_retry`.
+    - Result: `OK (1 test)`.
+    - Synthetic append proof:
+      - `append_adjacent_seed_generated_skip_synthetic path=/webtoon/849089/nv-849089-2`.
+      - `ntk_images_api_trusted_result path=/webtoon/849089/nv-849089-2,code=200,count=72`.
+      - `append_adjacent_verified_fetch ... result=0 ... reason=api-modern-native-ack-direct images=7`.
+      - `append_adjacent_resolved_inserted ... inserted=8 total=81`.
+      - `ntk_true_random_append_next ... success=true ... before=73,after=81`.
+    - No synthetic generated 404/miss was observed for `/webtoon/849089/nv-849089-2` after the fix.
+    - Run 2 current episode strict ACK remained true for `/webtoon/849089/1589072`.
+  - Actual direct UX selection after fix:
+    - Webtoon artifact: `build/ntk-ux-select/20260618_154155_actual_webtoon_after_synthetic_append_fix`.
+      - Result: `OK (1 test)`.
+      - Path: `/webtoon/16968/1463195`.
+      - First drawable: `3923ms`; coverage `missingPx=0`, `placeholderPx=0`, `loading=0`; strict ACK `native-fetch-ack-200`.
+    - Comic artifact: `build/ntk-ux-select/20260618_154600_actual_comic_after_synthetic_append_fix`.
+      - Result: `OK (1 test)`.
+      - Path: `/manhwa/36525/1807424`.
+      - First drawable: `4817ms`; coverage `missingPx=0`, `placeholderPx=0`, `loading=0`; strict ACK `native-fetch-ack-200`.
+  - Home continue UX attempt:
+    - Artifact: `build/ntk-ux-select/20260618_154226_home_continue_after_synthetic_append_fix`.
+    - Timed out after logging only `ntk_actual_home_continue_select_start`.
+    - This is not counted as a pass or fail for ACK/image rendering; it needs separate home-card selection harness cleanup. Earlier home continue proof remains `build/ntk-ux-select/20260618_151152_home_continue_ux_nonblank_clean`.
+- Bad approaches / do not repeat:
+  - `OK (0 tests)` from a wrong instrumentation method is worthless.
+  - Do not make `nv-*` append look successful by inserting unverified generated CDN URLs. The URL shape can 404 even when the real UX/direct episode works through API images.
+  - Do not count challenge-cookie success (`*-challenge-ad-ack-cookie-200`) as ACK completion. Strict `/api/ad/ack` 200 with `strictAdAck=true` remains required.
+- Remaining risk:
+  - Synthetic append can take longer than numeric generated append because it waits for strict ACK and API image extraction. In the validated run it inserted at append step 29 after about 12.2s fetch time.
+  - Strict 60fps perfection is still not claimed; current requested close-out remains ACK and stability.

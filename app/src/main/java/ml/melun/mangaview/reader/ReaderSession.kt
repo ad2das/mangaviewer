@@ -2516,12 +2516,23 @@ class ReaderSession(
         val extension = generatedExtensionForAppendNeighbor(source)
         if (extension.isEmpty()) return 0
         val path = target.ntkEpisodePath?.trim().orEmpty()
-        val match = NTK_NUMERIC_EPISODE_PATH.matchEntire(path) ?: return 0
+        val match = NTK_VIEWER_EPISODE_PATH.matchEntire(path) ?: return 0
         val segment = match.groupValues[1].lowercase(Locale.ROOT)
-        val imageWorkId = target.ntkImageWorkId.trim()
+        val pathWorkId = match.groupValues[2].trim()
+        val pathEpisodeToken = match.groupValues[3].trim()
+        if (!pathEpisodeToken.matches(Regex("\\d+"))) {
+            Log.d(
+                TAG,
+                "append_adjacent_seed_generated_skip_synthetic path=$path " +
+                    "imageEpisodeId=${target.ntkImageEpisodeId} sourcePath=${source.ntkEpisodePath}"
+            )
+            return 0
+        }
+        val inheritedWorkId = target.ntkImageWorkId.trim()
+        val imageWorkId = if (inheritedWorkId.isNotEmpty()) inheritedWorkId else pathWorkId
         val imageEpisodeId = target.ntkImageEpisodeId.trim()
         val count = target.ntkImageCount
-        if (imageWorkId.isEmpty() || imageEpisodeId.isEmpty() || count <= 0) return 0
+        if (imageWorkId.isEmpty() || !imageEpisodeId.matches(Regex("\\d{1,12}")) || count <= 0) return 0
         val urls = ArrayList<String>(count)
         for (page in 1..count) {
             val pageName = "p%03d.%s".format(Locale.ROOT, page, extension)
@@ -2606,9 +2617,10 @@ class ReaderSession(
             }
             val initialImages = imageRepository.imageUrls(target, appContext).size
             val earlyGeneratedImages = installEarlyGeneratedAppendUrlsIfAvailable(target)
+            val syntheticNtkPath = isNtkSyntheticEpisodePath(target.ntkEpisodePath)
             if (earlyGeneratedImages > 0 ||
                 (initialResult == Title.LOAD_OK && initialImages > 0) ||
-                initialResult == Title.LOAD_CAPTCHA ||
+                (initialResult == Title.LOAD_CAPTCHA && !syntheticNtkPath) ||
                 cancelled.get()
             ) {
                 if (earlyGeneratedImages > 0) Title.LOAD_OK else initialResult
@@ -3144,6 +3156,11 @@ class ReaderSession(
         return (parts[0] == "manhwa" || parts[0] == "webtoon") &&
             parts[1].isNotBlank() &&
             parts[2].isNotBlank()
+    }
+
+    private fun isNtkSyntheticEpisodePath(path: String?): Boolean {
+        val match = NTK_VIEWER_EPISODE_PATH.matchEntire(path?.trim().orEmpty()) ?: return false
+        return !match.groupValues[3].matches(Regex("\\d+"))
     }
 
     private fun looseEpisodeIndexForAppend(episodes: List<Manga>, source: Manga): Int {
@@ -6901,7 +6918,7 @@ class ReaderSession(
         private const val NTK_APPEND_EARLY_GENERATED_WAIT_MS = 2600L
         private const val NTK_APPEND_EARLY_GENERATED_POLL_MS = 40L
         private const val NTK_APPEND_EARLY_PUBLISH_PAGES = 12
-        private val NTK_NUMERIC_EPISODE_PATH = Regex("^/(manhwa|webtoon)/(\\d+)/(\\d+)(?:[/?#].*)?$")
+        private val NTK_VIEWER_EPISODE_PATH = Regex("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)(?:[/?#].*)?$")
         private val NTK_GENERATED_IMAGE_EXTENSION = Regex("(?i)\\.([a-z0-9]+)(?:[?#].*)?$")
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 16
         private const val NTK_INITIAL_BOOT_URGENT_PAGES = 16
