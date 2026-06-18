@@ -227,6 +227,9 @@ public class EpisodeActivityNetworkTest {
                     + episodePath);
             Rect bounds = ntkContinue.getVisibleBounds();
             assertTrue("Expected NTK continue card bounds for UX tap", bounds.width() > 0 && bounds.height() > 0);
+            Log.d("ViewerPerf", "ntk_actual_home_continue_tap x=" + bounds.centerX()
+                    + ",y=" + bounds.centerY()
+                    + ",bounds=" + bounds.toShortString());
             device.click(bounds.centerX(), bounds.centerY());
 
             openReaderFromHomeSelectionIfEpisodeList(device);
@@ -1120,24 +1123,12 @@ public class EpisodeActivityNetworkTest {
             UiObject2 icon = device.findObject(By.res(PACKAGE_NAME, "home_continue_site_icon").desc("NTK"));
             if(icon != null) {
                 lastIcon = icon;
-                UiObject2 card = clickableAncestor(icon);
-                if(card != null)
-                    return card;
+                return icon;
             }
             Thread.sleep(250L);
         }
         assertNotNull("Expected NTK home continue site icon", lastIcon);
-        return clickableAncestor(lastIcon);
-    }
-
-    private static UiObject2 clickableAncestor(UiObject2 node) {
-        UiObject2 current = node;
-        for(int depth = 0; current != null && depth < 5; depth++) {
-            if(current.isClickable())
-                return current;
-            current = current.getParent();
-        }
-        return null;
+        return lastIcon;
     }
 
     private static void openReaderFromHomeSelectionIfEpisodeList(UiDevice device) throws Exception {

@@ -23224,7 +23224,7 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Test still failed first reader image, but selected ACK 200 proof existed.
 - Root cause now narrowed:
   - Selected path `/manhwa/36525/1807424` recorded `ntk_native_ack_challenge_code=200` and `ntk_server_ack_success_recorded`.
-  - Later adjacent/prefetch path /manhwa/36525/1803388 stored its own d_ack_c and overwrote the process/global cookie jar.
+  - Later adjacent/prefetch path /manhwa/36525/1803388 stored its own ad_ack_c and overwrote the process/global cookie jar.
   - Image API requests for selected /1807424 then logged hasAdAckC=true but dAckCMatches=false and returned 403/428 browser_key_required.
   - Previous successful artifact 20260617_234619-comic-keyid-align had image API request cookies with hasAdAck=true, hasAdAckC=true, dAckMatches=true, dAckCMatches=true, and native primary /api/manhwa-images returned 200 imageCount=24.
 - Interpretation:
@@ -23234,7 +23234,7 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not chase only hidden WebView API signing while native primary has wrong scoped ACK cookie; that masks the real selected-vs-adjacent cookie pollution.
   - Do not publish ad/banner fallback images; current filtering correctly rejects board_uploads ads.
 - Next fix:
-  - Add a scoped d_ack_c restore path usable by CustomHttpClient native image API requests before etchNtkViewerImagesApiRace.
+  - Add a scoped ad_ack_c restore path usable by CustomHttpClient native image API requests before fetchNtkViewerImagesApiRace.
 
 ## 2026-06-18 00:18:00 +09:00 Actual UX requires strict scoped ad_ack, not challenge-only ad_ack_c
 
@@ -25577,5 +25577,57 @@ tk_rsc_payload_cloudflare_clearance_reset.
 ## 2026-06-18 main sync correction
 - User correction: NTK ACK/viewer stabilization commits must land on main, not only codex/ntk-strict-ack-proof.
 - Created C:\Users\Administrator\Downloads\mangaviewer-main-sync from origin/main and merged feature commit c6c35ed91 without force-pushing over newer main commits.
-- Conflict policy: preserve latest origin/main captcha stuck-reload/ACK proof recovery, preserve feature branch request-key material signing, scoped d_ack/d_ack_c lookup, random/actual UX test improvements, and synthetic adjacent append safeguards.
+- Conflict policy: preserve latest origin/main captcha stuck-reload/ACK proof recovery, preserve feature branch request-key material signing, scoped ad_ack/ad_ack_c lookup, random/actual UX test improvements, and synthetic adjacent append safeguards.
 - Bad approach to avoid: force-pushing feature branch to main or choosing one side wholesale in ACK/captcha conflicts; either would drop recent main fixes or feature proof paths.
+
+## 2026-06-18 16:15:00 +09:00 main actual UX ACK recheck and home continue harness fix
+
+- Continued from active goal after the main merge/push correction.
+- Current authoritative worktree for this pass: C:\Users\Administrator\Downloads\mangaviewer-main-sync, commit ceaf7d2a1 on top of origin/main.
+- Emulator: emulator-5554.
+- Actual UX direct selection recheck:
+  - Artifact: build/ntk-ux-select/20260618_160158_main_actual_ux_ack_recheck_live.
+  - Webtoon actual selection:
+    - Test: EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200.
+    - Result: OK (1 test).
+    - Path: /webtoon/16968/1463195.
+    - First drawable: 2533ms.
+    - Coverage: reader_visible_loading=0, drawablePx=2274, missingPx=0, placeholderPx=0.
+    - ACK proof: source=native-fetch-ack-200, strictAdAck=true.
+  - Comic actual selection:
+    - Test: EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200.
+    - Result: OK (1 test).
+    - Path: /manhwa/36525/1807424.
+    - First drawable: 5666ms.
+    - Coverage: reader_visible_loading=0, drawablePx=2275, missingPx=0, placeholderPx=0.
+    - ACK proof: source=native-fetch-ack-200, strictAdAck=true.
+- Home continue UX issue found:
+  - First direct adb shell am instrument attempt was invalid because APK file names were custom (mangaViewer_2112261618-debug.apk) and runLiveNetworkTests=true was missing. It produced assumption-skip OK (1 test) and must not be counted.
+  - Home continue then timed out after only ntk_actual_home_continue_select_start.
+  - Root cause was the test harness tap point, not ACK: the continue card is partially covered/near the bottom nav, and clicking the clickable ancestor center can hit the covered/lower area instead of visible card content.
+  - Fix: waitForNtkHomeContinueCard now returns the visible NTK site icon and the test taps that visible icon center, with tap coordinate logging.
+  - Build validation for the harness change: ./gradlew.bat --no-daemon :app:assembleDebugAndroidTest passed.
+- Home continue UX recheck after harness fix:
+  - Artifact: build/ntk-ux-select/20260618_160807_main_home_continue_icon_tap_live.
+  - Test: EpisodeActivityNetworkTest#ntkHomeContinueUxSelectionOpensReaderWithAck200.
+  - Result: OK (1 test).
+  - Tap proof: ntk_actual_home_continue_tap x=451,y=1735,bounds=[413,1697][490,1774].
+  - Path: /webtoon/16968/1463195.
+  - First drawable: 574ms.
+  - Coverage: reader_visible_loading=0, drawablePx=2274, missingPx=0, placeholderPx=0.
+  - ACK proof: source=native-fetch-ack-200, strictAdAck=true.
+- Fast random strict fresh smoke after main recheck:
+  - Artifact: build/ntk-random-perf/20260618_160915.
+  - Command used Runs=1, ScrollSteps=3, AppendSteps=4, strict fresh, cleared ACK and image cache, first drawable max 10000ms, max dropped frames 2.
+  - Result: OK (1 test), summary passed=true, failures=0.
+  - Seed: 1781766555527.
+  - Live random case: /manhwa/25399/296660, title 도쿄 결투 환상전, image count 27.
+  - First drawable: 7037ms; ACK preflight: 7615ms.
+  - ACK proof: /api/ad/ack native submit code=200, plus bridge-ack-200 and guard-fetch-ack-200, strictAdAck=true.
+  - Scroll settled coverage for all 3 steps: missingPx=0, placeholderPx=0, loading=0, post-stop drift maxPageDelta=0, maxOffsetDelta=0.
+  - Append next/previous both succeeded: next /manhwa/25399/296658, previous /manhwa/25399/296656.
+- Bad/weak evidence and remaining risk:
+  - Do not count instrumentation OK when it is an assumption skip. Require runLiveNetworkTests=true and inspect logs for ACK/image markers.
+  - Do not rely on clickable ancestor center taps for home cards near bottom navigation; use visible child bounds or logged tap coordinates.
+  - Random smoke still shows speed/jank weakness: ACK around 7.6s, first drawable around 7.0s, and slow frame signals remain. Current user direction accepts speed compromise, but this is not a 60fps perfection claim.
+  - Random append produced one intermediate reader_visible_coverage line with placeholderPx=62 after append. Settled scroll assertions stayed clean, but the original ideal of never any transient placeholder is still not fully proven.
