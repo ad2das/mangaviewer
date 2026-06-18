@@ -25574,6 +25574,65 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Synthetic append can take longer than numeric generated append because it waits for strict ACK and API image extraction. In the validated run it inserted at append step 29 after about 12.2s fetch time.
   - Strict 60fps perfection is still not claimed; current requested close-out remains ACK and stability.
 
+## 2026-06-19 05:55:00 +09:00 NTK previous prepend reveal deferred to avoid full-viewport placeholders
+
+- Continued after compaction by reading this file and checking the active goal.
+- Important workspace correction:
+  - `C:/Users/Administrator/Downloads/mangaviewer` is currently `codex/ntk-strict-ack-proof` with many old dirty changes.
+  - The main branch push target is `C:/Users/Administrator/Downloads/mangaviewer-main-sync`, currently `main...origin/main`.
+  - Do not apply current main-line stabilization work to the dirty `codex/ntk-strict-ack-proof` worktree unless explicitly asked.
+- New failure found before this fix:
+  - Artifact: `build/ntk-random-perf/20260619_broader_random_strict5/20260619_053550`.
+  - Seed: `1781814950345`.
+  - Failed target: `/manhwa/23007/216102`, imageEpisodeId `265637`, imageWorkId `23007`, imageCount `14`.
+  - Failure: after reverse-fast scroll toward previous episode, viewport became full placeholder:
+    - `coverage=viewportPx=2274;drawablePx=0;missingPx=0;placeholderPx=2275;drawableItems=0;items=2;loading=2;errors=0;cards=0;busy=false;pages=18`.
+  - ACK was not the immediate assertion; the visible failure occurred while ACK was still held/deferred by quiet/touch handling.
+- Root cause:
+  - Previous append publishes prepended pages immediately.
+  - `ReaderSession.appendResolvedEpisode(... direction < 0)` shifts current page state forward and posts `onPagesPrepended(...)`.
+  - `ReaderV2Activity.onPagesPrepended(...)` consumed a pending previous-boundary reveal and moved `currentPage` to the newly prepended boundary.
+  - The new previous episode pages were not decoded/delivered yet, so the viewport jumped from already drawable current pages into fresh placeholder pages.
+  - This is a structure/publish timing bug, not an ACK proof bug.
+- Fix:
+  - `ReaderV2Activity.consumePrependedBoundaryReveal(...)` now defers automatic previous-boundary reveal for NTK readers.
+  - Existing page/index preservation remains intact: `currentPage += insertedCount`, and `renderView.prependPageCount(..., reveal=false)` keeps the user's visible current content stable while previous pages warm in the background.
+  - Log marker added: `pages_prepended_reveal_deferred_ntk inserted=...`.
+- Validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Target repro after fix:
+    - Artifact: `build/ntk-random-perf/20260619_prepend_reveal_defer_repro2/20260619_054300`.
+    - Command used same failing path/seed with `FirstDrawableMaxMs=14000`.
+    - Result: `OK (1 test)`.
+    - ACK: `started=true`, `webViewDone=true`, `readerDone=true`, `strictProof=true`, `nativeBridgeAck200=true`, `passed=true`.
+    - Scroll step 2 reverse-fast now has `drawablePx=2275`, `placeholderPx=0`, `loading=0`, `maxPageDelta=0`, `maxOffsetDelta=0`.
+    - Log proof: `pages_prepended_reveal_deferred_ntk inserted=13` then `pages_prepended total=40 inserted=13 reveal=false`.
+  - Broader random 5-run attempt:
+    - Artifact: `build/ntk-random-perf/20260619_after_prepend_reveal_defer_strict5/20260619_054347`.
+    - Result: aborted by emulator/system crash, not a normal app assertion.
+    - Run 0 `/manhwa/36160/1799227`: ACK passed; 6 scroll steps passed; append next and previous passed; previous reveal deferred with `inserted=13`.
+    - Run 1 `/webtoon/14547/1262486`: ACK passed; 6 scroll steps passed; append next and previous passed; previous reveal deferred with `inserted=13`.
+    - Run 2 `/manhwa/25877/309796` did not actually start ACK before `INSTRUMENTATION_ABORTED: System has crashed`.
+    - System log included `DeadSystemException: The system died`; this is not counted as an app pass.
+  - Run 2 single repro:
+    - Artifact: `build/ntk-random-perf/20260619_after_prepend_reveal_defer_run2_repro/20260619_054825`.
+    - Result: `OK (1 test)`.
+    - ACK: `/api/ad/ack` strict proof true via native submit; first drawable `8798ms`; 6 scroll steps passed.
+- Additional failure discovered after the prepend fix:
+  - Artifact: `build/ntk-random-perf/20260619_after_prepend_reveal_defer_strict3/20260619_054936`.
+  - Seed: `1781815776669`.
+  - Target: `/webtoon/25/1051495`, imageEpisodeId `480365`, imageWorkId `25`, imageCount `15`.
+  - Failure: first drawable `15144ms`, max `14000ms`.
+  - Early URL and network were not the bottleneck:
+    - Early generated URLs ready at `1726ms`.
+    - p001 foreground image 200 at `514ms`; p002-p004 200 at about `526-540ms`.
+    - `decodeReady` logged at `5764ms`, but `reader_open_to_first_drawable ... ms=15144`.
+  - Current interpretation: this is a first-drawable commit / initial continuous delivery scheduling issue after bytes are already available, not an ACK or Cloudflare issue.
+- Bad approaches / do not repeat:
+  - Do not treat the 5-run aborted random as an app regression without checking for system crash. It died with `DeadSystemException`.
+  - Do not solve previous-prepend placeholder by adding blind waits before opening the viewer or by relaxing the scroll assertion. The correct local fix is to avoid revealing not-yet-drawable prepended NTK pages.
+  - Do not merge the new `/webtoon/25/1051495` first drawable lag into the prepend fix commit. It is a separate first-drawable scheduling/decode/commit problem.
+
 ## 2026-06-18 main sync correction
 - User correction: NTK ACK/viewer stabilization commits must land on main, not only codex/ntk-strict-ack-proof.
 - Created C:\Users\Administrator\Downloads\mangaviewer-main-sync from origin/main and merged feature commit c6c35ed91 without force-pushing over newer main commits.

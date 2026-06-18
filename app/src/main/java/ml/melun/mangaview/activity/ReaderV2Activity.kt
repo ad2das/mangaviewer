@@ -2533,6 +2533,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun consumePrependedBoundaryReveal(insertedCount: Int): Boolean {
         val reveal = shouldRevealPrependedBoundary(pendingPrependRevealRequests, insertedCount)
         if (pendingPrependRevealRequests > 0) pendingPrependRevealRequests--
+        if (reveal && isCurrentNtkReader()) {
+            Log.d(TAG, "pages_prepended_reveal_deferred_ntk inserted=$insertedCount")
+            return false
+        }
         return reveal
     }
 
