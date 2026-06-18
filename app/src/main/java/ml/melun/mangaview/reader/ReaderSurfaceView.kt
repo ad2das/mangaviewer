@@ -259,6 +259,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastCoverageLogMs = 0L
     private var lastVisibleCoverageSnapshot: VisibleCoverageSnapshot? = null
     private var lastFrameStatsSnapshot: FrameStatsSnapshot? = null
+    private var limitScrollToDrawablePrefix = false
 
     init {
         isFocusable = true
@@ -281,6 +282,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scheduleFrameLocked()
             stateLock.notifyAll()
         }
+        requestRender()
+    }
+
+    fun setLimitScrollToDrawablePrefix(enabled: Boolean) {
+        var request: WindowRequest? = null
+        synchronized(stateLock) {
+            if (limitScrollToDrawablePrefix == enabled) return
+            limitScrollToDrawablePrefix = enabled
+            clampScrollLocked()
+            renderRequested = pages.isNotEmpty()
+            if (renderRequested) scheduleFrameLocked()
+            stateLock.notifyAll()
+            request = if (renderRequested) windowRequestLocked(lastBusy) else null
+        }
+        dispatchWindowRequest(request)
         requestRender()
     }
 
@@ -2053,13 +2069,27 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun clampScrollLocked() {
-        val maxScroll = max(0f, totalHeightLocked() - height)
+        val maxScroll = maxScrollLocked()
         val minScroll = if (prependedRevealHoldPage in pages.indices) {
             min(pageTopOrElseLocked(prependedRevealHoldPage, 0f), maxScroll)
         } else {
             0f
         }
         setScrollOffsetLocked(scrollOffset.coerceIn(minScroll, maxScroll))
+    }
+
+    private fun maxScrollLocked(): Float {
+        val fullMaxScroll = max(0f, totalHeightLocked() - height)
+        if (!limitScrollToDrawablePrefix || pages.isEmpty() || height <= 0) return fullMaxScroll
+        val firstBlocked = pages.indexOfFirst { page ->
+            page.cardText == null &&
+                page.errorText == null &&
+                page.bitmap == null &&
+                page.tiles.isEmpty()
+        }
+        if (firstBlocked < 0) return fullMaxScroll
+        val drawableBottom = pageTopOrElseLocked(firstBlocked, 0f)
+        return min(fullMaxScroll, max(0f, drawableBottom - height))
     }
 
     private fun boundaryRequestLocked(clearDirection: Boolean = true): BoundaryRequest? {

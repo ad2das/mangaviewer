@@ -27499,3 +27499,152 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The reliable lower bound is ACK proof around `4.2 s`.
   - Good runs need URL discovery around `6.9-7.3 s` and first stream below about `1.6 s`; bad runs push `ntk_images_api_start/early_urls_ready` to `9.2-9.4 s` and/or first stream to `2.6-2.8 s`.
   - Focus on why token-early prefetch sometimes starts immediately after `ntk_viewer_api_prefetch_token_early` and sometimes is absent/late, and on preventing hidden WebView renderer crashes/tile memory pressure from delaying or disrupting the bridge.
+
+## 2026-06-19 12:15:00 +09:00 hashed slug webtoon current experiments
+
+- Working tree:
+  - `main` in `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Latest pushed `origin/main` is `cc21b6797`; old `origin/codex/ntk-strict-ack-proof` is behind main, not ahead.
+- Target repro:
+  - `/webtoon/u-bt-snsnicrazywoman-574c7e44/bt-snsnicrazywoman-3`, seed `1781801619087`, imageWorkId `1386262668`, imageEpisodeId `1129691`, imageCount `40`, strict fresh native ACK.
+- Stable finding:
+  - ACK is not the current blocker.
+  - Recent runs all had real `/api/ad/ack` proof 200:
+    - `guard-fetch-ack-200`.
+    - `ntk_webview_ack_preflight_done ... success=true`.
+    - ACK time remains about `4.1-4.4 s`.
+- Useful change under test:
+  - Start `/api/webtoon-images` token prefetch from page fetch completion for synthetic slug webtoon paths.
+  - Block partial RSC direct image handoff for synthetic slug paths, because it can publish `ed35afb...jpg?v2`, a 40 KB / 315 px non-page image.
+  - Prefer API payload over direct text images for synthetic slug paths.
+  - Hidden ACK-only WebView decorative/media blocking improved page/API timing, but it is not sufficient alone.
+- Rejected/unsafe findings:
+  - Direct text/RSC first image is unsafe for this path class:
+    - `build\ntk-random-perf\20260619_synthetic_token_prefetch_stagger600_repro\20260619_025913`.
+    - First drawable `7875 ms`, but decoded width was `315`; this was the bad `ed35afb...jpg?v2` candidate, not a real page.
+    - Do not count this as success, and do not re-enable synthetic slug direct-image fallback without strong page validation.
+  - Single initial stream improved first drawable but broke scroll coverage:
+    - `build\ntk-random-perf\20260619_synthetic_token_prefetch_single_stream_repro\20260619_025712`.
+    - First drawable `8571 ms`, ACK `4291 ms`, stream `1154 ms`.
+    - Failed scroll step 0 with all-visible placeholder/loading; first page only is not enough.
+  - 600/1000 ms adjacent stream staggering with foreground priority still lets page 1/2 compete with page 0:
+    - `build\ntk-random-perf\20260619_synthetic_token_prefetch_stagger600_append_wait_repro\20260619_030228`: first drawable `9939 ms`.
+    - `build\ntk-random-perf\20260619_synthetic_token_prefetch_stagger1000_append_wait_repro\20260619_030411`: first drawable `9751 ms`.
+  - Reducing launch hold alone is not sufficient:
+    - `build\ntk-random-perf\20260619_hold3200_visible_priority_repro\20260619_030902`: first URL `7016 ms`, stream `2110 ms`, first drawable `9310 ms`.
+    - `build\ntk-random-perf\20260619_hold2600_visible_priority_repro\20260619_031039`: first drawable `9715 ms`; stream variance worsened.
+- Current root:
+  - With valid API first image, first URL can be around `7.0-7.2 s`, but first full image body/decode still fluctuates `2.1-2.5 s`.
+  - The remaining stable fix should reduce page-0 body contention while still preparing adjacent pages before scroll.
+- Append race finding:
+  - In `20260619_synthetic_token_prefetch_stagger600_repro`, append previous failed before `/bt-snsnicrazywoman-2` API partial URLs arrived.
+  - `append_adjacent_verified_fetch result=2 images=0 ms=1733` appeared before `ntk_viewer_api_prefetch_token_early` and `ntk_images_api_start` for previous.
+  - Need append synthetic `api-strict` to wait for already-started API early URL handoff instead of closing as empty.
+- Parallel analysis:
+  - Spawned explorer `Arendt` for `ReaderImageCache` / first image stream contention.
+  - Spawned explorer `Newton` for append synthetic `api-strict` race.
+
+## 2026-06-19 13:05:00 +09:00 main-branch check and rejected synthetic slug fast-paths
+
+- Branch correction:
+  - Active clean target worktree is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - It is on `main` tracking `origin/main` at `cc21b6797`.
+  - Older `C:\Users\Administrator\Downloads\mangaviewer` is `codex/ntk-strict-ack-proof`, behind `origin/main`, and has a very large dirty tree. Do not use it as the main-line source of truth.
+- User concern:
+  - The user is right that verified work should land on `main`, not stay only on a codex branch.
+  - Current uncommitted code in `main-sync` is still experimental; do not commit/push it until target + regression pass.
+- Rejected experiment: synthetic slug page-fetch launch hold `1800 ms`.
+  - Artifact: `build\ntk-random-perf\20260619_synthetic_hold1800_repro\20260619_035429`.
+  - Result: failed first drawable, `11677 ms`.
+  - ACK still succeeded: `ntk_ack_proof ... source=guard-fetch-ack-200`, `ntk_webview_ack_preflight_done ... success=true,ms=5418`.
+  - Page/API token started earlier, but usable early URLs still arrived at `8185 ms`, and first stream/decode took `3313/3379 ms`.
+  - Decision: reverted. Simple launch-hold reduction is not a valid fix.
+- Rejected experiment: synthetic token API prefetch forced to known numeric `imageWorkId/imageEpisodeId`.
+  - Artifact: `build\ntk-random-perf\20260619_synthetic_known_ids_token_repro\20260619_035837`.
+  - Result: failed with no drawable, `16822 ms`, fast-fail captcha path.
+  - ACK still succeeded: strict proof `guard-fetch-ack-200`, `nativeSubmit code=200`, `ntk_webview_ack_preflight_done ... success=true,ms=4383`.
+  - The change caused `api-synthetic-webtoon-empty` and no early URL/foreground stream. Numeric payload substitution from token prefetch is unsafe in this path.
+  - Decision: reverted. Do not reapply this without a separate proof that `/api/webtoon-images` accepts the numeric payload for the same scoped ACK.
+- Current actual blocker:
+  - ACK is not the failing component on the target case.
+  - The target is blocked by first real image URL/body availability:
+    - Generated extension probe for `webtoon/1386262668/1129691` returns no verified extension.
+    - Direct text/RSC image fallback remains unsafe because it previously selected a non-page/ad-like `315 px` image.
+    - The only working page0 source in the better failed run was delayed partial URL publication from the hidden/API path around `8.1 s`.
+- Next direction:
+  - Keep synthetic direct/ad candidate rejection.
+  - Do not loosen ACK proof requirements.
+  - Investigate why hidden/API partial URL publication can produce real `flysky3m.com/<hash>.jpg` pages, but parse/API final paths still return empty or 403.
+  - If optimizing speed further, focus on earlier safe publication of those verified partial URLs, not on ACK shortcuts.
+
+## 2026-06-19 13:45:00 +09:00 synthetic slug ACK/append stabilization attempts on main
+
+- Branch/worktree:
+  - Active work remains `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on `main`.
+  - Do not commit/push yet: target strict-fresh synthetic slug regression is still failing in append timing.
+- Build:
+  - `.\gradlew.bat --no-daemon :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:assembleDebug :app:assembleDebugAndroidTest` passes after current changes.
+- Confirmed good pieces:
+  - Current page ACK still reaches real `/api/ad/ack` 200 proof.
+  - Good runs show first drawable around `8.5-8.9 s`.
+  - Scroll can pass with `placeholderPx=0` when initial protected-CDN request fan-out is limited.
+  - `next` append can pass in the better timing window.
+- Useful changes under test:
+  - Synthetic slug initial continuous request fan-out is capped to the first visible pages before first bitmap, instead of letting 12-13 protected CDN URLs compete before first screen.
+  - Synthetic append API fetch no longer waits behind the shared `network` executor; it runs on a dedicated daemon append fetch thread so ACK-ready append can actually start.
+  - `api-strict` append waits briefly for strict scoped ACK proof before launching fetch, then still uses early URL handoff.
+- Rejected or bad approaches:
+  - Starting adjacent ACK preflights before first bitmap made current page slower:
+    - `20260619_synthetic_early_adjacent_ack`: first drawable regressed to about `12.0 s`, current ACK/early URL publication slowed, and next append still failed.
+    - Keep adjacent ACK preflight after first bitmap for now.
+  - Previous ACK delay `0 ms` caused next append instability.
+  - Previous ACK delay `400 ms` improved previous timing but reintroduced scroll coverage failure:
+    - `20260619_synthetic_append_steps12_diagnosis`: scroll step 0 had `placeholderPx=114`, `loading=1`.
+  - Previous ACK delay `1000 ms` still destabilized next append in `20260619_synthetic_prev_stagger1000`.
+  - Delay tuning alone is not a robust fix; it trades next/previous ACK timing and scroll readiness.
+- Current best-known target result:
+  - `20260619_synthetic_limit_initial_visible_append_dedicated`:
+    - first drawable `8910 ms`.
+    - scroll steps passed.
+    - next append passed.
+    - previous append failed because strict proof arrived just after the short append probe window.
+- Current root:
+  - ACK itself is not missing; strict proof is real but adjacent proof timing races the append probe.
+  - Shared resource contention between hidden ACK-only WebView, current image stream/decode, and adjacent API append remains.
+  - Need a structure-level fix rather than more fixed delay tuning:
+    - either append should be able to reuse already-observed ACK/challenge state without waiting for late hidden proof,
+    - or adjacent append should get a non-janking, direction-aware prefetch/prepare path that does not compete with first visible scroll pages.
+
+## 2026-06-19 14:55:00 +09:00 main ACK stability pass and remaining append-speed risk
+
+- Branch/worktree:
+  - Active worktree is still `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on `main`.
+  - User explicitly expects verified work to land on `main`; avoid leaving verified changes stranded on old codex branches.
+- Build:
+  - `.\gradlew.bat --no-daemon :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:assembleDebug :app:assembleDebugAndroidTest` passed after the latest changes.
+- Accepted fixes/changes:
+  - Synthetic slug `api-strict` no longer runs the known-slug generated extension fast path before API/token fetch. This avoids spending the append window on a CDN extension probe that is unsafe for this protected slug class.
+  - Synthetic slug direct/RSC text image handoff remains blocked; this prevents the previously observed ad-like 315px image from being accepted as a manga page.
+  - Synthetic API image path now prefers token/API image URL extraction and skips generic board/text image candidates.
+  - Synthetic first API foreground streams are capped/staggered to avoid flooding protected CDN image requests before first bitmap.
+  - Synthetic append fetch runs on a dedicated append thread and is not tied to the ReaderSession cancellation set, so an already-started strict API handoff is less likely to be cut off before publishing verified URLs.
+  - Late early-URL handoff can still be accepted for `api-strict` append after an interruption path.
+- Rejected/bad approach:
+  - Starting a synthetic next ACK preflight from early URL publication before first bitmap was tested in `20260619_synthetic_next_ack_from_early_urls`.
+  - Result: first drawable remained acceptable (`8438 ms`) but scroll instrumentation failed with missing frame stats. This approach was reverted; do not retry pre-first-bitmap adjacent ACK without a separate non-janking scheduler.
+- Target synthetic slug results:
+  - `20260619_synthetic_skip_strict_slug_probe`: first drawable `8619 ms`, ACK 200 proof, scroll passed, next append passed, previous append failed because URL handoff arrived after the short append probe.
+  - `20260619_synthetic_late_cancel_handoff`: first drawable `8475 ms`, ACK 200 proof, scroll passed, previous append still failed; root was `api-synthetic-webtoon-empty` before late strict proof.
+  - `20260619_synthetic_append_independent_cancel`: first drawable `8563 ms`, ACK 200 proof, failed one strict scroll frame assertion before append.
+  - `20260619_synthetic_append_independent_cancel_rerun`: scroll passed, next append produced verified URLs and `append_adjacent_verified_fetch result=0 images=4 ms=2462`, but the 4-step append probe failed first. App-side fetch completed just after the probe window.
+  - `20260619_synthetic_append8_diagnosis`: passed with same strict fresh target and `AppendSteps 8`; ACK 200 proof, first drawable `9033 ms`, scroll passed, next/previous append passed. This confirms ACK and image URL generation are functional, while the remaining issue is cold strict adjacent ACK timing vs the very short append probe.
+- Regression:
+  - `20260619_generated_regression_after_ack_stability` passed for `/manhwa/36380/1800849` with strict fresh generated regression:
+    - first drawable `5745 ms`
+    - scroll passed
+    - append probe passed
+    - ACK proof succeeded
+- Remaining risk:
+  - Cold strict synthetic adjacent ACK can take `6-8 s`; if a manual boundary append probe only waits around 4 polling steps, next/previous insertion may miss the test window even though verified URLs arrive shortly after.
+  - This is now a speed/timing risk, not an ACK impossibility or ad-image contamination issue.
+  - Further speed work should target a non-janking post-scroll adjacent URL prepare path or a faster scoped ACK proof path; do not reintroduce pre-first-bitmap adjacent ACK or unverified generated/direct image fallback.

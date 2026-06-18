@@ -279,6 +279,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             it.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             it.contentDescription = null
+            it.setLimitScrollToDrawablePrefix(
+                viewerLaunchSourceSite.equals("ntk", ignoreCase = true) ||
+                    manga.ntkEpisodePath?.isNotBlank() == true
+            )
             it.setWindowListener(this)
         }
         status = TextView(this).apply {

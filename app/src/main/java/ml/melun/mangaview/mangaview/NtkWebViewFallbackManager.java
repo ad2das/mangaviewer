@@ -4488,6 +4488,20 @@ final class NtkWebViewFallbackManager {
                 return true;
             if(isNtkImageCdnUrl(uri))
                 return true;
+            if(path.endsWith(".css")
+                    || path.endsWith(".woff")
+                    || path.endsWith(".woff2")
+                    || path.endsWith(".ttf")
+                    || path.endsWith(".otf")
+                    || path.endsWith(".png")
+                    || path.endsWith(".jpg")
+                    || path.endsWith(".jpeg")
+                    || path.endsWith(".webp")
+                    || path.endsWith(".gif")
+                    || path.endsWith(".svg")
+                    || path.startsWith("/_next/image")
+                    || path.contains("/_next/static/media/"))
+                return true;
             return false;
         } catch (Exception e) {
             return false;

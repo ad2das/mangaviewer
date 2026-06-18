@@ -770,7 +770,8 @@ object ReaderImageCache {
         cancellation: Cancellation? = null,
         anchorHedge: Boolean = false,
         permit: NtkImagePermit? = null,
-        pageIndex: Int = -1
+        pageIndex: Int = -1,
+        visiblePriority: Boolean = true
     ): Boolean {
         if (!manga.isOnline) return false
         val appContext = context.applicationContext
@@ -824,7 +825,7 @@ object ReaderImageCache {
                     FOREGROUND_STREAM_RACE_ATTEMPTS,
                     anchorHedge,
                     generation,
-                    visiblePriority = true
+                    visiblePriority = visiblePriority
                 )
                 logCacheEvent(
                     "foreground_stream_async_done",
@@ -854,11 +855,11 @@ object ReaderImageCache {
                 existing.cancel(true)
                 foregroundStreamStartedAt.remove(streamKey)
                 logCacheEvent("foreground_stream_stale_restart", manga, image, true, "activeStream=true")
-                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex)
+                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority)
             }
             if (existing.isDone && foregroundStreams.remove(streamKey, existing)) {
                 foregroundStreamStartedAt.remove(streamKey)
-                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex)
+                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority)
             }
             logCacheEvent("foreground_stream_async_join", manga, image, true, "activeStream=true")
             ViewerWarmupManager.logMetric("reader_foreground_stream_async_join", 1L)
@@ -870,7 +871,7 @@ object ReaderImageCache {
             manga,
             image,
             true,
-            "activeStream=false,page=$pageIndex,lane=${permit?.lane},phase=${permit?.phaseAtGrant},permit=${permit?.permitId}"
+            "activeStream=false,page=$pageIndex,lane=${permit?.lane},phase=${permit?.phaseAtGrant},permit=${permit?.permitId},visiblePriority=$visiblePriority"
         )
         ViewerWarmupManager.logMetric("reader_foreground_stream_async_start", 1L)
         return try {
