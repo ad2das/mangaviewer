@@ -27762,3 +27762,29 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Actual UX selection path does get real strict ACK 200 on both comic and webtoon.
   - The remaining issue found in this pass was test blind spot / weak visual assertion for direct webtoon UX, not ACK failure.
   - Next app-behavior work should still focus on random strict/append timing and scroll stability, but UX tests now have stronger evidence that images are actually visible.
+
+## 2026-06-19 16:05:00 +09:00 post UX visual-proof random strict verification
+
+- After committing `Strengthen NTK actual UX visual proof`, ran live random strict fresh checks on `emulator-5554`.
+- Random strict fresh without append:
+  - Command: `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir build\ntk-random-perf\20260619_post_ux_visual_main_random -Runs 2 -ScrollSteps 4 -AppendSteps 0 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -StrictFresh -RequireLiveRandom -FirstDrawableMaxMs 14000 -ForceStopBeforeRun -SkipBuild -SkipInstall`
+  - Run: `build/ntk-random-perf/20260619_post_ux_visual_main_random/20260619_053026`
+  - Result: passed.
+  - Seed: `1781814626637`.
+  - Cases: `2`, unique episode paths: `2`, coverage: `live-random`.
+  - Scroll checks: `8`, failures: `0`.
+  - First drawable max in summary: `6028 ms`.
+  - ACK proof included strict `/api/ad/ack` 200 (`nativeSubmit@/code=200`, `ack_only_fetch` stages).
+- Random strict fresh with append probe:
+  - Command: `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir build\ntk-random-perf\20260619_post_ux_visual_main_random_append -Runs 1 -ScrollSteps 4 -AppendSteps 4 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -StrictFresh -RequireLiveRandom -FirstDrawableMaxMs 14000 -ForceStopBeforeRun -SkipBuild -SkipInstall`
+  - Run: `build/ntk-random-perf/20260619_post_ux_visual_main_random_append/20260619_053133`
+  - Result: passed.
+  - Seed: `1781814693211`.
+  - Target: `/webtoon/16992/1434601`, image count `31`.
+  - First drawable: `5233 ms`.
+  - ACK: `3995 ms`.
+  - Scroll checks: `4`, append steps: `4`, failures: `0`.
+- Current state after this pass:
+  - Actual UX comic/webtoon selection: ACK 200 plus nonblank visual proof is verified.
+  - Live random strict fresh: small random set passed with and without append.
+  - Remaining risk is not closed globally; broader random/restart/cache-deleted sweeps are still needed before claiming full objective completion.
