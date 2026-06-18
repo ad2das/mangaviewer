@@ -27461,3 +27461,41 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Commit scope:
   - Include the scoped generated fast-down visible request ordering improvement and progress/failure documentation.
   - Do not include the rejected `Manga.java` experiments.
+
+## 2026-06-19 05:35:00 +09:00 hashed webtoon fast path experiments rejected
+
+- Target case:
+  - `/webtoon/u-bt-snsnicrazywoman-574c7e44/bt-snsnicrazywoman-3`, titleId/imageWorkId `1386262668`, imageEpisodeId `1129691`, imageCount `40`, seed `1781801619087`, strict fresh, native ACK.
+- Stable finding:
+  - ACK is not the failing part in these runs.
+  - Each repro still had actual strict proof:
+    - `/api/ad/ack` proof source `guard-fetch-ack-200`.
+    - `ntk_webview_ack_preflight_done ... success=true`, about `4.1-4.3 s`.
+  - The instability is first image URL/body timing and, in one run, append finishing before adjacent strict proof/images are ready.
+- Rejected experiment 1: call image API before generated probe after page fetch.
+  - Artifact: `build\ntk-random-perf\20260619_0445_api_before_generated_repro\20260619_021517`.
+  - Result: failed, first drawable `12003 ms`.
+  - `ntk_images_api_start` still happened about `1.9 s` after page fetch done, so generated probe order was not the root.
+  - Decision: reverted.
+- Rejected experiment 2: known metadata fast path inside full-body API prefetch.
+  - Artifact: `build\ntk-random-perf\20260619_0455_known_metadata_fastpath_repro\20260619_021746`.
+  - Result: failed, first drawable `11836 ms`.
+  - The new fast path did not log, because the failing case used token-early prefetch rather than the full-body prefetch path.
+  - Decision: not sufficient.
+- Rejected/partial experiment 3: known metadata fast path inside token-early API prefetch.
+  - Artifact: `build\ntk-random-perf\20260619_0505_token_known_metadata_fastpath_repro\20260619_021949`.
+  - Result: first drawable improved to `7567 ms`, but run failed append-next: target stayed `before=1 after=1`.
+  - The apparent first-drawable improvement came from `ntk_rsc_direct_image_urls_early`, not from the new known-metadata logs; no `known_metadata_fast_path` log appeared.
+  - It exposed a real append issue: `LOAD_CAPTCHA` with zero images was treated as terminal by append fetch, before adjacent strict ACK/images were usable.
+- Rejected experiment 4: canonical webtoon non-generated API initial stream count = 1.
+  - Artifact: `build\ntk-random-perf\20260619_0530_canonical_one_stream_repro\20260619_022518`.
+  - Result: failed, first drawable `12294 ms`.
+  - `ntk_images_api_start` was late (`early_urls_ready ... ms=9386`) and three foreground streams still completed around `2.7 s`; the scoped stream-count change did not stabilize the case.
+  - Decision: revert.
+- Useful candidate kept for future only if separately validated:
+  - Append should not treat `LOAD_CAPTCHA` with zero images as a successful terminal append result.
+  - Needs its own repro after first-drawable path is stable; do not commit it from the failed first-drawable runs alone.
+- Next root direction:
+  - The reliable lower bound is ACK proof around `4.2 s`.
+  - Good runs need URL discovery around `6.9-7.3 s` and first stream below about `1.6 s`; bad runs push `ntk_images_api_start/early_urls_ready` to `9.2-9.4 s` and/or first stream to `2.6-2.8 s`.
+  - Focus on why token-early prefetch sometimes starts immediately after `ntk_viewer_api_prefetch_token_early` and sometimes is absent/late, and on preventing hidden WebView renderer crashes/tile memory pressure from delaying or disrupting the bridge.
