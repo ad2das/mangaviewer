@@ -27296,3 +27296,168 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The ACK stability issue is fixed on the repro path.
   - Fast-scroll strict fresh image coverage is improved but not fully solved. The best recheck after cancellation handling reached `drawablePx=1932/2274`, `placeholderPx=344`, `errors=0`; the remaining issue is one lower-edge visible generated page arriving around one frame too late.
   - Since the user asked to compromise on speed and finish ACK stability first, this commit will prioritize the ACK proof fix plus the safe visible-priority cancellation/queueing fixes, while documenting the remaining image-edge risk.
+
+## 2026-06-19 02:46:00 +09:00 edge page early URL exact-match pre-anchor request
+
+- Goal continuation:
+  - Continue from commit `74f34b9bc` on `main`, worktree initially clean.
+  - Remaining verified risk: fast-scroll strict fresh edge page still had `placeholderPx=344`, `loading=1`, `errors=0`.
+- Root refinement:
+  - In the best remaining failure artifact `build\ntk-random-perf\20260619_0215_cancel_expected_recheck\20260619_014133`, page 11 / `p012.jpg` was part of the early URL list (`early_urls_initial_continuous...effective=12`) but was deferred before first bitmap:
+    - `reader_ntk_pre_anchor_request_deferred_until_anchor_asset page=11`.
+  - The same page was later delivered almost exactly at assertion time:
+    - `foreground_cached ... image=p012.jpg` at `16:41:45.055`.
+    - `reader_initial_continuous_delivery_direct page=11` at `16:41:45.069`.
+    - scroll assertion sampled coverage at `16:41:45.070`.
+- Code change:
+  - `shouldAllowVerifiedNearGeneratedBeforeAnchorAsset` now allows a generated page before anchor asset when its URL exactly matches the trusted early URL list.
+  - It still requires `isNtkGeneratedImageUrl`, keeps the near/generated ahead bounds, and does not allow ads/challenge/captcha assets.
+  - For non-exact early URL cases, the existing coordinator permission check remains required.
+- Bad approach avoided:
+  - Do not increase generated foreground network parallelism; that regressed first drawable and coverage.
+  - Do not loosen assertion wait; the edge page needs to start earlier.
+
+## 2026-06-19 02:53:00 +09:00 exact-match pre-anchor experiment rejected
+
+- Recheck artifact:
+  - `build\ntk-random-perf\20260619_0248_exact_preanchor_recheck\20260619_014840`.
+- Result:
+  - The exact-match pre-anchor relaxation did not solve the repro.
+  - Page 11 / `p012.jpg` was still deferred:
+    - `reader_ntk_pre_anchor_request_deferred_until_anchor_asset page=11`.
+  - The run regressed to:
+    - `drawablePx=0;placeholderPx=2275;loading=2;errors=0`.
+- Interpretation:
+  - The exact-match condition did not match the edge URL that needed early start, likely due early URL canonicalization/variant mismatch.
+  - The experiment increased early requests for pages that were already safe enough, adding contention without solving the target edge page.
+- Decision:
+  - Reverted the code change.
+  - Bad approach recorded: do not broadly relax pre-anchor generated image requests based only on early URL exact-match unless the target edge page is proven to be allowed and contention stays stable.
+
+## 2026-06-19 03:02:00 +09:00 NTK generated fast-down visible order experiment
+
+- Rationale:
+  - Remaining failures are fast-down scrolls where the lower edge page is the last visible page to become drawable.
+  - Existing `windowOrder` alternates around the anchor: anchor, forward, backward, forward+2.
+  - For NTK generated busy fast-down, backward pages are usually already drawn while forward edge pages are newly needed.
+- Code change:
+  - Added a scoped `forwardBiasedWindowOrder`.
+  - Use it only for `generatedWindow && direction > 0` inside the busy visible request path.
+  - This avoids broad reader behavior changes while making lower-edge generated pages enter visible priority earlier.
+- Validation target:
+  - Re-run `/manhwa/36380/1800849`, seed `1781798550811`, strict fresh, fast mixed scroll.
+
+## 2026-06-19 03:10:00 +09:00 forward-biased visible order passed target repro
+
+- Recheck command:
+  - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-random-perf\20260619_0305_forward_order_recheck" -Runs 1 -ScrollSteps 2 -AppendSteps 4 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -TargetEpisodePath "/manhwa/36380/1800849" -Seed 1781798550811 -StrictFresh -ClearAck -FirstDrawableMaxMs 9000 -SkipBuild -SkipInstall -ForceStopBeforeRun`.
+- Artifact:
+  - `build\ntk-random-perf\20260619_0305_forward_order_recheck\20260619_015237`.
+- Result:
+  - `passed=True`, `OK (1 test)`.
+  - First drawable: `reader_open_to_first_drawable ... ms=5361`.
+  - Scroll step 0 coverage:
+    - `drawablePx=2275;missingPx=0;placeholderPx=0;loading=0;errors=0`.
+    - Position stable: `maxPageDelta=0;maxOffsetDelta=0`.
+  - Scroll step 1 coverage:
+    - `drawablePx=2276;missingPx=0;placeholderPx=0;loading=0;errors=0`.
+    - Position stable: `maxPageDelta=0;maxOffsetDelta=0`.
+  - ACK remained valid in the same run:
+    - `ntk_ack_proof={"scope":"/manhwa/36380/1800849","tp":"","source":"native-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`.
+    - `ntk_webview_ack_preflight_done ... success=true,ms=3000`.
+- Interpretation:
+  - The remaining edge placeholder was caused by generated fast-down visible request ordering, not by needing more network parallelism.
+  - Biasing visible request order forward for NTK generated fast-down scroll is a scoped structural fix and preserves scroll position.
+
+## 2026-06-19 03:24:00 +09:00 live random hashed webtoon first URL bottleneck
+
+- Random smoke artifact:
+  - `build\ntk-random-perf\20260619_0311_forward_order_random_smoke\20260619_015339`.
+- Case:
+  - Path `/webtoon/u-bt-snsnicrazywoman-574c7e44/bt-snsnicrazywoman-3`.
+  - Title `SNS에 미친 여자`, titleId `1386262668`, imageEpisodeId `1129691`, imageCount `40`, seed `1781801619087`.
+- Result:
+  - ACK succeeded:
+    - `ntk_ack_proof={"scope":"/webtoon/u-bt-snsnicrazywoman-574c7e44/bt-snsnicrazywoman-3","tp":"286ca3a06817596d","source":"guard-fetch-ack-200"}`.
+    - `ntk_webview_ack_preflight_done ... success=true,ms=4381`.
+  - First drawable failed the 9000 ms budget:
+    - `reader_open_to_first_drawable ... ms=9731`.
+    - `Expected first drawable within budget ... elapsedMs=9731 maxMs=9000`.
+- Root:
+  - This is not an ACK failure.
+  - Hashed first image URL discovery was late:
+    - `early_urls_ready ... count=1 ... ms=6966`.
+    - Foreground image download/decode then took about 2651 ms.
+  - Page fetch itself was delayed by launch hold:
+    - `ntk_page_fetch_launch_hold_wait ... ms=4216`.
+    - Hold cleared only shortly later by `prepared_native_ack_success`.
+- Guardrail:
+  - Board upload and ad-like images stayed rejected:
+    - `ntk_non_page_image_rejected ... /board_uploads/...`.
+  - Do not loosen `board_uploads` or ad filters to make this pass.
+- Rejected experiment:
+  - Tried reducing `NTK_PAGE_FETCH_LAUNCH_HOLD_MAX_MS` from `4200` to `900`.
+  - Repro artifact after rebuilding APKs with `--rerun-tasks`: `build\ntk-random-perf\20260619_0342_launch_hold_900_repro_rerunbuild\20260619_020331`.
+  - Result was worse: first drawable `10983 ms`, ACK still succeeded (`guard-fetch-ack-200`, `ackMs=5260`).
+  - The page/RSC fetch started earlier, but `/api/webtoon-images` still needed strict ACK proof before useful URLs appeared; the first usable URL arrived around `early_urls_ready ... ms=8072`.
+  - Decision: reverted the launch hold change. Bad approach recorded: do not treat the outer launch hold as the root for hashed webtoon first-image latency unless image API can produce valid page URLs before strict ACK proof.
+- Additional build/test issue:
+  - After a clean build, `compileDebugAndroidTest` restored cached Java compile state without valid app class outputs and the runner hit `ClassNotFoundException: ml.melun.mangaview.MainApplication`.
+  - Workaround for reliable fast loop: run `:app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:assembleDebug :app:assembleDebugAndroidTest --rerun-tasks` before `-SkipBuild` repros when cache state looks suspect.
+
+## 2026-06-19 04:12:00 +09:00 prioritize first hashed webtoon image stream
+
+- Root refinement:
+  - In the failed hashed webtoon repro, ACK proof completed and the first image URL was usable, but first image body read/decode still consumed about `2.7 s`.
+  - The initial API image streamer started index 0, 1, and 2 at `0/180/360 ms`, so adjacent 640-770 KB image downloads could compete with the first visible page body read.
+- Code change:
+  - Reduced `NTK_EARLY_INITIAL_STREAM_START_COUNT` from `3` to `1`.
+  - This keeps the first page foreground stream immediate and lets normal append/full prefetch fill adjacent pages after the first bitmap is available.
+  - Scope is NTK initial API image streaming only; ad/board upload filters remain unchanged.
+- Validation target:
+  - Re-run the hashed webtoon failure case `/webtoon/u-bt-snsnicrazywoman-574c7e44/bt-snsnicrazywoman-3`, seed `1781801619087`, strict fresh, `FirstDrawableMaxMs=9000`.
+  - Then re-run the prior generated target `/manhwa/36380/1800849`, seed `1781798550811`, to ensure generated fast-scroll coverage remains stable.
+
+## 2026-06-19 04:21:00 +09:00 initial stream count 1 rejected
+
+- Recheck command:
+  - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-random-perf\20260619_0415_initial_stream_1_hashed_repro" -Runs 1 -ScrollSteps 2 -AppendSteps 4 -ScreenshotEvery 0 -Seed 1781801619087 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -TargetEpisodePath /webtoon/u-bt-snsnicrazywoman-574c7e44/bt-snsnicrazywoman-3 -TargetImageEpisodeId 1129691 -TargetImageWorkId 1386262668 -TargetImageCount 40 -StrictFresh -RequireLiveRandom -FirstDrawableMaxMs 9000 -ForceStopBeforeRun -SkipBuild`.
+- Artifact:
+  - `build\ntk-random-perf\20260619_0415_initial_stream_1_hashed_repro\20260619_020811`.
+- Result:
+  - Failed: first drawable `10979 ms`.
+  - ACK stayed valid: `ntk_ack_proof={"scope":"/webtoon/u-bt-snsnicrazywoman-574c7e44/bt-snsnicrazywoman-3","tp":"24689f9c64135569","source":"guard-fetch-ack-200"}`, `ntk_webview_ack_preflight_done ... success=true,ms=4282`.
+  - First usable URL was later, not earlier: `early_urls_ready ... ms=9195`.
+  - First image stream itself was not the main delay: `foreground_race_win ... ms=499`, `foreground_stream_async_done ... ms=1588`, decode total `1667 ms`.
+- Decision:
+  - Reverted `NTK_EARLY_INITIAL_STREAM_START_COUNT` back to `3`.
+  - Bad approach recorded: do not reduce initial stream count to 1 for this class of failure; it does not address image URL discovery latency and can make the repro worse.
+- New root direction:
+  - The remaining hashed webtoon bottleneck is earlier in the URL-discovery path: page fetch completed around `4.6 s`, but `/api/webtoon-images` did not start until about `6.9 s` from open, then early URLs reached the reader at `9.2 s`.
+  - Next work should reduce the gap between page/RSC payload availability, token extraction, and `/api/webtoon-images` start/result publication, while preserving strict ACK proof and ad image rejection.
+
+## 2026-06-19 04:35:00 +09:00 forward-order precommit validation
+
+- Build:
+  - `.\gradlew.bat --no-daemon :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:assembleDebug :app:assembleDebugAndroidTest --rerun-tasks`.
+  - Result: `BUILD SUCCESSFUL`.
+- Recheck command:
+  - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-random-perf\20260619_0430_forward_order_precommit" -Runs 1 -ScrollSteps 2 -AppendSteps 4 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -TargetEpisodePath "/manhwa/36380/1800849" -Seed 1781798550811 -StrictFresh -ClearAck -FirstDrawableMaxMs 9000 -SkipBuild -SkipInstall -ForceStopBeforeRun`.
+- Artifact:
+  - `build\ntk-random-perf\20260619_0430_forward_order_precommit\20260619_021136`.
+- Result:
+  - `passed=True`, `OK (1 test)`.
+  - First drawable: `reader_open_to_first_drawable ... ms=5501`.
+  - ACK strict proof succeeded:
+    - `ntk_ack_proof={"scope":"/manhwa/36380/1800849","tp":"","source":"native-fetch-ack-200"}`.
+    - `ntk_webview_ack_preflight_done ... success=true,ms=4040`.
+  - Scroll step 0:
+    - `drawablePx=2275;missingPx=0;placeholderPx=0;loading=0;errors=0`.
+    - `maxPageDelta=0;maxOffsetDelta=0`.
+  - Scroll step 1:
+    - `drawablePx=2275;missingPx=0;placeholderPx=0;loading=0;errors=0`.
+    - `maxPageDelta=0;maxOffsetDelta=0`.
+- Commit scope:
+  - Include the scoped generated fast-down visible request ordering improvement and progress/failure documentation.
+  - Do not include the rejected `Manga.java` experiments.

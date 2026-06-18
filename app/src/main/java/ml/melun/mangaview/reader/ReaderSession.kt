@@ -1989,7 +1989,11 @@ class ReaderSession(
             } else {
                 minOf(safeLast, windowAnchor + busyVisibleRadius)
             }
-            val visible = windowOrder(visibleFirst, visibleLast, windowAnchor, direction)
+            val visible = if (generatedWindow && direction > 0) {
+                forwardBiasedWindowOrder(visibleFirst, visibleLast, windowAnchor)
+            } else {
+                windowOrder(visibleFirst, visibleLast, windowAnchor, direction)
+            }
             for (i in visible) requestPage(i, true, i == windowAnchor, generation)
             if (!ntkInitialAnchorWindow) {
                 for (i in requestList) {
@@ -6889,6 +6893,18 @@ class ReaderSession(
             }
             distance++
         }
+        return result
+    }
+
+    private fun forwardBiasedWindowOrder(first: Int, last: Int, anchor: Int): List<Int> {
+        val result = ArrayList<Int>(last - first + 1)
+        fun add(index: Int) {
+            if (index in first..last && !result.contains(index)) result.add(index)
+        }
+        val safeAnchor = anchor.coerceIn(first, last)
+        add(safeAnchor)
+        for (index in (safeAnchor + 1)..last) add(index)
+        for (index in (safeAnchor - 1) downTo first) add(index)
         return result
     }
 
