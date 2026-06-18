@@ -3262,7 +3262,7 @@ class ReaderSession(
                         if (
                             cancelled.get() ||
                             shouldSkipStalePage(index, generation, anchor) ||
-                            currentPageIndex(originalPage, index) < 0
+                            currentPageIndexForDelivery(originalPage, index) < 0
                         ) {
                             recycleDecodeResult(result)
                             return@execute
@@ -3372,9 +3372,10 @@ class ReaderSession(
             SystemClock.elapsedRealtime() - 30000L
         )
         val normalizedImage = Utils.viewerImageRequestUrl(image, page.manga.baseMode)
-        return earlyUrls.any {
+        val exactMatch = earlyUrls.any {
             it == image || Utils.viewerImageRequestUrl(it, page.manga.baseMode) == normalizedImage
         }
+        return exactMatch || earlyUrls.isNotEmpty()
     }
 
     private fun schedulePreAnchorFallbackRetry(index: Int, page: PageRef, generation: Int) {
@@ -5087,6 +5088,15 @@ class ReaderSession(
         pageIndexLocked(page, fallback)
     }
 
+    private fun currentPageIndexForDelivery(page: PageRef, fallback: Int): Int = synchronized(pagesLock) {
+        val strict = pageIndexLocked(page, fallback)
+        if (strict >= 0) return@synchronized strict
+        if (fallback in pages.indices && equivalentPageRefForDelivery(page, pages[fallback])) {
+            return@synchronized fallback
+        }
+        pages.indexOfFirst { equivalentPageRefForDelivery(page, it) }
+    }
+
     private fun pageIndexLocked(page: PageRef, fallback: Int): Int {
         val known = page.pageIndex
         if (known in pages.indices && pages[known] === page) return known
@@ -5283,6 +5293,9 @@ class ReaderSession(
         if (deliverInitialAnchorNow) {
             ViewerWarmupManager.logMetric("reader_anchor_delivery_direct", currentDelivery.index.toLong())
             val queuedAt = SystemClock.elapsedRealtime()
+            if (primeNearAfterInitialAnchorDelivery) {
+                primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
+            }
             val deliverAnchor = Runnable {
                 val runStartedAt = SystemClock.elapsedRealtime()
                 if (cancelled.get()) {
@@ -5303,9 +5316,6 @@ class ReaderSession(
                 val runMs = SystemClock.elapsedRealtime() - runStartedAt
                 if (runMs > 32L) {
                     Log.d(TAG, "reader_anchor_delivery_run_ms page=${currentDelivery.index},ms=$runMs")
-                }
-                if (primeNearAfterInitialAnchorDelivery) {
-                    primeNtkNearPagesAfterAnchorDecode(currentDelivery.index)
                 }
             }
             val anchorCoalesceDelayMs = initialAnchorCoalesceDelayMs(currentDelivery)
@@ -5408,6 +5418,9 @@ class ReaderSession(
         val secondNextLikelySoon = secondNextReady ||
             loading.contains(secondNext) ||
             urgentLoading.contains(secondNext)
+        if (resultDrawHeightPx(delivery.result) < max(1, viewerHeight).toFloat() && firstNextLikelySoon) {
+            return NTK_INITIAL_SHORT_ANCHOR_VIEWPORT_COALESCE_MS
+        }
         if (!firstNextLikelySoon || !secondNextLikelySoon) return 0L
         if (!initialAnchorCoalesceDelayed.compareAndSet(false, true)) return 0L
         val decodeMs = SystemClock.elapsedRealtime() - delivery.startedAt
@@ -5458,7 +5471,6 @@ class ReaderSession(
         if (firstBitmapLogged.get()) return false
         if (delivery.index != currentStartPage()) return false
         if (!isNtkSource(delivery.page.manga, title)) return false
-        if (synchronized(pagesLock) { pages.size } > delivery.index + 1) return false
         return initialNearAfterAnchorDecodeStarted.compareAndSet(false, true)
     }
 
@@ -6597,6 +6609,7 @@ class ReaderSession(
         private const val NTK_INITIAL_DIRECT_DELIVERY_PAGES = 10
         private const val NTK_INITIAL_ANCHOR_COALESCE_MS = 80L
         private const val NTK_INITIAL_ANCHOR_FAST_COALESCE_MS = 520L
+        private const val NTK_INITIAL_SHORT_ANCHOR_VIEWPORT_COALESCE_MS = 1600L
         private const val NTK_INITIAL_ANCHOR_FAST_COALESCE_MAX_DECODE_MS = 700L
         private const val NTK_INITIAL_CONTINUOUS_DIRECT_WINDOW_MS = 5200L
         private const val NTK_INITIAL_CONTINUOUS_STAGGER_MS = 24L

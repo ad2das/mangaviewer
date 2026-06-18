@@ -276,6 +276,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             it.id = R.id.strip
             it.isClickable = true
             it.setBackgroundColor(Color.BLACK)
+            it.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             it.contentDescription = null
             it.setWindowListener(this)

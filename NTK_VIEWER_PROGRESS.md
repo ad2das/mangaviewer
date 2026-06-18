@@ -24939,3 +24939,71 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - ACK stability is now proven for the two actual UX selection paths.
   - Image first drawable is still slow in this run (about 8-9s), but the user explicitly allowed speed compromise and asked to close ACK/stability first.
   - Do not claim final image-performance target is solved from this ACK-focused run alone.
+
+## 2026-06-18 23:25:00 +09:00 Actual UX ACK still passes, but emulator screencap is black
+
+- Validation:
+  - Actual UX webtoon rerun artifact: `build/ntk-ux-select/20260618_105521_actual_ux_screen_webtoon_live`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Instrumentation: `OK (1 test)`.
+- ACK result:
+  - Final strict proof still passed:
+    - `ntk_viewer_ad_bridge_response method=POST,path=/api/ad/ack,code=200`.
+    - `ntk_server_ack_success_recorded ... source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`.
+  - There can still be earlier `/api/ad/ack` 400 `missing_challenge` bridge attempts before the valid native-preserved request succeeds. Do not count those as final failure if later strict ACK proof exists.
+- Image result:
+  - `early_urls_ready ... ms=1268`.
+  - `reader_open_to_first_drawable ... ms=9047`.
+  - `reader_visible_loading=0`.
+  - Pulled cache image for the selected webtoon page is a valid webtoon image, not an ad or black placeholder.
+- New blocker:
+  - `screen_first_drawable.png` and `screen_ack.png` are black even though logs say first drawable exists.
+  - Local visual test `ReaderActualViewerVisualInstrumentedTest#actualViewerRendersLocalPageToBottomWithoutClippedRows` also reported draw state but pulled a black screenshot.
+  - MainActivity launched by `monkey` also produced black `screencap`, while earlier UI hierarchy dump showed normal MainActivity content.
+  - SurfaceFlinger showed a stale `starting_reveal` animation leash around MainActivity.
+- Bad approach:
+  - Forcing Reader root to software layer / `setWillNotDraw(false)` did not fix the black screenshot. Do not keep that change.
+- Current hypothesis:
+  - The image/network path is not the black-output cause for this case. Need separate app-rendering-vs-emulator-capture diagnosis before claiming real visual UX is stable.
+  - Manifest MainActivity theme was temporarily changed from launcher theme to `AppTheme.NoActionBar`; this is not proven yet and must not be committed unless it fixes the black capture/launch state.
+
+## 2026-06-18 23:50:00 +09:00 Actual UX visual path fixed; comic short-anchor viewport gap fixed
+
+- Validation context:
+  - Emulator: API35 `emulator-5554`, rebooted after package/activity services stopped responding.
+  - Final actual UX artifacts:
+    - `build/ntk-ux-select/20260618_114451_actual_ux_final_comic_webtoon`.
+    - `build/ntk-ux-select/20260618_114609_actual_ux_webtoon_final_visual`.
+    - Comic visual proof: `build/ntk-ux-select/20260618_114315_actual_ux_comic_short_anchor_prime/screen_after_bitmap_draw_plus2s.png`.
+    - Webtoon visual proof: `build/ntk-ux-select/20260618_114609_actual_ux_webtoon_final_visual/screen_after_first_drawable_plus2s.png`.
+- Rendering result:
+  - Hardware-accelerated `ReaderSurfaceView` could log a real non-black `canvas.drawBitmap()` but emulator `screencap` stayed black.
+  - Narrow fix kept the Activity hardware-accelerated and applied software layer only to the Reader drawing view.
+  - Result: actual UX screenshots show real manga/webtoon pages instead of black output.
+- Bad approach:
+  - Activity-wide `android:hardwareAccelerated="false"` made screenshots visible but caused actual UX ACK/test timeout and repeated `/api/ad/ack` `missing_challenge`; do not keep or retry it as the primary fix.
+  - Temporary `reader_first_bitmap_draw` pixel-sample logging proved the draw path but was removed before commit.
+- Comic visible-loading failure:
+  - Failed artifact: `build/ntk-ux-select/20260618_113827_actual_ux_comic_view_sw_layer`.
+  - ACK strict proof succeeded, but first screen logged `reader_visible_loading=1` because the anchor manga page was shorter than the viewport and the next page was not drawable yet.
+  - Root cause: NTK anchor-exclusive startup deferred near generated comic pages until after anchor decode, so short first pages could expose the next page placeholder.
+- Fix:
+  - Prime near NTK pages immediately after anchor decode, before posting anchor delivery to the main thread.
+  - Allow verified near generated pages to start before anchor asset completion once the episode has fresh early generated URLs.
+  - If the anchor page draw height is shorter than the viewport and the next page is already likely soon, coalesce the initial anchor delivery long enough to publish a complete first viewport instead of a half-drawn viewport.
+- Final comic result:
+  - `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`: `OK (1 test)`.
+  - `reader_open_to_first_drawable ... ms=2311`.
+  - `reader_visible_loading=0`.
+  - `reader_visible_coverage drawablePx=2275 missingPx=0 placeholderPx=0 drawableItems=2 items=2`.
+  - `/api/ad/ack` bridge 200 and native fetch 200 both recorded with `strictAdAck=true`.
+- Final webtoon result:
+  - `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`: `OK (1 test)`.
+  - Standalone visual run: `reader_open_to_first_drawable ... ms=3056`.
+  - `reader_visible_loading=0`.
+  - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0 drawableItems=1 items=1`.
+  - `/api/ad/ack` native fetch 200 recorded with `strictAdAck=true`; an earlier bridge 409 `challenge_used` can still occur after native success and must not be counted as final failure.
+- Remaining risk:
+  - The final scope proves actual UX comic/webtoon selection for the current live paths, visible images, no visible loading, and strict ACK 200.
+  - It does not prove broad randomized long-run scroll stability yet; that remains a separate broader regression target if the goal expands again.
