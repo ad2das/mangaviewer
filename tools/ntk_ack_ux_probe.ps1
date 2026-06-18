@@ -309,7 +309,7 @@ $argsList += @(
 
 $instrumentLog = Join-Path $runDir "instrumentation.txt"
 $instrumentTimeoutMs = [Math]::Max($MaxMs + 45000, 45000)
-$stopMarkers = @("ntk_captcha_ack_probe_done", "ntk_server_ack_success_recorded", "ntk_ack_proof")
+$stopMarkers = @("ntk_captcha_ack_probe_done", "ntk_ack_proof", "ntk_native_ack_final_success=true")
 if($NoRequireAck -or $StopOnRootStageTimeout) {
     $stopMarkers += @("NTK root bootstrap stage timeout")
 }
@@ -352,6 +352,9 @@ $summary = [ordered]@{
     quicIntercept = Marker-Lines $logText "Intercepted NTK WebView request through QUIC"
     webViewAckDone = Marker-Lines $logText "ntk_webview_ack_preflight_done"
     serverProof = Marker-Lines $logText "ntk_server_ack_success_recorded"
+    strictServerProof = (($logText -split "`r?`n") |
+        Where-Object { $_.Contains("ntk_server_ack_success_recorded") -and $_.Contains("strictAdAck=true") } |
+        Select-Object -Last 4) -join "`n"
     ackProof = Marker-Lines $logText "ntk_ack_proof"
     probeDone = Marker-Lines $logText "ntk_captcha_ack_probe_done"
     captchaEnv = Marker-Lines $logText "ntk_captcha_env" 6
@@ -401,6 +404,6 @@ if(((($exitCode -ne 0) -and (-not $hasUsefulClassification)) -or ($instrumentTex
     throw "UX ACK probe failed with exit code $exitCode. Summary: $summaryPath"
 }
 $requiresStrictAckProof = -not $NoRequireAck
-if($requiresStrictAckProof -and -not $summary.serverProof) {
+if($requiresStrictAckProof -and -not $summary.strictServerProof) {
     throw "UX ACK probe did not record strict server proof. Summary: $summaryPath"
 }

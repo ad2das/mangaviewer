@@ -170,7 +170,7 @@ public class NtkCaptchaLiveInstrumentedTest {
                 client.syncCookiesFromWebView(siteRoot, true);
                 client.syncCookiesFromWebView(siteRoot + path, true);
                 if(client.hasUsableNtkAdAckCookieForPath(path)
-                        && client.hasRecentNtkServerAckProof(path))
+                        && client.hasRecentStrictNtkAdAckProof(path))
                     break;
                 PageState state = readPageState(activity);
                 if(state != null)
@@ -190,6 +190,7 @@ public class NtkCaptchaLiveInstrumentedTest {
                             + ",ack=" + client.hasUsableNtkAdAckCookieForPath(path)
                             + ",clearance=" + client.hasCloudflareClearance()
                             + ",serverProof=" + client.hasRecentNtkServerAckProof(path)
+                            + ",strictProof=" + client.hasRecentStrictNtkAdAckProof(path)
                             + ",accessProof=" + client.hasNtkAccessProof()
                             + ",ms=" + (now - startedAt)
                             + ",page=" + last.summary());
@@ -201,17 +202,20 @@ public class NtkCaptchaLiveInstrumentedTest {
             }
             boolean ack = client.hasUsableNtkAdAckCookieForPath(path);
             boolean serverProof = client.hasRecentNtkServerAckProof(path);
+            boolean strictProof = client.hasRecentStrictNtkAdAckProof(path);
             android.util.Log.d("NtkCaptchaLiveTest", "ntk_captcha_ack_probe_done path=" + path
                     + ",ack=" + ack
                     + ",clearance=" + client.hasCloudflareClearance()
                     + ",serverProof=" + serverProof
+                    + ",strictProof=" + strictProof
                     + ",accessProof=" + client.hasNtkAccessProof()
                     + ",ms=" + (System.currentTimeMillis() - startedAt)
                     + ",page=" + last.summary());
             if(requireAck)
                 assertTrue("Expected normal UX probe to record strict NTK ACK 200 proof for " + path
                         + ", ack=" + ack + ", serverProof=" + serverProof
-                        + ", last=" + last.summary(), ack && serverProof);
+                        + ", strictProof=" + strictProof
+                        + ", last=" + last.summary(), ack && strictProof);
             else
                 assertTrue("Expected ACK probe to reach a challenge or normal NTK page, last="
                                 + last.summary(),

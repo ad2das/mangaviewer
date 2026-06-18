@@ -26114,3 +26114,146 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - ACK can still be externally slow on strict fresh (`22s-28s` observed on some live paths). This work stabilizes correctness and UI lifecycle, not the live server's latency.
   - Emulator frame slow-signal counters still appear, but recorded viewport coverage and scroll-jump assertions are clean in this validation.
+
+## 2026-06-18 19:42:00 +09:00 Actual UX selection revalidated after main push
+
+- Current code state:
+  - Branch: `main`.
+  - Head: `8688fcadb` (`Stabilize NTK captcha close and scroll anchor removal`), pushed to `origin/main`.
+  - GitHub Actions `Release APK` run `27753548698` passed.
+- Actual UX selection validation:
+  - Combined comic+webtoon instrumentation artifact: `build/ntk-ux-select/20260618_193714_main_post_commit`.
+    - `ntkCurrentComicUxSelectionOpensReaderWithAck200`: instrumentation passed.
+    - `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`: instrumentation passed.
+    - Because the second test clears logcat internally, detailed comic metrics were not retained in this combined artifact.
+  - Webtoon detailed proof from combined artifact:
+    - Path: `/webtoon/16968/1463195`.
+    - First drawable: `reader_open_to_first_drawable ... ms=4730`.
+    - Strict ACK proof: `native-fetch-ack-200`, `strictAdAck=true`.
+    - Screenshot saved by test: `ntk_actual_ux_webtoon_reader.png`.
+  - Comic detailed proof artifact: `build/ntk-ux-select/20260618_193933_main_post_commit_comic_only`.
+    - Path: `/manhwa/36525/1807424`.
+    - First drawable: `reader_open_to_first_drawable ... ms=7612`.
+    - Strict ACK proof: `native-fetch-ack-200`, `strictAdAck=true`.
+    - Screenshot saved by test: `ntk_actual_ux_comic_reader.png`.
+  - Log scans for the retained detailed artifacts found no visible loading, placeholder pixels, missing pixels, `reader_scroll_jump`, ANR, or input dispatch timeout.
+- Bad conclusion / bad approach to avoid:
+  - Do not rely on a combined UX log for both detailed proofs when tests call `logcat -c`; preserve per-test artifacts or rerun single-test artifacts for metrics.
+  - Do not treat early `native-challenge-ad-ack-cookie-200` as final ACK success; strict success remains the later `native-fetch-ack-200` with `strictAdAck=true`.
+
+## 2026-06-18 19:45:00 +09:00 Additional fresh live-random after UX validation
+
+- Artifact: `build/ntk-random-perf/20260618_194135`.
+- Command shape:
+  - Runs=4, strict fresh, clear ACK/cache, force-stop, live random required.
+  - Native ACK mode, mixed programmatic scroll, 3 scroll steps, 4 append steps.
+- Result:
+  - Passed: true.
+  - Seed: `1781779295316`.
+  - Cases: 4.
+  - Scroll checks in runner summary: 12.
+  - Failures: 0.
+  - ACK checks: 4/4 strict proof passed.
+  - Cases:
+    - `/manhwa/36986/1816473`
+    - `/webtoon/10480/1068006`
+    - `/manhwa/35047/1757249`
+    - `/webtoon/8664/1315757`
+  - Log scan found no `reader_scroll_jump`, visible placeholder/missing/loading, ANR, input dispatch timeout, or strict ACK false.
+- Remaining risk:
+  - This extends the random evidence but does not prove all possible NTK live cases. Keep using fresh random runs to catch new long-tail image/episode shapes.
+  - ACK latency remains variable; this run's summary still shows several-second ACK waits even with successful strict proof.
+
+## 2026-06-18 19:52:00 +09:00 Additional 6-case strict fresh random
+
+- Artifact: `build/ntk-random-perf/20260618_194638`.
+- Command shape:
+  - Runs=6, strict fresh, clear ACK/cache, force-stop, live random required.
+  - Native ACK mode, mixed programmatic scroll, 3 scroll steps, 4 append steps.
+- Result:
+  - Passed: true.
+  - Seed: `1781779598767`.
+  - Cases: 6.
+  - First drawable checks: 6/6.
+  - Scroll checks in runner summary: 18.
+  - Failures: 0.
+  - ACK checks: 6/6 strict proof passed.
+  - Cases:
+    - `/manhwa/35325/1765853`
+    - `/webtoon/69043685/1591933`
+    - `/manhwa/33378/1678653`
+    - `/webtoon/12900/1150796`
+    - `/manhwa/25000/288707`
+    - `/webtoon/8845/1033937`
+  - Log scan found no `reader_scroll_jump`, visible placeholder/missing/loading, ANR, input dispatch timeout, or strict ACK false.
+- Notes:
+  - ACK remains variable: one stage in this run took about `20582ms`, but completed with strict proof.
+  - This adds six more live-random cases after the captcha-close and remove-anchor fixes without introducing new code changes.
+
+## 2026-06-18 19:58:00 +09:00 Additional 6-case strict fresh random, second follow-up
+
+- Artifact: `build/ntk-random-perf/20260618_195300`.
+- Command shape:
+  - Runs=6, strict fresh, clear ACK/cache, force-stop, live random required.
+  - Native ACK mode, mixed programmatic scroll, 3 scroll steps, 4 append steps.
+- Result:
+  - Passed: true.
+  - Seed: `1781779980249`.
+  - Cases: 6.
+  - First drawable checks: 6/6.
+  - Scroll checks in runner summary: 18.
+  - Failures: 0.
+  - ACK checks: 6/6 strict proof passed.
+  - Cases:
+    - `/manhwa/33471/1683082`
+    - `/webtoon/11348/1251556`
+    - `/manhwa/35321/1765846`
+    - `/webtoon/13450/1187135`
+    - `/manhwa/26688/323333`
+    - `/webtoon/9403/1268451`
+  - Log scan found no `reader_scroll_jump`, visible placeholder/missing/loading, ANR, input dispatch timeout, or strict ACK false.
+- Notes:
+  - Some `ackChecks` have `nativeBridgeAck200=false`, but `strictProof=true`; current strict proof can come from native fetch / guard proof rather than the bridge submit flag alone.
+  - This was another validation-only pass; no code change was needed after commit `8688fcadb`.
+
+## 2026-06-18 20:10:00 +09:00 ACK proof gate tightened, actual UX strict proof rechecked
+
+- Code/test state:
+  - Branch: `main`.
+  - Base before this change: `8688fcadb`.
+  - Strengthened `NtkCaptchaLiveInstrumentedTest#captchaActivityAttemptsAdAckWhenRequested` so `ntkRequireAck=true` requires `hasRecentStrictNtkAdAckProof(path)`, not just a usable ACK cookie plus any server proof.
+  - Strengthened `tools/ntk_ack_ux_probe.ps1` so it no longer stops on the first `ntk_server_ack_success_recorded`; it now records `strictServerProof` and fails if no `strictAdAck=true` proof exists.
+- Bad finding / previous false-positive path:
+  - Artifact: `build/ntk-ack-ux-probe/20260618_200045_33ad78`.
+  - The old ACK UX probe passed even though the only server proof was `source=captcha-bridge-challenge-ad-ack-cookie-200,strictAdAck=false`.
+  - It did prove `/api/ad/challenge` POST 200 and scoped `ad_ack_c`, but not `/api/ad/ack` 200.
+  - This must not be treated as ACK success for the goal.
+- Strict standalone CaptchaActivity probe after tightening:
+  - Artifact: `build/ntk-ack-ux-probe/20260618_200253_5dd502`.
+  - Result: failed as intended because strict proof was missing.
+  - Evidence:
+    - `/api/ad/challenge` POST 200 set `ad_ack_c`.
+    - `ntk_captcha_ack_probe_done ... ack=true,serverProof=true,strictProof=false`.
+    - Page reached normal episode URL but displayed `일시적 오류가 발생했습니다`.
+    - WebView attempted `GET /api/ad/ack` and received 405; no strict `/api/ad/ack` 200 was recorded.
+  - Bad approach to avoid:
+    - Do not accept `ad_ack_c` from `/api/ad/challenge` alone as strict ACK.
+    - Do not use `ntk_server_ack_success_recorded` without checking `strictAdAck=true`.
+- Actual UX webtoon strict ACK validation:
+  - Artifact: `build/ntk-ux-select/20260618_200631_strict_ack_webtoon_after_probe_gate`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result: passed.
+  - First drawable: `reader_open_to_first_drawable source=ntk kind=tiles page=0 ms=5224`.
+  - Strict ACK proof: `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+  - `/api/ad/ack` attempts initially returned `400 missing_challenge`, then recovered to strict native fetch ACK 200.
+- Actual UX comic strict ACK validation:
+  - Artifact: `build/ntk-ux-select/20260618_200744_strict_ack_comic_after_probe_gate`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+  - Result: passed.
+  - First drawable: `reader_open_to_first_drawable source=ntk kind=initial_continuous page=1 ms=6341`.
+  - Strict ACK proof: `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=native-fetch-ack-200,strictAdAck=true`.
+  - `/api/ad/ack` attempts initially returned `400 missing_challenge`, then recovered to strict native fetch ACK 200.
+- Current interpretation:
+  - Actual reader UX still reaches strict `/api/ad/ack` proof for both webtoon and comic.
+  - Standalone CaptchaActivity ACK probe is now correctly exposing that captcha-only challenge-cookie success is weaker than actual ACK success.
+  - If future work changes CaptchaActivity close behavior, use the strengthened probe to avoid regressing into challenge-cookie-only success.
