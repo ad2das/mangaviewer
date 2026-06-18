@@ -26766,3 +26766,32 @@ tk_rsc_payload_cloudflare_clearance_reset.
     - `ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
     - Result: `OK (1 test)`, time `53.978s`.
   - Interpretation: kept main code still proves strict ACK 200 in actual UX selection after the reverted timing experiments.
+
+## 2026-06-18 23:45:00 +09:00 main head live-random regression after push
+
+- Current branch/remote:
+  - Workspace: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - `main == origin/main == cbd70c6dda8c44b6a02387ff0d54b5ed8438b8e5`.
+  - GitHub Actions `Release APK` for `cbd70c6dd` completed successfully: run `27767388482`.
+- Live-random strict fresh regression:
+  - Command:
+    - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 2 -ScrollSteps 2 -AppendSteps 8 -ScreenshotEvery 0 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -StrictFresh -RequireLiveRandom -ForceStopBeforeRun -SkipBuild -FirstDrawableMaxMs 30000 -MaxDroppedFrames 999 -MaxMissedFrames 999 -RenderFrameMaxMs 1000`
+  - Artifact: `build\ntk-random-perf\20260618_234154`.
+  - Result: `passed=True`, instrumentation `OK (1 test)`, failures `0`.
+  - Seed: `1781793714712`.
+  - Coverage: `live-random`, `titleSourceCounts.api=2`, unique episodes `2`, unique titles `2`.
+  - Cases:
+    - Run 0: `/manhwa/32800/1693698`, imageEpisodeId `111620`, imageCount `24`.
+    - Run 1: `/webtoon/13918/1220987`, imageEpisodeId `635816`, imageWorkId `13918`, imageCount `183`.
+  - ACK:
+    - Run 0 strict proof passed with `nativeBridgeAck200=true`; `/api/ad/ack` native submit logged `code=200`.
+    - Run 1 strict proof passed via `native-fetch-ack-200`; `nativeBridgeAck200=false` in the summary but `strictProof=true` and `ackChecks.passed=true`.
+    - Main path preflight times observed: about `12480ms` for run 0 and `11249ms` for run 1.
+  - Image/scroll:
+    - First drawable: run 0 `3810ms`, run 1 `3816ms`.
+    - Every scroll sample had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - Post-stop drift stayed stable on all samples: `maxPageDelta=0`, `maxOffsetDelta=0`, `changedSamples=0`.
+    - Append next passed for both runs; append previous passed for run 0.
+- Remaining risk / do not overclaim:
+  - Log contained an append-neighbor ACK preflight false for `/manhwa/32800/1693697`: `ntk_webview_ack_preflight_done ... success=false,ms=18701`. It did not fail the user-visible run or ackChecks, but it is still a tail/stability signal for neighbor prefetch/append ACK work.
+  - `surface_jank_v3` callback gaps and reader slow frame logs remain. Draw totals were generally low in the measured samples, and no visible blank/placeholder/drift reproduced, but smoothness is not fully solved.
