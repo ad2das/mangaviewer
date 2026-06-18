@@ -27648,3 +27648,71 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Cold strict synthetic adjacent ACK can take `6-8 s`; if a manual boundary append probe only waits around 4 polling steps, next/previous insertion may miss the test window even though verified URLs arrive shortly after.
   - This is now a speed/timing risk, not an ACK impossibility or ad-image contamination issue.
   - Further speed work should target a non-janking post-scroll adjacent URL prepare path or a faster scoped ACK proof path; do not reintroduce pre-first-bitmap adjacent ACK or unverified generated/direct image fallback.
+
+## 2026-06-19 15:10:00 +09:00 main push confirmed and post-push append timing experiments
+
+- Main branch status:
+  - `main` was already pushed to `origin/main` at `b46c4aeb2 Stabilize NTK strict ACK image loading`.
+  - GitHub Actions `Release APK` for `b46c4aeb2` completed successfully.
+  - New post-push experiments below are not committed because they have not produced a full target pass.
+- Verified current blocker:
+  - Current page ACK still succeeds with real `/api/ad/ack` 200 proof.
+  - Adjacent ACK proof and API URL generation are functional but can miss the very short `AppendSteps 4` probe.
+  - This is not an ACK-impossible state; it is an adjacent strict proof/API timing problem.
+- Useful partial experiment:
+  - Direction-aware next URL lookahead triggered during real downward scroll and allowed verified URLs to be inserted as pages when ready.
+  - `20260619_scroll_url_insert_append4` changed the failure from next append to previous append:
+    - first drawable `8772 ms`
+    - next append passed as already loaded
+    - previous append failed due cold strict ACK/API timing.
+  - Re-check `20260619_next_insert_only_recheck_append4` showed the same idea is not stable:
+    - first drawable `8955 ms`
+    - scroll passed
+    - next append failed again in the 4-step window.
+  - Decision: revert the direction-aware next insert code too. Do not commit this experiment.
+- Rejected/bad approaches:
+  - Setting both next and previous adjacent ACK preflight delay to `0 ms` caused next append to fail again:
+    - `20260619_bidir_ack0_insert_append4`
+    - next append failed with before/after page count unchanged.
+    - Reverted to previous delay `1200 ms`.
+  - Allowing modern-root `/api/webtoon-images` pre-ACK based only on scoped `ad_ack_c` did not solve previous append:
+    - `20260619_scoped_cookie_preack_append4`
+    - next passed, previous still failed.
+    - Previous pre-ACK API returned `403` with `ackRequired=false`; do not treat scoped `ad_ack_c` alone as enough for synthetic previous API.
+    - Reverted.
+  - Enabling synthetic previous URL-only lookahead after first bitmap regressed first drawable badly:
+    - `20260619_prev_url_lookahead_append4`
+    - first drawable failed at `22003 ms`.
+    - Reverted; do not re-enable broad synthetic previous lookahead without a non-contending scheduler.
+  - Starting previous URL-only lookahead right after next lookahead insert also hurt scroll stability:
+    - `20260619_next_insert_then_prev_url_append4`
+    - first drawable was acceptable (`8457 ms`), but scroll step 0 exposed `placeholderPx=114`, `loading=1`.
+    - Reverted; do not add previous API work on the immediate scroll path without a no-placeholder render gate or stricter resource isolation.
+  - Reducing previous adjacent ACK preflight delay from `1200 ms` to `150 ms` also hurt scroll stability:
+    - `20260619_prev_ack150_next_insert_append4`
+    - first drawable was acceptable (`8784 ms`) but scroll step 1 had `droppedFrames=1` and failed strict jank.
+    - Reverted; do not reduce previous ACK delay in the current shared WebView/network scheduler.
+- Next direction:
+  - Preserve verified `b46c4aeb2` on `main` as the stable pushed baseline.
+  - Continue from the scroll-direction next insertion idea only if it can be combined with a previous path that does not contend with first drawable or next append.
+  - Avoid broad parallel adjacent ACK/API for both directions; it creates contention and unstable first drawable.
+
+## 2026-06-19 15:35:00 +09:00 append timeline diagnostic added
+
+- Added `tools/ntk_append_timeline.ps1` to speed up ACK/append investigations.
+  - Input: one run directory containing `summary.json` and `logcat.txt`.
+  - Output: compact summary plus ordered `ViewerPerf` events for ACK preflight, image API URL generation, early URL memory, adjacent append probe/fetch/insert, and next/previous append result.
+  - `-MaxEvents` defaults to `140`; pass `-MaxEvents 0` for full output.
+- Verified the tool against both known pass and known fail:
+  - Pass: `build/ntk-random-perf/20260619_synthetic_append8_diagnosis/20260619_045208`
+    - `passed=True`, seed `1781801619087`, first drawable `9033 ms`.
+    - Shows current ACK done, next ACK done, next insert success, previous ACK done, previous insert success.
+  - Fail: `build/ntk-random-perf/20260619_next_insert_only_recheck_append4/20260619_051642`
+    - `passed=False`, first drawable `8955 ms`.
+    - Shows next append probe failed at `20:17:13.326`, then next ACK stage arrived at `20:17:13.343`.
+    - This confirms that this specific failure was a very tight append probe/timing miss, not proof that the ACK path is broken.
+- Practical use:
+  - Before another structural change, run this tool on the failing run and one nearest passing run.
+  - If ACK proof arrives shortly after append failure, treat it as scheduler/test-window/adjacent-prepare timing.
+  - If ACK proof never arrives or `/api/ad/ack` is missing, treat it as real ACK regression.
+  - This prevents repeating the bad experiments above and reduces the next analysis loop from manual log scanning to one command.
