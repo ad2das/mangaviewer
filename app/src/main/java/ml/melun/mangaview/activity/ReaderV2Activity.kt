@@ -2809,7 +2809,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS = 450L
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS_STRICT_FRESH = 1_500L
         private const val NTK_ACK_PREFLIGHT_INITIAL_NO_INTERACTION_QUIET_MS = 1_500L
-        private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 3_500L
+        private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 1_500L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MS = 650L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS = 450L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MAX_ATTEMPTS = 5

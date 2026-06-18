@@ -28183,3 +28183,40 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - ACK tail is improved but not mathematically bounded across all site states; continue to keep strict ACK proof as required evidence.
   - Strict frame callbacks still show slow-frame signals even while dropped-frame debt stays `0` and tests pass. Do not claim complete scroll perfection beyond the recorded strict-run evidence.
+
+## 2026-06-19 08:22:00 +09:00 ACK scroll quiet reduced after main push verification
+
+- CI:
+  - GitHub Actions `Release APK` for `377d3ba94 Reduce NTK strict ACK preflight latency` completed successfully.
+  - Run: `https://github.com/ad2das/mangaviewer/actions/runs/27794986113`.
+- Wider post-push strict random check before the new tweak:
+  - First 8-run command with `-SkipInstall` failed before app code because emulator instrumentation was missing: `Unable to find instrumentation info`.
+  - This is repeated environment evidence that `-SkipInstall` is unsafe after connected test/install churn; it is not app evidence.
+  - Re-run with install included passed.
+  - Artifact: `build/ntk-random-perf/main_ack_floor1500_random8_strict_20260619/20260619_081241`.
+  - Result: passed, cases `8`, scroll checks `32`, failures `0`, unique episode paths `8`, title sources `api=8`, coverage `live-random`.
+  - First drawable max `8202ms`.
+  - ACK proof max still reached `10812ms`; log review showed current-case ACK could be delayed by repeated post-first-drawable scroll quiet waits, not by `/api/ad/ack` failure.
+- Change:
+  - Reduced `ReaderV2Activity.NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS` from `3500ms` to `1500ms`.
+  - Rationale: image initial request pressure is now lower, and the prior `3500ms` scroll quiet repeatedly pushed ACK start behind normal immediate scrolling. This keeps a quiet gate but stops the proof from waiting for a long idle window.
+- Target validation:
+  - Artifact: `build/ntk-random-perf/main_ack_scrollquiet1500_repro3852_20260619/20260619_081717`.
+  - Target: `/webtoon/3852/183210`, seed `1781824361626`, image episode `275280`, work `3852`, image count `29`.
+  - Result: passed.
+  - ACK strict proof `7723ms` (`ack_only_fetch=7707/7715`, `/api/ad/ack` native submit `200`).
+  - This improves the observed same-path ACK wait class from `10211ms`, but the first drawable in this run was `5717ms`, so this is a moderate improvement rather than a total tail fix.
+  - Scroll/image: failures `0`, `missingPx=0`, `placeholderPx=0`, `loading=0`, no post-stop drift.
+- Strict random validation after the scroll quiet change:
+  - Artifact: `build/ntk-random-perf/main_ack_scrollquiet1500_random4_strict_20260619/20260619_081759`.
+  - Result: passed.
+  - Cases `4`: `/manhwa/22770/222141`, `/webtoon/14749/1547984`, `/manhwa/12234/128098`, `/webtoon/3785/177294`.
+  - Scroll checks `16`, failures `0`, live-random `api=4`.
+  - First drawable max `5477ms`; ACK max `8008ms`.
+- Actual UX validation:
+  - `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200` and `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200` both passed.
+  - XML result: tests `2`, failures `0`, errors `0`.
+  - Comic test time `22.02s`; webtoon test time `20.609s`.
+- Remaining risk:
+  - This reduces avoidable scroll-idle ACK delay, but ACK tails can still be several seconds because guard module load/native challenge/ack-only fetch are real network and WebView work.
+  - Adjacent/current ACK overlap and stale-cleared entries still appear in long random logs. Keep this as the next ACK stability target rather than treating the objective as complete.
