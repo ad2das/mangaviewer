@@ -26987,3 +26987,57 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk / do not hide:
   - ACK correctness is now proved again in the tested live-random and actual UX paths, but ACK tail latency is still high in some samples: webtoon actual UX ACK proof arrived after first drawable, and comic isolated ACK arrived about 30s after open.
   - Speed is currently being accepted per the latest scope compromise, but if speed is reopened later, target the ACK preflight tail and first-drawable decode/network split rather than changing success criteria.
+
+## 2026-06-19 01:00:00 +09:00 ACK preflight launch hold trimmed after first drawable
+
+- Branch/worktree:
+  - Workspace: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Active branch: `main`.
+  - GitHub Actions `Release APK` for `ae362c1cb` completed successfully before this change.
+- Root cause narrowed:
+  - ACK correctness was stable, but actual UX proof still arrived late.
+  - Recent logs showed `reader_ntk_ack_recovery_launch_hold_after_first_drawable` / `reader_ntk_ack_recovery_launch_hold_expired` delaying WebView ACK preflight for about 18s after first drawable.
+  - This was app-side delay before ACK preflight even started. It was separate from the server/WebView `ack_only_fetch` stage.
+- Code change:
+  - `ReaderV2Activity.NTK_ACK_PREFLIGHT_INITIAL_NO_INTERACTION_QUIET_MS` reduced from `18_000L` to `4_500L`.
+  - The strict-fresh first-drawable floor remains `4_500L`, and scroll/busy quiet guards remain in place. This removes the extra idle-only 18s hold without allowing ACK work before first drawable.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat --no-daemon :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:installDebug :app:installDebugAndroidTest` passed.
+  - Actual UX combined webtoon+comic:
+    - Artifact: `build\ntk-ux-select\20260619_004211_actual_ux_after_ack_quiet_trim`.
+    - Result: `OK (2 tests)`, time `87.317s` versus previous combined `103.964s`.
+    - Webtoon `/webtoon/16968/1463195`: first drawable `3849ms`, visible coverage `missingPx=0`, `placeholderPx=0`, strict ACK `native-fetch-ack-200`.
+    - ACK preflight began after the hold expired at about 6.2s after first drawable, instead of about 18s after first drawable in the previous sample.
+    - `ntk_webview_ack_preflight_done ... success=true,ms=12013`.
+    - Captcha container lookup returned `Node not found`; no visible captcha block.
+  - Actual UX comic isolated:
+    - Artifact: `build\ntk-ux-select\20260619_004550_actual_ux_comic_after_ack_quiet_trim`.
+    - Result: `OK (1 test)`, time `41.737s` versus previous isolated comic `55.855s`.
+    - Comic `/manhwa/36525/1807424`: first drawable `6994ms`, visible coverage `missingPx=0`, `placeholderPx=0`, `/api/ad/ack` bridge submit `code=200`, strict ACK sources `bridge-ack-200`, `guard-state-ack-200`, and `guard-fetch-ack-200`.
+    - ACK preflight began about 4.5s after first drawable.
+    - `ntk_webview_ack_preflight_done ... success=true,ms=12463`.
+  - Fixed-seed live-random strict fresh:
+    - Artifact: `build\ntk-random-perf\20260619_004410`.
+    - Seed: `1781796134007`.
+    - Result: `passed=True`, `OK (1 test)`, failures `0`, `cases=2`, `coverage=live-random`, `api=2`.
+    - First drawable: `/webtoon/12759/1135205` `3481ms`, `/manhwa/25501/1654911` `3393ms`.
+    - Visible coverage during scroll stayed `missingPx=0`, `placeholderPx=0`; post-stop drift remained 0 in recorded samples.
+    - Strict ACK waits after scroll/checkpoint shortened to about `4818ms` and `4957ms`.
+  - Additional live-random strict fresh seed:
+    - Artifact: `build\ntk-random-perf\20260619_004702`.
+    - Seed: `1781797622368`.
+    - Result: `passed=True`, `OK (1 test)`, failures `0`, `cases=2`, `coverage=live-random`, `api=2`.
+    - Cases: `/webtoon/17408/1467607` and `/manhwa/36169/1796401`.
+    - First drawable: `4187ms` and `3138ms`.
+    - Visible coverage during scroll stayed `missingPx=0`, `placeholderPx=0`; post-stop drift remained 0 in recorded samples.
+    - Strict ACK waits after scroll/checkpoint were `7577ms` and `9900ms`.
+- Bad signal / do not hide:
+  - This does not solve the WebView/server ACK internal tail. `ack_only_fetch` still varied heavily:
+    - Actual UX webtoon/comic around `12013ms` / `12463ms`.
+    - Fixed-seed random around `20926ms` / `18714ms`.
+    - Additional random around `27823ms` / `23807ms`.
+  - Some speculative adjacent append ACK preflights still failed for non-current neighbor paths in the additional random run. The visible current episode ACK proof and image coverage passed; do not treat neighbor failures as current-reader success.
+- Remaining risk / next target:
+  - ACK proof is stable and starts earlier, but the dominant remaining latency is inside `NtkWebViewFallbackManager` ack-only flow after synthetic shell promotion, not in the reader launch hold.
+  - Next speed/stability work should instrument and reduce `ack_only_fetch` internals: canary/token timing, repeated canary before ACK, native submit timing, and why some ack-only runs wait 20s+ before strict proof even though `ad_ack_c` and `ad_guard_l` are present.
