@@ -23,11 +23,19 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 @TargetApi(34)
 public final class NtkQuicFetcher {
     private static volatile Boolean runtimeAvailable;
+    private static final long EXECUTOR_SHUTDOWN_GRACE_MS = 1_500L;
+    private static final ScheduledExecutorService EXECUTOR_CLOSER =
+            Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "ntk-quic-executor-closer");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private NtkQuicFetcher() {
     }
@@ -144,12 +152,7 @@ public final class NtkQuicFetcher {
                 return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                         method, body, timeoutMs);
             } finally {
-                try {
-                    engine.shutdown();
-                } finally {
-                    executor.shutdown();
-                    executor.awaitTermination(2_500, TimeUnit.MILLISECONDS);
-                }
+                shutdownEngineAndExecutor(engine, executor);
             }
         } catch (Throwable throwable) {
             return Result.error(throwable);
@@ -190,17 +193,23 @@ public final class NtkQuicFetcher {
 
         @Override
         public void close() {
-            try {
-                engine.shutdown();
-            } catch (Throwable ignored) {
-            }
+            shutdownEngineAndExecutor(engine, executor);
+        }
+    }
+
+    private static void shutdownEngineAndExecutor(HttpEngine engine, ExecutorService executor) {
+        try {
+            engine.shutdown();
+        } catch (Throwable ignored) {
+        }
+        EXECUTOR_CLOSER.schedule(() -> {
             executor.shutdown();
             try {
                 executor.awaitTermination(2_500, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-        }
+        }, EXECUTOR_SHUTDOWN_GRACE_MS, TimeUnit.MILLISECONDS);
     }
 
     public static Result fetchWithEngine(HttpEngine engine, String url, String userAgent,

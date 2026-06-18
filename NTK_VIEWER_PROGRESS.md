@@ -26827,3 +26827,40 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Comic still logged several early `reader_ntk_ack_prepared_native_preflight_done ... success=false,proof=false` entries before final bridge ACK success. This is not an ACK correctness failure, but it is the same tail-latency class that makes ACK proof arrive after first drawable.
   - First drawable is acceptable under the current speed compromise, but comic is still slower than ideal (`7487ms`).
   - Cronet executor `RejectedExecutionException` lines appeared during failed/aborted transport races. The fallback path recovered and tests passed, but this remains a cleanup/stability signal for future transport work.
+
+## 2026-06-19 00:15:00 +09:00 QUIC executor shutdown grace removes Cronet callback rejection noise
+
+- Continued active goal on `main` after checking `NTK_VIEWER_PROGRESS.md`.
+- CI status before code change:
+  - GitHub Actions `Release APK` for `120b064ed` completed successfully: run `27768172223`.
+- Root cause narrowed:
+  - Actual UX recheck had 50 `cr_CronetUrlRequestContext RejectedExecutionException` lines.
+  - These were concentrated around short-lived `HttpEngine` races and early/canceled requests.
+  - `NtkQuicFetcher.fetchWithTransport(...)` and `Session.close()` shut down the callback executor immediately after `engine.shutdown()`. Android Cronet can still deliver late cancel/upload/read callbacks after the request result has already returned, so the terminated executor rejects those callbacks.
+  - This did not break the visible fallback path, but it made ACK/image transport races noisier and less deterministic.
+- Fix:
+  - `NtkQuicFetcher` now shuts down the `HttpEngine` immediately but keeps the callback executor alive for a short 1500ms grace period via a daemon scheduled closer before terminating it.
+  - This is a cleanup/stability change only; it does not weaken ACK proof checks and does not treat `ad_ack_c` as final ACK.
+- Validation:
+  - Build: `.\gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Actual UX comic+webtoon after reinstalling APKs:
+    - Artifact: `build/ntk-ux-select/20260618_235710_actual_ux_after_quic_executor_grace`.
+    - Result: `OK (2 tests)`, time `116.781s`.
+    - Cronet executor rejection count: before `50`, after `0`.
+    - Comic `/manhwa/36525/1807424`: first drawable `6964ms`, visible coverage `missingPx=0`, `placeholderPx=0`, strict ACK `/api/ad/ack` bridge submit `code=200`, proof `strictAdAck=true`.
+    - Webtoon `/webtoon/16968/1463195`: first drawable `4686ms`, visible coverage `missingPx=0`, `placeholderPx=0`, strict ACK `nativeAckFetchResponse status=200`, proof `strictAdAck=true`.
+    - Captcha container checks still returned `Node not found`; no visible captcha block.
+  - Live-random strict fresh 2-run with touch scroll and append probes:
+    - Artifact: `build/ntk-random-perf/20260618_235947`.
+    - Result: `passed=True`, instrumentation `OK (1 test)`, failures `0`, coverage `live-random`.
+    - Cases: `/webtoon/60536199/971571` and `/manhwa/33034/1667373`.
+    - First drawable: `4828ms` and `3020ms`.
+    - Main path ACK checks passed with `strictProof=true`; run 0 had bridge/native submit 200, run 1 had `native-fetch-ack-200`.
+    - Every settled scroll sample had `missingPx=0`, `placeholderPx=0`, `loading=0`; post-stop drift remained `maxPageDelta=0`, `maxOffsetDelta=0`.
+    - Append next/previous succeeded for the webtoon case where expected.
+    - Cronet executor rejection count remained `0`.
+- Remaining risk / do not hide:
+  - ACK latency was not improved by this change. Actual UX ACK preflight was about `15194ms` for comic and `12263ms` for webtoon in this sample.
+  - Random run still contained speculative append-neighbor ACK preflight false tails for non-visible adjacent paths (`/webtoon/60536199/969271`, `/974097`, `/89693`, `/89648`). The visible current-run ACK checks passed; neighbor tail remains a future cleanup target.
+  - Prepared native ACK still returns `success=false,proof=false` on modern guard roots because native deliberately does not submit `/api/ad/ack` without guard proof `tp`; strict ACK remains owned by the WebView/bridge path.
+  - Strict 60fps perfection is still not claimed. Slow frame/surface callback-gap signals remain, but current requested close-out is ACK correctness and visible stability.
