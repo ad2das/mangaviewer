@@ -28055,3 +28055,38 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Command gotcha recorded:
   - PowerShell treats `#` in an unquoted Gradle property as a comment/task parsing hazard. Use quotes around `-Pandroid.testInstrumentationRunnerArguments.class=...#method`.
   - The first unquoted attempt failed before running app code; it is not app evidence.
+
+## 2026-06-19 07:52:00 +09:00 ACK close-out random strict fresh stability sweep
+
+- Scope for this close-out:
+  - User explicitly accepted compromising speed and asked to finish ACK/stability.
+  - Kept strict fresh, ACK assertions, live random coverage, image coverage, and scroll drift assertions.
+  - Relaxed only strict frame perfection for close-out checks: `MaxDroppedFrames=2`, `RenderFrameMaxMs=30`. This does not claim 60fps perfection.
+- Invalid/expected failures before relaxation:
+  - First random run failed before ACK verification because the test stopped on strict jank, not on image/ACK: `/manhwa/33412/1679687`, `droppedFrames=1` with `maxDroppedFrames=0`.
+  - Second random run also stopped before ACK because `renderFrameMaxMs=16.67` was exceeded: `/webtoon/15252/1308479`, `totalMax=25.29`.
+  - In both stopped runs, settled coverage and drift samples before failure were good (`missingPx=0`, `placeholderPx=0`, `loading=0`, `maxPageDelta=0`, `maxOffsetDelta=0`). The failure was the strict speed target.
+- Repro checks under close-out stability criteria:
+  - `/manhwa/33412/1679687`, seed `1781822829549`, strict fresh, target repro:
+    - Result: passed.
+    - First drawable `8674ms`.
+    - ACK strict `/api/ad/ack` proof `6145ms`, `ack_only_fetch=6141/6143`, `sync_after=2/6145`.
+    - Failures `0`, scroll checks `4`, coverage/drift stable.
+  - `/webtoon/15252/1308479`, seed `1781822926981`, strict fresh, target repro:
+    - Result: passed.
+    - First drawable `5824ms`.
+    - ACK strict `/api/ad/ack` proof `5718ms`, `ack_only_fetch=5710/5714`, `nativeSubmit@/code=200`.
+    - Failures `0`, scroll checks `4`, coverage/drift stable.
+- Live-random 2-run close-out sweep:
+  - Artifact: `build/ntk-random-perf/main_ack_closeout_random2_stability_20260619/20260619_075007`.
+  - Command used strict fresh, live random, native ACK, touch mixed scroll, no append probe, `MaxDroppedFrames=2`, `RenderFrameMaxMs=30`.
+  - Result: passed.
+  - Cases:
+    - `/manhwa/36659/1807542`, image count `39`, first drawable `7044ms`, strict ACK proof `5048ms`.
+    - `/webtoon/3956/191006`, image count `13`, first drawable `9268ms`, strict ACK proof `5752ms`, `nativeSubmit@/code=200`.
+  - Summary: cases `2`, scroll checks `8`, failures `0`, coverage `live-random`, title sources `api=2`.
+  - All scroll coverage samples stayed at `missingPx=0`, `placeholderPx=0`, `loading=0`; post-stop drift stayed `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Remaining risk, not hidden:
+  - Strict 60fps/jank perfection is still not solved. Slow frame signals remain, and strict `16.67ms` frame criteria can still stop tests before ACK verification.
+  - First drawable can still be slow on random long-tail cases, up to `9268ms` in the latest passing random sweep.
+  - PowerShell `ConvertFrom-Json` can fail on `summary.json` when Korean titles are mojibake/truncated in the generated JSON. Use script summary lines/log grep for close-out evidence until summary serialization is hardened.
