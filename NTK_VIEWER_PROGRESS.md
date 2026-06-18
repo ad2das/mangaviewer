@@ -25946,3 +25946,54 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - ACK can still take several seconds on strict fresh. This patch reduces image anchor delay, not ACK server latency.
   - Slow frame signals still exist in some scroll runs. Current scope is ACK correctness plus no placeholder/missing/loading exposure, with speed improved but not perfect.
+
+## 2026-06-18 18:57:00 +09:00 ACK defer starvation fixed on main
+
+- Problem:
+  - Broader strict fresh random found `/webtoon/11902/1483342` seed `1781775514871`.
+  - The earlier hardblock path let WebView ACK start before first drawable; that overlapped the first scroll and caused severe callback jank.
+  - Simply removing `allowBeforeFirstDrawable` avoided the overlap, but exposed a second bug: ACK never actually started after scroll. Logs showed repeated `ntk_webview_ack_preflight_join_proof_done ... inFlight=false` and `reader_ntk_ack_preflight_deferred_wait_quiet reason=quiet,quietMs=3500` until the 70s strict ACK assertion timed out.
+  - Root cause was scheduler starvation:
+    - `deferredNtkAckPreflightQuietRunnable` re-entered `maybeStartDeferredNtkAckAfterInitialContinuous()`, so post-quiet ACK could be blocked again by initial-continuous readiness after scroll.
+    - `readerWindowBusy` could remain true if a busy=false window callback was not delivered after programmatic scroll. ACK quiet calculation then returned a fresh 3500ms delay forever.
+- Fix:
+  - `deferredNtkAckPreflightQuietRunnable` now calls `startDeferredNtkAckPreflight("quiet")` directly. The ACK start path still enforces first-drawable, strict floor, scroll quiet, and recovery hold checks, but it no longer loops back into initial image readiness.
+  - Prepared native ACK failure/error no longer uses `allowBeforeFirstDrawable=true`; fallback WebView ACK must wait for first drawable and scroll quiet.
+  - Initial Cloudflare/image-ready ACK block paths no longer force before-first-drawable WebView ACK.
+  - ACK quiet calculation now releases stale `readerWindowBusy` for ACK scheduling once the last busy signal is older than `NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS`, logging `reader_ntk_ack_preflight_stale_busy_released`.
+- Validation:
+  - Build passed: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest`.
+  - Target repro before stale-busy fix:
+    - Artifact: `build/ntk-random-perf/20260618_184603`.
+    - Result: failed strict ACK proof after 70178ms.
+    - First drawable was fast (`3750ms`), coverage had no missing/placeholder/loading, but ACK never started.
+  - Target repro after fix:
+    - Artifact: `build/ntk-random-perf/20260618_184909`.
+    - Target `/webtoon/11902/1483342`, seed `1781775514871`, strict fresh, clear ACK/cache, force-stop, native ACK, mixed scroll, append probe.
+    - Result: OK (1 test), failures 0.
+    - First drawable: app log `1595ms`.
+    - ACK: `reader_ntk_ack_preflight_stale_busy_released ageMs=13543`, then `reader_ntk_ack_preflight_deferred_start reason=first_drawable_ready`.
+    - Strict proof: `native-fetch-ack-200`, `strictAdAck=true`; WebView preflight `success=true,ms=8516`; test ACK wait `strictProof=true,ms=13988`.
+    - Scroll coverage: no visible loading, missing pixels, placeholder pixels, or scroll drift.
+  - Live random validation:
+    - Artifact: `build/ntk-random-perf/20260618_185024`.
+    - Runs=2, strict fresh, clear ACK/cache, force-stop, live random required.
+    - Result: OK (1 test), failures 0.
+    - Cases: `/manhwa/35356/1767903` and `/webtoon/2776/131149`.
+    - Strict proofs: `native-fetch-ack-200` for manhwa, `guard-fetch-ack-200` plus bridge ACK for webtoon.
+    - WebView ACK preflight: `success=true,ms=6739` and `success=true,ms=9168`.
+    - First drawable: `5536ms`, `61ms`, `3826ms` across initial/append flows.
+  - Actual UX selection validation:
+    - First attempt used the wrong package name `ml.melun.mangaview.activity.EpisodeActivityNetworkTest` and failed with `ClassNotFoundException`; this was a test invocation error, not an app failure.
+    - Correct artifact: `build/ntk-ux-select/20260618_185244_ack_quiet_stale_release_ux_retry`.
+    - Correct class: `ml.melun.mangaview.EpisodeActivityNetworkTest`.
+    - Result: OK (2 tests), comic and webtoon UX selection both passed.
+    - Webtoon proof: `/webtoon/16968/1463195`, first drawable `3185ms`, strict ACK `native-fetch-ack-200`, WebView preflight `success=true,ms=6565`.
+- Bad conclusion / bad approach to avoid:
+  - Do not allow WebView ACK before first drawable just because native prepared challenge fails. It can overlap initial scroll and cause frame callback debt.
+  - Do not solve that by pure deferral without a post-quiet start path. It can produce a false-stable UI while ACK proof starves forever.
+  - Do not treat persistent `readerWindowBusy=true` as absolute truth for ACK scheduling. If no fresh busy event arrives after the quiet window, stale busy must not block ACK forever.
+  - Do not call UX tests with the stale package name; current class is `ml.melun.mangaview.EpisodeActivityNetworkTest`.
+- Remaining risk:
+  - Slow-frame callback samples still appear in emulator stats, but droppedFrames/droppedFrameDebt stayed 0 in the target repro after fix and coverage remained clean.
+  - ACK actual proof still depends on live NTK server/Cloudflare behavior and can take 6-9s in strict fresh. This patch fixes ACK start starvation and initial-scroll overlap, not external server latency.

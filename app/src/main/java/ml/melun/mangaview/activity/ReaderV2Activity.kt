@@ -146,7 +146,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         startDeferredNtkAckPreflight("timeout")
     }
     private val deferredNtkAckPreflightQuietRunnable = Runnable {
-        maybeStartDeferredNtkAckAfterInitialContinuous()
+        startDeferredNtkAckPreflight("quiet")
     }
     private val deferredNtkAckPreflightBlockProbeRunnable = Runnable {
         maybeStartDeferredNtkAckForInitialCloudflareProbe()
@@ -1037,7 +1037,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             remaining = maxOf(remaining, ntkAckPreflightAfterFirstDrawableQuietMs())
         }
         if (readerWindowBusy) {
-            remaining = maxOf(remaining, NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS)
+            val busyAgeMs = if (lastReaderBusyMs > 0L) now - lastReaderBusyMs else 0L
+            if (lastReaderBusyMs <= 0L || busyAgeMs < NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS) {
+                remaining = maxOf(remaining, NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS - busyAgeMs.coerceAtLeast(0L))
+            } else {
+                readerWindowBusy = false
+                Log.d(TAG, "reader_ntk_ack_preflight_stale_busy_released ageMs=$busyAgeMs,path=${currentManga?.ntkEpisodePath ?: deferredNtkAckPreflightManga?.ntkEpisodePath}")
+            }
         }
         val lastActiveMs = maxOf(lastReaderInteractionMs, lastReaderBusyMs)
         if (lastActiveMs > 0L) {
@@ -1638,13 +1644,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "prepared_native_ack_success")
                 } else if (ackGeneration == ntkAckPreflightGeneration.get() && !destroyed && !isFinishing) {
                     deferredNtkAckPreflightManga = manga
-                    startDeferredNtkAckPreflight("${reason}_native_failed", allowBeforeFirstDrawable = true)
+                    startDeferredNtkAckPreflight("${reason}_native_failed")
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "reader_ntk_ack_prepared_native_preflight_error reason=$reason,path=$path,$e")
                 if (ackGeneration == ntkAckPreflightGeneration.get() && !destroyed && !isFinishing) {
                     deferredNtkAckPreflightManga = manga
-                    startDeferredNtkAckPreflight("${reason}_native_error", allowBeforeFirstDrawable = true)
+                    startDeferredNtkAckPreflight("${reason}_native_error")
                 }
             }
         }, "reader-ntk-prepared-native-ack").apply {
@@ -1768,12 +1774,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     TAG,
                     "reader_ntk_ack_preflight_initial_cf_probe_wait_first_drawable path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts"
                 )
-                val allowBeforeFirstDrawable =
-                    deferredNtkAckPreflightBlockProbeAttempts >= NTK_ACK_PREFLIGHT_INITIAL_IMAGES_READY_HARDBLOCK_ATTEMPTS
                 maybeStartDeferredNtkAckForInitialBlock(
                     deferred,
-                    "initial_cf_probe_images_ready",
-                    allowBeforeFirstDrawable
+                    "initial_cf_probe_images_ready"
                 )
                 return
             }
@@ -1792,8 +1795,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             maybeStartDeferredNtkAckForInitialBlock(
                 deferred,
-                "initial_cf_probe",
-                allowBeforeFirstDrawable = true
+                "initial_cf_probe"
             )
             return
         }
@@ -1813,8 +1815,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 )
                 maybeStartDeferredNtkAckForInitialBlock(
                     deferred,
-                    "initial_images_ready_slow_anchor",
-                    allowBeforeFirstDrawable = true
+                    "initial_images_ready_slow_anchor"
                 )
             } else {
                 maybeStartDeferredNtkAckForInitialBlock(deferred, "initial_images_ready")
