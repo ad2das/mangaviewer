@@ -2958,16 +2958,21 @@ class ReaderSession(
                 total = pages.size
                 shiftPageStateForPrepend(inserted)
             }
-            if (warm) warmPrependedEpisode(inserted)
             val posted = main.post {
+                var shouldWarm = false
+                var finished = false
                 try {
+                    finishStructurePublish()
+                    finished = true
                     if (!cancelled.get()) {
                         listener.onPagesPrepended(total, inserted)
                         if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
+                        shouldWarm = warm
                     }
                 } finally {
-                    finishStructurePublish()
+                    if (!finished) finishStructurePublish()
                 }
+                if (shouldWarm) warmPrependedEpisode(inserted)
             }
             if (!posted) finishStructurePublish()
         } else {

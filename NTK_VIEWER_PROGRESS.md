@@ -25631,3 +25631,39 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not rely on clickable ancestor center taps for home cards near bottom navigation; use visible child bounds or logged tap coordinates.
   - Random smoke still shows speed/jank weakness: ACK around 7.6s, first drawable around 7.0s, and slow frame signals remain. Current user direction accepts speed compromise, but this is not a 60fps perfection claim.
   - Random append produced one intermediate reader_visible_coverage line with placeholderPx=62 after append. Settled scroll assertions stayed clean, but the original ideal of never any transient placeholder is still not fully proven.
+
+## 2026-06-18 16:30:00 +09:00 prepend append warm request skip fixed
+
+- Continued toward active NTK ACK/viewer stability goal from main commit b64ae19e8.
+- Focus: remaining risk from random smoke where previous-episode append produced transient placeholder after prepend.
+- Root cause found:
+  - In ReaderSession.appendResolvedEpisode for direction < 0, warmPrependedEpisode(inserted) ran before finishStructurePublish().
+  - requestPage(...) intentionally skips visible/warm requests while structurePublishPending > 0.
+  - Evidence before fix from build/ntk-random-perf/20260618_160915/logcat.txt:
+    - reader_visible_request_skip_structure page=51/50/49/... before pages_prepended.
+    - Then reader_visible_loading=1 and reader_visible_coverage placeholderPx=62 immediately after pages_prepended.
+- Fix:
+  - For prepend append, finishStructurePublish() is now called on the main thread before listener.onPagesPrepended(...), so renderView/window requests during prepend are allowed to reach requestPage(...).
+  - warmPrependedEpisode(inserted) now runs after listener notification and after structure publish is finished, matching the safer appended-episode warm pattern.
+- Bad approach tried and reverted:
+  - A short render hold in ReaderSurfaceView for prepend reveal hid loading frames, but it caused a strict random repro failure at scroll step 0 with placeholderPx=1492 and cards=1.
+  - This was removed. Do not revive that approach without a more precise invariant.
+- Validation after keeping only the ReaderSession structure timing fix:
+  - Build: ./gradlew.bat --no-daemon :app:assembleDebug passed.
+  - Repro: build/ntk-random-perf/20260618_162337.
+  - Command: same target seed 1781766555527, /manhwa/25399/296660, strict fresh, ClearAck, ClearImageCache, ScrollSteps=3, AppendSteps=4.
+  - Result: OK (1 test), passed=true, failures=0.
+  - ACK proof: /api/ad/ack bridge-ack-200 strictAdAck=true, ACK preflight 10760ms.
+  - Scroll settled coverage for all 3 steps: placeholderPx=0, loading=0, drift maxPageDelta=0 and maxOffsetDelta=0.
+  - Append next and previous both succeeded.
+  - Improvement: no reader_visible_request_skip_structure lines around pages_prepended, and no reader_visible_coverage placeholderPx>0 line immediately after previous append. The previous append now logs reader_visible_request_start page=50 before success.
+- Actual UX regression check:
+  - Artifact: build/ntk-ux-select/20260618_162457_after_prepend_publish_timing.
+  - Test: EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200.
+  - Result: OK (1 test).
+  - First drawable: 2793ms.
+  - Coverage: reader_visible_loading=0, drawablePx=2274, missingPx=0, placeholderPx=0.
+  - ACK proof: native-fetch-ack-200, strictAdAck=true.
+- Remaining risk:
+  - The same repro still showed an earlier non-append transient placeholder before the settled scroll assertions. It did not fail settled coverage, but the original ideal of never any transient placeholder is still not fully proven.
+  - ACK speed remains variable; this pass had ACK preflight around 10.8s on the target repro. Current user direction accepts speed compromise, but this is not a speed win.
