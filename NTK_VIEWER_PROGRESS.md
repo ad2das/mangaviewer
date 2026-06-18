@@ -28007,3 +28007,32 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The ACK regression was not that the server stopped issuing ACK. It was an app-side strict proof classifier/root-mode bug that let challenge-cookie 200 short-circuit the real proof-capable ACK path.
   - With the fix, the previous failing `newtoki1.org` target now gets actual strict ACK 200, and default live random still passes.
   - Remaining non-ACK risk: occasional scroll jank under strict `maxDroppedFrames=0`, specifically `/manhwa/8681/72602` in the newtoki locked random run.
+
+## 2026-06-19 16:45:00 +09:00 follow-up on newtoki manhwa jank/first drawable risk
+
+- Baseline state:
+  - `main` was clean and synced to `origin/main` at `533527e09`.
+  - Only `emulator-5554` was attached.
+- Repro of the previous non-ACK risk:
+  - Command: targeted `/manhwa/8681/72602` on `https://newtoki1.org` locked root, strict fresh, native ACK, touch mixed scroll, `FirstDrawableMaxMs=14000`.
+  - Artifact: `build/ntk-random-perf/main_repro_manhwa8681_jank_20260619/20260619_073615`.
+  - Result: passed.
+  - ACK: strict proof true, `nativeBridgeAck200=true`, `bridge-ack-200` and `guard-fetch-ack-200` recorded as `strictAdAck=true`.
+  - First drawable: `10325ms`, still slow but within the 14000ms budget.
+  - Scroll: 8 checks passed, `droppedFrames=0`, `missingPx=0`, `placeholderPx=0`, `postStopDrift` unchanged in all steps.
+  - Conclusion: the prior random 3-run `droppedFrames=1` on this path did not reproduce as a stable app failure. The stable risk on this target is slow first drawable, not ACK or scroll position drift.
+- Pipeline observation:
+  - Early generated URLs were available at `603ms`.
+  - p001 direct hedge got HTTP 200 at about `1037ms`.
+  - But anchor asset/file lease and decode were delayed until about `9.1s-9.4s`, and first drawable released at `10.3s`.
+  - Logs show p001 and nearby initial pages entering `generated_initial_range_first_*` range/reassemble work. The range path eventually succeeded, but it delayed visible delivery despite the direct hedge success.
+- Bad experiment, reverted:
+  - Tried disabling `shouldUseInitialGeneratedRangeFirst(...)` for `/manhwa/` page 1 so p001 would use direct-full first.
+  - Artifact: `build/ntk-random-perf/main_disable_manhwa_p1_range_repro_20260619/20260619_073817`.
+  - Result: worse. First drawable failed at `15581ms`; `openToFirstDrawable=null`; scroll and ACK were not reached.
+  - Although p001 decode became faster in the partial pipeline (`decodeMs=3112`), the initial continuous gate did not open. This means range-first is still helping satisfy the initial multi-page readiness contract for this class of manhwa episodes.
+  - Do not repeat a blanket “disable manhwa p001 range-first” change. Any future fix needs to preserve the initial continuous readiness behavior while allowing a successful direct p001 response to publish/cache the anchor asset immediately.
+- Next safer direction:
+  - Investigate why `generated_initial_range_first_direct_hedge_hit` does not immediately satisfy/publish the anchor asset/file lease for p001 when it wins early.
+  - Prefer a targeted direct-hedge publish/cache path over disabling range-first globally.
+  - Keep ACK proof checks strict; this follow-up did not uncover a new ACK regression.
