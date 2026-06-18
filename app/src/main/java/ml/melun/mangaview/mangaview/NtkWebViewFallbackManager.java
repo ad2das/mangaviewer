@@ -2077,9 +2077,22 @@ final class NtkWebViewFallbackManager {
         if(source == null)
             return false;
         String normalized = source.toLowerCase(Locale.US);
-        return normalized.contains("ad-ack-200")
-                || normalized.contains("ack-200")
-                || "native-ack-200".equals(normalized);
+        if(normalized.contains("challenge") || normalized.contains("cookie"))
+            return false;
+        return "native-ack-200".equals(normalized)
+                || "native-fetch-ack-200".equals(normalized)
+                || "captcha-webview-ack-200".equals(normalized)
+                || "captcha-bridge-ack-200".equals(normalized)
+                || "bridge-ack-200".equals(normalized)
+                || "compact-ack-200".equals(normalized)
+                || normalized.endsWith("-bridge-ack-200")
+                || normalized.endsWith("-fetch-ack-200")
+                || normalized.endsWith("-signed-fetch-ack-200")
+                || normalized.endsWith("-state-ack-200");
+    }
+
+    static boolean isStrictAdAckSuccessSourceForTest(String source) {
+        return isStrictAdAckSuccessSource(source);
     }
 
     static void rememberExternalServerAckSuccess(String scope, String source) {
@@ -2842,7 +2855,7 @@ final class NtkWebViewFallbackManager {
 
     private static boolean isModernNtkGuardRoot(String root) {
         root = root == null ? "" : root.toLowerCase(Locale.ROOT);
-        return root.contains("sbxh") || root.contains("toonflix");
+        return root.contains("sbxh") || root.contains("toonflix") || root.contains("newtoki");
     }
 
     private void releaseWaiterAndCancelIfUnused(FetchTask task) {

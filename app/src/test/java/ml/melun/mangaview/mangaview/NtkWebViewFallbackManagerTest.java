@@ -93,4 +93,20 @@ public class NtkWebViewFallbackManagerTest {
         assertTrue(script.contains("if(x.pathname.indexOf('/cdn-cgi/challenge-platform/')===0)return false;"));
         assertTrue(script.contains("return String(m||'GET').toUpperCase()!=='GET';"));
     }
+
+    @Test
+    public void strictAckProofRequiresActualAdAckPost() {
+        assertTrue(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest("native-fetch-ack-200"));
+        assertTrue(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest("guard-bridge-ack-200"));
+        assertTrue(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest("captcha-webview-ack-200"));
+
+        assertFalse(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest(
+                "native-challenge-ad-ack-cookie-200"));
+        assertFalse(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest(
+                "native-prepare-challenge-ad-ack-cookie-200"));
+        assertFalse(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest(
+                "bridge-challenge-ad-ack-cookie-200"));
+        assertFalse(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest(
+                "captcha-bridge-challenge-ad-ack-cookie-200"));
+    }
 }

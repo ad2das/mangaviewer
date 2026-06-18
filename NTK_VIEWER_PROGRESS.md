@@ -27961,3 +27961,49 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - ACK is not the blocker in this slice; strict `/api/ad/ack` 200 is repeatedly proven in target and random tests.
   - The latest blockers were false test harness idle waiting, initial page anchor selection, and valid trusted generated stream extension handling.
   - Remaining risk is still long-tail NTK diversity and low-resource/cache-deleted/restart sweeps, but the current main branch slice is ready to commit/push.
+
+## 2026-06-19 16:35:00 +09:00 strict ACK false-positive removal on main
+
+- Main branch correction:
+  - `origin/main` already contained the prior NTK stabilization commits through `2ed84923b`.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` folder is on `codex/ntk-strict-ack-proof`; continuing there is misleading because `main` is ahead of that branch.
+  - Current work continues from `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on `main`.
+- Root cause found:
+  - `NtkWebViewFallbackManager.isStrictAdAckSuccessSource(...)` used broad substring checks: any source containing `ack-200` became strict.
+  - Challenge-cookie sources such as `native-challenge-ad-ack-cookie-200`, `native-prepare-challenge-ad-ack-cookie-200`, `bridge-challenge-ad-ack-cookie-200`, and `captcha-bridge-challenge-ad-ack-cookie-200` therefore could be misclassified as strict ACK proof even though no `/api/ad/ack` 200 had happened.
+  - `newtoki1.org` was also missing from the modern guard root predicate. That made `waitForNtkWebViewAckPreflightProof(...)` use the legacy join condition and repeatedly log `ntk_webview_ack_preflight_join_proof_hit` from a non-strict server ACK record instead of forcing the proof-capable ACK path.
+- Accepted fixes:
+  - Strict ACK source classification now rejects any `challenge` or `cookie` source and only accepts actual `/api/ad/ack` success source names such as `native-fetch-ack-200`, `native-ack-200`, `guard-bridge-ack-200`, `guard-fetch-ack-200`, and related bridge/fetch/state ACK sources.
+  - `newtoki` roots are now treated like `sbxh` and `toonflix` in both `CustomHttpClient` and `NtkWebViewFallbackManager`, so modern roots require strict `/api/ad/ack` proof instead of legacy soft ACK.
+  - Added a JVM test for source classification so challenge-cookie 200 cannot regress into strict proof again.
+- Bad approaches / do not repeat:
+  - Do not treat `ad_ack_c` from `/api/ad/challenge` as strict ACK success. It can be a useful scoped cookie/soft readiness signal, but it is not the requested actual `/api/ad/ack` 200 proof.
+  - Do not trust `ntk_webview_ack_preflight_join_proof_hit` unless the root is in the modern guard set and `hasRecentStrictAdAckSuccess(...)` is true.
+  - Do not rerun target ACK validation with the default `FirstDrawableMaxMs=3500` when comparing against the established 14000ms target budget; that caused a false first-drawable failure at `3593ms`.
+  - JVM unit test execution in this Windows environment failed from a Gradle test executor/PATH encoding issue after compilation, not from the new assertion. Use instrumentation and compile output as the reliable fast check until that environment issue is fixed.
+- Validation:
+  - Build/install path passed through `ntk_random_perf.ps1`, including `:app:assembleDebug` and `:app:assembleDebugAndroidTest`.
+  - First rerun after strict-source patch only:
+    - Artifact: `build/ntk-random-perf/main_strict_source_fix_repro_webtoon16508_20260619/20260619_072523`.
+    - Target: `/webtoon/16508/1389792`.
+    - Result: failed strict ACK as expected because false strict classification was gone.
+    - Logs now show `native-prepare-challenge-ad-ack-cookie-200` and `native-challenge-ad-ack-cookie-200` with `strictAdAck=false`.
+  - Target repro after adding `newtoki` to modern guard roots:
+    - Artifact: `build/ntk-random-perf/main_newtoki_modern_repro_webtoon16508_budget14000_20260619/20260619_072841`.
+    - Result: passed.
+    - First drawable `3607ms`; strict ACK `5397ms`.
+    - ACK stages included `ack_only_fetch=5386/5387`, `sync_after=10/5397`, and strict proof was accepted only after the proof-capable ACK path ran.
+  - `newtoki1.org` locked live random 3-run:
+    - Artifact: `build/ntk-random-perf/main_newtoki_modern_random3_20260619/20260619_072929`.
+    - ACK result: all 3 cases reached strict ACK 200; stages include `nativeSubmit@/code=200` and per-run `ack_only_fetch`.
+    - Overall run failed only on scroll jank assertion for `/manhwa/8681/72602` step 4: `droppedFrames=1` with `maxDroppedFrames=0`.
+    - This is not an ACK failure and is recorded as remaining scroll-performance risk because the current priority was narrowed to ACK stability.
+  - Default/root live random 2-run:
+    - Artifact: `build/ntk-random-perf/main_strict_source_fix_sbxh_random2_20260619/20260619_073120`.
+    - Result: passed.
+    - Cases `2`, scroll checks `8`, failures `0`, coverage `live-random`.
+    - ACK max in summary `4701ms`, with `nativeSubmit@/code=200` and `ack_only_fetch`.
+- Current conclusion:
+  - The ACK regression was not that the server stopped issuing ACK. It was an app-side strict proof classifier/root-mode bug that let challenge-cookie 200 short-circuit the real proof-capable ACK path.
+  - With the fix, the previous failing `newtoki1.org` target now gets actual strict ACK 200, and default live random still passes.
+  - Remaining non-ACK risk: occasional scroll jank under strict `maxDroppedFrames=0`, specifically `/manhwa/8681/72602` in the newtoki locked random run.

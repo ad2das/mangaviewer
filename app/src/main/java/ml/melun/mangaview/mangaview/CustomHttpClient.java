@@ -5759,7 +5759,7 @@ public class CustomHttpClient {
 
     private static boolean isModernNtkGuardRoot(String root) {
         root = root == null ? "" : root.toLowerCase(Locale.ROOT);
-        return root.contains("sbxh") || root.contains("toonflix");
+        return root.contains("sbxh") || root.contains("toonflix") || root.contains("newtoki");
     }
 
     public boolean isModernNtkGuardRootForPath(String path) {
