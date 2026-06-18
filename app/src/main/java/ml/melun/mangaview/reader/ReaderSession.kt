@@ -4243,7 +4243,6 @@ class ReaderSession(
             scheduleNtkSourcePrefetchAfterFirstBitmap()
             scheduleNtkGeneratedFullEpisodeBytePrefetchAfterFirstBitmap()
             scheduleNtkEpisodeMetadataAfterFirstBitmap()
-            scheduleNtkAdjacentAckPreflightsAfterFirstBitmap()
             scheduleNtkForwardTimelinePrimeAfterFirstBitmap()
         }
     }

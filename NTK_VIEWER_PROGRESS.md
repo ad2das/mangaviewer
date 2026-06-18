@@ -28220,3 +28220,48 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - This reduces avoidable scroll-idle ACK delay, but ACK tails can still be several seconds because guard module load/native challenge/ack-only fetch are real network and WebView work.
   - Adjacent/current ACK overlap and stale-cleared entries still appear in long random logs. Keep this as the next ACK stability target rather than treating the objective as complete.
+
+## 2026-06-19 08:35:00 +09:00 automatic adjacent ACK preflight disabled after overlap analysis
+
+- Root cause refined:
+  - Long-tail summaries were sometimes inflated by automatic next/previous adjacent ACK preflights, not by the current visible episode's strict proof.
+  - Example from the bad delay-gate experiment on `/webtoon/67626367/kp-67626367-67649834`:
+    - Current visible episode strict ACK completed at `6515ms`.
+    - Adjacent/canonical paths `/webtoon/67626367/kp-67626367-67649837` and `/webtoon/67626367/1136544` continued to `12434ms` and `12664ms`.
+    - Those background ACKs produced `ackOnlyRunningStaleCleared` and polluted the run's ACK max.
+- Bad experiment recorded:
+  - Tried delaying adjacent ACK behind current ACK instead of disabling it.
+  - Artifact: `build/ntk-random-perf/main_adjacent_ack_gate_repro67626367_20260619/20260619_082511`.
+  - Result: passed but worse tail and first drawable: first drawable `8019ms`, ACK max `12664ms`.
+  - This approach should not be repeated; delaying alone still allowed adjacent ACK to run during early scroll and made the metrics noisier.
+- Change:
+  - Removed the automatic `scheduleNtkAdjacentAckPreflightsAfterFirstBitmap()` call from `ReaderSession.logFirstBitmapIfNeeded`.
+  - The existing first-bitmap-before-load call still only logs/skips before first bitmap; the expensive hidden WebView adjacent ACK preflight is no longer started automatically after the first drawable.
+  - Rationale: adjacent ACK is a speculative accelerator, while the current objective prioritizes current visible episode ACK proof, image stability, and scroll stability. Append/transition paths still have strict ACK wait logic when they actually need target proof.
+- Target validation:
+  - Artifact: `build/ntk-random-perf/main_no_adjacent_ack_repro67626367_20260619/20260619_082657`.
+  - Target: `/webtoon/67626367/kp-67626367-67649834`, image episode `1136544`, image count `196`.
+  - Result: passed.
+  - Current ACK max `5021ms` (`ack_only_fetch=5012/5021`), down from the adjacent-polluted `12664ms` bad experiment.
+  - First drawable `7907ms`; scroll/image failures `0`, placeholder/missing/loading `0`, no drift.
+  - Log grep found no `ntk_adjacent_ack_preflight_start` or `ntk_adjacent_ack_preflight_done` in this run.
+- Strict random validation:
+  - First random 4-run after the change failed on strict jank only: `/webtoon/3864/183885`, droppedFrames `1` at step `0`; no image coverage/drift failure. This is not ACK failure.
+  - Failure repro artifact: `build/ntk-random-perf/main_no_adjacent_ack_random4_strict_20260619/20260619_082737`.
+  - Target repro `/webtoon/3864/183885` then passed:
+    - Artifact: `build/ntk-random-perf/main_no_adjacent_ack_repro3864_20260619/20260619_082922`.
+    - First drawable `7060ms`, ACK strict proof `7965ms`, failures `0`.
+  - Re-run strict random 4 passed:
+    - Artifact: `build/ntk-random-perf/main_no_adjacent_ack_random4b_strict_20260619/20260619_082957`.
+    - Cases `4`: `/webtoon/11445/1115822`, `/manhwa/23023/218889`, `/webtoon/15233/1461127`, `/manhwa/25242/293104`.
+    - Scroll checks `16`, failures `0`, live-random `api=4`.
+    - First drawable max `9649ms`; ACK max `6891ms`.
+    - Log grep found no adjacent ACK preflight start/done entries.
+- Actual UX validation:
+  - `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200` and `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200` both passed.
+  - XML result: tests `2`, failures `0`, errors `0`.
+  - Comic test time `23.387s`; webtoon test time `20.532s`.
+- Remaining risk:
+  - First drawable can still be high on long-tail generated webtoon cases (`9649ms` in the latest random pass).
+  - Strict jank can still fail intermittently by one dropped frame during very early scroll; keep strict re-run + target repro as the current evidence pattern.
+  - Automatic adjacent ACK is now intentionally off; if future append/transition tests show regressions, fix the actual transition path instead of re-enabling broad speculative adjacent ACK.
