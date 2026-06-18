@@ -26864,3 +26864,23 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Random run still contained speculative append-neighbor ACK preflight false tails for non-visible adjacent paths (`/webtoon/60536199/969271`, `/974097`, `/89693`, `/89648`). The visible current-run ACK checks passed; neighbor tail remains a future cleanup target.
   - Prepared native ACK still returns `success=false,proof=false` on modern guard roots because native deliberately does not submit `/api/ad/ack` without guard proof `tp`; strict ACK remains owned by the WebView/bridge path.
   - Strict 60fps perfection is still not claimed. Slow frame/surface callback-gap signals remain, but current requested close-out is ACK correctness and visible stability.
+
+## 2026-06-19 00:20:00 +09:00 rejected append API-first seed skip
+
+- Follow-up investigation on the random artifact `build/ntk-random-perf/20260618_235947` found another real risk:
+  - Append target `/webtoon/60536199/974097` was inserted quickly from neighbor-generated hints, but the early generated image requests initially returned multiple `404`s before the direct/API path later corrected them.
+  - This is not an ACK correctness failure, but it is relevant to the broader "random append should not show blank images" goal.
+- Rejected experiment:
+  - Changed `ReaderSession.seedNtkAppendGeneratedUrlsFromNeighbor(...)` to skip early generated seed when `Manga.shouldUseGeneratedAppendBeforeApi(...)` says the path should be API-first.
+  - Unit/build command was first mistyped with non-existent test filters and failed with `No tests found`; this is an invalid test failure, not a code failure.
+  - Correct unit/build command then passed:
+    - `.\gradlew.bat --no-daemon :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.MangaTest.ntkCanonicalWebtoonNumericEpisodePrefersApiFirst --tests ml.melun.mangaview.mangaview.MangaTest.ntkAppendUsesGeneratedFirstOnlyForLegacyNumericWebtoons :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Target repro failed:
+    - Artifact: `build/ntk-random-perf/20260619_000621`.
+    - Command targeted `/webtoon/60536199/971571` with append probes.
+    - Failure: `Next append did not load adjacent episode ... next=/webtoon/60536199/974097 start=STARTED before=63 after=63`.
+    - Interpretation: blocking seed entirely protects against bad early generated URLs, but makes append too slow. This violates the goal by hiding the issue behind delayed append.
+  - Action: reverted the seed-skip code. Do not repeat this as a fix.
+- Better future direction:
+  - Keep fast append handoff, but validate or repair the generated work/episode ID mapping before publishing early adjacent URLs.
+  - A safe fix should avoid inserting unverified URLs that 404 while still allowing append to complete within the current fast window.
