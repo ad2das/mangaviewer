@@ -28090,3 +28090,32 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Strict 60fps/jank perfection is still not solved. Slow frame signals remain, and strict `16.67ms` frame criteria can still stop tests before ACK verification.
   - First drawable can still be slow on random long-tail cases, up to `9268ms` in the latest passing random sweep.
   - PowerShell `ConvertFrom-Json` can fail on `summary.json` when Korean titles are mojibake/truncated in the generated JSON. Use script summary lines/log grep for close-out evidence until summary serialization is hardened.
+
+## 2026-06-19 08:00:00 +09:00 generated initial recovery request width reduced
+
+- Root cause candidate:
+  - `ReaderImageCache` treats generated initial recovery as the first `4` pages.
+  - `ReaderSession` independently expanded early generated URLs to `12` pages before first bitmap.
+  - This mismatch made the initial continuous request flood pages well beyond the foreground cache recovery window, increasing foreground network/decode pressure before the first drawable and contributing to strict jank failures.
+- Change:
+  - Reduced `ReaderSession.NTK_GENERATED_INITIAL_RECOVERY_PAGES` from `12` to `4`, matching the image cache recovery window.
+  - This preserves page 1 range-first behavior. It does not repeat the bad blanket experiment that disabled manhwa page-1 range-first.
+- Target validation:
+  - Artifact: `build/ntk-random-perf/main_initial_recovery4_manhwa8681_20260619/20260619_075420`.
+  - Target: `/manhwa/8681/72602` on locked `https://newtoki1.org`, strict fresh, 8 touch mixed scrolls, strict jank defaults.
+  - Result: passed.
+  - Improvement: first drawable improved from prior `10325ms` baseline to `4828ms`.
+  - ACK: strict `/api/ad/ack` proof `5347ms`, `ack_only_fetch=5295/5296`, `nativeSubmit@/code=200`.
+  - Scroll/image: failures `0`, `missingPx=0`, `placeholderPx=0`, no drift.
+- Random strict validation:
+  - Artifact: `build/ntk-random-perf/main_initial_recovery4_random2_strict_20260619/20260619_075522`.
+  - Strict defaults restored: `MaxDroppedFrames=0`, `RenderFrameMaxMs=16.67`.
+  - Result: passed.
+  - Cases `2`, scroll checks `8`, failures `0`, coverage `live-random`, title sources `api=2`.
+  - First drawable max in the run: `2123ms`; ACK max `5290ms`.
+- Actual UX validation:
+  - `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200` passed.
+  - Path `/webtoon/16968/1463195`, first drawable `3573ms`, settled coverage `missingPx=0`, `placeholderPx=0`.
+  - Challenge-cookie records remained `strictAdAck=false`; final success came only from `native-fetch-ack-200` strict `/api/ad/ack` proof.
+- Remaining risk:
+  - This is promising but not a full completion proof for every long-tail random combination. Continue with wider random sweeps and actual comic UX recheck before considering the broad goal complete.

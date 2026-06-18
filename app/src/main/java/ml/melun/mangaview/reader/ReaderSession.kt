@@ -7368,7 +7368,7 @@ class ReaderSession(
         private const val NTK_GENERATED_TRANSIENT_RETRY_DELAY_MS = 650L
         private const val NTK_GENERATED_PARTIAL_RETRY_DELAY_MS = 120L
         private const val NTK_GENERATED_ACTIVE_FETCH_RETRY_DELAY_MS = 900L
-        private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 12
+        private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 4
         private const val NTK_TRACE_AHEAD_PAGES = 8
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 120L
         private const val NTK_BACKGROUND_PREPARE_AFTER_FIRST_BITMAP_QUIET_MS = 3500L
