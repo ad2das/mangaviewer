@@ -25997,3 +25997,50 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - Slow-frame callback samples still appear in emulator stats, but droppedFrames/droppedFrameDebt stayed 0 in the target repro after fix and coverage remained clean.
   - ACK actual proof still depends on live NTK server/Cloudflare behavior and can take 6-9s in strict fresh. This patch fixes ACK start starvation and initial-scroll overlap, not external server latency.
+
+## 2026-06-18 19:06:00 +09:00 Foreground generated manhwa direct hedge widened
+
+- Problem:
+  - Wider strict fresh live-random `Runs=4` found a new image/scroll failure:
+    - Artifact: `build/ntk-random-perf/20260618_185839`.
+    - Seed: `1781776719408`.
+    - Case: `/manhwa/27245/1691376`, imageEpisodeId `176083`, 12 generated images, rendered page count 5.
+    - Failure: scroll step 1 exposed `loading=1`, `placeholderPx=338`, while scroll position itself did not drift.
+  - This was not an ACK failure or captcha failure. ACK had not yet reached proof because the test failed early on viewport coverage.
+  - Root cause:
+    - Page 1 generated direct hedge was already immediate, but foreground-visible generated manhwa pages 2-4 still logged `generated_initial_range_first_direct_hedge_skip ... reason=manhwa_range_first`.
+    - On short manhwa chapters, pages 2-4 enter the viewport almost immediately after the first/second scroll.
+    - Range reassembly for p002/p003/p004 took 8-12s in the failure log, so visible pages lagged behind scroll and showed loading/placeholder even though a direct full fetch would have won quickly.
+- Fix:
+  - `ReaderImageCache.initialGeneratedDirectHedgeDelayMs(...)` now receives the `foreground` flag.
+  - For generated manhwa pages 2 through `NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES`, direct full hedge remains disabled for background range-first work, but foreground-visible requests now start direct hedge at `0ms`.
+  - This keeps background prefetch conservative while allowing any actually visible generated page to race range reassembly against direct full bytes immediately.
+- Validation:
+  - Build passed: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest`.
+  - Target repro after fix:
+    - Artifact: `build/ntk-random-perf/20260618_190106`.
+    - Target `/manhwa/27245/1691376`, seed `1781776719408`, strict fresh, clear ACK/cache, force-stop, native ACK, mixed scroll, append probe.
+    - Result: OK (1 test), failures 0.
+    - Direct hedge proof: p002/p003/p004 logged `generated_initial_range_first_direct_hedge_start ... delayMs=0` and `direct_hedge_hit ... code=200`.
+    - First drawable app log: `357ms` in summary open-to-first-drawable.
+    - Scroll checks: 3/3 passed with `placeholderPx=0`, `loading=0`, `missingPx=0`, no drift.
+    - ACK proof: WebView preflight `success=true,ms=18725`, strict `native-fetch-ack-200`.
+  - Wider live-random after fix:
+    - Artifact: `build/ntk-random-perf/20260618_190212`.
+    - Runs=4, strict fresh, clear ACK/cache, force-stop, live random required.
+    - Result: OK (1 test), failures 0.
+    - Cases:
+      - `/manhwa/36095/1793635`
+      - `/webtoon/12797/1136157`
+      - `/manhwa/36182/1801026`
+      - `/webtoon/60609584/1160752`
+    - Scroll checks: 12/12 passed; log scan found no visible loading, missing pixels, or placeholder pixels in the recorded scroll coverage.
+    - ACK checks: 4/4 passed with strict proofs, including `native-fetch-ack-200` and `guard-fetch-ack-200`.
+    - WebView ACK preflight durations included `8136ms`, `6607ms`, `7071ms`, and one slow but successful `22522ms`.
+- Bad conclusion / bad approach to avoid:
+  - Do not assume fixing only page 1 generated direct hedge is sufficient. Short manhwa chapters can scroll into pages 2-4 immediately.
+  - Do not force direct full for all background generated manhwa range-first work; the fix is scoped to foreground-visible requests so it improves actual UX without exploding background network work.
+  - Do not classify this as an ACK problem just because the run mode is `native-ack`; the failure happened before ACK proof wait and was caused by visible image delivery lag.
+- Remaining risk:
+  - Emulator frame callback stats still report missed intervals/slow signals even when dropped frame debt is 0 and viewport coverage is clean.
+  - Strict ACK can still be slow on live server paths; `/webtoon/60609584/1160752` took `22522ms` in the widened random run but completed with strict proof.

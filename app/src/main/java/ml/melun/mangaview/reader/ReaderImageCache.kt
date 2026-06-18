@@ -3660,7 +3660,7 @@ object ReaderImageCache {
             if (response != null && response.isSuccessful) finished.set(true)
             response
         })
-        val directHedgeDelayMs = initialGeneratedDirectHedgeDelayMs(ntkGeneratedTarget(image), page)
+        val directHedgeDelayMs = initialGeneratedDirectHedgeDelayMs(ntkGeneratedTarget(image), page, foreground)
         val expectedResults = if (directHedgeDelayMs >= 0L) 2 else 1
         if (directHedgeDelayMs >= 0L) {
             completion.submit(Callable {
@@ -3820,7 +3820,7 @@ object ReaderImageCache {
         }
     }
 
-    private fun initialGeneratedDirectHedgeDelayMs(target: NtkGeneratedTarget?, page: Int): Long {
+    private fun initialGeneratedDirectHedgeDelayMs(target: NtkGeneratedTarget?, page: Int, foreground: Boolean): Long {
         if (page <= 1) {
             return 0L
         }
@@ -3830,7 +3830,7 @@ object ReaderImageCache {
         if (target?.path?.startsWith("/manhwa/", ignoreCase = true) == true &&
             page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
         ) {
-            return -1L
+            return if (foreground) 0L else -1L
         }
         return NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS
     }
