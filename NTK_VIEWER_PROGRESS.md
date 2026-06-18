@@ -28119,3 +28119,27 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Challenge-cookie records remained `strictAdAck=false`; final success came only from `native-fetch-ack-200` strict `/api/ad/ack` proof.
 - Remaining risk:
   - This is promising but not a full completion proof for every long-tail random combination. Continue with wider random sweeps and actual comic UX recheck before considering the broad goal complete.
+
+## 2026-06-19 08:04:00 +09:00 comic UX and wider strict random verification after recovery width change
+
+- Actual comic UX recheck:
+  - Command: `:app:connectedDebugAndroidTest` with `runLiveNetworkTests=true` and `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+  - Result: passed.
+  - Path `/manhwa/36525/1807424`.
+  - First drawable `4817ms`; settled coverage `missingPx=0`, `placeholderPx=0`, `loading=0`.
+  - ACK: challenge-cookie bridge source remained `strictAdAck=false`; final strict success was `native-fetch-ack-200` with `/api/ad/ack` status `200`, body `ok=true`, `seen=4`, `expected=4`.
+- Invalid wider random attempt:
+  - First 4-run command used `-SkipInstall` after the emulator no longer had the test APK instrumentation registered.
+  - It failed before app code with `Unable to find instrumentation info`; this is not app evidence and should not be counted.
+- Wider strict random validation:
+  - Artifact: `build/ntk-random-perf/main_initial_recovery4_random4_strict_20260619/20260619_080013`.
+  - Command used strict fresh, live random, native ACK, touch mixed scroll, no append probe, strict jank defaults (`MaxDroppedFrames=0`, `RenderFrameMaxMs=16.67`), install included.
+  - Result: passed.
+  - Cases `4`, unique episode paths `4`, unique title paths `4`, scroll checks `16`, failures `0`, title sources `api=4`, coverage `live-random`.
+  - Pipeline summary: first drawable max `7552ms`; ACK max `10393ms`.
+  - ACK stages all reached `ack_only_fetch` + `sync_after`; one long-tail ACK took `ack_only_fetch=10381/10386`, `sync_after=6/10393`.
+  - Current repro command from the run targets `/manhwa/2688/241424`, image episode `198121`, work `2688`, image count `20`.
+- Current conclusion:
+  - The recovery-width change did not break actual comic/webtoon UX and made the previously slow `/manhwa/8681/72602` much faster.
+  - Strict random evidence is stronger now: 2-run and 4-run both pass with strict jank defaults after the change.
+  - Remaining risk is ACK tail latency around 10s on some live-random cases and still-limited sample size; continue with broader sweeps or targeted tail-latency investigation before marking the full objective complete.
