@@ -1527,6 +1527,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val bottom = top + pageHeight
             if (bottom > 0f && top < viewHeight) {
                 if (
+                    shouldSkipLeadingStructuralPlaceholderLocked(
+                        index,
+                        top,
+                        bottom,
+                        viewHeight,
+                        items.isEmpty()
+                    )
+                ) {
+                    index++
+                    continue
+                }
+                if (
                     page.bitmap == null &&
                     page.tiles.isEmpty() &&
                     page.cardText == null &&
@@ -1583,6 +1595,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return null
         }
         return state
+    }
+
+    private fun shouldSkipLeadingStructuralPlaceholderLocked(
+        index: Int,
+        top: Float,
+        bottom: Float,
+        viewHeight: Int,
+        leadingItem: Boolean
+    ): Boolean {
+        if (!leadingItem) return false
+        if (SystemClock.uptimeMillis() > structuralScrollAdjustUntilMs) return false
+        if (top >= 0f || bottom <= 0f) return false
+        val visiblePx = ceil(min(viewHeight.toFloat(), bottom) - max(0f, top)).toInt()
+        if (visiblePx <= 0) return false
+        if (visiblePx > (viewHeight * PREPENDED_BOUNDARY_HOLD_MAX_FRACTION).toInt()) return false
+        val page = pages.getOrNull(index) ?: return false
+        if (page.cardText != null || page.errorText != null || page.bitmap != null || page.tiles.isNotEmpty()) {
+            return false
+        }
+        if (!pageHasDrawableContentLocked(index + 1)) return false
+        renderRequested = true
+        scheduleFrameLocked()
+        return true
     }
 
     private fun logCoverageIfNeeded(state: DrawState, force: Boolean) {
@@ -2754,6 +2789,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS = 820L
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
+        private const val PREPENDED_BOUNDARY_HOLD_MAX_FRACTION = 0.35f
         private const val SCROLLBAR_TOUCH_WIDTH_PX = 96f
         private const val SCROLLBAR_RIGHT_MARGIN_PX = 10f
         private const val SCROLLBAR_TRACK_WIDTH_PX = 48f

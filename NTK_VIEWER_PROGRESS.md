@@ -25737,3 +25737,111 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Speed is acceptable but not perfect; ACK remains around 6.7-9.3s on the validated strict cases.
   - Some intermediate `reader_visible_coverage` samples can still show transient placeholder before the final settled scroll assertion. The validated settled states are clean, but absolute "never transient" perfection is not claimed.
   - Frame stats still show missed frames under emulator stress; current close-out is ACK correctness and stability, not 60fps perfection.
+
+## 2026-06-18 17:47:00 +09:00 post-main random strict fresh broadening
+
+- Continued after `838174b19` was pushed to `origin/main` and GitHub Actions `Release APK` passed.
+- Current worktree:
+  - `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `codex/main-ntk-sync`, tracking `origin/main`.
+  - No code changes before this validation pass.
+- Additional random validation:
+  - Artifact: `build/ntk-random-perf/20260618_174539`.
+  - Command shape: `Runs=3`, `ScrollSteps=3`, strict fresh, clear ACK, clear image cache, force-stop before run, live random required, native ACK mode, programmatic mixed scroll.
+  - Result: OK (1 test), `passed=true`, failures 0.
+  - Seed: `1781772339580`.
+  - Live random cases:
+    - `/manhwa/22696/211064`, image count 39, first drawable 3232ms, strict ACK via `bridge-ack-200` and `guard-fetch-ack-200`.
+    - `/webtoon/17328/1533568`, image count 125, first drawable 3413ms, strict ACK via `native-fetch-ack-200`.
+    - `/manhwa/4036/1766470`, image count 22, first drawable 12027ms, strict ACK via `bridge-ack-200` and `guard-fetch-ack-200`.
+  - ACK preflight timings by run: about 8926ms, 7999ms, 6960ms.
+  - Scroll validation: 9/9 settled scroll checks had `missingPx=0`, `placeholderPx=0`, `loading=0`.
+  - Scroll position stability: all settled drift checks had `maxPageDelta=0`, `maxOffsetDelta=0`.
+  - Log scan found no `placeholderPx>0`, `loading>0`, nonzero drift, or ACK false-done signal in this artifact.
+- Remaining risk:
+  - Frame timing is still not perfect: emulator stress logs had callback p95 spikes and missed frame counts, but no dropped-frame debt and draw/total render times stayed low in the scroll assertions.
+  - This strengthens random ACK/image/scroll stability evidence, but does not close the original ideal of guaranteed 55-60fps across all possible random cases.
+
+## 2026-06-18 17:52:00 +09:00 append random strict fresh validation and remaining weak signal
+
+- Additional append/adjacent validation after `838174b19` on the installed main APK:
+  - Artifact: `build/ntk-random-perf/20260618_174734`.
+  - Command shape: `Runs=2`, `ScrollSteps=2`, `AppendSteps=4`, strict fresh, clear ACK, clear image cache, force-stop before run, live random required, native ACK mode, programmatic mixed scroll, `-SkipBuild -SkipInstall` because the APK was already the post-commit build.
+  - Result: OK (1 test), `passed=true`, failures 0.
+  - Seed: `1781772454241`.
+- Live random cases:
+  - `/manhwa/33992/1719506`, image count 23, first drawable 28370ms, strict ACK via `native-fetch-ack-200`, ACK preflight about 8113ms.
+  - `/webtoon/11599/1314017`, image count 104, first drawable 9275ms, strict ACK via `native-fetch-ack-200`, ACK preflight about 6476ms.
+- Settled scroll validation:
+  - 4/4 settled scroll checks had `missingPx=0`, `placeholderPx=0`, `loading=0`.
+  - Settled drift checks had `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Append validation:
+  - Next append succeeded for both cases:
+    - `/manhwa/33992/1719506` -> `/manhwa/33992/1719504`, before 3 after 25.
+    - `/webtoon/11599/1314017` -> `/webtoon/11599/1316305`, before 104 after 206.
+  - Previous append succeeded for both cases:
+    - `/manhwa/33992/1719506` <- `/manhwa/33992/1708323`, before 5 after 26.
+    - `/webtoon/11599/1314017` <- `/webtoon/11599/1307739`, before 104 after 204.
+- Remaining weak signal / not complete:
+  - Even though append assertions passed, previous append still produced a transient visible loading/placeholder frame before success.
+  - `/manhwa/33992/1719506`: logcat lines around 3238-3239 showed `reader_visible_loading=1` and `placeholderPx=543`; append previous then succeeded around line 3280.
+  - `/webtoon/11599/1314017`: logcat lines around 5529-5532 showed `reader_visible_loading=1` and `placeholderPx=314`; append previous then succeeded around line 5572.
+  - This means the current code proves settled append stability, not the stronger goal of never exposing newly prepended undecoded boundary content.
+- Bad conclusion to avoid:
+  - Do not claim append is fully solved just because `ntk_true_random_append_previous success=true` and final settled coverage are clean.
+  - The next fix should target the prepend boundary invariant: newly inserted pages that overlap the current viewport must have drawable content available before they can be exposed as visible items.
+
+## 2026-06-18 18:00:00 +09:00 failed prepend-boundary predecode experiment
+
+- Experiment:
+  - Tried preparing the newly prepended boundary images before `onPagesPrepended(...)` by synchronously decoding the last inserted image pages, then delivering them in the same main-thread tick after `renderView.prependPageCount(...)`.
+  - Intent was correct: avoid exposing newly inserted pages that overlap the viewport before drawable content exists.
+- Validation:
+  - Build passed after the experiment.
+  - Repro command used seed `1781772454241`, `Runs=2`, `ScrollSteps=2`, `AppendSteps=4`, strict fresh, native ACK mode, installed fresh APK.
+  - Artifact: `build/ntk-random-perf/20260618_175528`.
+  - Result: failed.
+  - ACK still passed for `/manhwa/33992/1719506`: strict proof true, ACK preflight about 9337ms.
+  - Initial/settled scroll coverage remained clean for the current chapter.
+  - Previous append failed: `Expected previous append ... current=/manhwa/33992/1719506 previous=/manhwa/33992/1708323`, before 5 after 5.
+- Root cause of failed approach:
+  - The synchronous boundary decode blocked the append worker long enough that the test's previous-append polling window expired before pages were published.
+  - Logs showed permits for `preparePrependedBoundaryDeliveries` at page 19, then page 18/17 much later; append previous had already failed before publish.
+- Action:
+  - Reverted this experiment immediately.
+- Bad approach to avoid:
+  - Do not synchronously network/decode multiple prepended boundary pages before `onPagesPrepended(...)`; it can make append correctness worse by missing the append completion window.
+  - Any future fix must either use already-available cached/queued boundary results or change the render/publish invariant without blocking append on network.
+
+## 2026-06-18 18:08:00 +09:00 prepend boundary placeholder narrowed without blocking append
+
+- Fix:
+  - Added a narrow `ReaderSurfaceView` render invariant for structure-change windows.
+  - During `structuralScrollAdjustUntilMs`, if the first visible item is a newly exposed leading placeholder that is clipped at the top, covers only a small viewport fraction, and the next visible page already has drawable content, that placeholder fragment is skipped for the current draw frame.
+  - This does not block append on network/decode, does not move the scroll offset, and does not hold the whole frame. It only prevents a top-edge prepended boundary sliver from becoming visible while its bitmap is still catching up.
+- Why this is different from the reverted bad approach:
+  - It does not synchronously decode new pages before `onPagesPrepended(...)`.
+  - It keeps append publish fast, and relies on the next scheduled render to reveal the page when the bitmap arrives.
+- Validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug` passed.
+  - Repro artifact: `build/ntk-random-perf/20260618_180044`.
+  - Command shape: same seed `1781772454241`, `Runs=2`, `ScrollSteps=2`, `AppendSteps=4`, strict fresh, native ACK, clear ACK/cache, force-stop, fresh APK install.
+  - Result: OK (1 test), `passed=true`, failures 0.
+  - Cases:
+    - `/manhwa/33992/1719506`, first drawable 45535ms, strict ACK true.
+    - `/webtoon/11599/1314017`, first drawable 10216ms, strict ACK true.
+  - Previous append now succeeded for both:
+    - `/manhwa/33992/1719506` <- `/manhwa/33992/1708323`, before 5 after 26.
+    - `/webtoon/11599/1314017` <- `/webtoon/11599/1307739`, before 104 after 204.
+  - Critical log scan:
+    - Around first previous append: `pages_prepended` line 4207, then `reader_visible_coverage ... placeholderPx=0` line 4227, then `ntk_true_random_append_previous ... success=true` line 4265.
+    - Around second previous append: `pages_prepended` line 7538, then `reader_visible_coverage ... placeholderPx=0` line 7551, then `ntk_true_random_append_previous ... success=true` line 7568.
+    - The old append-boundary placeholder signals (`placeholderPx=543` and `placeholderPx=314` from `20260618_174734`) did not recur around previous append.
+- Actual UX smoke:
+  - Artifact: `build/ntk-ux-select/20260618_180044_surface_boundary_ux`.
+  - Tests: `ntkCurrentComicUxSelectionOpensReaderWithAck200` and `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result: OK (2 tests).
+  - Webtoon UX proof: `/webtoon/16968/1463195`, first drawable about 2184ms, strict `native-fetch-ack-200`, coverage `placeholderPx=0`.
+- Remaining risk:
+  - The same random artifact still had two earlier initial-entry `reader_visible_loading=1` / `placeholderPx=1566` samples before the append phase. The append boundary fix does not solve every transient placeholder in the entire reader lifecycle.
+  - `/manhwa/33992/1719506` first drawable was slow in this run (45535ms, still under the relaxed 60000ms gate). Speed is still variable.
+  - Slow-frame logs still exist around boundary rendering (`drawMs` spikes, including one 211ms sample), though settled scroll checks stayed clean with dropped-frame debt 0.
