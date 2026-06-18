@@ -174,7 +174,7 @@ public class EpisodeActivityNetworkTest {
         assertInitialVisibleCoverageSettles("NTK current comic UX");
         assertNoVisibleLoadingLogged("NTK current comic UX");
         File screenshot = new File(context.getCacheDir(), "ntk_actual_ux_comic_reader.png");
-        assertTrue("Expected NTK current comic UX reader screenshot", device.takeScreenshot(screenshot));
+        takeNonBlankReaderScreenshot(device, screenshot, "NTK current comic UX");
         Log.d("ViewerPerf", "ntk_actual_ux_screenshot type=comic,path=" + screenshot.getAbsolutePath());
         Log.d("ViewerPerf", "ntk_actual_ux_select_success source=ntk,type=comic,firstDrawable="
                 + sanitizeForMetric(firstDrawable) + ",ack=" + sanitizeForMetric(ack200));
@@ -202,7 +202,7 @@ public class EpisodeActivityNetworkTest {
         assertInitialVisibleCoverageSettles("NTK current webtoon UX");
         assertNoVisibleLoadingLogged("NTK current webtoon UX");
         File screenshot = new File(context.getCacheDir(), "ntk_actual_ux_webtoon_reader.png");
-        assertTrue("Expected NTK current webtoon UX reader screenshot", device.takeScreenshot(screenshot));
+        takeNonBlankReaderScreenshot(device, screenshot, "NTK current webtoon UX");
         Log.d("ViewerPerf", "ntk_actual_ux_screenshot type=webtoon,path=" + screenshot.getAbsolutePath());
         Log.d("ViewerPerf", "ntk_actual_ux_select_success source=ntk,type=webtoon,firstDrawable="
                 + sanitizeForMetric(firstDrawable) + ",ack=" + sanitizeForMetric(ack200));

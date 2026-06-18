@@ -27716,3 +27716,49 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - If ACK proof arrives shortly after append failure, treat it as scheduler/test-window/adjacent-prepare timing.
   - If ACK proof never arrives or `/api/ad/ack` is missing, treat it as real ACK regression.
   - This prevents repeating the bad experiments above and reduces the next analysis loop from manual log scanning to one command.
+
+## 2026-06-19 15:55:00 +09:00 actual UX selection ACK/nonblank verification
+
+- User concern rechecked: actual UX should be tested by selecting a comic/webtoon episode, not only synthetic target entry.
+- Baseline branch:
+  - `main == origin/main == bc97064c0` before this UX verification change.
+- Actual webtoon UX test before strengthening:
+  - Command: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
+  - Run: `build/ntk-ux-actual/webtoon_20260619_052253`
+  - Result: instrumentation passed.
+  - First drawable: `4097 ms`.
+  - Strict ACK proof: `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+  - `reader_visible_loading=0`.
+  - Weakness found: the saved reader screenshot was all black:
+    - `AvgLum=0`, `DarkPct=100%`.
+    - This means the old direct webtoon UX test could pass on drawable/coverage/ACK metrics while preserving weak visual evidence.
+    - It was not an ACK failure; ACK 200 proof succeeded.
+- Actual comic UX test before strengthening:
+  - Run: `build/ntk-ux-actual/comic_20260619_052407`
+  - Result: instrumentation passed.
+  - First drawable: `5423 ms`.
+  - Strict ACK proof: `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=native-fetch-ack-200,strictAdAck=true`.
+  - Screenshot showed real manga page content.
+- Accepted verification fix:
+  - `ntkCurrentComicUxSelectionOpensReaderWithAck200` and `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200` now use `takeNonBlankReaderScreenshot(...)` instead of raw `device.takeScreenshot(...)`.
+  - This matches the existing home-continue UX assertion and prevents direct UX tests from accepting a fully blank/black reader screenshot.
+  - The helper retries and scrolls slightly between attempts, so a legitimate black intro frame does not immediately false-fail if actual content appears on the next visible position.
+- Verification after strengthening:
+  - Build: `.\gradlew.bat --no-daemon :app:assembleDebugAndroidTest` passed.
+  - Webtoon direct UX:
+    - Run: `build/ntk-ux-actual/webtoon_nonblank_20260619_052724`
+    - Result: passed.
+    - First drawable: `3921 ms`.
+    - Strict ACK proof: `source=native-fetch-ack-200,strictAdAck=true`.
+    - Nonblank visual proof: attempt `0` had `pixels=0`; attempt `1` after slight scroll had `pixels=662416`.
+    - Saved screenshot shows actual webtoon page content, not an ad/blank page.
+  - Comic direct UX:
+    - Run: `build/ntk-ux-actual/comic_nonblank_20260619_052823`
+    - Result: passed.
+    - First drawable: `5283 ms`.
+    - Strict ACK proof: `source=native-fetch-ack-200,strictAdAck=true`.
+    - Nonblank visual proof: attempt `0` had `pixels=2228928`.
+- Current conclusion:
+  - Actual UX selection path does get real strict ACK 200 on both comic and webtoon.
+  - The remaining issue found in this pass was test blind spot / weak visual assertion for direct webtoon UX, not ACK failure.
+  - Next app-behavior work should still focus on random strict/append timing and scroll stability, but UX tests now have stronger evidence that images are actually visible.
