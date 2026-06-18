@@ -2083,6 +2083,7 @@ class ReaderSession(
             cancellation.cancel()
         }
         imageCancellation.cancel()
+        ReaderImageCache.cancelNtkEpisodeVolatile(manga)
         MainApplication.getHttpClient().cancelNtkWebViewFallbacks()
         repositoryCancellations.clear()
         main.removeCallbacks(clearPreparedBitmapsRunnable)
@@ -3390,7 +3391,9 @@ class ReaderSession(
         generation: Int
     ): Boolean {
         if (anchor) return false
-        if (index <= start || index > start + NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD) return false
+        val minNearVisible = (start - 1).coerceAtLeast(0)
+        if (index < minNearVisible || index > start + NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD) return false
+        if (index == start) return false
         val image = page.image.orEmpty()
         if (!isNtkGeneratedImageUrl(image)) return false
         if (ntkCoordinator?.allowsPreAnchorFallback(index, page.image, "verifiedNearGeneratedBeforeAnchorAsset") != true) {

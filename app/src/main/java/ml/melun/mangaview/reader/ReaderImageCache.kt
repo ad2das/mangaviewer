@@ -227,6 +227,61 @@ object ReaderImageCache {
         Log.d(TAG, "reader_image_cache_volatile_clear_for_test generation=$generation")
     }
 
+    fun cancelNtkEpisodeVolatile(manga: Manga?) {
+        val path = earlyNtkPathKey(manga?.ntkEpisodePath)
+        if (manga == null || path.isEmpty()) return
+        val streamPrefix = "ntk-generated-stream|${manga.baseMode}|$path|"
+        val rangePrefix = "ntk-generated-range|${manga.baseMode}|$path|"
+        val fallbackSuffix = path
+        val episodeKeys = ntkGeneratedEpisodeHintKeys(path)
+        val cancelledStreams = cancelFutureTasks(foregroundStreams) { it.startsWith(streamPrefix) }
+        foregroundStreamStartedAt.keys.removeAll { it.startsWith(streamPrefix) }
+        val cancelledRanges = cancelFutureTasks(initialGeneratedRangeFlights) { it.startsWith(rangePrefix) }
+        val cancelledApi = cancelFutureTasks(ntkApiFallbackFlights) { it.endsWith(fallbackSuffix) }
+        val cancelledAck = cancelFutureTasks(ntkGeneratedAckRecoveryFlights) { it.endsWith(fallbackSuffix) }
+        earlyNtkImageUrls.remove(path)
+        ntkApiFallbackImages.keys.removeAll { it.endsWith(fallbackSuffix) }
+        ntkAckRecoveryLaunchHolds.remove(path)
+        episodeKeys.forEach { ntkGeneratedEpisodeExtensions.remove(it) }
+        ntkGeneratedNotFoundPages.removeAll { it.startsWith("$path|") }
+        ntkGeneratedReplacementClaims.removeAll { it.contains("|$path|") }
+        ntkAnchorAssetFiles.keys.removeAll { it.contains("|$path|") }
+        if (cancelledStreams > 0 || cancelledRanges > 0 || cancelledApi > 0 || cancelledAck > 0) {
+            Log.d(
+                TAG,
+                "reader_image_cache_ntk_episode_volatile_cancel path=$path," +
+                    "streams=$cancelledStreams,ranges=$cancelledRanges,api=$cancelledApi,ack=$cancelledAck"
+            )
+        }
+    }
+
+    private fun <T> cancelFutureTasks(
+        tasks: ConcurrentHashMap<String, FutureTask<T>>,
+        shouldCancel: (String) -> Boolean
+    ): Int {
+        var count = 0
+        for ((key, task) in tasks.entries) {
+            if (shouldCancel(key) && tasks.remove(key, task)) {
+                task.cancel(true)
+                count++
+            }
+        }
+        return count
+    }
+
+    private fun ntkGeneratedEpisodeHintKeys(path: String): List<String> {
+        val parts = path.trim('/').split('/')
+        if (parts.size < 3) return emptyList()
+        val kind = parts[0].lowercase()
+        val work = parts[1]
+        val episode = parts[2]
+        return if (kind == "webtoon") {
+            listOf("webtoon/$work/$episode", "wt/$work/$episode")
+        } else {
+            listOf("$kind/$work/$episode")
+        }
+    }
+
     class FileLease internal constructor(
         val file: File,
         private val key: String?

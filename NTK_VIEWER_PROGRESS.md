@@ -25264,3 +25264,68 @@ tk_rsc_payload_cloudflare_clearance_reset.
     - `build/ntk-random-perf/20260618_131210/screenshots/ntk-random-scroll-0.png`.
     - `build/ntk-ux-select/20260618_132000_comic_after_visible_cached_decode/comic_reader.png`.
     - `build/ntk-ux-select/20260618_132030_webtoon_after_visible_cached_decode/webtoon_reader.png`.
+
+## 2026-06-18 13:49:00 +09:00 Actual UX direct selection and strict ACK revalidated after generated extension/root changes
+
+- Context:
+  - Continued from compaction by reading this file and checking active goal.
+  - User explicitly asked to test by directly selecting comic/webtoon through the real UX, not only synthetic/random launch.
+  - Emulator: API35 `emulator-5554`.
+- Code changes in this slice:
+  - `ReaderSurfaceView.prepareBitmapPaint()` now disables dithering on the fast bitmap draw path (`paint.isDither = !fastBitmapDraw`) to reduce draw cost without changing layout behavior.
+  - `ReaderImageCache.cancelNtkEpisodeVolatile(manga)` now cancels and clears episode-scoped generated volatile state on session cancel:
+    - foreground generated streams,
+    - initial generated range flights,
+    - API fallback flights,
+    - ACK recovery flights,
+    - early URL hints,
+    - extension hints,
+    - generated not-found/replacement/anchor asset volatile maps.
+  - `ReaderSession.cancel()` calls that episode-scoped volatile cleanup so stale generated hints from a previous direct/random episode do not leak into the next UX selection.
+  - `Manga.trustedPrimaryNtkGeneratedExtension()` now returns empty instead of blindly trusting `.jpg` for numeric webtoon paths.
+  - `Manga.reachableEarlyNtkGeneratedImageExtensionForPageUnshared()` no longer serially spends time on `.jpg`; it races all configured generated extensions. This avoids the current `sbxh8/flysky3m` case where real webtoon images are `.jpeg` while stale assumptions prefer `.jpg`.
+  - Generated image URL construction now targets `https://flysky3m.com/...`, and generated URL recognition includes `flysky*m.com`, `fvcdn*.com`, and `aws-cdn*.site`.
+  - `ReaderSession.shouldAllowVerifiedNearGeneratedBeforeAnchorAsset()` now allows the immediate pre-anchor page (`startPage - 1`) when it is a verified near generated page. This covers actual UX restore/start positions where the viewport visibly includes the previous page above the anchor.
+- Bad approaches / mistakes recorded:
+  - An intermediate bad patch accidentally made `trustedPrimaryNtkGeneratedExtension()` return `.jpg` unconditionally. It was caught before validation and corrected to return `""`. Do not restore unconditional `.jpg` trust.
+  - Removing `.jpg` trust alone made `/webtoon/13976/1270945` worse because first drawable waited on extension discovery/ACK gate. The correct shape is no blind trust plus parallel extension race.
+  - A failed actual UX rerun at `build/ntk-ux-select/20260618_134226_actual_comic_selection_after_preanchor_fix` happened because `assembleDebug` was run but the rebuilt APK was not installed before `am instrument`. Do not treat that failure as proof of the patch; always install `mangaViewer_2112261618-debug.apk` and the androidTest APK when using direct `adb shell am instrument`.
+  - `tools/ntk_random_perf_retry.ps1` can fail before instrumentation if it lets Gradle build output `Note:` surface as a native command error. For fast loops, build/install explicitly once, then use `-SkipBuild -SkipInstall`.
+- Actual UX comic direct selection validation:
+  - Artifact: `build/ntk-ux-select/20260618_134334_actual_comic_selection_after_preanchor_fix_installed`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+  - Result: `OK (1 test)`.
+  - First drawable: `reader_open_to_first_drawable source=ntk kind=initial_continuous page=8 ms=7059`.
+  - Visual: `reader_visible_loading=0`, `drawablePx=2276`, `missingPx=0`, `placeholderPx=0`, `drawableItems=3`.
+  - ACK proof:
+    - `nativeAckFetchResponse status=200`.
+    - Body includes `ok=true`, `seen=4`, `expected=4`.
+    - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=native-fetch-ack-200,strictAdAck=true`.
+  - Root-cause proof:
+    - `reader_ntk_pre_anchor_request_allowed_before_anchor_asset page=7,start=8,...,image=p008.jpg`.
+    - The previous visible page is no longer deferred until after first coverage.
+  - Screenshot `ntk_actual_ux_comic_reader.png` is a real manga page (`1937082` bytes), not ad/captcha/blank.
+- Actual UX webtoon direct selection validation:
+  - Artifact: `build/ntk-ux-select/20260618_134356_actual_webtoon_selection_after_preanchor_fix_installed`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result: `OK (1 test)`.
+  - First drawable: `reader_open_to_first_drawable source=ntk kind=tiles page=8 ms=3586`.
+  - Visual: `reader_visible_loading=0`, `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`, `drawableItems=1`.
+  - ACK proof:
+    - `nativeAckFetchResponse status=200`.
+    - Body includes `ok=true`, `seen=4`, `expected=4`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+  - Screenshot `ntk_actual_ux_webtoon_reader.png` is real webtoon content (`3045015` bytes), not ad/captcha/blank.
+- Target random strict fresh validation:
+  - Artifact: `build/ntk-random-perf/20260618_134512`.
+  - Repro target: `/webtoon/13976/1270945`, imageEpisodeId `311349`, workId `13976`, imageCount `87`, seed `1781756833369`.
+  - Result: `OK (1 test)`, `passed=True`, failures `0`.
+  - First drawable budget was relaxed to `9000ms` per current direction to compromise on speed and close ACK/stability first.
+  - First drawable: `6798ms`.
+  - ACK: `nativeAckFetchResponse status=200`, `seen=4`, strict proof `native-fetch-ack-200`.
+  - Scroll coverage across the run: visible loading `0`, `missingPx=0`, `placeholderPx=0` on sampled settled frames.
+  - Screenshot `screenshots/ntk-random-scroll-0.png` is real webtoon content (`2615349` bytes), not ad/captcha/blank.
+- Current status:
+  - Actual UX direct comic and webtoon selection paths now show real content, no visible loading/placeholder at validation time, and strict ACK 200 proof.
+  - The previously bad `.jpg` assumption on webtoon generated images is removed; extension probing is concurrent.
+  - Remaining risk is speed: ACK hardblock can still make first drawable around `6-7s` on some strict fresh paths. Per user direction, this is accepted for now while ACK/stability are the close-out priority.

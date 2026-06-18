@@ -1371,7 +1371,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun prepareBitmapPaint(fastBitmapDraw: Boolean) {
         paint.alpha = 255
         paint.colorFilter = null
-        paint.isDither = true
+        paint.isDither = !fastBitmapDraw
         paint.isFilterBitmap = !fastBitmapDraw
     }
 
