@@ -2570,7 +2570,28 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun shouldDeferNtkInitialDrawGateTimeout(): Boolean {
         if (destroyed || isFinishing || initialDrawGateOpen) return false
         if (!isCurrentNtkReader() || firstDrawableMetricLogged) return false
-        if (initialDrawGateNtkTimeoutDeferrals >= NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX) return false
+        if (initialDrawGateNtkTimeoutDeferrals >= NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX) {
+            val snapshot = renderView.visibleCoverageSnapshot()
+            val hasRenderableFallback = snapshot != null &&
+                (snapshot.visibleErrors > 0 || snapshot.visibleCards > 0)
+            val stillExposesUndrawnContent = snapshot == null ||
+                snapshot.visibleLoading > 0 ||
+                snapshot.placeholderPx > 0 ||
+                snapshot.missingPx > 0 ||
+                snapshot.drawablePx <= 0
+            if (stillExposesUndrawnContent && !hasRenderableFallback) {
+                Log.d(
+                    TAG,
+                    "initial_draw_gate_timeout_deferred reason=ntk_viewport_not_ready_after_cap," +
+                        "loading=${snapshot?.visibleLoading ?: -1}," +
+                        "placeholderPx=${snapshot?.placeholderPx ?: -1}," +
+                        "missingPx=${snapshot?.missingPx ?: -1}," +
+                        "drawablePx=${snapshot?.drawablePx ?: -1}"
+                )
+                return true
+            }
+            return false
+        }
         return true
     }
 

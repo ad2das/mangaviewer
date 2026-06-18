@@ -25845,3 +25845,56 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The same random artifact still had two earlier initial-entry `reader_visible_loading=1` / `placeholderPx=1566` samples before the append phase. The append boundary fix does not solve every transient placeholder in the entire reader lifecycle.
   - `/manhwa/33992/1719506` first drawable was slow in this run (45535ms, still under the relaxed 60000ms gate). Speed is still variable.
   - Slow-frame logs still exist around boundary rendering (`drawMs` spikes, including one 211ms sample), though settled scroll checks stayed clean with dropped-frame debt 0.
+
+## 2026-06-18 18:18:00 +09:00 initial draw gate no longer releases onto placeholder viewport
+
+- Branch/push discipline:
+  - Continued in `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `codex/main-ntk-sync`, tracking `origin/main`.
+  - Confirmed `origin/main` and this worktree were both at `581777e87` before this patch.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` worktree is still on `codex/ntk-strict-ack-proof` with many dirty/untracked files; do not use it for final main commits.
+- Problem:
+  - Artifact `build/ntk-random-perf/20260618_180044` still showed an initial-entry placeholder exposure before append:
+    - `reader_visible_loading=1 ... visibleItems=0:0.0-1566.0:load|1:1566.0-3128.4:draw`
+    - `reader_visible_coverage drawablePx=708 missingPx=0 placeholderPx=1566`
+  - This happened after `initial_draw_gate_timeout_deferred reason=ntk_anchor_pending,count=45`, followed by `initial_draw_gate_released reason=timeout`.
+  - Page 1 was drawable, but page 0 was still loading; page 0 decoded later. So the timeout cap could reveal an incomplete viewport.
+- Fix:
+  - Tightened `ReaderV2Activity.shouldDeferNtkInitialDrawGateTimeout()`.
+  - After the NTK timeout defer cap, the gate now still defers if the current visible coverage would expose loading, placeholder, missing area, or zero drawable pixels.
+  - Renderable fallback states (`visibleErrors` / `visibleCards`) are allowed through so a real error/card is not hidden forever.
+  - This is readiness-based, not a longer timer: the gate opens when the viewport becomes drawable or has a renderable fallback.
+- Target repro validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - First repro with default 3500ms budget failed only on speed (`firstDrawable=22657ms`), but showed the important stability behavior:
+    - Artifact: `build/ntk-random-perf/20260618_181217`.
+    - No `reader_visible_loading=1`, no `placeholderPx>0`, no `initial_draw_gate_released reason=timeout`.
+    - Strict ACK proof succeeded: `native-fetch-ack-200`.
+  - Repro with correct slow-case budget passed:
+    - Artifact: `build/ntk-random-perf/20260618_181306`.
+    - Target: `/manhwa/33992/1719506`, seed `1781772454241`, strict fresh, clear ACK/cache, native ACK, append probe.
+    - Result: OK (1 test), failures 0.
+    - Strict ACK: `native-fetch-ack-200`, `strictAdAck=true`.
+    - First drawable: 21714ms in app log / 60000ms budget.
+    - Scroll checks: 2/2 passed.
+    - Append next and previous both passed.
+    - Log scan: no `reader_visible_loading=1`, no `placeholderPx>0`, no timeout release.
+- Random validation:
+  - Artifact: `build/ntk-random-perf/20260618_181418`.
+  - Command shape: `Runs=2`, `ScrollSteps=2`, `AppendSteps=4`, strict fresh, clear ACK/cache, force-stop, live random required, native ACK.
+  - Result: OK (1 test), failures 0.
+  - Cases:
+    - `/webtoon/13757/1209355`, image count 100, first drawable 4513ms, strict ACK `native-fetch-ack-200`.
+    - `/manhwa/4146/30735`, image count 19, first drawable 7476ms, strict ACK `guard-fetch-ack-200` with bridge ACK also recorded.
+  - Scroll checks: 4/4 passed.
+  - Append next/previous passed for both cases.
+  - Log scan: no `reader_visible_loading=1`, no `placeholderPx>0`, no `missingPx>0`, no timeout release.
+- Actual UX selection validation:
+  - Direct instrumentation command ran `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200` and `#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result: OK (2 tests).
+  - Saved final logcat: `build/ntk-ux-select/20260618_181418_initial_gate_cap_ux/logcat.txt`.
+  - Webtoon UX proof in saved log: `/webtoon/16968/1463195`, first drawable 1952ms, strict `native-fetch-ack-200`.
+  - Saved log scan: no visible loading/placeholder/missing signal.
+- Remaining risk:
+  - Speed is still variable. `/manhwa/33992/1719506` can take ~21-22s to first drawable on emulator because page 0 bytes/decode/delivery can still lag even after early URL discovery.
+  - Slow-frame signals remain in random runs, including one ~56ms draw sample. Current close-out scope is ACK correctness and placeholder-free viewport stability, not perfect 60fps.
+  - The old non-main worktree should not be used for final status or commits unless it is intentionally cleaned/synced later.
