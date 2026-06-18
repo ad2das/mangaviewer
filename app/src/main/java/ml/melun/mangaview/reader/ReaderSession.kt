@@ -3594,12 +3594,14 @@ class ReaderSession(
                 if (!anchor && !urgent && !foregroundPrime) prefetchImageFile(index, originalPage)
                 try {
                     decodeExecutor.execute {
-                    val gate = if (busy) busyDecodeGate else idleDecodeGate
+                    val gate = if (visiblePriority) null else if (busy) busyDecodeGate else idleDecodeGate
                     var acquired = false
                     var delivered = false
                     try {
-                        gate.acquire()
-                        acquired = true
+                        if (gate != null) {
+                            gate.acquire()
+                            acquired = true
+                        }
                         if (cancelled.get() || shouldSkipStalePage(index, generation, anchor)) return@execute
                         val startedAt = SystemClock.elapsedRealtime()
                         val foregroundFetch = shouldUseForegroundFetch(
@@ -3650,7 +3652,7 @@ class ReaderSession(
                         recordIfUnexpected(e)
                         postPageError(index, originalPage, e)
                     } finally {
-                        if (acquired) gate.release()
+                        if (acquired) gate?.release()
                         clearPageLoadState(index, page, ownsLoading, urgent)
                         if (delivered) ViewerWarmupManager.logMetric("reader_delivery_posted", index.toLong())
                     }
@@ -3962,10 +3964,7 @@ class ReaderSession(
         try {
             urgentDecode.execute {
                 val startedAt = SystemClock.elapsedRealtime()
-                var acquired = false
                 try {
-                    busyDecodeGate.acquire()
-                    acquired = true
                     if (
                         cancelled.get() ||
                         pageRef(index) != page ||
@@ -4007,7 +4006,6 @@ class ReaderSession(
                     recordIfUnexpected(e)
                     postPageError(index, page, e)
                 } finally {
-                    if (acquired) busyDecodeGate.release()
                     visibleGeneratedDecodeHedges.remove(index)
                 }
             }
@@ -5072,6 +5070,7 @@ class ReaderSession(
     private fun isExpectedCancellation(t: Throwable?): Boolean {
         if (t == null) return false
         if (cancelled.get()) return true
+        if (t is java.util.concurrent.CancellationException) return true
         if (t is InterruptedException || t is InterruptedIOException) return true
         if (t.javaClass.name.endsWith("StreamResetException") && (t.message ?: "").contains("CANCEL")) return true
         if ((t.message ?: "").startsWith("Generated image past tail:")) return true
@@ -7193,7 +7192,7 @@ class ReaderSession(
         private const val BUSY_DELIVERY_SCAN_LIMIT = 64
         private const val NTK_GENERATED_BUSY_DIRECTIONAL_DECODE_AHEAD = 3
         private const val NTK_GENERATED_BUSY_VISIBLE_DECODE_RADIUS = 2
-        private const val NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS = 0
+        private const val NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS = 1
         private const val BUSY_DIRECTIONAL_DECODE_AHEAD = 8
         private const val BUSY_VISIBLE_DECODE_RADIUS = 5
         private const val BUSY_DELIVERY_DRAIN_LIMIT = 12

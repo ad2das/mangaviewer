@@ -2008,6 +2008,7 @@ object ReaderImageCache {
         if (existing != null && shouldSupersedeGeneratedVisibleFlight(
                 image,
                 foreground,
+                visiblePriority,
                 priorityFullDownload,
                 hasFreshInitialForegroundStream(streamKey, image),
                 existing
@@ -2264,11 +2265,12 @@ object ReaderImageCache {
     private fun shouldSupersedeGeneratedVisibleFlight(
         image: String,
         foreground: Boolean,
+        visiblePriority: Boolean,
         priorityFullDownload: Boolean,
         freshInitialForegroundStream: Boolean,
         existing: FutureTask<File>
     ): Boolean {
-        if (!foreground || !priorityFullDownload) return false
+        if (!foreground || (!visiblePriority && !priorityFullDownload)) return false
         if (existing.isDone || existing.isCancelled) return false
         val target = ntkGeneratedTarget(image) ?: return false
         if (target.page == 1) return false

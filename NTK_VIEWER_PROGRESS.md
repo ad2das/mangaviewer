@@ -27040,4 +27040,259 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Some speculative adjacent append ACK preflights still failed for non-current neighbor paths in the additional random run. The visible current episode ACK proof and image coverage passed; do not treat neighbor failures as current-reader success.
 - Remaining risk / next target:
   - ACK proof is stable and starts earlier, but the dominant remaining latency is inside `NtkWebViewFallbackManager` ack-only flow after synthetic shell promotion, not in the reader launch hold.
-  - Next speed/stability work should instrument and reduce `ack_only_fetch` internals: canary/token timing, repeated canary before ACK, native submit timing, and why some ack-only runs wait 20s+ before strict proof even though `ad_ack_c` and `ad_guard_l` are present.
+- Next speed/stability work should instrument and reduce `ack_only_fetch` internals: canary/token timing, repeated canary before ACK, native submit timing, and why some ack-only runs wait 20s+ before strict proof even though `ad_ack_c` and `ad_guard_l` are present.
+
+## 2026-06-19 01:00:00 +09:00 rejected compact ACK-only retry on main
+
+- User correction: meaningful work must land on `main`. Confirmed `C:\Users\Administrator\Downloads\mangaviewer-main-sync` is on `main` and `HEAD == origin/main` at `f6ee11a3b`.
+- Avoid using stale `C:\Users\Administrator\Downloads\mangaviewer` for this goal; that worktree is still on the old `codex/ntk-strict-ack-proof` branch with many unrelated dirty files.
+- Experiment tried:
+  - Temporarily routed `__ack_only__` through existing `buildAckOnlyProofScript(baseUrl, proofScope)` instead of the full viewer ACK/image script.
+  - Build compile passed.
+  - Probe artifact: `build\ntk-ack-ux-probe\20260619_005618_compact_ack_ux\20260619_005618_410d4c`.
+- Result:
+  - Failed strict ACK proof.
+  - Summary showed only `ntk_server_ack_success_recorded ... source=captcha-bridge-challenge-ad-ack-cookie-200,strictAdAck=false`.
+  - `strictProof=false`, `ackProof=""`, and the test failed with `Expected normal UX probe to record strict NTK ACK 200 proof`.
+- Action:
+  - Reverted the compact routing immediately. No code change from this experiment remains.
+- Bad approach:
+  - Do not revive compact ACK-only as the default path. It can observe/root/captcha ACK-cookie states, but in current `sbxh8` behavior it does not reliably produce strict selected-path `/api/ad/ack` 200 proof.
+  - Continue from the full viewer ACK script, where logs have shown real `/api/ad/ack` 200 via `guard-fetch-ack-200` / bridge proof.
+
+## 2026-06-19 01:05:00 +09:00 main actual UX ACK recheck after compact revert
+
+- Reinstalled the reverted `main` APK on `emulator-5554`.
+- Actual UX comic:
+  - Artifact: `build\ntk-ux-select\20260619_005935_actual_ux_comic_main_recheck_live`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+  - Result: `OK (1 test)`, time `54.190s`.
+  - Selected path: `/manhwa/36525/1807424`.
+  - First drawable: `reader_open_to_first_drawable ... ms=6953`.
+  - Initial visible coverage: `missingPx=0`, `placeholderPx=0`, `drawableItems=2`, `items=2`.
+  - Strict ACK proof:
+    - `/api/ad/ack` bridge submit `code=200`.
+    - `ntk_server_ack_success_recorded ... source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof ... source=guard-state-ack-200` and `source=guard-fetch-ack-200`.
+  - Remaining slow signal: `ack_only_fetch=19380ms`, `ntk_webview_ack_preflight_done ... success=true,ms=19830`.
+- Actual UX webtoon:
+  - Artifact: `build\ntk-ux-select\20260619_010053_actual_ux_webtoon_main_recheck_live`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result: `OK (1 test)`, time `47.953s`.
+  - Selected path: `/webtoon/16968/1463195`.
+  - First drawable: `reader_open_to_first_drawable ... ms=7668`.
+  - Initial visible coverage: `missingPx=0`, `placeholderPx=0`, `drawableItems=1`, `items=1`.
+  - Strict ACK proof:
+    - `/api/ad/ack` bridge submit `code=200`.
+    - `ntk_server_ack_success_recorded ... source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof ... source=guard-state-ack-200` and `source=guard-fetch-ack-200`.
+  - Remaining slow signal: `ack_only_fetch=17517ms`, `ntk_webview_ack_preflight_done ... success=true,ms=17524`.
+- Conclusion:
+  - Current `main` satisfies actual UX ACK correctness for the fixed comic/webtoon UX selection paths.
+  - The ACK correctness issue is not currently failing in actual UX; the remaining issue is latency and variance in the full ACK-only hidden WebView path.
+
+## 2026-06-19 01:18:00 +09:00 main random strict ACK failure after actual UX success
+
+- Branch/worktree:
+  - Workspace: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Active branch: `main`, `HEAD == origin/main == f6ee11a3b`.
+- Test attempted:
+  - Command: `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 2 -ScrollSteps 4 -AppendSteps 8 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -StrictFresh -ClearAck -RequireLiveRandom -FirstDrawableMaxMs 9000 -SkipBuild -SkipInstall -ForceStopBeforeRun`.
+  - Artifact directory: `build\ntk-random-perf\20260619_010230_main_recheck\20260619_010230`.
+  - The wrapper timed out at about 304s; manual logcat dump saved as `logcat_timeout_dump.txt`.
+- Failure case:
+  - Seed: `1781798550811`.
+  - Run: `0`, mode `native-ack`.
+  - Path: `/manhwa/36380/1800849`.
+  - Title ID: `36380`.
+  - Image episode ID: `62462`.
+  - Image count: `23`.
+  - First drawable was acceptable: `ntk_true_random_first_drawable ... ms=6120, appMs=6120, maxMs=9000`.
+  - Visible coverage during sampled scroll stayed good: repeated `reader_visible_coverage` entries had `missingPx=0`, `placeholderPx=0`.
+- ACK failure details:
+  - Native preflight got `/api/ad/challenge` `200`, recorded challenge/cookies, but skipped strict ACK because proof/canary was not ready:
+    - `ntk_native_ack_prepare_challenge_code=200`.
+    - `ntk_native_ack_vc_skipped token_len=296`.
+    - `ntk_native_ack_ack_skipped_without_proof ... canaryOk=false`.
+  - Hidden WebView ACK-only script was evaluated against `https://sbxh8.com/manhwa/36380/1800849`, length `221172`.
+  - The script logged setup markers through `ackOnlySyncGuardLoaderInstalled`, then no `ackProofStrictInstalled`, no `ackOnlyMainEntry`, no `ackOnlyLoop`, and no `/api/ad/ack` submit.
+  - Final outcome:
+    - `ntk_webview_ack_only_timeout_cancel path=/manhwa/36380/1800849`.
+    - `ntk_true_random_ack_wait ... joined=false,strictProof=false,ms=70308,maxMs=70000`.
+    - `ntk_webview_ack_preflight_done ... success=false,ms=74097`.
+- Interpretation:
+  - This is not an image loading failure; images were visible and scroll coverage remained stable.
+  - This is not a proven server `/api/ad/ack` rejection; the ACK-only JavaScript did not reach the main ACK loop.
+  - The risky structure is that optional ACK-only wrappers execute before the final main ACK loop. If one wrapper stalls after `ackOnlySyncGuardLoaderInstalled`, strict proof is never attempted.
+- Required fix:
+  - Start an ACK-only strict proof runner immediately after `directAck` is available, before optional DOM/image gates and later wrappers.
+  - The runner must still require real selected-path `/api/ad/challenge` and `/api/ad/ack` 200 proof; do not downgrade to cookie-only or compact ACK-only success.
+  - Bad approach to avoid: do not reuse the compact ACK-only path as default; it already failed to produce strict proof on current `sbxh8`.
+
+## 2026-06-19 01:34:00 +09:00 early ACK proof runner and visible decode follow-up
+
+- Code change:
+  - Added an ACK-only early strict proof runner in `NtkWebViewFallbackManager`.
+  - It starts immediately after `directAck` and guard loader wrappers are available, before optional DOM/image gates and later ACK-only wrappers.
+  - It still uses the real selected-path `/api/ad/challenge` -> guard proof -> `/api/ad/ack` 200 path, then records strict proof through the existing `markProofAck -> onAckProof` bridge.
+  - It does not accept cookie-only proof and does not restore the rejected compact ACK-only path.
+- Emulator issue during verification:
+  - `emulator-5554` lost Android `package` service after the first install attempt.
+  - Reboot did not restore it, so the AVD was killed and restarted as `MangaViewerApi35`.
+  - After restart, `sys.boot_completed=1` and `service check package` succeeded; app and androidTest APKs were installed directly with `adb install -r -d`.
+- ACK-focused validation:
+  - Artifact: `build\ntk-random-perf\20260619_012932_early_ack_repro_ackonly\20260619_012932`.
+  - Command used the previous failure path `/manhwa/36380/1800849`, seed `1781798550811`, strict fresh, clear ACK/cache, `ScrollSteps=0`, `NoAppendProbe`.
+  - Result: `passed=True`, `OK (1 test)`.
+  - Logs proved the new runner path:
+    - `ackOnlyEarlyProofRunnerStart`.
+    - `ackOnlyEarlyProofLoop ... hasFn=true`.
+    - real `POST https://sbxh8.com/api/ad/ack`.
+    - `ntk_ack_proof={"scope":"/manhwa/36380/1800849","tp":"","source":"native-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded ... strictAdAck=true`.
+    - `ackOnlyEarlyProofRunnerExit ... ok=true,attempts=1,ms=2701`.
+    - `ntk_webview_ack_preflight_done ... success=true,ms=3156`.
+    - `ntk_true_random_ack_wait ... joined=true,strictProof=true,ms=7491`.
+- New visible-image failure found while reproducing the same path with scroll:
+  - Artifact: `build\ntk-random-perf\20260619_012846_early_ack_repro\20260619_012847`.
+  - Same path `/manhwa/36380/1800849`, seed `1781798550811`, strict fresh, `ScrollSteps=2`.
+  - First drawable passed: `reader_open_to_first_drawable ... ms=4667`, initial coverage `missingPx=0`, `placeholderPx=0`.
+  - After a fast scroll, page 14/15 viewport stayed placeholder at the assertion point:
+    - `coverage=viewportPx=2274;drawablePx=0;missingPx=0;placeholderPx=2275;drawableItems=0;items=2;loading=2`.
+  - ACK preflight had not started yet because the reader was still in post-first-drawable ACK launch hold, so this failure is separate from ACK.
+- Image root cause:
+  - Fast scroll generated urgent visible requests for later pages, but visible generated cached decode still acquired the shared `busyDecodeGate`.
+  - Older active decodes could occupy the gate, leaving the current visible page as placeholder even after byte hedge work began.
+- Code change:
+  - `ReaderSession.scheduleVisibleGeneratedCachedDecode` now lets visible generated cached decode run directly on the dedicated `urgentDecode` pool instead of also waiting on `busyDecodeGate`.
+  - This is scoped to visible generated hedge decode; it does not relax test assertions or add artificial wait.
+
+## 2026-06-19 01:42:00 +09:00 visible image recheck after urgent decode gate removal
+
+- Recheck command:
+  - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-random-perf\20260619_013235_early_ack_scroll_recheck" -Runs 1 -ScrollSteps 2 -AppendSteps 4 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -TargetEpisodePath "/manhwa/36380/1800849" -Seed 1781798550811 -StrictFresh -ClearAck -FirstDrawableMaxMs 9000 -SkipBuild -SkipInstall -ForceStopBeforeRun`.
+- Artifact:
+  - `build\ntk-random-perf\20260619_013235_early_ack_scroll_recheck\20260619_013235`.
+- Result:
+  - Still failed at the first fast-scroll visible coverage assertion, but improved from the previous run.
+  - Before change: `drawablePx=0`, `placeholderPx=2275`, `loading=2`.
+  - After change: `drawablePx=1127`, `placeholderPx=1148`, `loading=1`.
+  - First drawable still passed: `reader_open_to_first_drawable ... ms=4952`.
+- Interpretation:
+  - Removing the shared busy decode gate allowed one visible page to draw in time.
+  - The adjacent visible page can still lag behind during active scroll because non-webtoon NTK foreground fetch radius is `0`, so only the viewport anchor gets foreground priority.
+  - Bad approach to avoid: do not hide this with longer assertion waits or delayed viewer opening; the adjacent visible page must receive real foreground priority.
+- Next code change:
+  - Raise `NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS` from `0` to `1` so both pages visible around the viewport anchor can use foreground fetch during active scroll.
+
+## 2026-06-19 01:50:00 +09:00 active foreground radius alone was insufficient
+
+- Recheck artifact:
+  - `build\ntk-random-perf\20260619_0145_active_radius_recheck\20260619_013529`.
+- Result:
+  - The same path `/manhwa/36380/1800849` still failed at first fast-scroll coverage:
+    - `viewportPx=2274;drawablePx=0;missingPx=0;placeholderPx=2275;drawableItems=0;items=2;loading=2`.
+  - First drawable remained acceptable: `reader_open_to_first_drawable ... ms=4746`.
+  - Scroll position stayed stable after settle: `maxPageDelta=0;maxOffsetDelta=0`.
+- More precise root cause:
+  - Current visible pages moved to pages 14/15, but older generated page work around pages 8/9/10 held the generated fetch/decode path.
+  - Logs showed `ntk_generated_fetch_gate_wait ... available=0` and visible byte hedge completion several seconds late.
+  - `requestPage` routes visiblePriority requests to `urgentDecode`, but the decode task still acquired `busyDecodeGate` when the scroll was busy.
+  - This meant visible requests entered the urgent executor and then queued behind normal busy decode work anyway.
+- Next code change:
+  - VisiblePriority decode now bypasses the shared busy/idle decode semaphore inside `requestPage`.
+  - This keeps current viewport decode on the urgent path end-to-end instead of rejoining the busy queue.
+  - Bad approach to avoid: do not solve this by increasing scroll settle waits; the user-visible pages need priority, not a looser test.
+
+## 2026-06-19 02:03:00 +09:00 visible foreground joined stale background generated flights
+
+- Recheck artifact:
+  - `build\ntk-random-perf\20260619_0154_visible_bypass_recheck\20260619_013809`.
+- Result:
+  - Still failed on the same first fast-scroll step:
+    - `viewportPx=2274;drawablePx=0;missingPx=0;placeholderPx=2276;drawableItems=0;items=3;loading=3`.
+  - Scroll position remained stable: `maxPageDelta=0;maxOffsetDelta=0`.
+  - First drawable was slower in this run: `reader_open_to_first_drawable ... ms=5380`.
+- More precise root cause:
+  - Busy source prefetch created background generated flights for pages around 12-18 just before the fast scroll reached them.
+  - When those pages became visible, their foreground visible requests logged `flight_join ... activeFlight=true,foregroundDownload=true` instead of replacing the older background work.
+  - The existing generated visible supersede rule only fired for `priorityFullDownload`, so normal visible foreground downloads could still join stale or slower flights.
+- Code change:
+  - `ReaderImageCache.shouldSupersedeGeneratedVisibleFlight` now receives `visiblePriority`.
+  - Foreground visiblePriority generated requests can supersede an active generated flight even when `priorityFullDownload` is false.
+  - This is a structural priority fix: visible viewport work should not wait behind background prefetch work for the same image.
+
+## 2026-06-19 02:12:00 +09:00 supersede worked but cancellation surfaced as page error
+
+- Recheck artifact:
+  - `build\ntk-random-perf\20260619_0207_visible_supersede_recheck\20260619_014005`.
+- Result:
+  - The same fast-scroll run still failed:
+    - `viewportPx=2274;drawablePx=0;missingPx=0;placeholderPx=2278;drawableItems=0;items=5;loading=2;errors=3`.
+- Positive signal:
+  - The new supersede branch did fire for visible pages:
+    - `flight_supersede_generated_visible ... image=p012.jpg`.
+    - `flight_supersede_generated_visible ... image=p013.jpg`.
+    - Similar entries appeared for later visible pages.
+- New bug found:
+  - Cancelling the old flight propagated as `java.util.concurrent.CancellationException`.
+  - `ReaderSession.isExpectedCancellation` treated `InterruptedException` and `InterruptedIOException` as expected, but not `CancellationException`.
+  - That caused cancelled superseded flights to call `postPageError`, creating visible error items even though a replacement foreground download had started.
+- Code change:
+  - Treat `java.util.concurrent.CancellationException` as expected cancellation in `ReaderSession.isExpectedCancellation`.
+  - Bad approach to avoid: do not suppress all errors; only explicit cancellation from superseded work is ignored.
+
+## 2026-06-19 02:21:00 +09:00 remaining placeholder narrowed to one edge page
+
+- Recheck artifact:
+  - `build\ntk-random-perf\20260619_0215_cancel_expected_recheck\20260619_014133`.
+- Result:
+  - The cancellation error issue was fixed: `errors=0`.
+  - Coverage improved materially:
+    - Before cancellation fix: `drawablePx=0;placeholderPx=2278;errors=3`.
+    - After cancellation fix: `drawablePx=1932;placeholderPx=344;loading=1;errors=0`.
+  - Scroll position remained stable: `maxPageDelta=0;maxOffsetDelta=0`.
+- Remaining issue:
+  - Only one lower-edge visible page, page 11 / `p012.jpg`, missed the assertion by about one frame.
+  - `reader_initial_continuous_delivery_direct page=11` landed at `16:41:45.069`, while the scroll assertion logged at `16:41:45.070` using a surface sample from just before delivery.
+  - That page spent `793ms` waiting on the generated foreground fetch gate:
+    - `ntk_generated_fetch_gate_wait ... image=p012.jpg,ms=793,available=0,visiblePriority=true`.
+- Code change:
+  - Raise `NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM` from `6` to `8`.
+  - This is scoped to generated foreground image fetches so true visible/near-visible pages do not lose almost a second waiting behind already-started foreground work.
+  - Bad approach to avoid: do not add assertion delay; start visible edge fetch earlier.
+
+## 2026-06-19 02:28:00 +09:00 foreground parallelism increase rejected
+
+- Recheck artifact:
+  - `build\ntk-random-perf\20260619_0224_fg8_recheck\20260619_014323`.
+- Result:
+  - Increasing generated foreground fetch parallelism from `6` to `8` did not stabilize the repro.
+  - It regressed the run under current emulator/network conditions:
+    - `reader_open_to_first_drawable ... ms=7758`.
+    - final scroll coverage fell back to `drawablePx=0;placeholderPx=2275;loading=2`.
+- Decision:
+  - Reverted `NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM` to `6`.
+  - Bad approach recorded: simply increasing generated foreground network parallelism can increase contention/variance and should not be used as the next fix.
+
+## 2026-06-19 02:33:00 +09:00 final ACK strict proof recheck before commit
+
+- Recheck command:
+  - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-random-perf\20260619_0230_ack_final_recheck" -Runs 1 -ScrollSteps 0 -AppendSteps 0 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -TargetEpisodePath "/manhwa/36380/1800849" -Seed 1781798550811 -StrictFresh -ClearAck -NoAppendProbe -FirstDrawableMaxMs 9000 -SkipBuild -SkipInstall -ForceStopBeforeRun`.
+- Artifact:
+  - `build\ntk-random-perf\20260619_0230_ack_final_recheck\20260619_014427`.
+- Result:
+  - `passed=True`, `OK (1 test)`.
+  - `ackMs=3156`, `ack_only_fetch=3152/3154`.
+  - Strict proof logs:
+    - `ackOnlyEarlyProofRunnerStart`.
+    - `ntk_realframe_request method=POST,main=false,url=https://sbxh8.com/api/ad/ack`.
+    - `ntk_ack_proof={"scope":"/manhwa/36380/1800849","tp":"","source":"native-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`.
+    - `ackOnlyEarlyProofRunnerExit ... ok=true,attempts=1,ms=2685`.
+    - `ntk_webview_ack_preflight_done ... success=true,ms=3156`.
+    - `ntk_true_random_ack_wait ... joined=true,strictProof=true,ms=7642`.
+- Current remaining risk:
+  - The ACK stability issue is fixed on the repro path.
+  - Fast-scroll strict fresh image coverage is improved but not fully solved. The best recheck after cancellation handling reached `drawablePx=1932/2274`, `placeholderPx=344`, `errors=0`; the remaining issue is one lower-edge visible generated page arriving around one frame too late.
+  - Since the user asked to compromise on speed and finish ACK stability first, this commit will prioritize the ACK proof fix plus the safe visible-priority cancellation/queueing fixes, while documenting the remaining image-edge risk.
