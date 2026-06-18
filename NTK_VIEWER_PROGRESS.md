@@ -28036,3 +28036,22 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Investigate why `generated_initial_range_first_direct_hedge_hit` does not immediately satisfy/publish the anchor asset/file lease for p001 when it wins early.
   - Prefer a targeted direct-hedge publish/cache path over disabling range-first globally.
   - Keep ACK proof checks strict; this follow-up did not uncover a new ACK regression.
+
+## 2026-06-19 07:46:00 +09:00 main branch actual UX ACK recheck
+
+- User pointed out work should be committed/pushed on `main`, not left on the old feature branch.
+- Branch cleanup:
+  - `C:\Users\Administrator\Downloads\mangaviewer` was on stale `codex/ntk-strict-ack-proof` at `c6c35ed`, while `main/origin/main` was already at `533527e09`.
+  - Preserved that stale worktree's tracked changes in stash `pre-main-switch-ntk-worktree` and continued from `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on `main`.
+  - Committed/pushed the prior follow-up notes to `main` as `43dee596f Record NTK newtoki first drawable follow-up`.
+- Actual UX recheck on `emulator-5554`, `main`, live network enabled:
+  - Webtoon command: `:app:connectedDebugAndroidTest` with `runLiveNetworkTests=true` and `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Webtoon result: passed. Path `/webtoon/16968/1463195`, first drawable `4470ms`, settled coverage `missingPx=0`, `placeholderPx=0`, strict ACK source `native-fetch-ack-200`, `/api/ad/ack` response body `ok=true`, `seen=4`, `expected=4`.
+  - Comic command: `:app:connectedDebugAndroidTest` with `runLiveNetworkTests=true` and `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+  - Comic result: passed. Path `/manhwa/36525/1807424`, first drawable `5894ms`, settled coverage `missingPx=0`, `placeholderPx=0`, strict ACK source `native-fetch-ack-200`, `/api/ad/ack` response body `ok=true`, `seen=4`, `expected=4`.
+- Important observation:
+  - Both runs still logged challenge-cookie records such as `bridge-challenge-ad-ack-cookie-200`, but those remained `strictAdAck=false`.
+  - Final success was accepted only from real `/api/ad/ack` proof via `native-fetch-ack-200`.
+- Command gotcha recorded:
+  - PowerShell treats `#` in an unquoted Gradle property as a comment/task parsing hazard. Use quotes around `-Pandroid.testInstrumentationRunnerArguments.class=...#method`.
+  - The first unquoted attempt failed before running app code; it is not app evidence.
