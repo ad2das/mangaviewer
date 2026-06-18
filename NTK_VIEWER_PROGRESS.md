@@ -26795,3 +26795,35 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk / do not overclaim:
   - Log contained an append-neighbor ACK preflight false for `/manhwa/32800/1693697`: `ntk_webview_ack_preflight_done ... success=false,ms=18701`. It did not fail the user-visible run or ackChecks, but it is still a tail/stability signal for neighbor prefetch/append ACK work.
   - `surface_jank_v3` callback gaps and reader slow frame logs remain. Draw totals were generally low in the measured samples, and no visible blank/placeholder/drift reproduced, but smoothness is not fully solved.
+
+## 2026-06-19 00:00:00 +09:00 main branch actual UX comic+webtoon ACK recheck
+
+- User pointed out that committed work should be on `main`.
+- Branch correction:
+  - The active shell was on stale `codex/ntk-strict-ack-proof`, but `origin/main` already contained that branch through merge `ceaf7d2a1` and was 20 commits ahead.
+  - Correct worktree for main is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Verified `main == origin/main == cd99717be1c7e94cee9df7a1bb91c874eaadd7a5`; worktree was clean before this record.
+- Actual UX validation on `emulator-5554` after reinstalling both APKs:
+  - Install command: `.\gradlew.bat --no-daemon :app:installDebug :app:installDebugAndroidTest`.
+  - Test command selected real NTK comic and webtoon through `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200,ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Artifact: `build/ntk-ux-select/20260618_235020_main_actual_ux_recheck_comic_webtoon`.
+  - Result: `OK (2 tests)`, time `110.056s`.
+- Comic actual UX result:
+  - Path: `/manhwa/36525/1807424`.
+  - First drawable: `reader_open_to_first_drawable ... page=2 ms=7487`.
+  - Visible coverage: `reader_visible_loading=0`, `drawablePx=2275`, `missingPx=0`, `placeholderPx=0`.
+  - Strict ACK: `/api/ad/ack` bridge/native submit returned `code=200`; proof sources included `bridge-ack-200`, `guard-state-ack-200`, and `guard-fetch-ack-200` with `strictAdAck=true`.
+  - ACK preflight final: `ntk_webview_ack_preflight_done ... success=true,ms=12462`.
+- Webtoon actual UX result:
+  - Path: `/webtoon/16968/1463195`.
+  - First drawable: `reader_open_to_first_drawable ... page=3 ms=4823`.
+  - Visible coverage: `reader_visible_loading=0`, `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`.
+  - Strict ACK: `nativeAckFetchResponse status=200` with body `ok=true`, `seen=4`, `expected=4`; proof source `native-fetch-ack-200`, `strictAdAck=true`.
+  - ACK preflight final: `ntk_webview_ack_preflight_done ... success=true,ms=11010`.
+- Advertising/captcha/content check:
+  - Captcha container lookups occurred, but were `Node not found`; no captcha screen was visible in the test.
+  - Image fetch logs were scoped to reader content for the selected paths (`p001.jpg` etc. for comic and `/api/m/i?...scope=/webtoon/16968/1463195` for webtoon). No ad-image host or banner/advert image evidence was found in the relevant visible reader proof.
+- Remaining risk / do not hide:
+  - Comic still logged several early `reader_ntk_ack_prepared_native_preflight_done ... success=false,proof=false` entries before final bridge ACK success. This is not an ACK correctness failure, but it is the same tail-latency class that makes ACK proof arrive after first drawable.
+  - First drawable is acceptable under the current speed compromise, but comic is still slower than ideal (`7487ms`).
+  - Cronet executor `RejectedExecutionException` lines appeared during failed/aborted transport races. The fallback path recovered and tests passed, but this remains a cleanup/stability signal for future transport work.
