@@ -5825,15 +5825,15 @@ class ReaderSession(
         var promotionIndex = delivery.index
         var promotionDelivery = delivery
         if (delivery.index > start + 1 &&
-            resultDrawHeightPx(delivery.result) < max(1, viewerHeight).toFloat() &&
-            !initialHeldViewportReadyFrom(delivery.index)
+            (!initialHeldViewportReadyFrom(delivery.index) ||
+                !initialPromotedScrollCushionReady(delivery.index))
         ) {
             val alternateIndex = findPromotableInitialGeneratedHeldStart(start)
             if (alternateIndex == null) {
                 Log.d(
                     TAG,
                     "reader_initial_generated_start_promote_defer oldStart=$start,newStart=${delivery.index}," +
-                        "reason=short_viewport,height=${resultDrawHeightPx(delivery.result).toInt()},viewport=$viewerHeight"
+                        "reason=viewport_cushion,height=${resultDrawHeightPx(delivery.result).toInt()},viewport=$viewerHeight"
                 )
                 return false
             }
@@ -5862,7 +5862,9 @@ class ReaderSession(
             val delivery = initialDeliveryBacklog[index]?.let { deliveryAtCurrentIndex(it) } ?: continue
             if (!isNtkGeneratedImageUrl(delivery.page.image.orEmpty())) continue
             if (index > oldStart + 1 && !initialPreviousPageReadyForPromotedStart(index)) continue
-            if (index == oldStart + 1 || initialHeldViewportReadyFrom(index)) return index
+            if (index == oldStart + 1 ||
+                (initialHeldViewportReadyFrom(index) && initialPromotedScrollCushionReady(index))
+            ) return index
         }
         return null
     }
@@ -5967,6 +5969,19 @@ class ReaderSession(
 
     private fun flushInitialHeldDeliveries(reason: String) {
         if (initialDeliveryBacklog.isEmpty() && initialPreparedBacklog.isEmpty()) return
+        if ((reason == "anchor" || reason == "fallback") &&
+            isNtkSource(manga, title) &&
+            !firstBitmapLogged.get() &&
+            !initialStableViewportReadyForFirstFlush()
+        ) {
+            Log.d(
+                TAG,
+                "reader_initial_hold_flush_defer reason=$reason,start=${currentStartPage()}," +
+                    "backlog=${initialDeliveryBacklog.size},prepared=${initialPreparedBacklog.size}"
+            )
+            scheduleInitialDeliveryFallback()
+            return
+        }
         val prepared = initialPreparedBacklog.entries
             .sortedBy { it.key }
             .mapNotNull { entry ->
@@ -6010,6 +6025,13 @@ class ReaderSession(
         if (!deliverHeldNow || held.any { it.index !in immediateHeld }) scheduleDeliveryDrain()
     }
 
+    private fun initialStableViewportReadyForFirstFlush(): Boolean {
+        val start = currentStartPage()
+        val count = synchronized(pagesLock) { pages.size }
+        if (!initialHeldViewportReady(start, count)) return false
+        return initialPromotedScrollCushionReady(start)
+    }
+
     private fun initialHeldViewportReady(start: Int, count: Int): Boolean {
         val held = initialDeliveryBacklog.entries
             .mapNotNull { entry -> deliveryAtCurrentIndex(entry.value) }
@@ -6043,6 +6065,16 @@ class ReaderSession(
             index++
         }
         return coveredHeight >= requiredHeight
+    }
+
+    private fun initialPromotedScrollCushionReady(startIndex: Int): Boolean {
+        val count = synchronized(pagesLock) { pages.size }
+        val last = minOf(count - 1, startIndex + 3)
+        for (index in startIndex..last) {
+            val delivery = initialDeliveryBacklog[index]?.let { deliveryAtCurrentIndex(it) } ?: return false
+            if (delivery.index != index) return false
+        }
+        return true
     }
 
     private fun initialViewportHeldDeliveries(held: List<Delivery>): Set<Int> {
@@ -6928,27 +6960,27 @@ class ReaderSession(
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 16
         private const val NTK_INITIAL_BOOT_URGENT_PAGES = 16
         private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 18
-        private const val NTK_WEBTOON_INITIAL_BOOT_PRIORITY_PAGES = 4
-        private const val NTK_WEBTOON_INITIAL_BOOT_URGENT_PAGES = 4
-        private const val NTK_WEBTOON_INITIAL_BOOT_BACKGROUND_PAGES = 4
+        private const val NTK_WEBTOON_INITIAL_BOOT_PRIORITY_PAGES = 12
+        private const val NTK_WEBTOON_INITIAL_BOOT_URGENT_PAGES = 10
+        private const val NTK_WEBTOON_INITIAL_BOOT_BACKGROUND_PAGES = 14
         private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 24
-        private const val NTK_WEBTOON_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 0
+        private const val NTK_WEBTOON_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 16
         private const val NTK_GENERATED_INITIAL_LIMITED_WARM_PAGES = 18
         private const val NTK_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 18
         private const val NTK_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 8
-        private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_WARM_PAGES = 0
-        private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 0
-        private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 0
+        private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_WARM_PAGES = 14
+        private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 12
+        private const val NTK_WEBTOON_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 8
         private const val NTK_INITIAL_ANCHOR_DECODE_PRIME_PAGES = 2
         private const val NTK_INITIAL_PRIORITY_PAGES = 9
         private const val NTK_INITIAL_GENERATED_PROMOTE_MAX_AHEAD = 4
         private const val NTK_FOREGROUND_STREAM_AHEAD_PAGES = 6
         private const val NTK_INITIAL_NEAR_DECODE_AHEAD_PAGES = 8
         private const val NTK_INITIAL_DECODE_AHEAD_PAGES = 18
-        private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 4
-        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 0
-        private const val NTK_WEBTOON_FOREGROUND_STREAM_AHEAD_PAGES = 2
-        private const val NTK_WEBTOON_ACTIVE_SCROLL_FOREGROUND_RADIUS = 0
+        private const val NTK_WEBTOON_INITIAL_NEAR_DECODE_AHEAD_PAGES = 8
+        private const val NTK_WEBTOON_INITIAL_DECODE_AHEAD_PAGES = 12
+        private const val NTK_WEBTOON_FOREGROUND_STREAM_AHEAD_PAGES = 6
+        private const val NTK_WEBTOON_ACTIVE_SCROLL_FOREGROUND_RADIUS = 1
         private const val NTK_WEBTOON_WINDOW_AFTER = 8
         private const val NTK_WEBTOON_BUSY_WINDOW_AFTER = 6
         private const val NTK_WEBTOON_BUSY_DIRECTIONAL_DECODE_AHEAD = 2

@@ -1558,6 +1558,8 @@ public class NtkRandomStressInstrumentedTest {
                     maxMissedFrames, maxDroppedFrames, swipeInputSteps,
                     assertNoSchedulerGap, renderFrameMaxMs, scrollInputMode,
                     scrollPattern);
+            if("native-ack".equals(mode))
+                waitForStrictNtkAckProofBeforeClose(run, mode, episode, 70_000L);
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
@@ -1569,6 +1571,49 @@ public class NtkRandomStressInstrumentedTest {
         }
         if(appendProbe && previousEpisode != null)
             runPreviousAppendCase(context, device, run, mode, title, episode, previousEpisode, appendSteps);
+    }
+
+    private static void waitForStrictNtkAckProofBeforeClose(int run, String mode, Manga episode,
+                                                            long timeoutMs) {
+        String path = episode == null ? "" : episode.getNtkEpisodePath();
+        long startedAt = SystemClock.elapsedRealtime();
+        boolean proof = false;
+        boolean joined = false;
+        try {
+            CustomHttpClient client = MainApplication.getHttpClient();
+            long deadline = startedAt + Math.max(0L, timeoutMs);
+            while(SystemClock.elapsedRealtime() < deadline) {
+                proof = client.hasRecentStrictNtkAdAckProof(path);
+                if(proof)
+                    break;
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                long joinMs = Math.min(2500L, Math.max(100L, remaining));
+                joined = client.waitForNtkWebViewAckPreflightProof(path, joinMs) || joined;
+                proof = client.hasRecentStrictNtkAdAckProof(path);
+                if(proof)
+                    break;
+                SystemClock.sleep(300L);
+            }
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_true_random_ack_wait_error run=" + run
+                    + ",mode=" + mode
+                    + ",path=" + path
+                    + ",error=" + e);
+        }
+        long ms = SystemClock.elapsedRealtime() - startedAt;
+        Log.d(TAG, "ntk_true_random_ack_wait run=" + run
+                + ",mode=" + mode
+                + ",path=" + path
+                + ",joined=" + joined
+                + ",strictProof=" + proof
+                + ",ms=" + ms
+                + ",maxMs=" + timeoutMs);
+        assertTrue("Expected strict NTK ACK proof before closing reader run=" + run
+                        + " mode=" + mode
+                        + " path=" + path
+                        + " elapsedMs=" + ms
+                        + " maxMs=" + timeoutMs,
+                proof);
     }
 
     private static void runPreviousAppendCase(Context context, UiDevice device, int run, String mode,

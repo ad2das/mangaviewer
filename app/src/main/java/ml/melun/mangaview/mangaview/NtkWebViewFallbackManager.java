@@ -1276,6 +1276,10 @@ final class NtkWebViewFallbackManager {
                                            boolean ackOnlyFrame, NtkQuicBridge quicBridge,
                                            String ackScopePath) {
         try {
+            synchronized (viewerImageBridgeRefs) {
+                if(viewerImageBridgeRefs.containsKey(view))
+                    return;
+            }
             ViewerImageBridge bridge = new ViewerImageBridge(result, finish, mainHandler,
                     ackOnlyFrame, ackScopePath);
             viewerImageBridgeRefs.put(view, bridge);
@@ -2304,7 +2308,7 @@ final class NtkWebViewFallbackManager {
             return;
         if("__ack_only__".equals(imagesToken)) {
             String expected = baseUrl + path;
-            view.evaluateJavascript("(function(){try{var h=String(location.href||''),t=String(document.title||''),b=document.body?String(document.body.innerText||document.body.textContent||'').replace(/\\s+/g,' ').slice(0,180):'',l=(h+' '+t+' '+b).toLowerCase(),cf=l.indexOf('__cf_chl')>=0||l.indexOf('/cdn-cgi/challenge-platform')>=0||l.indexOf('just a moment')>=0||l.indexOf('verify you are human')>=0||l.indexOf('verifying you are human')>=0||l.indexOf('challenges.cloudflare.com')>=0,ck=String(document.cookie||''),bc='',ls=[],ss=[],i,k;try{if(window.NtkQuicBridge&&window.NtkQuicBridge.cookie)bc=String(window.NtkQuicBridge.cookie(h,'ad_ack_c')||'');}catch(_){}try{for(i=0;i<localStorage.length;i++){k=String(localStorage.key(i)||'');if(/ack|guard|browser|key|ntk|ad/i.test(k))ls.push(k.slice(0,48));}}catch(_){}try{for(i=0;i<sessionStorage.length;i++){k=String(sessionStorage.key(i)||'');if(/ack|guard|browser|key|ntk|ad/i.test(k))ss.push(k.slice(0,48));}}catch(_){}return JSON.stringify({href:h,ready:String(document.readyState||''),crypto:!!(window.crypto&&crypto.subtle),cf:cf,title:t.slice(0,80),body:b,visible:document.visibilityState,focus:document.hasFocus&&document.hasFocus(),cookieLen:ck.length,hasCf:/cf_clearance=/.test(ck),hasAdAck:/ad_ack=/.test(ck),hasAdAckC:/ad_ack_c=/.test(ck),hasBridgeAdAckC:bc.length>0,hasAdGuard:/ad_guard_l=/.test(ck),viewerBridge:!!window.NtkViewerBridge,ackBridge:!!window.NtkAckBridge,namedNativeAck:!!window.MangaViewerNativeAckBridge,namedNativeAckState:!!(window.MangaViewerNativeAckBridge&&window.MangaViewerNativeAckBridge.onAckState),namedNativeViewer:!!window.MangaViewerNativeViewerBridge,namedNativeViewerState:!!(window.MangaViewerNativeViewerBridge&&window.MangaViewerNativeViewerBridge.onAckState),viewerAckState:!!((window.NtkViewerBridge&&window.NtkViewerBridge.onAckState)||(window.NtkAckBridge&&window.NtkAckBridge.onAckState)),quicBridge:!!window.NtkQuicBridge,local:ls.slice(0,12),session:ss.slice(0,12)});}catch(e){return 'ERR:'+String(e);}})()",
+            view.evaluateJavascript("(function(){try{var h=String(location.href||''),t=String(document.title||''),hb=!!document.body,b=hb?String(document.body.innerText||document.body.textContent||'').replace(/\\s+/g,' ').slice(0,180):'',l=(h+' '+t+' '+b).toLowerCase(),cf=l.indexOf('__cf_chl')>=0||l.indexOf('/cdn-cgi/challenge-platform')>=0||l.indexOf('just a moment')>=0||l.indexOf('verify you are human')>=0||l.indexOf('verifying you are human')>=0||l.indexOf('challenges.cloudflare.com')>=0,ck=String(document.cookie||''),bc='',ls=[],ss=[],i,k;try{if(window.NtkQuicBridge&&window.NtkQuicBridge.cookie)bc=String(window.NtkQuicBridge.cookie(h,'ad_ack_c')||'');}catch(_){}try{for(i=0;i<localStorage.length;i++){k=String(localStorage.key(i)||'');if(/ack|guard|browser|key|ntk|ad/i.test(k))ls.push(k.slice(0,48));}}catch(_){}try{for(i=0;i<sessionStorage.length;i++){k=String(sessionStorage.key(i)||'');if(/ack|guard|browser|key|ntk|ad/i.test(k))ss.push(k.slice(0,48));}}catch(_){}return JSON.stringify({href:h,ready:String(document.readyState||''),hasBody:hb,crypto:!!(window.crypto&&crypto.subtle),cf:cf,title:t.slice(0,80),body:b,visible:document.visibilityState,focus:document.hasFocus&&document.hasFocus(),cookieLen:ck.length,hasCf:/cf_clearance=/.test(ck),hasAdAck:/ad_ack=/.test(ck),hasAdAckC:/ad_ack_c=/.test(ck),hasBridgeAdAckC:bc.length>0,hasAdGuard:/ad_guard_l=/.test(ck),viewerBridge:!!window.NtkViewerBridge,ackBridge:!!window.NtkAckBridge,namedNativeAck:!!window.MangaViewerNativeAckBridge,namedNativeAckState:!!(window.MangaViewerNativeAckBridge&&window.MangaViewerNativeAckBridge.onAckState),namedNativeViewer:!!window.MangaViewerNativeViewerBridge,namedNativeViewerState:!!(window.MangaViewerNativeViewerBridge&&window.MangaViewerNativeViewerBridge.onAckState),viewerAckState:!!((window.NtkViewerBridge&&window.NtkViewerBridge.onAckState)||(window.NtkAckBridge&&window.NtkAckBridge.onAckState)),quicBridge:!!window.NtkQuicBridge,local:ls.slice(0,12),session:ss.slice(0,12)});}catch(e){return 'ERR:'+String(e);}})()",
                     value -> {
                         String rawState = value == null ? "" : value;
                         String state = unquoteJavascriptString(rawState);
@@ -2326,6 +2330,12 @@ final class NtkWebViewFallbackManager {
                             return;
                         if(state.contains("about:blank") || state.contains("chrome-error://") || state.contains("ERR:"))
                             return;
+                        if(!state.contains("\"hasBody\":true")) {
+                            Log.d(TAG, "ntk_ack_only_eval_wait_body path=" + path
+                                    + ",url=" + view.getUrl()
+                                    + ",state=" + state);
+                            return;
+                        }
                         boolean readyComplete = state.contains("\"ready\":\"complete\"")
                                 || state.contains("|complete|");
                         final boolean ackBridgeReady = state.contains("\"quicBridge\":true")

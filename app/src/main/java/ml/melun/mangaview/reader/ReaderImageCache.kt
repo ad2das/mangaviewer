@@ -3649,13 +3649,14 @@ object ReaderImageCache {
         page: Int,
         stage: String
     ): Response? {
-        if (page <= 1) {
-            return requestSharedInitialGeneratedRange(context, manga, image, cancellation, page, stage)
-        }
         val completion = ExecutorCompletionService<Response?>(foregroundRaceExecutor)
         val finished = AtomicBoolean(false)
         completion.submit(Callable {
-            val response = requestGeneratedRangeReassembled(context, manga, image, cancellation, page, stage)
+            val response = if (page <= 1) {
+                requestSharedInitialGeneratedRange(context, manga, image, cancellation, page, stage)
+            } else {
+                requestGeneratedRangeReassembled(context, manga, image, cancellation, page, stage)
+            }
             if (response != null && response.isSuccessful) finished.set(true)
             response
         })
@@ -3821,9 +3822,6 @@ object ReaderImageCache {
 
     private fun initialGeneratedDirectHedgeDelayMs(target: NtkGeneratedTarget?, page: Int): Long {
         if (target?.path?.startsWith("/webtoon/", ignoreCase = true) == true) {
-            if (page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
-                return -1L
-            }
             return NTK_GENERATED_INITIAL_DIRECT_HEDGE_WEBTOON_DELAY_MS
         }
         if (target?.path?.startsWith("/manhwa/", ignoreCase = true) == true &&

@@ -25667,3 +25667,73 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - The same repro still showed an earlier non-append transient placeholder before the settled scroll assertions. It did not fail settled coverage, but the original ideal of never any transient placeholder is still not fully proven.
   - ACK speed remains variable; this pass had ACK preflight around 10.8s on the target repro. Current user direction accepts speed compromise, but this is not a speed win.
+
+## 2026-06-18 17:25:00 +09:00 main branch and strict ACK failure narrowed
+
+- Branch/push state:
+  - Verified `origin/main` is at `19f88323c Reduce NTK prepend append placeholder window`.
+  - Current active work is now on `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `codex/main-ntk-sync`, tracking `origin/main`.
+  - From now on, validated units should be pushed with `git push origin HEAD:main`; do not leave the final work only on a codex side branch.
+- Important ACK parser/test correction:
+  - `tools/ntk_random_perf.ps1` no longer counts `ntk_server_ack_success_recorded ... strictAdAck=false` as strict ACK proof.
+  - Challenge/canary 200 and scoped `ad_ack_c` are useful setup signals, but they are not `/api/ad/ack` success.
+  - Native/random test now waits for strict proof before closing the reader in `native-ack` mode, so late ACK races are exposed instead of hidden.
+- Latest hard ACK failure:
+  - Artifact: `build/ntk-random-perf/20260618_165907`.
+  - Target: `/webtoon/11851/1088764`, image count 15.
+  - Image coverage during scroll was clean: placeholder/missing/loading all 0 on settled scroll steps.
+  - First drawable remained slow but within relaxed 30000ms: about 19042ms.
+  - Strict ACK proof failed after 70000ms: `ntk_true_random_ack_wait ... strictProof=false`.
+  - The hidden ACK flow reached `/api/ad/challenge` 200 and `/api/ad/canary` 200, then logged a real-frame `/api/ad/ack` POST start, but no strict proof was recorded afterward.
+  - No Turnstile/captcha was detected: repeated `ntk_ack_turnstile_probe ... {"type":"none"}`.
+- Bad/weak approach recorded:
+  - Do not treat `native-prepare-challenge-ad-ack-cookie-200` or `bridge-challenge-ad-ack-cookie-200` as strict ACK success; those sources are `strictAdAck=false`.
+  - Waiting longer alone is not a fix. 22s was too short for some late successes, but 70s polling still showed a real no-proof failure on `/webtoon/11851/1088764`.
+  - The large ACK/image combined WebView script can be too opaque in ACK-only mode: in the failing run it logged eval attempts but did not emit `ackOnlyMainEntry`, `directAckStart`, or `guardBeaconBridgeInstalled`, while a real-frame ACK request escaped without proof.
+- Current fix under test:
+  - ACK-only preflight now uses the existing compact ACK proof script (`buildAckOnlyProofScript`) instead of the full viewer image fetch script.
+  - Goal: make ACK-only focus only on challenge -> guard-js/wasm -> impressions -> canary -> `/api/ad/ack`, with compact `compactAck*` logs and strict `onAckProof`.
+  - This is not claimed fixed until `/webtoon/11851/1088764` produces `/api/ad/ack` 200 strict proof on emulator.
+
+## 2026-06-18 17:42:00 +09:00 strict ACK restored and initial flush tightened
+
+- Branch/push discipline:
+  - User correctly pointed out final work must land on main.
+  - Continued in `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `codex/main-ntk-sync`, which tracks `origin/main`.
+  - Validated close-out changes should be committed here and pushed with `git push origin HEAD:main`.
+- ACK root cause and fix:
+  - The compact ACK-only shell was the wrong direction for current `sbxh8` guard behavior.
+  - It reached challenge 200, guard module/init, and impression 200, but `_vc` returned boolean `"true"` and no proof token; guard attempted an empty `/api/ad/ack` body and strict proof never arrived.
+  - Kept the useful bridge lifecycle fix that avoids re-adding JavaScript interfaces to the same hidden WebView. This removed stale bridge/`Unknown object` style behavior.
+  - Switched ACK-only evaluation back to the full viewer ACK script after the bridge lifecycle fix. This restored the real UX-like guard/runtime path.
+- ACK validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Target repro artifact: `build/ntk-random-perf/20260618_173357`.
+  - Target: `/webtoon/11851/1088764`, seed `1781768848350`, strict fresh, cache clear, force-stop, `sbxh8`.
+  - Result: OK (1 test).
+  - Strict proof: `ntk_ack_proof {"scope":"/webtoon/11851/1088764","source":"native-fetch-ack-200"}` and `ntk_server_ack_success_recorded ... strictAdAck=true`.
+  - ACK preflight: 9256ms; first drawable: 17889ms; scroll settled coverage: `missingPx=0`, `placeholderPx=0`, `loading=0`, drift page/offset 0.
+  - Final installed-APK recheck after cleaning unused compact experiment edits: `build/ntk-random-perf/20260618_174147`, OK (1 test), ACK preflight 8189ms, first drawable 19440ms, failures 0.
+- New random image stability failure and fix:
+  - Random 2-run artifact before fix: `build/ntk-random-perf/20260618_173455`.
+  - Failure target: `/manhwa/9652/91075`, image count 99.
+  - ACK was already good (`bridge-ack-200` and `guard-fetch-ack-200`, `strictAdAck=true`), but fast scroll immediately after first drawable saw `placeholderPx=612`, `loading=1`.
+  - Root cause: initial `anchor` flush could publish page 0 when the first page did not cover the full viewport and page 1/2 were still decoding, so the first drawable was marked too early.
+  - Fix: NTK first flush from `anchor`/`fallback` now waits for a stable initial viewport plus scroll cushion before publishing. This is based on decoded image readiness, not a timer or loading-screen delay.
+- Image/scroll validation:
+  - Target repro after fix: `build/ntk-random-perf/20260618_173703`.
+  - `/manhwa/9652/91075` passed with first drawable 3369ms, ACK preflight 6758ms, strict `guard-fetch-ack-200`.
+  - Settled scroll coverage for both steps: `placeholderPx=0`, `loading=0`, drift page/offset 0.
+  - Same random seed 2-run after fix: `build/ntk-random-perf/20260618_173735`.
+  - Result: OK (1 test), two live random cases, four scroll checks, strict ACK true for both `/webtoon/16735/1407379` and `/manhwa/9652/91075`.
+  - Real UX selection after fix: `build/ntk-ux-select/20260618_173841_actual_ux_after_ack_flush_fix`.
+  - Result: OK (2 tests), `ntkCurrentComicUxSelectionOpensReaderWithAck200` and `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Webtoon UX proof: `/webtoon/16968/1463195`, first drawable 2326ms, `native-fetch-ack-200`, `strictAdAck=true`, visible coverage `placeholderPx=0`.
+- Bad approaches / do not repeat:
+  - Do not revive compact ACK-only as the default path unless guard semantics are fully understood and it produces strict `/api/ad/ack` proof. Challenge/impression/canary success alone is not enough.
+  - Do not push unvalidated dirty work to main. The final push should happen only after strict ACK and image/scroll smoke pass.
+  - `-SkipInstall` is valid only when the current APK was already installed after the latest build; after code changes, install must be included.
+- Remaining risk:
+  - Speed is acceptable but not perfect; ACK remains around 6.7-9.3s on the validated strict cases.
+  - Some intermediate `reader_visible_coverage` samples can still show transient placeholder before the final settled scroll assertion. The validated settled states are clean, but absolute "never transient" perfection is not claimed.
+  - Frame stats still show missed frames under emulator stress; current close-out is ACK correctness and stability, not 60fps perfection.

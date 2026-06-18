@@ -588,7 +588,10 @@ if(-not $NoAckAssert) {
             if($line -match "reader_ntk_ack_webview_preflight_done path=$pathRe,success=false(\b|,|$)") {
                 $hasFalseDone = $true
             }
-            if($line -match "ntk_server_ack_success_recorded path=$pathRe,source=") {
+            if($line -match "ntk_server_ack_success_recorded path=$pathRe,source=.*strictAdAck=true(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "ntk_ack_proof=.*`"scope`":`"$pathRe`"") {
                 $hasStrictProof = $true
             }
             if($line -match "ntk_native_ack_bridge_submit code=200,path=$pathRe(\b|,|$)") {
@@ -596,10 +599,10 @@ if(-not $NoAckAssert) {
                 $hasStrictProof = $true
             }
         }
-        if($hasWebDone -or $hasReaderDone -or $hasNativeBridgeAck200) {
+        if($hasWebDone -or $hasReaderDone -or $hasNativeBridgeAck200 -or $hasStrictProof) {
             $hasStart = $true
         }
-        $ok = $hasStrictProof -and ($hasWebDone -or $hasReaderDone -or $hasNativeBridgeAck200)
+        $ok = $hasStart -and $hasStrictProof
         $ackChecks += [pscustomobject]@{
             run = $case.run
             path = $case.path
