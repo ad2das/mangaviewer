@@ -25329,3 +25329,80 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Actual UX direct comic and webtoon selection paths now show real content, no visible loading/placeholder at validation time, and strict ACK 200 proof.
   - The previously bad `.jpg` assumption on webtoon generated images is removed; extension probing is concurrent.
   - Remaining risk is speed: ACK hardblock can still make first drawable around `6-7s` on some strict fresh paths. Per user direction, this is accepted for now while ACK/stability are the close-out priority.
+
+## 2026-06-18 14:22:00 +09:00 Append metadata seeding fixed target webtoon adjacent failure
+
+- Continued from compaction by reading this file and checking active goal.
+- User asked to test through real UX direct comic/webtoon selection; that remains part of this validation slice.
+- Target failure being fixed first: `/webtoon/69006777/1590098` next append to `/webtoon/69006777/1590099` failed even though ACK and current images were good.
+- Root cause found:
+  - The failure was not ACK/captcha for the current reader. `/api/ad/ack` was already 200 with strict proof.
+  - Current episode images displayed correctly; scroll coverage had `placeholderPx=0`, `loading=0`, and no drift.
+  - The append target had title metadata (`imageEpisodeId=441108`, `imageCount=117`) but missed the generated CDN `imageWorkId` needed to build image URLs.
+  - The append path preferred `api-strict` for canonical webtoon and returned `LOAD_CAPTCHA/images=0`, so it never used the available generated metadata.
+- Fix shape:
+  - `ReaderSession` now inherits missing append generated hints from the visible neighbor episode when the target is the same NTK title.
+  - If the neighbor already has verified generated image extension evidence, append seeds generated URLs for the target immediately using target metadata and bypasses the API-first append fetch.
+  - This is not a fixed-case hardcode: it applies to NTK same-title adjacent episodes with complete generated metadata but missing CDN work hint.
+- Target repro after fix:
+  - Artifact: `build/ntk-random-perf/20260618_142123`.
+  - Command target: `/webtoon/69006777/1590098`, next `/webtoon/69006777/1590099`, seed `1781758212440`, strict fresh, native ACK.
+  - Result: `OK (1 test)`, `passed=True`, failures `0`.
+  - ACK: strict proof true; native submit `/api/ad/ack` code `200`.
+  - First drawable: app `350ms` marker for already seeded/streamed drawable after open pipeline, observed run remained within `9000ms` budget.
+  - Append proof expected to be checked in log: `append_adjacent_seed_generated_urls`, `append_adjacent_resolved_inserted`, and `ntk_true_random_append_next success=true`.
+- Bad approach recorded:
+  - Retrying `api-strict` after append had generated metadata just re-hit the captcha/API block and discarded the useful generated path. Do not use API-only retry as the append fallback for canonical NTK webtoon when generated metadata is present.
+  - Blind extension assumptions are still avoided; append URL seeding uses the extension observed from the already-loaded neighbor generated image.
+
+## 2026-06-18 14:28:00 +09:00 Actual UX direct selection passed; stability-only random run passed; strict jank remains risk
+
+- Code validation after append generated URL seeding:
+  - `./gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - APK and androidTest APK installed on `emulator-5554`.
+- Target append repro:
+  - Artifact: `build/ntk-random-perf/20260618_142123`.
+  - Result: `OK (1 test)`, `passed=True`.
+  - Append proof:
+    - `append_adjacent_inherit_generated_hints ... targetPath=/webtoon/69006777/1590099 imageWorkId=19322 imageEpisodeId=441108 imageCount=117`.
+    - `append_adjacent_seed_generated_urls ... count=117 extension=jpeg`.
+    - `append_adjacent_resolved_inserted ... inserted=118 total=228`.
+    - `ntk_true_random_append_next ... success=true ... before=110,after=228`.
+  - ACK proof includes strict 200 records: `bridge-ack-200` and `guard-fetch-ack-200`, `strictAdAck=true`.
+- Actual UX direct comic selection:
+  - Artifact: `build/ntk-ux-select/20260618_142218_actual_comic_selection_after_append_seed`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+  - Result: `OK (1 test)`.
+  - Path: `/manhwa/36525/1807424`.
+  - First drawable: `reader_open_to_first_drawable ... page=8 ms=8004`.
+  - Visual coverage: `reader_visible_loading=0`, `drawablePx=2276`, `missingPx=0`, `placeholderPx=0`, `drawableItems=3`, `items=3`.
+  - ACK: `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`.
+  - Screenshot: `build/ntk-ux-select/20260618_142218_actual_comic_selection_after_append_seed/ntk_actual_ux_comic_reader.png`.
+- Actual UX direct webtoon selection:
+  - Artifact: `build/ntk-ux-select/20260618_142243_actual_webtoon_selection_after_append_seed`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result: `OK (1 test)`.
+  - Path: `/webtoon/16968/1463195`.
+  - First drawable: `reader_open_to_first_drawable ... page=8 ms=4007`.
+  - Visual coverage: `reader_visible_loading=0`, `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`, `drawableItems=1`, `items=1`.
+  - ACK: `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`.
+  - Screenshot: `build/ntk-ux-select/20260618_142243_actual_webtoon_selection_after_append_seed/ntk_actual_ux_webtoon_reader.png`.
+- Live-random 3-run strict jank result:
+  - Artifact: `build/ntk-random-perf/20260618_142316`.
+  - Seed: `1781758212440`, strict fresh, native ACK, 3 live-random cases.
+  - ACK checks passed for all 3 runs (`strictProof=true`; runs 1 and 2 also `nativeBridgeAck200=true`; run 0 strict proof was native-fetch ACK 200 even though the summary's bridge boolean was false).
+  - Append checks passed where expected: webtoon next append and previous append success, manhwa previous append success.
+  - Settled scroll samples had `placeholderPx=0`, `loading=0`, `maxPageDelta=0`, `maxOffsetDelta=0`.
+  - Failure reason was only strict jank: run 2 step 2 had `droppedFrames=1` while max allowed was `0`.
+- Stability-only 3-run result after disabling strict jank assertion per current user direction that speed can be compromised:
+  - Artifact: `build/ntk-random-perf/20260618_142448_runs3_stability_no_jank_assert`.
+  - Command used direct instrumentation with `ntkAssertNoJank=false`; all other ACK/image/append/drift assertions remained active.
+  - Result: `OK (1 test)`.
+  - Cases: `/webtoon/15331/1384859`, `/manhwa/25802/308571`, `/webtoon/69006777/1590098`.
+  - ACK strict 200 proof recorded for all runs.
+  - Append next/previous succeeded where expected, including `/webtoon/69006777/1590098 -> /webtoon/69006777/1590099`.
+  - Settled `ntk_true_random_scroll` samples remained `placeholderPx=0`, `loading=0`, and drift `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Remaining risk / not hidden:
+  - Strict 60fps/jank is not solved. The strict run still failed on one dropped frame; this is accepted only because the current requested close-out is ACK and stability, not speed perfection.
+  - The stability-only log still has transient `reader_visible_loading=1` / placeholder pixels during intermediate frames before settled scroll samples. It did not persist into settled assertions, but the original ideal of literally never showing placeholders in any transient frame is still not fully proven.
+  - Actual UX comic can still be slow (`8004ms` first drawable) under strict fresh ACK; acceptable only under the current speed compromise.

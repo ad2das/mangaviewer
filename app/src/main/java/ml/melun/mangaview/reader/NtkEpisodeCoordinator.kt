@@ -146,7 +146,7 @@ internal class NtkEpisodeCoordinator(
     companion object {
         private const val TAG = "ViewerPerf"
         private const val ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
-        private const val INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 8
+        private const val INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 18
         private val NEXT_EPOCH = AtomicLong()
     }
 }
