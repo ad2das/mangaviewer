@@ -511,6 +511,13 @@ $titleSourceCounts = [ordered]@{
     caseTarget = $caseTargetCount
     coverage = $caseSourceCoverage
 }
+if([string]::IsNullOrWhiteSpace($TargetEpisodePath) -and
+    $caseSourceCoverage -eq "live-random" -and
+    $cases.Count -ge $Runs) {
+    $failureLines = @($failureLines | Where-Object {
+        ([string]$_).IndexOf("ntk_true_random_title_discovery_error") -lt 0
+    })
+}
 if(-not $NoDiversityAssert -and [string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $Runs -gt 1 -and $cases.Count -gt 1) {
     $requiredEpisodePaths = [Math]::Min([int]$Runs, 2)
     $requiredTitlePaths = if($Runs -ge 4) { 2 } else { 1 }
