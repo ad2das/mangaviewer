@@ -26044,3 +26044,73 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - Emulator frame callback stats still report missed intervals/slow signals even when dropped frame debt is 0 and viewport coverage is clean.
   - Strict ACK can still be slow on live server paths; `/webtoon/60609584/1160752` took `22522ms` in the widened random run but completed with strict proof.
+
+## 2026-06-18 19:28:00 +09:00 Captcha success-close ANR root cause
+
+- Problem:
+  - Wider strict fresh live-random `Runs=6` failed after 5 completed cases.
+  - Artifact: `build/ntk-random-perf/20260618_190948`.
+  - Completed cases had clean viewport coverage and strict ACK proof; this was not an image/scroll/ACK-200 failure for those cases.
+  - Failure:
+    - Instrumentation died with `Input dispatching timed out ... CaptchaActivity ... FocusEvent(hasFocus=false)`.
+    - Captcha was opened from true-random API title selection after `Cloudflare challenge` on `https://sbxh8.com/api/manhwa-list?page=3276&pageSize=1&withTotal=1`.
+    - `CaptchaActivity` resolved that API URL to `https://sbxh8.com/manhwa`, loaded the page, observed cookies with `adGuard=true,adAck=true`, posted `/api/ad/challenge`, verified document access `code=200`, and logged `finished with verified NTK clearance proof=false recent=true`.
+    - Immediately after that, Activity pause/top-resumed state loss timeouts and a 7006ms HWUI frame appeared; the ANR happened while closing the already-successful captcha Activity.
+  - Root cause:
+    - `finishWithVerifiedClearance()` detached and synchronously destroyed the active WebView on the UI thread before calling `finish()`.
+    - WebView renderer shutdown and window transition overlapped, blocking focus/lifecycle dispatch long enough for the system to flag `CaptchaActivity` as unresponsive.
+- Fix in progress:
+  - Successful NTK captcha close now detaches the WebView but schedules `destroy()` after the close transition instead of destroying synchronously.
+  - Existing immediate destroy remains for ordinary `finish()` / `onDestroy()` paths that are not already using the verified-clearance success path.
+- Bad conclusion / bad approach to avoid:
+  - Do not count `Runs=6` as a pass just because ACK and scroll succeeded for the first 5 cases; instrumentation death is a real stability failure.
+  - Do not blame this one on ACK 200. The completed cases had strict proof; the failure is captcha success-close lifecycle jank.
+  - Do not fix by increasing instrumentation/ANR timeouts. The correct fix is removing heavy WebView destruction from the close transition.
+
+## 2026-06-18 19:38:00 +09:00 Remove-page scroll anchor drift fix
+
+- Validation after captcha close patch:
+  - Re-ran strict fresh live-random with the same seed: `build/ntk-random-perf/20260618_191856`.
+  - The previous `CaptchaActivity` close ANR did not recur; the run completed all 6 random cases.
+  - ACK checks passed 6/6 with strict proof.
+  - Viewport coverage stayed clean: no visible loading, missing pixels, or placeholder pixels in the recorded scroll checks.
+- Remaining failure:
+  - One `reader_scroll_jump` remained on `/webtoon/57311327/1317504`.
+  - Log context:
+    - Previous episode `/webtoon/57311327/1312213` was prepended above the current episode.
+    - A speculative generated page (`p046`) returned 404 and was removed with `remove_invalid_generated_page index=45`.
+    - The user-visible anchor was around page 47, so removing page 45 should have subtracted the removed page height while preserving the same content.
+    - `ReaderSurfaceView.removePageRange()` only removed pages and clamped scroll; it did not preserve the viewport anchor across structural removal.
+- Fix in progress:
+  - `removePageRange()` now captures the current progress anchor before removal, transforms the anchor index after the removed range, and restores `page:offset` under a structural adjustment window.
+  - This is a structural layout correction, not a cosmetic scroll mask: when the page list changes above the viewport, the same content and intra-page offset remain visible.
+- Bad conclusion / bad approach to avoid:
+  - Do not treat generated 404 page removal as harmless. If the removed page is above the viewport, it can move the scroll offset by a full page height unless the anchor is preserved.
+  - Do not ignore a clean coverage run when `reader_scroll_jump` appears; scroll position stability is still part of the goal.
+
+## 2026-06-18 19:35:00 +09:00 Captcha close and remove-anchor fixes validated
+
+- Target repro validation:
+  - Artifact: `build/ntk-random-perf/20260618_192647`.
+  - Target: `/webtoon/57311327/1317504`, seed `1781777388837`, strict fresh, clear ACK/cache, force-stop, native ACK, mixed scroll, append probe.
+  - Result: OK, failures 0.
+  - Strict ACK proof passed with native bridge submit `code=200`; ACK wait was slow (`ack_only_fetch` about `27847ms`) but successful.
+  - First drawable app log included `ntk kind=tiles page=0 ms=178`.
+  - Log scan found no `reader_scroll_jump`, visible placeholder/missing/loading, ANR, or strict ACK false.
+- Wider same-seed validation:
+  - Artifact: `build/ntk-random-perf/20260618_192802`.
+  - Runs=6, strict fresh, clear ACK/cache, force-stop, live random required.
+  - Result: OK, failures 0.
+  - Cases:
+    - `/webtoon/57311327/1317504`
+    - `/manhwa/27080/1750140`
+    - `/webtoon/13107/1161368`
+    - `/manhwa/33460/1708231`
+    - `/webtoon/10722/1065866`
+    - `/manhwa/25647/303832`
+  - ACK checks: 6/6 passed with strict proof.
+  - Scroll checks: 18 total in runner summary, failures 0.
+  - Log scan found no `reader_scroll_jump`, visible placeholder/missing/loading, ANR, or strict ACK false.
+- Remaining risk:
+  - ACK can still be externally slow on strict fresh (`22s-28s` observed on some live paths). This work stabilizes correctness and UI lifecycle, not the live server's latency.
+  - Emulator frame slow-signal counters still appear, but recorded viewport coverage and scroll-jump assertions are clean in this validation.

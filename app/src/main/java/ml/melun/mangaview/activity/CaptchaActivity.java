@@ -3146,7 +3146,7 @@ public class CaptchaActivity extends AppCompatActivity {
         getHttpClient().clearNtkTransientLoads();
         Search.clearNtkResultCaches();
         detachCaptchaWebView();
-        destroyReleasedWebViewNow();
+        destroyReleasedWebViewLater();
         getHttpClient().saveClearanceToDisk();
         getHttpClient().markNtkAccessVerified();
         Log.d("CaptchaActivity", "finished with verified NTK clearance proof="
@@ -3486,7 +3486,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 target.destroy();
             } catch (Exception ignored) {
             }
-        }, 750L);
+        }, 1500L);
     }
 
     private void clearWebViewProxy() {

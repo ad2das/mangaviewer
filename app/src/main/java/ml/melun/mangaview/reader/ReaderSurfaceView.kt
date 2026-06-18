@@ -419,9 +419,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val endExclusive = min(pages.size, startIndex + removedCount)
             if (endExclusive <= startIndex) return
             rebuildLayoutLocked()
+            val viewportAnchor = progressPositionLocked()
             repeat(endExclusive - startIndex) { pages.removeAt(startIndex) }
             pageTopDeltas.clear()
             layoutDirty = true
+            rebuildLayoutLocked()
             if (pages.isEmpty()) {
                 setScrollOffsetLocked(0f)
                 lastAnchor = -1
@@ -439,6 +441,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     lockedRestoreOffset = 0
                 }
                 lastAnchor = lastAnchor.coerceIn(0, pages.lastIndex)
+                val adjustedAnchor = when {
+                    viewportAnchor == null -> null
+                    viewportAnchor.page >= endExclusive -> {
+                        viewportAnchor.copy(page = viewportAnchor.page - (endExclusive - startIndex))
+                    }
+                    viewportAnchor.page >= startIndex -> {
+                        viewportAnchor.copy(page = startIndex.coerceAtMost(pages.lastIndex), offset = 0)
+                    }
+                    else -> viewportAnchor
+                }
+                structuralScrollAdjustUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+                if (adjustedAnchor != null && adjustedAnchor.page in pages.indices) {
+                    val before = scrollOffset
+                    setScrollOffsetLocked(pageTopOrElseLocked(adjustedAnchor.page, 0f) - adjustedAnchor.offset)
+                    Log.d(
+                        TAG,
+                        "reader_remove_anchor_restore start=$startIndex removed=${endExclusive - startIndex} " +
+                            "anchor=${viewportAnchor?.page}:${viewportAnchor?.offset} " +
+                            "adjusted=${adjustedAnchor.page}:${adjustedAnchor.offset} " +
+                            "from=${before.toInt()} to=${scrollOffset.toInt()}"
+                    )
+                }
                 clampScrollLocked()
             }
             boundaryArmedDirection = 0
