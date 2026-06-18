@@ -25898,3 +25898,51 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Speed is still variable. `/manhwa/33992/1719506` can take ~21-22s to first drawable on emulator because page 0 bytes/decode/delivery can still lag even after early URL discovery.
   - Slow-frame signals remain in random runs, including one ~56ms draw sample. Current close-out scope is ACK correctness and placeholder-free viewport stability, not perfect 60fps.
   - The old non-main worktree should not be used for final status or commits unless it is intentionally cleaned/synced later.
+
+## 2026-06-18 18:36:00 +09:00 main branch synced and NTK anchor direct full hedge enabled
+
+- Branch/push discipline correction:
+  - The canonical worktree is now `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Switched it from the confusing local branch name `codex/main-ntk-sync` to actual local `main`.
+  - Confirmed local `main`, `origin/main`, and previous `codex/main-ntk-sync` all point at `4b3c6503638fdc3133af6209acdabe4a4891c8f4` before this patch.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` tree remains dirty on `codex/ntk-strict-ack-proof`; do not use it for main commits.
+- Problem:
+  - Slow target `/manhwa/33992/1719506` previously proved ACK and placeholder stability, but first drawable could still be ~21-22s.
+  - Log cause was not ACK/root/captcha. `p001.png` direct full foreground 200 responses were seen in ~250-800ms, while the anchor page still waited on generated range reassembly/full cache completion.
+  - The bad path was `generated_initial_range_first` for page 1: range reassembly was useful as a fallback, but on this anchor it delayed the full cached page even though direct full image fetch had already won.
+- Fix:
+  - Changed `ReaderImageCache.initialGeneratedDirectHedgeDelayMs(...)` so page 1 generated images start direct full hedge at `0ms`.
+  - Range reassembly remains active as backup; direct full 200 can now win immediately for the visible anchor.
+  - This is not a delay workaround. It changes fetch priority so the fastest valid full image response is used for the first visible page.
+- Test harness fix:
+  - UX tests had a false-negative mode: the app logged `reader_open_to_first_drawable`, but UIAutomator sometimes failed to see the `reader-drawable-ready` accessibility marker on `ReaderSurfaceView`.
+  - Updated `EpisodeActivityNetworkTest` reader-open assertions to accept either the accessibility marker or `ReaderV2Activity.testFirstDrawableElapsedMs() >= 0`.
+  - This keeps the test strict because `testFirstDrawableElapsedMs()` is set only when the app records the real first drawable event.
+- Validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Target repro artifact: `build/ntk-random-perf/20260618_182519`.
+    - Target `/manhwa/33992/1719506`, seed `1781772454241`, strict fresh, clear ACK/cache, force-stop, native ACK, append probe.
+    - Result: OK (1 test), failures 0.
+    - Strict ACK: `native-fetch-ack-200`, `strictAdAck=true`.
+    - Previous slow path improved:
+      - Before: `download_done` for p001 around `20084ms`, first drawable around `21714-22657ms`.
+      - After: `foregroundRaceWin` p001 `533ms`, `foregroundStreamDone` `6080ms`, `reader_open_to_first_drawable ... ms=921`, test firstDrawable appMs `15288` including ACK/preflight time.
+    - No `reader_visible_loading=1`, no `placeholderPx>0`, no `missingPx>0`, no timeout gate release.
+  - Live random artifact: `build/ntk-random-perf/20260618_182611`.
+    - Runs=2, strict fresh, clear ACK/cache, force-stop, live random required.
+    - Result: OK (1 test), failures 0.
+    - Cases included `/webtoon/9489/968470` and `/manhwa/26879/326464`.
+    - Strict ACK proofs: both `guard-fetch-ack-200`.
+    - First drawable app logs included `3506ms`, `673ms`, `5607ms`, and `168ms` for initial/append flows.
+    - No loading/placeholder/missing or timeout-release signals in the scan.
+  - Actual UX selection:
+    - Combined comic+webtoon after test harness fix: `build/ntk-ux-select/20260618_183229_anchor_direct_hedge_ux_retry`, OK (2 tests).
+    - Webtoon proof: `/webtoon/16968/1463195`, `reader_open_to_first_drawable ... ms=3086`, strict ACK `native-fetch-ack-200`.
+    - Comic-only proof: `build/ntk-ux-select/20260618_183436_anchor_direct_hedge_comic_only`, OK (1 test).
+    - Comic proof: `/manhwa/36525/1807424`, `reader_open_to_first_drawable ... ms=8088`, strict ACK `native-fetch-ack-200`.
+- Bad conclusion / bad approach to avoid:
+  - Do not treat UIAutomator missing `reader-drawable-ready` as proof the app did not render. Check app-side `reader_open_to_first_drawable` / `testFirstDrawableElapsedMs()` before calling it an app failure.
+  - Do not make page 1 depend primarily on generated range reassembly when a valid direct full foreground 200 is available quickly.
+- Remaining risk:
+  - ACK can still take several seconds on strict fresh. This patch reduces image anchor delay, not ACK server latency.
+  - Slow frame signals still exist in some scroll runs. Current scope is ACK correctness plus no placeholder/missing/loading exposure, with speed improved but not perfect.

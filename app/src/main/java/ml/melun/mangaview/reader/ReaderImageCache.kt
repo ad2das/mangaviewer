@@ -3821,6 +3821,9 @@ object ReaderImageCache {
     }
 
     private fun initialGeneratedDirectHedgeDelayMs(target: NtkGeneratedTarget?, page: Int): Long {
+        if (page <= 1) {
+            return 0L
+        }
         if (target?.path?.startsWith("/webtoon/", ignoreCase = true) == true) {
             return NTK_GENERATED_INITIAL_DIRECT_HEDGE_WEBTOON_DELAY_MS
         }

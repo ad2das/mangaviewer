@@ -1488,8 +1488,7 @@ public class EpisodeActivityNetworkTest {
     private static void assertReaderOpened(UiDevice device, String label) {
         UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 60000L);
         assertNotNull("Expected tapping a " + label + " episode to open the reader", strip);
-        UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
-        assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
+        assertReaderFirstDrawable(device, label);
     }
 
     private static void clickFreshEpisodeRow(UiDevice device, UiObject2 row) throws Exception {
@@ -1530,8 +1529,7 @@ public class EpisodeActivityNetworkTest {
         while(System.currentTimeMillis() < deadline) {
             UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
             if(strip != null) {
-                UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
-                assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
+                assertReaderFirstDrawable(device, label);
                 return;
             }
             if(isCaptchaShown(device))
@@ -1547,8 +1545,7 @@ public class EpisodeActivityNetworkTest {
         while(System.currentTimeMillis() < deadline) {
             UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
             if(strip != null) {
-                UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
-                assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
+                assertReaderFirstDrawable(device, label);
                 return;
             }
             UiObject2 captcha = device.findObject(By.res(PACKAGE_NAME, "captchaContainer"));
@@ -1565,11 +1562,49 @@ public class EpisodeActivityNetworkTest {
         }
         UiObject2 strip = device.findObject(By.res(PACKAGE_NAME, "strip"));
         if(strip != null) {
-            UiObject2 firstDrawable = device.wait(Until.findObject(By.desc("reader-drawable-ready")), 60000L);
-            assertNotNull("Expected tapping a " + label + " episode to render the first reader image", firstDrawable);
+            assertReaderFirstDrawable(device, label);
             return;
         }
         assertCaptchaShown(device, label);
+    }
+
+    private static void assertReaderFirstDrawable(UiDevice device, String label) {
+        long deadline = System.currentTimeMillis() + 60000L;
+        while(System.currentTimeMillis() < deadline) {
+            UiObject2 marker = device.findObject(By.desc("reader-drawable-ready"));
+            if(marker != null)
+                return;
+            ReaderV2Activity reader = activeReaderActivity();
+            if(reader != null) {
+                final long[] elapsedMs = new long[]{-1L};
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                        elapsedMs[0] = reader.testFirstDrawableElapsedMs());
+                if(elapsedMs[0] >= 0L)
+                    return;
+            }
+            try {
+                Thread.sleep(100L);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        fail("Expected tapping a " + label + " episode to render the first reader image");
+    }
+
+    private static ReaderV2Activity activeReaderActivity() {
+        AtomicReference<ReaderV2Activity> result = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED);
+            for(Activity activity : activities) {
+                if(activity instanceof ReaderV2Activity) {
+                    result.set((ReaderV2Activity) activity);
+                    return;
+                }
+            }
+        });
+        return result.get();
     }
 
     private static boolean isCaptchaShown(UiDevice device) {
