@@ -926,7 +926,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else {
             INITIAL_READY_MANHWA_AHEAD_PAGES
         }
-        val firstRequired = if (!firstDrawableMetricLogged && initialStartAtFirstPage && currentPage == 0) 0 else currentPage
+        val firstRequired = if (!firstDrawableMetricLogged && initialStartAtFirstPage) 0 else currentPage
         val lastRequired = minOf(pageCount - 1, firstRequired + readyAhead)
         for (page in firstRequired..lastRequired) {
             if (!launchDrawableMetricPages.contains(page)) return false
@@ -944,7 +944,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun maybeReleaseInitialNtkContinuousGate(reason: String) {
         if (!isCurrentNtkReader() || firstDrawableMetricLogged) return
         if (!isInitialContinuousScrollReady()) return
-        val firstDrawablePage = if (initialStartAtFirstPage && currentPage == 0) 0 else currentPage
+        val firstDrawablePage = if (initialStartAtFirstPage) 0 else currentPage
         logFirstDrawableMetric(firstDrawablePage, reason)
         releaseInitialDrawGate(reason)
     }
@@ -998,7 +998,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun logLaunchDrawableMetric(index: Int, kind: String) {
         if (viewerLaunchStartedAtMs <= 0L) return
-        val first = currentPage
+        val first = if (!firstDrawableMetricLogged && initialStartAtFirstPage) 0 else currentPage
         if (index < first || index > first + 2) return
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         if (kind == "error" && isCurrentNtkReader()) {
@@ -2669,15 +2669,35 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     fun testPrepareForNextLaunch() {
+        destroyed = true
         ntkAckPreflightGeneration.incrementAndGet()
+        currentManga?.ntkEpisodePath?.let { path ->
+            ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "test-next-launch")
+        }
+        progressHandler.removeCallbacks(saveProgressRunnable)
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        statusHandler.removeCallbacks(showAdjacentStatusRunnable)
+        statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
         statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
         statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
         statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
-        session?.cancel()
-        session = null
+        statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
+        missingEpisodePromptState.dismiss()
+        removeInitialDrawGateListener()
+        pendingProgressInfo = null
+        pendingBoundaryStatus = false
+        pendingBoundaryCaptchaRetry = false
+        pendingPrependRevealRequests = 0
+        deferredBoundaryDirection = 0
+        deferredBoundaryAnchor = -1
         getHttpClient().cancelNtkWebViewFallbacks()
+        renderView.setWindowListener(null)
         renderView.stopRenderingAndClearPages()
         clearPendingPageCallbacks()
+        session?.cancel()
+        session = null
     }
 
     fun testCurrentProgressPosition(): ReaderSurfaceView.ProgressPosition? {

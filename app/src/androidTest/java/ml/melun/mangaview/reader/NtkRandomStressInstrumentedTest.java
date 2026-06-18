@@ -18,6 +18,8 @@ import android.webkit.CookieManager;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
+import androidx.test.runner.lifecycle.Stage;
 import androidx.test.uiautomator.By;
 import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.Until;
@@ -31,6 +33,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -1496,8 +1499,7 @@ public class NtkRandomStressInstrumentedTest {
                     + ",scrollPattern=" + scrollPattern
                     + ",hasNext=" + (nextEpisode != null)
                     + ",hasPrevious=" + (previousEpisode != null));
-            activity = InstrumentationRegistry.getInstrumentation()
-                    .startActivitySync(viewerIntent(context, title, episode));
+            activity = startReaderActivityWithoutIdle(context, viewerIntent(context, title, episode), 12_000L);
             ReaderV2Activity reader = activity instanceof ReaderV2Activity ? (ReaderV2Activity) activity : null;
             long firstDrawableWaitMs = firstDrawableMaxMs > 0L
                     ? Math.max(1500L, firstDrawableMaxMs + 1000L)
@@ -1647,8 +1649,7 @@ public class NtkRandomStressInstrumentedTest {
                     + ",mode=" + mode
                     + ",path=" + episode.getNtkEpisodePath()
                     + ",previousPath=" + previousEpisode.getNtkEpisodePath());
-            activity = InstrumentationRegistry.getInstrumentation()
-                    .startActivitySync(viewerIntent(context, title, episode));
+            activity = startReaderActivityWithoutIdle(context, viewerIntent(context, title, episode), 12_000L);
             boolean ready = waitForDrawableReady(activity, device, 16000L);
             long firstMs = SystemClock.elapsedRealtime() - startedAt;
             assertTrue("Expected first drawable before previous append run=" + run
@@ -1684,6 +1685,37 @@ public class NtkRandomStressInstrumentedTest {
             SystemClock.sleep(25L);
         Log.d(TAG, "ntk_true_random_activity_finish_wait destroyed=" + activity.isDestroyed()
                 + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
+    }
+
+    private static Activity startReaderActivityWithoutIdle(Context context, Intent intent, long timeoutMs) {
+        AtomicReference<Activity> resumedReader = new AtomicReference<>();
+        long startedAt = SystemClock.elapsedRealtime();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> context.startActivity(intent));
+        long deadline = SystemClock.elapsedRealtime() + Math.max(1L, timeoutMs);
+        while(SystemClock.elapsedRealtime() < deadline) {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(Stage.RESUMED);
+                for(Activity candidate : activities) {
+                    if(candidate instanceof ReaderV2Activity
+                            && !candidate.isFinishing()
+                            && !candidate.isDestroyed()) {
+                        resumedReader.set(candidate);
+                        break;
+                    }
+                }
+            });
+            Activity activity = resumedReader.get();
+            if(activity != null) {
+                Log.d(TAG, "ntk_true_random_activity_launch_resumed ms="
+                        + (SystemClock.elapsedRealtime() - startedAt)
+                        + ",activity=" + activity);
+                return activity;
+            }
+            SystemClock.sleep(50L);
+        }
+        throw new RuntimeException("ReaderV2Activity did not reach RESUMED within "
+                + timeoutMs + "ms for " + intent);
     }
 
     private static Intent viewerIntent(Context context, Title title, Manga episode) {

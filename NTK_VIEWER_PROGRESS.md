@@ -27913,3 +27913,51 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - This closes the current ACK/stability slice, not the full long-tail random/performance objective.
   - Broader random, cache-deleted, restart, append/prepend, and low-resource sweeps are still required before claiming global NTK viewer perfection.
+
+## 2026-06-19 16:15:00 +09:00 main random launch and stream extension stability
+
+- Main worktree correction:
+  - Continued in `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on `main`; the older `mangaviewer` folder is not the branch to finish/push from.
+- Accepted fixes:
+  - `NtkRandomStressInstrumentedTest` no longer uses `startActivitySync(...)` for reader launches in random stress paths.
+  - The test now starts the reader on the main thread and waits for a resumed `ReaderV2Activity` via `ActivityLifecycleMonitorRegistry`, avoiding false `startActivitySync` idle timeouts while the reader is legitimately rendering/gating.
+  - `ReaderV2Activity.testPrepareForNextLaunch()` now clears the same core callbacks/state as real teardown: progress/status runnables, initial gate listener, prompt state, pending boundary/prepend state, WebView fallbacks, render window listener, pages, callbacks, session, and ACK launch hold.
+  - NTK start-at-first-page initial readiness now anchors on page `0` even if `currentPage` temporarily drifts to `1` before initial draw release. This prevents over-waiting for a nonvisible later page when page 0 is already drawable.
+  - `ReaderImageCache.isTrustedNtkGeneratedStreamResponse(...)` now accepts host-matched trusted generated stream responses for `/stream.jpg`, `/stream.jpeg`, `/stream.png`, and `/stream.webp`, while still rejecting ad/captcha/challenge/disallowed asset paths.
+- Bad approaches / do not repeat:
+  - Running random stress with `-SkipInstall` after changing androidTest code invalidates evidence; it keeps the old test APK installed and can make a fixed harness look broken.
+  - Treating `startActivitySync` timeout as an app launch failure was misleading here. The reader had reached `RESUMED`; instrumentation was waiting for full queue idle during active rendering/gate work.
+  - Using stale package names for direct UX tests wastes time. The current actual UX class is `ml.melun.mangaview.EpisodeActivityNetworkTest`, not `ml.melun.mangaview.activity.EpisodeActivityNetworkTest`.
+  - Running actual UX tests without `runLiveNetworkTests=true` only produces skipped tests, not useful proof.
+- Failures found and fixed:
+  - `build/ntk-random-perf/main_no_idle_launch_random3_append2_installed_20260619/20260619_065711`:
+    - Target `/manhwa/12453/128999`.
+    - ACK strict 200 succeeded, but first drawable failed because start-at-first-page readiness required from transient `currentPage=1` instead of page `0`.
+  - `build/ntk-random-perf/main_start_page_zero_random3_append2_20260619/20260619_070136`:
+    - Target `/webtoon/2823/938054`.
+    - Failure was not ACK. Real image fetch returned 200 but final URL was `stream.webp`; only `stream.png` was accepted, so p001 was rejected as untrusted and the initial gate stayed pending.
+- Validation:
+  - Target repro `/manhwa/12453/128999`:
+    - Artifact: `build/ntk-random-perf/main_start_page_zero_repro_manhwa12453_20260619/20260619_070051`.
+    - Result: passed.
+    - First drawable `2265ms`; ACK `5207ms`; `nativeSubmit@/code=200`; scroll `8`; failures `0`.
+  - Target repro `/webtoon/2823/938054`:
+    - Artifact: `build/ntk-random-perf/main_stream_webp_repro_webtoon2823_20260619/20260619_070324`.
+    - Result: passed.
+    - First drawable `2349ms`; ACK `6710ms`; `nativeSubmit@/code=200`; scroll `8`; failures `0`.
+  - Live random strict fresh with append:
+    - Artifact: `build/ntk-random-perf/main_stream_ext_random3_append2_20260619/20260619_070425`.
+    - Result: passed.
+    - Seed `1781819191558`; cases `3`; unique episode paths `3`; scroll `24`; failures `0`; coverage `live-random`.
+    - ACK preflight succeeded for all completed runs; summary includes strict `nativeSubmit@/code=200` and per-run `ack_only_fetch`.
+    - Max first drawable in summary pipeline was `4174ms`.
+  - Actual UX webtoon selection:
+    - Command: `.\gradlew.bat --no-daemon :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" "-Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true"`.
+    - Result: build/test passed, 1 test executed, 0 skipped, 0 failed.
+  - Actual UX comic selection:
+    - Command: `.\gradlew.bat --no-daemon :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200" "-Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true"`.
+    - Result: build/test passed, 1 test executed, 0 skipped, 0 failed.
+- Current conclusion:
+  - ACK is not the blocker in this slice; strict `/api/ad/ack` 200 is repeatedly proven in target and random tests.
+  - The latest blockers were false test harness idle waiting, initial page anchor selection, and valid trusted generated stream extension handling.
+  - Remaining risk is still long-tail NTK diversity and low-resource/cache-deleted/restart sweeps, but the current main branch slice is ready to commit/push.

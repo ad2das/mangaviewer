@@ -1901,7 +1901,8 @@ object ReaderImageCache {
             val actualHost = actualUri.host?.lowercase().orEmpty()
             requestedHost.isNotBlank() &&
                 requestedHost == actualHost &&
-                actualUri.path.orEmpty().equals("/stream.png", ignoreCase = true)
+                Regex("^/stream\\.(jpg|jpeg|png|webp)$", RegexOption.IGNORE_CASE)
+                    .matches(actualUri.path.orEmpty())
         } catch (_: Exception) {
             false
         }
