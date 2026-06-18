@@ -13,6 +13,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_comic;
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class MainPageWebtoonTest {
@@ -356,6 +357,26 @@ public class MainPageWebtoonTest {
         assertEquals(1, filtered.size());
         assertEquals(15538, filtered.get(0).getId());
         assertEquals("건객", filtered.get(0).getName());
+    }
+
+    @Test
+    public void fastNtkHomePreviewTitlesUseCanonicalNtkPaths() {
+        List<Ranking<?>> dataset = MainPageWebtoon.getFastHomePreviewDataSet(base_webtoon, true);
+        Title first = null;
+        for(Ranking<?> ranking : dataset) {
+            if(ranking == null || ranking.size() == 0)
+                continue;
+            Object item = ranking.get(0);
+            if(item instanceof Title) {
+                first = (Title) item;
+                break;
+            }
+        }
+
+        assertNotNull("Expected a fast NTK home preview title", first);
+        assertEquals("ntk", first.getSourceSite());
+        assertEquals("/webtoon/17801", first.getPath());
+        assertEquals("/webtoon/17801", first.getUrl());
     }
 
     public void parseWolfTitlesReadsNtkSearchResultCards() {

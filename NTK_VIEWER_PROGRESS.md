@@ -25406,3 +25406,47 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Strict 60fps/jank is not solved. The strict run still failed on one dropped frame; this is accepted only because the current requested close-out is ACK and stability, not speed perfection.
   - The stability-only log still has transient `reader_visible_loading=1` / placeholder pixels during intermediate frames before settled scroll samples. It did not persist into settled assertions, but the original ideal of literally never showing placeholders in any transient frame is still not fully proven.
   - Actual UX comic can still be slow (`8004ms` first drawable) under strict fresh ACK; acceptable only under the current speed compromise.
+
+## 2026-06-18 15:15:44 +09:00 Actual MainActivity home continue UX ACK proof stabilized
+
+- Continued after context compaction by reading this file and checking the active goal.
+- User asked to test "actual UX" by directly selecting manga/webtoon, not only direct Activity launches.
+- New actual-home UX coverage:
+  - Added `EpisodeActivityNetworkTest#ntkHomeContinueUxSelectionOpensReaderWithAck200`.
+  - The test seeds a real NTK "이어보기" card in `MainActivity`, finds the visible NTK site icon/card, taps the card center like a user, opens the reader, waits for strict ACK 200, checks settled visible coverage, and saves a screenshot.
+  - The test now also verifies real screenshot pixels. If the first visible page is a black title/transition page, it scrolls and retries until non-blank image pixels are visible.
+- Root cause fixed:
+  - Fast NTK home preview titles were missing NTK source/path metadata, so some actual home selections could degrade to WFWF-style `/list?toon={id}` paths.
+  - `MainPageWebtoon.previewTitle(..., ntk=true)` now sets `sourceSite="ntk"` and canonical `/webtoon/{id}` or `/manhwa/{id}` path.
+  - Added unit coverage: `MainPageWebtoonTest.fastNtkHomePreviewTitlesUseCanonicalNtkPaths`.
+- ACK bridge hardening:
+  - Previous failing home UX run opened the correct `/webtoon/16968/1463195` reader and drew images, but strict `/api/ad/ack` proof was missing.
+  - Log shape of that failure: native challenge/cookie ACK was recorded with `strictAdAck=false`; canary was OK; realframe POST to `/api/ad/ack` existed, but JS fetch wrapper did not capture `nativeAckFetchBody/Response`.
+  - `NtkWebViewFallbackManager` now allows non-empty `/api/ad/ack` POSTs through the bridge/XHR path so Java can see body/headers and record proof. Empty-body ACK attempts still fall back to native XHR to avoid bridging useless blank ACKs.
+- Validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Unit test: first attempt failed due local Windows PATH quoting (`C:\Program Files\PowerShell\7"`), producing `ClassNotFoundException: Files\nodejs...`; after removing quotes only for the command, `:app:testDebugUnitTest --tests MainPageWebtoonTest.fastNtkHomePreviewTitlesUseCanonicalNtkPaths` passed. This was environment/tooling, not assertion failure.
+  - Actual MainActivity home continue UX:
+    - Artifact: `build/ntk-ux-select/20260618_151152_home_continue_ux_nonblank_clean`.
+    - Result: `OK (1 test)`.
+    - First drawable: `reader_open_to_first_drawable source=ntk kind=initial_continuous page=0 ms=1168`.
+    - Coverage: `reader_visible_loading=0`, `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`.
+    - ACK: `/api/ad/ack` `nativeAckFetchResponse status=200`, body `ok=true`, `seen=4`, `expected=4`; strict proof `source=native-fetch-ack-200,strictAdAck=true`.
+    - Visual proof: first screenshot attempt had `nonblank pixels=0` because page 0 is an actual black page; after a scroll, `nonblank pixels=1231360`, screenshot is real webtoon content, not ad/captcha/blank.
+  - Direct UX webtoon regression:
+    - Artifact: `build/ntk-ux-select/20260618_151301_direct_ux_regression_after_home_ack`.
+    - Result: included in `OK (2 tests)`.
+    - First drawable: `1941ms`; coverage `missingPx=0`, `placeholderPx=0`; strict ACK `native-fetch-ack-200`.
+  - Direct UX comic regression:
+    - Artifact: `build/ntk-ux-select/20260618_151417_direct_comic_regression_after_home_ack`.
+    - Result: `OK (1 test)`.
+    - First drawable: `5666ms`; coverage `missingPx=0`, `placeholderPx=0`; strict ACK `native-fetch-ack-200`.
+- Bad approaches / mistakes recorded:
+  - Raw coordinate tapping on home cards is unreliable unless the app is known foreground and coordinates come from the current app window. After instrumentation timeout, launcher can be on top while stale `MainActivity` appears in `dumpsys`; manual tap evidence from that state is invalid.
+  - A screenshot can be technically valid but visually useless if the first comic/webtoon page is a black title/transition page. Do not treat a tiny/black screenshot as content proof; use pixel checks and scroll to a non-blank reader image.
+  - Challenge/cookie records such as `native-challenge-ad-ack-cookie-200` or `bridge-challenge-ad-ack-cookie-200` are not final ACK success. Only strict `/api/ad/ack` proof with `strictAdAck=true` counts.
+  - Unit-test failures caused by malformed Windows PATH quoting can look like classpath/test failures. Sanitize quotes in the command environment before trusting the result.
+- Current status:
+  - Actual MainActivity home continue selection, direct webtoon selection, and direct comic selection all reach real NTK reader content and strict ACK 200 on `emulator-5554`.
+  - Speed is acceptable under the current compromise: webtoon/home path is fast, direct comic remains slower but stable.
+  - Strict jank/never-transient-placeholder perfection remains outside this close-out slice; ACK and stability are the focus now.
