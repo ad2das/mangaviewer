@@ -25117,3 +25117,69 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The specific actual UX request is satisfied for direct comic/webtoon selection.
   - The known target random repro now passes with stricter placeholder accounting and 5s first-draw budget.
   - Speed is being treated as a compromise per user direction; ACK stability and no settled blank/placeholder are the priority.
+
+## 2026-06-18 13:05:00 +09:00 Actual UX ACK/visual stability fixed again after guard and anchor-previous failures
+
+- Context:
+  - Continued from compaction by reading this file and checking active goal.
+  - User asked to test like real UX by directly selecting manga/webtoon, because actual selection path matters more than synthetic-only launch.
+  - Emulator: API35 `emulator-5554`.
+- ACK failure found:
+  - Artifact `build/ntk-ux-select/20260618_123337_actual_ux_direct_webtoon`.
+  - Actual UX webtoon opened the reader and image coverage was good:
+    - `reader_open_to_first_drawable ... ms=2737`
+    - `reader_visible_loading=0`
+    - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0`
+  - `/api/ad/challenge` bridge returned `200` and scoped `ad_ack_c`, but `/api/ad/ack` returned `409 challenge_used` with server `seen=0`.
+  - Captcha/Turnstile probe was `type=none`; this was not a visible captcha screen problem.
+- Bad approach / bug recorded:
+  - Returning a local tiny gif from `bridgeMetricImageHitResponse()` for recent `/api/m/i` metric images made impression GETs look locally satisfied but prevented server-side impression counting.
+  - Do not fake or short-circuit ACK impression image URLs; they must reach the server.
+- ACK fixes:
+  - `NtkWebViewFallbackManager` now lets recent metric image hits continue to network instead of returning a local fake response.
+  - Guard module batch fetch now gives `/api/ad/guard-js` and `/api/ad/guard-wasm` longer timeout.
+  - ACK-only sync guard loader now waits longer and falls back to the previous loader instead of ending with `guardProofMissing/module`.
+  - Duplicate diagnostic augmented bridge submit for native ACK fetch was disabled. Native browser fetch already returns `/api/ad/ack` `200`; the extra bridge submit reused the same challenge and produced confusing post-success `409 challenge_used` noise.
+- Intermediate ACK proof after guard fix:
+  - Artifact `build/ntk-ux-select/20260618_124520_actual_ux_direct_webtoon_guard_timeout_fallback`.
+  - Guard loaded: `ackOnlySyncGuardModule ... wasmBytes=402526 ... ms=4318`, `ackOnlySyncGuardDefaultInit loaded=true`.
+  - Impressions reached server: `directAckImpsComplete seen=4 submitted=4`.
+  - Actual fetch ACK succeeded: `nativeAckFetchResponse status=200`, body `ok=true`, `seen=4`.
+  - Post-success duplicate bridge still produced `409`; this is now removed.
+- Actual UX visual failure found:
+  - Artifact `build/ntk-ux-select/20260618_124929_actual_ux_direct_comic_manual_instrument_screenshot`.
+  - Actual comic UX failed strict visual check:
+    - `reader_visible_loading=1`
+    - `visibleItems=3:-827.1-738.9:empty|4:738.9-2274.0:draw`
+    - `placeholderPx=739`
+  - Root cause:
+    - In continuous manga mode, the first drawable could be committed for page 4/5, then the restored/settled viewport shifted to page 3/4 while page 3 was still empty.
+    - Later retry showed the persistent form: saved/restored anchor `5` with offset `738` means `anchor-1` is visibly clipped at the top. Initial continuous requests only fetched anchor and forward pages, so `anchor-1` could remain `load`.
+- Visual fixes:
+  - Initial generated start promotion now requires the previous page when promoting more than one page forward.
+  - Initial held-delivery flush includes a prepared previous page when it can be visible above a promoted start.
+  - Initial continuous NTK request now foreground-requests `startPage - 1` when `startPage > 0`.
+  - `NtkEpisodeCoordinator` now allows `anchorPageIndex - 1` as an initial near page, so the previous visible page is not blocked by anchor-exclusive gating.
+- Final actual UX validation:
+  - Webtoon final artifact: `build/ntk-ux-select/20260618_130043_actual_ux_direct_webtoon_final_ack_visual`.
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+    - Result: `OK (1 test)`, manual `am instrument` path.
+    - First drawable: `3567ms`.
+    - Visual: `reader_visible_loading=0`, `placeholderPx=0`, `missingPx=0`.
+    - ACK: `nativeAckFetchResponse status=200`, `seen=4`, `ntk_server_ack_success_recorded ... strictAdAck=true`.
+    - Negative grep: no `reader_visible_loading=[1-9]`, no `placeholderPx=[1-9]`, no `code=409`, no `challenge_used`.
+    - Screenshot `webtoon_reader.png` is a real PNG (`699762` bytes) and visually shows webtoon art, not ad-only/black/blank.
+  - Comic final artifact: `build/ntk-ux-select/20260618_130005_actual_ux_direct_comic_anchor_previous_foreground`.
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+    - Result: `OK (1 test)`, manual `am instrument` path.
+    - First drawable: `4357ms`.
+    - Visual: `reader_visible_loading=0`, `placeholderPx=0`, `missingPx=0`.
+    - ACK: `nativeAckFetchResponse status=200`, `seen=4`, `ntk_server_ack_success_recorded ... strictAdAck=true`.
+    - Negative grep: no `reader_visible_loading=[1-9]`, no `placeholderPx=[1-9]`, no `code=409`, no `challenge_used`.
+    - Screenshot `comic_reader.png` is a real PNG (`2376464` bytes) and visually shows manga pages, not ad-only/black/blank.
+- Test speed improvement:
+  - For actual UX loops, direct APK install + `adb shell am instrument ...` keeps app data available and avoids Gradle connected-test uninstall behavior.
+  - This reduced actual UX validation loops to roughly 10-13 seconds per test after build, and allows immediate `run-as` screenshot pull.
+- Remaining risk:
+  - This slice validates direct actual UX comic/webtoon ACK and first-screen visual stability.
+  - Broad randomized fast-scroll/jank regression is still a separate risk area; current user priority is ACK/stability over speed.

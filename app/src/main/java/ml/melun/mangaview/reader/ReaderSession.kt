@@ -694,6 +694,7 @@ class ReaderSession(
         val seed = urls.firstOrNull { isNtkGeneratedImageUrl(it) } ?: return urls
         val knownCount = target.ntkImageCount
         val desiredCount = when {
+            knownCount > urls.size && knownCount <= NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD -> knownCount
             knownCount > urls.size -> minOf(knownCount, NTK_GENERATED_INITIAL_RECOVERY_PAGES)
             else -> maxOf(urls.size, NTK_GENERATED_INITIAL_RECOVERY_PAGES)
         }
@@ -774,6 +775,14 @@ class ReaderSession(
             )
         }
         val count = synchronized(pagesLock) { pages.size }
+        if (startPage > 0) {
+            requestPage(
+                startPage - 1,
+                busy = true,
+                anchor = false,
+                generation = FOREGROUND_PRIME_WARM_GENERATION
+            )
+        }
         val last = minOf(count - 1, effectiveUrlCount - 1, startPage + NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES - 1)
         if (last <= startPage) return
         for (index in (startPage + 1)..last) {
@@ -965,7 +974,16 @@ class ReaderSession(
     ) {
         if (cancelled.get() || urls.isEmpty()) return
         val verifiedApiUrls = ReaderImageCache.cachedNtkApiFallbackImages(target.ntkEpisodePath)
-        var sourceUrls = if (verifiedApiUrls.isNotEmpty() && verifiedApiUrls.size < urls.size) {
+        val knownGeneratedCount = target.ntkImageCount
+        val shouldReplaceWithShortVerifiedApi =
+            verifiedApiUrls.isNotEmpty() &&
+                verifiedApiUrls.size < urls.size &&
+                (
+                    knownGeneratedCount <= 0 ||
+                        verifiedApiUrls.size >= knownGeneratedCount ||
+                        urls.none { isNtkGeneratedImageUrl(it) }
+                )
+        var sourceUrls = if (shouldReplaceWithShortVerifiedApi) {
             Log.d(
                 TAG,
                 "reader_ntk_generated_full_replace_with_verified_api path=${target.ntkEpisodePath}," +
@@ -973,6 +991,13 @@ class ReaderSession(
             )
             verifiedApiUrls
         } else {
+            if (verifiedApiUrls.isNotEmpty() && verifiedApiUrls.size < urls.size) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_generated_full_keep_known_count path=${target.ntkEpisodePath}," +
+                        "generated=${urls.size},verified=${verifiedApiUrls.size},known=$knownGeneratedCount"
+                )
+            }
             urls
         }
         sourceUrls = filterKnownMissingGeneratedInitialUrls(target, sourceUrls, loadStartedAt)
@@ -5576,9 +5601,20 @@ class ReaderSession(
         for (index in (oldStart + 1)..last) {
             val delivery = initialDeliveryBacklog[index]?.let { deliveryAtCurrentIndex(it) } ?: continue
             if (!isNtkGeneratedImageUrl(delivery.page.image.orEmpty())) continue
+            if (index > oldStart + 1 && !initialPreviousPageReadyForPromotedStart(index)) continue
             if (index == oldStart + 1 || initialHeldViewportReadyFrom(index)) return index
         }
         return null
+    }
+
+    private fun initialPreviousPageReadyForPromotedStart(index: Int): Boolean {
+        val previousIndex = index - 1
+        if (previousIndex < 0) return true
+        if (hasDeliveredBitmap(previousIndex)) return true
+        val previousDelivery = initialDeliveryBacklog[previousIndex]?.let { deliveryAtCurrentIndex(it) }
+            ?: return false
+        if (previousDelivery.index != previousIndex) return false
+        return resultDrawHeightPx(previousDelivery.result) > 0f
     }
 
     private fun clearInitialStaleLoadingBeforePromotedStart(oldStart: Int, newStart: Int) {
@@ -5757,14 +5793,15 @@ class ReaderSession(
         val count = synchronized(pagesLock) { pages.size }
         val requiredHeight = max(1, viewerHeight).toFloat()
         var coveredHeight = 0f
-        var firstImmediate = start
+        val promotedPrevious = if (start > 0 && byIndex.containsKey(start - 1)) start - 1 else start
+        var firstImmediate = promotedPrevious
         var lastImmediate = start
-        var index = start
+        var index = promotedPrevious
         val anchorAlreadyDelivered = !byIndex.containsKey(start) && hasDeliveredBitmap(start)
         if (anchorAlreadyDelivered) {
-            firstImmediate = start + 1
+            firstImmediate = if (promotedPrevious < start) promotedPrevious else start + 1
             lastImmediate = start
-            index = start + 1
+            index = if (promotedPrevious < start) promotedPrevious else start + 1
         }
         while (index < count) {
             val delivery = byIndex[index] ?: break
@@ -6581,7 +6618,7 @@ class ReaderSession(
         private const val NTK_VISIBLE_GENERATED_BYTE_HEDGE_DELAY_MS = 0L
         private const val NTK_PRE_ANCHOR_FALLBACK_RETRY_MS = 60L
         private const val NTK_PRE_ANCHOR_FALLBACK_MAX_AHEAD = 8
-        private const val NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD = 3
+        private const val NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD = 8
         private const val NTK_EARLY_URL_HANDOFF_WAIT_MS = 4200L
         private const val NTK_EARLY_URL_LATE_HANDOFF_WAIT_MS = 30000L
         private const val NTK_EARLY_URL_POLL_MS = 16L
