@@ -26632,3 +26632,42 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - ACK latency is improved and stable enough for current close-out, but one random case still showed about `26.6s` ACK wait before the later `8.5s` case.
   - `surface_jank_v3` callback-gap noise and occasional real slow frames still exist in emulator logs, though visible missing/placeholder pixels and scroll drift did not reproduce.
+
+## 2026-06-18 23:08:00 +09:00 Main branch follow-up random and UX ACK validation
+
+- Continued after context compaction and rechecked active goal.
+- Important branch correction:
+  - The canonical committed work is in `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on `main`.
+  - `main` and `origin/main` were both at `55aed8238 Stabilize NTK ACK signed bridge body handling` before this note.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` folder is still on `codex/ntk-strict-ack-proof` with many dirty/untracked experiment files and should not be treated as the final main-branch state.
+- Additional strict fresh random validation:
+  - Command: `tools/ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 3 -ScrollSteps 2 -AppendSteps 12 -Mode native-ack -ScrollPattern mixed -StrictFresh -ClearAck -ClearImageCache -RequireLiveRandom -FirstDrawableMaxMs 30000 -MaxDroppedFrames 999 -MaxMissedFrames 999 -RenderFrameMaxMs 1000 -SkipBuild -ForceStopBeforeRun`.
+  - Artifact: `build/ntk-random-perf/20260618_230329`.
+  - Result: `passed=True`, failures `0`, seed `1781791409419`.
+  - Coverage: `live-random`, `cases=3`, `uniqueEpisodePaths=3`, `uniqueTitlePaths=3`, API title source count `3`.
+  - Cases:
+    - Run 0: `/webtoon/765804/1133799`, imageCount `84`, title `A.I. 닥터`.
+    - Run 1: `/manhwa/12234/128098`, imageCount `66`, title `아르카이크 스마일`.
+    - Run 2: `/webtoon/9757/955351`, imageCount `48`, title `모어 라이프`.
+  - First drawable:
+    - Run 0: `4778ms` metric, observed `14850ms`.
+    - Run 1: `3847ms`.
+    - Run 2: `2687ms`.
+  - ACK:
+    - All `ackChecks` passed with `strictProof=true` and `nativeBridgeAck200=true`.
+    - Run 0 proof included `ntk_ack_proof source=guard-fetch-ack-200`, `tp=6dbef68b11d6cbfd`, `nativeSubmit code=200`, and `ntk_webview_ack_preflight_done ... ms=30760`.
+    - Run 1 `ntk_webview_ack_preflight_done ... ms=7026`; `ntk_true_random_ack_wait ... ms=9752`.
+    - Run 2 `ntk_webview_ack_preflight_done ... ms=8056`; `ntk_true_random_ack_wait ... ms=10851`.
+  - Image/scroll:
+    - All settled scroll samples had `missingPx=0`, `placeholderPx=0`, `loading=0`, errors `0`.
+    - All post-stop drift samples stayed at `maxPageDelta=0`, `maxOffsetDelta=0`.
+    - Append next/previous passed where available; run 1 had no next.
+- Additional comic UX direct selection validation:
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+  - Result: `OK (1 test)`, time `52.401s`.
+- Important interpretation / do not regress:
+  - Do not treat `ack_only_fetch done=false earlyStrictProof=true` as ACK failure. In this case strict proof and `nativeBridgeAck200` already prove correctness, but the delayed ACK-only preflight completion still marks a cleanup/latency issue worth future investigation.
+  - Do not switch back to unsigned augmented bridge ACK posts; that was already recorded as a bad approach because it produced `missing_challenge`/invalid-body behavior.
+- Remaining risk:
+  - ACK correctness is currently stable on main in strict fresh random and UX tests, but ACK-only WebView cleanup/preflight tail latency can still stretch to about `30.7s` on one random case.
+  - `surface_jank_v3` callback gaps and some `reader_slow_frame` draw spikes around `20-42ms` remain, though visible loading/blank pixels and scroll drift did not reproduce in this validation.
