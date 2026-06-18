@@ -221,6 +221,7 @@ class ReaderSession(
     private val bytePrefetching = ConcurrentHashMap.newKeySet<Int>()
     private val preAnchorFallbackRetries = ConcurrentHashMap.newKeySet<Int>()
     private val visibleGeneratedByteHedges = ConcurrentHashMap.newKeySet<Int>()
+    private val visibleGeneratedDecodeHedges = ConcurrentHashMap.newKeySet<Int>()
     private val idleFullWidthUpgradeScheduled = ConcurrentHashMap.newKeySet<Int>()
     private val failedPages = ConcurrentHashMap.newKeySet<Int>()
     private val transientGeneratedRetries = ConcurrentHashMap<Int, Int>()
@@ -1052,6 +1053,7 @@ class ReaderSession(
                 inFlightWidths.clear()
                 bytePrefetching.clear()
                 visibleGeneratedByteHedges.clear()
+                visibleGeneratedDecodeHedges.clear()
                 total = pages.size
             } else {
                 beginStructurePublish()
@@ -2076,6 +2078,7 @@ class ReaderSession(
         lastUserInteractionMs.set(0L)
         urgentLoading.clear()
         visibleGeneratedByteHedges.clear()
+        visibleGeneratedDecodeHedges.clear()
         for (cancellation in repositoryCancellations.toList()) {
             cancellation.cancel()
         }
@@ -3064,6 +3067,7 @@ class ReaderSession(
         bytePrefetching.clear()
         preAnchorFallbackRetries.clear()
         visibleGeneratedByteHedges.clear()
+        visibleGeneratedDecodeHedges.clear()
         idleFullWidthUpgradeScheduled.clear()
         synchronized(deliveredBitmaps) {
             val oldEntries = deliveredBitmaps.entries.toList()
@@ -3566,6 +3570,7 @@ class ReaderSession(
                             "visible_generated_byte_hedge_done",
                             "reason=$reason,delayMs=$delayMs,ms=${SystemClock.elapsedRealtime() - startedAt}"
                         )
+                        scheduleVisibleGeneratedCachedDecode(index, page, reason, startedAt)
                     }
                 } catch (e: Exception) {
                     if (isExpectedCancellation(e)) {
@@ -3587,6 +3592,77 @@ class ReaderSession(
             }
         } catch (_: RejectedExecutionException) {
             visibleGeneratedByteHedges.remove(index)
+        }
+    }
+
+    private fun scheduleVisibleGeneratedCachedDecode(
+        index: Int,
+        page: PageRef,
+        reason: String,
+        byteStartedAt: Long
+    ) {
+        if (cancelled.get() || pageRef(index) != page) return
+        if (hasDeliveredBitmap(index) || (pendingDeliveryWidths[index] ?: 0) > 0) return
+        val image = page.image ?: return
+        val cached = ReaderImageCache.cachedFile(appContext, page.manga, image) ?: run {
+            logNtkPagePerf(index, "visible_generated_cached_decode_skip", "reason=$reason,cached=false")
+            return
+        }
+        if (!visibleGeneratedDecodeHedges.add(index)) return
+        try {
+            urgentDecode.execute {
+                val startedAt = SystemClock.elapsedRealtime()
+                var acquired = false
+                try {
+                    busyDecodeGate.acquire()
+                    acquired = true
+                    if (
+                        cancelled.get() ||
+                        pageRef(index) != page ||
+                        hasDeliveredBitmap(index) ||
+                        (pendingDeliveryWidths[index] ?: 0) > 0
+                    ) {
+                        return@execute
+                    }
+                    val targetWidth = targetWidth(true)
+                    val result = cachedDecodedResult(
+                        page,
+                        targetWidth,
+                        shouldUsePreviewDecodedCache(index, targetWidth)
+                    ) ?: decodePage(index, page, cached, targetWidth)
+                    if (
+                        cancelled.get() ||
+                        pageRef(index) != page ||
+                        currentPageIndexForDelivery(page, index) < 0
+                    ) {
+                        recycleDecodeResult(result)
+                        return@execute
+                    }
+                    logNtkPagePerf(
+                        index,
+                        "visible_generated_cached_decode_ready",
+                        "reason=$reason,byteMs=${startedAt - byteStartedAt},decodeMs=${SystemClock.elapsedRealtime() - startedAt},width=${result.width}"
+                    )
+                    postDecodeResult(
+                        Delivery(
+                            index,
+                            page,
+                            result,
+                            startedAt,
+                            targetWidth,
+                            retainWhenBusy = true
+                        )
+                    )
+                } catch (e: Exception) {
+                    recordIfUnexpected(e)
+                    postPageError(index, page, e)
+                } finally {
+                    if (acquired) busyDecodeGate.release()
+                    visibleGeneratedDecodeHedges.remove(index)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            visibleGeneratedDecodeHedges.remove(index)
         }
     }
 
