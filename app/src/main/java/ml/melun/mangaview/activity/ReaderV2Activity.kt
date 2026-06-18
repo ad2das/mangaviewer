@@ -811,8 +811,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
         if (waitForContinuous) {
             maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
+            scheduleNtkDrawableReadyPolling()
         } else if (visibleInitialDrawable) {
             releaseInitialDrawGate("page")
+        } else if (isCurrentNtkReader() && !firstDrawableMetricLogged) {
+            maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
+            scheduleNtkDrawableReadyPolling()
         }
     }
 
@@ -829,8 +833,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
         if (waitForContinuous) {
             maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
+            scheduleNtkDrawableReadyPolling()
         } else if (visibleInitialDrawable) {
             releaseInitialDrawGate("tiles")
+        } else if (isCurrentNtkReader() && !firstDrawableMetricLogged) {
+            maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
+            scheduleNtkDrawableReadyPolling()
         }
     }
 
@@ -948,7 +956,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             releaseInitialDrawGate("viewport")
             return
         }
+        if (requiresInitialNtkWebtoonViewportReady()) return
         maybeReleaseInitialNtkContinuousGate(reason)
+    }
+
+    private fun scheduleNtkDrawableReadyPolling() {
+        if (!isCurrentNtkReader() || firstDrawableMetricLogged || drawableReadyDescriptionPosted) return
+        statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
+        statusHandler.postDelayed(drawableReadyDescriptionRunnable, DRAWABLE_READY_CHECK_INTERVAL_MS)
+    }
+
+    private fun requiresInitialNtkWebtoonViewportReady(): Boolean {
+        return isCurrentNtkReader() &&
+            !firstDrawableMetricLogged &&
+            currentManga?.ntkEpisodePath?.startsWith("/webtoon/", ignoreCase = true) == true
     }
 
     private fun postDrawableReadyDescription() {
@@ -1305,6 +1326,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ) {
             logVisibleViewportReadyMetric()
         }
+    }
+
+    override fun shouldReportVisibleStats(): Boolean {
+        return !isCurrentNtkReader() || initialDrawGateOpen
     }
 
     private fun openAdjacent(next: Boolean) {
@@ -2776,7 +2801,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
         private const val DRAWABLE_READY_CHECK_INTERVAL_MS = 80L
         private const val INITIAL_READY_WEBTOON_AHEAD_PAGES = 2
-        private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 1
+        private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 2
         private const val INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX = 2
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1

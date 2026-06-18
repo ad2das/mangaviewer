@@ -1874,7 +1874,8 @@ object ReaderImageCache {
                                 actualTarget.page > requestedTarget.page
                             )
                     ) &&
-                !isDisallowedNtkImageAssetUrl(actual)
+                !isDisallowedNtkImageAssetUrl(actual) ||
+                isTrustedNtkGeneratedStreamResponse(image, actual)
         } else {
             isTrustedNtkImageUrl(actual) && !isDisallowedNtkImageAssetUrl(actual)
         }
@@ -1889,6 +1890,21 @@ object ReaderImageCache {
             ViewerWarmupManager.logMetric("reader_ntk_reject_untrusted_actual_url", 1L)
         }
         return allowed
+    }
+
+    private fun isTrustedNtkGeneratedStreamResponse(requested: String, actual: String): Boolean {
+        if (!isTrustedNtkImageUrl(actual) || isDisallowedNtkImageAssetUrl(actual)) return false
+        return try {
+            val requestedUri = Uri.parse(requested)
+            val actualUri = Uri.parse(actual)
+            val requestedHost = requestedUri.host?.lowercase().orEmpty()
+            val actualHost = actualUri.host?.lowercase().orEmpty()
+            requestedHost.isNotBlank() &&
+                requestedHost == actualHost &&
+                actualUri.path.orEmpty().equals("/stream.png", ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private data class ForegroundRaceResult(
@@ -3287,6 +3303,7 @@ object ReaderImageCache {
         target: NtkGeneratedTarget
     ): Boolean {
         if (target.page == 1 && isSupportedNtkGeneratedImageExtension(image)) return true
+        if (target.path.startsWith("/webtoon/", ignoreCase = true)) return false
         return target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
             ntkGeneratedEpisodeExtensionMatches(image)
     }

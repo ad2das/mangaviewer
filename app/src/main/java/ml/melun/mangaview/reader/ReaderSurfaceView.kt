@@ -81,6 +81,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         fun onBoundaryReached(direction: Int, anchorPage: Int)
         fun onTap()
         fun onVisibleCoverageChanged(snapshot: VisibleCoverageSnapshot) {}
+        fun shouldReportVisibleStats(): Boolean = true
     }
 
     private data class Page(
@@ -1224,16 +1225,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     "totalMs=${fmt(timing.totalMs)} visibleItems=${formatDrawItems(state.items)}"
             )
         }
-        if (lastVisibleLoading != state.visibleLoading) {
-            lastVisibleLoading = state.visibleLoading
-            Log.i(
-                TAG,
-                "reader_visible_loading=${state.visibleLoading} busy=${state.busy} " +
-                    "items=${state.items.size} visibleItems=${formatDrawItems(state.items)}"
-            )
-            logCoverageIfNeeded(state, force = true)
+        if (listener?.shouldReportVisibleStats() != false) {
+            if (lastVisibleLoading != state.visibleLoading) {
+                lastVisibleLoading = state.visibleLoading
+                Log.i(
+                    TAG,
+                    "reader_visible_loading=${state.visibleLoading} busy=${state.busy} " +
+                        "items=${state.items.size} visibleItems=${formatDrawItems(state.items)}"
+                )
+                logCoverageIfNeeded(state, force = true)
+            }
+            logCoverageIfNeeded(state, force = false)
         }
-        logCoverageIfNeeded(state, force = false)
         if (timing.posted) synchronized(stateLock) { lastPostedFrameEndNs = timing.postEndNs }
         updateVisibleCoverageSnapshot(state)
         val nowForStats = SystemClock.uptimeMillis()
