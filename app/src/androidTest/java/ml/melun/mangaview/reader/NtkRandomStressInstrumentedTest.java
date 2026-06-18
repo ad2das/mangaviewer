@@ -1563,14 +1563,19 @@ public class NtkRandomStressInstrumentedTest {
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
+            if(appendProbe && reader != null && previousEpisode != null)
+                assertTrue("Expected previous append run=" + run
+                                + " mode=" + mode
+                                + " current=" + episode.getNtkEpisodePath()
+                                + " previous=" + previousEpisode.getNtkEpisodePath(),
+                        probePreviousAppend(device, reader, run, mode,
+                                episode, previousEpisode, Math.min(appendSteps, 12)));
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
             finishActivityForNextLaunch(activity);
             device.wait(Until.gone(By.desc("reader-drawable-ready")), 3000L);
             device.waitForIdle(1500L);
         }
-        if(appendProbe && previousEpisode != null)
-            runPreviousAppendCase(context, device, run, mode, title, episode, previousEpisode, appendSteps);
     }
 
     private static void waitForStrictNtkAckProofBeforeClose(int run, String mode, Manga episode,
@@ -1657,10 +1662,12 @@ public class NtkRandomStressInstrumentedTest {
             return;
         long startedAt = SystemClock.elapsedRealtime();
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            if(activity instanceof ReaderV2Activity)
+                ((ReaderV2Activity) activity).testPrepareForNextLaunch();
             if(!activity.isFinishing() && !activity.isDestroyed())
                 activity.finish();
         });
-        long deadline = SystemClock.elapsedRealtime() + 2500L;
+        long deadline = SystemClock.elapsedRealtime() + 8000L;
         while(!activity.isDestroyed() && SystemClock.elapsedRealtime() < deadline)
             SystemClock.sleep(25L);
         Log.d(TAG, "ntk_true_random_activity_finish_wait destroyed=" + activity.isDestroyed()

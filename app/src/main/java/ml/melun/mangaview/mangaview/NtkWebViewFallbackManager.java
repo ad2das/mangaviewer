@@ -1227,8 +1227,7 @@ final class NtkWebViewFallbackManager {
         }
         ArrayList<ActiveViewerImageFetch> cancels = new ArrayList<>();
         for(ActiveViewerImageFetch active : activeViewerImageFetches.values()) {
-            boolean samePath = path != null && path.equals(active.path);
-            if(!active.ackOnly || !samePath)
+            if(!active.ackOnly)
                 cancels.add(active);
         }
         if(cancels.size() == 0)

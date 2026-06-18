@@ -66,6 +66,7 @@ object ReaderImageCache {
     private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_WEBTOON_DELAY_MS = 140L
     private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS = 900L
     private const val EARLY_NTK_IMAGE_URL_TTL_MS = 6000L
+    private const val EARLY_NTK_APPEND_IMAGE_URL_TTL_MS = 30000L
     private const val EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS = 1200L
     private const val NTK_ACK_RECOVERY_LAUNCH_HOLD_MS = 30_000L
     private const val NTK_ACK_RECOVERY_AFTER_FIRST_DRAWABLE_QUIET_MS = 4_500L
@@ -663,12 +664,20 @@ object ReaderImageCache {
     }
 
     fun earlyNtkImageUrls(path: String?, minCreatedAtMs: Long): List<String> {
+        return earlyNtkImageUrls(path, minCreatedAtMs, EARLY_NTK_IMAGE_URL_TTL_MS)
+    }
+
+    fun earlyNtkAppendImageUrls(path: String?, minCreatedAtMs: Long): List<String> {
+        return earlyNtkImageUrls(path, minCreatedAtMs, EARLY_NTK_APPEND_IMAGE_URL_TTL_MS)
+    }
+
+    private fun earlyNtkImageUrls(path: String?, minCreatedAtMs: Long, maxAgeMs: Long): List<String> {
         val key = earlyNtkPathKey(path)
         if (key.isEmpty()) return emptyList()
         val entry = earlyNtkImageUrls[key] ?: return emptyList()
         val ageMs = SystemClock.elapsedRealtime() - entry.createdAtMs
         if (entry.createdAtMs + EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS < minCreatedAtMs ||
-            ageMs > EARLY_NTK_IMAGE_URL_TTL_MS
+            ageMs > maxAgeMs
         ) {
             earlyNtkImageUrls.remove(key, entry)
             return emptyList()

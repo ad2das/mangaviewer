@@ -293,7 +293,24 @@ final class NtkEpisodeParser {
         if(imageCount <= 0)
             imageCount = extractImageCount(imageCountMetadata, epPath);
         manga.setNtkImageCount(imageCount);
+        if(shouldPreserveViewerPayloadHint(imageCountMetadata))
+            manga.setNtkViewerPayloadHint(imageCountMetadata);
         result.episodes.add(manga);
+    }
+
+    private static boolean shouldPreserveViewerPayloadHint(String html) {
+        if(html == null || html.length() == 0)
+            return false;
+        String lower = html.toLowerCase(java.util.Locale.ROOT);
+        if(!lower.contains("\"imagestoken\"") || !lower.contains("\"imagemetas\""))
+            return false;
+        if(lower.contains("/webtoon_uploads/")
+                || lower.contains("/manhwa_uploads/")
+                || lower.contains("/comic_uploads/"))
+            return true;
+        return Pattern.compile("(?i)https?://(?:flysky\\d*m\\.com|fvcdn\\d*\\.com|aws-cdn\\d*\\.site)/[a-z0-9_-]{16,}\\.(?:jpg|jpeg|png|webp)(?:[?#][^\"'<>\\\\\\s]*)?")
+                .matcher(html)
+                .find();
     }
 
     private static int findMatchingBracket(String value, int start, char open, char close) {

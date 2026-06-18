@@ -2410,11 +2410,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val structuralAdjustActive = now <= structuralScrollAdjustUntilMs
             val recentUserScrollActive = lastScrollInteractionMs > 0L &&
                 now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
+            val visibleForJumpCheck = isAttachedToWindow && isShown && windowVisibility == VISIBLE
             if (
                 abs(delta) >= height * SCROLL_JUMP_LOG_SCREEN_RATIO &&
                 !pointerDown &&
                 !dragging &&
                 scroller.isFinished &&
+                visibleForJumpCheck &&
                 !lockedRestoreActive &&
                 !structuralAdjustActive &&
                 !recentUserScrollActive

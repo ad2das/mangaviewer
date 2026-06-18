@@ -182,6 +182,8 @@ public class MangaTest {
         assertTrue(Manga.isNtkPageImageForTest(
                 "<img src=\"https://www.pl3040.com/kr//07/34911/1792086/J0sSOWegkucq.jpg\">"));
         assertTrue(Manga.isNtkPageImageForTest(
+                "<img src=\"https://flysky3m.com/7307f2fd9b13a1acfb4c5ed2726909eb.jpg\">"));
+        assertTrue(Manga.isNtkPageImageForTest(
                 "<main class=\"vw-main\"><div class=\"vw-imgs\"><a href=\"https://i.toonflix.app/webtoon_uploads/page002.webp\"><img src=\"https://i.toonflix.app/webtoon_uploads/page002.webp\"></a></div></main>"));
 
         org.junit.Assert.assertFalse(Manga.isNtkPageImageForTest(
@@ -298,6 +300,15 @@ public class MangaTest {
 
         assertEquals(1, images.size());
         assertEquals("https://i.toonflix.app/webtoon_uploads/page001.jpg", images.get(0));
+    }
+
+    @Test
+    public void ntkEmbeddedRootHashImagesAreParsed() {
+        List<String> images = Manga.ntkEmbeddedPageImagesForTest(
+                "<script>self.__next_f.push([1,\"{\\\"src\\\":\\\"https:\\\\/\\\\/flysky3m.com\\\\/7307f2fd9b13a1acfb4c5ed2726909eb.jpg\\\"}\"])</script>");
+
+        assertEquals(1, images.size());
+        assertEquals("https://flysky3m.com/7307f2fd9b13a1acfb4c5ed2726909eb.jpg", images.get(0));
     }
 
     @Test

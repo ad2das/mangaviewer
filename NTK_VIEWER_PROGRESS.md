@@ -26257,3 +26257,224 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Actual reader UX still reaches strict `/api/ad/ack` proof for both webtoon and comic.
   - Standalone CaptchaActivity ACK probe is now correctly exposing that captcha-only challenge-cookie success is weaker than actual ACK success.
   - If future work changes CaptchaActivity close behavior, use the strengthened probe to avoid regressing into challenge-cookie-only success.
+
+## 2026-06-18 20:50:00 +09:00 Main branch ACK/image-list stabilization continuation
+
+- User clarified commits must be on `main`; work continued in `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on branch `main` tracking `origin/main`.
+- Current meaningful local fixes before commit:
+  - `ReaderSurfaceView.kt`: visible-window guard for `reader_scroll_jump`, because `20260618_201935` failed only from teardown/PAUSED scroll-jump logging after Activity close, not visible UX drift.
+  - `ReaderSession.kt`: adjacent NTK ACK preflights after first bitmap and `kp-*` synthetic append fetches use `api-strict` rather than generated-first.
+  - `CustomHttpClient.java`: modern guard roots no longer let soft/challenge-cookie ACK proof suppress later fresh strict `/api/ad/ack` proof; soft `ad_ack_c` success remains non-strict.
+- Recovered/ran artifacts:
+  - `build/ntk-random-perf/20260618_201300`: instrumentation actually completed 6/6 with strict ACK true, wrapper timed out before summary, so not formal pass.
+  - `build/ntk-random-perf/20260618_201935`: 6-run strict random failed only by teardown `reader_scroll_jump`; fixed visibility guard.
+  - `build/ntk-random-perf/20260618_202614`: target repro after scroll guard passed.
+  - `build/ntk-random-perf/20260618_202750`: found `kp-*` synthetic webtoon append failure.
+  - `build/ntk-random-perf/20260618_203540`, `_203917`, `_204114`: adjacent ACK preflight iteration; sequential preflight was insufficient, parallel preflight helped, but soft recent skip on modern root was wrong.
+  - `build/ntk-random-perf/20260618_204403`: current path strict ACK passed (`strictProof=true`, native bridge ACK 200), but Reader had only 1 page and next append failed.
+- Current root cause found:
+  - `/api/m/i` WebView requests are guard/metric GIF responses (`len=42`), not actual page images; treating them as Reader images would mix dummy/ad-like artifacts and is forbidden.
+  - The actual current page metadata already contains `imageEpisodeId=1152952`, `imageCount=142`, and `imageMetas`, but generated validation path used `validationPageCount=1` for every webtoon.
+  - That made `kp-*` slug webtoon publish only one verified generated image into `ReaderImageCache`, leaving pages=1 until too late.
+- Bad approaches to avoid:
+  - Do not promote `/api/m/i` metric GIF URLs into Reader images.
+  - Do not increase append wait/polling to hide the one-page state.
+  - Do not accept soft `ad_ack_c`/challenge-cookie proof as strict ACK.
+- New code change now under test:
+  - In `Manga.java`, keep numeric webtoon generated validation at 1 page, but allow slug/synthetic webtoon paths (`kp-*`) to use `ntkGeneratedInitialValidationPageCount`, so initial validated generated pages can publish early.
+
+## 2026-06-18 21:08:00 +09:00 `kp-*` synthetic webtoon append repro fixed on main workspace
+
+- Target repro:
+  - Path: `/webtoon/68992354/kp-68992354-68992537`
+  - Seed: `1781782070293`
+  - Image metadata: `imageWorkId=68992354`, `imageEpisodeId=1152952`, `imageCount=142`
+  - Command shape: 1 run, strict fresh, native ACK, forced install, clear ACK/image cache, append probe next/previous, mixed programmatic scroll.
+- Bad / failed intermediate runs:
+  - `build/ntk-random-perf/20260618_204904`: current pages improved from 1 to 14, but next append still failed.
+  - `build/ntk-random-perf/20260618_205156` and `20260618_205514`: invalid validation attempts because `-SkipInstall` was accidentally used after code changes. Do not treat as current-code evidence.
+  - `build/ntk-random-perf/20260618_205609`: current strict ACK and next append passed, previous append failed because adjacent strict proof/image list was not ready.
+  - `build/ntk-random-perf/20260618_210006` and `20260618_210246`: current strict ACK passed, but Reader still had `pages=1`; next append failed with `before=1 after=1`.
+- Root causes found:
+  - `/api/m/i` requests are guard/metric GIFs, not page images. They must never be promoted into Reader image URLs.
+  - `kp-*` synthetic webtoon RSC payload already exposes numeric `imageWorkId`/`imageEpisodeId`/`imageCount`, but old generated/speculation guards blocked using those hints early.
+  - Generated `p001` style URL probing is not valid for this target; the real images are hashed `flysky3m.com/webtoon_uploads/*.jpg` URLs returned through the viewer/API path.
+  - Synthetic adjacent append used `api-strict` without the early handoff loop, so one adjacent direction could miss the RSC direct-first image before the append probe.
+- Code changes under test:
+  - `Manga.java`
+    - Partial RSC direct image marker now includes `webtoon_uploads`, `manhwa_uploads`, `comic_uploads` and percent-encoded variants.
+    - Early direct URL handoff uses `NTK_EARLY_INITIAL_PUBLISH_PAGES` instead of a hard-coded 4.
+    - The unverified canonical webtoon guard now allows generated probing only when slug metadata provides matching numeric `imageWorkId` and `imageEpisodeId`; broad speculation stays blocked.
+  - `ReaderSession.kt`
+    - Synthetic NTK adjacent append now runs `api-strict` inside the early handoff loop, so trusted RSC/direct image URLs can be installed before the slower ACK/API path completes.
+  - Existing guard retained:
+    - Do not treat soft challenge-cookie `ad_ack_c` as strict ACK.
+    - Do not publish `/api/m/i` or banner/board/metric assets as Reader pages.
+- Passing validation:
+  - Artifact: `build/ntk-random-perf/20260618_210632`.
+  - Result: `passed=True`, failures `0`.
+  - ACK: strict proof passed, `nativeBridgeAck200=true`; logs include `/api/ad/ack` success (`bridge-ack-200`, `guard-fetch-ack-200` strict true).
+  - Append: target repro passed next and previous append probes.
+  - First drawable: `1750ms` app pipeline after early URLs, but ACK stage still varied; summary max ACK phase around `20929ms`.
+  - Remaining risk:
+    - ACK latency is still high/variable on modern guard root.
+    - Current target can still start with small early URL counts; the full image list path is not fully solved for all `kp-*` variants.
+    - Need random strict fresh and actual UX selection regression before commit/push.
+
+## 2026-06-18 21:23:00 +09:00 Random regression: `nv-*` proves KP-only slug handling is too narrow
+
+- Random strict fresh run after the `kp-*` focused fix:
+  - Artifact: `build/ntk-random-perf/20260618_210803`.
+  - Failed run 1:
+    - Path: `/webtoon/850656/nv-850656-2`.
+    - Seed: `1781784483120`.
+    - Metadata: `imageEpisodeId=1157556`, `imageWorkId=850656`, `imageCount=97`.
+    - Failure: next append did not load adjacent episode; summary had `before=1 after=1`.
+- Root cause:
+  - Several fast/direct image paths were still gated by `isNtkKpWebtoonEpisodePath(...)`.
+  - The same protected/synthetic slug structure applies to `nv-*` and other nonnumeric webtoon episode ids.
+  - The fix must not be a new `nv-*` hardcode; it should generalize to nonnumeric webtoon slug episodes.
+- Bad approaches to avoid:
+  - Do not generate predictable `nv-*` CDN URLs to make append pass. Earlier logs proved these can 404 and create blank real UX pages.
+  - Do not treat `/api/m/i` metric GIFs, banners, or board/ad images as reader pages.
+  - Do not keep adding prefix-specific exceptions (`kp-*`, `nv-*`, etc.); use the structural predicate: webtoon path + nonnumeric episode id.
+- Code change now under test:
+  - Added a generic synthetic webtoon predicate for webtoon paths whose episode id is nonnumeric.
+  - Generalized the direct-page/image-text preference and direct-only prefetch decisions from `kp-*` to synthetic webtoon slug episodes.
+  - Generalized metadata-generated candidate handling so known numeric `imageWorkId`/`imageEpisodeId` can be used for synthetic webtoon slug episodes when metadata matches.
+- Required validation before commit/push:
+  - Rebuild.
+  - Reproduce `/webtoon/850656/nv-850656-2` seed `1781784483120`.
+  - Rerun random strict fresh coverage.
+  - Rerun actual UX selection webtoon/comic strict ACK tests.
+
+## 2026-06-18 21:45:00 +09:00 Main push correction and exact ACK gate cleanup
+
+- User corrected that the meaningful work must be committed/pushed from the `main` branch.
+- Active workspace for commit/push:
+  - `C:\Users\Administrator\Downloads\mangaviewer-main-sync`
+  - Branch: `main`, tracking `origin/main`.
+- Current target repro still failing before commit:
+  - Path: `/webtoon/850656/nv-850656-2`
+  - Next append target observed in logs: `/webtoon/850656/nv-850656-3`
+  - Seed: `1781784483120`
+  - Failure shape: current episode can get strict ACK and images, but adjacent append fails because `/nv-850656-3` does not get exact strict `/api/ad/ack` proof.
+- New fixes added before retest:
+  - `Manga.java`: trust NTK root-hash CDN page images such as `https://flysky3m.com/<hash>.jpg` when they match the same strict primary image rules already used by the HTTP client.
+  - `NtkEpisodeParser.java`: preserve embedded viewer payload hints only when they contain `imagesToken` + `imageMetas` and trusted primary upload/root-hash image content. Board-only or ad/metric payloads stay rejected.
+  - `MangaTest.java`: added regression coverage for root-hash image acceptance and embedded root-hash parsing.
+- Bad approach confirmed and removed:
+  - Numeric image episode scope retry (`/webtoon/850656/1180914`) did not fix append; image API still returned 403 without exact strict proof.
+  - Same-title strict ACK readiness must not be used as episode image API readiness. It made `/nv-850656-3` look ready from `/webtoon/850656` proof and caused premature 403 image API calls.
+  - `hasNtkAdAckCookieForPath` must not treat generic `hasRecentServerAckSuccess(path)` as a usable ACK cookie. Challenge-cookie sources like `native-prepare-challenge-ad-ack-cookie-200` are non-strict and cannot satisfy modern image API readiness.
+  - Modern guard image API must not retry merely because `modernGuardRoot=true`; it now retries only when `webViewAckCompleted` is actually true.
+- Current interpretation:
+  - Challenge cookie success (`ad_ack_c` from `/api/ad/challenge`) is preparation only.
+  - Goal success still requires exact episode scoped `/api/ad/ack` 200 recorded as strict proof (`bridge-ack-200`, `guard-fetch-ack-200`, `guard-state-ack-200`, `native-fetch-ack-200`, etc.).
+  - Do not commit/push until the target append repro and follow-up strict random/UX checks pass on `main`.
+
+## 2026-06-18 21:58:00 +09:00 Adjacent ACK preflight self-cancellation root cause
+
+- Artifact: `build/ntk-random-perf/20260618_214229`.
+- Target still failed:
+  - `/webtoon/850656/nv-850656-2` next append `/webtoon/850656/nv-850656-3`.
+  - Current episode strict proof succeeded:
+    - `bridge-ack-200`
+    - `guard-fetch-ack-200`
+    - `/api/ad/ack` 200 with scoped `ad_ack`.
+  - Current episode images were safe primary root-hash images from API partial stream, e.g. `flysky3m.com/<hash>.jpg`.
+- New root cause:
+  - Adjacent ACK preflights run for both next and previous episodes.
+  - `cancelActiveViewerImageFetchesForForegroundAck(path)` cancelled ACK-only WebViews for other paths.
+  - `/nv-850656-3` ACK-only WebView started, then `/nv-850656-1` ACK-only WebView started and preempted/destroyed it.
+  - Log evidence:
+    - `ntk_images_api_hidden_main_entry path=/webtoon/850656/nv-850656-3,ackOnly=true`
+    - `ntk_ack_only_synthetic_shell_load path=/webtoon/850656/nv-850656-3`
+    - then `ntk_viewer_image_foreground_ack_preempt path=/webtoon/850656/nv-850656-1,count=1`
+    - then `Application attempted to call on a destroyed WebView`
+    - `/nv-850656-3` preflight ended early with `success=false`.
+- Fix:
+  - `NtkWebViewFallbackManager.cancelActiveViewerImageFetchesForForegroundAck` now cancels only non-ACK image fetches.
+  - ACK-only preflights for different adjacent episode paths are allowed to run concurrently.
+- Bad approach to avoid:
+  - Do not serialize adjacent ACK preflights or disable previous/next lookahead just to hide the race.
+  - Do not make append wait longer while ACK-only WebViews are being actively destroyed.
+  - The right fix is preserving independent ACK-only proof jobs and letting exact strict proof decide readiness.
+
+## 2026-06-18 22:01:33 +09:00 Main branch correction and trusted early append consumption fix
+
+- User corrected again that the work must land on `main`.
+- Confirmed:
+  - `C:\Users\Administrator\Downloads\mangaviewer` is still on `codex/ntk-strict-ack-proof`; do not commit from there.
+  - Active commit/push workspace is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `main`, tracking `origin/main`.
+- New root cause from the `/webtoon/850656/nv-850656-2` seed:
+  - `/nv-850656-3` trusted early image URLs were already being remembered from the API partial stream before append assertion.
+  - The append loader still treated synthetic API-backed webtoon paths as `preferVerifiedApiAppend=true`.
+  - Because early API/root-hash URLs are not generated `p001` URLs, the loader did not count them as seeded generated URLs and could clear them with `target.setImgs(null)` before insertion.
+- Fix under test:
+  - `loadAppendUrlsForCandidate(...)` and `loadLookaheadAppendUrls(...)` now call `installEarlyGeneratedAppendUrlsIfAvailable(...)` before deciding whether to force verified API refresh.
+  - For NTK synthetic webtoon episode paths, non-generated trusted early URLs are accepted as valid append seed URLs and are not discarded by the verified-API refresh gate.
+  - If a fetch returns non-OK but trusted early URLs became available during the fetch, append can still return `LOAD_OK` with those URLs.
+- Safety boundary:
+  - This does not broaden accepted image hosts at append time; `ReaderImageCache.rememberEarlyNtkImageUrls(...)` still filters out captcha, challenge, banner, board, metric, and non-trusted hosts before anything reaches this path.
+  - Do not weaken this into accepting arbitrary existing URLs just to pass append.
+- First retest after the fix:
+  - Artifact: `build/ntk-random-perf/20260618_220241`.
+  - Current strict ACK passed for `/webtoon/850656/nv-850656-2` with `/api/ad/ack` 200 (`bridge-ack-200`, `guard-fetch-ack-200`, `strictAdAck=true`).
+  - Next append now passed: `ntk_true_random_append_next ... success=true ... before=9,after=12,nextPath=/webtoon/850656/nv-850656-3`.
+  - Failure shifted to the test harness previous-append phase: first Reader activity finish waited `destroyed=false` after ~3.3s, then the next `startActivitySync` hit a 45s idle timeout while leftover ACK/WebView cleanup and window transitions were still active.
+- Test-loop speed/stability fix under test:
+  - Added `ReaderV2Activity.testPrepareForNextLaunch()` to cancel the session, pending ACK/append callbacks, WebView fallbacks, render pages, and pending page callbacks before instrumentation finishes the activity.
+  - `NtkRandomStressInstrumentedTest.finishActivityForNextLaunch(...)` now calls this cleanup before `finish()` and allows up to 8s for actual destroy.
+  - This is test-loop cleanup only; it does not add user-visible wait or hide image/ACK failures.
+- Second retest after harness cleanup:
+  - Artifact: `build/ntk-random-perf/20260618_220734`.
+  - Current strict ACK still passed for `/webtoon/850656/nv-850656-2`.
+  - `/nv-850656-3` exact strict ACK also passed before append: `bridge-ack-200`, `guard-fetch-ack-200`, `ntk_webview_ack_preflight_done ... success=true`.
+  - `/nv-850656-3` trusted early URLs were remembered around 13:08:01-13:08:03, but append probe began around 13:08:15.
+  - Root cause: normal early URL TTL is 6s, so trusted adjacent URLs expired before the append probe consumed them after scroll.
+- Fix under test:
+  - Added `ReaderImageCache.earlyNtkAppendImageUrls(...)` with a 30s TTL for append consumption only.
+  - `ReaderSession.installEarlyGeneratedAppendUrlsIfAvailable(...)` now uses the append TTL.
+  - Initial/current image handoff still uses the tighter 6s TTL; only path-scoped trusted append URLs live longer.
+- Third retest after append TTL:
+  - Artifact: `build/ntk-random-perf/20260618_221003`.
+  - Next append passed again: `/nv-850656-3` inserted `4` pages and `ntk_true_random_append_next ... success=true`.
+  - Activity finish eventually reached `destroyed=true`, but the separate previous-append case still hit `startActivitySync` idle timeout.
+- Test-loop speed/stability fix under test:
+  - The random stress test no longer closes and relaunches a second Reader just to test previous append.
+  - It now probes next append and previous append in the same Reader session.
+  - This removes a slow/flaky instrumentation launch path while preserving the actual app behavior being verified: both boundary directions append in the live reader.
+
+## 2026-06-18 22:18:00 +09:00 Main validation pass before commit
+
+- Build/unit validation:
+  - `./gradlew.bat --no-daemon :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.MangaTest :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Result: `BUILD SUCCESSFUL`.
+- Target repro validation:
+  - Artifact: `build/ntk-random-perf/20260618_221305`.
+  - Target: `/webtoon/850656/nv-850656-2`, seed `1781784483120`.
+  - Result: `passed=True`, failures `0`.
+  - Current strict ACK: `/api/ad/ack` proof recorded with `bridge-ack-200` and `guard-fetch-ack-200`, `strictAdAck=true`.
+  - Adjacent next strict ACK: `/webtoon/850656/nv-850656-3` also recorded `strictAdAck=true`.
+  - Adjacent previous strict ACK: `/webtoon/850656/nv-850656-1` also recorded `strictAdAck=true`.
+  - First drawable: `21117ms` app metric under the current ACK-stability compromise.
+  - Visible coverage during scroll: `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+  - Scroll position drift after fast/slow/reverse scroll: `maxPageDelta=0`, `maxOffsetDelta=0`.
+  - Next append: `success=true`, `before=8`, `after=19`, next `/webtoon/850656/nv-850656-3`.
+  - Previous append: `success=true`, `before=19`, `after=27`, previous `/webtoon/850656/nv-850656-1`.
+- Live random strict fresh validation:
+  - Artifact: `build/ntk-random-perf/20260618_221430`.
+  - Seed: `1781788470268`.
+  - Random target: `/manhwa/36637/1807159`.
+  - Result: `passed=True`, failures `0`, coverage `live-random`.
+  - Strict ACK proof: `native-fetch-ack-200`, `strictAdAck=true`.
+  - First drawable: `5577ms`.
+  - Visible coverage: `missingPx=0`, `placeholderPx=0`.
+  - Next append and previous append both passed in the same Reader session.
+- Actual UX selection validation:
+  - Command: `adb -s emulator-5554 shell am instrument -w -r -e runLiveNetworkTests true -e ntkSafeNetwork true -e ntkStrictFresh true -e class ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200 ml.melun.mangaview.test/androidx.test.runner.AndroidJUnitRunner`
+  - Result: `OK (1 test)`.
+- Remaining risk:
+  - ACK latency remains high/variable on modern guard roots; this close-out prioritizes strict ACK correctness and stable image display over speed.
+  - Slow-frame/jank counters still show strict over-budget samples in emulator instrumentation. No visible blank/placeholder/position drift was observed in the validated cases, but 60fps perfection is not claimed.

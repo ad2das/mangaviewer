@@ -270,6 +270,7 @@ class ReaderSession(
     private val nextAppendLoading = AtomicBoolean(false)
     private val adjacentMissingRefreshes = ConcurrentHashMap.newKeySet<String>()
     private val adjacentMissingTargets = ConcurrentHashMap.newKeySet<String>()
+    private val ntkAdjacentAckPreflightPaths = ConcurrentHashMap.newKeySet<String>()
     private val ntkEpisodeMetadataLoading = AtomicBoolean(false)
     private val deferredAdjacentPrepareScheduled = AtomicBoolean(false)
     private val deferredAdjacentPrepareAnchor = AtomicInteger(-1)
@@ -359,6 +360,9 @@ class ReaderSession(
             try {
                 logNtkRepositoryStage(manga, "load_start", "queueMs=${startedAt - queuedAt}")
                 attachTitle()
+                if (isNtkSource(manga, title)) {
+                    scheduleNtkAdjacentAckPreflightsAfterFirstBitmap(includeLookahead = false)
+                }
                 var activeManga = manga
                 var urls = imageRepository.imageUrls(activeManga, appContext)
                 logNtkRepositoryStage(
@@ -2396,8 +2400,23 @@ class ReaderSession(
 
     private fun loadAppendUrlsForCandidate(target: Manga, currentTitle: Title, direction: Int): AppendUrlLoad {
         var urls = imageRepository.imageUrls(target, appContext)
+        val earlyInstalled = if (isNtkSource(target, currentTitle)) {
+            installEarlyGeneratedAppendUrlsIfAvailable(target) > 0
+        } else {
+            false
+        }
+        if (earlyInstalled) {
+            urls = imageRepository.imageUrls(target, appContext)
+        }
         val seededGeneratedUrls = !urls.isNullOrEmpty() && urls.any { isNtkGeneratedImageUrl(it) }
-        val preferVerifiedApiAppend = shouldPreferVerifiedApiAppend(target, currentTitle) && !seededGeneratedUrls
+        val seededTrustedEarlyUrls =
+            earlyInstalled ||
+                (!urls.isNullOrEmpty() &&
+                    isNtkSource(target, currentTitle) &&
+                    isNtkSyntheticEpisodePath(target.ntkEpisodePath) &&
+                    urls.none { isNtkGeneratedImageUrl(it) })
+        val preferVerifiedApiAppend =
+            shouldPreferVerifiedApiAppend(target, currentTitle) && !seededGeneratedUrls && !seededTrustedEarlyUrls
         if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
             isNtkSource(target, currentTitle) &&
             shouldRefreshNtkGeneratedAppendUrls(urls)
@@ -2412,7 +2431,11 @@ class ReaderSession(
             if (preferVerifiedApiAppend) target.setImgs(null)
             val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
             Log.d(TAG, "append_adjacent_fetch direction=$direction targetId=${target.id} result=$result")
-            if (result != Title.LOAD_OK) return AppendUrlLoad(result, emptyList())
+            if (result != Title.LOAD_OK &&
+                installEarlyGeneratedAppendUrlsIfAvailable(target) <= 0
+            ) {
+                return AppendUrlLoad(result, emptyList())
+            }
             urls = imageRepository.imageUrls(target, appContext)
         }
         return AppendUrlLoad(Title.LOAD_OK, urls ?: emptyList())
@@ -2420,8 +2443,23 @@ class ReaderSession(
 
     private fun loadLookaheadAppendUrls(target: Manga, currentTitle: Title, direction: Int): AppendUrlLoad {
         var urls = imageRepository.imageUrls(target, appContext)
+        val earlyInstalled = if (isNtkSource(target, currentTitle)) {
+            installEarlyGeneratedAppendUrlsIfAvailable(target) > 0
+        } else {
+            false
+        }
+        if (earlyInstalled) {
+            urls = imageRepository.imageUrls(target, appContext)
+        }
         val seededGeneratedUrls = !urls.isNullOrEmpty() && urls.any { isNtkGeneratedImageUrl(it) }
-        val preferVerifiedApiAppend = shouldPreferVerifiedApiAppend(target, currentTitle) && !seededGeneratedUrls
+        val seededTrustedEarlyUrls =
+            earlyInstalled ||
+                (!urls.isNullOrEmpty() &&
+                    isNtkSource(target, currentTitle) &&
+                    isNtkSyntheticEpisodePath(target.ntkEpisodePath) &&
+                    urls.none { isNtkGeneratedImageUrl(it) })
+        val preferVerifiedApiAppend =
+            shouldPreferVerifiedApiAppend(target, currentTitle) && !seededGeneratedUrls && !seededTrustedEarlyUrls
         if (!preferVerifiedApiAppend && !urls.isNullOrEmpty() &&
             isNtkSource(target, currentTitle) &&
             shouldRefreshNtkGeneratedAppendUrls(urls)
@@ -2434,7 +2472,11 @@ class ReaderSession(
         if (urls.isNullOrEmpty() || preferVerifiedApiAppend) {
             if (preferVerifiedApiAppend) target.setImgs(null)
             val result = fetchGeneratedNtkAppendUrls(target, currentTitle, direction)
-            if (result != Title.LOAD_OK) return AppendUrlLoad(result, emptyList())
+            if (result != Title.LOAD_OK &&
+                installEarlyGeneratedAppendUrlsIfAvailable(target) <= 0
+            ) {
+                return AppendUrlLoad(result, emptyList())
+            }
             urls = imageRepository.imageUrls(target, appContext)
         }
         return AppendUrlLoad(Title.LOAD_OK, urls ?: emptyList())
@@ -2446,12 +2488,12 @@ class ReaderSession(
         episodes: List<Manga>,
         direction: Int
     ) {
-        if (direction <= 0 || cancelled.get() || !isNtkSource(source, currentTitle)) return
-        val target = nextUnloadedAdjacentEpisode(source, currentTitle, episodes, ReaderSurfaceView.DIRECTION_NEXT)
+        if (direction == 0 || cancelled.get() || !isNtkSource(source, currentTitle)) return
+        val target = nextUnloadedAdjacentEpisode(source, currentTitle, episodes, direction)
         if (target == null) {
             Log.d(
                 TAG,
-                "append_adjacent_lookahead_missing sourceId=${source.id} " +
+                "append_adjacent_lookahead_missing direction=$direction sourceId=${source.id} " +
                     "sourcePath=${source.ntkEpisodePath} episodes=${episodes.size}"
             )
             return
@@ -2462,30 +2504,31 @@ class ReaderSession(
         if (episodes.isNotEmpty()) target.setEps(episodes)
         inheritNtkAppendGeneratedHints(target, source, currentTitle)
         seedNtkAppendGeneratedUrlsFromNeighbor(target, source, currentTitle)
-        if (shouldPreferVerifiedApiAppend(target, currentTitle)) {
+        val syntheticNtkPath = isNtkSyntheticEpisodePath(target.ntkEpisodePath)
+        if (shouldPreferVerifiedApiAppend(target, currentTitle) && !syntheticNtkPath) {
             Log.d(
                 TAG,
-                "append_adjacent_lookahead_skip_verified_api sourceId=${source.id} targetId=${target.id} " +
+                "append_adjacent_lookahead_skip_verified_api direction=$direction sourceId=${source.id} targetId=${target.id} " +
                     "targetPath=${target.ntkEpisodePath}"
             )
             return
         }
         Log.d(
             TAG,
-            "append_adjacent_lookahead_start sourceId=${source.id} targetId=${target.id} " +
+            "append_adjacent_lookahead_start direction=$direction sourceId=${source.id} targetId=${target.id} " +
                 "targetPath=${target.ntkEpisodePath} targetName=${target.name}"
         )
-        val appendUrls = loadLookaheadAppendUrls(target, currentTitle, ReaderSurfaceView.DIRECTION_NEXT)
+        val appendUrls = loadLookaheadAppendUrls(target, currentTitle, direction)
         if (cancelled.get()) return
         Log.d(
             TAG,
-            "append_adjacent_lookahead_fetch targetId=${target.id} result=${appendUrls.result} " +
+            "append_adjacent_lookahead_fetch direction=$direction targetId=${target.id} result=${appendUrls.result} " +
                 "images=${appendUrls.urls.size}"
         )
         if (appendUrls.result != Title.LOAD_OK || appendUrls.urls.isEmpty()) return
         Log.d(
             TAG,
-            "append_adjacent_lookahead_prepared targetId=${target.id} " +
+            "append_adjacent_lookahead_prepared direction=$direction targetId=${target.id} " +
                 "targetPath=${target.ntkEpisodePath} images=${appendUrls.urls.size}"
         )
     }
@@ -2496,7 +2539,7 @@ class ReaderSession(
         episodes: List<Manga>,
         direction: Int
     ) {
-        if (direction <= 0 || cancelled.get() || !isNtkSource(source, currentTitle)) return
+        if (direction == 0 || cancelled.get() || !isNtkSource(source, currentTitle)) return
         try {
             adjacentNetwork.execute {
                 try {
@@ -2508,6 +2551,94 @@ class ReaderSession(
         } catch (_: RejectedExecutionException) {
             // Session is closing; the visible append already completed.
         }
+    }
+
+    private fun scheduleNtkAdjacentAckPreflightsAfterFirstBitmap(includeLookahead: Boolean = true) {
+        if (!isNtkSource(manga, title)) return
+        try {
+            primeNetwork.execute {
+                try {
+                    val currentTitle = title ?: manga.title ?: return@execute
+                    if (syncNtkTitlePathFromEpisode(currentTitle, manga)) {
+                        currentTitle.removeEps()
+                    }
+                    restoreNtkEpisodeSnapshotIfNeeded(currentTitle, manga)
+                    if (currentTitle.eps == null || currentTitle.eps.size <= 1) {
+                        val result = withRepositoryCancellation {
+                            imageRepository.fetchEpisodesForeground(currentTitle, it)
+                        }
+                        if (cancelled.get() || result != Title.LOAD_OK) return@execute
+                    }
+                    attachTitle()
+                    val episodes = Utils.snapshotEpisodes(currentTitle)
+                    if (episodes.isNotEmpty()) {
+                        manga.setEps(episodes)
+                        persistNtkEpisodeSnapshot(currentTitle, episodes)
+                    }
+                    manga.title = currentTitle
+                    manga.titleId = currentTitle.id
+                    if (includeLookahead) {
+                        scheduleNtkForwardLookahead(
+                            manga,
+                            currentTitle,
+                            episodes,
+                            ReaderSurfaceView.DIRECTION_NEXT
+                        )
+                        scheduleNtkForwardLookahead(
+                            manga,
+                            currentTitle,
+                            episodes,
+                            ReaderSurfaceView.DIRECTION_PREVIOUS
+                        )
+                    }
+                    val next = manga.nextEp()
+                    val previous = manga.prevEp()
+                    val candidates = arrayOf(next to 0L, previous to 1200L)
+                    for ((candidate, delayMs) in candidates) {
+                        if (cancelled.get()) return@execute
+                        if (candidate == null) continue
+                        candidate.title = currentTitle
+                        candidate.titleId = currentTitle.id
+                        candidate.mode = manga.mode
+                        if (episodes.isNotEmpty()) candidate.setEps(episodes)
+                        val path = candidate.ntkEpisodePath?.trim().orEmpty()
+                        if (!isNtkSyntheticEpisodePath(path)) continue
+                        startNtkAdjacentAckPreflight(path, delayMs)
+                    }
+                } catch (e: Exception) {
+                    recordIfUnexpected(e)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Session is closing; adjacent ACK preflight is only a background accelerator.
+        }
+    }
+
+    private fun startNtkAdjacentAckPreflight(path: String, delayMs: Long = 0L) {
+        if (!ntkAdjacentAckPreflightPaths.add(path)) return
+        val sourcePath = manga.ntkEpisodePath
+        val thread = Thread({
+            try {
+                Process.setThreadPriority(
+                    if (delayMs <= 0L) Process.THREAD_PRIORITY_DEFAULT else Process.THREAD_PRIORITY_BACKGROUND
+                )
+                if (delayMs > 0L) SystemClock.sleep(delayMs)
+                if (cancelled.get()) return@Thread
+                Log.d(
+                    TAG,
+                    "ntk_adjacent_ack_preflight_start sourcePath=$sourcePath targetPath=$path delayMs=$delayMs"
+                )
+                val ok = MainApplication.getHttpClient().performNtkWebViewAckPreflight(path)
+                Log.d(
+                    TAG,
+                    "ntk_adjacent_ack_preflight_done sourcePath=$sourcePath targetPath=$path success=$ok"
+                )
+            } catch (e: Exception) {
+                recordIfUnexpected(e)
+            }
+        }, "ntk-adjacent-ack-preflight")
+        thread.isDaemon = true
+        thread.start()
     }
 
     private fun seedNtkAppendGeneratedUrlsFromNeighbor(target: Manga, source: Manga, currentTitle: Title): Int {
@@ -2604,11 +2735,14 @@ class ReaderSession(
         )
         return try {
             val preferApiFirst = shouldPreferVerifiedApiAppend(target, currentTitle)
-            val initialResult = if (isNtkSource(target, currentTitle)) {
+            val syntheticNtkPath = isNtkSyntheticEpisodePath(target.ntkEpisodePath)
+            val initialResult = if (isNtkSource(target, currentTitle) && !preferApiFirst && !syntheticNtkPath) {
                 fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target)
+            } else if (syntheticNtkPath) {
+                fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target, "api-strict")
             } else {
                 withRepositoryCancellation(userVisible = true) { cancellation ->
-                    if (preferApiFirst) {
+                    if (preferApiFirst || syntheticNtkPath) {
                         imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
                     } else {
                         imageRepository.fetchViewerInitial(target, cancellation)
@@ -2617,7 +2751,6 @@ class ReaderSession(
             }
             val initialImages = imageRepository.imageUrls(target, appContext).size
             val earlyGeneratedImages = installEarlyGeneratedAppendUrlsIfAvailable(target)
-            val syntheticNtkPath = isNtkSyntheticEpisodePath(target.ntkEpisodePath)
             if (earlyGeneratedImages > 0 ||
                 (initialResult == Title.LOAD_OK && initialImages > 0) ||
                 (initialResult == Title.LOAD_CAPTCHA && !syntheticNtkPath) ||
@@ -2627,10 +2760,14 @@ class ReaderSession(
             } else {
                 if (target.ntkViewerParseReason == "unavailable") {
                     initialResult
-                } else {
-                    restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
-                    target.setImgs(null)
-                    val retryMode = if (isNtkSource(target, currentTitle)) "generated" else "api-strict"
+                    } else {
+                        restoreNtkEpisodeSnapshotIfNeeded(currentTitle, target)
+                        target.setImgs(null)
+                    val retryMode = if (isNtkSource(target, currentTitle) && !syntheticNtkPath) {
+                        "generated"
+                    } else {
+                        "api-strict"
+                    }
                     Log.d(
                         TAG,
                         "append_adjacent_verified_fetch_retry direction=$direction targetId=${target.id} " +
@@ -2638,7 +2775,7 @@ class ReaderSession(
                             "path=${target.ntkEpisodePath}"
                     )
                     val retryResult = withRepositoryCancellation(userVisible = true) { retryCancellation ->
-                        if (retryMode == "generated") {
+                        if (retryMode == "generated" && !syntheticNtkPath) {
                             imageRepository.fetchViewerInitial(target, retryCancellation)
                         } else {
                             imageRepository.fetchViewerInitialWithMode(target, retryCancellation, retryMode)
@@ -2666,10 +2803,14 @@ class ReaderSession(
         }
     }
 
-    private fun fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target: Manga): Int {
+    private fun fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target: Manga, mode: String? = null): Int {
         val task = FutureTask {
             withRepositoryCancellation(userVisible = true) { cancellation ->
-                imageRepository.fetchViewerInitial(target, cancellation)
+                if (mode != null) {
+                    imageRepository.fetchViewerInitialWithMode(target, cancellation, mode)
+                } else {
+                    imageRepository.fetchViewerInitial(target, cancellation)
+                }
             }
         }
         return try {
@@ -2716,7 +2857,7 @@ class ReaderSession(
 
     private fun installEarlyGeneratedAppendUrlsIfAvailable(target: Manga): Int {
         if (!isNtkSource(target, title)) return 0
-        val earlyUrls = ReaderImageCache.earlyNtkImageUrls(
+        val earlyUrls = ReaderImageCache.earlyNtkAppendImageUrls(
             target.ntkEpisodePath,
             SystemClock.elapsedRealtime() - 30000L
         )
@@ -3910,6 +4051,7 @@ class ReaderSession(
             scheduleNtkSourcePrefetchAfterFirstBitmap()
             scheduleNtkGeneratedFullEpisodeBytePrefetchAfterFirstBitmap()
             scheduleNtkEpisodeMetadataAfterFirstBitmap()
+            scheduleNtkAdjacentAckPreflightsAfterFirstBitmap()
             scheduleNtkForwardTimelinePrimeAfterFirstBitmap()
         }
     }

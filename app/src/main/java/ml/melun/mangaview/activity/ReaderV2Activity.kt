@@ -2635,6 +2635,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return startResult
     }
 
+    fun testPrepareForNextLaunch() {
+        ntkAckPreflightGeneration.incrementAndGet()
+        statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+        statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
+        session?.cancel()
+        session = null
+        getHttpClient().cancelNtkWebViewFallbacks()
+        renderView.stopRenderingAndClearPages()
+        clearPendingPageCallbacks()
+    }
+
     fun testCurrentProgressPosition(): ReaderSurfaceView.ProgressPosition? {
         return renderView.currentProgressPosition()
     }

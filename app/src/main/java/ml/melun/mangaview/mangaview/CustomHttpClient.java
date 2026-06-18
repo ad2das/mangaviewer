@@ -61,6 +61,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -8058,8 +8059,11 @@ public class CustomHttpClient {
                                     && !ntkNativeAckScopePath(apiScopePath).equals(
                                     ntkNativeAckScopePath(cookiePath))) {
                                 boolean apiScopeAck = hasNtkViewerImagesAckReady(baseUrl, apiScopePath);
-                                if(!apiScopeAck)
-                                    apiScopeAck = performNtkNativeAckBypassFresh(baseUrl, apiScopePath, path);
+                                if(!apiScopeAck) {
+                                    apiScopeAck = modernGuardRoot
+                                            ? performNtkWebViewAckPreflight(apiScopePath)
+                                            : performNtkNativeAckBypassFresh(baseUrl, apiScopePath, path);
+                                }
                                 Log.d(TAG, "ntk_images_api_dual_scope_ack path=" + path
                                         + ",apiScope=" + apiScopePath
                                         + ",success=" + apiScopeAck
@@ -8179,7 +8183,7 @@ public class CustomHttpClient {
                     webViewAckCompleted = hasNtkAdAckCookieForPath(cookiePath)
                             || NtkWebViewFallbackManager.hasRecentServerAckSuccess(cookiePath);
                 }
-                if(webViewAckCompleted || modernGuardRoot) {
+                if(webViewAckCompleted) {
                     String nvAfterWebViewAck = getCookie("nv");
                     if(!isNtkNvValid(nvAfterWebViewAck)) {
                         issueNtkNvCookie(baseUrl);
@@ -8340,7 +8344,7 @@ public class CustomHttpClient {
             Log.d(TAG, "ntk_images_api_webview_start path=" + path + ",hardForbidden=" + hardForbidden);
             urls.addAll(NtkWebViewFallbackManager.get(context).fetchViewerImageUrls(agent, baseUrl,
                     path, cookiePath, headers, kind, workId, episodeId, imagesToken,
-                    getCookieHeaderForNtkPath(cookiePath)));
+                    getCookieHeaderForNtkPath(cookiePath), viewerBody));
             Log.d(TAG, "ntk_images_api_webview_result path=" + path + ",count=" + urls.size());
             if(urls.size() > 0) {
                 if(areInitialNtkViewerImageUrlsReachable(urls, baseUrl, path)) {
@@ -8381,6 +8385,8 @@ public class CustomHttpClient {
     }
 
     private boolean hasRecentNtkViewerImageAckProof(String baseUrl, String path, String cookiePath) {
+        if(isModernNtkGuardRoot(baseUrl))
+            return hasNtkViewerImagesAckReady(baseUrl, cookiePath);
         return hasNtkViewerImagesAckReady(baseUrl, cookiePath)
                 || NtkWebViewFallbackManager.hasRecentServerAckSuccess(cookiePath)
                 || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
@@ -8642,19 +8648,24 @@ public class CustomHttpClient {
         int submitted = 0;
         boolean freshSubmitted = false;
         boolean signedRequest = headers != null && headers.containsKey("x-ntk-sig");
-        AtomicBoolean firstUrlNotified = new AtomicBoolean(false);
+        AtomicInteger partialUrlNotifyCount = new AtomicInteger(0);
         NtkQuicFetcher.PartialTextObserver firstUrlObserver = partialText -> {
-            if(trustedUrlsCallback == null || firstUrlNotified.get())
+            if(trustedUrlsCallback == null)
                 return;
-            String first = firstNtkViewerImageUrlFromPartialApiBody(partialText);
-            if(first.length() == 0 || !firstUrlNotified.compareAndSet(false, true))
+            List<String> partialUrls = ntkViewerImageUrlsFromPartialApiBody(partialText, 12);
+            int previousCount = partialUrlNotifyCount.get();
+            if(partialUrls.size() <= previousCount)
                 return;
-            Log.d(TAG, "ntk_images_api_first_url_partial path=" + refererPath
-                    + ",image=" + safeLogUrl(first)
+            if(!partialUrlNotifyCount.compareAndSet(previousCount, partialUrls.size()))
+                return;
+            Log.d(TAG, "ntk_images_api_partial_urls path=" + refererPath
+                    + ",count=" + partialUrls.size()
+                    + ",previous=" + previousCount
+                    + ",first=" + safeLogUrl(partialUrls.get(0))
                     + ",partialLen=" + (partialText == null ? 0 : partialText.length())
                     + ",ms=" + (System.currentTimeMillis() - startedAt));
-            prepareNtkImageTransportForUrls(Collections.singletonList(first), refererPath);
-            notifyNtkViewerImageUrls(trustedUrlsCallback, Collections.singletonList(first));
+            prepareNtkImageTransportForUrls(partialUrls, refererPath);
+            notifyNtkViewerImageUrls(trustedUrlsCallback, partialUrls);
         };
         try {
             futures.add(completion.submit(() -> new NtkImageApiResult("shared",
@@ -8671,11 +8682,6 @@ public class CustomHttpClient {
                         TimeUnit.MILLISECONDS);
                 if(future == null) {
                     if(!freshSubmitted) {
-                        if(firstUrlNotified.get()) {
-                            Log.d(TAG, "ntk_images_api_hedge_skip_after_first_url endpoint=" + endpoint
-                                    + ",ms=" + (System.currentTimeMillis() - startedAt));
-                            continue;
-                        }
                         futures.add(completion.submit(() -> new NtkImageApiResult("fresh",
                                 NtkQuicFetcher.fetch(context, baseUrl + endpoint, agent, cookieHeader, headers,
                                         "POST", signedRequest ? body : freshNtkViewerImagesRequestBody(body), NTK_VIEWER_IMAGES_API_TIMEOUT_MS,
@@ -8716,11 +8722,6 @@ public class CustomHttpClient {
                 if(accepted)
                     return result;
                 if(!freshSubmitted && completed + 1 >= submitted) {
-                    if(firstUrlNotified.get()) {
-                        Log.d(TAG, "ntk_images_api_hedge_skip_after_first_url endpoint=" + endpoint
-                                + ",ms=" + (System.currentTimeMillis() - startedAt));
-                        continue;
-                    }
                     futures.add(completion.submit(() -> new NtkImageApiResult("fresh",
                             NtkQuicFetcher.fetch(context, baseUrl + endpoint, agent, cookieHeader, headers,
                                     "POST", signedRequest ? body : freshNtkViewerImagesRequestBody(body), NTK_VIEWER_IMAGES_API_TIMEOUT_MS,
@@ -8928,27 +8929,42 @@ public class CustomHttpClient {
     private static String firstNtkViewerImageUrlFromPartialApiBody(String body) {
         if(body == null || body.length() == 0)
             return "";
-        String first = firstNtkViewerImageUrlFromPartialApiBody(body,
-                Pattern.compile("\"src\"\\s*:\\s*\"([^\"]+)\""));
-        if(first.length() > 0)
-            return first;
-        return firstNtkViewerImageUrlFromPartialApiBody(body,
-                Pattern.compile("\\\\\"src\\\\\"\\s*:\\s*\\\\\"([^\\\\\"]+)\\\\\""));
+        List<String> urls = ntkViewerImageUrlsFromPartialApiBody(body, 1);
+        return urls.isEmpty() ? "" : urls.get(0);
     }
 
-    private static String firstNtkViewerImageUrlFromPartialApiBody(String body, Pattern pattern) {
+    private static List<String> ntkViewerImageUrlsFromPartialApiBody(String body, int limit) {
+        ArrayList<String> urls = new ArrayList<>();
+        if(body == null || body.length() == 0 || limit <= 0)
+            return urls;
+        LinkedHashSet<String> ordered = new LinkedHashSet<>();
+        collectNtkViewerImageUrlsFromPartialApiBody(ordered, body,
+                Pattern.compile("\"src\"\\s*:\\s*\"([^\"]+)\""), limit);
+        if(ordered.size() < limit)
+            collectNtkViewerImageUrlsFromPartialApiBody(ordered, body,
+                    Pattern.compile("\\\\\"src\\\\\"\\s*:\\s*\\\\\"([^\\\\\"]+)\\\\\""), limit);
+        urls.addAll(ordered);
+        return urls;
+    }
+
+    private static void collectNtkViewerImageUrlsFromPartialApiBody(Set<String> out, String body,
+                                                                    Pattern pattern, int limit) {
+        if(out == null || body == null || pattern == null || limit <= 0 || out.size() >= limit)
+            return;
         Matcher matcher = pattern.matcher(body);
-        while(matcher.find()) {
+        while(matcher.find() && out.size() < limit) {
             String src = matcher.group(1);
             if(src == null || src.length() == 0)
                 continue;
             src = src.replace("\\/", "/")
                     .replace("\\u002F", "/")
                     .replace("\\u002f", "/");
+            String stable = normalizeNtkVolatileCdnImageSrc(src);
+            if(stable.length() > 0)
+                src = stable;
             if(isTrustedNtkPrimaryImageUrl(src))
-                return src;
+                out.add(src);
         }
-        return "";
     }
 
     private static boolean isNtkNvValid(String nv) {
@@ -9295,9 +9311,13 @@ public class CustomHttpClient {
         String ackPath = ntkNativeAckScopePath(path);
         String cacheKey = baseUrl + ackPath;
         String flightKey = ntkNativeAckFlightKey(ackPath);
-        if(hasNtkAdAckCookieForPath(ackPath)
+        boolean modernGuardRoot = isModernNtkGuardRoot(baseUrl);
+        boolean recentAckReady = modernGuardRoot
+                ? NtkWebViewFallbackManager.hasRecentStrictAdAckSuccess(ackPath)
+                : hasNtkAdAckCookieForPath(ackPath)
                 || NtkWebViewFallbackManager.hasRecentServerAckSuccess(ackPath)
-                || hasRecentNtkAckChallengeOk(cacheKey, flightKey)) {
+                || hasRecentNtkAckChallengeOk(cacheKey, flightKey);
+        if(recentAckReady) {
             Log.d(TAG, "ntk_native_ack_prepare_skip_recent path=" + ackPath);
             return;
         }
@@ -9398,10 +9418,13 @@ public class CustomHttpClient {
                     || challenge.body == null || !looksLikeJsonObject(challenge.body))
                 return;
             if(ntkChallengeIssuedAdAckCookie(challenge)) {
+                rememberNtkNativeAckChallengeBody(path, challenge.body,
+                        "prepare-challenge-cookie");
                 NtkWebViewFallbackManager.rememberExternalServerAckSuccess(
                         path, "native-prepare-challenge-ad-ack-cookie-200");
-                markNtkAckChallengeOk(baseUrl + ntkNativeAckScopePath(path),
-                        ntkNativeAckFlightKey(path));
+                if(!isModernNtkGuardRoot(baseUrl))
+                    markNtkAckChallengeOk(baseUrl + ntkNativeAckScopePath(path),
+                            ntkNativeAckFlightKey(path));
                 Log.d(TAG, "ntk_native_ack_prepare_challenge_cookie_success path=" + path
                         + ",ms=" + (System.currentTimeMillis() - startedMs));
                 return;
@@ -9426,6 +9449,28 @@ public class CustomHttpClient {
                         + ",path=" + path
                         + ",ms=" + (System.currentTimeMillis() - startedMs));
             }
+        }
+    }
+
+    private static void rememberNtkNativeAckChallengeBody(String fallbackPath, String body,
+                                                          String source) {
+        if(body == null || body.length() == 0 || !looksLikeJsonObject(body))
+            return;
+        try {
+            JSONObject challengeJson = new JSONObject(body);
+            if(!challengeJson.optBoolean("ok", false))
+                return;
+            JSONObject challengeObj = challengeJson.optJSONObject("challenge");
+            if(challengeObj == null)
+                return;
+            String scope = extractNtkChallengeScope(challengeObj.optString("token", ""));
+            String challengePath = scope.length() > 0 ? scope : ntkNativeAckScopePath(fallbackPath);
+            if(challengePath.length() == 0)
+                return;
+            NtkWebViewFallbackManager.rememberNativeAckChallenge(challengePath, body);
+            Log.d(TAG, "ntk_native_ack_challenge_body_remembered path=" + challengePath
+                    + ",source=" + source);
+        } catch(Exception ignored) {
         }
     }
 
@@ -9738,6 +9783,8 @@ public class CustomHttpClient {
             if(challenge == null || challenge.error != null || challenge.code != 200 || challenge.body == null)
                 return false;
             if(ntkChallengeIssuedAdAckCookie(challenge)) {
+                rememberNtkNativeAckChallengeBody(path, challenge.body,
+                        "native-challenge-cookie");
                 NTK_ACK_CACHE.put(cacheKey, System.currentTimeMillis());
                 NtkWebViewFallbackManager.rememberExternalServerAckSuccess(
                         path, "native-challenge-ad-ack-cookie-200");
@@ -10640,8 +10687,7 @@ public class CustomHttpClient {
 
     private synchronized boolean hasNtkAdAckCookieForPath(String path) {
         return ntkAckCookieUsableForPath("ad_ack", cookies.get("ad_ack"), path)
-                || ntkAckCookieUsableForPath("ad_ack_c", cookies.get("ad_ack_c"), path)
-                || NtkWebViewFallbackManager.hasRecentServerAckSuccess(path);
+                || ntkAckCookieUsableForPath("ad_ack_c", cookies.get("ad_ack_c"), path);
     }
 
     private synchronized boolean removeExpiredNtkAckCookiesLocked() {
@@ -10986,6 +11032,15 @@ public class CustomHttpClient {
         if(encodedScope.equals(path) || encodedScope.equals(encodedPath))
             return true;
         return ntkDecodePath(scope).equals(ntkDecodePath(path));
+    }
+
+    private static String ntkTitleScopePath(String path) {
+        if(path == null || path.length() == 0)
+            return "";
+        Matcher matcher = Pattern.compile("^/(manhwa|webtoon)/([^/?#]+)(?:/[^/?#]+)?").matcher(path);
+        if(!matcher.find())
+            return "";
+        return "/" + matcher.group(1) + "/" + matcher.group(2);
     }
 
     private static String ntkNativeAckScopePath(String path) {
