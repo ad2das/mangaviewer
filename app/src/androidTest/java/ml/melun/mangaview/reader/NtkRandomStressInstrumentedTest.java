@@ -417,6 +417,13 @@ public class NtkRandomStressInstrumentedTest {
         String webtoonRoot = MainApplication.p == null
                 ? CustomHttpClient.NTK_WEBTOON_URL : MainApplication.p.getWebtoonUrl();
         String url = client.getLastCloudflareChallengeUrl();
+        if(isNtkApiChallengeUrl(url)) {
+            Log.d(TAG, "ntk_true_random_captcha_skip_api_challenge baseMode=" + baseMode
+                    + ",url=" + url
+                    + ",reason=api_list_challenge_not_viewer_ack_proof");
+            client.clearLastCloudflareChallenge();
+            return;
+        }
         if(url == null || url.length() == 0 || url.startsWith("/api/"))
             url = webtoonRoot + "/";
         else if(url.startsWith("/"))
@@ -1059,6 +1066,11 @@ public class NtkRandomStressInstrumentedTest {
                 || lower.contains("challenge")
                 || lower.contains("ntk hard block")
                 || lower.contains("request failed: /api/");
+    }
+
+    private static boolean isNtkApiChallengeUrl(String url) {
+        String path = normalizeTargetPath(url);
+        return path.startsWith("/api/");
     }
 
     private static String ntkCategoryPagePath(String path, int page) {

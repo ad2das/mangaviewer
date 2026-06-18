@@ -26941,3 +26941,49 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Fix the `CaptchaActivity` ANR/test-loop path: random stress should not launch heavy visible captcha recovery for an API-list challenge after a viewer already proved strict `/api/ad/ack`; either avoid the redundant captcha launch or move it to a bounded non-blocking proof path.
   - Re-run the failed seed `1781796134007` after that fix.
   - Then rerun live-random 2+ and actual UX before the next commit.
+
+## 2026-06-19 00:45:00 +09:00 API-list challenge no longer opens visible captcha in random runner
+
+- Branch/worktree:
+  - Workspace: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Active branch: `main`.
+  - GitHub Actions `Release APK` for `f5fffa393` completed successfully before this change.
+- Root cause fixed:
+  - The previous broad live-random failure was not a reader image or ACK failure.
+  - `NtkRandomStressInstrumentedTest.ensureNtkAccessAfterChallenge(...)` treated `/api/manhwa-list?...` and `/api/works?...` Cloudflare/list challenge URLs like viewer episode challenges.
+  - For `/api/...`, the helper converted the challenge to the NTK root and launched visible `CaptchaActivity`.
+  - On the failed seed this loaded `https://sbxh8.com/manhwa` in a heavy WebView after run 0 had already proved strict `/api/ad/ack`, then instrumentation hit a `CaptchaActivity` focus ANR before run 2 could start.
+- Code change:
+  - Added `isNtkApiChallengeUrl(...)` in `NtkRandomStressInstrumentedTest`.
+  - `ensureNtkAccessAfterChallenge(...)` now logs `ntk_true_random_captcha_skip_api_challenge ... reason=api_list_challenge_not_viewer_ack_proof`, clears the stale list challenge marker, and returns instead of launching visible captcha for `/api/...`.
+  - This is intentionally scoped to the random test recovery loop. It does not weaken reader ACK success criteria and does not mark API-list challenge as viewer ACK proof.
+- Validation:
+  - Build/install:
+    - `.\gradlew.bat --no-daemon :app:compileDebugKotlin :app:compileDebugJavaWithJavac :app:installDebug :app:installDebugAndroidTest` passed.
+  - Failed-seed live-random rerun:
+    - Command:
+      - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 2 -ScrollSteps 2 -AppendSteps 8 -ScreenshotEvery 0 -Seed 1781796134007 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -StrictFresh -RequireLiveRandom -ForceStopBeforeRun -SkipBuild -FirstDrawableMaxMs 30000 -MaxDroppedFrames 999 -MaxMissedFrames 999 -RenderFrameMaxMs 1000`
+    - Artifact: `build\ntk-random-perf\20260619_003058`.
+    - Result: `passed=True`, `OK (1 test)`, failures `0`, `cases=2`.
+    - Coverage remained real live-random: `api=2`, `db=0`, `rsc=0`, `numeric=0`, `curated=0`, `coverage=live-random`.
+    - Cases:
+      - `/webtoon/12759/1135205`: first drawable `5710ms`, strict ACK proof true, `/api/ad/ack` bridge submit `code=200`, visible coverage `missingPx=0`, `placeholderPx=0`, post-stop drift 0.
+      - `/manhwa/25501/1654911`: first drawable `3039ms`, strict ACK proof true, native ACK fetch response `status=200`, visible coverage `missingPx=0`, `placeholderPx=0`, post-stop drift 0.
+    - No `CaptchaActivity` ANR and no `Input dispatching timed out`.
+  - Actual UX combined webtoon+comic selection:
+    - Artifact: `build\ntk-ux-select\20260619_003311_actual_ux_after_api_challenge_skip`.
+    - Result: `OK (2 tests)`, time `103.964s`.
+    - Webtoon `/webtoon/16968/1463195`: first drawable `3738ms`, visible coverage `missingPx=0`, `placeholderPx=0`, strict ACK `native-fetch-ack-200`, `/api/ad/ack` proof true.
+    - Captcha container lookup returned `Node not found`; no visible captcha block.
+  - Actual UX comic isolated proof:
+    - Artifact: `build\ntk-ux-select\20260619_003532_actual_ux_comic_after_api_challenge_skip`.
+    - Result: `OK (1 test)`, time `55.855s`.
+    - Comic `/manhwa/36525/1807424`: first drawable `7098ms`, visible coverage `missingPx=0`, `placeholderPx=0`, `/api/ad/ack` bridge submit `code=200`, strict ACK sources `bridge-ack-200`, `guard-state-ack-200`, and `guard-fetch-ack-200`.
+    - Captcha container lookup returned `Node not found`; no visible captcha block.
+- Bad signal / do not misread next time:
+  - The latest random artifact still has two `RejectedExecutionException` lines after the test has already finished and instrumentation is force-stopping the app.
+  - Stack trace is `android.accessibilityservice.AccessibilityService$IAccessibilityServiceClientWrapper` through `HandlerExecutor`, not Cronet/HttpEngine.
+  - Treat this as instrumentation teardown noise unless it appears before test completion or in app network callback stacks.
+- Remaining risk / do not hide:
+  - ACK correctness is now proved again in the tested live-random and actual UX paths, but ACK tail latency is still high in some samples: webtoon actual UX ACK proof arrived after first drawable, and comic isolated ACK arrived about 30s after open.
+  - Speed is currently being accepted per the latest scope compromise, but if speed is reopened later, target the ACK preflight tail and first-drawable decode/network split rather than changing success criteria.
