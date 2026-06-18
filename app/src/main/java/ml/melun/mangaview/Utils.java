@@ -1021,6 +1021,8 @@ public class Utils {
         copy.setTitleId(source.getTitleId());
         copy.setNtkEpisodePath(source.hasExplicitNtkEpisodePath() ? source.getNtkEpisodePath() : "");
         copy.setNtkImageEpisodeId(source.getNtkImageEpisodeId());
+        copy.setNtkImageWorkId(source.getNtkImageWorkId());
+        copy.setNtkViewerPayloadHint(source.getNtkViewerPayloadHint());
         copy.setNtkImageCount(source.getNtkImageCount());
         copy.setOfflinePath(source.getOfflinePath());
         if(includeImages) {
@@ -1842,12 +1844,58 @@ public class Utils {
             return "";
         String url = image.trim();
         if(url.startsWith("//"))
-            return "https:" + url;
+            return normalizeVolatileNtkImageCdn("https:" + url);
         if(url.startsWith("/"))
-            return getSiteRoot(baseMode) + url;
+            return normalizeVolatileNtkImageCdn(getSiteRoot(baseMode) + url);
         if(!url.startsWith("http") && !url.contains("://"))
-            return getSiteRoot(baseMode) + "/" + url;
-        return url;
+            return normalizeVolatileNtkImageCdn(getSiteRoot(baseMode) + "/" + url);
+        return normalizeVolatileNtkImageCdn(url);
+    }
+
+    private static String normalizeVolatileNtkImageCdn(String url) {
+        if(url == null || url.length() == 0)
+            return "";
+        try {
+            Uri parsed = Uri.parse(url);
+            String host = parsed.getHost();
+            String path = parsed.getEncodedPath();
+            if(host == null || path == null)
+                return url;
+            String lowerHost = host.toLowerCase(Locale.ROOT);
+            String lowerPath = path.toLowerCase(Locale.ROOT);
+            if(!lowerHost.matches("aws-cdn\\d*\\.site"))
+                return url;
+            if(!isSafeNtkPageImagePath(lowerPath))
+                return url;
+            String query = parsed.getEncodedQuery();
+            return "https://flysky3m.com" + path + (query == null || query.length() == 0 ? "" : "?" + query);
+        } catch(Exception ignored) {
+            return url;
+        }
+    }
+
+    private static boolean isSafeNtkPageImagePath(String path) {
+        if(path == null || path.length() == 0)
+            return false;
+        String lower = path.toLowerCase(Locale.ROOT);
+        if(lower.startsWith("/api/")
+                || lower.startsWith("/cdn-cgi/")
+                || lower.contains("/challenge")
+                || lower.contains("/turnstile")
+                || lower.contains("/cloudflare")
+                || lower.contains("/verification")
+                || lower.contains("/captcha")
+                || lower.contains("/banner")
+                || lower.contains("/advert")
+                || lower.contains("/sponsor")
+                || lower.contains("/popup")
+                || lower.contains("/ads/")
+                || lower.contains("/ad/"))
+            return false;
+        return lower.contains("/blacktoon/episodes/")
+                || lower.contains("/manhwa/")
+                || lower.contains("/webtoon/")
+                || lower.contains("/wt/episodes/");
     }
 
     private static String getSiteRoot(int baseMode) {

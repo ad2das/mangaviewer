@@ -115,9 +115,8 @@ internal class NtkEpisodeCoordinator(
 
     fun preAnchorFallbackRetryDelayMs(pageIndex: Int, image: String?): Long {
         if (!isNtkEpisode || pageIndex == anchorPageIndex) return 0L
-        val generatedInitial = image?.contains("/p00") == true &&
-            pageIndex in (anchorPageIndex + 1)..(anchorPageIndex + 2)
-        if (!generatedInitial) return ANCHOR_EXCLUSIVE_FALLBACK_MS
+        val initialNearPage = isInitialNearPage(pageIndex, image)
+        if (!initialNearPage) return ANCHOR_EXCLUSIVE_FALLBACK_MS
         val ageMs = android.os.SystemClock.elapsedRealtime() - createdAtMs
         return (ANCHOR_EXCLUSIVE_FALLBACK_MS - ageMs).coerceAtLeast(0L)
     }
@@ -125,22 +124,29 @@ internal class NtkEpisodeCoordinator(
     private fun relaxedPhaseFor(pageIndex: Int, image: String?, source: String): NtkBootPhase {
         val currentPhase = phase
         if (currentPhase != NtkBootPhase.ANCHOR_EXCLUSIVE || pageIndex == anchorPageIndex) return currentPhase
+        val initialNearPage = isInitialNearPage(pageIndex, image)
+        if (!initialNearPage) return currentPhase
         val ageMs = android.os.SystemClock.elapsedRealtime() - createdAtMs
         if (ageMs < ANCHOR_EXCLUSIVE_FALLBACK_MS) return currentPhase
-        val generatedInitial = image?.contains("/p00") == true && pageIndex in (anchorPageIndex + 1)..(anchorPageIndex + 2)
-        if (!generatedInitial) return currentPhase
         Log.d(
             TAG,
             "ntk_anchor_exclusive_fallback page=$pageIndex,anchor=$anchorPageIndex,ageMs=$ageMs," +
-                "source=$source,image=${image.substringAfterLast('/')},path=$path"
+                "source=$source,image=${image.orEmpty().substringAfterLast('/')},path=$path"
         )
         ViewerWarmupManager.logMetric("ntk_anchor_exclusive_fallback", pageIndex.toLong())
         return NtkBootPhase.ANCHOR_BITMAP_DECODED
     }
 
+    private fun isInitialNearPage(pageIndex: Int, image: String?): Boolean {
+        if (image?.contains("/p00") != true) return false
+        if (pageIndex == anchorPageIndex - 1) return true
+        return pageIndex in (anchorPageIndex + 1)..(anchorPageIndex + INITIAL_NEAR_PAGE_FALLBACK_AHEAD)
+    }
+
     companion object {
         private const val TAG = "ViewerPerf"
-        private const val ANCHOR_EXCLUSIVE_FALLBACK_MS = 70L
+        private const val ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
+        private const val INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 18
         private val NEXT_EPOCH = AtomicLong()
     }
 }

@@ -173,12 +173,26 @@ public class CaptchaActivityTest {
     }
 
     @Test
+    public void ntkAccessVerificationPrefersOriginalEpisodeOverBootstrapPage() {
+        assertEquals("/webtoon/3774/176692", CaptchaActivity.ntkVerificationPathForAccessForTest(
+                "https://sbxh7.com/webtoon/3774/176692",
+                "https://sbxh7.com/webtoon/3774/176692",
+                "https://sbxh7.com/manhwa"));
+        assertEquals("/manhwa/25694/1767091", CaptchaActivity.ntkVerificationPathForAccessForTest(
+                "https://sbxh7.com/manhwa/25694/1767091",
+                "https://sbxh7.com/manhwa",
+                "https://sbxh7.com/manhwa"));
+    }
+
+    @Test
     public void turnstileTouchRepeatsAreBoundedAndSpaced() {
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(1000L, 0L, 0));
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(2400L, 0L, 1));
         assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(2500L, 0L, 1));
         assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(5000L, 2500L, 5));
         assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(7500L, 5000L, 6));
+        assertTrue(CaptchaActivity.shouldRetryTurnstileTouchForTest(5000L, 2500L, 17));
+        assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(7500L, 5000L, 18));
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(45_000L, 42_500L, 18));
     }
 

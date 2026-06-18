@@ -1719,22 +1719,22 @@ public class MainPageWebtoon {
             SectionInfo info = parseSectionInfo(section.getName());
             if(!info.label.contains("인기순"))
                 continue;
-            addHomePreviewTitles((Ranking<Object>) section, baseMode);
+            addHomePreviewTitles((Ranking<Object>) section, baseMode, ntk);
             if(section.size() > 0)
                 break;
         }
         return dataset;
     }
 
-    private static void addHomePreviewTitles(Ranking<Object> section, int baseMode) {
+    private static void addHomePreviewTitles(Ranking<Object> section, int baseMode, boolean ntk) {
         if(section == null)
             return;
         String[][] source = baseMode == base_comic ? HOME_PREVIEW_COMIC : HOME_PREVIEW_WEBTOON;
         for(String[] item : source)
-            section.add(previewTitle(item, baseMode));
+            section.add(previewTitle(item, baseMode, ntk));
     }
 
-    private static Title previewTitle(String[] item, int baseMode) {
+    private static Title previewTitle(String[] item, int baseMode, boolean ntk) {
         int id = 0;
         try {
             id = Integer.parseInt(item[0]);
@@ -1745,7 +1745,12 @@ public class MainPageWebtoon {
             for(String tag : item[3].split("\\|"))
                 if(tag.length() > 0)
                     tags.add(tag);
-        return new Title(item[1], item[2], "", tags, "", id, baseMode);
+        Title title = new Title(item[1], item[2], "", tags, "", id, baseMode);
+        if(ntk) {
+            title.setSourceSite("ntk");
+            title.setPath((baseMode == base_comic ? "/manhwa/" : "/webtoon/") + id);
+        }
+        return title;
     }
 
     public static List<Ranking<?>> getFastNtkWebtoonDataSet() {

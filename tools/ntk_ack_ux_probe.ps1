@@ -197,6 +197,36 @@ function Save-WebViewDebugTargets {
     }
 }
 
+function Save-DeviceState {
+    param(
+        [string]$DeviceSerial,
+        [string]$OutDir
+    )
+    try {
+        (& adb -s $DeviceSerial shell dumpsys window 2>$null) |
+            Set-Content -Path (Join-Path $OutDir "window_focus.txt") -Encoding UTF8
+    } catch {
+        ("WINDOW_FOCUS_COLLECT_ERROR={0}" -f $_.Exception.Message) |
+            Set-Content -Path (Join-Path $OutDir "window_focus.txt") -Encoding UTF8
+    }
+    try {
+        (& adb -s $DeviceSerial shell dumpsys activity top 2>$null) |
+            Set-Content -Path (Join-Path $OutDir "activity_top.txt") -Encoding UTF8
+    } catch {
+        ("ACTIVITY_TOP_COLLECT_ERROR={0}" -f $_.Exception.Message) |
+            Set-Content -Path (Join-Path $OutDir "activity_top.txt") -Encoding UTF8
+    }
+    try {
+        $remote = "/sdcard/ntk_ack_ux_probe_final.png"
+        & adb -s $DeviceSerial shell screencap -p $remote | Out-Null
+        & adb -s $DeviceSerial pull $remote (Join-Path $OutDir "screen_final.png") | Out-Null
+        & adb -s $DeviceSerial shell rm $remote | Out-Null
+    } catch {
+        ("SCREENSHOT_COLLECT_ERROR={0}" -f $_.Exception.Message) |
+            Set-Content -Path (Join-Path $OutDir "screen_final.error.txt") -Encoding UTF8
+    }
+}
+
 Require-Command adb
 
 $timestamp = "{0}_{1}" -f (Get-Date -Format "yyyyMMdd_HHmmss"), ([Guid]::NewGuid().ToString("N").Substring(0, 6))
@@ -297,10 +327,13 @@ $instrumentText = Get-Content -Path $instrumentLog -Raw
 if($EnableWebViewDebuggingForDiagnostics) {
     Save-WebViewDebugTargets $DeviceSerial $runDir
 }
+Save-DeviceState $DeviceSerial $runDir
 
 $logcatPath = Join-Path $runDir "logcat.txt"
 & adb -s $DeviceSerial logcat -d -v time | Set-Content -Path $logcatPath -Encoding UTF8
 $logText = Get-Content -Path $logcatPath -Raw
+$windowFocusPath = Join-Path $runDir "window_focus.txt"
+$windowFocusText = if(Test-Path $windowFocusPath) { Get-Content -Path $windowFocusPath -Raw } else { "" }
 
 $summary = [ordered]@{
     runDir = $runDir
@@ -338,6 +371,9 @@ $summary = [ordered]@{
     webViewDebugPages = if(Test-Path (Join-Path $runDir "webview_debug_pages.json")) {
         Get-Content -Path (Join-Path $runDir "webview_debug_pages.json") -Raw
     } else { "" }
+    windowFocus = Marker-Lines $windowFocusText "mCurrentFocus" 2
+    focusedApp = Marker-Lines $windowFocusText "mFocusedApp" 2
+    screenFinal = if(Test-Path (Join-Path $runDir "screen_final.png")) { Join-Path $runDir "screen_final.png" } else { "" }
     connectionReset = Marker-Lines $logText "ERR_CONNECTION_RESET"
     connectionClosed = Marker-Lines $logText "ERR_CONNECTION_CLOSED"
     failure = Marker-Lines ($instrumentText + "`n" + $logText) "AssertionError" 2

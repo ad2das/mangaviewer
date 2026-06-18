@@ -8,9 +8,9 @@ import static org.junit.Assert.assertTrue;
 
 public class EpisodeWarmupPolicyTest {
     @Test
-    public void ntkDirectWarmupRequiresNtkContextAndConcretePath() {
-        assertTrue(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(true, false, "/manhwa/1/2"));
-        assertTrue(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(false, true, "/webtoon/1/2"));
+    public void ntkDirectWarmupIsDisabledOnEpisodeList() {
+        assertFalse(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(true, false, "/manhwa/1/2"));
+        assertFalse(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(false, true, "/webtoon/1/2"));
         assertFalse(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(false, false, "/manhwa/1/2"));
         assertFalse(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(true, false, ""));
         assertFalse(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(true, false, null));

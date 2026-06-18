@@ -228,6 +228,18 @@ function First-Value($Items, $Key) {
     return ""
 }
 
+function First-Matching-Case($Items, $Path) {
+    if([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+    foreach($item in $Items) {
+        if($item.PSObject.Properties.Name -contains "path" -and [string]$item.path -eq $Path) {
+            return $item
+        }
+    }
+    return $null
+}
+
 Require-Command adb
 
 if($Seed -eq 0) {
@@ -299,6 +311,7 @@ $assertSchedulerGapArg = if($AssertSchedulerGap) { "true" } else { "false" }
 $ensureAccessBeforeArg = if($EnsureAccessBefore) { "true" } else { "false" }
 $changeDeviceIdentityArg = if($ChangeDeviceIdentityBeforeRun) { "true" } else { "false" }
 $resetDeviceIdentityArg = if($ResetDeviceIdentityBeforeRun) { "true" } else { "false" }
+$requireLiveRandomArg = if($RequireLiveRandom) { "true" } else { "false" }
 
 $argsList = @(
     "-s", $DeviceSerial,
@@ -327,6 +340,7 @@ $argsList = @(
     "-e", "ntkScrollPattern", $ScrollPattern,
     "-e", "ntkClearAckBeforeRun", $clearAckArg,
     "-e", "ntkClearReaderImageCacheBeforeRun", $clearImageCacheArg,
+    "-e", "ntkRequireLiveRandom", $requireLiveRandomArg,
     "-e", "ntkChangeDeviceIdentityBeforeRun", $changeDeviceIdentityArg,
     "-e", "ntkResetDeviceIdentityBeforeRun", $resetDeviceIdentityArg
 )
@@ -455,7 +469,17 @@ $ackPhases = @(
 $ackPreflightStages = @(Read-MetricLines $logText "ntk_webview_ack_preflight_stage")
 $slowFrames = ($logText -split "`r?`n") | Where-Object { $_ -match "reader_slow_frame|surface_jank_v3|reader_visible_gap|reader_visible_loading=true" }
 $failureLines = (($instrumentText + "`n" + $logText) -split "`r?`n") |
-    Where-Object { $_ -match "FAILURES!!!|AssertionError|INSTRUMENTATION_STATUS: stack|Process crashed|ntk_true_random_first_drawable_fast_fail|reader_scroll_jump" }
+    Where-Object { $_ -match "FAILURES!!!|AssertionError|INSTRUMENTATION_STATUS: stack|Process crashed|keyDispatchingTimedOut|Input dispatching timed out|ntk_true_random_first_drawable_fast_fail|reader_scroll_jump" }
+if($instrumentText -match "INSTRUMENTATION_RESULT:\s+shortMsg=" -or
+    $instrumentText -match "INSTRUMENTATION_RESULT:\s+longMsg=") {
+    $failureLines += "NTK_INSTRUMENTATION_RESULT_ASSERT instrumentation_result_failure=true"
+}
+if($instrumentText -match "INSTRUMENTATION_CODE:\s+0(\r?\n|$)") {
+    $failureLines += "NTK_INSTRUMENTATION_CODE_ASSERT code=0"
+}
+if($instrumentText -notmatch "OK\s+\(\d+\s+tests?\)") {
+    $failureLines += "NTK_INSTRUMENTATION_OK_ASSERT okMarker=false"
+}
 $casePaths = @($cases | ForEach-Object { [string]$_.path } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $uniqueCasePaths = @($casePaths | Select-Object -Unique)
 $uniqueTitlePaths = @($casePaths | ForEach-Object {
@@ -506,6 +530,12 @@ if($RequireLiveRandom -and [string]::IsNullOrWhiteSpace($TargetEpisodePath) -and
             $caseCuratedCount, `
             $cases.Count)
 }
+if([string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $Runs -gt 0 -and $cases.Count -lt $Runs) {
+    $failureLines += ("NTK_RUN_COUNT_ASSERT cases={0},requested={1}" -f $cases.Count, $Runs)
+}
+if($cases.Count -gt 0 -and $firstDrawable.Count -lt $cases.Count) {
+    $failureLines += ("NTK_FIRST_DRAWABLE_COUNT_ASSERT firstDrawable={0},cases={1}" -f $firstDrawable.Count, $cases.Count)
+}
 
 $ackChecks = @()
 $ackFailureLines = @()
@@ -539,6 +569,7 @@ if(-not $NoAckAssert) {
         $hasWebDone = $false
         $hasReaderDone = $false
         $hasStrictProof = $false
+        $hasNativeBridgeAck200 = $false
         $hasFalseDone = $false
         for($li = [int]$case.index; $li -lt $end; $li++) {
             $line = $logLines[$li]
@@ -560,8 +591,15 @@ if(-not $NoAckAssert) {
             if($line -match "ntk_server_ack_success_recorded path=$pathRe,source=") {
                 $hasStrictProof = $true
             }
+            if($line -match "ntk_native_ack_bridge_submit code=200,path=$pathRe(\b|,|$)") {
+                $hasNativeBridgeAck200 = $true
+                $hasStrictProof = $true
+            }
         }
-        $ok = $hasStart -and $hasStrictProof
+        if($hasWebDone -or $hasReaderDone -or $hasNativeBridgeAck200) {
+            $hasStart = $true
+        }
+        $ok = $hasStrictProof -and ($hasWebDone -or $hasReaderDone -or $hasNativeBridgeAck200)
         $ackChecks += [pscustomobject]@{
             run = $case.run
             path = $case.path
@@ -569,11 +607,12 @@ if(-not $NoAckAssert) {
             webViewDone = $hasWebDone
             readerDone = $hasReaderDone
             strictProof = $hasStrictProof
+            nativeBridgeAck200 = $hasNativeBridgeAck200
             falseDone = $hasFalseDone
             passed = $ok
         }
         if(-not $ok) {
-            $ackFailureLines += "NTK_ACK_ASSERT run=$($case.run),path=$($case.path),started=$hasStart,webViewDone=$hasWebDone,readerDone=$hasReaderDone,strictProof=$hasStrictProof,falseDone=$hasFalseDone"
+            $ackFailureLines += "NTK_ACK_ASSERT run=$($case.run),path=$($case.path),started=$hasStart,webViewDone=$hasWebDone,readerDone=$hasReaderDone,strictProof=$hasStrictProof,nativeBridgeAck200=$hasNativeBridgeAck200,falseDone=$hasFalseDone"
         }
     }
 }
@@ -585,8 +624,12 @@ foreach($line in $failureLines) {
     if(-not $failurePath -and ([string]$line) -match "path=([^,\s]+)") {
         $failurePath = $Matches[1]
     }
-    if(-not $failureMode -and ([string]$line) -match "mode=([^,\s]+)") {
-        $failureMode = $Matches[1]
+    if(-not $failureMode -and ([string]$line) -match "(^|[,\s])mode=([^,\s]+)") {
+        $candidateMode = $Matches[2]
+        if($candidateMode -match "^\d+$") {
+            continue
+        }
+        $failureMode = $candidateMode
     }
 }
 
@@ -594,6 +637,16 @@ $firstPath = First-Value $cases "path"
 $firstMode = First-Value $cases "mode"
 $reproPath = if($failurePath) { $failurePath } elseif($firstPath) { $firstPath } else { $TargetEpisodePath }
 $reproMode = if($failureMode) { $failureMode } elseif($firstMode) { $firstMode } else { $Mode }
+$reproCase = First-Matching-Case $cases $reproPath
+$reproImageEpisodeId = if($reproCase) { Metric-Value $reproCase "imageEpisodeId" } else { "" }
+$reproImageWorkId = if($reproCase) { Metric-Value $reproCase "imageWorkId" } else { "" }
+$reproImageCount = if($reproCase) { Metric-Value $reproCase "imageCount" } else { "" }
+if([string]::IsNullOrWhiteSpace($reproImageEpisodeId)) { $reproImageEpisodeId = $TargetImageEpisodeId }
+if([string]::IsNullOrWhiteSpace($reproImageWorkId)) { $reproImageWorkId = $TargetImageWorkId }
+if([string]::IsNullOrWhiteSpace($reproImageWorkId) -and $reproCase) { $reproImageWorkId = Metric-Value $reproCase "titleId" }
+if([string]::IsNullOrWhiteSpace($reproImageCount) -or $reproImageCount -eq "0") {
+    $reproImageCount = if($TargetImageCount -gt 0) { [string]$TargetImageCount } else { "" }
+}
 $reproArgs = @(
     ".\tools\ntk_random_perf.ps1",
     "-DeviceSerial", $DeviceSerial,
@@ -608,11 +661,14 @@ $reproArgs = @(
     "-HoldAfterFirstDrawableMs", [string]$HoldAfterFirstDrawableMs,
     "-TargetEpisodePath", $reproPath
 )
-if($TargetImageEpisodeId -and $TargetImageEpisodeId.Trim().Length -gt 0) {
-    $reproArgs += @("-TargetImageEpisodeId", $TargetImageEpisodeId.Trim())
+if($reproImageEpisodeId -and $reproImageEpisodeId.Trim().Length -gt 0) {
+    $reproArgs += @("-TargetImageEpisodeId", $reproImageEpisodeId.Trim())
 }
-if($TargetImageWorkId -and $TargetImageWorkId.Trim().Length -gt 0) {
-    $reproArgs += @("-TargetImageWorkId", $TargetImageWorkId.Trim())
+if($reproImageWorkId -and $reproImageWorkId.Trim().Length -gt 0) {
+    $reproArgs += @("-TargetImageWorkId", $reproImageWorkId.Trim())
+}
+if($reproImageCount -and $reproImageCount.Trim().Length -gt 0 -and $reproImageCount -ne "0") {
+    $reproArgs += @("-TargetImageCount", $reproImageCount.Trim())
 }
 if($TargetImageCount -gt 0) {
     $reproArgs += @("-TargetImageCount", [string]$TargetImageCount)
@@ -659,7 +715,7 @@ if([string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $caseSourceCoverage -ne
     $probeRoots = if($NtkSiteRoot -and $NtkSiteRoot.Trim().Length -gt 0) {
         $NtkSiteRoot.Trim()
     } else {
-        "https://sbxh5.com,https://sbxh6.com,https://toonflix.app,https://sbxh4.com"
+        "https://sbxh7.com,https://sbxh6.com,https://toonflix.app,https://sbxh5.com"
     }
     $liveRandomBlockedReason = ("caseSourceCoverage={0}; run root probe before claiming final live-random proof" -f $caseSourceCoverage)
     $nextRootProbeCommand = ".\tools\ntk_root_probe.ps1 -DeviceSerial $DeviceSerial -Roots `"$probeRoots`" -TimeoutMs 5000 -MaxRoots 12 -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
@@ -687,6 +743,9 @@ $summary = [ordered]@{
     assertSchedulerGap = [bool]$AssertSchedulerGap
     requireLiveRandom = [bool]$RequireLiveRandom
     targetEpisodePath = $TargetEpisodePath
+    targetImageEpisodeId = $TargetImageEpisodeId
+    targetImageWorkId = $TargetImageWorkId
+    targetImageCount = $TargetImageCount
     ntkSiteRoot = $NtkSiteRoot
     ntkLockSiteRoot = [bool]$NtkLockSiteRoot
     uniqueEpisodePathCount = $uniqueCasePaths.Count

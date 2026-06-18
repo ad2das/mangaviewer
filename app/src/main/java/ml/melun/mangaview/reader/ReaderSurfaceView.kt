@@ -80,6 +80,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         fun onNearBoundary(direction: Int, anchorPage: Int)
         fun onBoundaryReached(direction: Int, anchorPage: Int)
         fun onTap()
+        fun onVisibleCoverageChanged(snapshot: VisibleCoverageSnapshot) {}
     }
 
     private data class Page(
@@ -236,6 +237,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
     private var hasDrawnContentFrame = false
+    private var fastBitmapRefineScheduled = false
     private var lastVisibleLoading = -1
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
     private val statsPostSpacingMs = ArrayList<Float>(240)
@@ -1161,15 +1163,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (animateScroll) scheduleFrameLocked()
             RenderWork(request, boundary, state)
         }
-        dispatchWindowRequest(work.request)
-        dispatchBoundaryRequest(work.boundary)
         val state = work.state ?: run {
+            dispatchWindowRequest(work.request)
+            dispatchBoundaryRequest(work.boundary)
             if (SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
                 Log.d(TAG, "reader_test_scroll_draw_skipped state=null")
             }
             return
         }
         val timing = drawState(frameTimeNanos, callbackStartNs, state, canvas)
+        dispatchWindowRequest(work.request)
+        dispatchBoundaryRequest(work.boundary)
         val nowMs = SystemClock.uptimeMillis()
         if (timing.totalMs > frameBudgetMs() && nowMs - lastSlowFrameLogMs >= SLOW_FRAME_LOG_INTERVAL_MS) {
             lastSlowFrameLogMs = nowMs
@@ -1206,8 +1210,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             Trace.beginSection("RSV.draw")
             canvas.drawColor(PAGE_PLACEHOLDER_COLOR)
             if (!state.empty) {
-                val fastInitialBitmapDraw = !hasDrawnContentFrame && state.hasDrawableContent
-                for (item in state.items) drawItem(canvas, state, item, fastInitialBitmapDraw)
+                val fastBitmapDraw = shouldUseFastBitmapDraw(state)
+                for (item in state.items) drawItem(canvas, state, item, fastBitmapDraw)
+                if (fastBitmapDraw && hasDrawnContentFrame && !state.busy) scheduleFilteredBitmapRefineFrame()
             }
             drawScrollbar(canvas, state)
             if (state.hasDrawableContent) hasDrawnContentFrame = true
@@ -1226,6 +1231,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
             postEndNs = postEndNs,
             posted = true
         )
+    }
+
+    private fun shouldUseFastBitmapDraw(state: DrawState): Boolean {
+        if (!state.hasDrawableContent) return false
+        if (!hasDrawnContentFrame) return true
+        if (state.busy) return true
+        val now = SystemClock.uptimeMillis()
+        return now <= programmaticScrollStatsUntilMs ||
+            (lastScrollInteractionMs > 0L && now - lastScrollInteractionMs <= SCROLL_FAST_BITMAP_DRAW_MS)
+    }
+
+    private fun scheduleFilteredBitmapRefineFrame() {
+        synchronized(stateLock) {
+            if (fastBitmapRefineScheduled) return
+            fastBitmapRefineScheduled = true
+        }
+        mainHandler.postDelayed({
+            synchronized(stateLock) {
+                fastBitmapRefineScheduled = false
+                if (!renderRunning || pages.isEmpty()) return@synchronized
+                if (lastBusy || pointerDown || dragging || !scroller.isFinished) return@synchronized
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+            }
+        }, SCROLL_FAST_BITMAP_REFINE_DELAY_MS)
     }
 
     private fun drawItem(canvas: Canvas, state: DrawState, item: DrawItem, fastBitmapDraw: Boolean) {
@@ -1340,7 +1371,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun prepareBitmapPaint(fastBitmapDraw: Boolean) {
         paint.alpha = 255
         paint.colorFilter = null
-        paint.isDither = true
+        paint.isDither = !fastBitmapDraw
         paint.isFilterBitmap = !fastBitmapDraw
     }
 
@@ -1589,20 +1620,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (item.errorText != null) visibleErrors++
             if (item.cardText != null) visibleCards++
         }
+        val snapshot = VisibleCoverageSnapshot(
+            viewportPx = state.height,
+            drawablePx = coverage.drawablePx,
+            missingPx = coverage.missingPx,
+            placeholderPx = coverage.placeholderPx,
+            drawableItems = coverage.drawableItems,
+            totalItems = coverage.totalItems,
+            visibleLoading = state.visibleLoading,
+            visibleErrors = visibleErrors,
+            visibleCards = visibleCards,
+            busy = state.busy,
+            pageCount = state.pageCount
+        )
         synchronized(stateLock) {
-            lastVisibleCoverageSnapshot = VisibleCoverageSnapshot(
-                viewportPx = state.height,
-                drawablePx = coverage.drawablePx,
-                missingPx = coverage.missingPx,
-                placeholderPx = coverage.placeholderPx,
-                drawableItems = coverage.drawableItems,
-                totalItems = coverage.totalItems,
-                visibleLoading = state.visibleLoading,
-                visibleErrors = visibleErrors,
-                visibleCards = visibleCards,
-                busy = state.busy,
-                pageCount = state.pageCount
-            )
+            lastVisibleCoverageSnapshot = snapshot
+        }
+        if (
+            snapshot.drawablePx > 0 &&
+            snapshot.visibleLoading == 0 &&
+            snapshot.missingPx == 0 &&
+            snapshot.placeholderPx == 0
+        ) {
+            mainHandler.post { listener?.onVisibleCoverageChanged(snapshot) }
         }
     }
 
@@ -1638,7 +1678,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (itemHasDrawable(item)) {
                 drawablePx += px
                 drawableItems++
-            } else if (item.loading) {
+            } else {
                 placeholderPx += px
             }
         }
@@ -1659,7 +1699,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun itemHasDrawable(item: DrawItem): Boolean {
         if (item.cardText != null) return true
-        if (item.errorText != null) return true
         val bitmap = item.bitmap
         if (bitmap != null && !bitmap.isRecycled) return true
         return item.tiles.any { !it.bitmap.isRecycled }
@@ -2745,6 +2784,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
+        private const val SCROLL_FAST_BITMAP_DRAW_MS = 900L
+        private const val SCROLL_FAST_BITMAP_REFINE_DELAY_MS = 950L
         private const val PENDING_NONE = 0
         private const val PENDING_BITMAP = 1
         private const val PENDING_TILES = 2

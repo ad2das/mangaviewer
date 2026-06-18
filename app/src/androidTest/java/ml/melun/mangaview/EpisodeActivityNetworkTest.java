@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
+import ml.melun.mangaview.activity.MainActivity;
 import ml.melun.mangaview.activity.ReaderV2Activity;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
@@ -149,6 +150,99 @@ public class EpisodeActivityNetworkTest {
         clickFreshEpisodeRow(device, episodeRow);
         assertReaderOpenedThroughAutoCaptcha(device, "NTK scroll stress");
         stressScrollViewer(device, "ntk");
+    }
+
+    @Test
+    public void ntkCurrentComicUxSelectionOpensReaderWithAck200() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        CustomHttpClient client = MainApplication.getHttpClient();
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/manhwa/36525/1807424", true);
+        clearColdReaderState(context);
+        launchNtkCurrentComicTitle();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = waitForEpisodeRowThroughAutoCaptcha(device, "NTK current comic UX episode list");
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/manhwa/36525/1807424", true);
+        executeShell("logcat -c");
+        Log.d("ViewerPerf", "ntk_actual_ux_select_start source=ntk,type=comic,titlePath=/manhwa/36525");
+        clickFreshEpisodeRow(device, episodeRow);
+
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK current comic UX");
+        String firstDrawable = waitForFirstDrawableMetric("ntk", 120000L);
+        String readerPath = currentReaderNtkEpisodePath();
+        String ack200 = waitForNtkStrictAck200Metric(readerPath, 120000L);
+        assertInitialVisibleCoverageSettles("NTK current comic UX");
+        assertNoVisibleLoadingLogged("NTK current comic UX");
+        File screenshot = new File(context.getCacheDir(), "ntk_actual_ux_comic_reader.png");
+        assertTrue("Expected NTK current comic UX reader screenshot", device.takeScreenshot(screenshot));
+        Log.d("ViewerPerf", "ntk_actual_ux_screenshot type=comic,path=" + screenshot.getAbsolutePath());
+        Log.d("ViewerPerf", "ntk_actual_ux_select_success source=ntk,type=comic,firstDrawable="
+                + sanitizeForMetric(firstDrawable) + ",ack=" + sanitizeForMetric(ack200));
+    }
+
+    @Test
+    public void ntkCurrentWebtoonUxSelectionOpensReaderWithAck200() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        CustomHttpClient client = MainApplication.getHttpClient();
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/webtoon/16968/1430500", true);
+        clearColdReaderState(context);
+        launchNtkCurrentWebtoonTitle();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = waitForEpisodeRowThroughAutoCaptcha(device, "NTK current webtoon UX episode list");
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/webtoon/16968/1430500", true);
+        executeShell("logcat -c");
+        Log.d("ViewerPerf", "ntk_actual_ux_select_start source=ntk,type=webtoon,titlePath=/webtoon/16968");
+        clickFreshEpisodeRow(device, episodeRow);
+
+        assertReaderOpenedThroughAutoCaptcha(device, "NTK current webtoon UX");
+        String firstDrawable = waitForFirstDrawableMetric("ntk", 120000L);
+        String readerPath = currentReaderNtkEpisodePath();
+        String ack200 = waitForNtkStrictAck200Metric(readerPath, 120000L);
+        assertInitialVisibleCoverageSettles("NTK current webtoon UX");
+        assertNoVisibleLoadingLogged("NTK current webtoon UX");
+        File screenshot = new File(context.getCacheDir(), "ntk_actual_ux_webtoon_reader.png");
+        assertTrue("Expected NTK current webtoon UX reader screenshot", device.takeScreenshot(screenshot));
+        Log.d("ViewerPerf", "ntk_actual_ux_screenshot type=webtoon,path=" + screenshot.getAbsolutePath());
+        Log.d("ViewerPerf", "ntk_actual_ux_select_success source=ntk,type=webtoon,firstDrawable="
+                + sanitizeForMetric(firstDrawable) + ",ack=" + sanitizeForMetric(ack200));
+    }
+
+    @Test
+    public void ntkHomeContinueUxSelectionOpensReaderWithAck200() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        CustomHttpClient client = MainApplication.getHttpClient();
+        String episodePath = "/webtoon/16968/1463195";
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + episodePath, true);
+        clearColdReaderState(context);
+        seedNtkHomeContinueWebtoon(episodePath);
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        try(ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            UiObject2 ntkContinue = waitForNtkHomeContinueCard(device);
+            assertNotNull("Expected seeded NTK continue card on MainActivity home", ntkContinue);
+            client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + episodePath, true);
+            executeShell("logcat -c");
+            Log.d("ViewerPerf", "ntk_actual_home_continue_select_start source=ntk,type=webtoon,titlePath=/webtoon/16968,episodePath="
+                    + episodePath);
+            Rect bounds = ntkContinue.getVisibleBounds();
+            assertTrue("Expected NTK continue card bounds for UX tap", bounds.width() > 0 && bounds.height() > 0);
+            device.click(bounds.centerX(), bounds.centerY());
+
+            openReaderFromHomeSelectionIfEpisodeList(device);
+            assertReaderOpenedThroughAutoCaptcha(device, "NTK home continue UX");
+            String firstDrawable = waitForFirstDrawableMetric("ntk", 120000L);
+            String readerPath = currentReaderNtkEpisodePath();
+            assertEquals("Expected NTK home continue to open the seeded episode", episodePath, readerPath);
+            String ack200 = waitForNtkStrictAck200Metric(readerPath, 120000L);
+            assertInitialVisibleCoverageSettles("NTK home continue UX");
+            assertNoVisibleLoadingLogged("NTK home continue UX");
+            File screenshot = new File(context.getCacheDir(), "ntk_actual_home_continue_reader.png");
+            takeNonBlankReaderScreenshot(device, screenshot, "NTK home continue UX");
+            Log.d("ViewerPerf", "ntk_actual_home_continue_screenshot path=" + screenshot.getAbsolutePath());
+            Log.d("ViewerPerf", "ntk_actual_home_continue_select_success source=ntk,type=webtoon,firstDrawable="
+                    + sanitizeForMetric(firstDrawable) + ",ack=" + sanitizeForMetric(ack200));
+        }
     }
 
     @Test
@@ -939,6 +1033,155 @@ public class EpisodeActivityNetworkTest {
         context.startActivity(intent);
     }
 
+    private void launchNtkCurrentComicTitle() {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.setBaseMode(MTitle.base_comic);
+
+        Title title = new Title(
+                "늑대의 탈을 쓴 양 공주님",
+                "",
+                "",
+                Collections.singletonList("fantasy"),
+                "",
+                36525,
+                MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setPath("/manhwa/36525");
+
+        Intent intent = new Intent(context, EpisodeActivity.class);
+        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
+        intent.putExtra("online", true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        context.startActivity(intent);
+    }
+
+    private void launchNtkCurrentWebtoonTitle() {
+        Context context = ApplicationProvider.getApplicationContext();
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+
+        Title title = new Title(
+                "ntk-current-webtoon-16968",
+                "",
+                "",
+                Collections.singletonList("webtoon"),
+                "",
+                16968,
+                MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setPath("/webtoon/16968");
+
+        Intent intent = new Intent(context, EpisodeActivity.class);
+        intent.putExtra("title", Utils.toViewerTitleJson(title, true));
+        intent.putExtra("online", true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        context.startActivity(intent);
+    }
+
+    private void seedNtkHomeContinueWebtoon(String episodePath) {
+        MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+        MainApplication.p.resetBookmark();
+        MainApplication.p.resetRecent();
+        MainApplication.p.resetViewerBookmark();
+
+        Title title = new Title(
+                "ntk-home-continue-webtoon-16968",
+                "",
+                "",
+                Collections.singletonList("webtoon"),
+                "",
+                16968,
+                MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setPath("/webtoon/16968");
+        title.setResumeNtkEpisodePath(episodePath);
+        title.setReadingProgress(1463195, 1, 1);
+        title.setBookmark(1463195);
+
+        Manga episode = new Manga(1463195, "1화", "", MTitle.base_webtoon);
+        episode.setMode(0);
+        episode.setTitle(title);
+        episode.setTitleId(16968);
+        episode.setNtkEpisodePath(episodePath);
+        title.setEps(Collections.singletonList(episode));
+
+        MainApplication.p.addRecent(title);
+        MainApplication.p.setBookmark(title, 1463195);
+    }
+
+    private static UiObject2 waitForNtkHomeContinueCard(UiDevice device) throws Exception {
+        long deadline = System.currentTimeMillis() + 60000L;
+        UiObject2 lastIcon = null;
+        while(System.currentTimeMillis() < deadline) {
+            UiObject2 icon = device.findObject(By.res(PACKAGE_NAME, "home_continue_site_icon").desc("NTK"));
+            if(icon != null) {
+                lastIcon = icon;
+                UiObject2 card = clickableAncestor(icon);
+                if(card != null)
+                    return card;
+            }
+            Thread.sleep(250L);
+        }
+        assertNotNull("Expected NTK home continue site icon", lastIcon);
+        return clickableAncestor(lastIcon);
+    }
+
+    private static UiObject2 clickableAncestor(UiObject2 node) {
+        UiObject2 current = node;
+        for(int depth = 0; current != null && depth < 5; depth++) {
+            if(current.isClickable())
+                return current;
+            current = current.getParent();
+        }
+        return null;
+    }
+
+    private static void openReaderFromHomeSelectionIfEpisodeList(UiDevice device) throws Exception {
+        long deadline = System.currentTimeMillis() + 45000L;
+        while(System.currentTimeMillis() < deadline) {
+            if(device.findObject(By.res(PACKAGE_NAME, "strip")) != null)
+                return;
+            UiObject2 row = device.findObject(By.res(PACKAGE_NAME, "episode"));
+            if(row != null) {
+                clickFreshEpisodeRow(device, row);
+                return;
+            }
+            if(isCaptchaShown(device))
+                return;
+            Thread.sleep(250L);
+        }
+    }
+
+    private static void takeNonBlankReaderScreenshot(UiDevice device, File screenshot, String label) throws Exception {
+        AssertionError last = null;
+        int width = device.getDisplayWidth();
+        int x = width / 2;
+        int bottom = Math.max(1, device.getDisplayHeight() - 260);
+        int top = Math.max(1, device.getDisplayHeight() / 4);
+        for(int attempt = 0; attempt < 6; attempt++) {
+            Thread.sleep(attempt == 0 ? 250L : 500L);
+            assertTrue("Expected " + label + " reader screenshot", device.takeScreenshot(screenshot));
+            Bitmap bitmap = BitmapFactory.decodeFile(screenshot.getAbsolutePath());
+            assertNotNull("Expected readable " + label + " screenshot", bitmap);
+            try {
+                int nonBlank = countNonBlankPixels(bitmap, 180, 96);
+                Log.d("ViewerPerf", "ntk_reader_visual_nonblank label=" + label.replace(' ', '_')
+                        + ",attempt=" + attempt + ",pixels=" + nonBlank);
+                if(nonBlank > 1000)
+                    return;
+                last = new AssertionError("Expected " + label + " to show nonblank reader image pixels, nonBlank=" + nonBlank);
+            } finally {
+                bitmap.recycle();
+            }
+            device.swipe(x, bottom, x, top, 12);
+        }
+        throw last == null ? new AssertionError("Expected " + label + " screenshot") : last;
+    }
+
     private void launchWfwfComicTitle() {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
@@ -1398,6 +1641,18 @@ public class EpisodeActivityNetworkTest {
         return null;
     }
 
+    private static String currentReaderNtkEpisodePath() throws Exception {
+        ReaderV2Activity reader = waitForReaderActivity(10000L);
+        assertNotNull("Expected active reader to expose the selected NTK episode path", reader);
+        AtomicReference<String> path = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                path.set(reader.testCurrentNtkEpisodePath()));
+        assertNotNull("Expected selected reader NTK episode path", path.get());
+        assertTrue("Expected selected reader NTK path, got " + path.get(),
+                path.get().startsWith("/manhwa/") || path.get().startsWith("/webtoon/"));
+        return path.get();
+    }
+
     private static ReaderSurfaceView.ProgressPosition scrollActualReaderUntilProgressChanges(
             UiDevice device, ReaderV2Activity reader) throws Exception {
         int width = device.getDisplayWidth();
@@ -1658,6 +1913,92 @@ public class EpisodeActivityNetworkTest {
         }
         fail("Expected first drawable metric for " + source + ": " + latestOutput);
         return "";
+    }
+
+    private static String waitForNtkNativeAck200Metric(long timeoutMs) throws Exception {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        String latestOutput = "";
+        while(System.currentTimeMillis() < deadline) {
+            latestOutput = executeShellOutput("logcat -d -s CustomHttpClient:D ViewerPerf:D *:S");
+            for(String line : latestOutput.split("\\R")) {
+                if(line.contains("ntk_native_ack_bridge_submit code=200")
+                        && line.contains("/api/ad/ack"))
+                    return line;
+                if(line.contains("ntk_native_ack_final_success=true"))
+                    return line;
+            }
+            Thread.sleep(100L);
+        }
+        fail("Expected actual NTK /api/ad/ack 200 proof in UX flow: " + latestOutput);
+        return "";
+    }
+
+    private static String waitForNtkStrictAck200Metric(String targetPath, long timeoutMs) throws Exception {
+        assertNotNull("Expected selected NTK path for ACK proof", targetPath);
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        String latestOutput = "";
+        while(System.currentTimeMillis() < deadline) {
+            latestOutput = executeShellOutput("logcat -d -s CustomHttpClient:D ViewerPerf:D *:S");
+            for(String line : latestOutput.split("\\R")) {
+                if(line.contains("ntk_server_ack_success_recorded path=" + targetPath)
+                        && line.contains("strictAdAck=true"))
+                    return line;
+                if(line.contains("ntk_native_ack_final_success=true,path=" + targetPath))
+                    return line;
+            }
+            if(isNtkAckRootTransportUnavailable(latestOutput, targetPath))
+                fail("NTK ACK root transport unavailable before strict /api/ad/ack 200 for "
+                        + targetPath + ": " + latestOutput);
+            Thread.sleep(100L);
+        }
+        fail("Expected strict NTK /api/ad/ack 200 proof for " + targetPath + ": " + latestOutput);
+        return "";
+    }
+
+    private static boolean isNtkAckRootTransportUnavailable(String output, String targetPath) {
+        if(output == null || targetPath == null)
+            return false;
+        int challengeTimeouts = 0;
+        boolean nativeExhausted = false;
+        boolean bridgeExhausted = false;
+        boolean noReachableRoot = false;
+        boolean challengeSucceeded = false;
+        for(String line : output.split("\\R")) {
+            if(line.contains("ntk_domain_reachable_none"))
+                noReachableRoot = true;
+            if(line.contains("/api/ad/challenge")
+                    && line.contains("code=200")
+                    && (!line.contains("path=") || line.contains("path=" + targetPath)))
+                challengeSucceeded = true;
+            if(line.contains("ntk_native_ack_challenge_race_done")
+                    && line.contains("code=200")
+                    && line.contains("valid=true")
+                    && line.contains("path=" + targetPath))
+                challengeSucceeded = true;
+            if(line.contains("/api/ad/challenge")
+                    && line.contains("SocketTimeoutException"))
+                challengeTimeouts++;
+            if(line.contains("ntk_native_ack_prepare_challenge_code=0")
+                    && line.contains("attempt=2")
+                    && line.contains("path=" + targetPath))
+                nativeExhausted = true;
+            if(line.contains("ntk_webview_preack_done")
+                    && line.contains("ok=false")
+                    && line.contains("SocketTimeoutException")
+                    && line.contains("path=" + targetPath))
+                bridgeExhausted = true;
+        }
+        if(challengeSucceeded)
+            return false;
+        return noReachableRoot || (challengeTimeouts >= 4 && (nativeExhausted || bridgeExhausted));
+    }
+
+    private static String sanitizeForMetric(String line) {
+        if(line == null)
+            return "";
+        return line.replace('\n', ' ')
+                .replace('\r', ' ')
+                .replace(',', ';');
     }
 
     private static void assertNoVisibleLoadingLogged(String source) throws Exception {

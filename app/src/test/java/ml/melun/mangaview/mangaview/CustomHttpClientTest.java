@@ -248,6 +248,9 @@ public class CustomHttpClientTest {
         assertFalse(CustomHttpClient.shouldSkipNtkHiddenWebViewFallbackAfterPageErrorForTest(true, "/manhwa/1",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, false, true, true,
                 new Exception("Cloudflare challenge")));
+        assertFalse(CustomHttpClient.shouldSkipNtkHiddenWebViewFallbackAfterPageErrorForTest(true, "/manhwa/1",
+                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, true, false, true,
+                new Exception("Unusable NTK page: /manhwa/1 code=403")));
     }
 
     @Test
@@ -358,14 +361,24 @@ public class CustomHttpClientTest {
 
         assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/1073395", true, false));
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/1073395", false, true));
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/nv-840894-7", false, true));
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "webtoon", "/webtoon/840894/u-slug-1073395", false, false));
         assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
                 "manhwa", "/manhwa/840894/1073395", false, false));
+    }
+
+    @Test
+    public void ntkModernGuardWaitsForAckBeforeViewerImageApi() {
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "https://sbxh6.example", "/webtoon/840894/1073395", false, true));
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "https://sbxh6.example", "/webtoon/840894/nv-840894-7", false, true));
+        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
+                "webtoon", "https://toonflix.example", "/webtoon/840894/u-slug-1073395", false, false));
     }
 
     @Test
@@ -464,14 +477,16 @@ public class CustomHttpClientTest {
 
     @Test
     public void ntkQuicPrimaryAndDirectClientCoverProtectedHosts() {
-        assertTrue(CustomHttpClient.shouldUseNtkQuicPrimaryUrlForTest(
+        assertFalse(CustomHttpClient.shouldUseNtkQuicPrimaryUrlForTest(
                 "https://sbxh4.com/search?q=hero"));
         assertTrue(CustomHttpClient.shouldUseNtkQuicPrimaryUrlForTest(
-                "https://img.sbxh4.com/images/1.jpg"));
+                "https://img.sbxh4.com/webtoon_uploads/17801/1.jpg"));
+        assertTrue(CustomHttpClient.shouldUseNtkDirectClientUrlForTest(
+                "https://sbxh4.com/search?q=hero"));
         assertTrue(CustomHttpClient.shouldUseNtkDirectClientUrlForTest(
                 "https://sbxh4.com/manhwa?page=2"));
         assertTrue(CustomHttpClient.shouldUseNtkDirectClientUrlForTest(
-                "https://img.sbxh4.com/images/1.jpg"));
+                "https://img.sbxh4.com/webtoon_uploads/17801/1.jpg"));
         assertFalse(CustomHttpClient.shouldUseNtkQuicPrimaryUrlForTest(
                 "https://example.com/images/1.jpg"));
         assertFalse(CustomHttpClient.shouldUseNtkDirectClientUrlForTest(
@@ -740,6 +755,21 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkReachabilityRequiresApiJsonRoot() {
+        String challenge = "<!DOCTYPE html><html><body>"
+                + "<script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\"></script>"
+                + "Verify you are human</body></html>";
+        String apiJson = "{\"works\":[{\"sourceWorkId\":\"1\",\"title\":\"sample\"}]}";
+
+        assertTrue(CustomHttpClient.isReachableNtkProbeResponseForTest(200, "", apiJson));
+        assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(403, "", challenge));
+        assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(
+                403, "", "<html><body>plain forbidden</body></html>"));
+        assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(
+                200, "", "<html><body>뉴토끼 공식 주소안내</body></html>"));
+    }
+
+    @Test
     public void ntkOfficialRootOverridesStaleDefaultRoot() {
         String staleDefaultRoot = "https://sbxh2.com";
         List<String> officialRoots = Arrays.asList("https://sbxh3.com/");
@@ -783,13 +813,18 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkProbeDoesNotTreatCloudflareChallengeAsReachable() {
+    public void ntkProbeRejectsNonApiJsonRoots() {
         String challenge = "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
                 + "<body>checking your browser</body></html>";
+        String nginx403 = "<html><head><title>403 Forbidden</title></head>"
+                + "<body><h1>403 Forbidden</h1><hr><center>nginx/1.24</center></body></html>";
+        String apiJson = "{\"works\":[],\"total\":0}";
 
+        assertTrue(CustomHttpClient.isReachableNtkProbeResponseForTest(200, "", apiJson));
         assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(403, "", challenge));
+        assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(403, "", nginx403));
         assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(302, "https://t.me/newtoki_url", ""));
-        assertTrue(CustomHttpClient.isReachableNtkProbeResponseForTest(200, "", "<html></html>"));
+        assertFalse(CustomHttpClient.isReachableNtkProbeResponseForTest(200, "", "<html></html>"));
     }
 
     @Test

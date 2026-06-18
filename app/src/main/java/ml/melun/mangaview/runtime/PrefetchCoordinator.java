@@ -288,7 +288,9 @@ public final class PrefetchCoordinator {
 
     public static boolean shouldSkipNtkPrefetchForTest(String sourceSite, boolean ntkPreference, boolean ntkClient) {
         String normalized = sourceSite == null ? "" : sourceSite.trim().toLowerCase(java.util.Locale.ROOT);
-        if("ntk".equals(normalized) || "wfwf".equals(normalized))
+        if("ntk".equals(normalized))
+            return true;
+        if("wfwf".equals(normalized))
             return false;
         return ntkPreference || ntkClient;
     }

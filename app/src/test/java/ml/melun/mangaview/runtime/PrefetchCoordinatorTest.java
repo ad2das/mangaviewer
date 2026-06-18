@@ -116,12 +116,12 @@ public class PrefetchCoordinatorTest {
     }
 
     @Test
-    public void ntkPrefetchSkipsUnverifiedNtkTitles() {
-        assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", true, true));
+    public void ntkPrefetchSkipsAllNtkViewerWarmups() {
+        assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", true, true));
         assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("", true, true));
         assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest(null, true, true));
         assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("wfwf", true, true));
-        assertFalse(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", false, false));
+        assertTrue(PrefetchCoordinator.shouldSkipNtkPrefetchForTest("ntk", false, false));
     }
 
     @Test

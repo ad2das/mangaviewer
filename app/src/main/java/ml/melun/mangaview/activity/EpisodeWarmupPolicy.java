@@ -13,9 +13,7 @@ final class EpisodeWarmupPolicy {
     }
 
     static boolean shouldDirectWarmupNtkViewerPage(boolean ntkPreference, boolean ntkClient, String episodePath) {
-        return (ntkPreference || ntkClient)
-                && episodePath != null
-                && episodePath.trim().length() > 0;
+        return false;
     }
 
     static boolean shouldPreloadNtkFirstFrameAfterDirectWarmup(boolean directWarmupSucceeded) {
