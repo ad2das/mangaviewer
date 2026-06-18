@@ -1638,7 +1638,7 @@ final class NtkWebViewFallbackManager {
                                           String kind, String workId, String episodeId,
                                           String imagesToken, long delayMs) {
         mainHandler.postDelayed(() -> {
-            if(finished[0] || scriptRequests[0] >= viewerScriptRequestLimit(imagesToken) || view == null)
+            if(finished[0] || view == null)
                 return;
             String currentUrl = view.getUrl();
             boolean matched = isFinishedDocumentUrl(currentUrl, baseUrl, path);
@@ -1649,6 +1649,11 @@ final class NtkWebViewFallbackManager {
                     + ",attempts=" + scriptRequests[0]);
             if(!matched)
                 return;
+            if(scriptRequests[0] >= viewerScriptRequestLimit(imagesToken)) {
+                maybeRetryStaleAckOnlyFetch(view, finished, scriptRequests, baseUrl, path,
+                        ackScopePath, kind, workId, episodeId, imagesToken, delayMs);
+                return;
+            }
             if("__ack_only__".equals(imagesToken)
                     && isAckOnlyPlainCloudflarePending(view.getTag())) {
                 Log.d(TAG, "ntk_ack_only_plain_cf_eval_defer path=" + path
@@ -1659,6 +1664,36 @@ final class NtkWebViewFallbackManager {
             evaluateViewerImageFetchScript(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId,
                     episodeId, imagesToken);
         }, delayMs);
+    }
+
+    private void maybeRetryStaleAckOnlyFetch(WebView view, boolean[] finished, int[] scriptRequests,
+                                             String baseUrl, String path, String ackScopePath,
+                                             String kind, String workId, String episodeId,
+                                             String imagesToken, long delayMs) {
+        if(!"__ack_only__".equals(imagesToken) || finished[0] || view == null)
+            return;
+        String script = "(function(){try{var scope=" + jsonQuote(path) + ";"
+                + "var running=window.__ntkAckOnlyRunning===scope;"
+                + "var age=Date.now()-Number(window.__ntkAckOnlyRunningAt||0);"
+                + "var proof=!!window.__ntk_ad_ack_proof_200;"
+                + "if(running&&age>=9000&&!proof){delete window.__ntkAckOnlyRunning;"
+                + "return JSON.stringify({stale:true,age:age,proof:proof});}"
+                + "return JSON.stringify({stale:false,running:running,age:age,proof:proof});"
+                + "}catch(e){return JSON.stringify({stale:false,error:String(e)});}})()";
+        view.evaluateJavascript(script, value -> {
+            String state = unquoteJavascriptString(value == null ? "" : value);
+            Log.d(TAG, "ntk_ack_only_limit_probe path=" + path
+                    + ",delay=" + delayMs
+                    + ",attempts=" + scriptRequests[0]
+                    + ",state=" + state);
+            if(finished[0] || view == null)
+                return;
+            if(!state.contains("\"stale\":true"))
+                return;
+            scriptRequests[0] = 0;
+            evaluateViewerImageFetchScriptNow(view, finished, scriptRequests, baseUrl, path,
+                    ackScopePath, kind, workId, episodeId, imagesToken);
+        });
     }
 
     private static WebResourceResponse viewerShellResponse(String html, String guardVersion) {

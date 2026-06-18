@@ -26671,3 +26671,59 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - ACK correctness is currently stable on main in strict fresh random and UX tests, but ACK-only WebView cleanup/preflight tail latency can still stretch to about `30.7s` on one random case.
   - `surface_jank_v3` callback gaps and some `reader_slow_frame` draw spikes around `20-42ms` remain, though visible loading/blank pixels and scroll drift did not reproduce in this validation.
+
+## 2026-06-18 23:16:00 +09:00 ACK-only eval-limit experiment rejected
+
+- Continued on `C:\Users\Administrator\Downloads\mangaviewer-main-sync` `main` after checking active goal and this progress file.
+- Root-cause analysis from artifact `build/ntk-random-perf/20260618_230329`:
+  - The slow run 0 path `/webtoon/765804/1133799` did not spend 30s on server challenge or Cloudflare.
+  - `/api/ad/challenge` returned 200, guard module/init were under a few seconds, and the eventual `/api/ad/ack` 200 was valid strict proof.
+  - The first ACK-only hidden WebView loop timed out around `directAckTimeout attempt=1`, then the run stayed stale until a later ACK-only main entry cleared `__ntkAckOnlyRunning` at age about `26438ms`.
+  - After that stale clear, the same proof-capable signed ACK flow succeeded quickly with `guard-fetch-ack-200`.
+  - Interpretation: remaining ACK latency is caused by an ACK-only WebView loop getting stale/stuck before a later re-entry, not by missing captcha solving or image loading.
+- Rejected experiment:
+  - Changed `viewerScriptRequestLimit("__ack_only__")` from `3` to `5` to let 12s/20s scheduled reevaluations bypass the exhausted attempt budget.
+  - Build passed: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest`.
+  - Target repro command used the same path/seed as the slow random case:
+    - `/webtoon/765804/1133799`, imageEpisodeId `21615`, imageWorkId `9081`, imageCount `84`, seed `1781791409419`.
+    - Artifact: `build/ntk-random-perf/20260618_231527`.
+  - Result: test passed for correctness, but ACK preflight worsened to `32497ms` versus previous `30760ms`.
+  - ACK remained strict-valid: `nativeSubmit code=200`, `strictProof=true`, image coverage and drift stayed good.
+  - Action: reverted the eval-limit change; no code from this experiment is kept.
+- Bad approach / do not repeat:
+  - Merely increasing ACK-only script eval limit does not fix the stale hidden WebView loop and can make latency worse. The next improvement should target stale-loop cancellation/re-entry or the direct ACK loop itself, not just raising attempt counts.
+
+## 2026-06-18 23:24:00 +09:00 ACK-only stale lock probe added
+
+- Code change kept:
+  - In `NtkWebViewFallbackManager.scheduleViewerImageFetch(...)`, ACK-only scheduled ticks no longer return silently when the script request budget is exhausted.
+  - For `__ack_only__` only, the scheduler now probes the hidden WebView state:
+    - If `window.__ntkAckOnlyRunning` is the same scope, age is at least `9000ms`, and strict proof is not already present, it deletes the stale running lock.
+    - It then resets the local ACK-only script request counter and immediately reevaluates the ACK script.
+  - Normal image URL extraction keeps the existing request limit behavior.
+  - This does not weaken ACK proof requirements; `/api/ad/ack` 200 plus strict proof is still required.
+- Why:
+  - Prior slow logs showed the first ACK-only loop could timeout and remain stale until a much later scheduled entry cleared it.
+  - The problem was not captcha, Cloudflare, or slow image loading; it was stale hidden WebView ACK-loop state delaying the proof-capable signed ACK path.
+- Validation:
+  - Build: `./gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest` passed.
+  - Target repro after stale probe:
+    - Artifact: `build/ntk-random-perf/20260618_231804`.
+    - Target: `/webtoon/765804/1133799`, imageEpisodeId `21615`, imageWorkId `9081`, imageCount `84`, seed `1781791409419`.
+    - Result: `passed=True`, failures `0`.
+    - ACK: `nativeSubmit code=200`, strict proof true, `ntk_webview_ack_preflight_done ... ms=24920`.
+    - Before this change, the comparable main random artifact for the same path showed about `30760ms`; the bad eval-limit experiment showed `32497ms`.
+    - Stale probe proof: `ntk_ack_only_limit_probe ... delay=7000 ... state={"stale":true,"age":11460,"proof":false}` followed by re-entry and final `guard-fetch-ack-200`.
+    - Image/scroll: first drawable `8102ms`, missing/placeholder/loading failures `0`, drift failures `0`.
+  - Live-random 2-run regression:
+    - Artifact: `build/ntk-random-perf/20260618_231918`.
+    - Result: `passed=True`, failures `0`, coverage `live-random`, two API-discovered title/episode paths.
+    - ACK strict proof and `nativeSubmit code=200` remained true.
+    - Image coverage stayed `missingPx=0`, `placeholderPx=0`, `loading=0`; post-stop drift stayed `maxPageDelta=0`, `maxOffsetDelta=0`.
+    - Remaining ACK latency still appeared in some random stages, with `webViewAckPreflightDone` around `26116ms`.
+  - Real UX webtoon selection:
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+    - Result: `OK (1 test)`, time `53.936s`.
+- Remaining risk:
+  - ACK correctness is still stable, but the stale probe only reduces one class of ACK-only tail. It does not eliminate all 20s+ ACK cases.
+  - Further improvement should focus on the direct ACK loop timeout path and why the first hidden ACK run sometimes waits until re-entry before producing signed proof.
