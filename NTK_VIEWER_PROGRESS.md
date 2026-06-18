@@ -28143,3 +28143,43 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The recovery-width change did not break actual comic/webtoon UX and made the previously slow `/manhwa/8681/72602` much faster.
   - Strict random evidence is stronger now: 2-run and 4-run both pass with strict jank defaults after the change.
   - Remaining risk is ACK tail latency around 10s on some live-random cases and still-limited sample size; continue with broader sweeps or targeted tail-latency investigation before marking the full objective complete.
+
+## 2026-06-19 08:12:00 +09:00 main branch ACK tail-latency reduction
+
+- Branch hygiene correction:
+  - Verified `origin/main` is the authoritative target and is already at `9b53bc908 Record NTK recovery width verification`.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` worktree is still on `codex/ntk-strict-ack-proof` with stale dirty experiment files; do not use it as the commit target.
+  - Continue work in `C:\Users\Administrator\Downloads\mangaviewer-main-sync` on `main`.
+  - Comparing `main` against `origin/codex/ntk-strict-ack-proof` showed the old branch is behind the current main NTK commits; merging it back would risk reverting current main behavior.
+- Root cause refined:
+  - The 4-run strict random pass still had one ACK long tail around `10393ms`.
+  - Log review showed that the slow case was dominated by conservative strict-fresh ACK preflight start gates, not by image visibility or scroll drift.
+  - After reducing initial generated request pressure, the old `4500ms` strict-fresh first-drawable/no-interaction ACK holds were too conservative.
+- Change:
+  - In `ReaderV2Activity.kt`, reduced strict-fresh ACK first-drawable quiet and initial no-interaction quiet from `4500ms` to `1500ms`.
+  - Left the scroll quiet gate at `3500ms` so active scroll protection remains intact; this is a focused ACK start-latency change rather than a broad timing rewrite.
+- Target long-tail repro:
+  - Artifact: `build/ntk-random-perf/main_ack_floor1500_repro2688_20260619/20260619_080607`.
+  - Target: `/manhwa/2688/241424`, seed `1781823613430`, image episode `198121`, work `2688`, image count `20`.
+  - Result: passed.
+  - ACK strict proof: `6188ms` (`ack_only_fetch=6182/6185`, `nativeSubmit@/code=200`), improved from the prior long-tail `10393ms` class.
+  - First drawable: `4642ms`.
+  - Scroll/image: failures `0`, `missingPx=0`, `placeholderPx=0`, `loading=0`, no post-stop page/offset drift.
+- Wider strict random validation:
+  - Artifact: `build/ntk-random-perf/main_ack_floor1500_random4_strict_20260619/20260619_080657`.
+  - Command used strict fresh, live random, native ACK, touch mixed scroll, no append probe, strict jank defaults (`MaxDroppedFrames=0`, `RenderFrameMaxMs=16.67`), and app/test APKs already installed from the target run.
+  - Result: passed.
+  - Cases `4`, unique episode paths `4`, unique title paths `4`, scroll checks `16`, failures `0`, title sources `api=4`, coverage `live-random`.
+  - Cases included `/webtoon/13970/1266145`, `/manhwa/33501/1683611`, `/webtoon/10560/1040595`, `/manhwa/26988/329924`.
+  - First drawable max `7524ms`; ACK max `6410ms`, down from prior strict 4-run max `10393ms`.
+  - All ACK checks passed strict proof. Coverage samples stayed at `missingPx=0`, `placeholderPx=0`, `loading=0`; post-stop drift stayed `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Actual UX recheck:
+  - `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200` and `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200` both passed on `emulator-5554`.
+  - XML result: tests `2`, failures `0`, errors `0`.
+  - Comic test time `29.708s`; webtoon test time `19.359s`.
+- Bad/invalid commands recorded:
+  - `.\gradlew.bat :app:connectedDebugAndroidTest -P...` without quoting `-P` failed in PowerShell before test execution because Gradle saw a malformed task name. Not app evidence.
+  - `ml.melun.mangaview.activity.EpisodeActivityNetworkTest` was the wrong test class path. The correct class is `ml.melun.mangaview.EpisodeActivityNetworkTest`.
+- Remaining risk:
+  - ACK tail is improved but not mathematically bounded across all site states; continue to keep strict ACK proof as required evidence.
+  - Strict frame callbacks still show slow-frame signals even while dropped-frame debt stays `0` and tests pass. Do not claim complete scroll perfection beyond the recorded strict-run evidence.
