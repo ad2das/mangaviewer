@@ -286,13 +286,16 @@ public class CustomHttpClient {
 
     private static List<InetAddress> lookupNetworkResilientDns(String hostname) throws UnknownHostException {
         if(isNtkDnsProtectedHost(hostname)) {
-            List<InetAddress> protectedAddresses = ipv4OnlyOrEmpty(lookupCachedNtkDns(hostname, true));
+            List<InetAddress> protectedAddresses = ipv4OnlyOrEmpty(lookupCachedNtkDns(hostname, false));
             if(!protectedAddresses.isEmpty())
                 return protectedAddresses;
             List<InetAddress> systemAddresses = lookupSystemDns(hostname, false);
             if(!systemAddresses.isEmpty())
                 return ipv4OnlyOrThrow(hostname, mergeIpv4First(hostname, systemAddresses, null, null));
             protectedAddresses = ipv4OnlyOrEmpty(lookupFallbackNtkDns(hostname));
+            if(!protectedAddresses.isEmpty())
+                return protectedAddresses;
+            protectedAddresses = ipv4OnlyOrEmpty(lookupCachedNtkDns(hostname, true));
             if(!protectedAddresses.isEmpty())
                 return protectedAddresses;
             throw new UnknownHostException(hostname);
@@ -641,15 +644,18 @@ public class CustomHttpClient {
     public static String resolveDirectHostForNtkProxy(String hostname) {
         if(!isNtkDnsProtectedHost(hostname))
             return hostname;
-        List<InetAddress> addresses = lookupCachedNtkDns(hostname, true);
+        List<InetAddress> addresses = lookupCachedNtkDns(hostname, false);
         if(addresses.isEmpty()) {
             try {
-                if(!lookupSystemDns(hostname, false).isEmpty())
+                List<InetAddress> systemAddresses = lookupSystemDns(hostname, false);
+                if(!systemAddresses.isEmpty())
                     return hostname;
             } catch (Exception ignored) {
             }
             addresses = lookupFallbackNtkDns(hostname);
         }
+        if(addresses.isEmpty())
+            addresses = lookupCachedNtkDns(hostname, true);
         if(addresses.isEmpty())
             return hostname;
         return addresses.get(0).getHostAddress();
@@ -3076,6 +3082,7 @@ public class CustomHttpClient {
         long now = System.currentTimeMillis();
         String currentRoot = WfwfDomainResolver.toRoot(getWebtoonUrl());
         if(!force && isCurrentDefaultNtkRoot(currentRoot)
+                && hasRecentNtkAccessVerification()
                 && !hasRecentCloudflareChallenge()
                 && !hasRecentNtkHardBlock())
             return false;
@@ -3177,13 +3184,19 @@ public class CustomHttpClient {
         if(resolvedRoots != null)
             for(String root : resolvedRoots)
                 addNtkRootCandidate(candidates, root, true);
+        addNtkRootCandidate(candidates, "https://" + PREVIOUS_NTK_HOST);
         addNtkRootCandidate(candidates, NTK_WEBTOON_URL);
         addNtkRootCandidate(candidates, currentRoot);
+        addNtkRootCandidate(candidates, "https://" + OLDER_NTK_HOST);
+        addNtkRootCandidate(candidates, "https://" + OLDEST_NTK_HOST);
         addNtkRootCandidate(candidates, "https://" + LEGACY_NTK_HOST);
         for(String candidate : candidates)
             if(canReachNtkRoot(candidate, headers))
                 return candidate;
-        return resolvedRoots == null || resolvedRoots.isEmpty() ? null : NtkDomainResolver.normalizeRoot(resolvedRoots.get(0));
+        Log.d(TAG, "ntk_domain_reachable_none current=" + currentRoot
+                + ",resolved=" + (resolvedRoots == null ? "[]" : resolvedRoots.toString())
+                + ",candidates=" + candidates);
+        return null;
     }
 
     private static String firstTrustedResolvedNtkRoot(List<String> resolvedRoots) {
@@ -3279,8 +3292,119 @@ public class CustomHttpClient {
                 body = response.peekBody(256 * 1024L).string();
             } catch (Exception ignored) {
             }
-            return isReachableNtkProbeResponse(code, location, contentType, body);
+            if(isReachableNtkProbeResponse(code, location, contentType, body))
+                return true;
+            response.close();
+            response = null;
+            call.cancel();
+
+            builder = new Request.Builder()
+                    .url(normalizedRoot + "/api/ad/challenge")
+                    .get()
+                    .header("Accept", "application/json,text/plain,*/*")
+                    .header("Referer", normalizedRoot + "/");
+            if(headers != null) {
+                for(String key : headers.keySet()) {
+                    if(key == null)
+                        continue;
+                    String lower = key.toLowerCase(Locale.ROOT);
+                    if("accept".equals(lower) || "referer".equals(lower))
+                        continue;
+                    builder.header(key, headers.get(key));
+                }
+            }
+            call = probeClient.newCall(builder.build());
+            response = call.execute();
+            if(response == null)
+                return false;
+            code = response.code();
+            location = response.header("location", "");
+            contentType = response.header("content-type", "");
+            body = "";
+            try {
+                body = response.peekBody(64 * 1024L).string();
+            } catch (Exception ignored) {
+            }
+            if(isReachableNtkChallengeTransportResponse(code, location, contentType, body))
+                return true;
+            response.close();
+            response = null;
+            call.cancel();
+
+            OkHttpClient unsafeProbeClient = unsafeNtkApiFastClient == null
+                    ? probeClient
+                    : unsafeNtkApiFastClient.newBuilder()
+                    .connectTimeout(2, TimeUnit.SECONDS)
+                    .readTimeout(2, TimeUnit.SECONDS)
+                    .callTimeout(3, TimeUnit.SECONDS)
+                    .followRedirects(false)
+                    .followSslRedirects(false)
+                    .build();
+            call = unsafeProbeClient.newCall(builder.build());
+            response = call.execute();
+            if(response == null)
+                return false;
+            code = response.code();
+            location = response.header("location", "");
+            contentType = response.header("content-type", "");
+            body = "";
+            try {
+                body = response.peekBody(64 * 1024L).string();
+            } catch (Exception ignored) {
+            }
+            return isReachableNtkChallengeTransportResponse(code, location, contentType, body);
         } catch (Exception e) {
+            if(isNtkSslTrustFailure(e)) {
+                Response unsafeResponse = null;
+                Call unsafeCall = null;
+                try {
+                    OkHttpClient.Builder unsafeProbeBuilder = unsafeNtkApiFastClient == null
+                            ? client.newBuilder()
+                            : unsafeNtkApiFastClient.newBuilder();
+                    OkHttpClient unsafeProbeClient = unsafeProbeBuilder
+                            .connectTimeout(2, TimeUnit.SECONDS)
+                            .readTimeout(2, TimeUnit.SECONDS)
+                            .callTimeout(3, TimeUnit.SECONDS)
+                            .followRedirects(false)
+                            .followSslRedirects(false)
+                            .build();
+                    String normalizedRoot = trimTrailingSlash(root);
+                    Request.Builder unsafeBuilder = new Request.Builder()
+                            .url(normalizedRoot + "/api/ad/challenge")
+                            .get()
+                            .header("Accept", "application/json,text/plain,*/*")
+                            .header("Referer", normalizedRoot + "/");
+                    if(headers != null) {
+                        for(String key : headers.keySet()) {
+                            if(key == null)
+                                continue;
+                            String lower = key.toLowerCase(Locale.ROOT);
+                            if("accept".equals(lower) || "referer".equals(lower))
+                                continue;
+                            unsafeBuilder.header(key, headers.get(key));
+                        }
+                    }
+                    unsafeCall = unsafeProbeClient.newCall(unsafeBuilder.build());
+                    unsafeResponse = unsafeCall.execute();
+                    if(unsafeResponse == null)
+                        return false;
+                    String body = "";
+                    try {
+                        body = unsafeResponse.peekBody(64 * 1024L).string();
+                    } catch (Exception ignored) {
+                    }
+                    return isReachableNtkChallengeTransportResponse(unsafeResponse.code(),
+                            unsafeResponse.header("location", ""),
+                            unsafeResponse.header("content-type", ""), body);
+                } catch (Exception ignored) {
+                    return false;
+                } finally {
+                    if(unsafeCall != null)
+                        unsafeCall.cancel();
+                    if(unsafeResponse != null)
+                        unsafeResponse.close();
+                }
+            }
             return false;
         } finally {
             if(call != null)
@@ -3308,6 +3432,37 @@ public class CustomHttpClient {
 
     static boolean isReachableNtkProbeResponseForTest(int code, String location, String body) {
         return isReachableNtkProbeResponse(code, location, body);
+    }
+
+    private static boolean isReachableNtkChallengeTransportResponse(int code, String location,
+                                                                    String contentType, String body) {
+        if(location != null && location.toLowerCase(Locale.ROOT).contains("t.me/"))
+            return false;
+        String sample = body == null ? "" : body.trim().toLowerCase(Locale.ROOT);
+        String type = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+        if(code == 405 && (type.contains("application/json") || sample.contains("\"method\"")))
+            return true;
+        return code == 200 && (type.contains("application/json") || sample.startsWith("{"));
+    }
+
+    static boolean isReachableNtkChallengeTransportResponseForTest(int code, String location,
+                                                                   String contentType, String body) {
+        return isReachableNtkChallengeTransportResponse(code, location, contentType, body);
+    }
+
+    private static boolean isNtkSslTrustFailure(Throwable throwable) {
+        if(throwable == null)
+            return false;
+        for(Throwable current = throwable; current != null; current = current.getCause()) {
+            String message = String.valueOf(current.getMessage()).toLowerCase(Locale.ROOT);
+            String type = current.getClass().getName().toLowerCase(Locale.ROOT);
+            if(type.contains("sslhandshakeexception")
+                    || message.contains("trust anchor")
+                    || message.contains("cert_authority_invalid")
+                    || message.contains("certpathvalidatorexception"))
+                return true;
+        }
+        return false;
     }
 
     private static boolean shouldSkipRecentWfwfDomainCheck(boolean force, String currentRoot,
@@ -8437,9 +8592,6 @@ public class CustomHttpClient {
             byte[] body = requestBody.toString().getBytes(StandardCharsets.UTF_8);
             Map<String, String> headers = new HashMap<>();
             headers.put("content-type", "application/json");
-            headers.put("accept", "application/json");
-            headers.put("origin", baseUrl);
-            headers.put("referer", baseUrl + ntkNativeAckScopePath(cookiePath));
             String cookieHeader = getMergedNtkCookieHeaderForUrl(baseUrl, cookiePath);
             NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl,
                     baseUrl + "/api/client-key/register", cookieHeader, headers,
@@ -9315,11 +9467,12 @@ public class CustomHttpClient {
                 h.put("content-type", "application/json");
             String effectiveCookieHeader = bridgeCookieHeader != null && bridgeCookieHeader.length() > 0
                     ? bridgeCookieHeader : getCookieHeader();
+            long ackSubmitTimeoutMs = Math.max(NTK_ACK_CONFIRM_TIMEOUT_MS, 4_500L);
             NtkQuicFetcher.Result result = engine != null
                     ? NtkQuicFetcher.fetchWithEngine(engine, executor, baseUrl + "/api/ad/ack",
-                            agent, effectiveCookieHeader, h, "POST", body, NTK_ACK_CONFIRM_TIMEOUT_MS)
+                            agent, effectiveCookieHeader, h, "POST", body, ackSubmitTimeoutMs)
                     : NtkQuicFetcher.fetch(context, baseUrl + "/api/ad/ack",
-                            agent, effectiveCookieHeader, h, "POST", body, NTK_ACK_CONFIRM_TIMEOUT_MS);
+                            agent, effectiveCookieHeader, h, "POST", body, ackSubmitTimeoutMs);
             if(result != null)
                 applySetCookieHeaders(result.headers, baseUrl);
             Log.d(TAG, "ntk_native_ack_bridge_submit code=" + (result == null ? "null" : result.code)
@@ -9663,7 +9816,15 @@ public class CustomHttpClient {
 
             // 4. POST /api/ad/ack with challenge token
             // WebView sends additional metrics: total, visible, td, tp
-            // tp is a proof computed by ad_guard.js; we leave it empty for now
+            // tp is a proof computed by ad_guard.js. Submitting the native empty proof
+            // consumes current server challenges and makes the later WebView proof ACK hit
+            // challenge_used, so native stops here and lets the proof-capable path finish.
+            if(ackPayload.optString("tp", "").length() == 0) {
+                markNtkAckProofRequired(cacheKey, ntkNativeAckFlightKey(challengePath));
+                Log.d(TAG, "ntk_native_ack_ack_skipped_without_proof path=" + challengePath
+                        + ",canaryOk=" + (proactiveCanaryResult != null && proactiveCanaryResult.ok));
+                return false;
+            }
             boolean ackBodyOk = false;
             String ackStatus = null;
             String ackError = null;
@@ -10347,7 +10508,16 @@ public class CustomHttpClient {
                 String cookieHeader = getCookieHeader();
                 if(cookieHeader != null && cookieHeader.length() > 0)
                     builder.header("Cookie", cookieHeader);
-                response = ntkApiFastClient.newCall(builder.build()).execute();
+                Request request = builder.build();
+                try {
+                    response = ntkApiFastClient.newCall(request).execute();
+                } catch(Exception firstError) {
+                    if(!isNtkSslTrustFailure(firstError) || unsafeNtkApiFastClient == null)
+                        throw firstError;
+                    Log.d(TAG, "ntk_native_ack_challenge_okhttp_unsafe_retry path=" + path
+                            + ",error=" + firstError.getClass().getSimpleName());
+                    response = unsafeNtkApiFastClient.newCall(request).execute();
+                }
                 byte[] bytes = response.body() == null ? new byte[0] : response.body().bytes();
                 return new NtkAckChallengeResult("okhttp",
                         NtkQuicFetcher.Result.fromBytes(response.code(), bytes, response.headers().toMultimap()));
@@ -11180,7 +11350,16 @@ public class CustomHttpClient {
             String cookieHeader = getCookieHeader();
             if(cookieHeader != null && cookieHeader.length() > 0)
                 builder.header("Cookie", cookieHeader);
-            response = ntkApiFastClient.newCall(builder.build()).execute();
+            Request request = builder.build();
+            try {
+                response = ntkApiFastClient.newCall(request).execute();
+            } catch(Exception firstError) {
+                if(!isNtkSslTrustFailure(firstError) || unsafeNtkApiFastClient == null)
+                    throw firstError;
+                Log.d(TAG, "ntk_native_ack_post_okhttp_unsafe_retry endpoint=" + endpoint
+                        + ",error=" + firstError.getClass().getSimpleName());
+                response = unsafeNtkApiFastClient.newCall(request).execute();
+            }
             byte[] bytes = response.body() == null ? new byte[0] : response.body().bytes();
             return NtkQuicFetcher.Result.fromBytes(response.code(), bytes, response.headers().toMultimap());
         } catch(Exception e) {
