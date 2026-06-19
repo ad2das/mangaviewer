@@ -30095,3 +30095,70 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Next action:
   - If continuing ACK close-out, prioritize making actual UX tests preserve per-test logs or run via a wrapper that executes each method separately. That improves evidence quality without weakening the verification gates.
 
+## 2026-06-20 12:xx +09:00 Context recovery and current blocker after main-sync handoff
+
+- Continued after context compaction by reading this file and checking active goal.
+- Important worktree clarification:
+  - `C:\Users\Administrator\Downloads\mangaviewer` is currently on `codex/ntk-strict-ack-proof`.
+  - The main branch worktree to use for user-requested main commits/pushes is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Current main-sync HEAD is `a20932831 Record NTK heartbeat UX validation`, aligned with `origin/main`.
+- Current uncommitted main-sync work:
+  - `tools/ntk_actual_ux_suite.ps1` added to run actual UX instrumentation methods one-by-one with per-test Gradle/logcat/summary artifacts, clearing logcat per method and stopping on first failure by default.
+  - Browser-like `Sec-Fetch-Site` handling added for NTK viewer image requests/probes.
+  - Scoped NTK image cookie merge exposed from `CustomHttpClient` and used by `ReaderImageCache`.
+  - Root/legacy image URL canonicalization improved for `moamoabon.com/p001.*`, `/p001.*`, and `/black/episodes/...` to canonical episode paths.
+- Latest valid failing actual UX run before this note:
+  - Artifact dir: `build\ntk-actual-ux-suite\20260620_034656`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Failure: reader first image did not render before timeout.
+- Current blocker shape:
+  - This is not primarily an ACK failure in the latest evidence.
+  - WebView JS `/api/webtoon-images` succeeds with 200 and returns 62 image URLs for `/webtoon/16968/1463195`.
+  - Strict ACK proof has been successful in this line of work; do not regress to treating challenge/cookie-only as final proof.
+  - Native `/api/webtoon-images` still shows 403 in the failing run.
+  - Reader/native direct image GET for `moamoabon.com/.../p001.jpg` still returns 403, so the image list is known but the byte path is blocked.
+- Bad approaches / do not repeat:
+  - Do not keep debugging this as "ACK missing" unless the current log lacks strict `/api/ad/ack` proof. The latest failure is image bytes, not the URL list.
+  - Do not assume the problem is only missing cookies; scoped `ad_ack`/`ad_ack_c` merge was added, but direct CDN image GET still 403s.
+  - Browser-like `Sec-Fetch-Site` parity alone is insufficient; keep it only if tests remain green, but it did not solve CDN 403 by itself.
+  - Do not use `/api/m/i` metric/observation URLs as manga page images.
+  - Do not repeatedly drop a good WebView image URL list only because native reachability probe 403s; solve the actual byte path or capture through a browser/WebView-valid lane.
+- Next technical direction:
+  - Inspect actual 403 response bodies for canonical and legacy CDN image URLs.
+  - Inspect hidden WebView request blocking and `interceptViewerQuicRequest` behavior for CDN images.
+  - If WebView can load the CDN image while native cannot, add a controlled WebView/browser-stack image byte capture/cache path instead of forcing native direct GET to be the only lane.
+
+## 2026-06-20 13:xx +09:00 Main branch push preparation and ACK/image split
+
+- User correctly called out that meaningful work must land on `main`, not only remain in a side worktree/branch.
+- Current push target:
+  - Worktree: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`.
+  - Remote: `origin/main`.
+  - Starting HEAD for this note: `a20932831 Record NTK heartbeat UX validation`.
+- Current meaningful changes being prepared for main:
+  - `tools/ntk_actual_ux_suite.ps1` runs actual UX instrumentation methods one at a time and writes per-method Gradle/logcat/summary artifacts, avoiding the earlier evidence-loss problem where later tests cleared the failed test's logcat.
+  - `Utils` and `Manga` now compute browser-like `Sec-Fetch-Site` for NTK viewer image/header probes instead of hard-coded same-origin semantics.
+  - `CustomHttpClient` exposes scoped NTK viewer image cookie merging and canonicalizes legacy `/black/episodes/...` webtoon image paths to `/blacktoon/episodes/...`.
+  - `ReaderImageCache` uses the scoped NTK image cookie header for NTK image requests.
+  - `NtkWebViewFallbackManager` canonicalizes page-file and legacy black episode image URLs before publishing viewer image API fallback results.
+  - Unit tests cover Sec-Fetch-Site, scoped/legacy canonicalization, and fallback URL normalization behavior.
+- Latest actual UX rerun before this note:
+  - Artifact dir: `build\ntk-actual-ux-suite\20260620_035818`.
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result: FAIL because the first reader image did not render before timeout.
+  - Important split: ACK was successful in this failing run.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"845a57ffd139fada","source":"native-fetch-ack-200"}`.
+  - WebView viewer image API also succeeded and returned 62 `moamoabon.com` images for the episode.
+  - The failing layer was image bytes: native/header/reader requests for those returned HTTP `403` with Cloudflare "Website Access Blocked" HTML, so real bitmap bytes were unavailable.
+- Bad approaches / do not repeat:
+  - Do not debug this specific `20260620_035818` failure as an ACK failure. It already had strict ACK 200 proof.
+  - Do not claim image rendering success just because the viewer image API returned a valid image list. The reader still needs real image bytes.
+  - Do not accept Cloudflare TOS-block HTML as an image response or mask it with placeholder success.
+  - Do not rely on a combined instrumentation run that loses per-test log evidence; use the per-method suite wrapper for actual UX evidence.
+- Current honest status:
+  - Main has prior committed evidence where actual UX ACK/image passed.
+  - The latest live site/CDN state can still block image bytes for the same webtoon case even with ACK proof.
+  - The commit being prepared improves diagnostics and request parity, but it is not a final proof that the current upstream CDN hard block is solved.
+

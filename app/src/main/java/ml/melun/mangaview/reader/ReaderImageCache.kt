@@ -2838,12 +2838,23 @@ object ReaderImageCache {
     ): Request {
         val requestBuilder = Request.Builder().url(Utils.viewerImageRequestUrl(image, manga.baseMode))
         val ntkEpisodeReferer = ntkEpisodeImageReferer(manga, image)
+        val ntkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
+        val ntkEpisodeCookie = if (ntkEpisodeReferer != null) {
+            getHttpClient().getMergedNtkViewerImageCookieHeaderForPath(ntkEpisodePath)
+        } else {
+            ""
+        }
         for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
             if (ntkEpisodeReferer != null && entry.key.equals("Referer", ignoreCase = true)) {
                 requestBuilder.addHeader(entry.key, ntkEpisodeReferer)
+            } else if (ntkEpisodeCookie.isNotBlank() && entry.key.equals("Cookie", ignoreCase = true)) {
+                continue
             } else {
                 requestBuilder.addHeader(entry.key, entry.value)
             }
+        }
+        if (ntkEpisodeCookie.isNotBlank()) {
+            requestBuilder.addHeader("Cookie", ntkEpisodeCookie)
         }
         if (foregroundPriority) {
             requestBuilder.addHeader("X-MangaViewer-Foreground", "1")

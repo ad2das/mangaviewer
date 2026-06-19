@@ -109,4 +109,21 @@ public class NtkWebViewFallbackManagerTest {
         assertFalse(NtkWebViewFallbackManager.isStrictAdAckSuccessSourceForTest(
                 "captcha-bridge-challenge-ad-ack-cookie-200"));
     }
+
+    @Test
+    public void viewerImageApiNormalizesRootPageImagesToEpisodePath() {
+        assertEquals("https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg",
+                NtkWebViewFallbackManager.normalizeViewerImageApiSrcForTest(
+                        "https://moamoabon.com/p001.jpg", "webtoon", "16968", "1463195"));
+        assertEquals("https://moamoabon.com/blacktoon/episodes/16968/1463195/p002.webp",
+                NtkWebViewFallbackManager.normalizeViewerImageApiSrcForTest(
+                        "moamoabon.com/p002.webp", "webtoon", "16968", "1463195"));
+        assertEquals("https://moamoabon.com/manhwa/36525/1807424/p001.jpg",
+                NtkWebViewFallbackManager.normalizeViewerImageApiSrcForTest(
+                        "/p001.jpg", "manhwa", "36525", "1807424"));
+        assertEquals("https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg",
+                NtkWebViewFallbackManager.normalizeViewerImageApiSrcForTest(
+                        "https://moamoabon.com/black/episodes/16968/1463195/p001.jpg",
+                        "webtoon", "16968", "1463195"));
+    }
 }

@@ -2339,6 +2339,15 @@ public class CustomHttpClient {
         return builder.toString();
     }
 
+    public String getMergedNtkViewerImageCookieHeaderForPath(String path) {
+        if(path == null || path.length() == 0)
+            return getCookieHeader();
+        String baseUrl = getUrl(path);
+        if(baseUrl == null || baseUrl.length() == 0)
+            return getCookieHeaderForNtkPath(path);
+        return getMergedNtkCookieHeaderForUrl(baseUrl, path);
+    }
+
     private void invalidateCookieHeaderCache() {
         cookieHeaderCache = null;
     }
@@ -9078,6 +9087,9 @@ public class CustomHttpClient {
         String stableCdn = normalizeNtkVolatileCdnImageSrc(trimmed);
         if(stableCdn.length() > 0)
             return stableCdn;
+        String canonicalLegacy = canonicalLegacyNtkViewerImageSrc(trimmed);
+        if(canonicalLegacy.length() > 0)
+            return canonicalLegacy;
         if(isTrustedNtkPrimaryImageUrl(trimmed))
             return trimmed;
         Matcher pageMatcher = Pattern.compile("(?i)^p(\\d{3})\\.(jpg|jpeg|png|webp)$")
@@ -9094,6 +9106,35 @@ public class CustomHttpClient {
         return String.format(Locale.ROOT,
                 "https://moamoabon.com/manhwa/%s/%s/%s",
                 workId, episodeId, pageFile);
+    }
+
+    private static String canonicalLegacyNtkViewerImageSrc(String src) {
+        if(src == null || src.length() == 0)
+            return "";
+        try {
+            HttpUrl parsed = HttpUrl.parse(src);
+            if(parsed == null)
+                return "";
+            String path = parsed.encodedPath();
+            if(path == null)
+                return "";
+            Matcher matcher = Pattern.compile(
+                    "^/black/episodes/(\\d+)/([^/?#]+)/((?:p)?\\d{1,5}\\.(?:jpg|jpeg|png|webp))$",
+                    Pattern.CASE_INSENSITIVE).matcher(path);
+            if(!matcher.find())
+                return "";
+            String query = parsed.encodedQuery();
+            return "https://moamoabon.com/blacktoon/episodes/"
+                    + matcher.group(1) + "/" + matcher.group(2) + "/" + matcher.group(3)
+                    + (query == null || query.length() == 0 ? "" : "?" + query);
+        } catch(Exception ignored) {
+            return "";
+        }
+    }
+
+    static String normalizeNtkViewerApiImageSrcForTest(String src, String kind,
+                                                       String workId, String episodeId) {
+        return normalizeNtkViewerApiImageSrc(src, kind, workId, episodeId);
     }
 
     private static String normalizeNtkVolatileCdnImageSrc(String src) {
@@ -9113,11 +9154,10 @@ public class CustomHttpClient {
             return "";
         String query = parsed.encodedQuery();
         String lowerPath = path.toLowerCase(Locale.ROOT);
-        String canonicalHost = lowerPath.startsWith("/black/episodes/")
-                || lowerPath.startsWith("/blacktoon/episodes/")
-                ? "moamoabon.com"
-                : "moamoabon.com";
-        return "https://" + canonicalHost + path
+        String canonicalPath = lowerPath.startsWith("/black/episodes/")
+                ? "/blacktoon/episodes/" + path.substring("/black/episodes/".length())
+                : path;
+        return "https://moamoabon.com" + canonicalPath
                 + (query == null || query.length() == 0 ? "" : "?" + query);
     }
 

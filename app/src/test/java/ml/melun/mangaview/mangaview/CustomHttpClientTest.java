@@ -494,6 +494,14 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkViewerApiImagesCanonicalizeLegacyBlackEpisodes() {
+        assertEquals("https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg",
+                CustomHttpClient.normalizeNtkViewerApiImageSrcForTest(
+                        "https://moamoabon.com/black/episodes/16968/1463195/p001.jpg",
+                        "webtoon", "16968", "1463195"));
+    }
+
+    @Test
     public void ntkNetworkMissesAreExpectedRequestFailures() {
         assertFalse(CustomHttpClient.shouldRecordRequestFailureForTest(
                 "https://sbxh1.com/api/manhwa-list?page=1",

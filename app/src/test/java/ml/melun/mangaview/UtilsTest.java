@@ -218,6 +218,16 @@ public class UtilsTest {
     }
 
     @Test
+    public void ntkViewerImageFetchSiteMatchesBrowserContext() {
+        assertEquals("cross-site", Utils.secFetchSiteForViewerImageForTest(
+                "https://sbxh8.com/webtoon/16968/1463195",
+                "https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg"));
+        assertEquals("same-origin", Utils.secFetchSiteForViewerImageForTest(
+                "https://moamoabon.com/blacktoon/episodes/16968/1463195",
+                "https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg"));
+    }
+
+    @Test
     public void exactViewerLaunchRequiresPreparedFirstFrame() {
         PreparedViewerLaunch pending = ViewerPreparationCoordinator.statusForResult(
                 ViewerWarmupManager.LOAD_FIRST_FRAME_PENDING);

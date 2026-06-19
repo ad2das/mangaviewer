@@ -4703,10 +4703,11 @@ public class Manga {
             return -1;
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
-        headers.put("Referer", client.getUrl(src.contains("/webtoon/")
+        String referer = client.getUrl(src.contains("/webtoon/")
                 || src.contains("/blacktoon/episodes/")
                 || src.contains("/wt/episodes/")
-                ? MTitle.base_webtoon : MTitle.base_comic));
+                ? MTitle.base_webtoon : MTitle.base_comic);
+        headers.put("Referer", referer);
         headers.put("User-Agent", client.agent);
         String cookie = client.getCookieHeader();
         if(cookie != null && cookie.length() > 0)
@@ -4714,9 +4715,23 @@ public class Manga {
         headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
         headers.put("Sec-Fetch-Dest", "image");
         headers.put("Sec-Fetch-Mode", "no-cors");
-        headers.put("Sec-Fetch-Site", "same-origin");
+        headers.put("Sec-Fetch-Site", secFetchSiteForImageReferer(referer, src));
         headers.put("Accept-Encoding", "identity");
         return client.ntkImageHeaderReachability(src, headers, NTK_EARLY_GENERATED_HEADER_PROBE_MS);
+    }
+
+    private static String secFetchSiteForImageReferer(String referer, String imageUrl) {
+        try {
+            URI refererUri = URI.create(referer);
+            URI imageUri = URI.create(imageUrl);
+            String refererHost = refererUri.getHost();
+            String imageHost = imageUri.getHost();
+            if(refererHost == null || imageHost == null)
+                return "same-origin";
+            return refererHost.equalsIgnoreCase(imageHost) ? "same-origin" : "cross-site";
+        } catch(Exception ignored) {
+            return "same-origin";
+        }
     }
 
     private void addValidatedNtkGeneratedPages(CustomHttpClient client, Set<String> seenImages,
@@ -5227,9 +5242,18 @@ public class Manga {
         String cacheKey = ntkGeneratedExtensionCacheKey(segment, workId, episodeId, page);
         String cached = cachedFreshNtkGeneratedImageExtension(cacheKey);
         if(cached != null) {
-            if(cached.length() == 0 && onPrimaryValidationMiss != null)
-                onPrimaryValidationMiss.run();
-            return cached;
+            if(cached.length() == 0 && client != null
+                    && client.hasRecentStrictNtkAdAckProof(getNtkEpisodePath())) {
+                Log.d(TAG, "ntk_generated_empty_extension_retry_after_ack path=" + getNtkEpisodePath()
+                        + ",segment=" + segment
+                        + ",workId=" + workId
+                        + ",episodeId=" + episodeId
+                        + ",page=" + page);
+            } else {
+                if(cached.length() == 0 && onPrimaryValidationMiss != null)
+                    onPrimaryValidationMiss.run();
+                return cached;
+            }
         }
         String extension = reachableEarlyNtkGeneratedImageExtensionForPage(client, segment, workId, episodeId, page);
         if(extension.length() > 0)
@@ -5533,10 +5557,11 @@ public class Manga {
         try {
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
-            headers.put("Referer", client.getUrl(src.contains("/webtoon/")
+            String referer = client.getUrl(src.contains("/webtoon/")
                     || src.contains("/blacktoon/episodes/")
                     || src.contains("/wt/episodes/")
-                    ? MTitle.base_webtoon : MTitle.base_comic));
+                    ? MTitle.base_webtoon : MTitle.base_comic);
+            headers.put("Referer", referer);
             headers.put("User-Agent", client.agent);
             String cookie = client.getCookieHeader();
             if(cookie != null && cookie.length() > 0)
@@ -5544,7 +5569,7 @@ public class Manga {
             headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
             headers.put("Sec-Fetch-Dest", "image");
             headers.put("Sec-Fetch-Mode", "no-cors");
-            headers.put("Sec-Fetch-Site", "same-origin");
+            headers.put("Sec-Fetch-Site", secFetchSiteForImageReferer(referer, src));
             headers.put("range", "bytes=0-" + (NTK_GENERATED_IMAGE_PROBE_BYTES - 1));
             response = client.get(src, headers);
             int code = response == null ? 0 : response.code();
@@ -5617,10 +5642,11 @@ public class Manga {
                 return false;
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
-            headers.put("Referer", client.getUrl(src.contains("/webtoon/")
+            String referer = client.getUrl(src.contains("/webtoon/")
                     || src.contains("/blacktoon/episodes/")
                     || src.contains("/wt/episodes/")
-                    ? MTitle.base_webtoon : MTitle.base_comic));
+                    ? MTitle.base_webtoon : MTitle.base_comic);
+            headers.put("Referer", referer);
             headers.put("User-Agent", client.agent);
             String cookie = client.getCookieHeader();
             if(cookie != null && cookie.length() > 0)
@@ -5628,7 +5654,7 @@ public class Manga {
             headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
             headers.put("Sec-Fetch-Dest", "image");
             headers.put("Sec-Fetch-Mode", "no-cors");
-            headers.put("Sec-Fetch-Site", "same-origin");
+            headers.put("Sec-Fetch-Site", secFetchSiteForImageReferer(referer, src));
             headers.put("Accept-Encoding", "identity");
             int headerReachability = client.ntkImageHeaderReachability(
                     src, headers, Math.min(NTK_EARLY_GENERATED_HEADER_PROBE_MS,
@@ -5668,10 +5694,11 @@ public class Manga {
         try {
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
-            headers.put("Referer", client.getUrl(src.contains("/webtoon/")
+            String referer = client.getUrl(src.contains("/webtoon/")
                     || src.contains("/blacktoon/episodes/")
                     || src.contains("/wt/episodes/")
-                    ? MTitle.base_webtoon : MTitle.base_comic));
+                    ? MTitle.base_webtoon : MTitle.base_comic);
+            headers.put("Referer", referer);
             headers.put("User-Agent", client.agent);
             String cookie = client.getCookieHeader();
             if(cookie != null && cookie.length() > 0)
@@ -5679,7 +5706,7 @@ public class Manga {
             headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
             headers.put("Sec-Fetch-Dest", "image");
             headers.put("Sec-Fetch-Mode", "no-cors");
-            headers.put("Sec-Fetch-Site", "same-origin");
+            headers.put("Sec-Fetch-Site", secFetchSiteForImageReferer(referer, src));
             headers.put("Accept-Encoding", "identity");
             headers.put("range", "bytes=0-255");
             response = client.get(src, headers);

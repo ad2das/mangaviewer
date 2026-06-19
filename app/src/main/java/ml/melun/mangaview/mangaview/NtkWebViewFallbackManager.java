@@ -619,14 +619,15 @@ final class NtkWebViewFallbackManager {
         String safeWorkId = workId == null ? "" : workId.trim();
         String safeEpisodeId = episodeId == null ? "" : episodeId.trim();
         String safeKind = kind == null ? "" : kind.trim().toLowerCase(Locale.US);
-        if(pageFile && safeWorkId.length() > 0 && safeEpisodeId.length() > 0) {
-            if("webtoon".equals(safeKind))
-                return "https://moamoabon.com/blacktoon/episodes/" + safeWorkId + "/" + safeEpisodeId + "/" + value;
-            return "https://moamoabon.com/manhwa/" + safeWorkId + "/" + safeEpisodeId + "/" + value;
-        }
+        String pageName = viewerApiPageFileName(value, pageFile);
+        if(pageName.length() > 0 && safeWorkId.length() > 0 && safeEpisodeId.length() > 0)
+            return canonicalViewerImageApiPageUrl(safeKind, safeWorkId, safeEpisodeId, pageName);
         if(value.startsWith("//"))
             value = "https:" + value;
         if(value.startsWith("/")) {
+            String canonicalBlack = canonicalLegacyBlackEpisodeImageUrl(value);
+            if(canonicalBlack.length() > 0)
+                return canonicalBlack;
             if(lower.startsWith("/manhwa/") || lower.startsWith("/blacktoon/episodes/")
                     || lower.startsWith("/webtoon/"))
                 value = "https://moamoabon.com" + value;
@@ -639,11 +640,74 @@ final class NtkWebViewFallbackManager {
         if(!(normalizedLower.endsWith(".jpg") || normalizedLower.endsWith(".jpeg")
                 || normalizedLower.endsWith(".png") || normalizedLower.endsWith(".webp")))
             return "";
+        String canonicalBlack = canonicalLegacyBlackEpisodeImageUrl(value);
+        if(canonicalBlack.length() > 0)
+            return canonicalBlack;
         if(normalizedLower.contains("/board_uploads/") || normalizedLower.contains("/banner")
                 || normalizedLower.contains("/advert") || normalizedLower.contains("/ads/")
                 || normalizedLower.contains("/api/m/"))
             return "";
         return value;
+    }
+
+    private static String viewerApiPageFileName(String value, boolean alreadyPageFile) {
+        if(value == null || value.length() == 0)
+            return "";
+        if(alreadyPageFile)
+            return value;
+        String path = "";
+        try {
+            URI uri = new URI(value);
+            if(uri.getScheme() != null && uri.getHost() != null)
+                path = uri.getPath();
+        } catch (Exception ignored) {
+        }
+        if(path.length() == 0 && value.startsWith("/"))
+            path = value;
+        if(path.length() == 0) {
+            int slash = value.indexOf('/');
+            if(slash > 0)
+                path = value.substring(slash);
+        }
+        if(path == null || path.length() == 0)
+            return "";
+        String lowerPath = path.toLowerCase(Locale.US);
+        if(!lowerPath.matches("/p\\d{1,5}\\.(jpg|jpeg|png|webp)"))
+            return "";
+        return path.substring(1);
+    }
+
+    private static String canonicalViewerImageApiPageUrl(String kind, String workId,
+                                                         String episodeId, String pageName) {
+        if("webtoon".equals(kind))
+            return "https://moamoabon.com/blacktoon/episodes/" + workId + "/" + episodeId + "/" + pageName;
+        return "https://moamoabon.com/manhwa/" + workId + "/" + episodeId + "/" + pageName;
+    }
+
+    private static String canonicalLegacyBlackEpisodeImageUrl(String value) {
+        if(value == null || value.length() == 0)
+            return "";
+        String path = value;
+        try {
+            URI uri = new URI(value);
+            if(uri.getScheme() != null && uri.getHost() != null)
+                path = uri.getPath();
+        } catch (Exception ignored) {
+        }
+        if(path == null)
+            return "";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "^/black/episodes/(\\d+)/([^/?#]+)/((?:p)?\\d{1,5}\\.(?:jpg|jpeg|png|webp))$",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(path);
+        if(!matcher.find())
+            return "";
+        return "https://moamoabon.com/blacktoon/episodes/"
+                + matcher.group(1) + "/" + matcher.group(2) + "/" + matcher.group(3);
+    }
+
+    static String normalizeViewerImageApiSrcForTest(String src, String kind, String workId,
+                                                    String episodeId) {
+        return normalizeViewerImageApiSrc(src, kind, workId, episodeId);
     }
 
     private static String viewerImageApiBodyFromUrls(List<String> urls) {

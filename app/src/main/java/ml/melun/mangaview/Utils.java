@@ -53,6 +53,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1754,7 +1755,7 @@ public class Utils {
             headers.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
             headers.put("Sec-Fetch-Dest", "image");
             headers.put("Sec-Fetch-Mode", "no-cors");
-            headers.put("Sec-Fetch-Site", "same-origin");
+            headers.put("Sec-Fetch-Site", secFetchSiteForViewerImage(referer, url));
             addClientHintHeaderMap(headers);
         }
         return headers;
@@ -1785,7 +1786,7 @@ public class Utils {
             headers.addHeader("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
             headers.addHeader("Sec-Fetch-Dest", "image");
             headers.addHeader("Sec-Fetch-Mode", "no-cors");
-            headers.addHeader("Sec-Fetch-Site", "same-origin");
+            headers.addHeader("Sec-Fetch-Site", secFetchSiteForViewerImage(referer, url));
             addClientHintHeaders(headers);
         }
         GlideUrl glideUrl = new GlideUrl(url, headers.build());
@@ -1805,6 +1806,26 @@ public class Utils {
         headers.addHeader("sec-ch-ua", CustomHttpClient.clientHintUa(getHttpClient().agent));
         headers.addHeader("sec-ch-ua-mobile", CustomHttpClient.clientHintMobile(getHttpClient().agent));
         headers.addHeader("sec-ch-ua-platform", CustomHttpClient.clientHintPlatform(getHttpClient().agent));
+    }
+
+    private static String secFetchSiteForViewerImage(String referer, String imageUrl) {
+        try {
+            String refererHost = URI.create(referer).getHost();
+            String imageHost = URI.create(imageUrl).getHost();
+            if(refererHost == null || imageHost == null)
+                return "same-origin";
+            refererHost = refererHost.toLowerCase(Locale.ROOT);
+            imageHost = imageHost.toLowerCase(Locale.ROOT);
+            if(refererHost.equals(imageHost))
+                return "same-origin";
+            return "cross-site";
+        } catch(Exception ignored) {
+            return "same-origin";
+        }
+    }
+
+    static String secFetchSiteForViewerImageForTest(String referer, String imageUrl) {
+        return secFetchSiteForViewerImage(referer, imageUrl);
     }
 
     private static boolean isProtectedImageHost(String url) {
