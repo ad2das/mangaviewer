@@ -29471,3 +29471,45 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - This fixes the observed class of adjacent manhwa placeholder exposure without hiding ACK or delaying viewer open.
   - It is still a bounded random validation slice, not proof that every NTK work/episode combination is permanently covered.
 
+## 2026-06-20 02:56:00 +09:00 Actual UX selection ACK proof rechecked on API35
+
+- Device:
+  - `emulator-5554`
+  - API level `35`
+  - Model: `sdk_gphone64_x86_64`
+- Actual UX comic selection test:
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`
+  - Result: `BUILD SUCCESSFUL`.
+  - UX path:
+    - Open current NTK comic title `/manhwa/36525`.
+    - Tap an actual episode row.
+    - Reader opened `/manhwa/36525/1807424`.
+  - Evidence:
+    - First drawable: `reader_open_to_first_drawable source=ntk kind=initial_continuous page=0 ms=2435`.
+    - Initial visible coverage: `drawablePx=1536 missingPx=0 placeholderPx=0 drawableItems=1 items=1`.
+    - Settled visible coverage: `drawablePx=2275 missingPx=0 placeholderPx=0 drawableItems=2 items=2`.
+    - Strict ACK:
+      - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=bridge-ack-200,strictAdAck=true`.
+      - `ntk_ack_proof {"scope":"/manhwa/36525/1807424","source":"native-fetch-ack-200"}`.
+      - `ntk_server_ack_success_recorded path=/manhwa/36525/1807424,source=native-fetch-ack-200,strictAdAck=true`.
+    - Screenshot captured: `/data/user/0/ml.melun.mangaview/cache/ntk_actual_ux_comic_reader.png`.
+- Actual UX webtoon selection test:
+  - Test: `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
+  - Result: `BUILD SUCCESSFUL`.
+  - UX path:
+    - Open current NTK webtoon title `/webtoon/16968`.
+    - Tap an actual episode row.
+    - Reader opened `/webtoon/16968/1463195`.
+  - Evidence:
+    - First drawable: `reader_open_to_first_drawable source=ntk kind=tiles page=0 ms=2746`.
+    - Initial visible coverage: `drawablePx=2274 missingPx=0 placeholderPx=0 drawableItems=1 items=1`.
+    - Strict ACK:
+      - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+      - `ntk_ack_proof {"scope":"/webtoon/16968/1463195","source":"native-fetch-ack-200"}`.
+      - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+    - Screenshot captured: `/data/user/0/ml.melun.mangaview/cache/ntk_actual_ux_webtoon_reader.png`.
+- Notes:
+  - These tests exercise actual visible episode-row selection, not only direct seeded reader launch.
+  - No captcha/hard-block lines appeared in the saved evidence snippets.
+  - This strengthens ACK/UX proof but does not replace broader random strict fresh stress coverage.
+
