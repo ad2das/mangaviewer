@@ -30312,4 +30312,41 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not treat exit code `125` as success. It means "known current image CDN hard-block proven early."
   - Do not fast-fail solely on one 403. The fast-fail requires strict ACK proof plus repeated hard-block logs.
   - Do not use this to exclude random cases from final validation. It is a diagnostic accelerator, not a pass-condition shortcut.
+- Commit/push result:
+  - Committed on `main`: `72b3ed0a8 Fast-fail NTK actual UX image hard blocks`.
+  - Pushed to `origin/main`.
+  - GitHub Actions `Release APK` run `27845125608` completed successfully in `1m43s`.
+  - This post-push Actions result is local progress context and can be batched into the next meaningful commit if work continues.
+
+## 2026-06-20 04:46 +09:00 Main branch workspace correction and live image CDN probe tooling
+
+- User correctly called out that work must land on `main`.
+- Workspace clarification:
+  - The default conversation cwd was `C:\Users\Administrator\Downloads\mangaviewer`, currently on `codex/ntk-strict-ack-proof`, which can make it look like work is not on main.
+  - The actual `main` worktree is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - `origin/main` is currently `72b3ed0a8 Fast-fail NTK actual UX image hard blocks`, and recent meaningful hard-block diagnostic commits are already pushed there.
+  - Continue future commands from `mangaviewer-main-sync` unless explicitly investigating another worktree.
+- Added reusable probe:
+  - New script: `tools\ntk_live_image_probe.ps1`.
+  - Purpose: quickly test live NTK image byte availability across candidate CDN hosts and path templates without hand-written curl loops.
+  - It writes `summary.csv` and `summary.json`, prints `FOUND_IMAGE` on any `200 image/*`, and exits nonzero with `NO_IMAGE_BYTES_FOUND` when no real image bytes are found.
+- Probe validation:
+  - Command:
+    - `& .\tools\ntk_live_image_probe.ps1 -Kind webtoon -WorkId 16968 -EpisodeId 1463195 -Root https://sbxh8.com`.
+  - Artifact:
+    - `build\ntk-live-image-probe\20260620_044546_webtoon_16968_1463195`.
+  - Result:
+    - `NO_IMAGE_BYTES_FOUND`.
+    - Checked 80 host/path combinations.
+    - `moamoabon.com` and `flysky3m.com` returned Cloudflare-like `403 text/html` bodies around 4.4KB.
+    - `fvcdn.com` returned `404 text/html` for tested generated paths.
+    - Other candidate hosts returned curl status `000`/0 bytes from this network.
+- Current diagnosis:
+  - For `/webtoon/16968/1463195`, strict ACK proof remains the solved part in the app logs.
+  - The current blocker for this exact case is live image byte availability, not `/api/ad/ack`.
+  - Do not claim app rendering success for this case until at least one actual image path returns `200 image/*` or the app discovers a different verified image source.
+- Bad approaches / do not repeat:
+  - Do not keep retrying ACK-only fixes for this case when logs already show strict `/api/ad/ack` proof.
+  - Do not infer a usable fallback from host guesses. The new probe must show `200 image/*`.
+  - Do not commit generated `build\ntk-live-image-probe` artifacts unless explicitly needed as external evidence.
 
