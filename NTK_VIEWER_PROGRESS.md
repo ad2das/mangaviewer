@@ -25574,6 +25574,31 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Synthetic append can take longer than numeric generated append because it waits for strict ACK and API image extraction. In the validated run it inserted at append step 29 after about 12.2s fetch time.
   - Strict 60fps perfection is still not claimed; current requested close-out remains ACK and stability.
 
+## 2026-06-20 15:36:00 +09:00 Main branch ACK-only real-frame fast promote diagnosis
+
+- Continued after context compaction by reading this file and checking the active goal.
+- User pointed out main branch should be the push target. Verified `C:\Users\Administrator\Downloads\mangaviewer-main-sync` is on `main` and `origin/main`, both at `79e3e2d78 Require strict NTK ACK before image API`.
+- Verified `C:\Users\Administrator\Downloads\mangaviewer` is an older `codex/ntk-strict-ack-proof` worktree at `c6c35ed91`; do not merge that branch into main because `main` is already ahead and a merge/diff direction would roll back many NTK fixes.
+- Important failed experiment recorded:
+  - Artifact: `build/ntk-random-perf/20260620_053939`.
+  - Hidden ACK-only real main frame was enlarged and `offscreenPreRaster(true)` was tested.
+  - Result worsened first drawable from the previous `5319ms` run to `5782ms`, still no strict ACK proof.
+  - Key log shape:
+    - `ntk_ack_only_real_frame_load ... plainCf=true`
+    - `ntk_ack_only_synthetic_shell_fast_promote ... reason=shell-load-160,url=https://sbxh8.com/webtoon/840347/1549957`
+    - `ntk_ack_state={"ackOnlyRealMainFrame":true,...,"href":"about:blank"}`
+    - `ntk_ack_state={"ackOnlyEarlyProofRunnerStart":true,...,"href":"about:blank"}`
+  - Bad approach: do not enlarge hidden ACK-only frame / enable offscreen pre-raster as-is. It does not fix ACK proof and can slow first drawable.
+- Root cause narrowed:
+  - The reader ACK-only real-frame path used a synthetic-shell fast promote designed for `loadDataWithBaseURL` shells.
+  - `WebView.getUrl()` could already show the target URL while the JS execution context was still initial `about:blank`.
+  - That let `evaluateViewerImageFetchScriptNow` install the ACK proof runner in the wrong context, before the real NTK document was ready.
+- Current fix under test:
+  - Removed the page-finished synthetic fast-promote call for ACK-only plain Cloudflare real-frame.
+  - Disabled synthetic-shell promote timers for real main frames.
+  - Real-frame ACK now relies on the existing JS readiness gate (`location.href`, body, crypto, bridge, clearance/guard state) before starting proof.
+- Do not count this as complete until emulator validation shows no `ackOnlyEarlyProofRunnerStart` with `href":"about:blank"` and strict ACK 200 is recorded for actual UX/random reader cases.
+
 ## 2026-06-19 08:41:45 +09:00 Main branch UX ACK recheck found scoped test false fail
 
 - Continued on `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `main`; `origin/main` is ahead of the older `codex/ntk-strict-ack-proof` worktree and contains the latest ACK/image stabilization commits through `99d8c01a3`.
@@ -30567,4 +30592,63 @@ tk_rsc_payload_cloudflare_clearance_reset.
     - ACK-only reader WebView uses real episode frame instead of synthetic shell;
     - ACK-only eval survives cookie access SecurityError;
     - actual UX strict ACK still succeeds after the change.
+
+## 2026-06-20 14:50-15:58 +09:00 Main branch ACK proof restored, image CDN hard-block remains
+
+- Branch/worktree correction:
+  - The active main worktree is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - `main` and `origin/main` were already at `79e3e2d78 Require strict NTK ACK before image API`.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` worktree is branch `codex/ntk-strict-ack-proof` at `c6c35ed91`; do not merge it into main because it is behind main and would reintroduce stale behavior.
+- Bad approach, do not repeat:
+  - Hidden full-size/offscreen ACK-only WebView preraster made the target slower and did not produce strict ACK:
+    - `build\ntk-random-perf\20260620_053939`.
+    - It still produced `ackOnlyEarlyProofRunnerStart href=about:blank`.
+  - ACK-only fast promote from a real main frame was also wrong:
+    - It allowed the proof runner to start while the page context could still be `about:blank`.
+    - The fix is to avoid synthetic shell promotion for real main frames and keep the real episode URL context.
+- ACK body/root-cause:
+  - The failing direct Fast3 ACK body was not shaped like the successful UX proof.
+  - Failed body shape before fix:
+    - `/api/ad/ack` returned `400 {"ok":false,"error":"missing_canary"}`.
+    - Body had `total=32`, `visible=6`, and only `observationUrls=1`.
+  - Successful earlier proof shape:
+    - `total=4`, `visible=4`, `observationUrls=4`.
+  - Code change:
+    - Fast3 direct ACK now bounds `total` to `max(ch.slotCount, impressionUrls.length, 4)` instead of forcing at least `28`.
+    - `visible` is bounded to the same challenge slot count.
+- Target strict-fresh verification:
+  - Command:
+    - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 1 -ScrollSteps 1 -AppendSteps 0 -TargetEpisodePath "/webtoon/840347/1549957" -TargetImageEpisodeId "1549957" -TargetImageWorkId "18535" -TargetImageCount 250 -NtkSiteRoot "https://sbxh8.com" -NtkLockSiteRoot -StrictFresh -ClearAck -ClearImageCache -FirstDrawableMaxMs 20000 -InitialContinuousMaxMs 20000 -NoAppendProbe -ForceStopBeforeRun`
+  - Artifact:
+    - `build\ntk-random-perf\20260620_055101`.
+  - ACK result:
+    - `ntk_server_ack_success_recorded path=/webtoon/840347/1549957,source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof={"scope":"/webtoon/840347/1549957","tp":"2d7eb64bd1968bbd","source":"native-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded path=/webtoon/840347/1549957,source=native-fetch-ack-200,strictAdAck=true`.
+    - `ntk_webview_ack_preflight_done path=/webtoon/840347/1549957,success=true,ms=15169`.
+  - Remaining failure:
+    - First drawable still failed at `23069ms` because images were blocked after ACK.
+    - `/api/webtoon-images` unlocked after strict proof, but generated images on `moamoabon.com` returned Cloudflare HTML `403`.
+- Actual UX verification:
+  - Command:
+    - `.\tools\ntk_actual_ux_suite.ps1 -DeviceSerial emulator-5554 -Tests "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" -TimeoutMs 180000`
+  - Artifact:
+    - `build\ntk-actual-ux-suite\20260620_055439`.
+  - Result:
+    - Still failed fast on image hard-block:
+      - `reader_image_cache_event ... path=/webtoon/16968/1463195,image=p001.jpg,code=403,block=cloudflare-html-403`.
+    - This is no longer an ACK proof failure; it is native image host access.
+- Image host probe:
+  - `.\tools\ntk_live_image_probe.ps1 -WorkId 16968 -EpisodeId 1463195 -Kind webtoon -Root https://sbxh8.com -RefererPath /webtoon/16968/1463195 -StopOnFirstImage`
+    - `build\ntk-live-image-probe\20260620_055603_webtoon_16968_1463195`.
+    - No image bytes found; `moamoabon.com` and `flysky3m.com` returned Cloudflare HTML 403, `fvcdn.com` returned 404, other hosts timed out/failed.
+  - `.\tools\ntk_live_image_probe.ps1 -WorkId 16968 -EpisodeId 525919 -Kind webtoon -Root https://sbxh8.com -RefererPath /webtoon/16968/1463195 -StopOnFirstImage`
+    - `build\ntk-live-image-probe\20260620_055631_webtoon_16968_525919`.
+    - Also no image bytes found.
+- Bad approach, do not repeat:
+  - Merging default image-host cookie headers with scoped episode ACK cookies in `ReaderImageCache.requestFor` did not change actual UX hard-block.
+  - It was reverted; the failure is more likely native HTTP/TLS/browser-context mismatch against the image CDN than simple cookie omission.
+- Current status:
+  - ACK strict proof is restored on the target and should be committed as a bounded ACK fix.
+  - Image CDN hard-block remains unresolved and must be treated as a separate stability issue if continuing beyond ACK closure.
 
