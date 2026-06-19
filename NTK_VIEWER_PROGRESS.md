@@ -25574,6 +25574,29 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Synthetic append can take longer than numeric generated append because it waits for strict ACK and API image extraction. In the validated run it inserted at append step 29 after about 12.2s fetch time.
   - Strict 60fps perfection is still not claimed; current requested close-out remains ACK and stability.
 
+## 2026-06-19 08:41:45 +09:00 Main branch UX ACK recheck found scoped test false fail
+
+- Continued on `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `main`; `origin/main` is ahead of the older `codex/ntk-strict-ack-proof` worktree and contains the latest ACK/image stabilization commits through `99d8c01a3`.
+- Re-ran actual UX selection tests on `emulator-5554`.
+  - First attempt forgot `runLiveNetworkTests=true`, so all UX tests were skipped. This is invalid evidence and must not be counted.
+  - Second attempt ran live tests. Direct comic and direct webtoon UX tests passed, but home continue failed early in `waitForNtkStrictAck200Metric`.
+- Root cause of this failure:
+  - The app actually produced strict ACK proof for `/webtoon/16968/1463195` later:
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`
+    - `ntk_webview_ack_preflight_done ... success=true,ms=7241`
+  - The test helper failed before that proof because `isNtkAckRootTransportUnavailable(...)` treated unscoped `ntk_domain_reachable_none` / challenge timeout noise as target episode failure.
+- Fix in progress:
+  - Scope `ntk_domain_reachable_none` and `/api/ad/challenge` timeout counting to the selected `targetPath` before allowing early hard-fail.
+- Follow-up home continue single-test failure:
+  - Artifact: latest connected test XML under `app/build/outputs/androidTest-results/connected/debug`.
+  - Failure: `Expected tapping a NTK home continue UX episode to open the reader after NTK auto captcha`.
+  - Log only had `ntk_actual_home_continue_tap x=451,y=1735,bounds=[413,1697][490,1774]`, no `home_continue_click` / `viewer_launch` / reader launch metric.
+  - Root cause: the test returned and tapped the `home_continue_site_icon`, not the full continue card. The icon is an indicator, while the click listener is attached to the parent card.
+  - Fix in progress: `waitForNtkHomeContinueCard(...)` now finds the NTK icon but returns its parent card when available, so the test taps the same target a real user would tap.
+- Bad approach / do not repeat:
+  - Do not treat unscoped home/root/challenge transport logs as proof that the selected reader episode ACK is impossible. In actual UX flows, home feed fetches and reader ACK fetches overlap, so the ACK verifier must wait for target-scoped strict `/api/ad/ack` proof unless the target itself exhausts.
+  - Do not use the small site icon bounds as proof of a home continue card click. It can identify the card, but the actual UX tap should hit the card container.
+
 ## 2026-06-19 05:55:00 +09:00 NTK previous prepend reveal deferred to avoid full-viewport placeholders
 
 - Continued after compaction by reading this file and checking the active goal.
@@ -28265,3 +28288,41 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - First drawable can still be high on long-tail generated webtoon cases (`9649ms` in the latest random pass).
   - Strict jank can still fail intermittently by one dropped frame during very early scroll; keep strict re-run + target repro as the current evidence pattern.
   - Automatic adjacent ACK is now intentionally off; if future append/transition tests show regressions, fix the actual transition path instead of re-enabling broad speculative adjacent ACK.
+
+## 2026-06-19 09:15:00 +09:00 actual UX test false-fail cleanup on main
+
+- Branch/worktree:
+  - Continued on `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `main`, tracking `origin/main`.
+  - Confirmed there are no missing branch-only commits relative to `origin/main`; keep all further work on main.
+- Actual UX verifier issues found:
+  - Three-test live UX run failed `ntkHomeContinueUxSelectionOpensReaderWithAck200` even though the seeded continue card was visible.
+  - Root cause: the helper returned `home_continue_site_icon` and tapped the small NTK icon, but the click listener belongs to the parent continue card.
+  - Fix: `waitForNtkHomeContinueCard()` now returns the icon parent when present, so the test taps the same card area a user taps.
+  - Validation: home continue UX passed alone in `54s`, first drawable `2657ms`, strict ACK proof `native-fetch-ack-200`, screenshot became nonblank on retry attempt `1`.
+- Scoped ACK verifier false-fail:
+  - Earlier combined UX run reported `NTK ACK root transport unavailable` before target ACK, but logs later showed strict ACK succeeded for the target path.
+  - Root cause: `isNtkAckRootTransportUnavailable()` treated unscoped root/challenge transport noise as the target episode failure.
+  - Fix: `ntk_domain_reachable_none` is now target-path scoped; `/api/ad/challenge SocketTimeoutException` only fails early when unscoped or target-scoped.
+- Bad approach recorded:
+  - Tried adding `Intent.FLAG_ACTIVITY_CLEAR_TASK` to direct UX launch helpers to isolate activity stack.
+  - This caused/allowed emulator `System UI isn't responding` overlay during the webtoon list wait; the app still fetched `/webtoon/16968` with `code=200` and parsed `episodes=19`, but UIAutomator only saw the system ANR dialog.
+  - Reverted `CLEAR_TASK`. Do not repeat this isolation approach inside instrumentation; prefer narrower activity cleanup (`finishReaderActivities`, `finishCaptchaActivities`) plus emulator cleanup between external Gradle invocations.
+- Current remaining issue:
+  - In one three-test sequence, webtoon reader image bytes and decodes were ready within about `1s`, ACK succeeded, but `reader_open_to_first_drawable` was delayed to about `223s`.
+  - Need separate true render-delay proof from test/order pollution before app-side changes. Do not classify this as ACK failure.
+- Follow-up combined UX finding:
+  - After emulator cleanup and reverting `CLEAR_TASK`, webtoon UX alone passed again.
+  - Three-test sequence then failed only the strict ACK log wait for `/webtoon/16968/1463195`.
+  - Logs showed home continue had already created strict proof for the same path, then the webtoon test cleared only stale `/webtoon/16968/1430500`. The app correctly skipped native ACK as recent proof existed, but the test had cleared logcat and waited for a new strict 200 line.
+  - Fix: webtoon UX strict-fresh setup now clears both `/webtoon/16968/1430500` and the actually selected `/webtoon/16968/1463195` before clicking.
+- Validation after fixes:
+  - Command:
+    - `.\gradlew.bat --no-daemon :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true" "-Pandroid.testInstrumentationRunnerArguments.class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200,ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200,ml.melun.mangaview.EpisodeActivityNetworkTest#ntkHomeContinueUxSelectionOpensReaderWithAck200"`
+  - Result: passed, tests `3`, failures `0`, skipped `0`.
+  - XML times:
+    - `ntkHomeContinueUxSelectionOpensReaderWithAck200`: `48.341s`.
+    - `ntkCurrentComicUxSelectionOpensReaderWithAck200`: `50.295s`.
+    - `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`: `37.817s`.
+  - Final webtoon log proof after per-test log clear:
+    - First drawable: `reader_open_to_first_drawable source=ntk kind=tiles page=1 ms=3057`.
+    - Strict ACK: `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.

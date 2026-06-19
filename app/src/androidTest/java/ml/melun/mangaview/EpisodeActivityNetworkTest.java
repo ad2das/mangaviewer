@@ -184,13 +184,16 @@ public class EpisodeActivityNetworkTest {
     public void ntkCurrentWebtoonUxSelectionOpensReaderWithAck200() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         CustomHttpClient client = MainApplication.getHttpClient();
+        String currentExpectedEpisodePath = "/webtoon/16968/1463195";
         client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/webtoon/16968/1430500", true);
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + currentExpectedEpisodePath, true);
         clearColdReaderState(context);
         launchNtkCurrentWebtoonTitle();
 
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         UiObject2 episodeRow = waitForEpisodeRowThroughAutoCaptcha(device, "NTK current webtoon UX episode list");
         client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + "/webtoon/16968/1430500", true);
+        client.clearNtkAckStateForTest(CustomHttpClient.NTK_WEBTOON_URL + currentExpectedEpisodePath, true);
         executeShell("logcat -c");
         Log.d("ViewerPerf", "ntk_actual_ux_select_start source=ntk,type=webtoon,titlePath=/webtoon/16968");
         clickFreshEpisodeRow(device, episodeRow);
@@ -1040,6 +1043,8 @@ public class EpisodeActivityNetworkTest {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_comic);
+        finishReaderActivities();
+        finishCaptchaActivities();
 
         Title title = new Title(
                 "늑대의 탈을 쓴 양 공주님",
@@ -1064,6 +1069,8 @@ public class EpisodeActivityNetworkTest {
         Context context = ApplicationProvider.getApplicationContext();
         MainApplication.p.setNtkSitePreset(CustomHttpClient.NTK_WEBTOON_URL);
         MainApplication.p.setBaseMode(MTitle.base_webtoon);
+        finishReaderActivities();
+        finishCaptchaActivities();
 
         Title title = new Title(
                 "ntk-current-webtoon-16968",
@@ -1118,17 +1125,20 @@ public class EpisodeActivityNetworkTest {
 
     private static UiObject2 waitForNtkHomeContinueCard(UiDevice device) throws Exception {
         long deadline = System.currentTimeMillis() + 60000L;
-        UiObject2 lastIcon = null;
+        UiObject2 lastCandidate = null;
         while(System.currentTimeMillis() < deadline) {
             UiObject2 icon = device.findObject(By.res(PACKAGE_NAME, "home_continue_site_icon").desc("NTK"));
             if(icon != null) {
-                lastIcon = icon;
+                lastCandidate = icon;
+                UiObject2 card = icon.getParent();
+                if(card != null)
+                    return card;
                 return icon;
             }
             Thread.sleep(250L);
         }
-        assertNotNull("Expected NTK home continue site icon", lastIcon);
-        return lastIcon;
+        assertNotNull("Expected NTK home continue site icon", lastCandidate);
+        return lastCandidate;
     }
 
     private static void openReaderFromHomeSelectionIfEpisodeList(UiDevice device) throws Exception {
@@ -1990,7 +2000,8 @@ public class EpisodeActivityNetworkTest {
         boolean noReachableRoot = false;
         boolean challengeSucceeded = false;
         for(String line : output.split("\\R")) {
-            if(line.contains("ntk_domain_reachable_none"))
+            if(line.contains("ntk_domain_reachable_none")
+                    && line.contains("path=" + targetPath))
                 noReachableRoot = true;
             if(line.contains("/api/ad/challenge")
                     && line.contains("code=200")
@@ -2002,7 +2013,8 @@ public class EpisodeActivityNetworkTest {
                     && line.contains("path=" + targetPath))
                 challengeSucceeded = true;
             if(line.contains("/api/ad/challenge")
-                    && line.contains("SocketTimeoutException"))
+                    && line.contains("SocketTimeoutException")
+                    && (!line.contains("path=") || line.contains("path=" + targetPath)))
                 challengeTimeouts++;
             if(line.contains("ntk_native_ack_prepare_challenge_code=0")
                     && line.contains("attempt=2")
