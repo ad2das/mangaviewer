@@ -5212,6 +5212,8 @@ public class CustomHttpClient {
             return false;
         if(isNtkDnsProtectedHost(parsed.host()))
             return isTrustedNtkPrimaryImagePath(path) || looksLikeRootHashImage(path);
+        if(isSafeNtkPageImagePath(path))
+            return true;
         if(host.matches("\\d{5,10}\\.com") || host.matches("flysky\\d*m\\.com")
                 || "moamoabon.com".equals(host))
             return path.contains("/blacktoon/episodes/")
@@ -5245,6 +5247,8 @@ public class CustomHttpClient {
             return false;
         if(isDisallowedNtkPrimaryImagePath(path))
             return false;
+        if(isSafeNtkPageImagePath(path))
+            return true;
         return (host.matches("fvcdn\\d*\\.com")
                 || host.matches("flysky\\d*m\\.com")
                 || "moamoabon.com".equals(host)
@@ -5268,6 +5272,15 @@ public class CustomHttpClient {
                 || path.contains("/webtoon_uploads/")
                 || path.contains("/manhwa_uploads/")
                 || path.contains("/comic_uploads/");
+    }
+
+    private static boolean isSafeNtkPageImagePath(String path) {
+        if(path == null || path.length() == 0 || isDisallowedNtkPrimaryImagePath(path))
+            return false;
+        return path.matches("(?i).*/(?:manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(?:jpg|jpeg|png|webp)$")
+                || path.matches("(?i).*/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(?:jpg|jpeg|png|webp)$")
+                || path.matches("(?i).*/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(?:jpg|jpeg|png|webp)$")
+                || path.matches("(?i).*/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(?:jpg|jpeg|png|webp)$");
     }
 
     private static boolean looksLikeRootHashImage(String path) {
@@ -5796,7 +5809,24 @@ public class CustomHttpClient {
                 new ExecutorCompletionService<>(raceExecutor);
         List<Future<NtkImageFetchResult>> futures = new ArrayList<>();
         long startedAt = System.currentTimeMillis();
+        String requestCookie = cookieHeader == null ? "" : cookieHeader;
+        String refererHeader = headerValue(headers, "Referer");
+        String secFetchSite = headerValue(headers, "Sec-Fetch-Site");
+        String imageHost = safeLogHost(url);
+        String refererHost = safeLogHost(refererHeader);
+        boolean hasAdAckC = ntkCookieValue(requestCookie, "ad_ack_c").length() > 0;
+        boolean hasAdAck = ntkCookieValue(requestCookie, "ad_ack").length() > 0;
+        boolean hasCfClearance = ntkCookieValue(requestCookie, "cf_clearance").length() > 0;
         try {
+            Log.d(TAG, "ntk_foreground_image_race_start"
+                    + ",cookieLen=" + requestCookie.length()
+                    + ",hasAdAckC=" + hasAdAckC
+                    + ",hasAdAck=" + hasAdAck
+                    + ",hasCfClearance=" + hasCfClearance
+                    + ",refererHost=" + refererHost
+                    + ",imageHost=" + imageHost
+                    + ",secFetchSite=" + (secFetchSite == null ? "" : secFetchSite)
+                    + ",url=" + safeLogUrl(url));
             futures.add(completion.submit(() -> {
                 try {
                     return new NtkImageFetchResult("httpengine",
@@ -5852,6 +5882,13 @@ public class CustomHttpClient {
                         + ",bytes=" + (result == null || result.bodyBytes == null ? 0 : result.bodyBytes.length)
                         + ",accepted=" + accepted
                         + ",block=" + ntkImageHardBlockReason(result)
+                        + ",cookieLen=" + requestCookie.length()
+                        + ",hasAdAckC=" + hasAdAckC
+                        + ",hasAdAck=" + hasAdAck
+                        + ",hasCfClearance=" + hasCfClearance
+                        + ",refererHost=" + refererHost
+                        + ",imageHost=" + imageHost
+                        + ",secFetchSite=" + (secFetchSite == null ? "" : secFetchSite)
                         + ",head=" + ntkShortBodyHead(result == null ? null : result.bodyBytes)
                         + ",error=" + (result == null ? null : result.error)
                         + ",ms=" + (System.currentTimeMillis() - startedAt)
@@ -7170,6 +7207,9 @@ public class CustomHttpClient {
             if(parsed == null || parsed.host() == null)
                 return false;
             String host = parsed.host().toLowerCase(Locale.ROOT);
+            String path = parsed.encodedPath() == null ? "" : parsed.encodedPath().toLowerCase(Locale.ROOT);
+            if(isSafeNtkPageImagePath(path))
+                return true;
             return host.equals("i.toonflix.app")
                     || host.endsWith(".toonflix.app")
                     || host.matches("flysky\\d*m\\.com")
@@ -9267,11 +9307,11 @@ public class CustomHttpClient {
         String stableCdn = normalizeNtkVolatileCdnImageSrc(trimmed);
         if(stableCdn.length() > 0)
             return stableCdn;
+        if(isTrustedNtkPrimaryImageUrl(trimmed))
+            return trimmed;
         String canonicalLegacy = canonicalLegacyNtkViewerImageSrc(trimmed);
         if(canonicalLegacy.length() > 0)
             return canonicalLegacy;
-        if(isTrustedNtkPrimaryImageUrl(trimmed))
-            return trimmed;
         Matcher pageMatcher = Pattern.compile("(?i)^p(\\d{3})\\.(jpg|jpeg|png|webp)$")
                 .matcher(trimmed);
         if(!pageMatcher.find() || workId == null || episodeId == null
@@ -9332,13 +9372,7 @@ public class CustomHttpClient {
         String path = parsed.encodedPath() == null ? "" : parsed.encodedPath();
         if(!isTrustedNtkPrimaryImagePath(path.toLowerCase(Locale.ROOT)))
             return "";
-        String query = parsed.encodedQuery();
-        String lowerPath = path.toLowerCase(Locale.ROOT);
-        String canonicalPath = lowerPath.startsWith("/black/episodes/")
-                ? "/blacktoon/episodes/" + path.substring("/black/episodes/".length())
-                : path;
-        return "https://moamoabon.com" + canonicalPath
-                + (query == null || query.length() == 0 ? "" : "?" + query);
+        return src;
     }
 
     private static String firstNtkViewerImageUrlFromPartialApiBody(String body) {
@@ -11432,6 +11466,18 @@ public class CustomHttpClient {
             return host + "/" + file;
         } catch(Exception ignored) {
             return "url";
+        }
+    }
+
+    private static String safeLogHost(String url) {
+        if(url == null || url.length() == 0)
+            return "";
+        try {
+            URI uri = URI.create(url);
+            String host = uri.getHost();
+            return host == null ? "" : host;
+        } catch(Exception ignored) {
+            return "";
         }
     }
 

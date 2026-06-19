@@ -1832,10 +1832,17 @@ public class Utils {
         if(url == null)
             return false;
         try {
-            String host = android.net.Uri.parse(url).getHost();
+            android.net.Uri parsed = android.net.Uri.parse(url);
+            String host = parsed.getHost();
             if(host == null)
                 return false;
             host = host.toLowerCase(Locale.ROOT);
+            String path = parsed.getEncodedPath();
+            if(path != null
+                    && isSafeNtkPageImagePath(path.toLowerCase(Locale.ROOT))
+                    && !host.contains("naver")
+                    && !host.contains("pstatic"))
+                return true;
             return host.matches("y\\d+stm\\.com")
                     || host.matches("w\\d+cloud\\.com")
                     || host.matches("i\\d+\\.imgcloud\\d+\\.com")
@@ -1901,10 +1908,7 @@ public class Utils {
                 return url;
             if(!isSafeNtkPageImagePath(lowerPath))
                 return url;
-            String query = parsed.getEncodedQuery();
-            String canonicalHost = "moamoabon.com";
-            return "https://" + canonicalHost + path
-                    + (query == null || query.length() == 0 ? "" : "?" + query);
+            return url;
         } catch(Exception ignored) {
             return url;
         }

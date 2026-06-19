@@ -30733,3 +30733,49 @@ tk_rsc_payload_cloudflare_clearance_reset.
     - This progress record.
   - Exclude:
     - Temporary image WebView probe instrumentation and raw logcat artifacts.
+
+## 2026-06-20 16:58 +09:00 Main push confirmed, next host-preservation fix validated to the image hard-block boundary
+
+- Main branch status:
+  - `8486a12e0 Stabilize NTK strict ACK recovery` is on `main` and pushed to `origin/main`.
+  - GitHub Actions `Release APK` for that commit completed successfully.
+  - The pushed commit contains the strict ACK Fast3 recovery fix and generated-image Cloudflare hard-block memoization.
+- New local fix after `8486a12e0`:
+  - `/api/webtoon-images` can return direct page URLs on a random CDN host such as `https://nvophcw.com/black/episodes/16968/1463195/p001.jpg`.
+  - Previous normalization incorrectly rewrote that host to `moamoabon.com`, causing the app to request the wrong CDN host.
+  - Updated normalization/protection logic preserves absolute API-returned image hosts when the path is a strict safe page-image path:
+    - `/manhwa|webtoon/.../pNNN.ext`
+    - `/black/episodes/.../pNNN.ext`
+    - `/blacktoon/episodes/.../pNNN.ext`
+    - `/wt/episodes/.../pNNN.ext`
+  - The allow path still rejects challenge/captcha/banner/ad/sponsor/popup paths, so `board_uploads` and ad images remain excluded.
+- Actual UX verification after host preservation:
+  - Command:
+    - `.\tools\ntk_actual_ux_suite.ps1 -DeviceSerial emulator-5554 -Tests "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" -TimeoutMs 180000`
+  - Artifact:
+    - `build\ntk-actual-ux-suite\20260620_065036`.
+  - ACK success:
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"966c6911e34b0cec","source":"guard-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=guard-fetch-ack-200,strictAdAck=true`.
+  - Host preservation worked:
+    - Image request now logs `imageHost=nvophcw.com` instead of rewritten `moamoabon.com`.
+  - Remaining failure:
+    - Native image fetch still returns Cloudflare HTML `403` from `nvophcw.com`.
+    - Request state included `cookieLen=1445`, `hasAdAckC=true`, `hasAdAck=true`, `hasCfClearance=false`, `refererHost=sbxh8.com`, `imageHost=nvophcw.com`, `secFetchSite=cross-site`.
+- Image probe results:
+  - Native OkHttp and HttpEngine variants against `nvophcw.com` returned Cloudflare HTML `403` even with:
+    - same-origin referer,
+    - mobile UA,
+    - desktop UA,
+    - QUIC and HTTP/2 variants.
+  - A temporary hidden WebView `<img>` probe was attempted and removed. It produced a renderer crash/no usable callback in this instrumentation environment.
+- Bad approach / do not repeat:
+  - Do not re-canonicalize API-returned random CDN hosts to `moamoabon.com`.
+  - Do not treat `/api/webtoon-images` 200 as image success; actual page bytes must decode as a bitmap.
+  - Do not include `board_uploads` or other non-page DOM images as manga/webtoon images.
+  - Do not rely on naive hidden WebView `<img>` probes from instrumentation; this crashed/no-result here.
+  - Do not keep retrying native fetch variants after the CDN has proven Cloudflare HTML `403` without a browser clearance strategy.
+- Current conclusion:
+  - ACK is currently proven successful in the actual UX flow.
+  - The remaining hard blocker is image CDN Cloudflare clearance/browser-context acquisition for direct page-image hosts, not `/api/ad/ack`.

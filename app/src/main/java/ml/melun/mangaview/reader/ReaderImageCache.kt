@@ -2488,7 +2488,13 @@ object ReaderImageCache {
             Regex("^//aws-cdn\\d*\\.site/").containsMatchIn(lower)
         ) return true
         return try {
-            val host = Uri.parse(value).host?.lowercase().orEmpty()
+            val parsed = Uri.parse(value)
+            val host = parsed.host?.lowercase().orEmpty()
+            val path = parsed.path?.lowercase().orEmpty()
+            if (!host.contains("naver") &&
+                !host.contains("pstatic") &&
+                isSafeNtkPageImagePath(path)
+            ) return true
             host == "toonflix.app" || host.endsWith(".toonflix.app") ||
                 Regex("^flysky\\d*m\\.com$").matches(host) ||
                 host == "moamoabon.com" ||
@@ -2521,18 +2527,45 @@ object ReaderImageCache {
 
     private fun isNtkGeneratedImageUrl(value: String): Boolean {
         val lower = value.lowercase()
-        return (lower.contains("://toonflix.app/") ||
+        val safePagePath = try {
+            isSafeNtkPageImagePath(Uri.parse(value).path?.lowercase().orEmpty())
+        } catch (_: Exception) {
+            false
+        }
+        return ((lower.contains("://toonflix.app/") ||
             lower.contains("://i.toonflix.app/") ||
             Regex("://flysky\\d*m\\.com/").containsMatchIn(lower) ||
             lower.contains("://moamoabon.com/") ||
             Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower) ||
-            Regex("://aws-cdn\\d*\\.site/").containsMatchIn(lower)) &&
+            Regex("://aws-cdn\\d*\\.site/").containsMatchIn(lower) ||
+            safePagePath) &&
             (
                 Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
-                )
+                ))
+    }
+
+    private fun isSafeNtkPageImagePath(path: String): Boolean {
+        if (path.isBlank()) return false
+        if (path.contains("/cdn-cgi/") ||
+            path.contains("/challenge") ||
+            path.contains("/turnstile") ||
+            path.contains("/cloudflare") ||
+            path.contains("/verification") ||
+            path.contains("/captcha") ||
+            path.contains("/banner") ||
+            path.contains("/advert") ||
+            path.contains("/sponsor") ||
+            path.contains("/popup") ||
+            path.contains("/ads/") ||
+            path.contains("/ad/")
+        ) return false
+        return Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path) ||
+            Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path) ||
+            Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path) ||
+            Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path)
     }
 
     private fun <T> withNtkGeneratedFetchPermit(
