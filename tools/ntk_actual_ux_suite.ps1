@@ -7,6 +7,7 @@ param(
         "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkHomeContinueUxSelectionOpensReaderWithAck200"
     ),
     [int]$TimeoutMs = 180000,
+    [int]$HardBlockFastFailCount = 6,
     [switch]$NoForceStopBeforeEach,
     [switch]$NoStopOnFailure
 )
@@ -31,7 +32,9 @@ function Invoke-LoggedProcess {
         [string]$FilePath,
         [string[]]$Arguments,
         [string]$LogPath,
-        [int]$TimeoutMs
+        [int]$TimeoutMs,
+        [string]$DeviceSerial,
+        [int]$HardBlockFastFailCount
     )
     Write-Host ("> {0} {1}" -f $FilePath, ($Arguments -join " "))
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -45,17 +48,52 @@ function Invoke-LoggedProcess {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     [void]$process.Start()
-    $timedOut = -not $process.WaitForExit($TimeoutMs)
-    if($timedOut) {
+    $timedOut = $false
+    $hardBlocked = $false
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while(-not $process.HasExited) {
+        $remainingMs = [int][Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        if($remainingMs -le 0) {
+            $timedOut = $true
+            break
+        }
+        [void]$process.WaitForExit([Math]::Min(1000, $remainingMs))
+        if($process.HasExited) {
+            break
+        }
+        if($HardBlockFastFailCount -gt 0 -and $DeviceSerial) {
+            $snapshot = (& adb -s $DeviceSerial logcat -d -s ViewerPerf:D CustomHttpClient:D *:S 2>$null) -join "`n"
+            if($snapshot -match "ntk_ack_proof=") {
+                $hardBlockCount = ([regex]::Matches($snapshot, "block=cloudflare-html-403")).Count
+                if($hardBlockCount -ge $HardBlockFastFailCount) {
+                    $hardBlocked = $true
+                    break
+                }
+            }
+        }
+    }
+    if($timedOut -or $hardBlocked) {
         try { $process.Kill($true) } catch { try { $process.Kill() } catch {} }
+        if($hardBlocked -and $DeviceSerial) {
+            try { & adb -s $DeviceSerial shell am force-stop ml.melun.mangaview | Out-Null } catch {}
+        }
     }
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
-    $extra = if($timedOut) { "TIMED_OUT_AFTER_MS=$TimeoutMs" } else { "EXIT_CODE=$($process.ExitCode)" }
+    $extra = if($hardBlocked) {
+        "FAST_FAILED_ON_IMAGE_HARD_BLOCK count>=$HardBlockFastFailCount"
+    } elseif($timedOut) {
+        "TIMED_OUT_AFTER_MS=$TimeoutMs"
+    } else {
+        "EXIT_CODE=$($process.ExitCode)"
+    }
     @($stdout, $stderr, $extra) |
         Where-Object { $_ -ne $null -and $_.Length -gt 0 } |
         Set-Content -Path $LogPath -Encoding UTF8
     Get-Content -Path $LogPath | ForEach-Object { Write-Host $_ }
+    if($hardBlocked) {
+        return 125
+    }
     if($timedOut) {
         return 124
     }
@@ -101,7 +139,7 @@ foreach($test in $Tests) {
         "-Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true",
         "-Pandroid.testInstrumentationRunnerArguments.class=$test"
     )
-    $exitCode = Invoke-LoggedProcess ".\gradlew.bat" $args $gradleLog $TimeoutMs
+    $exitCode = Invoke-LoggedProcess ".\gradlew.bat" $args $gradleLog $TimeoutMs $DeviceSerial $HardBlockFastFailCount
     & adb -s $DeviceSerial logcat -d > $logcat
 
     $logText = Get-Content -Raw -Path $logcat
@@ -110,6 +148,7 @@ foreach($test in $Tests) {
     $coverageLine = Last-Line $logText "reader_visible_coverage .*missingPx=0 .*placeholderPx=0"
     $loadingLine = Last-Line $logText "reader_visible_loading=0"
     $firstDrawableLine = Last-Line $logText "reader_open_to_first_drawable"
+    $hardBlockLine = Last-Line $logText "block=cloudflare-html-403"
     $failureLine = First-Line $logText "AssertionError|FAILURES!!!|INSTRUMENTATION_RESULT: shortMsg"
     $passed = ($exitCode -eq 0 -and $successLine -and $ackLine -and $coverageLine -and $loadingLine -and $firstDrawableLine)
 
@@ -122,6 +161,7 @@ foreach($test in $Tests) {
         firstDrawableLine = [string]$firstDrawableLine
         coverageLine = [string]$coverageLine
         loadingLine = [string]$loadingLine
+        hardBlockLine = [string]$hardBlockLine
         failureLine = [string]$failureLine
         gradleLog = $gradleLog
         logcat = $logcat
@@ -150,6 +190,9 @@ foreach($result in $results) {
     Write-Host ("  {0} passed={1} exit={2}" -f $result.test, $result.passed, $result.exitCode)
     if(-not $result.passed) {
         Write-Host ("    failure={0}" -f $result.failureLine)
+        if($result.hardBlockLine) {
+            Write-Host ("    hardBlock={0}" -f $result.hardBlockLine)
+        }
         Write-Host ("    logcat={0}" -f $result.logcat)
     }
 }

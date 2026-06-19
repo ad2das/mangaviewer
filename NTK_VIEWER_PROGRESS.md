@@ -30272,4 +30272,44 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Bad approaches / do not repeat:
   - Do not interpret `image-full block=` empty as a different failure class in older logs; that was a logging blind spot fixed here.
   - Do not treat `viewerUrl` from the payload as an immediate usable fallback without verifying the domain. `blacktoon410.com` is not reachable from this current network.
+- Commit/push result:
+  - Committed on `main`: `fadfbca11 Align NTK image hard-block logging`.
+  - Pushed to `origin/main`.
+  - GitHub Actions `Release APK` run `27844923234` completed successfully in `1m45s`.
+  - This post-push Actions result is local progress context and can be batched into the next meaningful commit if work continues.
+
+## 2026-06-20 04:42 +09:00 Actual UX suite fast-fails proven image CDN hard-blocks
+
+- Continued from the active goal after checking the current worktree and this progress file.
+- Problem:
+  - The actual UX suite already had enough evidence within a few seconds after reader launch: strict ACK proof plus repeated `block=cloudflare-html-403`.
+  - Despite that, `tools\ntk_actual_ux_suite.ps1` waited until the full instrumentation timeout, wasting about 90s per known hard-block case.
+- Change:
+  - Added `-HardBlockFastFailCount` to `tools\ntk_actual_ux_suite.ps1`, default `6`.
+  - While Gradle instrumentation is running, the wrapper polls filtered logcat.
+  - If `ntk_ack_proof=` is already present and `block=cloudflare-html-403` appears at least the configured count, the wrapper kills the Gradle process tree, force-stops the app, and returns exit code `125`.
+  - The run still fails honestly; it does not mark image success. It just stops wasting time after the current failure class is proven.
+  - Summary JSON now records `hardBlockLine` alongside `ackLine`.
+- Validation:
+  - Command:
+    - `& .\tools\ntk_actual_ux_suite.ps1 -DeviceSerial emulator-5554 -Tests "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" -TimeoutMs 180000`.
+  - Artifact:
+    - `build\ntk-actual-ux-suite\20260620_043807`.
+  - Result:
+    - `passed=false`, `exitCode=125`.
+    - Runtime was about 44s instead of waiting for the previous 90s timeout.
+    - Gradle log contains `FAST_FAILED_ON_IMAGE_HARD_BLOCK count>=6`.
+  - ACK proof still present:
+    - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"d0a6a34b1d854626","source":"native-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+  - Hard-block line captured:
+    - `reader_image_cache_event stage=foreground_race_miss,...code=403,...block=cloudflare-html-403`.
+- Why this matters:
+  - It speeds the analysis/test loop without relaxing the actual pass criteria.
+  - It prevents spending full timeout budgets on already-proven upstream CDN blocks.
+  - It keeps ACK and image-byte failures split in the summary, which is the key current diagnostic boundary.
+- Bad approaches / do not repeat:
+  - Do not treat exit code `125` as success. It means "known current image CDN hard-block proven early."
+  - Do not fast-fail solely on one 403. The fast-fail requires strict ACK proof plus repeated hard-block logs.
+  - Do not use this to exclude random cases from final validation. It is a diagnostic accelerator, not a pass-condition shortcut.
 
