@@ -2933,8 +2933,24 @@ public class CaptchaActivity extends AppCompatActivity {
         if(url == null || url.length() == 0 || !getHttpClient().isNtkUrl(url))
             return false;
         String path = ntkVerificationUrl(url, url);
-        String lower = path == null ? "" : path.toLowerCase(java.util.Locale.ROOT);
-        return lower.startsWith("/webtoon/") || lower.startsWith("/manhwa/");
+        return isNtkEpisodePathForAdAck(path);
+    }
+
+    private static boolean isNtkEpisodePathForAdAck(String path) {
+        if(path == null || path.length() == 0)
+            return false;
+        int query = path.indexOf('?');
+        String clean = query >= 0 ? path.substring(0, query) : path;
+        while(clean.endsWith("/") && clean.length() > 1)
+            clean = clean.substring(0, clean.length() - 1);
+        String lower = clean.toLowerCase(java.util.Locale.ROOT);
+        if(!lower.startsWith("/webtoon/") && !lower.startsWith("/manhwa/"))
+            return false;
+        String[] parts = lower.split("/");
+        return parts.length == 4
+                && parts[1].length() > 0
+                && parts[2].length() > 0
+                && parts[3].length() > 0;
     }
 
     private boolean shouldLoadNtkAckTargetBeforeFinish(String purl) {
@@ -2943,8 +2959,7 @@ public class CaptchaActivity extends AppCompatActivity {
         if(!getHttpClient().isNtkUrl(purl))
             return false;
         String path = ntkVerificationUrl(purl, purl);
-        String lower = path == null ? "" : path.toLowerCase(java.util.Locale.ROOT);
-        if(!lower.startsWith("/webtoon/") && !lower.startsWith("/manhwa/"))
+        if(!isNtkEpisodePathForAdAck(path))
             return false;
         String currentUrl = webView.getUrl();
         if(currentUrl == null || currentUrl.length() == 0)
@@ -2977,6 +2992,10 @@ public class CaptchaActivity extends AppCompatActivity {
 
     static String ntkVerificationPathForAccessForTest(String captchaLoadUrl, String purl, String currentUrl) {
         return ntkVerificationPathForAccess(captchaLoadUrl, purl, currentUrl);
+    }
+
+    static boolean isNtkEpisodePathForAdAckForTest(String path) {
+        return isNtkEpisodePathForAdAck(path);
     }
 
     private static String ntkVerificationPathForAccess(String captchaLoadUrl, String purl, String currentUrl) {

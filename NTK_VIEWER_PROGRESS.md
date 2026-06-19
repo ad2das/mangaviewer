@@ -28967,3 +28967,34 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - ACK 200 proof and visible image stability passed in the latest target and live random no-jank-isolated emulator runs.
   - Strict emulator jank remains a known separate risk and must not be presented as fully solved.
 
+## 2026-06-19 19:19:00 +09:00 Actual UX title-path captcha overlay fixed on main
+
+- Continued from compaction by reading this file and checking the active goal.
+- User pointed out that prior work should be committed to `main`; confirmed the actual main worktree is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `main`, tracking `origin/main`.
+- Failure found before this fix:
+  - Actual UX webtoon selection opened the reader and rendered image content, but `CaptchaActivity` stayed foreground because `/webtoon/16968` title path was treated as an episode ACK target.
+  - That made the harness report reader-open failure even though logs showed `reader_open_to_first_drawable` and later ACK proof.
+  - Bad approach recorded: do not rely on a long-lived visible captcha screen to finish strict ACK. The reader-side hidden ACK path must prove `/api/ad/ack` 200, and title pages must not be classified as episode ACK targets.
+- Fix:
+  - `CaptchaActivity.isNtkEpisodeUrl(...)` and `shouldLoadNtkAckTargetBeforeFinish(...)` now require real NTK episode-shaped paths: `/webtoon/{work}/{episode}` or `/manhwa/{work}/{episode}`.
+  - Title paths such as `/webtoon/16968`, `/manhwa/36525`, and `/manhwa` no longer trigger before-finish episode ACK waiting.
+  - Added unit coverage through `CaptchaActivityTest.ntkAdAckBeforeFinishOnlyTreatsEpisodePathsAsEpisodes`.
+- Validation:
+  - Unit targeted test passed after sanitizing local Windows `PATH` quotes for the command:
+    - `:app:testDebugUnitTest --tests ml.melun.mangaview.activity.CaptchaActivityTest.ntkAdAckBeforeFinishOnlyTreatsEpisodePathsAsEpisodes`
+  - Actual UX webtoon selection passed on API35 emulator:
+    - Command: `:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true -Pandroid.testInstrumentationRunnerArguments.class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`
+    - Path: `/webtoon/16968/1463195`
+    - First drawable: `4431ms`
+    - Coverage: `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`
+    - Strict ACK: `bridge-ack-200`, then `native-fetch-ack-200`, `strictAdAck=true`, proof `tp=7e5451f9cb33f4d4`
+  - Actual UX comic selection passed on API35 emulator:
+    - Command: `:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true -Pandroid.testInstrumentationRunnerArguments.class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`
+    - Path: `/manhwa/36525/1807424`
+    - First drawable: `9391ms`
+    - Coverage: `drawablePx=1536`, `missingPx=0`, `placeholderPx=0`
+    - Strict ACK: `bridge-ack-200`, then `native-fetch-ack-200`, `strictAdAck=true`, proof `tp=1147f30d1744f087`
+- Remaining risk:
+  - Comic UX is stable but still slower than desired under strict fresh conditions.
+  - Strict 60fps/jank perfection remains separate from this ACK/stability close-out slice.
+

@@ -185,6 +185,15 @@ public class CaptchaActivityTest {
     }
 
     @Test
+    public void ntkAdAckBeforeFinishOnlyTreatsEpisodePathsAsEpisodes() {
+        assertFalse(CaptchaActivity.isNtkEpisodePathForAdAckForTest("/webtoon/16968"));
+        assertFalse(CaptchaActivity.isNtkEpisodePathForAdAckForTest("/manhwa/36525"));
+        assertFalse(CaptchaActivity.isNtkEpisodePathForAdAckForTest("/manhwa"));
+        assertTrue(CaptchaActivity.isNtkEpisodePathForAdAckForTest("/webtoon/16968/1463195"));
+        assertTrue(CaptchaActivity.isNtkEpisodePathForAdAckForTest("/manhwa/36525/1807424?dpl=test"));
+    }
+
+    @Test
     public void turnstileTouchRepeatsAreBoundedAndSpaced() {
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(1000L, 0L, 0));
         assertFalse(CaptchaActivity.shouldRetryTurnstileTouchForTest(2400L, 0L, 1));
