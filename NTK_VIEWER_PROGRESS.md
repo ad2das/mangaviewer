@@ -28998,3 +28998,61 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Comic UX is stable but still slower than desired under strict fresh conditions.
   - Strict 60fps/jank perfection remains separate from this ACK/stability close-out slice.
 
+## 2026-06-19 19:31:00 +09:00 Post-main random strict fresh recheck found speed-only and transient-loading risk
+
+- Continued toward the active goal after the `2cef02df7` main push.
+- Current main worktree:
+  - Branch: `main`
+  - HEAD: `2cef02df7 Fix NTK title ACK gating in actual UX`
+  - API35 emulator: `emulator-5554`
+- Random strict fresh 3-run with the older hard first-drawable budget failed:
+  - Command used `ntkRandomRuns=3`, `ntkRequireLiveRandom=true`, `ntkSafeNetwork=false`, cache/ACK clear, `ntkAssertNoJank=false`, default `ntkFirstDrawableMaxMs=3500`.
+  - Seed: `64487332`
+  - Failed first case:
+    - Path: `/webtoon/13011/1508066`
+    - Mode: `native-ack`
+    - Title: `토마토가 돼라!`
+    - Episode: `92화 : 반드시 오고야 말 행복 (4)`
+    - Image metadata: `imageEpisodeId=144006`, `imageWorkId=13011`, `imageCount=33`
+    - First drawable: `4236ms`, budget `3500ms`
+  - Failure classification:
+    - This was not an ACK failure and not a blank/placeholder failure.
+    - Logs showed `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0`.
+    - ACK did not get a chance to finish before the test aborted on the first-drawable assertion.
+    - Timing breakdown showed early generated URL verification around `1185-1418ms`, p001 image fetch/decode, then first visible metric around `3883-4236ms` across reruns.
+- Same seed re-run with speed assertion disabled (`ntkFirstDrawableMaxMs=0`) passed:
+  - Same path: `/webtoon/13011/1508066`
+  - First drawable: `3883ms`
+  - Strict ACK: `bridge-ack-200`, `native-fetch-ack-200`, `strictAdAck=true`, proof `tp=be9491390b733414`
+  - Scroll samples: `ntk_true_random_scroll=8`
+  - Stability counts: `reader_visible_loading=1=0`, `reader_visible_gap=0`, `reader_scroll_jump=0`
+  - Append:
+    - Next `/webtoon/13011/1510548` success
+    - Previous `/webtoon/13011/1449146` success
+- Broader random strict fresh 3-run with 5s first-drawable budget passed:
+  - Seed: `64751176`
+  - Command used `ntkRandomRuns=3`, `ntkRequireLiveRandom=true`, `ntkSafeNetwork=false`, cache/ACK clear, `ntkAssertNoJank=false`, `ntkFirstDrawableMaxMs=5000`.
+  - Cases:
+    - `/manhwa/26929/326837`, mode `generated`, first drawable `4038ms`.
+    - `/webtoon/3634/985088`, mode `native-ack`, first drawable `2853ms`, strict ACK `guard-fetch-ack-200`.
+    - `/manhwa/9396/86885`, mode `api-fallback`, first drawable `3164ms`, strict ACK `guard-fetch-ack-200`.
+  - Counts:
+    - `ntk_true_random_case_start=3`
+    - `reader_open_to_first_drawable=3`
+    - `ntk_ack_proof=3`
+    - `strictAdAck=true` records: `6`
+    - `ntk_true_random_scroll=24`
+    - `reader_visible_gap=0`
+    - `reader_scroll_jump=0`
+    - `ntk_true_random_append_next=3`
+    - `ntk_true_random_append_previous=2`
+    - `append_adjacent_resolved_inserted=4`
+- Bad/risky findings to keep:
+  - Do not claim the 3.5s strict fresh speed target is universally solved. `/webtoon/13011/1508066` exceeded it twice (`4236ms`, then `3883ms`).
+  - Do not hide transient placeholders: the 5s 3-run had one early transient `reader_visible_loading=1` with `placeholderPx=739` before settled scroll samples became clean. The test passed because settled coverage was clean, but the original ideal of never showing any transient placeholder is not fully proven.
+  - Strict jank remains separate: the 5s pass still showed missed frames/dropped-frame samples in scroll frame stats, although position drift stayed zero and the current requested close-out prioritizes ACK/stability.
+- Current status:
+  - Actual UX webtoon/comic ACK remains proven on main.
+  - Random strict fresh ACK and settled scroll/position stability are passing under a 5s first-drawable budget.
+  - Remaining work for the full original objective is speed/perfection: first drawable under 3.5s for all random cases, no transient placeholder at any point, and strict jank cleanup.
+
