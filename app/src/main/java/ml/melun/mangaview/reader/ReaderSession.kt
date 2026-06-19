@@ -1024,14 +1024,30 @@ class ReaderSession(
                         verifiedApiUrls.size >= knownGeneratedCount ||
                         urls.none { isNtkGeneratedImageUrl(it) }
                 )
-        var sourceUrls = if (shouldKeepManhwaGeneratedAppendToObservedUrls(target, urls)) {
-            val observed = observedInitialManhwaGeneratedUrls(target, urls)
+        val observedManhwaGeneratedUrls = if (shouldKeepManhwaGeneratedAppendToObservedUrls(target, urls)) {
+            observedInitialManhwaGeneratedUrls(target, urls)
+        } else {
+            emptyList()
+        }
+        if (observedManhwaGeneratedUrls.isNotEmpty()) {
+            val installedGeneratedCount = installedGeneratedPageCountForCurrentEpisode()
+            if (firstBitmapLogged.get() && installedGeneratedCount > observedManhwaGeneratedUrls.size) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_generated_full_skip_observed_shrink path=${target.ntkEpisodePath}," +
+                        "installed=$installedGeneratedCount,observed=${observedManhwaGeneratedUrls.size}," +
+                        "incoming=${urls.size}"
+                )
+                return
+            }
+        }
+        var sourceUrls = if (observedManhwaGeneratedUrls.isNotEmpty()) {
             Log.d(
                 TAG,
                 "reader_ntk_generated_full_keep_observed_manhwa path=${target.ntkEpisodePath}," +
-                    "from=${urls.size},to=${observed.size}"
+                    "from=${urls.size},to=${observedManhwaGeneratedUrls.size}"
             )
-            observed
+            observedManhwaGeneratedUrls
         } else if (shouldReplaceWithShortVerifiedApi) {
             Log.d(
                 TAG,
@@ -1126,6 +1142,10 @@ class ReaderSession(
                 !refreshedExisting &&
                 firstBitmapLogged.get() &&
                 shouldGateGeneratedAppendNotifyUntilNearReady(startIndex, total)
+        val generatedWarmStartedBeforePublish = generatedOnlyRefs && firstBitmapLogged.get()
+        if (generatedWarmStartedBeforePublish) {
+            warmNtkGeneratedInitialPagesLimited(currentStartPage(), loadStartedAt)
+        }
         val posted = postInitialFullAppendPublish(
             target = target,
             total = total,
@@ -1144,12 +1164,14 @@ class ReaderSession(
                 finishStructurePublish()
             }
             if (generatedOnlyRefs) {
-                logNtkRepositoryStage(
-                    target,
-                    "early_urls_append_full_skip_generated_warm",
-                    "total=$total,ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
-                )
-                warmNtkGeneratedInitialPagesLimited(currentStartPage(), loadStartedAt)
+                if (!generatedWarmStartedBeforePublish) {
+                    logNtkRepositoryStage(
+                        target,
+                        "early_urls_append_full_skip_generated_warm",
+                        "total=$total,ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                    )
+                    warmNtkGeneratedInitialPagesLimited(currentStartPage(), loadStartedAt)
+                }
                 if (gateGeneratedAppendNotify) {
                     notifyGeneratedAppendWhenNearReady(target, total, loadStartedAt)
                 }
@@ -1242,6 +1264,12 @@ class ReaderSession(
             if (count > 1) return fallback.take(count)
         }
         return fallback.take(1)
+    }
+
+    private fun installedGeneratedPageCountForCurrentEpisode(): Int = synchronized(pagesLock) {
+        pages.count { page ->
+            page.transitionTitle == null && isNtkGeneratedImageUrl(page.image.orEmpty())
+        }
     }
 
     private fun postInitialFullAppendPublish(

@@ -29056,3 +29056,52 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Random strict fresh ACK and settled scroll/position stability are passing under a 5s first-drawable budget.
   - Remaining work for the full original objective is speed/perfection: first drawable under 3.5s for all random cases, no transient placeholder at any point, and strict jank cleanup.
 
+## 2026-06-19 19:53:18 +09:00 Main sync branch verified and generated append shrink fixed
+
+- Branch/worktree clarification:
+  - Active worktree for shipping is `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`
+  - Before this slice, `HEAD == origin/main == fcb542085 Record NTK random strict fresh recheck`.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` worktree is stale/dirty experimental state on `codex/ntk-strict-ack-proof`; do not use it for main branch close-out unless explicitly rebasing or salvaging a specific patch.
+- Investigation:
+  - `/manhwa/26929/326837` replay showed ACK still succeeds and coverage is clean.
+  - The generated p002/p003 bytes were already ready before the UI publish callback requested/decode-warmed them, so the warm path was unnecessarily waiting on the main publish closure.
+  - Changed `ReaderSession.appendInitialNtkUrlsAfterEarlyInstall(...)` so generated initial page warming can start immediately after the internal `pages` list is extended, before the delayed UI publish callback.
+- New failure found while validating the first fix:
+  - Path: `/manhwa/26685/323331`
+  - One run with `ntkFirstDrawableMaxMs=5000` failed speed-only at first drawable around `7208ms`; this is not an ACK failure.
+  - A speed-disabled replay exposed the real stability bug: late `early_urls_refresh_full` shrank the current generated episode from 4 pages to 1 page:
+    - `reader_repository_stage stage=early_urls_refresh_full,path=/manhwa/26685/323331,from=0,total=1,previous=4,ms=23014`
+    - This caused scroll progress to collapse from page/offset state to `0:0`.
+- Fix:
+  - Keep observed-only generated manhwa refreshes, but after first bitmap is visible, skip a refresh that would reduce an already installed generated episode to fewer observed URLs.
+  - Added an installed generated page count helper so the guard is based on the actual current episode structure, not on a hardcoded title/episode.
+  - This preserves the broad rule: do not let a late, partial observed result rewrite a larger already-exposed generated structure.
+- Post-fix validation:
+  - Speed-disabled random strict fresh test passed:
+    - Command: `:app:connectedDebugAndroidTest` with live random, `ntkRandomSeed=64751176`, cache/ACK clear, `ntkAssertNoJank=false`, `ntkFirstDrawableMaxMs=0`.
+    - Path: `/manhwa/26685/323331`
+    - First drawable: `6776ms`
+    - Strict ACK: `bridge-ack-200`, then `guard-fetch-ack-200`, `strictAdAck=true`, proof `tp=a6c2cc08056d1ebf`
+    - Scroll samples stayed at `pages=4`, `maxPageDelta=0`, `maxOffsetDelta=0`.
+    - Coverage stayed clean: `missingPx=0`, `placeholderPx=0`, `loading=0`.
+  - Another strict fresh ACK/stability validation passed after clearing stale Gradle/UTP result lock:
+    - Path: `/manhwa/26077/313054`
+    - Title: `신본격 마법소녀 리스카`
+    - Episode: `신본격 마법소녀 리스카 1-1화`
+    - Image count metadata: `27`
+    - First drawable: `6599ms`
+    - Strict ACK: `bridge-ack-200`, then `guard-fetch-ack-200`, `strictAdAck=true`, proof `tp=64808ac6c32bdc7d`
+    - Scroll samples: 8 mixed touch samples.
+    - Every scroll sample had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, `maxPageDelta=0`, `maxOffsetDelta=0`.
+    - Next append succeeded for `/manhwa/26077/313055`.
+- 5s budget status:
+  - A 5s run hit `/manhwa/26077/313054` and logged first drawable `5343ms`, then failed the speed assertion.
+  - Current close-out should not call strict first-draw under 5s universally solved.
+  - User explicitly allowed speed compromise for this close-out; ACK 200 and stability are the focus.
+- Bad/risky approaches to avoid:
+  - Do not restore an initial continuous viewport/draw gate just to hide early incomplete states. That previously delayed/suppressed first drawable and made the user-facing open slower.
+  - Do not let a late full fetch or observed-only refresh shrink an already visible generated episode. That causes real scroll-position collapse, not just a cosmetic metric issue.
+  - Do not treat first drawable budget failures as ACK failures. ACK is currently proven separately by `bridge-ack-200` and `guard-fetch-ack-200`.
+  - Do not reuse stale Gradle/UTP result directories after killing a test by timeout; the stale `utp.0.log.lck` can make Gradle fail before the app test runs.
+
