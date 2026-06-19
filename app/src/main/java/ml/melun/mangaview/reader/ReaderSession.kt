@@ -230,6 +230,7 @@ class ReaderSession(
     private val desiredWidths = ConcurrentHashMap<Int, Int>()
     private val inFlightWidths = ConcurrentHashMap<Int, Int>()
     private val pendingDeliveryWidths = ConcurrentHashMap<Int, Int>()
+    private val listenerDrawableDeliveries = ConcurrentHashMap.newKeySet<Int>()
     private val sourceWidths = ConcurrentHashMap<Int, Int>()
     private val achievableWidths = ConcurrentHashMap<Int, Int>()
     private val deliveryQueue = ConcurrentLinkedQueue<Delivery>()
@@ -1101,6 +1102,7 @@ class ReaderSession(
                 bytePrefetching.clear()
                 visibleGeneratedByteHedges.clear()
                 visibleGeneratedDecodeHedges.clear()
+                listenerDrawableDeliveries.clear()
                 total = pages.size
             } else {
                 beginStructurePublish()
@@ -1161,19 +1163,17 @@ class ReaderSession(
     private fun shouldGateGeneratedAppendNotifyUntilNearReady(startIndex: Int, total: Int): Boolean {
         if (!isNtkSource(manga, title)) return false
         val start = currentStartPage()
-        val firstNear = start + 1
-        if (firstNear >= total) return false
-        if (startIndex > firstNear) return false
-        return !hasDeliveredBitmap(firstNear)
+        val firstNearDrawable = firstGeneratedAppendDrawableIndex(start, total) ?: return false
+        return !hasListenerDrawableDelivery(firstNearDrawable)
     }
 
     private fun notifyGeneratedAppendWhenNearReady(target: Manga, total: Int, loadStartedAt: Long) {
         val start = currentStartPage()
-        val firstNear = start + 1
+        val firstNearDrawable = firstGeneratedAppendDrawableIndex(start, total) ?: return
         val notify = object : Runnable {
             override fun run() {
                 if (cancelled.get()) return
-                val ready = firstNear >= total || hasDeliveredBitmap(firstNear)
+                val ready = hasListenerDrawableDelivery(firstNearDrawable)
                 if (!ready) {
                     main.postDelayed(this, NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
                     return
@@ -1181,12 +1181,22 @@ class ReaderSession(
                 logNtkRepositoryStage(
                     target,
                     "early_urls_append_full_notify_near_ready",
-                    "firstNear=$firstNear,total=$total,ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                    "firstNear=$firstNearDrawable,total=$total,ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
                 )
                 listener.onPagesAppended(total)
             }
         }
         notify.run()
+    }
+
+    private fun firstGeneratedAppendDrawableIndex(start: Int, total: Int): Int? = synchronized(pagesLock) {
+        if (start + 1 >= total) return@synchronized null
+        val last = minOf(total - 1, pages.lastIndex)
+        for (index in (start + 1)..last) {
+            val page = pages.getOrNull(index) ?: continue
+            if (page.transitionTitle == null) return@synchronized index
+        }
+        null
     }
 
     private fun filterKnownMissingGeneratedInitialUrls(
@@ -4324,6 +4334,10 @@ class ReaderSession(
         return false
     }
 
+    private fun hasListenerDrawableDelivery(index: Int): Boolean {
+        return listenerDrawableDeliveries.contains(index)
+    }
+
     private fun logFirstBitmapIfNeeded(startedAt: Long) {
         if (firstBitmapLogged.compareAndSet(false, true)) {
             ntkCoordinator?.markAnchorBitmapDecoded(currentStartPage())
@@ -6960,6 +6974,7 @@ class ReaderSession(
             is PageDecodeResult.Full -> listener.onPageReady(currentIndex, result.bitmap)
             is PageDecodeResult.Tiles -> listener.onPageTilesReady(currentIndex, result.pageWidth, result.pageHeight, result.tiles)
         }
+        listenerDrawableDeliveries.add(currentIndex)
         ntkCoordinator?.markFirstDrawableCommitted(currentIndex)
         if (currentIndex == currentStartPage() && !initialDeliveryFlushInProgress.get()) {
             flushInitialHeldDeliveries("anchor")

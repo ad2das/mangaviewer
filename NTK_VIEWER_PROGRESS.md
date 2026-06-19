@@ -28856,3 +28856,48 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - `/api/manhwa-images` can still return `browser_key_required`; current success relies on verified generated `moamoabon.com` image paths plus strict ACK proof.
   - Full random/webtoon/scroll-stress validation remains part of the larger goal.
 
+## 2026-06-19 18:22:39 +09:00 Main generated append gating fixed for random visible placeholder exposure
+
+- User reminder: work must stay on `main`. Current working repo remains `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+- Existing pushed main commit before this work:
+  - `e5817d7b6 Stabilize NTK ACK and generated image rendering`
+  - GitHub Actions `Release APK` run `27815855751` completed successfully.
+- Additional validation before the new fix:
+  - Actual UX webtoon passed on `emulator-5554` API35.
+  - Log: `build\ntk-ux-select\main_webtoon_ux_20260619_175708_logcat.txt`.
+  - First drawable: `reader_open_to_first_drawable source=ntk kind=tiles page=0 ms=4433`.
+  - Strict ACK proof: `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"fed4d1794bb37454","source":"native-fetch-ack-200"}`.
+  - No `reader_visible_gap`, no `reader_scroll_jump`, no `reader_visible_loading=1`.
+- Additional validation before the new fix:
+  - Comic fast scroll stress passed on `emulator-5554` API35.
+  - Log: `build\ntk-ux-select\main_comic_scroll_stress_20260619_175855_logcat.txt`.
+  - First drawable: `reader_open_to_first_drawable source=ntk kind=initial_continuous page=0 ms=5777`.
+  - Strict ACK proof: `ntk_ack_proof={"scope":"/manhwa/3540/135918","tp":"0d9058d2cbaa0e2a","source":"guard-fetch-ack-200"}`.
+  - No `reader_visible_gap`, no `reader_scroll_jump`, no `reader_visible_loading=1`.
+  - Residual risk: `surface_jank_v3` still reports high callback intervals/missed frames, while draw/total p95 remained low and dropped frame debt stayed zero in that specific stress run. Do not claim perfect 60fps yet.
+- Random strict fresh run exposed a real generated append bug:
+  - Command used live random, cache/ACK clear, `ntkRequireLiveRandom=true`, `ntkSafeNetwork=false`, `ntkRandomRuns=2`.
+  - Seed: `59820111`.
+  - First failure: `/manhwa/22895/213128`, `mode=generated`, `run=1`, `step=0`.
+  - First drawable succeeded at `3855ms`, but generated append exposed page 1 as `empty`: `reader_visible_loading=1`, `placeholderPx=713`.
+  - Strict ACK was not the failing component in this case; this was append/page publication ahead of visible bitmap delivery.
+- First attempted fix and why it was insufficient:
+  - Added a listener-delivery gate so generated append waits for a page callback instead of only internal `deliveredBitmaps`.
+  - This fixed one race but failed a second random case with a transition card: `/manhwa/22438/206765` showed item 1 as a card/draw and item 2 as `empty`.
+  - Bad approach / do not repeat: do not gate only on `start + 1`; transition cards can make that index look ready while the first actual image after the card is still empty.
+- Final fix applied:
+  - `ReaderSession` now tracks `listenerDrawableDeliveries`, meaning image/tile callbacks have actually been delivered to the listener.
+  - Generated append readiness now skips transition cards and waits for the first real drawable page after the current anchor.
+  - Generated append also no longer bypasses the gate just because the current append starts after the not-yet-ready adjacent drawable; this blocked later appends from increasing `pageCount` while the already-visible adjacent page was still empty.
+- Verification after final fix:
+  - Build: `.\gradlew.bat --no-daemon :app:assembleDebug` passed.
+  - Re-run command used seed `59820111` with live random, cache/ACK clear, `ntkAssertNoJank=false` to isolate image/ACK/position stability from the known jank metric.
+  - Result: `BUILD SUCCESSFUL`, 2 random cases, 16 scroll steps.
+  - Cases:
+    - `/webtoon/14893/1299660`, `mode=api-fallback`, first drawable `3220ms`, strict ACK `native-fetch-ack-200`.
+    - `/manhwa/22438/206765`, `mode=generated`, first drawable `2688ms`, strict ACK `guard-fetch-ack-200`.
+  - Log checks: `reader_visible_loading=1=0`, `reader_visible_gap=0`, `reader_scroll_jump=0`, `ntk_ack_proof=3`, `reader_open_to_first_drawable=2`.
+- Remaining risk:
+  - Strict jank assertion with `ntkAssertNoJank=true` can still fail with `droppedFrames=1` / callback interval spikes even when visible coverage is complete and draw/total p95 is low.
+  - Current priority was ACK and visible image stability; smoothness still needs a separate follow-up pass, but do not hide this residual risk.
+
