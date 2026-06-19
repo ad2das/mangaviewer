@@ -233,6 +233,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "function textFromBase64(b){try{return new TextDecoder().decode(bytesFromBase64(b));}catch(e){try{return decodeURIComponent(escape(atob(b||'')));}catch(_){try{return atob(b||'');}catch(__){return '';}}}}" +
             "function sameRootChallengePost(a,m){try{return a&&a.protocol==='https:'&&a.host===location.host&&a.pathname.indexOf('/cdn-cgi/challenge-platform/')===0&&String(m||'GET').toUpperCase()==='POST';}catch(e){return false;}}" +
             "function sameRootAdApiPost(a,m){try{return a&&a.protocol==='https:'&&a.host===location.host&&(a.pathname==='/api/ad/challenge'||a.pathname==='/api/ad/canary'||a.pathname==='/api/ad/ack')&&String(m||'GET').toUpperCase()==='POST';}catch(e){return false;}}" +
+            "function sameRootViewerImagesPost(a,m){try{return a&&a.protocol==='https:'&&a.host===location.host&&(a.pathname==='/api/webtoon-images'||a.pathname==='/api/manhwa-images'||a.pathname==='/api/manga-images')&&String(m||'GET').toUpperCase()==='POST';}catch(e){return false;}}" +
             "window.__ntkBridgeFetch=function(input,init){" +
             "var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';" +
             "var method=(init&&init.method)||(input&&input.method)||'GET';" +
@@ -252,6 +253,7 @@ public class CaptchaActivity extends AppCompatActivity {
             "try{var url=(typeof input==='string'||input instanceof String)?String(input):(input&&input.url)||'';var absolute=new URL(url,location.href);var method=(init&&init.method)||(input&&input.method)||'GET';" +
             "if(sameRootChallengePost(absolute,method))return window.__ntkBridgeFetch(absolute.href,init||{});" +
             "if(sameRootAdApiPost(absolute,method))return window.__ntkBridgeFetch(absolute.href,init||{});" +
+            "if(sameRootViewerImagesPost(absolute,method)){var imgReqBody=init&&init.body,imgArgs=arguments,imgSelf=this;return bodyBase64Async(imgReqBody).then(function(req64){return nativeFetch.apply(imgSelf,imgArgs).then(function(r){try{var rc=r.clone();rc.text().then(function(txt){try{window.NtkQuicBridge.recordViewerImageApiResponse(absolute.href,'POST',req64||'',r.status||0,txt||'','fetch');}catch(e){}});}catch(e){}return r;});});}" +
             "if(absolute.protocol==='https:'&&absolute.host===location.host&&(absolute.pathname==='/api/ad/ack'||absolute.pathname==='/api/ad/challenge')&&String(method).toUpperCase()==='POST'){var reqBody=init&&init.body,fetchArgs=arguments,self=this;return bodyBase64Async(reqBody).then(function(req64){return nativeFetch.apply(self,fetchArgs).then(function(r){try{window.NtkQuicBridge.recordAckStatus(absolute.href,'POST',r.status||0);}catch(e){}try{var rc=r.clone();rc.text().then(function(txt){try{window.NtkQuicBridge.recordAckExchange(absolute.href,'POST',r.status||0,req64||'',txt||'','fetch');}catch(e){}});}catch(e){}return r;});});}" +
             "}catch(e){}" +
             "return nativeFetch.apply(this,arguments);" +
@@ -267,6 +269,8 @@ public class CaptchaActivity extends AppCompatActivity {
             "if(sameRootAdApiPost(absolute,meta.method)){try{var xhr2=this,h2=addDefaultHeaders(meta.headers||{}),raw2=window.NtkQuicBridge.request(absolute.href,String(meta.method||'POST'),JSON.stringify(addBodyContentType(h2,body)),bodyBase64(body));var res2=JSON.parse(raw2||'{}');if(!res2.ok)throw new Error(res2.error||'NTK QUIC bridge failed');var txt2=textFromBase64(res2.bodyBase64||'');try{Object.defineProperty(xhr2,'readyState',{value:4,configurable:true});Object.defineProperty(xhr2,'status',{value:res2.status||0,configurable:true});Object.defineProperty(xhr2,'statusText',{value:res2.statusText||'',configurable:true});Object.defineProperty(xhr2,'responseText',{value:txt2,configurable:true});Object.defineProperty(xhr2,'response',{value:txt2,configurable:true});}catch(_){try{xhr2.__ntkqResponseText=txt2;}catch(__){}}fireXhr(xhr2,'readystatechange');fireXhr(xhr2,'load');fireXhr(xhr2,'loadend');}catch(e){try{Object.defineProperty(this,'readyState',{value:4,configurable:true});Object.defineProperty(this,'status',{value:0,configurable:true});}catch(_){}fireXhr(this,'readystatechange');fireXhr(this,'error');fireXhr(this,'loadend');}return;}" +
             "if(absolute&&absolute.protocol==='https:'&&absolute.host===location.host&&(absolute.pathname==='/api/ad/ack'||absolute.pathname==='/api/ad/challenge')&&String(meta.method||'GET').toUpperCase()==='POST'){" +
             "try{var xhr=this;var ackUrl=absolute.href;var ackMethod=String(meta.method||'POST'),reqBody=bodyBase64(body);xhr.addEventListener('loadend',function(){try{window.NtkQuicBridge.recordAckStatus(ackUrl,ackMethod,xhr.status||0);}catch(e){}try{window.NtkQuicBridge.recordAckExchange(ackUrl,ackMethod,xhr.status||0,reqBody||'',String(xhr.responseText||''),'xhr');}catch(e){}});}catch(e){}}" +
+            "if(sameRootViewerImagesPost(absolute,meta.method)){" +
+            "try{var ixhr=this,imgUrl=absolute.href,imgMethod=String(meta.method||'POST'),imgReqBody=bodyBase64(body);ixhr.addEventListener('loadend',function(){try{window.NtkQuicBridge.recordViewerImageApiResponse(imgUrl,imgMethod,imgReqBody||'',ixhr.status||0,String(ixhr.responseText||''),'xhr');}catch(e){}});}catch(e){}}" +
             "return xs.apply(this,arguments);};try{wrappedSend.__ntkBridgeWrapped=1;}catch(e){}xp.send=wrappedSend;}}" +
             "if(!window.__ntkBridgeFetchReadyLogged){window.__ntkBridgeFetchReadyLogged=1;try{console.log('__NTK_BRIDGE_FETCH_READY__');}catch(e){}}" +
             "})();";
@@ -1297,6 +1301,53 @@ public class CaptchaActivity extends AppCompatActivity {
                         + ",request=" + requestPreview + ",response=" + responsePreview);
             } catch (Exception e) {
                 android.util.Log.d("CaptchaActivity", "NTK WebView ACK exchange record failed: "
+                        + url, e);
+            }
+        }
+
+        @JavascriptInterface
+        public void recordViewerImageApiResponse(String url, String method, String requestBodyBase64,
+                                                 int status, String responseBody, String transport) {
+            if(isFinishing || isDestroyed())
+                return;
+            if(method == null || !"POST".equalsIgnoreCase(method))
+                return;
+            try {
+                URI uri = URI.create(url);
+                String apiPath = uri.getPath();
+                if(!"/api/webtoon-images".equals(apiPath)
+                        && !"/api/manhwa-images".equals(apiPath)
+                        && !"/api/manga-images".equals(apiPath))
+                    return;
+                org.json.JSONObject payload = new org.json.JSONObject();
+                if(requestBodyBase64 != null && requestBodyBase64.length() > 0) {
+                    try {
+                        byte[] requestBody = Base64.decode(requestBodyBase64, Base64.DEFAULT);
+                        String requestText = new String(requestBody, java.nio.charset.StandardCharsets.UTF_8);
+                        if(requestText.length() > 0)
+                            payload = new org.json.JSONObject(requestText);
+                    } catch (Exception ignored) {
+                    }
+                }
+                String scope = payload.optString("path", "");
+                if(scope.length() == 0) {
+                    String kind = "/api/webtoon-images".equals(apiPath) ? "webtoon" : "manhwa";
+                    String workId = payload.optString("workId", "");
+                    String episodeId = payload.optString("episodeId", "");
+                    if(workId.length() > 0 && episodeId.length() > 0)
+                        scope = "/" + kind + "/" + workId + "/" + episodeId;
+                }
+                if(scope.length() == 0)
+                    scope = ntkVerificationUrl(captchaLoadUrl, captchaLoadUrl);
+                if(scope == null || scope.length() == 0)
+                    return;
+                CustomHttpClient.rememberNtkViewerImageApiResponseBody(
+                        url, scope, payload, status, responseBody, "captcha-webview-" + transport);
+                android.util.Log.d("CaptchaActivity", "NTK WebView image API observed status="
+                        + status + ",scope=" + scope + ",transport=" + transport
+                        + ",url=" + url);
+            } catch (Exception e) {
+                android.util.Log.d("CaptchaActivity", "NTK WebView image API observe failed: "
                         + url, e);
             }
         }

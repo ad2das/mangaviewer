@@ -30865,3 +30865,146 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Bad approach / do not repeat:
   - Do not globally reorder NTK image episode identity preference in `Manga.java` without a narrower guard. It can remove the stale generated fallback but also starves first image delivery.
   - The next fix should target only stale generated candidate admission/replacement, not the whole API/metadata identity resolver.
+
+## 2026-06-20 08:20 UTC / 17:20 +09:00 Rejected narrow generated episode candidate scope fix
+
+- Current main state:
+  - `2d2b8fdfa Guard NTK generated image replacements by episode` is on `main` and pushed.
+  - The latest actual UX evidence still proves ACK 200 (`bridge-ack-200`, `native/guard-fetch-ack-200`, `strictAdAck=true`), so ACK should not be reclassified as the active failure.
+- Rejected local experiment:
+  - `Manga.ntkGeneratedEpisodeIdCandidatesForPath(...)` now treats numeric current path episodes as the primary generated-image probe scope.
+  - Raw `getNtkImageEpisodeId()` is only admitted for numeric current paths when it matches the current path episode.
+  - Non-numeric/slug paths keep the older known-metadata-first behavior because those paths may legitimately need metadata to resolve generated images.
+- Why this is narrower than the rejected experiment:
+  - It does not change `firstNtkImageEpisodeId(...)`, `ntkPreferredViewerImagesApiEpisodeId(...)`, API token parsing, or global metadata identity preference.
+  - It only prevents stale generated-image probes/replacements such as `/16968/525919/` from outranking the actual current reader path `/webtoon/16968/1463195`.
+- Result:
+  - Compile passed.
+  - Actual UX artifact `build\ntk-actual-ux-suite\20260620_080155` still succeeded for ACK and first drawable, but first drawable was `34877ms`, essentially unchanged from the prior `35562ms` baseline.
+  - Stale generated candidate logs still appeared from other paths, so this was not a meaningful fix.
+  - The experiment was reverted and must not be committed as an optimization.
+- Bad approach / do not repeat:
+  - Do not restore raw known image episode as first generated candidate for numeric current paths unless it is path-scoped.
+  - Do not broaden this into a global API identity reorder; that already made the actual UX result worse.
+  - Do not describe this as an active fix in future summaries; it was a compiled but ineffective experiment.
+
+## 2026-06-20 08:12 UTC / 17:12 +09:00 Rejected generated episode candidate scoping experiment
+
+- Experiment:
+  - Tried to make numeric current reader paths prefer the current path episode for generated-image candidates in:
+    - `ntkGeneratedEpisodeIdCandidatesForPath(...)`
+    - shell generated candidates
+    - partial early generated candidates
+    - last-resort generated candidates
+  - This was intended to suppress stale `16968/525919` generated probes for current `/webtoon/16968/1463195`.
+- Validation:
+  - Compile passed.
+  - Actual UX artifact: `build\ntk-actual-ux-suite\20260620_080707`.
+- Result:
+  - Worse than baseline.
+  - The run timed out with no `ackLine`, no `firstDrawableLine`, no success summary.
+  - Logs still showed stale `525919` from another path:
+    - `ntk_generated_partial_candidates ... episodeIds=[1463195, 525919]`.
+  - ACK WebView preflight later ended false:
+    - `ntk_webview_ack_preflight_done path=/webtoon/16968/1463195,success=false,ms=74210`.
+- Action:
+  - Reverted the `Manga.java` generated candidate scoping experiment immediately.
+- Bad approach / do not repeat:
+  - Do not try to solve this by broad generated episode candidate reordering/scoping in `Manga.java`; it destabilized ACK/first drawable and still did not remove every stale route.
+  - Prefer using actual browser/WebView-discovered current-scope image requests or API-confirmed current-scope URLs rather than guessing generated identity from mixed metadata.
+- New useful finding:
+  - In `20260620_080707`, hidden/visible WebView produced real current-scope image requests:
+    - `ntk_viewer_quic_intercept_image_start url=https://sbxh8.com/api/m/i?...scope=/webtoon/16968/1463195...`
+  - Correction from later direct-run inspection: `/api/m/i` is a 42-byte `image/gif` metric/ad guard response, not a reader page image. Do not capture/promote it to reader early URLs.
+
+## 2026-06-20 08:20 UTC / 17:20 +09:00 Main branch and latest ACK/image failure correction
+
+- Branch correction:
+  - User called out that commits should be on `main`.
+  - Verified in `C:\Users\Administrator\Downloads\mangaviewer-main-sync`:
+    - Current branch is `main`.
+    - `main` equals `origin/main`.
+    - `c6c35ed91 Stabilize NTK synthetic adjacent append` is contained by `main`.
+    - Latest pushed main commit is `2d2b8fdfa Guard NTK generated image replacements by episode`.
+  - The older `C:\Users\Administrator\Downloads\mangaviewer` worktree is on `codex/ntk-strict-ack-proof`; continue active work from `mangaviewer-main-sync` to avoid committing the next fix to the wrong branch.
+- Latest direct actual UX artifact:
+  - `build\ntk-actual-ux-direct\20260620_082029`.
+  - Test:
+    - `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Result:
+    - Failed after `88.669s`.
+    - Failure: `Expected tapping a NTK current webtoon UX episode to render the first reader image`.
+    - UX selected `/webtoon/16968/1463195`.
+    - No `reader_open_to_first_drawable`.
+    - No `reader_visible_coverage`.
+- ACK correction:
+  - Earlier actual UX suite runs proved strict ACK 200, but this latest direct run did not.
+  - Latest run only recorded soft/cookie ACK:
+    - `ntk_server_ack_success_recorded ... source=bridge-challenge-ad-ack-cookie-200,strictAdAck=false`.
+  - No strict proof line was present:
+    - no `native-fetch-ack-200`.
+    - no `bridge-ack-200`.
+  - `ntk_webview_ack_only_timeout_cancel path=/webtoon/16968/1463195`.
+  - Therefore ACK must stay an active stability concern until strict proof is repeatable in the real UX run.
+- Image correction:
+  - `/api/m/i` is not content.
+  - Evidence from latest direct log:
+    - `ntk_viewer_quic_intercept_image_hit code=200,cdn=false,metric=true,type=image/gif,mime=image/gif,len=42,sig=47 49 46 38 39 61 01 00 01 00 80 00`.
+  - This matches a 1x1 GIF-style metric/ad guard response. It directly explains the user-visible risk of "advertisement/guard image only" if it is trusted.
+  - Bad approach / do not repeat:
+    - Do not add `/api/m/i` to `ReaderImageCache.isTrustedNtkImageUrl(...)`.
+    - Do not use `/api/m/i` bytes or URL as reader early-page content.
+- Current likely blocker:
+  - Real frame requested `/api/webtoon-images`:
+    - `ntk_realframe_request method=POST,main=false,url=https://sbxh8.com/api/webtoon-images`.
+  - Hidden/eval image fetch repeatedly produced `ntk_images_api_eval_result ... value=null`.
+  - The token/metas for current `/webtoon/16968/1463195` existed, but the hidden script path appears to remain ACK-only (`ackOnly=true`) instead of completing and handing off the real image API response.
+  - Next fix should inspect `NtkWebViewFallbackManager` script scheduling around `__ack_only__`, `buildViewerImageFetchScript(...)`, and `buildViewerImageApiOnlyScript(...)`, then ensure strict ACK proof and actual `/api/webtoon-images` response are captured before reader success is claimed.
+
+## 2026-06-20 08:30-08:37 UTC / 17:30-17:37 +09:00 Strict ACK canary handoff fix on main
+
+- Branch/worktree:
+  - Active worktree: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Active branch: `main`.
+  - This is the branch that must receive the ACK stability commit/push.
+- Fix:
+  - `NtkWebViewFallbackManager.submitCanaryBeforeAdAck(...)` now removes stale `ad_guard_l` from old/refreshed cookie headers and merges the fresh canary `ad_guard_l` last.
+  - Root cause: when `/api/ad/canary` returned 200 with a new `ad_guard_l`, a later refreshed/WebView/app cookie header could still override it with an older guard cookie. That made `/api/ad/ack` return 400 `missing_canary` even though canary itself had succeeded.
+  - Added a WebView observation path for real UX `/api/webtoon-images`, `/api/manhwa-images`, and `/api/manga-images` responses:
+    - `CaptchaActivity` observes successful same-root browser `fetch`/XHR responses without replacing the browser response.
+    - `CustomHttpClient.rememberNtkViewerImageApiResponseBody(...)` forwards to the package-private fallback manager.
+    - `NtkWebViewFallbackManager.rememberViewerImageApiResponseBody(...)` stores the API response and early trusted URLs under the current scope.
+  - Important: the image API observation hook is a safe handoff path, but the passing run below should not be described as proving that the hook was used unless the log contains `ntk_webview_viewer_images_api_remember`.
+- Failed validation before cookie merge fix:
+  - Artifact: `build\ntk-actual-ux-direct\20260620_083051`.
+  - Result: test failed on strict ACK proof.
+  - Image was improved but still slow:
+    - `reader_open_to_first_drawable ... ms=28288`.
+    - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0`.
+  - ACK showed repeated canary failure:
+    - canary returned `code=200,setCookies=1,cookieNames=ad_guard_l`.
+    - `/api/ad/ack` still returned `400` with `missing_canary`.
+  - The end-of-test `TransactionTooLargeException` was instrumentation failure payload size, not the app's reader logic crashing.
+- Passing validation after cookie merge fix:
+  - Artifact: `build\ntk-actual-ux-direct\20260620_083651`.
+  - Test:
+    - `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+  - Instrumentation result:
+    - `Time: 46.527`.
+    - `OK (1 test)`.
+  - Strict ACK proof:
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_viewer_ad_bridge_response method=POST,path=/api/ad/ack,code=200,len=90,setCookies=1,cookieNames=ad_ack,body={"ok":true,...}`.
+    - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"05dbd88052ba7b5b","source":"guard-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=guard-fetch-ack-200,strictAdAck=true`.
+  - Image/reader proof:
+    - `reader_open_to_first_drawable source=ntk kind=tiles page=0 ms=21818`.
+    - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0 drawableItems=1 items=1`.
+    - `ntk_actual_ux_select_success ... firstDrawable=...ms=21818,ack=...source=bridge-ack-200;strictAdAck=true`.
+- Bad approach / do not repeat:
+  - Do not conclude that soft/cookie ACK (`bridge-challenge-ad-ack-cookie-200`, `strictAdAck=false`) is enough.
+  - Do not retry `/api/ad/ack` with mixed old/refreshed cookie headers that can override a fresh canary `ad_guard_l`.
+  - Do not claim `/api/m/i` is content; it is a 42-byte metric/ad guard GIF and must not be trusted as a reader image.
+- Remaining risk:
+  - Strict ACK is now proven again in a real UX emulator run, but repeatability should still be watched across additional random/actual cases.
+  - First drawable is stable but still around 21.8s in this artifact; speed is now secondary per user direction, but this remains the main UX performance risk if work resumes after ACK stabilization.

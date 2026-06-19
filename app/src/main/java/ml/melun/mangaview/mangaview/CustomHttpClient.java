@@ -98,6 +98,13 @@ import ml.melun.mangaview.runtime.PerfTrace;
 
 import static ml.melun.mangaview.MainApplication.p;
 public class CustomHttpClient {
+    public static void rememberNtkViewerImageApiResponseBody(String endpoint, String path,
+                                                             JSONObject payload, int status,
+                                                             String body, String reason) {
+        NtkWebViewFallbackManager.rememberViewerImageApiResponseBody(
+                endpoint, path, payload, status, body, reason);
+    }
+
     public interface NtkViewerImageUrlsCallback {
         void onUrls(List<String> urls);
     }

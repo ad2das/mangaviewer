@@ -581,6 +581,40 @@ final class NtkWebViewFallbackManager {
                     + ",reason=" + reason);
     }
 
+    public static void rememberViewerImageApiResponseBody(String endpoint, String path,
+                                                          JSONObject payload, int status,
+                                                          String body, String reason) {
+        if(status < 200 || status >= 300 || body == null || body.length() == 0
+                || path == null || path.length() == 0)
+            return;
+        String kind = "";
+        if(endpoint != null) {
+            if(endpoint.endsWith("/webtoon-images"))
+                kind = "webtoon";
+            else if(endpoint.endsWith("/manhwa-images") || endpoint.endsWith("/manga-images"))
+                kind = "manhwa";
+        }
+        String workId = "";
+        String episodeId = "";
+        if(payload != null) {
+            workId = payload.optString("workId", "");
+            episodeId = payload.optString("episodeId", "");
+        }
+        String key = viewerImageCacheKey(kind, workId, episodeId, path);
+        ArrayList<String> urls = viewerImageUrlsFromApiBody(body, kind, workId, episodeId);
+        if(key.length() > 0) {
+            String cachedBody = urls.size() > 0 ? viewerImageApiBodyFromUrls(urls) : body;
+            VIEWER_IMAGE_API_CACHE.put(key, new CachedViewerImages(cachedBody, System.currentTimeMillis()));
+        }
+        if(urls.size() > 0)
+            ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, urls);
+        if(key.length() > 0 || urls.size() > 0)
+            Log.d(TAG, "ntk_webview_viewer_images_api_remember key=" + key
+                    + ",path=" + path
+                    + ",count=" + urls.size()
+                    + ",reason=" + reason);
+    }
+
     private static ArrayList<String> viewerImageUrlsFromApiBody(String body, String kind,
                                                                 String workId, String episodeId) {
         ArrayList<String> urls = new ArrayList<>();
@@ -6342,9 +6376,11 @@ final class NtkWebViewFallbackManager {
                 String refreshedCookieHeader = bridgeCookieHeader(ackUrl, fallbackCookieHeader,
                         ackHeaders == null ? new HashMap<>() : new HashMap<>(ackHeaders), ackBody);
                 String resultCookieHeader = setCookiesAsHeader(result);
+                String ackBaseCookieHeader = cookieHeaderWithoutNames(cookieHeader, "ad_guard_l");
+                String refreshedWithoutStaleGuard = cookieHeaderWithoutNames(refreshedCookieHeader, "ad_guard_l");
                 String mergedCookieHeader = mergeCookieHeaders(
-                        mergeCookieHeaders(cookieHeader, resultCookieHeader),
-                        refreshedCookieHeader);
+                        mergeCookieHeaders(ackBaseCookieHeader, refreshedWithoutStaleGuard),
+                        resultCookieHeader);
                 return cookieHeaderWithScopedAdAckC(ackUrl, "POST", ackBody, mergedCookieHeader);
             } catch (Exception e) {
                 Log.d(TAG, "ntk_viewer_ad_bridge_canary_before_ack_error " + e);
