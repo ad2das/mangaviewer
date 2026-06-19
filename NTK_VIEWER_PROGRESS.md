@@ -30037,3 +30037,61 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - On current `main`, strict fresh random mixed cases, actual comic selection, actual webtoon selection, and actual home continue selection all reached real NTK reader images with strict ACK 200 proof and no settled placeholder/missing pixels or scroll drift.
   - Remaining risk is performance smoothness strictness, not ACK correctness or settled image visibility in the validated slice.
 
+## 2026-06-20 03:05:00 +09:00 Heartbeat validation after main push
+
+- Continued via active goal heartbeat and rechecked current state before trusting prior context.
+- Main/remote state:
+  - Worktree: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`.
+  - Local and remote HEAD after this sequence started: `eb23aee79 Record NTK main validation results`.
+  - `gh run list --repo ad2das/mangaviewer --branch main --limit 3` showed `Release APK` for `eb23aee79` completed with `success` in about `1m26s`.
+  - Emulator state: only `emulator-5554 device`.
+- New actual UX combined run:
+  - Gradle log: `ntk_actual_ux_main_heartbeat_20260620_024232.gradle.log`.
+  - Recovered logcat: `ntk_actual_ux_main_heartbeat_20260620_024232_timeout_recovered.logcat`.
+  - Command attempted the three actual UX tests in one instrumentation run:
+    - `ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+    - `ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+    - `ntkHomeContinueUxSelectionOpensReaderWithAck200`.
+  - Result: not valid as a pass. The command hit the outer 5-minute timeout after Gradle had already reported one failure.
+  - Reported failure:
+    - `ntkHomeContinueUxSelectionOpensReaderWithAck200` failed with `Expected tapping a NTK home continue UX episode to open the reader after NTK auto captcha`.
+  - Evidence limitation:
+    - The following webtoon test cleared logcat, so the recovered logcat no longer contains the home failure details.
+    - Do not use this combined run as root-cause evidence for home continue; use individual runs or change the harness to preserve per-test logs.
+  - Webtoon still passed inside the recovered log:
+    - Start: `/webtoon/16968`.
+    - Reader path: `/webtoon/16968/1463195`.
+    - First drawable: `1998ms`.
+    - Coverage: `reader_visible_loading=0`, `drawablePx=2275`, `missingPx=0`, `placeholderPx=0`.
+    - ACK proof: `/webtoon/16968/1463195`, source `native-fetch-ack-200`; bridge recorded `bridge-ack-200 strictAdAck=true`.
+    - Success line: `ntk_actual_ux_select_success source=ntk,type=webtoon`.
+- Home continue standalone rerun:
+  - Log: `ntk_home_continue_single_heartbeat_20260620_024814.logcat`.
+  - Gradle log: `ntk_home_continue_single_heartbeat_20260620_024814.gradle.log`.
+  - Result: PASS, Gradle exit `0`, build successful in about `50s`.
+  - Start: `source=ntk,type=webtoon,titlePath=/webtoon/16968,episodePath=/webtoon/16968/1463195`.
+  - First image: `https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg`.
+  - First drawable: `2792ms`.
+  - Coverage: `reader_visible_loading=0`, `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`.
+  - ACK proof: `/webtoon/16968/1463195`, source `native-fetch-ack-200`; bridge recorded `bridge-ack-200 strictAdAck=true`.
+  - Success line: `ntk_actual_home_continue_select_success`.
+  - Risk note: ACK proof arrived around 15s after first drawable in this run. The image UX and strict proof both succeeded, but ACK proof latency is still not ideal.
+- Comic standalone rerun:
+  - Log: `ntk_comic_single_heartbeat_20260620_024926.logcat`.
+  - Gradle log: `ntk_comic_single_heartbeat_20260620_024926.gradle.log`.
+  - Result: PASS, Gradle exit `0`, build successful in about `43s`.
+  - Start: `/manhwa/36525`.
+  - Reader path: `/manhwa/36525/1807424`.
+  - First image: `https://moamoabon.com/manhwa/36525/1807424/p001.jpg`.
+  - First drawable: `3698ms`.
+  - Coverage: `reader_visible_loading=0`, `drawablePx=1536`, `missingPx=0`, `placeholderPx=0`.
+  - ACK proof: `/manhwa/36525/1807424`, source `native-fetch-ack-200`; bridge recorded `bridge-ack-200 strictAdAck=true`.
+  - Success line: `ntk_actual_ux_select_success source=ntk,type=comic`.
+- Bad approaches / do not repeat:
+  - Do not trust a multi-test actual UX run when a later test clears logcat before the failed test's evidence is recovered. It loses the useful failure window.
+  - Do not count the combined heartbeat run as proof of home failure root cause. Standalone home continue immediately passed; the remaining issue is either intermittent home-card/test-state behavior or harness isolation.
+  - Do not hide ACK proof latency. In the standalone home run the page rendered quickly, but strict proof was much later.
+- Next action:
+  - If continuing ACK close-out, prioritize making actual UX tests preserve per-test logs or run via a wrapper that executes each method separately. That improves evidence quality without weakening the verification gates.
+
