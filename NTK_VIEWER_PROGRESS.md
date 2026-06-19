@@ -28378,3 +28378,45 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - ACK can still take several seconds on live network (`~8-12s` in recent proofs), but strict 200 is now shown in actual UX and random strict runs.
   - Manhwa initial UI intentionally avoids appending generated p002+ until foreground success proof exists, so very short one-page initial surface is possible. This is preferable to showing wrong/404/advertising-like image slots.
   - Keep future fixes focused on URL proof, drawable success, and real coverage; avoid broad gates or treating probe-only URLs as UI-ready.
+
+## 2026-06-19 10:22:26 +09:00 CI and current NTK root proof after main push
+
+- Main push status:
+  - Commit `2e50f0e83 Stabilize NTK generated manhwa rendering` is on `main` and `origin/main`.
+  - GitHub Actions run `27799478052` (`Release APK`) completed successfully in `1m48s`.
+  - Only warning: GitHub Actions Node.js 20 deprecation annotation. No build/test failure.
+- Current root state:
+  - Root probe command:
+    - `.\tools\ntk_root_probe.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-root-probe\main_sbxh8_probe_20260619" -Roots "https://sbxh8.com,https://sbxh7.com,https://sbxh6.com,https://toonflix.app,https://sbxh5.com" -TimeoutMs 5000 -MaxRoots 12 -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall`
+  - Artifact: `build\ntk-root-probe\main_sbxh8_probe_20260619\20260619_102120_5f1efd`.
+  - Verdict: `live-api-root-available`.
+  - API JSON roots:
+    - `https://sbxh8.com`
+    - `https://newtoki1.org`
+  - `https://sbxh8.com` proof:
+    - `okhttp_api` code `200`, type `application/json`.
+    - `/api/ad/challenge` code `200`, type `application/json`, `setCookies=ad_ack_c`.
+    - QUIC/H2 challenge also returned code `200` with `ad_ack_c`.
+  - `https://newtoki1.org` proof:
+    - `okhttp_api` code `200`, type `application/json`.
+    - `/api/ad/challenge` code `200`, type `application/json`, `setCookies=ad_ack_c`.
+    - QUIC/H2 challenge also returned code `200` with `ad_ack_c`.
+- Bad/stale roots to avoid:
+  - `https://sbxh7.com` is currently `address-guide`/redirect (`302`) and not the actual API JSON root.
+  - `https://sbxh6.com` and several older `sbxh*` roots reset connections.
+  - `https://toonflix.app` is `cf-block` (`403`) and should not be treated as a current ACK/API root.
+- Implication:
+  - The current code defaults already point to `sbxh8.com`, with `sbxh7.com` only as previous fallback.
+  - If future tests force-lock `sbxh7.com` or `toonflix.app`, failures should be classified as stale/root selection failures, not viewer image-rendering failures.
+- Locked current-root strict random validation:
+  - Command:
+    - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-random-perf\main_sbxh8_locked_random3_strict_20260619" -Runs 3 -ScrollSteps 3 -AppendSteps 0 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 22000 -StrictFresh -NoAppendProbe -RequireLiveRandom -NtkSiteRoot "https://sbxh8.com" -NtkLockSiteRoot -ForceStopBeforeRun -FirstDrawableMaxMs 6000 -SkipBuild -SkipInstall`
+  - Artifact: `build\ntk-random-perf\main_sbxh8_locked_random3_strict_20260619\20260619_102258`.
+  - Result: passed, seed `1781832178612`, cases `3`, scroll checks `9`, failures `0`, coverage `live-random`.
+  - ACK proof detail:
+    - `nativeSubmit@/code=200` present.
+    - ACK summary max `11368ms`.
+    - One preflight stage still showed a long `ack_only_fetch=19241/19253`; this did not fail the run but remains a tail-latency risk to watch.
+  - Pipeline summary: early URLs `1707ms`, foreground `578ms`, stream `2850ms`, decode `2662ms`, drawable `1933ms`.
+  - Repro command:
+    - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 1 -ScrollSteps 3 -AppendSteps 0 -ScreenshotEvery 0 -Seed 1781832178612 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 22000 -TargetEpisodePath /webtoon/15094/1492520 -TargetImageEpisodeId 386545 -TargetImageWorkId 15094 -TargetImageCount 41 -NtkSiteRoot https://sbxh8.com -NtkLockSiteRoot -StrictFresh -NoAppendProbe -RequireLiveRandom -ForceStopBeforeRun`
