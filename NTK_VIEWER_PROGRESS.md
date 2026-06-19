@@ -30162,3 +30162,35 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The latest live site/CDN state can still block image bytes for the same webtoon case even with ACK proof.
   - The commit being prepared improves diagnostics and request parity, but it is not a final proof that the current upstream CDN hard block is solved.
 
+## 2026-06-20 14:09 +09:00 Emulator Chrome visual proof for current image failure
+
+- After pushing `ceb03d570` to `origin/main`, GitHub Actions `Release APK` run `27843780391` completed successfully in `1m46s`.
+- Emulator state:
+  - Device: `emulator-5554`.
+  - Android: API 35 / Android 15.
+  - Chrome package is installed.
+- Actual Chrome UX check:
+  - Opened `https://sbxh8.com/webtoon/16968/1463195` in emulator Chrome.
+  - Screenshot after closing Chrome notification prompt and scrolling:
+    - `output\emulator_chrome_sbxh8_after_popups_scroll.png`.
+  - Visual result:
+    - Advertisement banners render.
+    - Manga page images do not render.
+    - Browser displays broken image icons and alt text such as `page 1`, `page 2`, ..., not actual comic image bitmaps.
+- Network corroboration:
+  - `https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg` returns `403 text/html`.
+  - `https://moamoabon.com/black/episodes/16968/1463195/p001.jpg` returns `403 text/html`.
+  - `https://moamoabon.com/manhwa/36525/1807424/p001.jpg` also returns `403 text/html`.
+  - The 403 response is Cloudflare HTML, not an image.
+- Root/domain check:
+  - `https://sbxh8.com/webtoon/16968/1463195` returns page HTML.
+  - `https://sbxh7.com/webtoon/16968/1463195` redirects to Telegram.
+  - `sbxh7.com` and `sbxh8.com` resolve to the same IP, but only `sbxh8.com` is currently usable for the page.
+- Conclusion:
+  - The current live failure is reproducible in a normal emulator Chrome UX, not only in the app or native fetch path.
+  - ACK 200 and image URL discovery can both succeed while final image rendering still fails because the upstream image CDN serves blocked HTML instead of JPG/WEBP bytes.
+- Bad approaches / do not repeat:
+  - Do not claim the app should render this exact live case while emulator Chrome itself shows broken images from the same source URLs.
+  - Do not treat visible ad banners as proof that manga images work. Ads render separately; page images are broken.
+  - Do not regress to `sbxh7.com` as the main root for this case; it redirects away from the content path at the time of this check.
+
