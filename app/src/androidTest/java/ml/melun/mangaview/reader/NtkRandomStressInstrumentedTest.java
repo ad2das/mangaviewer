@@ -1586,7 +1586,7 @@ public class NtkRandomStressInstrumentedTest {
                                 + " current=" + episode.getNtkEpisodePath()
                                 + " previous=" + previousEpisode.getNtkEpisodePath(),
                         probePreviousAppend(device, reader, run, mode,
-                                episode, previousEpisode, Math.min(appendSteps, 12)));
+                                episode, previousEpisode, appendSteps));
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
             finishActivityForNextLaunch(activity);
@@ -1664,7 +1664,7 @@ public class NtkRandomStressInstrumentedTest {
                             + " current=" + episode.getNtkEpisodePath()
                             + " previous=" + previousEpisode.getNtkEpisodePath(),
                     probePreviousAppend(device, (ReaderV2Activity) activity, run, mode,
-                            episode, previousEpisode, Math.min(appendSteps, 12)));
+                            episode, previousEpisode, appendSteps));
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
             finishActivityForNextLaunch(activity);

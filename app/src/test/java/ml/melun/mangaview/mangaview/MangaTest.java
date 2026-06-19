@@ -552,7 +552,10 @@ public class MangaTest {
                 "", "1807424", "1807424", "48388"));
         assertTrue(Manga.shouldRetryNtkKnownImageEpisodeIdForTest(
                 "", "ntk-slug", "140318", "48388"));
-        assertTrue(Manga.shouldRetryNtkKnownImageEpisodeIdForTest(
+        assertFalse(Manga.shouldRetryNtkKnownImageEpisodeIdForTest(
+                "kp-68408465-68460644", "kp-68408465-68460644",
+                "kp-68408465-68460644", "1153676", 108));
+        assertFalse(Manga.shouldRetryNtkKnownImageEpisodeIdForTest(
                 "1667148", "1667148", "1667148", "198888", 59));
     }
 

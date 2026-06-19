@@ -3242,7 +3242,7 @@ class ReaderSession(
                 NTK_APPEND_EARLY_GENERATED_WAIT_MS
             }
             val deadline = SystemClock.elapsedRealtime() + earlyWaitMs
-            while (!cancelled.get() && SystemClock.elapsedRealtime() < deadline) {
+            while (!cancelled.get() && !task.isDone && SystemClock.elapsedRealtime() < deadline) {
                 if (installEarlyGeneratedAppendUrlsIfAvailable(target) > 0) {
                     Log.d(
                         TAG,
@@ -8131,7 +8131,7 @@ class ReaderSession(
         private const val NTK_INITIAL_CONTINUOUS_DIRECT_WINDOW_MS = 5200L
         private const val NTK_INITIAL_CONTINUOUS_STAGGER_MS = 24L
         private const val NTK_APPEND_EARLY_GENERATED_WAIT_MS = 2600L
-        private const val NTK_APPEND_EARLY_API_STRICT_HANDOFF_WAIT_MS = 4600L
+        private const val NTK_APPEND_EARLY_API_STRICT_HANDOFF_WAIT_MS = 13500L
         private const val NTK_APPEND_EARLY_API_STRICT_LATE_WAIT_MS = 5200L
         private const val NTK_APPEND_API_STRICT_ACK_RETRY_WAIT_MS = 9000L
         private const val NTK_APPEND_EARLY_GENERATED_POLL_MS = 40L
