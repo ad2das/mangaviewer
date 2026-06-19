@@ -28952,3 +28952,18 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - ACK 200 proof and visible image stability are currently passing on API35 emulator for target regression and random no-jank regression.
   - Strict jank remains a separate unresolved risk; the new `prepP95/prepMax` diagnostics should stay because they make future strict failures actionable.
 
+## 2026-06-19 18:56:10 +09:00 Main commit/push and GitHub Actions proof
+
+- Confirmed the active checkout is `main` tracking `origin/main` in `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+- Committed and pushed the adjacent generated append gate fix to `origin/main`:
+  - Commit: `9bd79c43f Stabilize NTK adjacent generated append publishing`
+  - Push result: `afeba5154..9bd79c43f main -> main`
+- GitHub Actions verification:
+  - Workflow: `Release APK`
+  - Run: `27818675365`
+  - Result: success in about 2m4s.
+  - Only annotation was Node.js 20 deprecation for upstream GitHub actions; no build failure remained.
+- Current stability status:
+  - ACK 200 proof and visible image stability passed in the latest target and live random no-jank-isolated emulator runs.
+  - Strict emulator jank remains a known separate risk and must not be presented as fully solved.
+
