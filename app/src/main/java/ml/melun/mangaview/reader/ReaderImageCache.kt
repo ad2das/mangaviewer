@@ -100,6 +100,7 @@ object ReaderImageCache {
     private val ntkAckRecoveryPriorityPath = AtomicReference("")
     private val ntkGeneratedEpisodeExtensions = ConcurrentHashMap<String, String>()
     private val ntkGeneratedNotFoundPages = ConcurrentHashMap.newKeySet<String>()
+    private val ntkGeneratedHardBlockedPages = ConcurrentHashMap.newKeySet<String>()
     private val ntkGeneratedReplacementClaims = ConcurrentHashMap.newKeySet<String>()
     private val ntkAnchorAssetFiles = ConcurrentHashMap<String, File>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
@@ -227,6 +228,7 @@ object ReaderImageCache {
         ntkAckRecoveryPriorityPath.set("")
         ntkGeneratedEpisodeExtensions.clear()
         ntkGeneratedNotFoundPages.clear()
+        ntkGeneratedHardBlockedPages.clear()
         ntkGeneratedReplacementClaims.clear()
         ntkAnchorAssetFiles.clear()
         activeReads.clear()
@@ -252,6 +254,7 @@ object ReaderImageCache {
         ntkAckRecoveryPriorityPath.compareAndSet(path, "")
         episodeKeys.forEach { ntkGeneratedEpisodeExtensions.remove(it) }
         ntkGeneratedNotFoundPages.removeAll { it.startsWith("$path|") }
+        ntkGeneratedHardBlockedPages.removeAll { it.startsWith("$path|") }
         ntkGeneratedReplacementClaims.removeAll { it.contains("|$path|") }
         ntkAnchorAssetFiles.keys.removeAll { it.contains("|$path|") }
         if (cancelledStreams > 0 || cancelledRanges > 0 || cancelledApi > 0 || cancelledAck > 0) {
@@ -424,6 +427,7 @@ object ReaderImageCache {
     fun clearNtkGeneratedEpisodeExtensionHintsForTest() {
         ntkGeneratedEpisodeExtensions.clear()
         ntkGeneratedNotFoundPages.clear()
+        ntkGeneratedHardBlockedPages.clear()
     }
 
     @JvmStatic
@@ -2958,6 +2962,9 @@ object ReaderImageCache {
             )
         }
         val initialTarget = ntkGeneratedTarget(image)
+        if (initialTarget != null && hasNtkGeneratedHardBlocked(manga, image)) {
+            throw IOException("Generated image Cloudflare hard block: page=${initialTarget.page} code=403")
+        }
         if (initialTarget != null && hasNtkGeneratedNotFound(manga, image)) {
             throw IOException("Generated image not found: page=${initialTarget.page} code=404")
         }
@@ -5826,9 +5833,39 @@ object ReaderImageCache {
     private fun rememberNtkGeneratedHardBlocked(manga: Manga, image: String, source: String) {
         val target = ntkGeneratedTarget(image) ?: return
         val key = ntkGeneratedImageStateKey(image, target)
-        if (ntkGeneratedNotFoundPages.add(key)) {
+        val challengeImage = ntkCurrentEpisodeChallengeImage(manga, image, target)
+        try {
+            if (challengeImage != null) {
+                getHttpClient().markCloudflareChallenge(challengeImage)
+                Log.d(
+                    TAG,
+                    "ntk_generated_hardblock_challenge image=${challengeImage.substringAfterLast('/').takeLast(64)}," +
+                        "source=$source,original=${image.substringAfterLast('/').takeLast(64)}"
+                )
+            }
+        } catch (t: Throwable) {
+            rethrowIfFatal(t)
+        }
+        if (ntkGeneratedHardBlockedPages.add(key)) {
             Log.d(TAG, "ntk_generated_hardblock key=$key,source=$source,image=${image.substringAfterLast('/').takeLast(64)}")
         }
+    }
+
+    private fun ntkCurrentEpisodeChallengeImage(
+        manga: Manga,
+        image: String,
+        target: NtkGeneratedTarget
+    ): String? {
+        val page = target.page
+        val path = manga.ntkEpisodePath
+        val cached = cachedNtkApiFallbackImages(path)
+            .firstOrNull { candidate -> ntkGeneratedTarget(candidate)?.page == page }
+        if (!cached.isNullOrBlank()) return cached
+        val early = earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L)
+            .firstOrNull { candidate -> ntkGeneratedTarget(candidate)?.page == page }
+        if (!early.isNullOrBlank()) return early
+        if (ntkGeneratedTargetMatchesMangaEpisode(manga, target)) return image
+        return canonicalNtkGeneratedImageForActiveEpisode(manga, image)
     }
 
     private fun isPermanentGeneratedMissingCode(code: Int): Boolean {
@@ -5838,6 +5875,11 @@ object ReaderImageCache {
     private fun hasNtkGeneratedNotFound(manga: Manga, image: String): Boolean {
         val target = ntkGeneratedTarget(image) ?: return false
         return ntkGeneratedNotFoundPages.contains(ntkGeneratedImageStateKey(image, target))
+    }
+
+    private fun hasNtkGeneratedHardBlocked(manga: Manga, image: String): Boolean {
+        val target = ntkGeneratedTarget(image) ?: return false
+        return ntkGeneratedHardBlockedPages.contains(ntkGeneratedImageStateKey(image, target))
     }
 
     fun isKnownNtkGeneratedNotFound(manga: Manga, image: String): Boolean {

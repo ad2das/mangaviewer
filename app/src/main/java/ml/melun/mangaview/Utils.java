@@ -1466,7 +1466,9 @@ public class Utils {
 
     private static boolean openRecentNtkCloudflareChallenge(Context context, int code, Fragment fragment) {
         String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
-        if(challengedUrl == null || challengedUrl.length() == 0 || !getHttpClient().isNtkUrl(challengedUrl))
+        if(challengedUrl == null || challengedUrl.length() == 0)
+            return false;
+        if(!getHttpClient().isNtkUrl(challengedUrl) && !isSafeNtkPageImageUrl(challengedUrl))
             return false;
         if(!getHttpClient().hasRecentCloudflareChallenge())
             return false;
@@ -1646,9 +1648,12 @@ public class Utils {
 
     private static String captchaUrl(String url) {
         if(getHttpClient().isNtk()) {
+            String challengedUrl = recentNtkCaptchaChallengeUrl(url);
+            if(isSafeNtkPageImageUrl(challengedUrl))
+                return challengedUrl;
             if(url != null && url.length() > 0) {
                 if(url.startsWith("http://") || url.startsWith("https://")) {
-                    if(getHttpClient().isNtkUrl(url) && !isNtkApiUrl(url))
+                    if((getHttpClient().isNtkUrl(url) || isSafeNtkPageImageUrl(url)) && !isNtkApiUrl(url))
                         return url;
                     return ntkCaptchaLandingUrl();
                 }
@@ -1656,10 +1661,7 @@ public class Utils {
                     return getHttpClient().getUrl(url) + url;
                 return getHttpClient().getUrl() + "/" + url;
             }
-            String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
-            if(challengedUrl != null && challengedUrl.length() > 0
-                    && getHttpClient().isNtkUrl(challengedUrl)
-                    && !isNtkApiUrl(challengedUrl))
+            if(challengedUrl != null)
                 return challengedUrl;
             return ntkCaptchaLandingUrl();
         }
@@ -1671,6 +1673,72 @@ public class Utils {
             return getHttpClient().getUrl() + "/" + url;
         }
         return null;
+    }
+
+    private static String recentNtkCaptchaChallengeUrl(String preferredUrl) {
+        if(!getHttpClient().hasRecentCloudflareChallenge())
+            return null;
+        String challengedUrl = getHttpClient().getLastCloudflareChallengeUrl();
+        if(challengedUrl == null || challengedUrl.length() == 0)
+            return null;
+        if(!getHttpClient().isNtkUrl(challengedUrl) && !isSafeNtkPageImageUrl(challengedUrl))
+            return null;
+        if(isNtkApiUrl(challengedUrl))
+            return null;
+        if(isSafeNtkPageImageUrl(challengedUrl) && !sameNtkEpisodeScope(challengedUrl, preferredUrl))
+            return null;
+        return challengedUrl;
+    }
+
+    private static boolean sameNtkEpisodeScope(String challengedUrl, String preferredUrl) {
+        String preferredEpisode = ntkEpisodeScope(preferredUrl);
+        if(preferredEpisode == null)
+            return true;
+        String challengedEpisode = ntkEpisodeScope(challengedUrl);
+        return challengedEpisode == null || preferredEpisode.equals(challengedEpisode);
+    }
+
+    private static String ntkEpisodeScope(String url) {
+        if(url == null || url.length() == 0)
+            return null;
+        try {
+            Uri uri = Uri.parse(url);
+            String path = uri.getPath();
+            if(path == null || path.length() == 0)
+                return null;
+            String[] parts = path.split("/");
+            ArrayList<String> segments = new ArrayList<>();
+            for(String part : parts) {
+                if(part != null && part.length() > 0)
+                    segments.add(part.toLowerCase(Locale.ROOT));
+            }
+            for(int i = 0; i + 2 < segments.size(); i++) {
+                String first = segments.get(i);
+                if(("webtoon".equals(first) || "manhwa".equals(first))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 1))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 2)))
+                    return "/" + first + "/" + segments.get(i + 1) + "/" + segments.get(i + 2);
+                if(("black".equals(first) || "blacktoon".equals(first) || "wt".equals(first))
+                        && i + 3 < segments.size()
+                        && "episodes".equals(segments.get(i + 1))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 2))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 3)))
+                    return "/webtoon/" + segments.get(i + 2) + "/" + segments.get(i + 3);
+            }
+        } catch(Exception ignored) {
+        }
+        return null;
+    }
+
+    private static boolean isSafeNtkEpisodeSegment(String segment) {
+        if(segment == null || segment.length() == 0)
+            return false;
+        for(int i = 0; i < segment.length(); i++) {
+            char c = segment.charAt(i);
+            if(!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
+                return false;
+        }
+        return true;
     }
 
     private static String ntkCaptchaLandingUrl() {

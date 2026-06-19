@@ -226,6 +226,7 @@ class ReaderSession(
     private val visibleGeneratedDecodeHedges = ConcurrentHashMap.newKeySet<Int>()
     private val idleFullWidthUpgradeScheduled = ConcurrentHashMap.newKeySet<Int>()
     private val failedPages = ConcurrentHashMap.newKeySet<Int>()
+    private val ntkImageCaptchaLastPostedAt = AtomicLong(0L)
     private val transientGeneratedRetries = ConcurrentHashMap<Int, Int>()
     private val decodedWidths = ConcurrentHashMap<Int, Int>()
     private val desiredWidths = ConcurrentHashMap<Int, Int>()
@@ -5386,6 +5387,7 @@ class ReaderSession(
     }
 
     private fun postPageError(index: Int, page: PageRef, e: Exception) {
+        if (postNtkImageCloudflareCaptcha(index, page, e)) return
         if (trimNtkGeneratedTail(index, page, e)) return
         if (refreshNtkGeneratedPageImage(index, page, e)) return
         if (removeInvalidNtkGeneratedPage(index, page, e)) return
@@ -5665,6 +5667,21 @@ class ReaderSession(
         return false
     }
 
+    private fun isNtkImageCloudflareHardBlockError(e: Exception): Boolean {
+        var current: Throwable? = e
+        while (current != null) {
+            val message = current.message.orEmpty()
+            if (message.contains("Image request failed: 403") ||
+                message.contains(" code=403") ||
+                message.contains("cloudflare-html-403", ignoreCase = true)
+            ) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
+
     private fun isTransientNtkGeneratedImageError(e: Exception): Boolean {
         var current: Throwable? = e
         while (current != null) {
@@ -5747,6 +5764,27 @@ class ReaderSession(
         return candidates.firstOrNull { candidate ->
             !isNtkGeneratedImageUrl(candidate) && ntkImagePageNumber(candidate) == page
         }
+    }
+
+    private fun postNtkImageCloudflareCaptcha(index: Int, page: PageRef, e: Exception): Boolean {
+        if (!isNtkSource(page.manga, title)) return false
+        val image = page.image ?: return false
+        if (!isNtkGeneratedImageUrl(image)) return false
+        if (!isNtkImageCloudflareHardBlockError(e)) return false
+        val client = MainApplication.getHttpClient()
+        if (!client.hasRecentCloudflareChallenge()) return false
+        val now = SystemClock.elapsedRealtime()
+        val previous = ntkImageCaptchaLastPostedAt.get()
+        if (now - previous < 15_000L) return true
+        if (!ntkImageCaptchaLastPostedAt.compareAndSet(previous, now)) return true
+        Log.d(
+            TAG,
+            "reader_ntk_image_cloudflare_captcha index=$index,source=${page.sourceIndex}," +
+                "path=${page.manga.ntkEpisodePath},image=${image.substringAfterLast('/').takeLast(80)}," +
+                "challenge=${client.getLastCloudflareChallengeUrl()},error=${e.message}"
+        )
+        postCaptchaRequired(page.manga)
+        return true
     }
 
     private fun ntkReplacementImageUrlForPage(target: Manga, currentImage: String, page: Int): String? {
@@ -8246,7 +8284,7 @@ class ReaderSession(
         private val NTK_GENERATED_PAGE_URL = Regex("/p(\\d{3})\\.(jpg|jpeg|png|webp)(?:[?#].*)?$")
         private val NTK_EPISODE_PATH = Regex("^/(manhwa|webtoon)/(\\d+)/([^/?#]+)$", RegexOption.IGNORE_CASE)
         private val NTK_GENERATED_IMAGE_URL = Regex(
-            "^(https?://[^/]+/(?:blacktoon/episodes/\\d+/[^/?#]+|(?:manhwa|webtoon)/\\d+/[^/?#]+|wt/episodes/[^/?#]+/[^/?#]+)/)p\\d{3}\\.(jpg|jpeg|png|webp)([?#].*)?$",
+            "^(https?://[^/]+/(?:black(?:toon)?/episodes/\\d+/[^/?#]+|(?:manhwa|webtoon)/\\d+/[^/?#]+|wt/episodes/[^/?#]+/[^/?#]+)/)p\\d{3}\\.(jpg|jpeg|png|webp)([?#].*)?$",
             RegexOption.IGNORE_CASE
         )
 

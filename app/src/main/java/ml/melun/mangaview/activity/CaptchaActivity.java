@@ -3246,17 +3246,23 @@ public class CaptchaActivity extends AppCompatActivity {
         if(now - lastInvalidClearanceReloadAt < 5000L)
             return;
         lastInvalidClearanceReloadAt = now;
-        webView.loadUrl(ntkCaptchaLoadUrl(getHttpClient().getLastCloudflareChallengeUrl(), purl));
+        webView.loadUrl(ntkCaptchaLoadUrl(captchaLoadUrl, purl));
     }
 
     private String ntkCaptchaLoadUrl(String challengeUrl, String purl) {
-        if(challengeUrl != null && challengeUrl.length() > 0
-                && !isNtkApiUrl(challengeUrl)) {
-            if(challengeUrl.startsWith("/"))
-                return getHttpClient().getUrl(challengeUrl) + challengeUrl;
-            if(getHttpClient().isNtkUrl(challengeUrl))
-                return challengeUrl;
-        }
+        String recentChallengeUrl = getHttpClient().getLastCloudflareChallengeUrl();
+        if(isSafeNtkPageImageUrl(recentChallengeUrl)
+                && !isNtkApiUrl(recentChallengeUrl)
+                && sameNtkEpisodeScope(recentChallengeUrl, challengeUrl))
+            return recentChallengeUrl;
+        if(isSafeNtkPageImageUrl(challengeUrl) && !isNtkApiUrl(challengeUrl))
+            return challengeUrl;
+        String allowedChallengeUrl = allowedNtkCaptchaUrl(challengeUrl);
+        if(allowedChallengeUrl != null)
+            return allowedChallengeUrl;
+        allowedChallengeUrl = allowedNtkCaptchaUrl(recentChallengeUrl);
+        if(allowedChallengeUrl != null)
+            return allowedChallengeUrl;
         if(purl != null && purl.length() > 0
                 && getHttpClient().isNtkUrl(purl)
                 && !isNtkApiUrl(purl))
@@ -3272,6 +3278,16 @@ public class CaptchaActivity extends AppCompatActivity {
         if(root != null && root.endsWith("/manhwa"))
             root = root.substring(0, root.length() - 7);
         return root;
+    }
+
+    private String allowedNtkCaptchaUrl(String url) {
+        if(url == null || url.length() == 0 || isNtkApiUrl(url))
+            return null;
+        if(url.startsWith("/"))
+            return getHttpClient().getUrl(url) + url;
+        if(getHttpClient().isNtkUrl(url))
+            return url;
+        return null;
     }
 
     private boolean isNtkApiUrl(String url) {
@@ -3319,6 +3335,8 @@ public class CaptchaActivity extends AppCompatActivity {
             if(host.startsWith("ntk") || host.startsWith("sbxh") || host.startsWith("toonflix")
                     || host.endsWith(".toonflix.app"))
                 return true;
+            if(isSafeNtkPageImagePath(uri.getPath()))
+                return true;
             if("challenges.cloudflare.com".equals(host) || host.endsWith(".challenges.cloudflare.com"))
                 return true;
             String path = uri.getPath();
@@ -3328,6 +3346,93 @@ public class CaptchaActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static boolean isSafeNtkPageImageUrl(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        try {
+            URI uri = URI.create(url);
+            return isSafeNtkPageImagePath(uri.getPath());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean sameNtkEpisodeScope(String challengedUrl, String preferredUrl) {
+        String preferredEpisode = ntkEpisodeScope(preferredUrl);
+        if(preferredEpisode == null)
+            return true;
+        String challengedEpisode = ntkEpisodeScope(challengedUrl);
+        return challengedEpisode == null || preferredEpisode.equals(challengedEpisode);
+    }
+
+    private static String ntkEpisodeScope(String url) {
+        if(url == null || url.length() == 0)
+            return null;
+        try {
+            android.net.Uri uri = android.net.Uri.parse(url);
+            String path = uri.getPath();
+            if(path == null || path.length() == 0)
+                return null;
+            String[] parts = path.split("/");
+            java.util.ArrayList<String> segments = new java.util.ArrayList<>();
+            for(String part : parts) {
+                if(part != null && part.length() > 0)
+                    segments.add(part.toLowerCase(java.util.Locale.ROOT));
+            }
+            for(int i = 0; i + 2 < segments.size(); i++) {
+                String first = segments.get(i);
+                if(("webtoon".equals(first) || "manhwa".equals(first))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 1))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 2)))
+                    return "/" + first + "/" + segments.get(i + 1) + "/" + segments.get(i + 2);
+                if(("black".equals(first) || "blacktoon".equals(first) || "wt".equals(first))
+                        && i + 3 < segments.size()
+                        && "episodes".equals(segments.get(i + 1))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 2))
+                        && isSafeNtkEpisodeSegment(segments.get(i + 3)))
+                    return "/webtoon/" + segments.get(i + 2) + "/" + segments.get(i + 3);
+            }
+        } catch(Exception ignored) {
+        }
+        return null;
+    }
+
+    private static boolean isSafeNtkEpisodeSegment(String segment) {
+        if(segment == null || segment.length() == 0)
+            return false;
+        for(int i = 0; i < segment.length(); i++) {
+            char c = segment.charAt(i);
+            if(!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
+                return false;
+        }
+        return true;
+    }
+
+    private static boolean isSafeNtkPageImagePath(String path) {
+        if(path == null || path.length() == 0)
+            return false;
+        String lower = path.toLowerCase(java.util.Locale.ROOT);
+        if(lower.startsWith("/api/")
+                || lower.startsWith("/cdn-cgi/")
+                || lower.contains("/challenge")
+                || lower.contains("/turnstile")
+                || lower.contains("/cloudflare")
+                || lower.contains("/verification")
+                || lower.contains("/captcha")
+                || lower.contains("/banner")
+                || lower.contains("/advert")
+                || lower.contains("/sponsor")
+                || lower.contains("/popup")
+                || lower.contains("/ads/")
+                || lower.contains("/ad/"))
+            return false;
+        return lower.contains("/blacktoon/episodes/")
+                || lower.contains("/black/episodes/")
+                || lower.contains("/manhwa/")
+                || lower.contains("/webtoon/")
+                || lower.contains("/wt/episodes/");
     }
 
     static boolean shouldSuppressNtkLoadErrorPopupForTest(boolean ntkSite, String requestUrl, String captchaUrl) {

@@ -30779,3 +30779,62 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Current conclusion:
   - ACK is currently proven successful in the actual UX flow.
   - The remaining hard blocker is image CDN Cloudflare clearance/browser-context acquisition for direct page-image hosts, not `/api/ad/ack`.
+
+## 2026-06-20 17:25 +09:00 Image CDN challenge routing follow-up
+
+- Main branch state:
+  - `60d9e6871 Preserve NTK image CDN hosts` is on `main` and pushed to `origin/main`.
+  - GitHub Actions `Release APK` for `60d9e6871` completed successfully.
+- New local fixes after `60d9e6871`:
+  - `ReaderImageCache` now calls `markCloudflareChallenge(image)` when generated/direct page-image fetch returns Cloudflare HTML 403.
+  - `Utils.captchaUrl()` and recent-challenge routing now allow safe NTK page-image CDN URLs, not only NTK site-root URLs.
+  - `ReaderSession` now promotes generated image Cloudflare 403 to `postCaptchaRequired()` instead of surfacing a generic page error.
+  - `ReaderSession` generated URL recognition now includes `/black/episodes/...` as well as `/blacktoon/episodes/...`.
+  - Generated image hard-block state is now separate from generated not-found state.
+- Validation so far:
+  - `.\gradlew.bat --no-daemon :app:compileDebugJavaWithJavac :app:compileDebugKotlin` passed before the latest `captchaUrl()` priority change.
+  - Actual UX artifact `build\ntk-actual-ux-suite\20260620_071019` confirmed hard-block state is preserved as `Generated image Cloudflare hard block: page=X code=403` instead of being converted to not-found.
+  - Actual UX artifact `build\ntk-actual-ux-suite\20260620_071211` logged exactly one `reader_ntk_image_cloudflare_captcha`, proving ReaderSession promotion now fires.
+- Remaining issue found in `20260620_071211`:
+  - Despite the image hard-block challenge being `https://nvophcw.com/black/episodes/.../pNNN.jpg`, `CaptchaActivity` kept polling/loading only `https://sbxh8.com`, `/manhwa`, and `/webtoon/16968/1463195`.
+  - Root cause: `ReaderV2Activity.onCaptchaRequired()` passes `Manga.safeUrl(manga)` into `Utils.showCaptchaPopup()`.
+  - `Utils.captchaUrl(url)` previously trusted the explicit episode URL before checking the recent image-CDN challenge, so the visible captcha/browser context never targeted the blocked image CDN host.
+  - Latest local fix: if the recent NTK Cloudflare challenge is a safe page-image URL, `captchaUrl()` now prefers that challenged URL over the supplied episode URL.
+- Bad approach / do not repeat:
+  - Do not reuse generated not-found state for Cloudflare hard-blocks. It masks 403 as `Generated image not found code=404` and prevents captcha recovery from seeing the real block.
+  - Do not only patch `ReaderImageCache`; `ReaderSession` has its own generated-image URL regex and must stay in sync with safe NTK page-image path variants.
+  - Do not keep opening captcha against the episode URL after a page-image CDN host has become the latest Cloudflare challenge.
+
+## 2026-06-20 07:37 UTC / 16:37 +09:00 Main branch CDN captcha scope guard
+
+- User correction:
+  - Work must be committed and pushed on `main`, not left on `codex/ntk-strict-ack-proof`.
+  - Confirmed `C:\Users\Administrator\Downloads\mangaviewer-main-sync` is on `main` at `60d9e6871 Preserve NTK image CDN hosts`.
+- Local fix prepared on `main`:
+  - `Utils.captchaUrl()` now compares safe page-image challenge URLs against the preferred/current NTK episode scope before using them.
+  - `CaptchaActivity.ntkCaptchaLoadUrl()` applies the same episode-scope check before preferring the global recent Cloudflare challenge URL.
+  - `CaptchaActivity` reload now uses the current `captchaLoadUrl` as its preferred scope instead of blindly reloading the global last challenge.
+  - Scope mapping treats `/black/episodes/<work>/<episode>/...`, `/blacktoon/episodes/<work>/<episode>/...`, and `/wt/episodes/<work>/<episode>/...` as `/webtoon/<work>/<episode>`.
+- Validation:
+  - Build passed:
+    - `.\gradlew.bat --no-daemon :app:compileDebugJavaWithJavac :app:compileDebugKotlin`.
+  - Actual UX artifact:
+    - `build\ntk-actual-ux-suite\20260620_073704`.
+  - ACK proof still succeeds:
+    - `bridge-ack-200`, `strictAdAck=true`.
+    - `guard-fetch-ack-200`, `strictAdAck=true`.
+  - Captcha route improved:
+    - `resolve NTK captcha path=https://sbxh8.com/webtoon/16968/1463195 ... resolved=https://sbxh8.com/webtoon/16968/1463195`.
+    - This replaces the previous bad route to stale `moamoabon.com/blacktoon/episodes/16968/525919/p002.*`.
+  - First drawable was eventually recorded:
+    - `reader_open_to_first_drawable ... ms=35659`.
+    - Coverage line had `missingPx=0`, `placeholderPx=0`, but it was too slow and the suite timed out because later page-image fetches still hard-blocked.
+- Remaining issue:
+  - Generated image refresh still creates stale `16968/525919` page-image candidates for current path `/webtoon/16968/1463195`.
+  - Example:
+    - `refresh_generated_page_image ... path=/webtoon/16968/1463195,from=https://aws-cdn1.site/webtoon/16968/525919/p002.jpg,to=https://moamoabon.com/blacktoon/episodes/16968/525919/p002.jpeg`.
+  - This means captcha routing is no longer the only blocker; the generated URL source/metadata must be scoped to the current episode or API-confirmed image episode before use.
+- Bad approach / do not repeat:
+  - Do not trust a global recent image challenge without comparing it to the current episode scope.
+  - Do not treat eventual first drawable as success when it takes ~35s and later pages still hit Cloudflare HTML 403.
+  - Do not keep chasing ACK here: current actual UX proves strict ACK 200. The remaining blocker is stale generated image identity and CDN clearance.
