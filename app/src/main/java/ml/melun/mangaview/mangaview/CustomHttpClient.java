@@ -9184,8 +9184,6 @@ public class CustomHttpClient {
         if(isModernNtkGuardRoot(baseUrl)) {
             String ackPath = ntkNativeAckScopePath(path);
             return hasNtkWebViewAckPreflightReady(baseUrl, ackPath)
-                    || hasNtkAdAckCookieForPath(ackPath)
-                    || NtkWebViewFallbackManager.hasRecentServerAckSuccess(ackPath)
                     || NtkWebViewFallbackManager.hasRecentStrictAdAckSuccess(ackPath);
         }
         return hasNtkAdAckCookieForPath(path);

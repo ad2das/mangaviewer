@@ -30505,3 +30505,66 @@ tk_rsc_payload_cloudflare_clearance_reset.
     - It does not regress real UX strict ACK proof on the same target.
   - This does not claim image CDN/content URL stability is finished.
 
+## 2026-06-20 05:49 +09:00 Reader/random path still treated loose ACK as image API-ready
+
+- Repro command:
+  - `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -Runs 1 -ScrollSteps 8 -AppendSteps 0 -ScreenshotEvery 0 -Seed 1781899451129 -Mode native-ack -ScrollInputMode programmatic -ScrollPattern mixed -HoldAfterFirstDrawableMs 0 -TargetEpisodePath /webtoon/840347/1549957 -TargetImageEpisodeId 1549957 -TargetImageWorkId 18535 -NtkSiteRoot "https://sbxh8.com" -NtkLockSiteRoot -StrictFresh -NoAppendProbe -RequireLiveRandom -ForceStopBeforeRun`
+- Artifact:
+  - `build\ntk-random-perf\20260620_052759`.
+- Result:
+  - First drawable still failed before image availability:
+    - `ntk_true_random_first_drawable ... ready=false ... ms=6889 ... maxMs=3500`.
+  - ACK-only fetch stage ran but strict proof was not ready before the test assertion:
+    - `ntk_webview_ack_preflight_stage ... stage=ack_only_fetch,ms=5340,totalMs=5344,done=true,earlyStrictProof=false`.
+    - `ntk_webview_ack_preflight_strict_late_wait ... ms=5374`.
+  - The reader path called `/api/webtoon-images` too early:
+    - `ntk_images_api_native_ack ... success=true,ms=0`.
+    - This was caused by loose `ad_ack`/non-strict server success being treated as image API-ready on a modern guard root.
+    - The API then returned plain `403 Forbidden` before strict proof.
+- Fix direction:
+  - For modern guard roots, image API ACK readiness must require strict server proof only.
+  - Loose `ad_ack` / non-strict challenge cookie success can prove the challenge flow is alive, but must not unlock content image API calls.
+- Code change:
+  - `CustomHttpClient.hasNtkViewerImagesAckReady` now uses the same strict proof gate as `hasStrictNtkViewerImagesAckReady` on modern guard roots.
+- Bad approaches / do not repeat:
+  - Do not use `ad_ack` cookie presence alone as content image API readiness for modern NTK guard roots.
+  - Do not classify plain `403 Forbidden` from `/api/webtoon-images` as final hard block when it was reached before strict ACK proof.
+
+## 2026-06-20 05:39-05:55 +09:00 ACK-only reader path moved away from synthetic shell
+
+- Additional reader repros:
+  - `build\ntk-random-perf\20260620_052946` after strict image-API ACK gating.
+  - `build\ntk-random-perf\20260620_053153` after ACK-only real-frame load.
+  - `build\ntk-random-perf\20260620_053321` after isolating `document.cookie` SecurityError.
+- Results:
+  - First drawable still fails on the target because strict ACK/content images are not ready before the 3.5s first-drawable budget.
+  - Observed first drawable failure time improved across these runs:
+    - `6889ms` before strict-gating.
+    - `6026ms` after strict-gating.
+    - `5926ms` after ACK-only real-frame load.
+    - `5319ms` after cookie exception isolation.
+  - The bad early path was fixed:
+    - Before: `ntk_images_api_native_ack ... success=true,ms=0` from loose cookie/non-strict server success, then `/api/webtoon-images` plain `403 Forbidden`.
+    - After: `ntk_images_api_native_ack_skip_modern_guard`, `success=false`, `ntk_images_api_skip_unacked`, so content API is no longer unlocked by loose ACK.
+  - ACK-only hidden WebView now starts with the real episode URL:
+    - `ntk_ack_only_real_frame_load path=/webtoon/840347/1549957,url=https://sbxh8.com/webtoon/840347/1549957,plainCf=true`.
+  - A new actual-page eval issue was found and fixed:
+    - `document.cookie` can throw `SecurityError` in transient actual-frame states.
+    - The ACK-only context probe now isolates cookie reads so one cookie exception does not abort the whole eval.
+- Actual UX regression check:
+  - Command:
+    - `.\tools\ntk_actual_ux_suite.ps1 -DeviceSerial emulator-5554 -Tests "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" -TimeoutMs 180000 -SkipBuild -SkipInstall`
+  - Artifact: `build\ntk-actual-ux-suite\20260620_053400`.
+  - Result: exit `125` due known image CDN hard-block, but ACK proof succeeded:
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"8e646109db4304e4","source":"guard-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=guard-fetch-ack-200,strictAdAck=true`.
+  - Remaining failure:
+    - `reader_image_cache_event ... image=p001.jpg ... code=403 ... block=cloudflare-html-403`.
+- Commit decision:
+  - The current changes are a bounded ACK stability improvement, not final image stability:
+    - modern guard image API requires strict ACK proof;
+    - ACK-only reader WebView uses real episode frame instead of synthetic shell;
+    - ACK-only eval survives cookie access SecurityError;
+    - actual UX strict ACK still succeeds after the change.
+
