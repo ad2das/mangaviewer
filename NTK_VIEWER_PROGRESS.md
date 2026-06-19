@@ -30395,3 +30395,113 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Bad approaches / do not repeat:
   - Do not treat a home continue timeout from raw coordinate/icon-parent tap as app ACK/image evidence unless click progress logs confirm the click listener fired.
 
+## 2026-06-20 05:22 +09:00 `/webtoon/840347/1549957` narrows to strict ACK timing plus image API 403
+
+- Continued on `main` worktree: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+- Post-push root probe:
+  - Artifact: `build\ntk-root-probe\20260620_050317_a29de8`.
+  - Verdict: `live-api-root-available`.
+  - Live API JSON roots: `https://newtoki1.org`, `https://sbxh8.com`.
+  - `https://sbxh7.com` currently behaves as an address-guide / redirect surface, not the active API JSON root. Do not switch default/root to `sbxh7` without a fresh root probe proving it.
+- Repro target:
+  - Path: `/webtoon/840347/1549957`.
+  - Title/episode: `악신소년 14화`.
+  - Seed: `1781899451129`.
+  - Useful repro command is recorded in each `summary.json`, e.g. `build\ntk-random-perf\20260620_052119\summary.json`.
+- Findings before code changes:
+  - `newtoki1.org` target repro artifact: `build\ntk-random-perf\20260620_050411`.
+  - `sbxh8.com` target repro artifact: `build\ntk-random-perf\20260620_050504`.
+  - RSC payload is fast and usable on `sbxh8.com`:
+    - `ntk_rsc_payload ... code=200,bytes=44836,usable=true,ms=530`.
+    - `ntk_tokenized_viewer_payload_cached ... serverAck=true`.
+    - `imageMetas` show page count `250`.
+  - Generated CDN guesses still fail:
+    - `moamoabon.com/.../p001.*` returns `403` Cloudflare HTML.
+    - `i.toonflix.app/.../p001.*` returns `403/520`.
+  - `/api/m/i` responses are metric/observation GIFs, usually tiny `42` byte `image/gif`; they are not content image bytes.
+  - `/api/webtoon-images` is the real path for content URLs, but native key registration initially failed:
+    - `ntk_images_api_native_key_register_error ... Value Forbidden of type java.lang.String cannot be converted to JSONObject`.
+    - API calls remained unsigned and got `403 Forbidden`.
+- Code changes tried in this loop:
+  - `CustomHttpClient.ensureNtkViewerBrowserKey` now mirrors WebView bridge headers and identity payload:
+    - Adds `accept`, `origin`, `referer`, `user-agent`, `sec-fetch-*`, `priority`.
+    - Adds `eventId` when present.
+    - Uses `ad_ack_c/ad_ack` identity or generated `ntk_fp` if no `ntk_fp` exists.
+    - Logs non-JSON response body prefixes instead of losing the status as a JSON exception.
+  - Result: native key registration improved from `Forbidden` to `200 ok=true`.
+    - Artifact: `build\ntk-random-perf\20260620_050943`.
+    - Log: `ntk_images_api_native_key_register ... code=200,error=null,ok=true`.
+  - Added `requestKeyId` into the image API body before signing for both native-generated keys and recent WebView keys.
+  - Added token-id normalization in image API payload and low-S normalization for native P1363 signatures.
+  - Started WebView image race even when ACK preflight is already in flight.
+  - Tried ACK-only origin recovery for `about:blank` hidden WebView evaluation, then reverted it because it made the repro slower without producing content URLs.
+- Current measured outcome:
+  - Compile checks passed after each code change:
+    - `.\gradlew.bat --no-daemon :app:compileDebugJavaWithJavac`.
+  - Native key registration is now fixed for this repro, but `/api/webtoon-images` still returns `403 Forbidden` before strict ACK proof:
+    - `build\ntk-random-perf\20260620_051852`: `ntk_images_api_webview_race_start ... ackInFlight=true`; native key `200`; signed API still `403`.
+  - Strict ACK proof does not land before the first drawable assertion in this repro:
+    - `build\ntk-random-perf\20260620_051852`: `ntk_webview_ack_preflight_stage ... ack_only_fetch=3691/3702`, then `ntk_webview_ack_preflight_strict_late_wait`; no `ntk_ack_proof` before first drawable failure.
+  - ACK-only hidden WebView origin recovery experiment no longer consistently stayed `about:blank`, but it did not make the target pass:
+    - `build\ntk-random-perf\20260620_052119`: context shows `href=https://sbxh8.com/webtoon/840347/1549957`, bridge/cookies ready, but image discovery returns no content URLs before the assertion.
+    - This code path was reverted after the measurement.
+- Bad approaches / do not repeat:
+  - Do not treat `/api/m/i` 42-byte GIF hits as content image success.
+  - Do not keep switching roots to `sbxh7` based on visual/site-address impressions; current probe says `sbxh8` and `newtoki1` are the live API roots.
+  - Do not assume key registration 200 is enough. The content API can still 403 until strict ACK proof is actually accepted.
+  - `requestKeyId`, token-id normalization, and low-S normalization are protocol parity improvements, but they did not solve this repro alone.
+  - ACK-only origin recovery improved the context evidence but made first drawable slower in `20260620_052119`; it was reverted and should not be retried in the same form.
+- Next direction:
+  - Prioritize strict ACK proof timing and success for this repro before chasing generated CDN guesses.
+  - Once strict ACK is proven earlier, rerun `/api/webtoon-images` and only then judge signed API behavior.
+  - If keeping ACK-only origin recovery, make sure it does not create extra duplicate evals or slow the first drawable path.
+
+## 2026-06-20 05:35 +09:00 Real UX ACK succeeds, but reader first-drawable path times out first
+
+- ACK-specific probe:
+  - Command:
+    - `.\tools\ntk_ack_ux_probe.ps1 -DeviceSerial emulator-5554 -TargetEpisodePath /webtoon/840347/1549957 -NtkSiteRoot "https://sbxh8.com" -SkipBuild -SkipInstall`
+  - Artifact: `build\ntk-ack-ux-probe\20260620_052339_4d103b`.
+  - Script exit was `124` because the probe stopped after its completion marker; this is not an app crash.
+- Result:
+  - Full/real captcha UX environment can issue ACK for this target.
+  - `ntk_webview_ack_preflight_done path=/webtoon/840347/1549957,success=true,ms=14752`.
+  - Strict server ACK proof:
+    - `ntk_server_ack_success_recorded path=/webtoon/840347/1549957,source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_server_ack_success_recorded path=/webtoon/840347/1549957,source=guard-fetch-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof={"scope":"/webtoon/840347/1549957","tp":"1768a035bb8075a7","source":"guard-fetch-ack-200"}`.
+  - Probe completion:
+    - `ntk_captcha_ack_probe_done ... ack=true,...strictProof=true,...ms=19789,... normal=true ...`.
+- Interpretation:
+  - ACK is not impossible or permanently broken for `/webtoon/840347/1549957`; it succeeds in a real UX/captcha WebView path.
+  - The failure in `ntk_random_perf` is timing/flow separation: first drawable assertions fail at roughly 3.5-6s while the real ACK path needs roughly 14.8s preflight / 19.8s total on this target.
+  - `/api/webtoon-images` 403 before strict ACK proof should not be diagnosed as pure signature failure yet.
+- Bad approaches / do not repeat:
+  - Do not claim ACK is impossible from hidden/reader fast-path failure alone; real UX proof shows it can succeed.
+  - Do not judge `/api/webtoon-images` signing until the same scope has strict ACK proof first.
+  - Do not solve this by delaying viewer open. If speed is relaxed, the acceptable path is to make ACK state handoff and proof recording reliable, then allow image URL discovery to run with a valid proof.
+- Next direction:
+  - Compare `ntk_ack_ux_probe` / real captcha flow with the reader/random fast path and move the reliable ACK handoff earlier into the reader path.
+  - Validate that the current native key registration hardening does not regress actual UX ACK, then commit it as a bounded main-branch improvement if stable.
+
+## 2026-06-20 05:41 +09:00 ACK regression check after native key hardening
+
+- Validation command:
+  - `.\tools\ntk_ack_ux_probe.ps1 -DeviceSerial emulator-5554 -TargetEpisodePath /webtoon/840347/1549957 -NtkSiteRoot "https://sbxh8.com" -SkipBuild -SkipInstall`
+- Artifact:
+  - `build\ntk-ack-ux-probe\20260620_052607_dd969b`.
+- Result:
+  - Probe stopped after completion marker, no crash/ANR/instrumentation timeout.
+  - `ntk_webview_ack_preflight_done path=/webtoon/840347/1549957,success=true,ms=8607`.
+  - Strict proof:
+    - `ntk_server_ack_success_recorded ... source=bridge-ack-200,strictAdAck=true`.
+    - `ntk_server_ack_success_recorded ... source=guard-fetch-ack-200,strictAdAck=true`.
+    - `ntk_ack_proof={"scope":"/webtoon/840347/1549957","tp":"9ced25ba4005fa2c","source":"guard-fetch-ack-200"}`.
+  - Completion marker:
+    - `ntk_captcha_ack_probe_done ... ack=true,...strictProof=true,...ms=14513,... normal=true ...`.
+- Commit decision:
+  - `CustomHttpClient` native browser key registration hardening is validated enough for a bounded main-branch commit:
+    - It changed native `/api/client-key/register` from plain `Forbidden` to `200 ok=true` in the repro loop.
+    - It does not regress real UX strict ACK proof on the same target.
+  - This does not claim image CDN/content URL stability is finished.
+

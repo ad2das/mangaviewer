@@ -7976,7 +7976,7 @@ public class CustomHttpClient {
                     return urls;
             }
 
-            if(context != null && !webViewAckInFlight) {
+            if(context != null) {
                 webViewRace = new FutureTask<>(() -> NtkWebViewFallbackManager.get(context)
                         .fetchViewerImageUrls(agent, baseUrl, path, cookiePath, headers, kind,
                                 workId, episodeId, imagesToken, getCookieHeaderForNtkPath(cookiePath),
@@ -7985,9 +7985,8 @@ public class CustomHttpClient {
                 webViewRaceThread.setDaemon(true);
                 webViewRaceThread.start();
                 Log.d(TAG, "ntk_images_api_webview_race_start path=" + path
-                        + ",modernGuard=" + modernGuardRoot);
-            } else if(modernGuardRoot && webViewAckInFlight) {
-                Log.d(TAG, "ntk_images_api_webview_race_skip_ack_inflight path=" + path);
+                        + ",modernGuard=" + modernGuardRoot
+                        + ",ackInFlight=" + webViewAckInFlight);
             } else if(modernGuardRoot) {
                 Log.d(TAG, "ntk_images_api_webview_race_defer_until_ack path=" + path);
             }
@@ -8548,9 +8547,20 @@ public class CustomHttpClient {
                                               String imagesToken, String nv) throws Exception {
         String nonce = base64Url(randomBytes(24));
         String proof = hmacSha256Base64Url(nv, imagesToken + "." + nonce + "." + agent);
+        String tokenWorkId = ntkViewerImagesTokenField(imagesToken, "w");
+        String tokenEpisodeId = ntkViewerImagesTokenField(imagesToken, "e");
+        String payloadWorkId = tokenWorkId.length() > 0 ? tokenWorkId : workId;
+        String payloadEpisodeId = tokenEpisodeId.length() > 0 ? tokenEpisodeId : episodeId;
+        if((tokenWorkId.length() > 0 && !tokenWorkId.equals(workId))
+                || (tokenEpisodeId.length() > 0 && !tokenEpisodeId.equals(episodeId))) {
+            Log.d(TAG, "ntk_images_api_payload_token_ids workId=" + workId
+                    + ",episodeId=" + episodeId
+                    + ",tokenWorkId=" + tokenWorkId
+                    + ",tokenEpisodeId=" + tokenEpisodeId);
+        }
         JSONObject payload = new JSONObject();
-        payload.put("workId", workId);
-        payload.put("episodeId", episodeId);
+        payload.put("workId", payloadWorkId);
+        payload.put("episodeId", payloadEpisodeId);
         payload.put("token", imagesToken);
         payload.put("nonce", nonce);
         payload.put("proof", proof);
@@ -8567,6 +8577,7 @@ public class CustomHttpClient {
         try {
             if(headers != null)
                 headers.put("x-ntk-key-id", requestKeyId);
+            payload.put("requestKeyId", requestKeyId);
             Log.d(TAG, "ntk_images_api_request_key_header_attached path=" + cookiePath
                     + ",keyId=" + summarizeKeyId(requestKeyId));
             return true;
@@ -8735,6 +8746,7 @@ public class CustomHttpClient {
         try {
             String recentRequestKeyId = NtkWebViewFallbackManager.recentRequestKeyIdForScope(cookiePath);
             if(recentRequestKeyId != null && recentRequestKeyId.length() > 0) {
+                payload.put("requestKeyId", recentRequestKeyId);
                 String recentBodyText = payload.toString();
                 Map<String, String> recentHeaders = NtkWebViewFallbackManager.signRecentRequestKeyForScope(
                         cookiePath, "POST", endpoint, path, recentBodyText, signatureFormat);
@@ -8751,6 +8763,7 @@ public class CustomHttpClient {
             String keyId = ensureNtkViewerBrowserKey(baseUrl, cookiePath);
             if(keyId.length() == 0 || ntkViewerBrowserKeyPair == null)
                 return false;
+            payload.put("requestKeyId", keyId);
             String bodyText = payload.toString();
             String timestamp = String.valueOf(Math.floorDiv(
                     System.currentTimeMillis() + ntkViewerBrowserKeyServerTimeOffsetMs, 1L));
@@ -8764,7 +8777,7 @@ public class CustomHttpClient {
                             ntkViewerBrowserKeyPair.getPrivate(), base.getBytes(StandardCharsets.UTF_8))
                     : signNtkViewerP1363((java.security.interfaces.ECPrivateKey)
                             ntkViewerBrowserKeyPair.getPrivate(), base.getBytes(StandardCharsets.UTF_8));
-            boolean lowSAdjusted = false;
+            boolean lowSAdjusted = !der && normalizeP1363LowS(signature);
             headers.put("x-ntk-key-id", keyId);
             headers.put("x-ntk-ts", timestamp);
             headers.put("x-ntk-nonce", nonce);
@@ -8777,7 +8790,7 @@ public class CustomHttpClient {
                     + ",sigLen=" + signature.length
                     + ",sigTextLen=" + signatureText.length()
                     + ",bodyLen=" + bodyText.length()
-                    + ",bodyKey=false"
+                    + ",bodyKey=true"
                     + ",serverOffsetMs=" + ntkViewerBrowserKeyServerTimeOffsetMs
                     + ",lowSAdjusted=" + lowSAdjusted);
             return true;
@@ -8817,10 +8830,45 @@ public class CustomHttpClient {
             requestBody.put("publicKey", jwk);
             Map<String, String> headers = new HashMap<>();
             headers.put("content-type", "application/json");
+            headers.put("accept", "application/json");
+            String pageUrl = baseUrl + ntkNativeAckScopePath(cookiePath);
+            headers.put("origin", baseUrl);
+            headers.put("referer", pageUrl);
+            headers.put("user-agent", agent);
+            headers.put("sec-fetch-dest", "empty");
+            headers.put("sec-fetch-mode", "cors");
+            headers.put("sec-fetch-site", "same-origin");
+            headers.put("priority", "u=1, i");
             String cookieHeader = getMergedNtkCookieHeaderForUrl(baseUrl, cookiePath);
             String fp = ntkCookieValue(cookieHeader, "ntk_fp");
             String pid = ntkCookieValue(cookieHeader, "ntk_pid");
             String vsid = ntkCookieValue(cookieHeader, "__vsid");
+            String eventId = ntkCookieValue(cookieHeader, "__ntk_ev_id");
+            boolean fpFromIdentity = false;
+            if(fp.length() == 0) {
+                fp = ntkTokenIdentity(ntkCookieValue(cookieHeader, "ad_ack_c"));
+                if(fp.length() == 0)
+                    fp = ntkTokenIdentity(ntkCookieValue(cookieHeader, "ad_ack"));
+                fpFromIdentity = fp.length() > 0;
+            }
+            boolean fpGenerated = false;
+            if(fp.length() == 0) {
+                fp = generatedNtkFp(pageUrl, agent);
+                fpGenerated = fp.length() > 0;
+                if(fpGenerated) {
+                    cookieHeader = appendCookieForRequest(cookieHeader, "ntk_fp", fp);
+                    try {
+                        cookies.put("ntk_fp", fp);
+                        invalidateCookieHeaderCache();
+                        persistCookies();
+                        CookieManager manager = CookieManager.getInstance();
+                        manager.setCookie(baseUrl,
+                                "ntk_fp=" + fp + "; Path=/; Max-Age=31536000; SameSite=Lax; Secure");
+                        manager.flush();
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
             if(fp.length() > 0) {
                 requestBody.put("fp", fp);
                 requestBody.put("ntkFp", fp);
@@ -8832,12 +8880,14 @@ public class CustomHttpClient {
             }
             if(vsid.length() > 0)
                 requestBody.put("vsid", vsid);
+            if(eventId.length() > 0)
+                requestBody.put("eventId", eventId);
             byte[] body = requestBody.toString().getBytes(StandardCharsets.UTF_8);
             NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl,
                     baseUrl + "/api/client-key/register", cookieHeader, headers,
                     "POST", body, 4500L, null);
             String text = result == null || result.body == null ? "" : result.body;
-            JSONObject response = new JSONObject(text.length() == 0 ? "{}" : text);
+            JSONObject response = new JSONObject(text.trim().startsWith("{") ? text : "{}");
             String keyId = response.optString("keyId", "");
             boolean ok = result != null && result.error == null && result.code == 200
                     && response.optBoolean("ok", false) && keyId.length() > 0;
@@ -8848,8 +8898,13 @@ public class CustomHttpClient {
                     + ",keyId=" + summarizeKeyId(keyId)
                     + ",serverNow=" + response.optLong("serverNow", 0L)
                     + ",fpPresent=" + (fp.length() > 0)
+                    + ",fpFromIdentity=" + fpFromIdentity
+                    + ",fpGenerated=" + fpGenerated
                     + ",pidPresent=" + (pid.length() > 0)
-                    + ",vsidPresent=" + (vsid.length() > 0));
+                    + ",vsidPresent=" + (vsid.length() > 0)
+                    + ",eventIdPresent=" + (eventId.length() > 0)
+                    + ",uaLen=" + agent.length()
+                    + ",body=" + summarizeBodyPrefix(text, 80));
             if(!ok)
                 return "";
             ntkViewerBrowserKeyPair = keyPair;
@@ -8879,6 +8934,61 @@ public class CustomHttpClient {
                 return part.substring(eq + 1).trim();
         }
         return "";
+    }
+
+    private static String appendCookieForRequest(String cookieHeader, String name, String value) {
+        if(name == null || name.length() == 0 || value == null || value.length() == 0)
+            return cookieHeader == null ? "" : cookieHeader;
+        if(ntkCookieValue(cookieHeader, name).length() > 0)
+            return cookieHeader == null ? "" : cookieHeader;
+        StringBuilder builder = new StringBuilder(cookieHeader == null ? "" : cookieHeader.trim());
+        if(builder.length() > 0)
+            builder.append("; ");
+        builder.append(name).append('=').append(value);
+        return builder.toString();
+    }
+
+    private static String ntkTokenIdentity(String token) {
+        if(token == null || token.length() == 0)
+            return "";
+        try {
+            int dot = token.indexOf('.');
+            String payload = dot > 0 ? token.substring(0, dot) : token;
+            int padding = (4 - (payload.length() % 4)) % 4;
+            StringBuilder padded = new StringBuilder(payload);
+            for(int i = 0; i < padding; i++)
+                padded.append('=');
+            byte[] decoded = Base64.decode(padded.toString(), Base64.URL_SAFE | Base64.NO_WRAP);
+            JSONObject json = new JSONObject(new String(decoded, StandardCharsets.UTF_8));
+            return json.optString("identity", "");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String generatedNtkFp(String pageUrl, String requestUserAgent) {
+        try {
+            String seed = String.valueOf(requestUserAgent) + "|"
+                    + Locale.getDefault().toLanguageTag() + "|"
+                    + java.util.TimeZone.getDefault().getID() + "|"
+                    + String.valueOf(pageUrl);
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(seed.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(64);
+            for(byte value : digest)
+                builder.append(String.format(Locale.ROOT, "%02x", value & 0xff));
+            return builder.substring(0, 32);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String summarizeBodyPrefix(String value, int limit) {
+        if(value == null || value.length() == 0)
+            return "";
+        String compact = value.replace('\n', ' ').replace('\r', ' ');
+        int max = Math.max(0, limit);
+        return compact.length() <= max ? compact : compact.substring(0, max);
     }
 
     private NtkQuicFetcher.Result fetchNtkViewerImagesApiRace(String baseUrl, String endpoint,
