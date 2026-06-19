@@ -574,7 +574,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
     }
 
-    override fun onPagesPrepended(count: Int, insertedCount: Int) {
+    override fun onPagesPrepended(count: Int, insertedCount: Int, holdUntilReadyCount: Int) {
         if (pagesReady) {
             val revealPrependedBoundary = consumePrependedBoundaryReveal(insertedCount)
             pendingBoundaryStartInteractionMs = 0L
@@ -582,14 +582,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             pageCount = count
             currentPage += insertedCount
             if (pendingInitialRestorePage >= 0) pendingInitialRestorePage += insertedCount
-            renderView.prependPageCount(count, insertedCount, revealPrependedBoundary)
+            renderView.prependPageCount(count, insertedCount, revealPrependedBoundary, holdUntilReadyCount)
             if (revealPrependedBoundary) {
                 currentPage = (insertedCount - 1).coerceIn(0, count - 1)
             }
             Log.d(
                 TAG,
                 "pages_prepended total=$count inserted=$insertedCount reveal=$revealPrependedBoundary " +
-                    "deferredReveal=false currentPage=$currentPage"
+                    "holdUntilReady=$holdUntilReadyCount deferredReveal=false currentPage=$currentPage"
             )
             updateCurrentEpisode(currentPage)
         }

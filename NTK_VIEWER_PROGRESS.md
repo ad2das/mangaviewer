@@ -29381,3 +29381,93 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Commit readiness:
   - This slice is main-branch appropriate: it fixes stale generated first drawable recovery and long generated webtoon initial window placeholder exposure while preserving actual strict ACK proof requirements.
 
+## 2026-06-20 02:10:00 +09:00 Manhwa adjacent placeholder failures isolated
+
+- New random strict fresh failure:
+  - Path: `/manhwa/34931/1760919`
+  - Title: `아리스 씨네 화롯가`
+  - Episode: `17화`
+  - Mode: `generated`
+  - `imageEpisodeId=106480`
+  - `imageCount=25`
+  - Failure sample:
+    - `viewportPx=2274`
+    - `drawablePx=0`
+    - `missingPx=0`
+    - `placeholderPx=2275`
+    - `loading=2`
+    - `pages=27`
+- Additional random strict fresh failure:
+  - Path: `/manhwa/12686/133081`
+  - Title: `소녀괴수 캬라메리제`
+  - Episode: `6화`
+  - Mode: `api-fallback`
+  - `imageEpisodeId=197043`
+  - `imageCount=27`
+  - Failure sample:
+    - `viewportPx=2274`
+    - `drawablePx=0`
+    - `missingPx=0`
+    - `placeholderPx=2275`
+    - `loading=2`
+    - `pages=17`
+- Root cause:
+  - ACK was not the blocker in these failures.
+  - Observed-only/generated manhwa starts from a conservative current-page seed, then adjacent previous/next episodes are structurally appended/prepended after first bitmap.
+  - Fast or reverse scroll could reach the newly inserted adjacent episode structure before enough adjacent images were listener-delivered/drawable.
+  - This exposed loading placeholders even though the current episode itself was valid and ACK proof had succeeded.
+- Bad approach attempted and rejected:
+  - Fully deferring/cancelling observed-only manhwa adjacent append removed the placeholder exposure but broke expected previous append behavior:
+    - Failure: `Expected previous append run=0 mode=generated current=/manhwa/34931/1760919 previous=/manhwa/34931/1760443`
+  - Do not retry full adjacent cancellation; it changes UX semantics instead of stabilizing rendering.
+- Fix applied:
+  - Next adjacent generated/manhwa append now delays `onPagesAppended` publication until the first near adjacent image run is actually ready.
+  - For manhwa adjacent episodes, the ready threshold is 3 drawable/listener-delivered pages, capped by episode image count.
+  - Previous prepend still inserts the pages, but `ReaderSurfaceView` holds the scroll boundary at the old content until 3 prepended pages are drawable.
+  - This keeps the viewer open immediately and keeps adjacent navigation behavior intact, while preventing the user/test viewport from landing in a newly inserted blank strip.
+
+## 2026-06-20 02:35:00 +09:00 Manhwa adjacent hold/gate validated
+
+- Build validation:
+  - `.\gradlew.bat --no-daemon :app:assembleDebug`
+  - Result: `BUILD SUCCESSFUL`.
+- Target validation, generated manhwa:
+  - Path: `/manhwa/34931/1760919`
+  - Mode: `generated`
+  - `imageEpisodeId=106480`
+  - `imageCount=25`
+  - Result: `BUILD SUCCESSFUL`.
+  - Evidence:
+    - First drawable: `1839ms`.
+    - ACK proof: `bridge-ack-200` and `native-fetch-ack-200`.
+    - Proof scope: `/manhwa/34931/1760919`.
+    - Scroll coverage samples: `placeholderPx=0`, `loading=0`, no post-stop drift.
+- Target validation, api-fallback manhwa:
+  - Path: `/manhwa/12686/133081`
+  - Mode: `api-fallback`
+  - `imageEpisodeId=197043`
+  - `imageCount=27`
+  - Result: `BUILD SUCCESSFUL`.
+  - Evidence:
+    - First drawable: `6663ms`.
+    - ACK proof: `bridge-ack-200` and `guard-fetch-ack-200`.
+    - Proof scope: `/manhwa/12686/133081`.
+    - Adjacent notify gate: `ready=3 required=3`.
+    - Scroll coverage samples: `placeholderPx=0`, `loading=0`, no post-stop drift.
+- Random strict fresh validation:
+  - Command: `NtkRandomStressInstrumentedTest#randomNtkEpisodesOpenAndScroll`
+  - Options:
+    - `ntkRequireLiveRandom=true`
+    - `ntkRequireStrictAck=true`
+    - `ntkRandomRuns=3`
+    - cache, ACK, and reader image cache clear enabled.
+  - Result: `BUILD SUCCESSFUL` in `1m45s`.
+  - Random cases:
+    - `/webtoon/11261/1030409`, mode `generated`, first drawable `2541ms`, ACK `bridge-ack-200` + `native-fetch-ack-200`.
+    - `/manhwa/34124/1712486`, mode `native-ack`, first drawable `3782ms`, ACK `bridge-ack-200` + `native-fetch-ack-200`.
+    - `/webtoon/13539/1192285`, mode `api-fallback`, first drawable `2631ms`, ACK `bridge-ack-200` + `native-fetch-ack-200`.
+  - Visible coverage samples across the run showed `placeholderPx=0`, `loading=0`, and no drift.
+- Current risk:
+  - This fixes the observed class of adjacent manhwa placeholder exposure without hiding ACK or delaying viewer open.
+  - It is still a bounded random validation slice, not proof that every NTK work/episode combination is permanently covered.
+

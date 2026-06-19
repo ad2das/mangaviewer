@@ -64,7 +64,7 @@ class ReaderSession(
     interface Listener {
         fun onPagesReady(count: Int)
         fun onPagesAppended(count: Int)
-        fun onPagesPrepended(count: Int, insertedCount: Int)
+        fun onPagesPrepended(count: Int, insertedCount: Int, holdUntilReadyCount: Int = 0)
         fun onPagesRemoved(startIndex: Int, removedCount: Int, totalCount: Int)
         fun onInitialPage(index: Int)
         fun onPageLoading(index: Int)
@@ -2507,9 +2507,9 @@ class ReaderSession(
     }
 
     fun appendAdjacentEpisode(anchor: Int, direction: Int, silentMissing: Boolean = false): AppendStartResult {
-        val loadingFlag = if (direction < 0) previousAppendLoading else nextAppendLoading
         if (cancelled.get()) return AppendStartResult.CANCELLED
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) return AppendStartResult.CANCELLED
+        val loadingFlag = if (direction < 0) previousAppendLoading else nextAppendLoading
         if (silentMissing && !isNtkSilentAdjacentStillNearBoundary(anchor, direction)) {
             Log.d(
                 TAG,
@@ -3581,7 +3581,11 @@ class ReaderSession(
                             warmPrependedEpisode(inserted)
                             warmPrependedEpisodeStart(inserted)
                         }
-                        listener.onPagesPrepended(total, inserted)
+                        listener.onPagesPrepended(
+                            total,
+                            inserted,
+                            prependedHoldUntilReadyCount(target)
+                        )
                         if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
                         redeliverReadyPrependedStart(inserted)
                     }
@@ -3605,7 +3609,7 @@ class ReaderSession(
             }
             Log.d(TAG, "append_adjacent_resolved_inserted direction=$direction targetId=${target.id} path=${target.ntkEpisodePath} inserted=$inserted total=$total")
             val gateNtkGeneratedNotify =
-                shouldGateAdjacentAppendNotifyUntilNearReady(cardIndex, total)
+                shouldGateAdjacentAppendNotifyUntilNearReady(target, cardIndex, total)
             val posted = main.post {
                 try {
                     finishStructurePublish()
@@ -3666,10 +3670,18 @@ class ReaderSession(
         }
     }
 
-    private fun shouldGateAdjacentAppendNotifyUntilNearReady(cardIndex: Int, total: Int): Boolean {
+    private fun prependedHoldUntilReadyCount(target: Manga): Int {
+        if (!isNtkSource(target, title) || !firstBitmapLogged.get()) return 0
+        if (target.ntkImageCount <= 1) return 0
+        if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return 0
+        return minOf(NTK_OBSERVED_MANHWA_APPEND_READY_PAGES, target.ntkImageCount)
+    }
+
+    private fun shouldGateAdjacentAppendNotifyUntilNearReady(target: Manga, cardIndex: Int, total: Int): Boolean {
         if (!isNtkSource(manga, title) || !firstBitmapLogged.get()) return false
         val firstNearDrawable = firstGeneratedAppendDrawableIndex(cardIndex, total) ?: return false
-        return !hasListenerDrawableDelivery(firstNearDrawable)
+        return !hasGeneratedAppendNearReady(target, cardIndex, total) ||
+            !hasListenerDrawableDelivery(firstNearDrawable)
     }
 
     private fun notifyAdjacentAppendWhenNearReady(
@@ -3687,20 +3699,46 @@ class ReaderSession(
         val notify = object : Runnable {
             override fun run() {
                 if (cancelled.get()) return
-                if (!hasListenerDrawableDelivery(firstNearDrawable)) {
+                if (!hasGeneratedAppendNearReady(target, cardIndex, total)) {
                     main.postDelayed(this, NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
                     return
                 }
                 Log.d(
                     TAG,
                     "append_adjacent_notify_near_ready targetId=${target.id} path=${target.ntkEpisodePath} " +
-                        "firstNear=$firstNearDrawable total=$total"
+                        "firstNear=$firstNearDrawable ready=${generatedAppendNearReadyCount(cardIndex, total)} " +
+                        "required=${requiredGeneratedAppendReadyPages(target)} total=$total"
                 )
                 listener.onPagesAppended(total)
                 if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
             }
         }
         notify.run()
+    }
+
+    private fun hasGeneratedAppendNearReady(target: Manga, start: Int, total: Int): Boolean {
+        return generatedAppendNearReadyCount(start, total) >= requiredGeneratedAppendReadyPages(target)
+    }
+
+    private fun requiredGeneratedAppendReadyPages(target: Manga): Int {
+        if (isNtkManhwaEpisodePath(target.ntkEpisodePath) && target.ntkImageCount > 1) {
+            return minOf(NTK_OBSERVED_MANHWA_APPEND_READY_PAGES, target.ntkImageCount)
+        }
+        return 1
+    }
+
+    private fun generatedAppendNearReadyCount(start: Int, total: Int): Int = synchronized(pagesLock) {
+        if (start + 1 >= total) return@synchronized 0
+        val last = minOf(total - 1, pages.lastIndex)
+        var ready = 0
+        for (index in (start + 1)..last) {
+            val page = pages.getOrNull(index) ?: continue
+            if (page.transitionTitle != null) continue
+            if (!hasListenerDrawableDelivery(index)) break
+            ready++
+            if (ready >= NTK_OBSERVED_MANHWA_APPEND_READY_PAGES) break
+        }
+        ready
     }
 
     private fun warmAppendedEpisode(cardIndex: Int, total: Int) {
@@ -7931,6 +7969,7 @@ class ReaderSession(
         private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 4
         private const val NTK_GENERATED_INITIAL_RECOVERY_WINDOW_PAGES = 12
         private const val NTK_OBSERVED_MANHWA_APPEND_AFTER_FIRST_BITMAP_WAIT_MS = 4500L
+        private const val NTK_OBSERVED_MANHWA_APPEND_READY_PAGES = 3
         private const val NTK_TRACE_AHEAD_PAGES = 8
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 120L
         private const val NTK_BACKGROUND_PREPARE_AFTER_FIRST_BITMAP_QUIET_MS = 3500L

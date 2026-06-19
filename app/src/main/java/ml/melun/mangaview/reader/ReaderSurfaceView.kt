@@ -216,6 +216,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var structuralScrollAdjustUntilMs = 0L
     private var pendingResolveRetryPosted = false
     private var prependedRevealHoldPage = -1
+    private var prependedReadyHoldInserted = 0
+    private var prependedReadyHoldRequired = 0
     private var initialRenderHoldPage = -1
     private var initialRenderHoldUntilMs = 0L
     private var initialViewportHoldUntilMs = 0L
@@ -331,6 +333,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             windowDispatchPosted = false
             pages.clear()
             prependedRevealHoldPage = -1
+            clearPrependedReadyHoldLocked()
             repeat(max(0, count)) { pages.add(newPageLocked()) }
             setScrollOffsetLocked(0f)
             boundaryArmedDirection = 0
@@ -385,7 +388,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
-    fun prependPageCount(count: Int, insertedCount: Int, revealPrependedBoundary: Boolean = false) {
+    fun prependPageCount(
+        count: Int,
+        insertedCount: Int,
+        revealPrependedBoundary: Boolean = false,
+        holdUntilReadyCount: Int = 0
+    ) {
         val request = synchronized(stateLock) {
             if (insertedCount <= 0 || count <= pages.size) return
             rebuildLayoutLocked()
@@ -404,7 +412,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
             }
             if (lockedRestorePage >= 0) lockedRestorePage += insertedCount
-            if (revealPrependedBoundary) prependedRevealHoldPage = -1
+            if (revealPrependedBoundary) {
+                clearPrependedReadyHoldLocked()
+                prependedRevealHoldPage = -1
+            } else if (holdUntilReadyCount > 0) {
+                prependedReadyHoldInserted = insertedCount
+                prependedReadyHoldRequired = holdUntilReadyCount
+                prependedRevealHoldPage = insertedCount.coerceIn(0, pages.lastIndex)
+            }
             layoutDirty = true
             rebuildLayoutLocked()
             val shiftedFirstTop = pageTopOrElseLocked(insertedCount, 0f)
@@ -447,6 +462,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 setScrollOffsetLocked(0f)
                 lastAnchor = -1
                 prependedRevealHoldPage = -1
+                clearPrependedReadyHoldLocked()
             } else {
                 if (prependedRevealHoldPage >= endExclusive) {
                     prependedRevealHoldPage -= endExclusive - startIndex
@@ -553,6 +569,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
             restoreViewportAnchorLocked(viewportAnchor, "page_bitmap", index, oldHeight, newHeight)
+            maybeReleasePrependedReadyHoldLocked(index)
             val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -609,6 +626,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             deferInitialEmptyDraw = false
             applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
             restoreViewportAnchorLocked(viewportAnchor, "page_tiles", index, oldHeight, newHeight)
+            maybeReleasePrependedReadyHoldLocked(index)
             val nearVisible = isNearVisibleLocked(index, BUSY_RESOLVE_RENDER_EXTRA_PAGES)
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -2087,6 +2105,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
             0f
         }
         setScrollOffsetLocked(scrollOffset.coerceIn(minScroll, maxScroll))
+    }
+
+    private fun maybeReleasePrependedReadyHoldLocked(index: Int) {
+        if (prependedReadyHoldRequired <= 0 || prependedReadyHoldInserted <= 0) return
+        if (index !in 0 until prependedReadyHoldInserted) return
+        var ready = 0
+        val end = min(prependedReadyHoldInserted, pages.size)
+        for (i in 0 until end) {
+            val page = pages[i]
+            if (page.cardText != null) continue
+            if (page.bitmap != null || page.tiles.isNotEmpty()) ready++
+            if (ready >= prependedReadyHoldRequired) {
+                clearPrependedReadyHoldLocked()
+                return
+            }
+        }
+    }
+
+    private fun clearPrependedReadyHoldLocked() {
+        prependedReadyHoldInserted = 0
+        prependedReadyHoldRequired = 0
+        if (prependedRevealHoldPage >= 0) prependedRevealHoldPage = -1
     }
 
     private fun maxScrollLocked(): Float {
