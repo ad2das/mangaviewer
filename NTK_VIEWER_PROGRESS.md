@@ -30838,3 +30838,30 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not trust a global recent image challenge without comparing it to the current episode scope.
   - Do not treat eventual first drawable as success when it takes ~35s and later pages still hit Cloudflare HTML 403.
   - Do not keep chasing ACK here: current actual UX proves strict ACK 200. The remaining blocker is stale generated image identity and CDN clearance.
+
+## 2026-06-20 07:49 UTC / 16:49 +09:00 Generated replacement scope guard
+
+- Local follow-up after `2eefa476d`:
+  - `ReaderSession.refreshNtkGeneratedPageImage()` now rejects repository replacement URLs whose generated image prefix maps to a different NTK episode than the current page's manga.
+  - If the repository replacement is stale, it falls back through `ntkReplacementImageUrlForPage(...)` so the page can still retarget through verified/API/current-scope candidates.
+  - `ReaderSession` generated-prefix scope mapping now includes `/black/episodes/...`, not only `/blacktoon/episodes/...`.
+- Validation:
+  - Build passed:
+    - `.\gradlew.bat --no-daemon :app:compileDebugJavaWithJavac :app:compileDebugKotlin`.
+  - Actual UX artifact before the broader rejected `Manga.java` experiment:
+    - `build\ntk-actual-ux-suite\20260620_074434`.
+  - Result:
+    - Still timed out, but ACK was good and first drawable eventually appeared.
+    - `bridge-ack-200`, `strictAdAck=true`.
+    - `native-fetch-ack-200`, `strictAdAck=true`.
+    - `reader_open_to_first_drawable ... ms=35562`.
+    - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0`.
+    - No `refresh_generated_page_image` stale replacement was observed in this run, unlike `20260620_073704`.
+- Rejected experiment:
+  - Temporarily changed `Manga.firstNtkImageEpisodeId(...)` and `ntkPreferredViewerImagesApiEpisodeId(...)` to prefer numeric path episode IDs over known image episode metadata.
+  - Artifact: `build\ntk-actual-ux-suite\20260620_074904`.
+  - Result: worse. The test timed out with `Expected tapping a NTK current webtoon UX episode to render the first reader image`, and no ACK/first drawable summary was captured.
+  - Reverted this `Manga.java` change immediately.
+- Bad approach / do not repeat:
+  - Do not globally reorder NTK image episode identity preference in `Manga.java` without a narrower guard. It can remove the stale generated fallback but also starves first image delivery.
+  - The next fix should target only stale generated candidate admission/replacement, not the whole API/metadata identity resolver.
