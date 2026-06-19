@@ -3879,6 +3879,8 @@ public class Manga {
                 ntkGeneratedExtensionCacheKey(segment, workId, episodeId, page));
         if(cached != null && cached.length() > 0)
             return new String[]{cached};
+        if(shouldStartUnverifiedInitialGeneratedJpgStream(segment, workId, episodeId, page))
+            return new String[]{"jpg"};
         if(page == 1 && isNumericNtkId(workId) && isNumericNtkId(episodeId)) {
             Log.d(TAG, "ntk_generated_speculative_stream_unverified_candidates path="
                     + getNtkEpisodePath()
@@ -3889,6 +3891,23 @@ public class Manga {
                     + ",extensions=none,reason=wait_verified_probe");
         }
         return new String[0];
+    }
+
+    private boolean shouldStartUnverifiedInitialGeneratedJpgStream(String segment, String workId,
+                                                                   String episodeId, int page) {
+        if(page != 1 || !"manhwa".equalsIgnoreCase(segment)
+                || !isNumericNtkId(workId) || !isNumericNtkId(episodeId)
+                || getNtkImageCount() <= 0)
+            return false;
+        String path = getNtkEpisodePath();
+        Matcher matcher = Pattern.compile("^/manhwa/(\\d+)/(\\d+)(?:[/?#].*)?$").matcher(path == null ? "" : path);
+        if(!matcher.find() || !matcher.group(2).equals(episodeId))
+            return false;
+        Log.d(TAG, "ntk_generated_speculative_stream_unverified_jpg path=" + path
+                + ",workId=" + workId
+                + ",episodeId=" + episodeId
+                + ",page=" + page);
+        return true;
     }
 
     private String reachableNtkGeneratedImageExtensionConfirmPass(CustomHttpClient client, String segment,

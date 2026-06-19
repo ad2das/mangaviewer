@@ -141,6 +141,8 @@ public class NtkRandomStressInstrumentedTest {
                 firstDrawableMaxMs);
         long holdAfterFirstDrawableMs = parseNonNegativeLong(
                 arg(args, "ntkHoldAfterFirstDrawableMs", "0"), 0L);
+        boolean requireStrictAck = Boolean.parseBoolean(arg(args, "ntkRequireStrictAck",
+                requireLiveRandom ? "true" : "false"));
         boolean assertNoJank = Boolean.parseBoolean(arg(args, "ntkAssertNoJank", "true"));
         boolean assertNoSchedulerGap = Boolean.parseBoolean(arg(args, "ntkAssertNoSchedulerGap", "false"));
         int maxMissedFrames = parseNonNegativeInt(arg(args, "ntkMaxMissedFrames", "0"), 0);
@@ -205,6 +207,7 @@ public class NtkRandomStressInstrumentedTest {
                 + ",initialContinuousPages=" + initialContinuousPages
                 + ",initialContinuousMaxMs=" + initialContinuousMaxMs
                 + ",holdAfterFirstDrawableMs=" + holdAfterFirstDrawableMs
+                + ",requireStrictAck=" + requireStrictAck
                 + ",assertNoJank=" + assertNoJank
                 + ",assertNoSchedulerGap=" + assertNoSchedulerGap
                 + ",maxMissedFrames=" + maxMissedFrames
@@ -242,7 +245,7 @@ public class NtkRandomStressInstrumentedTest {
                         firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
                         assertNoJank, maxMissedFrames, maxDroppedFrames,
                         swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs,
-                        holdAfterFirstDrawableMs, scrollInputMode, scrollPattern);
+                        holdAfterFirstDrawableMs, requireStrictAck, scrollInputMode, scrollPattern);
             }
             return;
         }
@@ -340,7 +343,7 @@ public class NtkRandomStressInstrumentedTest {
                     firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
                     assertNoJank, maxMissedFrames, maxDroppedFrames,
                     swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs,
-                    holdAfterFirstDrawableMs, scrollInputMode, scrollPattern);
+                    holdAfterFirstDrawableMs, requireStrictAck, scrollInputMode, scrollPattern);
             completedRuns++;
         }
         assertTrue("Expected NTK episode list for all runs completed=" + completedRuns
@@ -1471,8 +1474,8 @@ public class NtkRandomStressInstrumentedTest {
                                       boolean assertNoJank, int maxMissedFrames,
                                       int maxDroppedFrames, int swipeInputSteps,
                                       boolean assertNoSchedulerGap, float renderFrameMaxMs,
-                                      long holdAfterFirstDrawableMs, String scrollInputMode,
-                                      String scrollPattern) {
+                                      long holdAfterFirstDrawableMs, boolean requireStrictAck,
+                                      String scrollInputMode, String scrollPattern) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
         Manga nextEpisode = null;
@@ -1572,7 +1575,7 @@ public class NtkRandomStressInstrumentedTest {
                     maxMissedFrames, maxDroppedFrames, swipeInputSteps,
                     assertNoSchedulerGap, renderFrameMaxMs, scrollInputMode,
                     scrollPattern);
-            if("native-ack".equals(mode))
+            if(requireStrictAck || "native-ack".equals(mode))
                 waitForStrictNtkAckProofBeforeClose(run, mode, episode, 70_000L);
             if(appendProbe && reader != null)
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,

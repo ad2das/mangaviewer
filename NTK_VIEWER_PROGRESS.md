@@ -29105,3 +29105,94 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not treat first drawable budget failures as ACK failures. ACK is currently proven separately by `bridge-ack-200` and `guard-fetch-ack-200`.
   - Do not reuse stale Gradle/UTP result directories after killing a test by timeout; the stale `utp.0.log.lck` can make Gradle fail before the app test runs.
 
+## 2026-06-19 22:56:00 +09:00 Main branch status and strict random ACK gate
+
+- Main branch/push status:
+  - Active shipping worktree remains `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`.
+  - `HEAD == origin/main == 57b453ac2 Stabilize NTK generated page refresh`.
+  - This means the generated page refresh stability fix is already committed and pushed to main.
+- Uncommitted experiment:
+  - `Manga.java` has an experimental generated first-page stream change that starts `/manhwa/.../p001.jpg` with `jpg` before extension verification when the current numeric generated episode has an image-count hint.
+  - Same seed/path `/manhwa/26077/313054` improved first drawable to `3377ms` under a 5s budget.
+  - However, that random generated run did not log strict ACK proof (`bridge-ack-200`, `guard-fetch-ack-200`, or `ntk_ack_proof`) before close.
+  - Actual UX comic ACK still succeeded after the experiment on `/manhwa/36525/1807424`, so the ACK infrastructure is not globally broken.
+- Test gap found:
+  - `NtkRandomStressInstrumentedTest` only waited for strict ACK proof in `native-ack` mode.
+  - This allowed generated/api-fallback random cases to pass image and scroll assertions without proving `/api/ad/ack` 200.
+- Fix in progress:
+  - Added `ntkRequireStrictAck`; for `ntkRequireLiveRandom=true` it defaults to `true`.
+  - Random reader cases now wait for strict NTK ACK proof before closing when `ntkRequireStrictAck=true`, regardless of generated/native/api-fallback mode.
+- Bad/risky approaches to avoid:
+  - Do not commit the generated first-page stream speed experiment as final merely because first drawable got faster.
+  - Do not count a random strict fresh pass as goal-complete unless the run also proves scoped strict ACK.
+  - Do not weaken ACK assertions to make generated mode pass; either prove ACK in the generated flow or keep the speed experiment out of main.
+
+## 2026-06-19 23:11:00 +09:00 Random strict ACK gate exposed adjacent ACK interference
+
+- New strict-gated validation:
+  - Command used `ntkRequireLiveRandom=true`, `ntkRequireStrictAck=true`, `ntkSafeNetwork=false`, `ntkRandomRuns=1`, cache/ACK clear, seed `64751176`, 5s first drawable budget.
+  - Result: test failed by design on strict ACK proof, not image/scroll.
+  - Failed current path: `/manhwa/26929/326837`, mode `generated`.
+  - Failure: `Expected strict NTK ACK proof before closing reader ... elapsedMs=70258 maxMs=70000`.
+- Important log evidence:
+  - Current path `/manhwa/26929/326837` had repeated `ntk_webview_ack_preflight_join_proof_done ... success=false`.
+  - Next/adjacent path `/manhwa/26929/333577` succeeded with `/api/ad/challenge` and `/api/ad/ack` 200, `ntk_ack_proof`, and `strictAdAck=true`.
+  - This suggests ACK server flow still works, but adjacent generated ACK preflight can overtake/interfere before the current episode has strict proof.
+- Fix in progress:
+  - `ReaderSession.scheduleNtkAdjacentAckPreflightsAfterFirstBitmap(...)` now skips adjacent ACK preflight until the current NTK episode already has recent strict ACK proof.
+  - This prioritizes the visible/current episode proof over speculative next/previous ACK.
+- Bad/risky approaches to avoid:
+  - Do not let adjacent/next episode ACK optimization run before current episode strict ACK is proven.
+  - Do not interpret adjacent `/api/ad/ack` 200 as success for the current visible episode; ACK proof is scoped by path.
+
+## 2026-06-19 23:15:00 +09:00 Strict ACK random validation passed with speed budget relaxed
+
+- Validation command:
+  - `:app:connectedDebugAndroidTest`
+  - `ntkRequireLiveRandom=true`
+  - `ntkRequireStrictAck=true`
+  - `ntkSafeNetwork=false`
+  - `ntkRandomRuns=1`
+  - `ntkClearCacheBeforeRun=true`
+  - `ntkClearAckBeforeRun=true`
+  - `ntkAssertNoJank=false`
+  - `ntkRandomSeed=64751176`
+  - `ntkFirstDrawableMaxMs=0`
+- Result: `BUILD SUCCESSFUL`.
+- Case:
+  - Path: `/manhwa/26685/323331`
+  - Mode: `generated`
+  - First drawable: `4750ms`
+  - Strict ACK: `bridge-ack-200`, `guard-fetch-ack-200`, `strictAdAck=true`
+  - Proof: `ntk_ack_proof={"scope":"/manhwa/26685/323331","tp":"5b7781bdba22d374","source":"guard-fetch-ack-200"}`
+  - Test wait: `ntk_true_random_ack_wait ... strictProof=true,ms=1`
+- Stability metrics:
+  - 8 mixed touch scroll samples.
+  - Every sampled coverage line had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+  - Every post-stop drift sample had `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Speed note:
+  - The same patched build still failed a 5s-budget run on `/manhwa/26685/323331` with observed `6598ms` before first drawable marker.
+  - The user has allowed speed compromise for close-out, so this slice treats ACK/stability as the commit gate, not universal first drawable under 5s.
+- Current commit candidate:
+  - Keep strict random ACK gate (`ntkRequireStrictAck`) so generated/api-fallback cannot pass without scoped `/api/ad/ack` proof.
+  - Keep adjacent ACK preflight gating until current episode strict proof exists.
+  - Keep generated first-page jpg stream experiment only if follow-up UX ACK validation still passes; otherwise revert it before commit.
+
+## 2026-06-19 23:18:00 +09:00 Actual UX comic ACK revalidated after ACK gating changes
+
+- Validation command:
+  - `:app:connectedDebugAndroidTest`
+  - `runLiveNetworkTests=true`
+  - `class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`
+- Result: `BUILD SUCCESSFUL`.
+- Actual UX selected comic case:
+  - Path: `/manhwa/36525/1807424`
+  - First drawable: `3909ms`
+  - Strict ACK: `bridge-ack-200`, then `native-fetch-ack-200`
+  - Proof: `ntk_ack_proof={"scope":"/manhwa/36525/1807424","tp":"174df9131d4af68d","source":"native-fetch-ack-200"}`
+  - UX success metric included `strictAdAck=true`.
+- Commit decision:
+  - The strict random ACK gate, adjacent ACK ordering fix, and current generated first-page stream patch are safe enough to commit as an ACK/stability-focused main branch slice.
+  - Remaining speed risk is explicit: universal 5s first drawable is not guaranteed, but the current close-out accepts speed compromise.
+

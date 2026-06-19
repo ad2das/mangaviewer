@@ -2705,6 +2705,16 @@ class ReaderSession(
             )
             return
         }
+        val currentPath = manga.ntkEpisodePath?.trim().orEmpty()
+        if (currentPath.isNotEmpty() &&
+            !MainApplication.getHttpClient().hasRecentStrictNtkAdAckProof(currentPath)
+        ) {
+            Log.d(
+                TAG,
+                "ntk_adjacent_ack_preflight_skip_before_current_ack path=$currentPath"
+            )
+            return
+        }
         try {
             primeNetwork.execute {
                 try {
