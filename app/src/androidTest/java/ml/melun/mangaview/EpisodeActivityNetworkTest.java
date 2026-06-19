@@ -228,12 +228,7 @@ public class EpisodeActivityNetworkTest {
             executeShell("logcat -c");
             Log.d("ViewerPerf", "ntk_actual_home_continue_select_start source=ntk,type=webtoon,titlePath=/webtoon/16968,episodePath="
                     + episodePath);
-            Rect bounds = ntkContinue.getVisibleBounds();
-            assertTrue("Expected NTK continue card bounds for UX tap", bounds.width() > 0 && bounds.height() > 0);
-            Log.d("ViewerPerf", "ntk_actual_home_continue_tap x=" + bounds.centerX()
-                    + ",y=" + bounds.centerY()
-                    + ",bounds=" + bounds.toShortString());
-            device.click(bounds.centerX(), bounds.centerY());
+            clickNtkHomeContinueCard(device, ntkContinue);
 
             openReaderFromHomeSelectionIfEpisodeList(device);
             assertReaderOpenedThroughAutoCaptcha(device, "NTK home continue UX");
@@ -1139,6 +1134,57 @@ public class EpisodeActivityNetworkTest {
         }
         assertNotNull("Expected NTK home continue site icon", lastCandidate);
         return lastCandidate;
+    }
+
+    private static void clickNtkHomeContinueCard(UiDevice device, UiObject2 candidate) throws Exception {
+        UiObject2 target = clickableAncestor(candidate);
+        Rect bounds = target.getVisibleBounds();
+        assertTrue("Expected NTK continue card bounds for UX tap", bounds.width() > 0 && bounds.height() > 0);
+        Log.d("ViewerPerf", "ntk_actual_home_continue_tap mode=clickable_ancestor"
+                + ",clickable=" + target.isClickable()
+                + ",x=" + bounds.centerX()
+                + ",y=" + bounds.centerY()
+                + ",bounds=" + bounds.toShortString());
+        target.click();
+        Thread.sleep(500L);
+        if(homeSelectionMadeProgress(device))
+            return;
+
+        int[][] fallbackPoints = new int[][] {
+                { bounds.centerX(), bounds.centerY() },
+                { bounds.left + Math.max(8, bounds.width() / 4), bounds.centerY() },
+                { bounds.right - Math.max(8, bounds.width() / 4), bounds.centerY() },
+                { bounds.centerX(), bounds.top + Math.max(8, bounds.height() / 4) },
+                { bounds.centerX(), bounds.bottom - Math.max(8, bounds.height() / 4) }
+        };
+        for(int i = 0; i < fallbackPoints.length && !homeSelectionMadeProgress(device); i++) {
+            int x = Math.max(1, Math.min(device.getDisplayWidth() - 1, fallbackPoints[i][0]));
+            int y = Math.max(1, Math.min(device.getDisplayHeight() - 1, fallbackPoints[i][1]));
+            Log.d("ViewerPerf", "ntk_actual_home_continue_tap_retry index=" + i
+                    + ",x=" + x
+                    + ",y=" + y
+                    + ",bounds=" + bounds.toShortString());
+            device.click(x, y);
+            Thread.sleep(350L);
+        }
+    }
+
+    private static UiObject2 clickableAncestor(UiObject2 candidate) {
+        UiObject2 current = candidate;
+        UiObject2 fallback = candidate;
+        for(int i = 0; i < 8 && current != null; i++) {
+            fallback = current;
+            if(current.isEnabled() && current.isClickable())
+                return current;
+            current = current.getParent();
+        }
+        return fallback;
+    }
+
+    private static boolean homeSelectionMadeProgress(UiDevice device) {
+        return device.findObject(By.res(PACKAGE_NAME, "strip")) != null
+                || device.findObject(By.res(PACKAGE_NAME, "episode")) != null
+                || isCaptchaShown(device);
     }
 
     private static void openReaderFromHomeSelectionIfEpisodeList(UiDevice device) throws Exception {

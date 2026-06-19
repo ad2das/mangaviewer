@@ -30350,3 +30350,48 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not infer a usable fallback from host guesses. The new probe must show `200 image/*`.
   - Do not commit generated `build\ntk-live-image-probe` artifacts unless explicitly needed as external evidence.
 
+## 2026-06-20 04:49 +09:00 Actual UX webtoon rerun on main confirms ACK solved, image CDN blocked
+
+- Ran current main actual UX webtoon selection again after adding the live image probe.
+- Command:
+  - `& .\tools\ntk_actual_ux_suite.ps1 -DeviceSerial emulator-5554 -Tests "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" -TimeoutMs 180000`.
+- Artifact:
+  - `build\ntk-actual-ux-suite\20260620_044721`.
+- Result:
+  - `passed=false`, `exitCode=125`.
+  - This is an honest known-failure fast-fail, not a pass.
+  - Runtime was about 45s.
+- ACK proof:
+  - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+  - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"9e747119eb5314f4","source":"native-fetch-ack-200"}`.
+  - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+- Image failure:
+  - p001 through p006 foreground image requests all returned `403` with `block=cloudflare-html-403`.
+  - The failure appears across the app's image lanes, including `image-1`, `image-2`, and `image-full`.
+- Current diagnosis:
+  - This run proves the current `/webtoon/16968/1463195` actual UX failure is after ACK, at image byte retrieval.
+  - Continue image source discovery / live host verification rather than ACK bridge churn for this case.
+
+## 2026-06-20 04:59 +09:00 Home continue actual UX harness now reaches ACK/hard-block instead of timing out
+
+- 3-way actual UX collection before the harness fix:
+  - Artifact: `build\ntk-actual-ux-suite\20260620_044843`.
+  - Webtoon: exit 125, strict ACK `native-fetch-ack-200`, image hard-block `cloudflare-html-403`.
+  - Comic: exit 125, strict ACK `guard-fetch-ack-200`, image hard-block `cloudflare-html-403`.
+  - Home continue: exit 124 timeout. It logged `ntk_actual_home_continue_tap`, but no `home_continue_click`, no `viewer_launch_start`, no ACK, and no hard-block summary. This was not useful app ACK/image evidence; the harness tap did not drive the click listener.
+- Fix:
+  - `ntkHomeContinueUxSelectionOpensReaderWithAck200` now clicks the clickable ancestor with `UiObject2.click()`.
+  - If no reader/episode/captcha progress is observed, it retries bounded points inside the same visible card.
+  - It logs the click target and retry points so future tap failures are diagnosable.
+- Validation:
+  - `.\gradlew.bat --no-daemon :app:compileDebugAndroidTestJavaWithJavac` passed.
+  - Home continue rerun artifact: `build\ntk-actual-ux-suite\20260620_045713`.
+  - Result: exit 125, no timeout.
+  - Click proof: `ntk_actual_home_continue_tap mode=clickable_ancestor,clickable=true,x=294,y=1875,bounds=[66,1675][523,2076]`.
+  - ACK proof: `bridge-ack-200 strictAdAck=true`, then `ntk_ack_proof ... source=native-fetch-ack-200`.
+  - Image failure: p001-p006 returned `403` / `block=cloudflare-html-403`.
+- Current status:
+  - Actual UX webtoon, comic, and home continue now all separate correctly: ACK succeeds; image CDN bytes are the current blocker.
+- Bad approaches / do not repeat:
+  - Do not treat a home continue timeout from raw coordinate/icon-parent tap as app ACK/image evidence unless click progress logs confirm the click listener fired.
+
