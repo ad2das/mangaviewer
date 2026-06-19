@@ -68,6 +68,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val droppedFrameDebt: Int,
         val callbackP95: Float,
         val callbackMax: Float,
+        val prepP95: Float,
+        val prepMax: Float,
         val drawP95: Float,
         val totalP95: Float,
         val totalMax: Float,
@@ -1221,7 +1223,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             Log.d(
                 TAG,
                 "reader_slow_frame busy=${state.busy} items=${state.items.size} " +
-                    "visibleLoading=${state.visibleLoading} drawMs=${fmt(timing.drawMs)} " +
+                    "visibleLoading=${state.visibleLoading} prepMs=${fmt(timing.lockWaitMs)} drawMs=${fmt(timing.drawMs)} " +
                     "totalMs=${fmt(timing.totalMs)} visibleItems=${formatDrawItems(state.items)}"
             )
         }
@@ -1267,7 +1269,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return DrawTiming(
             frameTimeNs = frameTimeNs,
             callbackStartNs = callbackStartNs,
-            lockWaitMs = 0f,
+            lockWaitMs = nsToMs(drawStartNs - callbackStartNs),
             drawMs = nsToMs(drawEndNs - drawStartNs),
             postMs = nsToMs(postEndNs - drawEndNs),
             totalMs = nsToMs(postEndNs - callbackStartNs),
@@ -2661,6 +2663,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val droppedPercent = if (total.isEmpty()) 0f else droppedFrames * 100f / total.size
         val callbackP95 = percentile(callbackIntervals, 0.95f)
         val callbackMax = maxOrZero(callbackIntervals)
+        val prepP95 = percentile(lockWait, 0.95f)
+        val prepMax = maxOrZero(lockWait)
         val drawP95 = percentile(draw, 0.95f)
         val totalP95 = percentile(total, 0.95f)
         val totalMax = maxOrZero(total)
@@ -2673,6 +2677,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             droppedFrameDebt = droppedFrameDebt,
             callbackP95 = callbackP95,
             callbackMax = callbackMax,
+            prepP95 = prepP95,
+            prepMax = prepMax,
             drawP95 = drawP95,
             totalP95 = totalP95,
             totalMax = totalMax,
@@ -2696,6 +2702,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 "missedIntervals=${snapshot.missedIntervals} missedFrames=${snapshot.missedFrames} missedPct=${fmt(missedPercent)} " +
                 "droppedFrames=${snapshot.droppedFrames} droppedFrameDebt=${snapshot.droppedFrameDebt} droppedPct=${fmt(droppedPercent)} " +
                 "callbackP95=${fmt(snapshot.callbackP95)} callbackMax=${fmt(snapshot.callbackMax)} " +
+                "prepP95=${fmt(snapshot.prepP95)} prepMax=${fmt(snapshot.prepMax)} " +
                 "drawP95=${fmt(snapshot.drawP95)} totalP95=${fmt(snapshot.totalP95)} totalMax=${fmt(snapshot.totalMax)} " +
                 "noCanvas=${snapshot.noCanvas} coalesced=${snapshot.coalesced}"
         )

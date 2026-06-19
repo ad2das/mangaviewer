@@ -28901,3 +28901,54 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Strict jank assertion with `ntkAssertNoJank=true` can still fail with `droppedFrames=1` / callback interval spikes even when visible coverage is complete and draw/total p95 is low.
   - Current priority was ACK and visible image stability; smoothness still needs a separate follow-up pass, but do not hide this residual risk.
 
+## 2026-06-19 18:48:10 +09:00 Main adjacent generated append gate fixed for transition-card placeholder exposure
+
+- Continued on `main` after confirming `afeba5154` was already pushed to `origin/main`.
+- Strict random with seed `59820111` reproduced remaining jank instability, but ACK/image coverage needed separate isolation:
+  - Failure example: `/manhwa/22682/210186`, generated, `totalMax=29.88`, strict dropped frame only; strict ACK later succeeded in the same log via `guard-fetch-ack-200`.
+  - Added frame stat diagnostics: `prepP95/prepMax` are now logged in `surface_jank_v3` and test failure messages, so future failures distinguish frame preparation from bitmap draw.
+  - Bad approach / do not repeat: skipping full canvas clear when drawable coverage is full did not address the root cause and was reverted before continuing.
+- Targeted no-jank isolation for `/manhwa/32709/1657688` found a real visibility bug:
+  - Before fix, adjacent append published `pages_appended` before the first real page after a transition card had reached the listener.
+  - Failure signature: `reader_visible_loading=1`, `placeholderPx=587`, `items=3`, `cards=1`, page after card `empty`.
+  - This was not the same path as `early_urls_append_full`; the earlier gate only covered full generated refresh/append, not adjacent episode append.
+- Fix applied:
+  - `appendResolvedEpisode` for forward adjacent NTK append now keeps the new pages internal, finishes structure publish, starts warm/decode, and delays `onPagesAppended`/`onPageCard` until the first actual appended drawable is listener-delivered.
+  - New log proof marker: `append_adjacent_notify_near_ready`.
+- Verification:
+  - Build and androidTest compile passed: `.\gradlew.bat --no-daemon :app:assembleDebug :app:compileDebugAndroidTestJavaWithJavac`.
+  - Target command passed for `/manhwa/32709/1657688`, generated, cache/ACK clear, `ntkAssertNoJank=false`.
+  - Log path: `app\build\outputs\androidTest-results\connected\debug\MangaViewerApi35(AVD) - 15\logcat-ml.melun.mangaview.reader.NtkRandomStressInstrumentedTest-randomNtkEpisodesOpenAndScroll.txt`.
+  - Proof: `reader_open_to_first_drawable ... ms=7091`, `ntk_ack_proof={"scope":"/manhwa/32709/1657688","tp":"689e4a646e9b47de","source":"native-fetch-ack-200"}`.
+  - Counts: `reader_visible_loading=1` = 0, `reader_visible_gap` = 0, `reader_scroll_jump` = 0, `append_adjacent_notify_near_ready` = 1, `ntk_true_random_scroll` = 8.
+- Remaining risk:
+  - Strict jank can still fail on emulator scheduler/GPU tail frames even when placeholder/gap/jump are clean. This is now separately visible with `prep*/draw*/total*` metrics.
+  - Current priority remains ACK 200 and visible stability; do not claim perfect 60fps yet.
+
+## 2026-06-19 18:52:30 +09:00 Random no-jank regression passed after adjacent append gate
+
+- Live random regression command passed with:
+  - `ntkRequireLiveRandom=true`
+  - `ntkSafeNetwork=false`
+  - `ntkRandomRuns=2`
+  - seed `59820111`
+  - cache/ACK clear enabled
+  - `ntkAssertNoJank=false` to isolate ACK/image/position stability from known strict emulator jank.
+- Log path:
+  - `app\build\outputs\androidTest-results\connected\debug\MangaViewerApi35(AVD) - 15\logcat-ml.melun.mangaview.reader.NtkRandomStressInstrumentedTest-randomNtkEpisodesOpenAndScroll.txt`
+- Cases:
+  - `/webtoon/14893/1299660`, `mode=api-fallback`, first drawable `6121ms`, ACK `native-fetch-ack-200`.
+  - `/manhwa/22438/206765`, `mode=generated`, first drawable `1799ms`, ACK `guard-fetch-ack-200`.
+- Counts:
+  - `ntk_ack_proof=2`
+  - `reader_open_to_first_drawable=2`
+  - `ntk_true_random_case_start=2`
+  - `ntk_true_random_scroll=16`
+  - `reader_visible_loading=1=0`
+  - `reader_visible_gap=0`
+  - `reader_scroll_jump=0`
+  - `append_adjacent_notify_near_ready=1`
+- Conclusion:
+  - ACK 200 proof and visible image stability are currently passing on API35 emulator for target regression and random no-jank regression.
+  - Strict jank remains a separate unresolved risk; the new `prepP95/prepMax` diagnostics should stay because they make future strict failures actionable.
+

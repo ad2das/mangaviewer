@@ -2355,6 +2355,8 @@ public class NtkRandomStressInstrumentedTest {
                 + ";droppedFrameDebt=" + stats.getDroppedFrameDebt()
                 + ";callbackP95=" + fmt(stats.getCallbackP95())
                 + ";callbackMax=" + fmt(stats.getCallbackMax())
+                + ";prepP95=" + fmt(stats.getPrepP95())
+                + ";prepMax=" + fmt(stats.getPrepMax())
                 + ";drawP95=" + fmt(stats.getDrawP95())
                 + ";totalP95=" + fmt(stats.getTotalP95())
                 + ";totalMax=" + fmt(stats.getTotalMax())

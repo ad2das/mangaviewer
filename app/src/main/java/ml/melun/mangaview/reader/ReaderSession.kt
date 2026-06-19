@@ -3421,21 +3421,63 @@ class ReaderSession(
                 total = pages.size
             }
             Log.d(TAG, "append_adjacent_resolved_inserted direction=$direction targetId=${target.id} path=${target.ntkEpisodePath} inserted=$inserted total=$total")
+            val gateNtkGeneratedNotify =
+                shouldGateAdjacentAppendNotifyUntilNearReady(cardIndex, total)
             val posted = main.post {
-                var shouldWarm = false
                 try {
-                    if (!cancelled.get()) {
+                    finishStructurePublish()
+                    if (cancelled.get()) return@post
+                    if (gateNtkGeneratedNotify) {
+                        warmAppendedEpisode(cardIndex, total)
+                        notifyAdjacentAppendWhenNearReady(target, cardIndex, total, cardOffset, transitionTitle)
+                    } else {
                         listener.onPagesAppended(total)
                         if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
-                        shouldWarm = warm
+                        if (warm) warmAppendedEpisode(cardIndex, total)
                     }
                 } finally {
-                    finishStructurePublish()
+                    if (isStructurePublishPending()) finishStructurePublish()
                 }
-                if (shouldWarm) warmAppendedEpisode(cardIndex, total)
             }
             if (!posted) finishStructurePublish()
         }
+    }
+
+    private fun shouldGateAdjacentAppendNotifyUntilNearReady(cardIndex: Int, total: Int): Boolean {
+        if (!isNtkSource(manga, title) || !firstBitmapLogged.get()) return false
+        val firstNearDrawable = firstGeneratedAppendDrawableIndex(cardIndex, total) ?: return false
+        return !hasListenerDrawableDelivery(firstNearDrawable)
+    }
+
+    private fun notifyAdjacentAppendWhenNearReady(
+        target: Manga,
+        cardIndex: Int,
+        total: Int,
+        cardOffset: Int,
+        transitionTitle: String
+    ) {
+        val firstNearDrawable = firstGeneratedAppendDrawableIndex(cardIndex, total) ?: run {
+            listener.onPagesAppended(total)
+            if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
+            return
+        }
+        val notify = object : Runnable {
+            override fun run() {
+                if (cancelled.get()) return
+                if (!hasListenerDrawableDelivery(firstNearDrawable)) {
+                    main.postDelayed(this, NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
+                    return
+                }
+                Log.d(
+                    TAG,
+                    "append_adjacent_notify_near_ready targetId=${target.id} path=${target.ntkEpisodePath} " +
+                        "firstNear=$firstNearDrawable total=$total"
+                )
+                listener.onPagesAppended(total)
+                if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
+            }
+        }
+        notify.run()
     }
 
     private fun warmAppendedEpisode(cardIndex: Int, total: Int) {
