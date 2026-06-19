@@ -29253,3 +29253,131 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not use stale Gradle/UTP output directories after a killed/timed-out run; clear `app/build/outputs/androidTest-results/connected/debug`.
   - Do not trust ADB `device` alone. If `cmd package` says service missing, restart the emulator before judging app behavior.
 
+## 2026-06-20 00:20:00 +09:00 Random strict ACK passed but first drawable failed from stale generated URL
+
+- New strict fresh random failure after `679fb177f`:
+  - Path: `/webtoon/848103/1580934`
+  - Mode: `native-ack`
+  - Result: strict ACK succeeded, but first drawable did not arrive before the test window.
+  - ACK proof was valid for the current path:
+    - `bridge-ack-200`
+    - `guard-fetch-ack-200`
+    - `ntk_webview_ack_preflight_done ... success=true,ms=8097`
+  - The failure was not an ACK failure.
+- Root cause found in logs:
+  - Initial generated URLs used stale image episode identity:
+    - Wrong: `https://moamoabon.com/blacktoon/episodes/19192/688553/p001.jpg`
+  - The later signed WebView/API image list was correct:
+    - Correct: `https://moamoabon.com/black/episodes/19192/1580934/p001.jpg`
+  - The correct p001 bytes were cached as the anchor asset, but the visible `PageRef.image` still pointed at the stale generated URL, so first drawable delivery kept following the wrong ref.
+- Fix in progress:
+  - When a verified non-generated API image list arrives, refresh existing generated seed refs even if this is a same-size or larger replacement.
+  - Clear per-page failure/decode/delivery state during this generated-to-verified refresh.
+  - For first-anchor generated 404 before first bitmap, retarget by page number to verified API/early/current image URLs before trying generated sibling reconstruction.
+  - Keep the pre-first-bitmap early URL watcher alive long enough to catch late signed WebView/API lists after ACK proof; this does not delay opening the viewer, it only prevents the live page model from missing a better URL list that arrives after the initial generated seed failed.
+  - Treat generated-to-non-generated same page URL changes as valid anchor replacements, not only generated-to-generated extension/path changes.
+  - Do not shrink a full generated page model to a partial verified API subset. Partial verified p001/p002 replacements now merge into the existing full list by page number; full-size verified API lists can still replace the full list.
+  - Same-size generated-to-verified URL refresh now mutates existing `PageRef` entries in place instead of clearing/re-adding the page list, so in-flight first-anchor decode is not invalidated by repeated late URL refreshes.
+  - First-anchor decode now checks the cached anchor asset file before starting foreground stream/race. Logs showed p001 bytes were already cached, but stale foreground race 404 could still dominate the first drawable path.
+  - URL replacement now also explicitly schedules cached-anchor urgent decode for the current page, so an already cached p001 can be posted as drawable without waiting for a stale foreground stream to fail.
+  - The cached-anchor decode path is now separated from the generic visible-generated decode hedge so stale in-flight hedges cannot suppress the corrected anchor decode.
+- Bad/risky approaches to avoid:
+  - Do not treat this case as an ACK regression; ACK had actual scoped `/api/ad/ack` proof.
+  - Do not increase first drawable timeout to hide the problem.
+  - Do not keep relying on `ntkImageEpisodeId` generated URLs for every webtoon case when the signed API returns a different canonical image episode/path.
+
+## 2026-06-20 01:03:00 +09:00 Target stale generated webtoon repro passed
+
+- Target validation command:
+  - `NtkRandomStressInstrumentedTest#randomNtkEpisodesOpenAndScroll`
+  - `ntkTargetTitlePath=/webtoon/848103`
+  - `ntkTargetEpisodePath=/webtoon/848103/1580934`
+  - `ntkTargetImageEpisodeId=688553`
+  - `ntkTargetImageWorkId=19192`
+  - `ntkTargetImageCount=45`
+  - `ntkMode=native-ack`
+  - `ntkBaseMode=2`
+  - strict fresh cache/ACK clear enabled.
+- Result: `BUILD SUCCESSFUL`.
+- Evidence:
+  - First drawable: `10480ms`.
+  - ACK proof: `bridge-ack-200`, then `guard-fetch-ack-200`.
+  - Proof scope: `/webtoon/848103/1580934`.
+  - Corrected path: `early_urls_anchor_replace_before_first ... incoming=2,merged=45`.
+  - Anchor cached decode: `ntk_anchor_cached_decode_ready ... decodeMs=34,width=690`.
+  - Signed API image list later confirmed: `ntk_images_api_after_ack_proof_signed_webview ... count=45`.
+  - Visible coverage samples during scroll: `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+  - Post-stop drift samples: `maxPageDelta=0`, `maxOffsetDelta=0`.
+- Remaining note:
+  - First drawable is stable but not fast for this hostile stale generated case because valid ACK/API correction arrives late. Current user priority accepts speed compromise and focuses on ACK/stability.
+
+## 2026-06-20 01:20:00 +09:00 Random generated long webtoon exposed placeholder after ACK success
+
+- New strict fresh random failure:
+  - Path: `/webtoon/18638/1547927`
+  - Title: `시한부는 흑막가에 위장 취업한다`
+  - Episode: `7화`
+  - Mode: `generated`
+  - `imageWorkId=18638`
+  - `imageEpisodeId=495442`
+  - `imageCount=91`
+- Failure:
+  - First random scroll sample failed coverage:
+    - `viewportPx=2274`
+    - `drawablePx=1564`
+    - `missingPx=0`
+    - `placeholderPx=711`
+    - `loading=1`
+    - `pages=4`
+  - This was not an ACK regression.
+- Root cause:
+  - The early verified generated seed was valid, but initial install expanded only one seed URL to `NTK_GENERATED_INITIAL_RECOVERY_PAGES=4`.
+  - The test began fast scrolling before the full 91-page model/near-window foreground requests caught up.
+  - The viewport then exposed the next not-yet-rendered generated page as a loading placeholder.
+- Fix applied:
+  - For `/manhwa/` and `/webtoon/` generated episodes, initial recovery expansion now installs a 12-page first-scroll window instead of only 4 pages.
+  - Pre-first-bitmap continuous foreground requests use the same generated recovery window for manhwa/webtoon episodes.
+  - Initial generated-to-verified replacement matching now accepts pages in that 12-page window, so late signed/verified URL corrections can update the visible early window, not just pages 1-4.
+- Bad/risky approaches to avoid:
+  - Do not treat this as an ACK issue; the observed failure is placeholder exposure caused by too-small initial generated window.
+  - Do not solve by adding an artificial scroll delay or by relaxing the visible-viewport assertion.
+  - Do not expand every unknown generated comic to the full reported count before first bitmap; keep the larger early window scoped to manhwa/webtoon continuous-scroll UX.
+
+## 2026-06-20 01:35:00 +09:00 Initial generated window fix validated on main
+
+- Build validation:
+  - `.\gradlew.bat --no-daemon :app:assembleDebug`
+  - Result: `BUILD SUCCESSFUL`.
+- Target repro validation:
+  - Test: `NtkRandomStressInstrumentedTest#randomNtkEpisodesOpenAndScroll`
+  - Path: `/webtoon/18638/1547927`
+  - Mode: `generated`
+  - `imageEpisodeId=495442`
+  - `imageCount=91`
+  - Result: `BUILD SUCCESSFUL`.
+  - Evidence:
+    - Initial generated expansion: `from=1,to=12,known=91`.
+    - Initial continuous request: `start=0,count=12,effective=12`.
+    - First drawable: `4582ms`.
+    - Strict ACK proof:
+      - `bridge-ack-200`
+      - `native-fetch-ack-200`
+      - `ntk_ack_proof {"scope":"/webtoon/18638/1547927","source":"native-fetch-ack-200"}`
+- Random strict fresh validation:
+  - Test: `NtkRandomStressInstrumentedTest#randomNtkEpisodesOpenAndScroll`
+  - Path: `/webtoon/11013/1118055`
+  - Mode: `native-ack`
+  - `imageEpisodeId=184402`
+  - `imageCount=73`
+  - Result: `BUILD SUCCESSFUL`.
+  - Evidence:
+    - Initial generated expansion: `from=1,to=12,known=73`.
+    - Initial continuous request: `start=0,count=12,effective=12`.
+    - First drawable: `4430ms`.
+    - Strict ACK proof:
+      - `bridge-ack-200`
+      - `native-fetch-ack-200`
+      - `ntk_ack_proof {"scope":"/webtoon/11013/1118055","source":"native-fetch-ack-200"}`
+- Commit readiness:
+  - This slice is main-branch appropriate: it fixes stale generated first drawable recovery and long generated webtoon initial window placeholder exposure while preserving actual strict ACK proof requirements.
+
