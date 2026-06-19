@@ -1743,13 +1743,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun coverageStats(state: DrawState): CoverageStats {
         if (state.empty) return CoverageStats(0, state.height, 0, 0, 0)
+        val visibleContentPx = ceil(
+            min(
+                state.height.toFloat(),
+                max(0f, state.contentHeight - state.scrollOffset)
+            )
+        ).toInt().coerceIn(0, state.height)
         var drawablePx = 0
         var placeholderPx = 0
         var drawableItems = 0
         var coveredPx = 0
         for (item in state.items) {
-            val top = floor(max(0f, item.top)).toInt().coerceIn(0, state.height)
-            val bottom = ceil(min(state.height.toFloat(), item.top + item.pageHeight)).toInt().coerceIn(top, state.height)
+            val top = floor(max(0f, item.top)).toInt().coerceIn(0, visibleContentPx)
+            val bottom = ceil(min(visibleContentPx.toFloat(), item.top + item.pageHeight)).toInt().coerceIn(top, visibleContentPx)
             if (bottom <= top) continue
             val px = bottom - top
             coveredPx += px
@@ -1760,14 +1766,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 placeholderPx += px
             }
         }
-        val rawMissingPx = max(0, state.height - coveredPx)
+        val rawMissingPx = max(0, visibleContentPx - coveredPx)
         val missingPx = if (rawMissingPx <= COVERAGE_EDGE_FILL_PX && placeholderPx == 0 && drawablePx > 0) {
             0
         } else {
             rawMissingPx
         }
         return CoverageStats(
-            drawablePx = if (missingPx == 0) max(drawablePx, state.height - placeholderPx) else drawablePx,
+            drawablePx = if (missingPx == 0) max(drawablePx, visibleContentPx - placeholderPx) else drawablePx,
             missingPx = missingPx,
             placeholderPx = placeholderPx,
             drawableItems = drawableItems,

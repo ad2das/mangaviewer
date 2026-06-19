@@ -555,7 +555,9 @@ class ReaderSession(
 
     private fun installEarlyNtkUrls(target: Manga, urls: List<String>, loadStartedAt: Long): Boolean {
         if (cancelled.get() || pagesInstalled.get()) return false
-        val initialUrls = if (shouldDeferGeneratedEarlyExpansionBeforeFirstBitmap(target, urls)) {
+        val initialUrls = if (shouldKeepManhwaGeneratedEarlyToObservedUrls(target, urls)) {
+            urls
+        } else if (shouldDeferGeneratedEarlyExpansionBeforeFirstBitmap(target, urls)) {
             expandInitialVerifiedGeneratedEarlyUrls(target, urls)
         } else {
             expandVerifiedGeneratedEarlyUrls(target, urls)
@@ -588,6 +590,7 @@ class ReaderSession(
         loadStartedAt: Long
     ) {
         if (!isNtkSource(target, title) || urls.isEmpty()) return
+        if (shouldKeepManhwaGeneratedEarlyToObservedUrls(target, urls)) return
         control.execute {
             val deadline = SystemClock.elapsedRealtime() + NTK_EARLY_GENERATED_EXPAND_AFTER_FIRST_BITMAP_WAIT_MS
             while (!cancelled.get() && !firstBitmapLogged.get() && SystemClock.elapsedRealtime() < deadline) {
@@ -685,6 +688,13 @@ class ReaderSession(
         return urls.size < NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD
     }
 
+    private fun shouldKeepManhwaGeneratedEarlyToObservedUrls(target: Manga, urls: List<String>): Boolean {
+        if (!isNtkSource(target, title)) return false
+        if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return false
+        if (urls.size != 1) return false
+        return urls.all { isNtkGeneratedImageUrl(it) }
+    }
+
     private fun expandVerifiedGeneratedEarlyUrls(target: Manga, urls: List<String>): List<String> {
         if (!isNtkSource(target, title) || urls.isEmpty()) return urls
         val seed = urls.firstOrNull { isNtkGeneratedImageUrl(it) } ?: return urls
@@ -754,6 +764,10 @@ class ReaderSession(
 
     private fun isNtkManhwaOrWebtoonEpisodePath(path: String?): Boolean {
         return NTK_EPISODE_PATH.matchEntire(path.orEmpty()) != null
+    }
+
+    private fun isNtkManhwaEpisodePath(path: String?): Boolean {
+        return path.orEmpty().startsWith("/manhwa/", ignoreCase = true)
     }
 
     private fun installEarlyGeneratedNtkUrlsIfBoardOnly(target: Manga, urls: List<String>, loadStartedAt: Long): Boolean {
@@ -1006,7 +1020,15 @@ class ReaderSession(
                         verifiedApiUrls.size >= knownGeneratedCount ||
                         urls.none { isNtkGeneratedImageUrl(it) }
                 )
-        var sourceUrls = if (shouldReplaceWithShortVerifiedApi) {
+        var sourceUrls = if (shouldKeepManhwaGeneratedAppendToObservedUrls(target, urls)) {
+            val observed = observedInitialManhwaGeneratedUrls(target, urls)
+            Log.d(
+                TAG,
+                "reader_ntk_generated_full_keep_observed_manhwa path=${target.ntkEpisodePath}," +
+                    "from=${urls.size},to=${observed.size}"
+            )
+            observed
+        } else if (shouldReplaceWithShortVerifiedApi) {
             Log.d(
                 TAG,
                 "reader_ntk_generated_full_replace_with_verified_api path=${target.ntkEpisodePath}," +
@@ -1145,6 +1167,21 @@ class ReaderSession(
             )
         }
         return filtered
+    }
+
+    private fun shouldKeepManhwaGeneratedAppendToObservedUrls(target: Manga, urls: List<String>): Boolean {
+        if (!isNtkSource(target, title)) return false
+        if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return false
+        if (urls.size <= 1 || urls.any { !isNtkGeneratedImageUrl(it) }) return false
+        val observed = observedInitialManhwaGeneratedUrls(target, urls)
+        return observed.isNotEmpty() && observed.size < urls.size
+    }
+
+    private fun observedInitialManhwaGeneratedUrls(target: Manga, fallback: List<String>): List<String> {
+        val observed = ReaderImageCache
+            .earlyNtkGeneratedSuccessImageUrls(target.ntkEpisodePath, SystemClock.elapsedRealtime() - 30000L)
+            .filter { isNtkGeneratedImageUrl(it) }
+        return observed.ifEmpty { fallback.take(1) }
     }
 
     private fun postInitialFullAppendPublish(
@@ -3867,6 +3904,7 @@ class ReaderSession(
                     "anchor=$anchor,generation=$generation,image=${page.image?.substringAfterLast('/')}"
             )
             ViewerWarmupManager.logMetric("reader_ntk_pre_anchor_request_deferred_until_anchor_asset", index.toLong())
+            schedulePreAnchorFallbackRetry(index, page, generation)
             return true
         }
         if (ntkCoordinator?.allowsPreAnchorFallback(index, page.image, "shouldDeferNtkPreAnchorPageRequest") == true) {
@@ -3930,7 +3968,13 @@ class ReaderSession(
         if (!preAnchorFallbackRetries.add(index)) return
         val delayMs = ntkCoordinator
             ?.preAnchorFallbackRetryDelayMs(index, page.image)
-            ?.coerceAtMost(NTK_PRE_ANCHOR_FALLBACK_RETRY_MS)
+            ?.let { remaining ->
+                if (remaining > 0L) {
+                    remaining.coerceAtMost(NTK_PRE_ANCHOR_FALLBACK_RETRY_MAX_MS)
+                } else {
+                    NTK_PRE_ANCHOR_FALLBACK_RETRY_MS
+                }
+            }
             ?: NTK_PRE_ANCHOR_FALLBACK_RETRY_MS
         main.postDelayed({
             preAnchorFallbackRetries.remove(index)
@@ -7276,6 +7320,7 @@ class ReaderSession(
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val NTK_VISIBLE_GENERATED_BYTE_HEDGE_DELAY_MS = 0L
         private const val NTK_PRE_ANCHOR_FALLBACK_RETRY_MS = 60L
+        private const val NTK_PRE_ANCHOR_FALLBACK_RETRY_MAX_MS = 600L
         private const val NTK_PRE_ANCHOR_FALLBACK_MAX_AHEAD = 8
         private const val NTK_PRE_ANCHOR_VERIFIED_GENERATED_AHEAD = 18
         private const val NTK_EARLY_URL_HANDOFF_WAIT_MS = 4200L

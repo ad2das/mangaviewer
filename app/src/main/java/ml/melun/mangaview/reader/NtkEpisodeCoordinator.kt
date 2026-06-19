@@ -36,6 +36,11 @@ internal class NtkEpisodeCoordinator(
 ) {
     private val epoch = NEXT_EPOCH.incrementAndGet()
     private val createdAtMs = android.os.SystemClock.elapsedRealtime()
+    private val anchorExclusiveFallbackMs = if (path.startsWith("/webtoon/", ignoreCase = true)) {
+        WEBTOON_ANCHOR_EXCLUSIVE_FALLBACK_MS
+    } else {
+        MANHWA_ANCHOR_EXCLUSIVE_FALLBACK_MS
+    }
     @Volatile
     private var phase: NtkBootPhase = NtkBootPhase.OPENING
 
@@ -116,9 +121,9 @@ internal class NtkEpisodeCoordinator(
     fun preAnchorFallbackRetryDelayMs(pageIndex: Int, image: String?): Long {
         if (!isNtkEpisode || pageIndex == anchorPageIndex) return 0L
         val initialNearPage = isInitialNearPage(pageIndex, image)
-        if (!initialNearPage) return ANCHOR_EXCLUSIVE_FALLBACK_MS
+        if (!initialNearPage) return anchorExclusiveFallbackMs
         val ageMs = android.os.SystemClock.elapsedRealtime() - createdAtMs
-        return (ANCHOR_EXCLUSIVE_FALLBACK_MS - ageMs).coerceAtLeast(0L)
+        return (anchorExclusiveFallbackMs - ageMs).coerceAtLeast(0L)
     }
 
     private fun relaxedPhaseFor(pageIndex: Int, image: String?, source: String): NtkBootPhase {
@@ -127,7 +132,7 @@ internal class NtkEpisodeCoordinator(
         val initialNearPage = isInitialNearPage(pageIndex, image)
         if (!initialNearPage) return currentPhase
         val ageMs = android.os.SystemClock.elapsedRealtime() - createdAtMs
-        if (ageMs < ANCHOR_EXCLUSIVE_FALLBACK_MS) return currentPhase
+        if (ageMs < anchorExclusiveFallbackMs) return currentPhase
         Log.d(
             TAG,
             "ntk_anchor_exclusive_fallback page=$pageIndex,anchor=$anchorPageIndex,ageMs=$ageMs," +
@@ -145,7 +150,8 @@ internal class NtkEpisodeCoordinator(
 
     companion object {
         private const val TAG = "ViewerPerf"
-        private const val ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
+        private const val MANHWA_ANCHOR_EXCLUSIVE_FALLBACK_MS = 3000L
+        private const val WEBTOON_ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
         private const val INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 18
         private val NEXT_EPOCH = AtomicLong()
     }

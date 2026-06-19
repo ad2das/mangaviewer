@@ -91,6 +91,7 @@ object ReaderImageCache {
     private val initialGeneratedRangeFlights = ConcurrentHashMap<String, FutureTask<GeneratedRangeSnapshot?>>()
     private val foregroundStreamStartedAt = ConcurrentHashMap<String, Long>()
     private val earlyNtkImageUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
+    private val earlyNtkGeneratedSuccessUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
     private val ntkApiFallbackImages = ConcurrentHashMap<String, List<String>>()
     private val ntkGeneratedAckRecoveryFlights = ConcurrentHashMap<String, FutureTask<Boolean>>()
@@ -214,6 +215,7 @@ object ReaderImageCache {
         initialGeneratedRangeFlights.clear()
         foregroundStreamStartedAt.clear()
         earlyNtkImageUrls.clear()
+        earlyNtkGeneratedSuccessUrls.clear()
         ntkApiFallbackFlights.values.forEach { it.cancel(true) }
         ntkApiFallbackFlights.clear()
         ntkApiFallbackImages.clear()
@@ -241,6 +243,7 @@ object ReaderImageCache {
         val cancelledApi = cancelFutureTasks(ntkApiFallbackFlights) { it.endsWith(fallbackSuffix) }
         val cancelledAck = cancelFutureTasks(ntkGeneratedAckRecoveryFlights) { it.endsWith(fallbackSuffix) }
         earlyNtkImageUrls.remove(path)
+        earlyNtkGeneratedSuccessUrls.remove(path)
         ntkApiFallbackImages.keys.removeAll { it.endsWith(fallbackSuffix) }
         ntkAckRecoveryLaunchHolds.remove(path)
         episodeKeys.forEach { ntkGeneratedEpisodeExtensions.remove(it) }
@@ -669,6 +672,29 @@ object ReaderImageCache {
 
     fun earlyNtkAppendImageUrls(path: String?, minCreatedAtMs: Long): List<String> {
         return earlyNtkImageUrls(path, minCreatedAtMs, EARLY_NTK_APPEND_IMAGE_URL_TTL_MS)
+    }
+
+    fun earlyNtkGeneratedSuccessImageUrls(path: String?, minCreatedAtMs: Long): List<String> {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return emptyList()
+        val entry = earlyNtkGeneratedSuccessUrls[key] ?: return emptyList()
+        val ageMs = SystemClock.elapsedRealtime() - entry.createdAtMs
+        if (entry.createdAtMs + EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS < minCreatedAtMs ||
+            ageMs > EARLY_NTK_IMAGE_URL_TTL_MS
+        ) {
+            earlyNtkGeneratedSuccessUrls.remove(key, entry)
+            return emptyList()
+        }
+        return entry.urls
+    }
+
+    private fun rememberEarlyNtkGeneratedSuccessUrls(path: String?, urls: List<String>) {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty() || urls.isEmpty()) return
+        earlyNtkGeneratedSuccessUrls[key] = EarlyNtkImageUrls(
+            Collections.unmodifiableList(ArrayList(urls)),
+            SystemClock.elapsedRealtime()
+        )
     }
 
     private fun earlyNtkImageUrls(path: String?, minCreatedAtMs: Long, maxAgeMs: Long): List<String> {
@@ -5674,6 +5700,7 @@ object ReaderImageCache {
         }
         if (merged.isEmpty() || merged == existing) return
         rememberEarlyNtkImageUrls(path, merged)
+        rememberEarlyNtkGeneratedSuccessUrls(path, merged)
         logCacheEvent(
             "foreground_generated_success_early_merge",
             manga,

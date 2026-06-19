@@ -3556,7 +3556,9 @@ public class Manga {
         if(path == null || path.length() == 0)
             return;
         int knownCount = getNtkImageCount() > 0 ? getNtkImageCount() : ntkGeneratedImageCandidateCount();
-        int publishCount = Math.max(verifiedCount, NTK_EARLY_INITIAL_STREAM_PAGES);
+        int publishCount = "manhwa".equalsIgnoreCase(segment)
+                ? verifiedCount
+                : Math.max(verifiedCount, NTK_EARLY_INITIAL_STREAM_PAGES);
         int limit = Math.min(Math.min(publishCount, NTK_EARLY_INITIAL_STREAM_PAGES),
                 Math.max(1, knownCount));
         int safeStartPage = Math.max(1, startPage);
@@ -5047,10 +5049,10 @@ public class Manga {
 
     private LinkedHashSet<String> ntkGeneratedEpisodeIdCandidatesForPath(String path, String pathEpisodeId) {
         LinkedHashSet<String> episodeIds = new LinkedHashSet<>();
-        addNtkCandidateIfNumeric(episodeIds,
-                ntkKnownImageEpisodeIdForGeneratedCandidate("", pathEpisodeId));
         addNtkCandidateIfNumeric(episodeIds, ntkGeneratedEpisodeIdForPath(path));
         addNtkCandidateIfNumeric(episodeIds, pathEpisodeId);
+        addNtkCandidateIfNumeric(episodeIds,
+                ntkKnownImageEpisodeIdForGeneratedCandidate("", pathEpisodeId));
         return episodeIds;
     }
 

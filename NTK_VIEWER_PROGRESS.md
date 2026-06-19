@@ -28326,3 +28326,55 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Final webtoon log proof after per-test log clear:
     - First drawable: `reader_open_to_first_drawable source=ntk kind=tiles page=1 ms=3057`.
     - Strict ACK: `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+
+## 2026-06-19 10:17:31 +09:00 generated manhwa observed-only append and coverage fix on main
+
+- Branch/worktree:
+  - Continued on `C:\Users\Administrator\Downloads\mangaviewer-main-sync`, branch `main`, tracking `origin/main`.
+  - User explicitly clarified that meaningful fixes should land on `main`; keep this worktree as the commit/push target.
+- Root causes found:
+  - Generated manhwa image candidate order sometimes preferred stale metadata image episode ids before the current path episode id.
+    - Example repro: `/manhwa/25993/311026` could initially try stale generated candidates from image episode `233616`.
+  - Manhwa generated expansion assumed that p001 extension applies safely to p002+.
+    - This is false for some manhwa episodes and can create 404/empty slots before the app has actually observed drawable-safe URLs.
+  - Header-probe-discovered generated URLs were mixed into the same `earlyNtkImageUrls` handoff as foreground drawable-success URLs.
+    - Bad approach: treating header probe success as drawable-safe UI append proof. This allowed `p002+` slots to be appended before visible decode proof and caused actual UX visible coverage failures.
+  - The visible coverage verifier counted the natural empty space after a short single-page manhwa image as `missingPx`/`reader_visible_gap`.
+    - Bad approach: using full viewport height as the coverage denominator even when the actual reader content is shorter than the viewport. This is a verifier/app-metric false failure, not an image-loading failure.
+- Changes:
+  - `Manga.ntkGeneratedEpisodeIdCandidatesForPath()` now prefers the current numeric path episode id before known metadata fallback ids.
+  - Early generated publish keeps manhwa to verified observed count; webtoon can still expand to the initial stream window.
+  - `ReaderImageCache` now keeps a separate `earlyNtkGeneratedSuccessUrls` map populated only by foreground generated success, not generic header probes.
+  - `ReaderSession` keeps initial manhwa generated installs to observed URLs and reduces generated-only full append from header-probe lists back to foreground-success observed URLs.
+  - Pre-anchor deferred generated requests now schedule a bounded fallback retry instead of waiting indefinitely for an anchor asset.
+  - `NtkEpisodeCoordinator` uses a manhwa-specific 3000ms anchor-exclusive window and immediate webtoon fallback.
+  - `ReaderSurfaceView.coverageStats()` now measures only the viewport range where content actually exists; natural space after short content is no longer reported as missing image coverage.
+- Bad experiment retained as warning:
+  - Tried an initial continuous viewport/draw gate in `ReaderV2Activity` to hide early incomplete manhwa viewport states.
+  - Result: it could delay or suppress first drawable/render proof and created worse UX/test behavior. Do not repeat as a fix for image stability; solve URL/decode/coverage state instead.
+- Target validation:
+  - Manhwa repro `/manhwa/25993/311026`, image episode `233616`, image count `57`:
+    - Artifact: `build\ntk-random-perf\main_repro25993_manhwa_observed_only_20260619\20260619_094542`.
+    - Result: passed, first drawable `2706ms`, ACK `/api/ad/ack` 200 max `8616ms`, scroll failures `0`.
+  - Webtoon repro `/webtoon/10348/962600`, image episode `385127`, image count `92`:
+    - Artifact: `build\ntk-random-perf\main_repro10348_webtoon_after_observed_only_20260619\20260619_094643`.
+    - Result: passed, first drawable `2389ms`, ACK max `11878ms`, scroll failures `0`.
+- Actual UX validation after latest patches:
+  - Single comic UX passed:
+    - Command: `.\gradlew.bat --no-daemon :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true" "-Pandroid.testInstrumentationRunnerArguments.class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200"`.
+    - Prior failure proof showed the app had drawn one image and later strict ACK 200, but coverage counted natural short-content bottom space as missing. After the coverage fix, the same UX path passed.
+  - Combined actual UX passed:
+    - Command: `.\gradlew.bat --no-daemon :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.runLiveNetworkTests=true" "-Pandroid.testInstrumentationRunnerArguments.class=ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200,ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200,ml.melun.mangaview.EpisodeActivityNetworkTest#ntkHomeContinueUxSelectionOpensReaderWithAck200"`.
+    - Result: passed, tests `3`, failures `0`.
+- Random strict fresh validation:
+  - First random script attempt failed before running tests because the instrumentation APK was not installed while `-SkipInstall` was used.
+    - This is an execution setup failure, not an app regression.
+  - Re-run with install included:
+    - Command: `.\tools\ntk_random_perf.ps1 -DeviceSerial emulator-5554 -OutDir "build\ntk-random-perf\main_generated_observed_random3_strict_20260619" -Runs 3 -ScrollSteps 2 -AppendSteps 1 -Mode native-ack -ScrollInputMode touch -ScrollPattern mixed -HoldAfterFirstDrawableMs 22000 -StrictFresh -NoAppendProbe -RequireLiveRandom -ForceStopBeforeRun -FirstDrawableMaxMs 6000 -SkipBuild`.
+    - Artifact: `build\ntk-random-perf\main_generated_observed_random3_strict_20260619\20260619_101450`.
+    - Result: passed, seed `1781831690924`, cases `3`, scroll checks `6`, failures `0`, coverage `live-random`.
+    - Pipeline summary: first drawable entries `3`, ACK max summary `7838ms`, early URLs `617ms`, foreground `563ms`, stream `1512ms`, decode `1528ms`, drawable `1503ms`.
+- Remaining risk:
+  - ACK can still take several seconds on live network (`~8-12s` in recent proofs), but strict 200 is now shown in actual UX and random strict runs.
+  - Manhwa initial UI intentionally avoids appending generated p002+ until foreground success proof exists, so very short one-page initial surface is possible. This is preferable to showing wrong/404/advertising-like image slots.
+  - Keep future fixes focused on URL proof, drawable success, and real coverage; avoid broad gates or treating probe-only URLs as UI-ready.

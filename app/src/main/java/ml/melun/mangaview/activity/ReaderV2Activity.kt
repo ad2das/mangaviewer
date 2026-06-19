@@ -935,10 +935,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable: Boolean): Boolean {
-        return visibleInitialDrawable &&
-            isCurrentNtkReader() &&
-            !initialDrawGateOpen &&
-            !isInitialContinuousScrollReady()
+        return false
     }
 
     private fun maybeReleaseInitialNtkContinuousGate(reason: String) {
