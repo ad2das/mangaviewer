@@ -571,12 +571,13 @@ public class Utils {
         if(source == null || source.length() == 0)
             return;
         boolean targetNtk = "ntk".equals(source);
-        if(p.isNtkSite() == targetNtk)
+        if(targetNtk) {
+            p.setNtkSitePreset(p.getNtkResolvedRoot());
             return;
-        if(targetNtk)
-            p.setSitePreset(CustomHttpClient.NTK_COMIC_URL, CustomHttpClient.NTK_WEBTOON_URL);
-        else
-            p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
+        }
+        if(!p.isNtkSite())
+            return;
+        p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
     }
 
     private static void launchPreparedViewer(Context context, Manga manga, int code, boolean returnToEpisodes,

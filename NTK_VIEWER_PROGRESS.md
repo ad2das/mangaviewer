@@ -29683,3 +29683,51 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Some frame stats still show missed intervals under fast touch input, but the current agreed close-out focus is ACK proof and image/scroll stability rather than perfect jank elimination.
   - One random candidate list fetch logged `ntk_true_random_captcha_skip_api_challenge`; this was a candidate-selection API challenge skip, not a viewer ACK failure.
 
+## 2026-06-20 00:53:00 +09:00 Main branch NTK actual UX root handoff fixed
+
+- Confirmed branch state:
+  - `C:\Users\Administrator\Downloads\mangaviewer-main-sync` is on `main...origin/main`.
+  - Latest pushed main before this fix: `498ea83ea Stabilize NTK ACK and webtoon append handoff`.
+  - `C:\Users\Administrator\Downloads\mangaviewer` remains an old dirty `codex/ntk-strict-ack-proof` worktree and should not be used for current main close-out.
+- Actual UX post-handoff validation before this fix:
+  - `ntk_actual_ux_comic_post_handoff_20260620_003846.logcat`: pass.
+  - `ntk_actual_ux_webtoon_post_handoff_20260620_003846.logcat`: pass.
+  - `ntk_actual_ux_home_continue_post_handoff_20260620_003846.logcat`: failed.
+- Failure:
+  - Home continue card displayed NTK, selected `/webtoon/16968/1463195`, but the viewer fetch went to WFWF:
+    - `Request failed: https://wfwf455.com/webtoon/16968/1463195`
+    - `Unusable WFWF page: /webtoon/16968/1463195`
+  - This was not a fresh ACK regression. It was stale mixed site-root state: `Preference.isNtkSite()` can be true when one stored URL is NTK, while `webtoonUrl` still points at WFWF. `Utils.switchToTitleSourceSite()` returned early in that partial state and did not re-sync the NTK webtoon root before launching the reader.
+- Fix:
+  - `Utils.switchToTitleSourceSite()` now always calls `p.setNtkSitePreset(p.getNtkResolvedRoot())` for NTK titles instead of returning just because `isNtkSite()` is true.
+  - WFWF titles still switch back to the WFWF preset only when the current global site is NTK.
+- Validation after fix:
+  - Build: `.\gradlew.bat --no-daemon :app:assembleDebug` passed.
+  - Home continue actual UX:
+    - Log: `ntk_actual_ux_home_continue_root_fix_20260620_004814.logcat`
+    - Gradle: `BUILD SUCCESSFUL in 35s`.
+    - Selected: source `ntk`, path `/webtoon/16968/1463195`.
+    - First drawable: `reader_open_to_first_drawable ... ms=1918`.
+    - Initial coverage: `drawablePx=2274 missingPx=0 placeholderPx=0`.
+    - Strict ACK proof:
+      - `ntk_ack_proof {"scope":"/webtoon/16968/1463195","source":"native-fetch-ack-200"}`
+      - `ntk_server_ack_success_recorded ... source=native-fetch-ack-200,strictAdAck=true`
+  - Comic actual UX:
+    - Log: `ntk_actual_ux_comic_root_fix_20260620_004904.logcat`
+    - Gradle: `BUILD SUCCESSFUL in 37s`.
+    - First drawable: `2679ms`.
+    - Initial coverage: `drawablePx=1536 missingPx=0 placeholderPx=0`.
+    - Strict ACK proof: `native-fetch-ack-200`, `strictAdAck=true`.
+  - Webtoon actual UX:
+    - Log: `ntk_actual_ux_webtoon_root_fix_20260620_004904.logcat`
+    - Gradle: `BUILD SUCCESSFUL in 33s`.
+    - First drawable: `3448ms`.
+    - Initial coverage: `drawablePx=2274 missingPx=0 placeholderPx=0`.
+    - Strict ACK proof: `native-fetch-ack-200`, `strictAdAck=true`.
+- Bad approaches / do not repeat:
+  - Do not trust `Preference.isNtkSite()` alone as proof that all active roots are NTK. It can be true in a partially mixed state.
+  - Do not treat the NTK icon/source label on the home continue card as enough. Reader launch must force the actual HTTP root to the title source before preflight/fetch.
+  - Do not diagnose this class as an ACK/captcha failure first; check the resolved fetch host in logcat before touching ACK timing.
+- Remaining risk:
+  - This closes the actual UX stale-root failure seen on the latest main slice. Broader random strict-fresh coverage is still needed for new unseen episode/image combinations.
+
