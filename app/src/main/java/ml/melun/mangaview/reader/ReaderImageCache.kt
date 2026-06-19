@@ -5492,7 +5492,7 @@ object ReaderImageCache {
                     image,
                     true,
                     "transport=${result.attempt.transport},completed=$completedIndex,total=$totalAttempts,code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
-                        + ",block=${response.header("x-mangaviewer-ntk-image-hard-block").orEmpty()}"
+                        + ",block=${ntkImageHardBlock(response)}"
                 )
                 response.close()
                 if (generatedFastFallback && completedIndex == 0) {
@@ -5523,6 +5523,19 @@ object ReaderImageCache {
         }
         for (call in calls) call.cancel()
         throw IOException("Foreground image race failed", failure)
+    }
+
+    private fun ntkImageHardBlock(response: Response): String {
+        response.header("x-mangaviewer-ntk-image-hard-block")?.takeIf { it.isNotEmpty() }?.let {
+            return it
+        }
+        if (response.code != 403) return ""
+        val contentType = response.header("content-type").orEmpty().lowercase()
+        if (!contentType.contains("text/html")) return ""
+        val cloudflare = response.header("server").orEmpty().lowercase().contains("cloudflare") ||
+            response.header("cf-ray").orEmpty().isNotEmpty() ||
+            response.header("cf-cache-status").orEmpty().isNotEmpty()
+        return if (cloudflare) "cloudflare-html-403" else ""
     }
 
     private fun closeCompletedForegroundRaceLosers(

@@ -30235,4 +30235,41 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Next direction:
   - Commit/push this classification because it prevents repeated ACK misdiagnosis and records the current upstream block precisely.
   - If continuing beyond this commit, next real fix is a browser/WebView-valid byte acquisition path or alternate valid CDN source, but emulator Chrome currently also shows the same page images broken, so this live case cannot honestly be claimed solved by app-only changes yet.
+- Commit/push result:
+  - Committed on `main`: `d1070c68b Classify NTK image CDN hard blocks`.
+  - Pushed to `origin/main`.
+  - GitHub Actions `Release APK` run `27844621969` completed successfully in `1m52s`.
+  - This note is intentionally left as progress context for the next working loop; it is not a separate commit-worthy code change by itself.
+
+## 2026-06-20 04:36 +09:00 OkHttp `image-full` hard-block logging aligned
+
+- Continued immediately after `d1070c68b`.
+- Additional live-source probes:
+  - `sbxh8.com/webtoon/16968/1463195` still returns page HTML and viewer payload.
+  - `moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg` returns `403 text/html`, Cloudflare TOS block, with or without Referer/cookies.
+  - Legacy `moamoabon.com/black/episodes/.../p001.jpg` also returns the same 403 HTML.
+  - `sbxh6.com`, `newtoki460.com`, and `newtoki461.com` did not produce usable content from this network at this check.
+  - Page payload contains `viewerUrl:"https://blacktoon410.com/webtoons/16968/1463195.html"`, but that domain is not usable here: HTTPS handshake resets and HTTP redirects to a Korean access-block page.
+- Small code improvement:
+  - `ReaderImageCache` now classifies 403 HTML Cloudflare hard-blocks directly from OkHttp `Response` headers when logging `foreground_race_miss`.
+  - This fixes the previous ambiguity where `transport=image-full` failures logged `block=` empty while HttpEngine/image race lanes logged `block=cloudflare-html-403`.
+  - This does not read the body or delay successful image paths; it only inspects headers on failed responses.
+- Validation:
+  - Unit/compile check passed:
+    - `.\gradlew.bat --no-daemon :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.CustomHttpClientTest`.
+  - Actual UX diagnostic rerun:
+    - Artifact: `build\ntk-actual-ux-suite\20260620_043202`.
+    - Result: failed/timed out as expected because live image CDN still returns blocked HTML instead of image bytes.
+    - ACK proof again succeeded:
+      - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"fcd2cf7749b17252","source":"native-fetch-ack-200"}`.
+      - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=native-fetch-ack-200,strictAdAck=true`.
+    - `image-full` now logs the same hard-block reason:
+      - `reader_image_cache_event stage=foreground_race_miss,...transport=image-full,...code=403,...block=cloudflare-html-403`.
+- Current honest status:
+  - ACK is stable in these current actual UX diagnostics.
+  - App and emulator Chrome still cannot render this exact live case because the page-image CDN is serving Cloudflare hard-block HTML.
+  - The useful progress is that all foreground byte lanes now identify the same upstream hard block, so future work will not waste cycles on ACK or image-list false leads.
+- Bad approaches / do not repeat:
+  - Do not interpret `image-full block=` empty as a different failure class in older logs; that was a logging blind spot fixed here.
+  - Do not treat `viewerUrl` from the payload as an immediate usable fallback without verifying the domain. `blacktoon410.com` is not reachable from this current network.
 
