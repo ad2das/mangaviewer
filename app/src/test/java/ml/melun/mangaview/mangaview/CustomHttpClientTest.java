@@ -6,6 +6,8 @@ import java.io.InterruptedIOException;
 import java.net.ConnectException;
 import java.net.InetAddress;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -499,6 +501,38 @@ public class CustomHttpClientTest {
                 CustomHttpClient.normalizeNtkViewerApiImageSrcForTest(
                         "https://moamoabon.com/black/episodes/16968/1463195/p001.jpg",
                         "webtoon", "16968", "1463195"));
+    }
+
+    @Test
+    public void ntkImageHardBlockDetectsCloudflareTosHtmlOnly() {
+        String tos = "<!doctype html><html><title>Website Access Blocked</title>"
+                + "<body>Cloudflare Terms of Service violation</body></html>";
+        String challenge = "<!doctype html><html><title>Just a moment...</title>"
+                + "<body>Cloudflare security check</body></html>";
+        String nginx = "<html><body><h1>403 Forbidden</h1><center>nginx</center></body></html>";
+
+        assertEquals("cloudflare-tos", CustomHttpClient.ntkImageHardBlockReasonForTest(
+                403, "text/html", tos));
+        assertEquals("", CustomHttpClient.ntkImageHardBlockReasonForTest(
+                403, "text/html", challenge));
+        assertEquals("", CustomHttpClient.ntkImageHardBlockReasonForTest(
+                403, "text/html", nginx));
+        assertEquals("", CustomHttpClient.ntkImageHardBlockReasonForTest(
+                200, "text/html", tos));
+        assertEquals("", CustomHttpClient.ntkImageHardBlockReasonForTest(
+                403, "image/jpeg", tos));
+
+        Map<String, List<String>> cloudflareHtmlHeaders = new HashMap<>();
+        cloudflareHtmlHeaders.put("content-type", Collections.singletonList("text/html"));
+        cloudflareHtmlHeaders.put("server", Collections.singletonList("cloudflare"));
+        assertEquals("cloudflare-html-403", CustomHttpClient.ntkImageHardBlockReasonForTest(
+                403, cloudflareHtmlHeaders, "<html></html>"));
+
+        Map<String, List<String>> nginxHtmlHeaders = new HashMap<>();
+        nginxHtmlHeaders.put("content-type", Collections.singletonList("text/html"));
+        nginxHtmlHeaders.put("server", Collections.singletonList("nginx"));
+        assertEquals("", CustomHttpClient.ntkImageHardBlockReasonForTest(
+                403, nginxHtmlHeaders, "<html></html>"));
     }
 
     @Test

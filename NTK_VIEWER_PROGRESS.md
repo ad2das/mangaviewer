@@ -30194,3 +30194,45 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not treat visible ad banners as proof that manga images work. Ads render separately; page images are broken.
   - Do not regress to `sbxh7.com` as the main root for this case; it redirects away from the content path at the time of this check.
 
+## 2026-06-20 04:26 +09:00 Current CDN hard-block classification added on main
+
+- Continued from context compaction by reading this file and checking the active goal.
+- User reiterated that meaningful commits should be on `main`; current worktree for this entry is:
+  - `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`.
+  - Remote tracking: `origin/main`.
+- Change made:
+  - `CustomHttpClient` now classifies NTK image responses that are not real image bytes:
+    - `cloudflare-tos` when a 403 HTML body contains Cloudflare "Website Access Blocked" / Terms of Service language.
+    - `cloudflare-html-403` when a 403 HTML response has Cloudflare response headers.
+  - Normalized NTK image responses expose the classification through `x-mangaviewer-ntk-image-hard-block`.
+  - `ntk_foreground_image_race_done` logs now include `block=...`.
+  - `ReaderImageCache` `foreground_race_miss` logs now include the hard-block header.
+  - Unit coverage added in `CustomHttpClientTest#ntkImageHardBlockDetectsCloudflareTosHtmlOnly`.
+- Validation:
+  - Unit test passed:
+    - `.\gradlew.bat --no-daemon :app:testDebugUnitTest --tests ml.melun.mangaview.mangaview.CustomHttpClientTest`.
+  - Actual UX quick diagnostic:
+    - Command: `& .\tools\ntk_actual_ux_suite.ps1 -DeviceSerial emulator-5554 -Tests "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" -TimeoutMs 90000`.
+    - Artifact: `build\ntk-actual-ux-suite\20260620_042234`.
+    - Result: failed/timed out because current live image CDN still did not return drawable image bytes.
+    - ACK proof still succeeded:
+      - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+      - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"350b08b082eaab8b","source":"native-fetch-ack-200"}`.
+    - Image-byte failure is now clearly classified:
+      - `ntk_foreground_image_race_done transport=httpengine,code=403,bytes=4452,accepted=false,block=cloudflare-html-403,...url=moamoabon.com/p001.jpg`.
+      - `reader_image_cache_event stage=foreground_race_miss,...code=403,...block=cloudflare-html-403`.
+- Current interpretation:
+  - This is not an ACK regression. Strict server ACK proof is present in the failing run.
+  - This is not an image-list discovery failure. WebView image API produced the episode image list.
+  - The failing layer is final image-byte delivery from `moamoabon.com`, which returns Cloudflare HTML 403 instead of image bytes in both app probes and emulator Chrome visual checks.
+- Bad approaches / do not repeat:
+  - Do not spend another loop treating this specific failure as missing ACK unless a new log actually lacks strict `/api/ad/ack` 200 proof.
+  - Do not call a run successful just because ads render or image URLs are listed.
+  - Do not accept 403 HTML as a placeholder, image, or soft success.
+  - Do not hide this with delays, loading screens, or relaxed assertions.
+  - `image-full` OkHttp fallback logs may still show `block=` empty because they do not yet use the same normalized HttpEngine response path; the foreground race lane now provides the hard-block evidence.
+- Next direction:
+  - Commit/push this classification because it prevents repeated ACK misdiagnosis and records the current upstream block precisely.
+  - If continuing beyond this commit, next real fix is a browser/WebView-valid byte acquisition path or alternate valid CDN source, but emulator Chrome currently also shows the same page images broken, so this live case cannot honestly be claimed solved by app-only changes yet.
+

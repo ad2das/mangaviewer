@@ -5851,6 +5851,7 @@ public class CustomHttpClient {
                         + ",code=" + (result == null ? 0 : result.code)
                         + ",bytes=" + (result == null || result.bodyBytes == null ? 0 : result.bodyBytes.length)
                         + ",accepted=" + accepted
+                        + ",block=" + ntkImageHardBlockReason(result)
                         + ",head=" + ntkShortBodyHead(result == null ? null : result.bodyBytes)
                         + ",error=" + (result == null ? null : result.error)
                         + ",ms=" + (System.currentTimeMillis() - startedAt)
@@ -5896,7 +5897,78 @@ public class CustomHttpClient {
             headers.put("x-mangaviewer-normalized-status", Collections.singletonList("404"));
             return NtkQuicFetcher.Result.fromBytes(404, result.bodyBytes, headers);
         }
+        String hardBlock = ntkImageHardBlockReason(result);
+        if(hardBlock.length() > 0) {
+            Map<String, List<String>> headers = result.headers == null
+                    ? new HashMap<>() : new HashMap<>(result.headers);
+            headers.put("x-mangaviewer-ntk-image-hard-block",
+                    Collections.singletonList(hardBlock));
+            return NtkQuicFetcher.Result.fromBytes(result.code, result.bodyBytes, headers);
+        }
         return result;
+    }
+
+    private static String ntkImageHardBlockReason(NtkQuicFetcher.Result result) {
+        if(result == null || result.error != null || result.bodyBytes == null)
+            return "";
+        String reason = ntkImageHardBlockReason(result.code, contentTypeHeader(result.headers),
+                result.bodyBytes);
+        if(reason.length() > 0)
+            return reason;
+        if(result.code == 403
+                && contentTypeHeader(result.headers).toLowerCase(Locale.ROOT).contains("text/html")
+                && hasNtkCloudflareResponseHeader(result.headers))
+            return "cloudflare-html-403";
+        return "";
+    }
+
+    private static String ntkImageHardBlockReason(int code, String contentType, byte[] bytes) {
+        if(code != 403 || bytes == null || bytes.length == 0 || bytes.length > 16 * 1024)
+            return "";
+        String type = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+        if(type.length() > 0 && !type.contains("text/html") && !type.contains("text/plain"))
+            return "";
+        String head = new String(bytes, 0, Math.min(bytes.length, 4096), StandardCharsets.UTF_8)
+                .toLowerCase(Locale.ROOT);
+        if(head.contains("website access blocked")
+                && head.contains("cloudflare")
+                && (head.contains("terms of service") || head.contains("tos")))
+            return "cloudflare-tos";
+        if(head.contains("www.cloudflare-terms-of-service-abuse.com"))
+            return "cloudflare-tos";
+        return "";
+    }
+
+    static String ntkImageHardBlockReasonForTest(int code, String contentType, String body) {
+        return ntkImageHardBlockReason(code, contentType,
+                body == null ? null : body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static String ntkImageHardBlockReasonForTest(int code, Map<String, List<String>> headers,
+                                                 String body) {
+        NtkQuicFetcher.Result result = NtkQuicFetcher.Result.fromBytes(code,
+                body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8), headers);
+        return ntkImageHardBlockReason(result);
+    }
+
+    private static boolean hasNtkCloudflareResponseHeader(Map<String, List<String>> headers) {
+        if(headers == null || headers.isEmpty())
+            return false;
+        for(String key : headers.keySet()) {
+            if(key == null)
+                continue;
+            String lowerKey = key.toLowerCase(Locale.ROOT);
+            List<String> values = headers.get(key);
+            if("cf-ray".equals(lowerKey) || "cf-cache-status".equals(lowerKey))
+                return true;
+            if(!"server".equals(lowerKey) || values == null)
+                continue;
+            for(String value : values) {
+                if(value != null && value.toLowerCase(Locale.ROOT).contains("cloudflare"))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static boolean isNtkHtmlNotFoundBody(byte[] bytes) {

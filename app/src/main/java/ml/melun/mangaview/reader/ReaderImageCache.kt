@@ -5492,6 +5492,7 @@ object ReaderImageCache {
                     image,
                     true,
                     "transport=${result.attempt.transport},completed=$completedIndex,total=$totalAttempts,code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                        + ",block=${response.header("x-mangaviewer-ntk-image-hard-block").orEmpty()}"
                 )
                 response.close()
                 if (generatedFastFallback && completedIndex == 0) {
