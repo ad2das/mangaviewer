@@ -30652,3 +30652,84 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - ACK strict proof is restored on the target and should be committed as a bounded ACK fix.
   - Image CDN hard-block remains unresolved and must be treated as a separate stability issue if continuing beyond ACK closure.
 
+## 2026-06-20 16:00 +09:00 Main branch image hard-block loop narrowed after ACK proof
+
+- Continued on the correct main worktree:
+  - `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch is `main...origin/main`.
+  - `origin/main` already includes `d438a9896 Restore strict NTK ACK proof flow`.
+- ACK status:
+  - The latest target strict-fresh failure is not an ACK regression.
+  - `/webtoon/840347/1549957` recorded strict ACK proof:
+    - `bridge-ack-200`.
+    - `native-fetch-ack-200`.
+    - `ntk_webview_ack_preflight_done ... success=true`.
+  - Actual UX `/webtoon/16968/1463195` also recorded strict ACK proof before failing on image bytes.
+- Image/CDN findings:
+  - Headless WebView image probe for `https://moamoabon.com/black/episodes/18535/1549957/p001.jpg` reported `net::ERR_BLOCKED_BY_ORB`.
+  - Playwright/Chrome-channel page probe also saw `moamoabon.com/board_uploads/...` blocked by ORB in this environment.
+  - Host-side exact web HMAC attempt:
+    - GET page succeeded and extracted `imagesToken`.
+    - `/api/nv-issue` returned 200 and issued `nv`.
+    - Exact browser-style POST `/api/webtoon-images` returned `403 Forbidden` from host.
+  - App bridge can still unlock `/api/webtoon-images` in some cases, but the returned direct CDN URLs can be Cloudflare HTML 403 and therefore unusable.
+- Bad approach / do not repeat:
+  - Do not treat `/api/webtoon-images` 200 or partial `src` extraction as image success.
+  - Do not publish or trust generated/direct `moamoabon` page URLs unless initial image bytes are verified as a real bitmap.
+  - Do not keep retrying the same generated p001/p002 path with full, 512-byte, and 32-byte requests after Cloudflare HTML 403; it only delays recovery and makes the same failure look like many new cases.
+- Code change in progress:
+  - `ReaderImageCache` now records NTK generated image Cloudflare HTML 403 as an episode/page hard-block using the existing generated-not-found state.
+  - This is intentionally distinct in logs as `ntk_generated_hardblock`.
+  - The goal is to stop repeated generated URL retries after a hard-block and let API/page recovery logic proceed without wasting seconds on known-bad generated candidates.
+- Validation so far:
+  - `.\gradlew.bat --no-daemon :app:compileDebugKotlin` passed.
+  - Emulator verification still pending after this hard-block loop change.
+
+## 2026-06-20 16:24 +09:00 Main actual UX ACK restored, image CDN still hard-blocked
+
+- Re-tested actual UX selection on emulator-5554 from the main worktree after the Fast3 strict ACK fix.
+- Command:
+  - `.\tools\ntk_actual_ux_suite.ps1 -DeviceSerial emulator-5554 -Tests "ml.melun.mangaview.EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200" -TimeoutMs 180000`
+- Artifact:
+  - `build\ntk-actual-ux-suite\20260620_062434`.
+- Result:
+  - Test still failed, but not because ACK failed.
+  - Exit reason was `FAST_FAILED_ON_IMAGE_HARD_BLOCK count>=6`.
+- Strict ACK proof observed:
+  - `ntk_ack_state={"directAckProofFirstFast3Enabled":true,...,"nativeChallenge":true}`.
+  - Native challenge cache was used instead of being skipped in ack-only mode:
+    - `directAckProofFirstFast3NativeChallenge ... hasChallenge=true`.
+  - Bridge ACK succeeded:
+    - `ntk_viewer_quic_bridge_request method=POST,url=https://sbxh8.com/api/ad/ack,...`.
+    - `ntk_viewer_ad_bridge_quic_first code=200`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=bridge-ack-200,strictAdAck=true`.
+  - Guard fetch proof also succeeded:
+    - `ntk_ack_proof={"scope":"/webtoon/16968/1463195","tp":"f2c8c56d3fa76848","source":"guard-fetch-ack-200"}`.
+    - `ntk_server_ack_success_recorded path=/webtoon/16968/1463195,source=guard-fetch-ack-200,strictAdAck=true`.
+  - ACK preflight completed:
+    - `ntk_webview_ack_preflight_done path=/webtoon/16968/1463195,success=true,ms=11832`.
+- ACK root cause fixed:
+  - The active Fast3 override incorrectly skipped the native challenge cache whenever `ackOnly=true`.
+  - It also treated `trusted && !challenge` as success by calling `markAck()`, which is not acceptable strict proof.
+  - Fix:
+    - Do not skip native challenge cache in ack-only mode unless retrying after explicit `missing_canary`.
+    - Do not mark trusted/no-challenge as strict ACK proof.
+    - Log `trusted` and `nativeChallenge` state so future failures can distinguish real challenge flow from stale trusted shortcuts.
+- Remaining image failure:
+  - `/api/webtoon-images` succeeded and returned 62 direct page URLs for `/webtoon/16968/1463195`.
+  - The returned direct CDN URLs were `https://moamoabon.com/black/episodes/16968/1463195/p001.jpg` and following pages.
+  - Native image fetch then received Cloudflare HTML 403:
+    - `ntk_foreground_image_race_done transport=httpengine,code=403,bytes=4452,accepted=false,block=cloudflare-html-403,...url=moamoabon.com/p006.jpg`.
+  - The new hard-block state was recorded:
+    - `ntk_generated_hardblock ... source=foreground_race_403_cloudflare-html-403`.
+- Bad approach / do not repeat:
+  - Do not claim ACK failure when `ntk_ack_proof` and `ntk_server_ack_success_recorded ... strictAdAck=true` exist before the image failure.
+  - Do not accept `board_uploads` DOM images as manga pages. Logs showed `ntk_non_page_image_rejected ... board_uploads/...`, and those must remain rejected to avoid ad/image contamination.
+  - Do not treat `/api/webtoon-images` 200 as enough; page image bytes must be verified as real bitmaps, not Cloudflare HTML.
+- Current main commit candidate:
+  - Include:
+    - ACK Fast3 strict proof correction in `NtkWebViewFallbackManager.java`.
+    - Generated-image Cloudflare hard-block memoization in `ReaderImageCache.kt`.
+    - This progress record.
+  - Exclude:
+    - Temporary image WebView probe instrumentation and raw logcat artifacts.

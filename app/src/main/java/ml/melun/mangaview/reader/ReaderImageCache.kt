@@ -3051,6 +3051,14 @@ object ReaderImageCache {
                     true,
                     "page=${rangeFirstTarget.page},code=${rangeResponse.code}"
                 )
+                val hardBlock = ntkImageHardBlock(rangeResponse)
+                if (hardBlock.isNotEmpty()) {
+                    rememberNtkGeneratedHardBlocked(
+                        manga,
+                        image,
+                        "generated_initial_range_first_${rangeResponse.code}_$hardBlock"
+                    )
+                }
                 if (isPermanentGeneratedMissingCode(rangeResponse.code)) {
                     rememberNtkGeneratedNotFound(
                         manga,
@@ -4232,6 +4240,23 @@ object ReaderImageCache {
                     image,
                     true,
                     "bytes=$byteCount,code=${response.code}"
+                )
+                response.close()
+                return null
+            }
+            val hardBlock = ntkImageHardBlock(response)
+            if (hardBlock.isNotEmpty()) {
+                rememberNtkGeneratedHardBlocked(
+                    manga,
+                    image,
+                    "generated_range_first_chunk_${response.code}_$hardBlock"
+                )
+                logCacheEvent(
+                    "generated_range_first_chunk_hardblock",
+                    manga,
+                    image,
+                    true,
+                    "bytes=$byteCount,code=${response.code},block=$hardBlock"
                 )
                 response.close()
                 return null
@@ -5486,13 +5511,21 @@ object ReaderImageCache {
                 if (isPermanentGeneratedMissingCode(response.code)) {
                     rememberNtkGeneratedNotFound(manga, response.request.url.toString(), "foreground_race")
                 }
+                val hardBlock = ntkImageHardBlock(response)
+                if (hardBlock.isNotEmpty()) {
+                    rememberNtkGeneratedHardBlocked(
+                        manga,
+                        response.request.url.toString(),
+                        "foreground_race_${response.code}_$hardBlock"
+                    )
+                }
                 logCacheEvent(
                     "foreground_race_miss",
                     manga,
                     image,
                     true,
                     "transport=${result.attempt.transport},completed=$completedIndex,total=$totalAttempts,code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
-                        + ",block=${ntkImageHardBlock(response)}"
+                        + ",block=$hardBlock"
                 )
                 response.close()
                 if (generatedFastFallback && completedIndex == 0) {
@@ -5754,6 +5787,14 @@ object ReaderImageCache {
         val key = ntkGeneratedImageStateKey(image, target)
         if (ntkGeneratedNotFoundPages.add(key)) {
             Log.d(TAG, "ntk_generated_not_found key=$key,source=$source,image=${image.substringAfterLast('/').takeLast(64)}")
+        }
+    }
+
+    private fun rememberNtkGeneratedHardBlocked(manga: Manga, image: String, source: String) {
+        val target = ntkGeneratedTarget(image) ?: return
+        val key = ntkGeneratedImageStateKey(image, target)
+        if (ntkGeneratedNotFoundPages.add(key)) {
+            Log.d(TAG, "ntk_generated_hardblock key=$key,source=$source,image=${image.substringAfterLast('/').takeLast(64)}")
         }
     }
 
