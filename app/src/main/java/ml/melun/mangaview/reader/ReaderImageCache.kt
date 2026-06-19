@@ -790,7 +790,7 @@ object ReaderImageCache {
     ): Boolean {
         if (target == null || target.page <= 1) return false
         val path = manga.ntkEpisodePath?.takeIf { it.isNotBlank() } ?: return false
-        if (target.path != path) return false
+        if (!ntkGeneratedTargetMatchesMangaEpisode(manga, target)) return false
         return earlyNtkImageUrls(path, 0L)
             .any { sameNtkGeneratedPage(it, target) }
     }
@@ -820,10 +820,12 @@ object ReaderImageCache {
     ): Boolean {
         if (target.page !in 2..4) return false
         val path = manga.ntkEpisodePath?.takeIf { it.isNotBlank() } ?: return false
-        if (target.path != path) return false
+        if (!ntkGeneratedTargetMatchesMangaEpisode(manga, target)) return false
         return earlyNtkImageUrls(path, 0L).any { candidate ->
             val candidateTarget = ntkGeneratedTarget(candidate)
-            candidateTarget?.path == target.path && candidateTarget.page == 1
+            candidateTarget?.let {
+                ntkGeneratedTargetsSameEpisode(it, target) && it.page == 1
+            } == true
         }
     }
 
@@ -5575,7 +5577,33 @@ object ReaderImageCache {
 
     private fun sameNtkGeneratedPage(candidate: String, target: NtkGeneratedTarget): Boolean {
         val candidateTarget = ntkGeneratedTarget(candidate) ?: return false
-        return candidateTarget.path == target.path && candidateTarget.page == target.page
+        return ntkGeneratedTargetsSameEpisode(candidateTarget, target) && candidateTarget.page == target.page
+    }
+
+    private fun ntkGeneratedTargetMatchesMangaEpisode(
+        manga: Manga,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (path.isBlank()) return false
+        if (target.path.equals(path, ignoreCase = true)) return true
+        val activeParts = path.trim('/').split('/')
+        val targetParts = target.path.trim('/').split('/')
+        if (activeParts.size < 3 || targetParts.size < 3) return false
+        if (!activeParts[0].equals(targetParts[0], ignoreCase = true)) return false
+        return activeParts[2] == targetParts[2]
+    }
+
+    private fun ntkGeneratedTargetsSameEpisode(
+        first: NtkGeneratedTarget,
+        second: NtkGeneratedTarget
+    ): Boolean {
+        if (first.path.equals(second.path, ignoreCase = true)) return true
+        val firstParts = first.path.trim('/').split('/')
+        val secondParts = second.path.trim('/').split('/')
+        if (firstParts.size < 3 || secondParts.size < 3) return false
+        if (!firstParts[0].equals(secondParts[0], ignoreCase = true)) return false
+        return firstParts[2] == secondParts[2]
     }
 
     private fun normalizedNtkImageIdentity(image: String): String {

@@ -29612,3 +29612,74 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - A target `/manhwa/3552/1739980` run still logged one very short busy `reader_visible_loading=1` sample during active touch while current episode pages were expanding, although all asserted settled scroll samples were clean.
   - The latest random 3-run had no `placeholderPx>0` or `loading>0` samples, but this remains a follow-up class if stricter real-time no-placeholder sampling is required.
 
+## 2026-06-20 00:35:00 +09:00 Webtoon API-strict append handoff and ACK/captcha stability fixed on main
+
+- Continued after context compaction by reading this file, checking the active goal, and switching work back to direct `main` commit/push flow.
+- User issue:
+  - Main branch should receive the stabilized changes directly.
+  - Current close-out priority is ACK 200 proof and stability, not chasing every remaining speed micro-optimization.
+- New target failure:
+  - Target: `/webtoon/68335144/1584258`
+  - Title: `괴물 공작의 아내로 살아남는 법 28화`
+  - Previous episode: `/webtoon/68335144/1583032`
+  - Initial failing run: `ntk_target_webtoon_68335144_1584258_final_20260620_002639.logcat`
+  - Strict ACK for current episode succeeded:
+    - `bridge-ack-200`
+    - scoped `guard-fetch-ack-200`
+  - First drawable and scroll coverage were clean, but previous append failed because the probe ended at step 11 while the API-strict append fetch completed about 50ms later.
+- Root causes:
+  - Webtoon app episode path can be `/webtoon/{titleId}/{episodeId}` while generated/CDN image path uses a different image work id such as `/webtoon/19080/{episodeId}`.
+  - Exact path matching incorrectly rejected valid generated anchors for the same segment and episode.
+  - A partial 6-image early generated cache could block expansion to the full sibling generated list.
+  - For API-first webtoon append, previous/next append waited for the full API-strict fetch instead of polling early image URLs while the fetch was in flight.
+  - A captcha popup could be triggered while image rendering or ACK preflight was already making progress, causing a false `ui-captcha` fast fail even though strict ACK 200 arrived moments later.
+  - A late generated full publish could shrink already-installed drawable pages if it arrived after first bitmap.
+- Fixes:
+  - `ReaderImageCache` now treats generated targets as matching when segment and episode id match, even if title work id and image work id differ.
+  - `ReaderSession` now:
+    - preserves a validated generated seed episode id instead of replacing it with stale metadata.
+    - derives adjacent generated work id from a neighbor generated URL when target metadata is missing.
+    - upgrades partial early generated caches to full sibling generated lists instead of letting 6-image early caches block expansion.
+    - clears stale append index state before publishing appended pages.
+    - skips late generated full publish if it would shrink the currently installed drawable page count.
+    - defers previous/prepend publish during active viewport/background prepare windows.
+    - runs API-strict append fetches through the early handoff path, with a 4600ms early window, so boundary append can publish as soon as early image URLs are available instead of waiting for the full API fetch.
+  - `ReaderV2Activity` now:
+    - waits for initial NTK webtoon viewport drawable readiness before releasing initial drawable gate.
+    - extends initial captcha deferral only when ACK preflight, scoped ACK cookie, or drawable progress is active.
+- Validation:
+  - Build: `.\gradlew.bat --no-daemon :app:assembleDebug` passed.
+  - Target repro after fix:
+    - Log: `ntk_target_webtoon_68335144_1584258_api_strict_handoff_20260620_003031.logcat`
+    - Gradle: `BUILD SUCCESSFUL in 54s`.
+    - First drawable: `reader_open_to_first_drawable ... ms=4785`.
+    - Initial visible coverage: `drawablePx=2274 missingPx=0 placeholderPx=0`.
+    - Strict ACK:
+      - `ntk_ack_proof {"scope":"/webtoon/68335144/1584258","source":"guard-fetch-ack-200"}`
+      - `ntk_server_ack_success_recorded ... source=guard-fetch-ack-200,strictAdAck=true`
+    - Scroll samples: `placeholderPx=0`, `loading=0`, no post-stop drift in asserted samples.
+    - Next append:
+      - API-strict early handoff at `3284ms`.
+      - `success=true`.
+    - Previous append:
+      - API-strict early handoff at `1821ms`.
+      - `success=true`.
+  - Random strict fresh 3-run:
+    - Log: `ntk_random3_after_api_strict_handoff_20260620_003147.logcat`
+    - Gradle: `BUILD SUCCESSFUL in 1m42s`.
+    - Cases:
+      - `/manhwa/12123/127174`, mode `api-fallback`, first drawable `7443ms`, ACK `guard-fetch-ack-200`.
+      - `/webtoon/13897/1218883`, mode `generated`, first drawable `5480ms`, ACK `native-fetch-ack-200`, next/previous append success.
+      - `/manhwa/35501/1772556`, mode `native-ack`, first drawable `2447ms`, ACK `native-fetch-ack-200`, next append success.
+    - No asserted `placeholderPx>0` / `loading>0` viewer coverage failures in the run.
+- Bad approaches / do not repeat:
+  - Do not assume app episode path work id and generated/CDN image work id must be identical for webtoon. Same segment plus episode id is the stable match key.
+  - Do not let a 6-image early cache prevent a later full generated sibling list from being installed.
+  - Do not treat captcha UI during active ACK/image progress as a final hard block without waiting for the in-flight strict ACK proof.
+  - Do not solve append races only by extending the test wait. The app path must hand off early URLs while the full API fetch is still in flight.
+  - Do not publish a late generated list that shrinks already-visible page structure.
+- Remaining risk:
+  - Random 3-run is a confidence slice, not exhaustive proof across every NTK episode.
+  - Some frame stats still show missed intervals under fast touch input, but the current agreed close-out focus is ACK proof and image/scroll stability rather than perfect jank elimination.
+  - One random candidate list fetch logged `ntk_true_random_captcha_skip_api_challenge`; this was a candidate-selection API challenge skip, not a viewer ACK failure.
+

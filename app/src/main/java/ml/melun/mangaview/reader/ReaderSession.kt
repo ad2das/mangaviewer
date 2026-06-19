@@ -1177,6 +1177,20 @@ class ReaderSession(
         }
         sourceUrls = filterKnownMissingGeneratedInitialUrls(target, sourceUrls, loadStartedAt)
         if (sourceUrls.isEmpty()) return
+        if (firstBitmapLogged.get() &&
+            isNtkSource(target, title) &&
+            sourceUrls.all { isNtkGeneratedImageUrl(it) }
+        ) {
+            val installedForEpisode = installedDrawablePageCountForEpisode(target)
+            if (installedForEpisode > sourceUrls.size) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_generated_full_skip_late_shrink path=${target.ntkEpisodePath}," +
+                        "installed=$installedForEpisode,incoming=${sourceUrls.size}"
+                )
+                return
+            }
+        }
         var fullRefs = pageRefsForImages(target, sourceUrls)
         if (fullRefs.isEmpty()) return
         if (isNtkSource(target, title) &&
@@ -1255,6 +1269,7 @@ class ReaderSession(
             } else {
                 beginStructurePublish()
                 startIndex = pages.size
+                clearPageStateFromIndex(startIndex)
                 for (index in pages.indices) {
                     pages[index].totalPages = fullRefs.size
                 }
@@ -1401,6 +1416,12 @@ class ReaderSession(
     private fun installedGeneratedPageCountForCurrentEpisode(): Int = synchronized(pagesLock) {
         pages.count { page ->
             page.transitionTitle == null && isNtkGeneratedImageUrl(page.image.orEmpty())
+        }
+    }
+
+    private fun installedDrawablePageCountForEpisode(target: Manga): Int = synchronized(pagesLock) {
+        pages.count { page ->
+            page.transitionTitle == null && looseSameEpisodeForAppend(page.manga, target)
         }
     }
 
@@ -2948,7 +2969,6 @@ class ReaderSession(
 
     private fun seedNtkAppendGeneratedUrlsFromNeighbor(target: Manga, source: Manga, currentTitle: Title): Int {
         if (!isNtkSource(target, currentTitle) || !isNtkSource(source, currentTitle)) return 0
-        if (!imageRepository.imageUrls(target, appContext).isNullOrEmpty()) return 0
         val extension = generatedExtensionForAppendNeighbor(source)
         if (extension.isEmpty()) return 0
         val path = target.ntkEpisodePath?.trim().orEmpty()
@@ -2957,7 +2977,12 @@ class ReaderSession(
         val pathWorkId = match.groupValues[2].trim()
         val pathEpisodeToken = match.groupValues[3].trim()
         val inheritedWorkId = target.ntkImageWorkId.trim()
-        val imageWorkId = if (inheritedWorkId.isNotEmpty()) inheritedWorkId else pathWorkId
+        val neighborGeneratedWorkId = generatedWorkIdForAppendNeighbor(source)
+        val imageWorkId = when {
+            inheritedWorkId.isNotEmpty() -> inheritedWorkId
+            neighborGeneratedWorkId.isNotEmpty() -> neighborGeneratedWorkId
+            else -> pathWorkId
+        }
         val recordedImageEpisodeId = target.ntkImageEpisodeId.trim()
         val imageEpisodeId = if (pathEpisodeToken.matches(Regex("\\d+"))) {
             canonicalWebtoonAppendImageEpisodeId(
@@ -2971,6 +2996,10 @@ class ReaderSession(
             recordedImageEpisodeId
         }
         val count = target.ntkImageCount
+        val existingUrls = imageRepository.imageUrls(target, appContext)
+        if (!existingUrls.isNullOrEmpty() && (count <= 0 || existingUrls.size >= count)) {
+            return 0
+        }
         if (!imageWorkId.matches(Regex("\\d{1,12}")) ||
             !imageEpisodeId.matches(Regex("\\d{1,12}")) ||
             count <= 0
@@ -2979,6 +3008,7 @@ class ReaderSession(
                 TAG,
                 "append_adjacent_seed_generated_skip_invalid path=$path " +
                     "workId=$imageWorkId imageEpisodeId=$imageEpisodeId count=$count " +
+                    "existing=${existingUrls?.size ?: 0} neighborWorkId=$neighborGeneratedWorkId " +
                     "sourcePath=${source.ntkEpisodePath}"
             )
             return 0
@@ -2997,11 +3027,21 @@ class ReaderSession(
         ReaderImageCache.rememberEarlyNtkImageUrls(path, urls.take(NTK_APPEND_EARLY_PUBLISH_PAGES))
         Log.d(
             TAG,
-            "append_adjacent_seed_generated_urls targetId=${target.id} path=$path " +
+                "append_adjacent_seed_generated_urls targetId=${target.id} path=$path " +
                 "workId=$imageWorkId imageEpisodeId=$imageEpisodeId count=${urls.size} " +
-                "extension=$extension sourcePath=${source.ntkEpisodePath}"
+                "extension=$extension existing=${existingUrls?.size ?: 0} " +
+                "neighborWorkId=$neighborGeneratedWorkId sourcePath=${source.ntkEpisodePath}"
         )
         return urls.size
+    }
+
+    private fun generatedWorkIdForAppendNeighbor(source: Manga): String {
+        val earlyUrls = ReaderImageCache.earlyNtkImageUrls(source.ntkEpisodePath, 0L)
+        val early = earlyUrls.firstOrNull { isNtkGeneratedImageUrl(it) }
+        val earlyWorkId = generatedImageWorkId(early)
+        if (earlyWorkId.isNotEmpty()) return earlyWorkId
+        val sourceUrls = imageRepository.imageUrls(source, appContext)
+        return generatedImageWorkId(sourceUrls.firstOrNull { isNtkGeneratedImageUrl(it) })
     }
 
     private fun canonicalWebtoonAppendImageEpisodeId(
@@ -3039,6 +3079,26 @@ class ReaderSession(
         if (image.isNullOrBlank()) return ""
         val match = NTK_GENERATED_IMAGE_EXTENSION.find(image) ?: return ""
         return match.groupValues[1].lowercase(Locale.ROOT)
+    }
+
+    private fun generatedImageWorkId(image: String?): String {
+        if (image.isNullOrBlank()) return ""
+        Regex("/blacktoon/episodes/(\\d+)/", RegexOption.IGNORE_CASE)
+            .find(image)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it }
+        Regex("/wt/episodes/(\\d+)/", RegexOption.IGNORE_CASE)
+            .find(image)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it }
+        Regex("/(?:manhwa|webtoon)/(\\d+)/", RegexOption.IGNORE_CASE)
+            .find(image)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.let { return it }
+        return ""
     }
 
     private fun inheritNtkAppendGeneratedHints(target: Manga, source: Manga, currentTitle: Title) {
@@ -3083,7 +3143,9 @@ class ReaderSession(
                     "preferApiFirst=$preferApiFirst synthetic=$syntheticNtkPath " +
                     "isNtk=${isNtkSource(target, currentTitle)}"
             )
-            val initialResult = if (isNtkSource(target, currentTitle) && !preferApiFirst && !syntheticNtkPath) {
+            val initialResult = if (isNtkSource(target, currentTitle) && preferApiFirst) {
+                fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target, "api-strict")
+            } else if (isNtkSource(target, currentTitle) && !syntheticNtkPath) {
                 fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target)
             } else if (syntheticNtkPath) {
                 fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target, "api-strict")
@@ -3174,7 +3236,12 @@ class ReaderSession(
             }, "ntk-append-fetch")
             fetchThread.isDaemon = true
             fetchThread.start()
-            val deadline = SystemClock.elapsedRealtime() + NTK_APPEND_EARLY_GENERATED_WAIT_MS
+            val earlyWaitMs = if (mode == "api-strict") {
+                NTK_APPEND_EARLY_API_STRICT_HANDOFF_WAIT_MS
+            } else {
+                NTK_APPEND_EARLY_GENERATED_WAIT_MS
+            }
+            val deadline = SystemClock.elapsedRealtime() + earlyWaitMs
             while (!cancelled.get() && SystemClock.elapsedRealtime() < deadline) {
                 if (installEarlyGeneratedAppendUrlsIfAvailable(target) > 0) {
                     Log.d(
@@ -3282,7 +3349,7 @@ class ReaderSession(
             target.ntkEpisodePath,
             SystemClock.elapsedRealtime() - 30000L
         )
-        if (earlyUrls.isEmpty() && isNtkSyntheticEpisodePath(target.ntkEpisodePath)) {
+        if (earlyUrls.isEmpty()) {
             earlyUrls = ReaderImageCache.earlyNtkImageUrls(
                 target.ntkEpisodePath,
                 SystemClock.elapsedRealtime() - 30000L
@@ -3716,12 +3783,31 @@ class ReaderSession(
                     "append_adjacent_prepend_notify_near_ready targetId=${target.id} path=${target.ntkEpisodePath} " +
                         "ready=$ready required=$requiredReady inserted=$inserted total=$total"
                 )
+                val publishDelayMs = ntkAdjacentPrependPublishDelayMs()
+                if (publishDelayMs > 0L) {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_prepend_notify_defer_active_view path=${target.ntkEpisodePath} " +
+                            "delayMs=$publishDelayMs viewportAnchor=${currentViewportAnchor.get()}"
+                    )
+                    main.postDelayed(this, publishDelayMs)
+                    return
+                }
                 listener.onPagesPrepended(total, inserted, requiredReady)
                 if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
                 redeliverReadyPrependedStart(inserted)
             }
         }
         notify.run()
+    }
+
+    private fun ntkAdjacentPrependPublishDelayMs(): Long {
+        if (!isNtkSource(manga, title) || !firstBitmapLogged.get()) return 0L
+        val quietMs = ntkBackgroundPrepareQuietRemainingMs()
+        if (quietMs > 0L) return quietMs.coerceAtLeast(NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
+        val viewportAnchor = currentViewportAnchor.get()
+        if (viewportAnchor > 0) return NTK_PREPEND_NOTIFY_BOUNDARY_RECHECK_MS
+        return 0L
     }
 
     private fun generatedPrependNearReadyCount(inserted: Int, requiredReady: Int): Int = synchronized(pagesLock) {
@@ -5678,11 +5764,7 @@ class ReaderSession(
         if ((seedTargetPath != null && seedTargetPath.equals(target.ntkEpisodePath.orEmpty(), ignoreCase = true)) ||
             ntkGeneratedPrefixEpisodeMatchesTarget(seedMatch.groupValues[1], targetMatch)
         ) {
-            val pathEpisodeId = targetMatch.groupValues[3]
-            val imageEpisodeId = target.ntkImageEpisodeId.orEmpty().trim()
-            if (!imageEpisodeId.matches(Regex("\\d+")) || imageEpisodeId == pathEpisodeId) {
-                return ntkGeneratedSiblingImageUrl(seed, page)
-            }
+            return ntkGeneratedSiblingImageUrl(seed, page)
         }
         val segment = targetMatch.groupValues[1]
         val pathEpisodeId = targetMatch.groupValues[3]
@@ -8049,10 +8131,12 @@ class ReaderSession(
         private const val NTK_INITIAL_CONTINUOUS_DIRECT_WINDOW_MS = 5200L
         private const val NTK_INITIAL_CONTINUOUS_STAGGER_MS = 24L
         private const val NTK_APPEND_EARLY_GENERATED_WAIT_MS = 2600L
+        private const val NTK_APPEND_EARLY_API_STRICT_HANDOFF_WAIT_MS = 4600L
         private const val NTK_APPEND_EARLY_API_STRICT_LATE_WAIT_MS = 5200L
         private const val NTK_APPEND_API_STRICT_ACK_RETRY_WAIT_MS = 9000L
         private const val NTK_APPEND_EARLY_GENERATED_POLL_MS = 40L
         private const val NTK_APPEND_EARLY_PUBLISH_PAGES = 12
+        private const val NTK_PREPEND_NOTIFY_BOUNDARY_RECHECK_MS = 250L
         private val NTK_VIEWER_EPISODE_PATH = Regex("^/(manhwa|webtoon)/([^/?#]+)/([^/?#]+)(?:[/?#].*)?$")
         private val NTK_GENERATED_IMAGE_EXTENSION = Regex("(?i)\\.([a-z0-9]+)(?:[?#].*)?$")
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 16

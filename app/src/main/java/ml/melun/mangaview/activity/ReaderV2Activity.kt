@@ -937,7 +937,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable: Boolean): Boolean {
-        return false
+        return visibleInitialDrawable && requiresInitialNtkWebtoonViewportReady()
     }
 
     private fun maybeReleaseInitialNtkContinuousGate(reason: String) {
@@ -1946,18 +1946,39 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun shouldDeferInitialNtkCaptcha(manga: Manga?): Boolean {
         if (firstDrawableMetricLogged || pagesReady) return false
-        if (pendingInitialNtkCaptchaDeferrals >= NTK_INITIAL_CAPTCHA_MAX_DEFERS) return false
         val path = manga?.ntkEpisodePath ?: currentManga?.ntkEpisodePath
         if (path.isNullOrBlank()) return false
         val client = getHttpClient()
         if (client.hasRecentStrictNtkAdAckProof(path) ||
             client.hasNtkAccessProof() ||
             client.hasRecentNtkAccessVerification()) return false
+        val ackOrImageProgress =
+            client.isNtkWebViewAckPreflightInFlight(path) ||
+                client.hasUsableNtkAdAckCookieForPath(path) ||
+                hasInitialNtkDrawableProgress()
+        val maxDefers = if (ackOrImageProgress) {
+            NTK_INITIAL_CAPTCHA_PROGRESS_MAX_DEFERS
+        } else {
+            NTK_INITIAL_CAPTCHA_MAX_DEFERS
+        }
+        if (pendingInitialNtkCaptchaDeferrals >= maxDefers) return false
         val shouldDefer = isCurrentNtkReader() && (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"))
         if (shouldDefer && client.hasRecentCloudflareChallenge()) {
-            Log.d(TAG, "reader_ntk_captcha_defer_despite_recent_cf path=$path,attempt=${pendingInitialNtkCaptchaDeferrals + 1}")
+            Log.d(
+                TAG,
+                "reader_ntk_captcha_defer_despite_recent_cf path=$path," +
+                    "attempt=${pendingInitialNtkCaptchaDeferrals + 1},max=$maxDefers," +
+                    "ackOrImageProgress=$ackOrImageProgress"
+            )
         }
         return shouldDefer
+    }
+
+    private fun hasInitialNtkDrawableProgress(): Boolean {
+        if (!isCurrentNtkReader() || firstDrawableMetricLogged) return false
+        if (launchDrawableMetricPages.isNotEmpty()) return true
+        val snapshot = renderView.visibleCoverageSnapshot() ?: return false
+        return snapshot.drawablePx > 0
     }
 
     private fun retryInitialNtkAfterAccessProof(manga: Manga?): Boolean {
@@ -2832,6 +2853,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX = 45
         private const val NTK_INITIAL_CAPTCHA_DEFER_MS = 1800L
         private const val NTK_INITIAL_CAPTCHA_MAX_DEFERS = 2
+        private const val NTK_INITIAL_CAPTCHA_PROGRESS_MAX_DEFERS = 5
         private const val DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS = 45000L
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS = 450L
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS_STRICT_FRESH = 1_500L
