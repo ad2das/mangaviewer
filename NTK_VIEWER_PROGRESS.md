@@ -29513,3 +29513,49 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - No captcha/hard-block lines appeared in the saved evidence snippets.
   - This strengthens ACK/UX proof but does not replace broader random strict fresh stress coverage.
 
+## 2026-06-19 23:10:00 +09:00 Adjacent append stale page-state collision fixed on main
+
+- Continued from context compaction by reading this file and checking the active goal.
+- User correctly pointed out the final fix needed to be committed and pushed on `main`.
+- New strict fresh random failure found after the actual UX ACK proof:
+  - Failed case: `/manhwa/25104/290028`
+  - Title: `TOKOSHIE×BULLET`
+  - Episode: `1화`
+  - Mode: `api-fallback`
+  - `imageEpisodeId=248353`
+  - `imageCount=56`
+  - Failure: visible viewport had a transition card plus placeholder during scroll.
+  - Bad coverage sample before the fix: `drawablePx=1698`, `placeholderPx=578`, `loading=1`, `cards=1`.
+- Root cause:
+  - Current episode initially published a one-page generated/full fallback view.
+  - Adjacent next episode later appended at the same index range that had stale decoded/loading/delivery readiness state from the previous one-page structure.
+  - The append publish gate could therefore treat newly appended pages as ready using old index-keyed state and expose a card/placeholder before the real adjacent pages were drawable.
+  - This was not an ACK failure; strict ACK was already able to reach 200 in the target repro.
+- Fix:
+  - `ReaderSession.appendResolvedEpisode(...)` now clears page-index keyed transient state from the append insertion index before adding appended next-episode refs.
+  - Cleared state includes decoded/desired/source widths, loading/urgent sets, prefetch/retry/failure flags, delivery queues/backlogs, prepared backlog, delivered bitmaps/tiles, and retained range metadata that overlaps the append range.
+  - This is a structural stale-state fix, not a timer, delayed viewer open, assertion relaxation, or hardcoded case skip.
+- Validation:
+  - Build: `.\gradlew.bat --no-daemon :app:assembleDebug` passed.
+  - Target repro:
+    - Path: `/manhwa/25104/290028`
+    - Result: `run finished: 1 tests, 0 failed, 0 ignored`.
+    - First drawable: `2000ms`.
+    - Strict ACK: `bridge-ack-200` plus scoped `guard-fetch-ack-200`, `strictAdAck=true`.
+    - Initial/scroll coverage after fix: `placeholderPx=0`, `loading=0`; no post-stop drift observed.
+  - Random strict fresh 5-run:
+    - Result: `BUILD SUCCESSFUL` and `run finished: 1 tests, 0 failed, 0 ignored`.
+    - Cases:
+      - `/webtoon/8666/817321`, mode `api-fallback`, first drawable `2987ms`, ACK `guard-fetch-ack-200`, scroll `placeholderPx=0`, `loading=0`, no drift.
+      - `/manhwa/34081/1709683`, mode `generated`, first drawable `1145ms`, ACK `native-fetch-ack-200`, scroll `placeholderPx=0`, `loading=0`, no drift.
+      - `/webtoon/17718/1511989`, mode `native-ack`, first drawable `3179ms`, ACK `native-fetch-ack-200`, scroll `placeholderPx=0`, `loading=0`, no drift.
+      - `/manhwa/21721/190608`, mode `api-fallback`, first drawable `2142ms`, ACK `guard-fetch-ack-200`, scroll `placeholderPx=0`, `loading=0`, no drift.
+      - `/webtoon/9931/1329595`, mode `generated`, first drawable `5369ms`, ACK `native-fetch-ack-200`, scroll `placeholderPx=0`, `loading=0`, no drift.
+- Bad approaches / do not repeat:
+  - Do not weaken random visible-coverage assertions to make this pass.
+  - Do not treat card/placeholder exposure from adjacent append as an ACK problem when scoped ACK proof is already present.
+  - Do not publish appended episode structure based on index-only readiness state that may predate the append.
+- Remaining risk:
+  - This validates the observed stale-index append class and a 5-run strict fresh slice. It is still not mathematical proof over all NTK episodes.
+  - Strict jank perfection is still not claimed; current close-out remains ACK 200 plus image/scroll stability.
+

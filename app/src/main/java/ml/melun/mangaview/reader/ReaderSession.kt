@@ -3603,6 +3603,7 @@ class ReaderSession(
                 }
                 beginStructurePublish()
                 cardIndex = pages.size
+                clearPageStateFromIndex(cardIndex)
                 refs.forEachIndexed { offset, page -> page.pageIndex = cardIndex + offset }
                 pages.addAll(refs)
                 total = pages.size
@@ -5741,6 +5742,44 @@ class ReaderSession(
         }
     }
 
+    private fun clearPageStateFromIndex(startIndex: Int) {
+        clearConcurrentMapFromIndex(decodedWidths, startIndex)
+        clearConcurrentMapFromIndex(desiredWidths, startIndex)
+        clearConcurrentMapFromIndex(pendingDeliveryWidths, startIndex)
+        clearConcurrentMapFromIndex(sourceWidths, startIndex)
+        clearConcurrentMapFromIndex(achievableWidths, startIndex)
+        clearConcurrentMapFromIndex(transientGeneratedRetries, startIndex)
+        clearConcurrentMapFromIndex(initialContinuousPostedWidths, startIndex)
+        clearConcurrentMapFromIndex(earlyPreparedBitmaps, startIndex)
+        clearConcurrentMapFromIndex(inFlightWidths, startIndex)
+        clearConcurrentMapFromIndex(loadingPages, startIndex)
+        clearConcurrentMapFromIndex(urgentLoadingPages, startIndex)
+        clearConcurrentSetFromIndex(loading, startIndex)
+        clearConcurrentSetFromIndex(urgentLoading, startIndex)
+        clearConcurrentSetFromIndex(bytePrefetching, startIndex)
+        clearConcurrentSetFromIndex(preAnchorFallbackRetries, startIndex)
+        clearConcurrentSetFromIndex(idleFullWidthUpgradeScheduled, startIndex)
+        clearConcurrentSetFromIndex(failedPages, startIndex)
+        clearConcurrentSetFromIndex(listenerDrawableDeliveries, startIndex)
+        clearDeliveryQueueFromIndex(startIndex)
+        clearDeliveryMapFromIndex(primedDeliveryBacklog, startIndex)
+        clearDeliveryMapFromIndex(initialDeliveryBacklog, startIndex)
+        clearPreparedMapFromIndex(initialPreparedBacklog, startIndex)
+        synchronized(deliveredBitmaps) {
+            clearLinkedMapFromIndex(deliveredBitmaps, startIndex)
+            clearLinkedMapFromIndex(deliveredTiles, startIndex)
+            deliveredOwned.removeIf { it >= startIndex }
+            if (retainedFirstPage >= startIndex) {
+                retainedFirstPage = 0
+                retainedLastPage = -1
+                retainedAnchorPage = 0
+            } else if (retainedLastPage >= startIndex) {
+                retainedLastPage = startIndex - 1
+                retainedAnchorPage = retainedAnchorPage.coerceIn(retainedFirstPage, retainedLastPage)
+            }
+        }
+    }
+
     private fun shiftedIndexAfterRemoval(index: Int, rangeStart: Int, removedCount: Int): Int? {
         if (index < rangeStart) return index
         if (index < rangeStart + removedCount) return null
@@ -5759,6 +5798,26 @@ class ReaderSession(
         val entries = set.toList()
         set.clear()
         for (index in entries) shiftedIndexAfterRemoval(index, rangeStart, removedCount)?.let { set.add(it) }
+    }
+
+    private fun <T> clearConcurrentMapFromIndex(map: ConcurrentHashMap<Int, T>, startIndex: Int) {
+        if (map.isEmpty()) return
+        for (key in map.keys.toList()) {
+            if (key >= startIndex) map.remove(key)
+        }
+    }
+
+    private fun clearConcurrentSetFromIndex(set: MutableSet<Int>, startIndex: Int) {
+        if (set.isEmpty()) return
+        set.removeIf { it >= startIndex }
+    }
+
+    private fun <T> clearLinkedMapFromIndex(map: MutableMap<Int, T>, startIndex: Int) {
+        if (map.isEmpty()) return
+        val iterator = map.keys.iterator()
+        while (iterator.hasNext()) {
+            if (iterator.next() >= startIndex) iterator.remove()
+        }
     }
 
     private fun shiftDeliveryQueueAfterRemoval(rangeStart: Int, removedCount: Int) {
@@ -5818,6 +5877,25 @@ class ReaderSession(
         val entries = map.entries.toList()
         map.clear()
         for (entry in entries) shiftedIndexAfterRemoval(entry.key, rangeStart, removedCount)?.let { map[it] = entry.value }
+    }
+
+    private fun clearDeliveryQueueFromIndex(startIndex: Int) {
+        if (deliveryQueue.isEmpty()) return
+        val entries = ArrayList<Delivery>()
+        while (true) {
+            entries.add(deliveryQueue.poll() ?: break)
+        }
+        for (delivery in entries) {
+            if (delivery.index < startIndex) deliveryQueue.add(delivery)
+        }
+    }
+
+    private fun clearDeliveryMapFromIndex(map: ConcurrentHashMap<Int, Delivery>, startIndex: Int) {
+        clearConcurrentMapFromIndex(map, startIndex)
+    }
+
+    private fun clearPreparedMapFromIndex(map: ConcurrentHashMap<Int, PreparedDelivery>, startIndex: Int) {
+        clearConcurrentMapFromIndex(map, startIndex)
     }
 
     private fun isExpectedCancellation(t: Throwable?): Boolean {
