@@ -5131,6 +5131,7 @@ public class Manga {
 
     private LinkedHashSet<String> ntkGeneratedEpisodeIdCandidatesForPath(String path, String pathEpisodeId) {
         LinkedHashSet<String> episodeIds = new LinkedHashSet<>();
+        addNtkCandidateIfNumeric(episodeIds, getNtkImageEpisodeId());
         addNtkCandidateIfNumeric(episodeIds, ntkGeneratedEpisodeIdForPath(path));
         addNtkCandidateIfNumeric(episodeIds, pathEpisodeId);
         addNtkCandidateIfNumeric(episodeIds,

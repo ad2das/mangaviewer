@@ -40,6 +40,7 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.max
 
@@ -96,6 +97,7 @@ object ReaderImageCache {
     private val ntkApiFallbackImages = ConcurrentHashMap<String, List<String>>()
     private val ntkGeneratedAckRecoveryFlights = ConcurrentHashMap<String, FutureTask<Boolean>>()
     private val ntkAckRecoveryLaunchHolds = ConcurrentHashMap<String, Long>()
+    private val ntkAckRecoveryPriorityPath = AtomicReference("")
     private val ntkGeneratedEpisodeExtensions = ConcurrentHashMap<String, String>()
     private val ntkGeneratedNotFoundPages = ConcurrentHashMap.newKeySet<String>()
     private val ntkGeneratedReplacementClaims = ConcurrentHashMap.newKeySet<String>()
@@ -222,6 +224,7 @@ object ReaderImageCache {
         ntkGeneratedAckRecoveryFlights.values.forEach { it.cancel(true) }
         ntkGeneratedAckRecoveryFlights.clear()
         ntkAckRecoveryLaunchHolds.clear()
+        ntkAckRecoveryPriorityPath.set("")
         ntkGeneratedEpisodeExtensions.clear()
         ntkGeneratedNotFoundPages.clear()
         ntkGeneratedReplacementClaims.clear()
@@ -246,6 +249,7 @@ object ReaderImageCache {
         earlyNtkGeneratedSuccessUrls.remove(path)
         ntkApiFallbackImages.keys.removeAll { it.endsWith(fallbackSuffix) }
         ntkAckRecoveryLaunchHolds.remove(path)
+        ntkAckRecoveryPriorityPath.compareAndSet(path, "")
         episodeKeys.forEach { ntkGeneratedEpisodeExtensions.remove(it) }
         ntkGeneratedNotFoundPages.removeAll { it.startsWith("$path|") }
         ntkGeneratedReplacementClaims.removeAll { it.contains("|$path|") }
@@ -447,6 +451,41 @@ object ReaderImageCache {
         if (ntkAckRecoveryLaunchHolds.remove(key) != null) {
             Log.d(TAG, "reader_ntk_ack_recovery_launch_hold_clear path=$key,reason=$reason")
         }
+    }
+
+    @JvmStatic
+    fun prioritizeNtkAckRecovery(path: String?) {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return
+        val previous = ntkAckRecoveryPriorityPath.getAndSet(key)
+        if (previous != key) {
+            Log.d(TAG, "reader_ntk_ack_recovery_priority path=$key,previous=$previous")
+        }
+    }
+
+    @JvmStatic
+    fun clearNtkAckRecoveryPriority(path: String?, reason: String) {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return
+        if (ntkAckRecoveryPriorityPath.compareAndSet(key, "")) {
+            Log.d(TAG, "reader_ntk_ack_recovery_priority_clear path=$key,reason=$reason")
+        }
+    }
+
+    private fun ntkAckRecoveryPriorityBlocker(path: String): String? {
+        val priority = ntkAckRecoveryPriorityPath.get()
+        if (priority.isEmpty() || priority == path) return null
+        val hasPriorityProof = try {
+            getHttpClient().hasRecentStrictNtkAdAckProof(priority)
+        } catch (_: Exception) {
+            false
+        }
+        if (hasPriorityProof) {
+            ntkAckRecoveryPriorityPath.compareAndSet(priority, "")
+            Log.d(TAG, "reader_ntk_ack_recovery_priority_clear path=$priority,reason=strict_proof_seen")
+            return null
+        }
+        return priority
     }
 
     @JvmStatic
@@ -4520,6 +4559,16 @@ object ReaderImageCache {
     ): FutureTask<Boolean>? {
         val target = ntkGeneratedTarget(image) ?: return null
         val path = ntkFallbackKeyPath(manga, target)
+        ntkAckRecoveryPriorityBlocker(path)?.let { priority ->
+            logCacheEvent(
+                "generated_webview_ack_recovery_skip",
+                manga,
+                image,
+                true,
+                "path=$path,reason=current_ack_priority,current=$priority"
+            )
+            return null
+        }
         if (isNtkAckRecoveryLaunchHeld(path)) {
             logCacheEvent(
                 "generated_webview_ack_recovery_skip",
@@ -5649,7 +5698,7 @@ object ReaderImageCache {
 
     private fun rememberNtkGeneratedNotFound(manga: Manga, image: String, source: String) {
         val target = ntkGeneratedTarget(image) ?: return
-        val key = ntkGeneratedPageStateKey(manga, target)
+        val key = ntkGeneratedImageStateKey(image, target)
         if (ntkGeneratedNotFoundPages.add(key)) {
             Log.d(TAG, "ntk_generated_not_found key=$key,source=$source,image=${image.substringAfterLast('/').takeLast(64)}")
         }
@@ -5661,7 +5710,7 @@ object ReaderImageCache {
 
     private fun hasNtkGeneratedNotFound(manga: Manga, image: String): Boolean {
         val target = ntkGeneratedTarget(image) ?: return false
-        return ntkGeneratedNotFoundPages.contains(ntkGeneratedPageStateKey(manga, target))
+        return ntkGeneratedNotFoundPages.contains(ntkGeneratedImageStateKey(image, target))
     }
 
     fun isKnownNtkGeneratedNotFound(manga: Manga, image: String): Boolean {
@@ -5691,9 +5740,14 @@ object ReaderImageCache {
         throw IOException("Generated image not found: page=${target.page}")
     }
 
-    private fun ntkGeneratedPageStateKey(manga: Manga, target: NtkGeneratedTarget): String {
-        val path = manga.ntkEpisodePath?.takeIf { it.isNotBlank() } ?: target.path
-        return "$path|${target.page}"
+    private fun ntkGeneratedImageStateKey(image: String, target: NtkGeneratedTarget): String {
+        val extension = Regex("\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.lowercase()
+            ?: ""
+        return "${target.path}|${target.page}|$extension"
     }
 
     private fun rememberEarlyNtkGeneratedSuccess(manga: Manga, image: String) {

@@ -3435,14 +3435,17 @@ class ReaderSession(
                     finishStructurePublish()
                     finished = true
                     if (!cancelled.get()) {
+                        if (warm) {
+                            warmPrependedEpisode(inserted)
+                            warmPrependedEpisodeStart(inserted)
+                        }
                         listener.onPagesPrepended(total, inserted)
                         if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
-                        shouldWarm = warm
+                        redeliverReadyPrependedStart(inserted)
                     }
                 } finally {
                     if (!finished) finishStructurePublish()
                 }
-                if (shouldWarm) warmPrependedEpisode(inserted)
             }
             if (!posted) finishStructurePublish()
         } else {
@@ -3478,6 +3481,46 @@ class ReaderSession(
                 }
             }
             if (!posted) finishStructurePublish()
+        }
+    }
+
+    private fun redeliverReadyPrependedStart(inserted: Int) {
+        if (cancelled.get() || inserted <= 0) return
+        val limit = minOf(inserted, NTK_PREPENDED_EPISODE_START_DECODE_PAGES)
+        var redelivered = 0
+        for (index in 0 until limit) {
+            val page = pageRef(index) ?: continue
+            if (page.transitionTitle != null) continue
+            val bitmap: Bitmap?
+            val tiles: List<ReaderTile>?
+            synchronized(deliveredBitmaps) {
+                bitmap = deliveredBitmaps[index]?.takeIf { !it.isRecycled }
+                tiles = if (bitmap == null) {
+                    deliveredTiles[index]?.takeIf { list -> list.any { !it.bitmap.isRecycled } }
+                } else {
+                    null
+                }
+            }
+            if (bitmap != null) {
+                listener.onPageReady(index, bitmap)
+                listenerDrawableDeliveries.add(index)
+                redelivered++
+            } else if (!tiles.isNullOrEmpty()) {
+                val first = tiles.first()
+                listener.onPageTilesReady(index, first.sourceWidth, first.sourceHeight, tiles)
+                listenerDrawableDeliveries.add(index)
+                redelivered++
+            } else {
+                requestPage(
+                    index,
+                    busy = true,
+                    anchor = index == 0,
+                    generation = FOREGROUND_PRIME_WARM_GENERATION
+                )
+            }
+        }
+        if (redelivered > 0) {
+            Log.d(TAG, "append_adjacent_prepend_redeliver_ready inserted=$inserted,count=$redelivered")
         }
     }
 
@@ -3593,6 +3636,29 @@ class ReaderSession(
         val firstByte = max(1, inserted - byteAhead)
         for (index in (firstDecoded - 1) downTo firstByte) {
             val page = pageRef(index) ?: continue
+            network.execute { prefetchImageFileQuietly(index, page) }
+        }
+    }
+
+    private fun warmPrependedEpisodeStart(inserted: Int) {
+        if (cancelled.get() || inserted <= 0) return
+        val ntk = isNtkSource(manga, title)
+        if (!ntk) return
+        val decodeLast = minOf(inserted - 1, NTK_PREPENDED_EPISODE_START_DECODE_PAGES - 1)
+        for (index in 0..decodeLast) {
+            val page = pageRef(index) ?: continue
+            if (page.transitionTitle != null) continue
+            requestPage(
+                index,
+                busy = false,
+                anchor = index == 0,
+                generation = FOREGROUND_PRIME_WARM_GENERATION
+            )
+        }
+        val byteLast = minOf(inserted - 1, NTK_PREPENDED_EPISODE_START_BYTE_PAGES - 1)
+        for (index in (decodeLast + 1)..byteLast) {
+            val page = pageRef(index) ?: continue
+            if (page.transitionTitle != null) continue
             network.execute { prefetchImageFileQuietly(index, page) }
         }
     }
@@ -3749,6 +3815,7 @@ class ReaderSession(
         shiftConcurrentMap(achievableWidths, delta)
         shiftConcurrentMap(earlyPreparedBitmaps, delta)
         shiftConcurrentSet(failedPages, delta)
+        shiftConcurrentSet(listenerDrawableDeliveries, delta)
         inFlightWidths.clear()
         loading.clear()
         loadingPages.clear()
@@ -5136,6 +5203,48 @@ class ReaderSession(
         val image = page.image ?: return false
         if (!isNtkGeneratedImageUrl(image)) return false
         if (!isImageNotFoundError(e)) return false
+        if (!firstBitmapLogged.get() && index == currentStartPage()) {
+            val replacement = ntkGeneratedImageUrlForTarget(
+                image,
+                page.manga,
+                ntkGeneratedPageNumber(image) ?: (page.sourceIndex + 1)
+            )
+            if (!replacement.isNullOrBlank() && replacement != image) {
+                synchronized(pagesLock) {
+                    if (index !in pages.indices || pages[index] != page) return false
+                    for (ref in pages) {
+                        if (
+                            ref.transitionTitle == null &&
+                            ref.sourceIndex == page.sourceIndex &&
+                            ref.image == image &&
+                            Manga.sameEpisodeIdentity(ref.manga, page.manga)
+                        ) {
+                            ref.image = replacement
+                        }
+                    }
+                }
+                failedPages.remove(index)
+                decodedWidths.remove(index)
+                desiredWidths.remove(index)
+                pendingDeliveryWidths.remove(index)
+                sourceWidths.remove(index)
+                achievableWidths.remove(index)
+                inFlightWidths.remove(index)
+                Log.d(
+                    TAG,
+                    "remove_invalid_generated_page_retarget_anchor index=$index,source=${page.sourceIndex}," +
+                        "path=${page.manga.ntkEpisodePath},from=$image,to=$replacement,error=${e.message}"
+                )
+                requestPage(index, busy = true, anchor = true, generation = FOREGROUND_PRIME_WARM_GENERATION)
+                return true
+            }
+            Log.d(
+                TAG,
+                "remove_invalid_generated_page_defer_anchor index=$index,source=${page.sourceIndex}," +
+                    "path=${page.manga.ntkEpisodePath},image=$image,error=${e.message}"
+            )
+            return true
+        }
         val removeIndex: Int
         val total: Int
         val displayTotalPages: Int
@@ -5300,7 +5409,11 @@ class ReaderSession(
         if ((seedTargetPath != null && seedTargetPath.equals(target.ntkEpisodePath.orEmpty(), ignoreCase = true)) ||
             ntkGeneratedPrefixEpisodeMatchesTarget(seedMatch.groupValues[1], targetMatch)
         ) {
-            return ntkGeneratedSiblingImageUrl(seed, page)
+            val pathEpisodeId = targetMatch.groupValues[3]
+            val imageEpisodeId = target.ntkImageEpisodeId.orEmpty().trim()
+            if (!imageEpisodeId.matches(Regex("\\d+")) || imageEpisodeId == pathEpisodeId) {
+                return ntkGeneratedSiblingImageUrl(seed, page)
+            }
         }
         val segment = targetMatch.groupValues[1]
         val pathEpisodeId = targetMatch.groupValues[3]
@@ -7565,6 +7678,8 @@ class ReaderSession(
         private const val NTK_LIGHT_PRIMED_EPISODE_BYTE_AHEAD_PAGES = 28
         private const val NTK_PREPENDED_EPISODE_DECODE_AHEAD_PAGES = 8
         private const val NTK_PREPENDED_EPISODE_BYTE_AHEAD_PAGES = 16
+        private const val NTK_PREPENDED_EPISODE_START_DECODE_PAGES = 4
+        private const val NTK_PREPENDED_EPISODE_START_BYTE_PAGES = 10
         private const val NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD = 64
         private const val NTK_INITIAL_PRIORITY_START_OFFSET = 1
         private const val NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES = 18

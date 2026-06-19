@@ -29196,3 +29196,60 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - The strict random ACK gate, adjacent ACK ordering fix, and current generated first-page stream patch are safe enough to commit as an ACK/stability-focused main branch slice.
   - Remaining speed risk is explicit: universal 5s first drawable is not guaranteed, but the current close-out accepts speed compromise.
 
+## 2026-06-19 21:10:00 +09:00 Main branch ACK and generated prepend stabilization
+
+- Branch/worktree:
+  - Worktree: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`, tracking `origin/main`.
+  - Current pushed baseline before this slice: `278d411ff Stabilize NTK strict ACK validation`.
+- Fixes applied:
+  - ACK-only WebView guard loader no longer gives up at 7.2s when JS/WASM import is slow.
+    - Pending/initial guard wait changed to 45s.
+    - Fallback guard wait changed to 22s.
+    - When the module becomes ready, it immediately schedules another direct ACK attempt.
+    - ACK-only proof loops now allow 65s total and 14s direct ACK calls, still requiring actual `/api/ad/ack` proof.
+  - Current visible episode is prioritized for generated ACK recovery.
+    - `ReaderImageCache.prioritizeNtkAckRecovery(path)` blocks non-current generated ACK recovery until current strict proof exists.
+    - The priority is cleared on strict proof/session/destroy/test-next-launch.
+  - Generated 404 cache key now includes actual target path + page + extension.
+    - Prevents `.jpg` 404 poisoning later `.jpeg` success for the same page.
+  - Generated episode id candidates now prefer explicit `ntkImageEpisodeId`.
+    - Needed for cases where URL path episode id and image episode id differ.
+  - First-anchor generated 404 now retargets/defer-retries instead of immediately removing the current visible page.
+  - Previous episode prepend no longer gates `onPagesPrepended` on first prepended drawable.
+    - NTK reveal is already deferred, and `ReaderSurfaceView.prependPageCount()` preserves the current visual position by scroll-offset compensation.
+    - Start pages are warmed/redelivered after prepend so images arrive without exposing placeholder.
+    - `listenerDrawableDeliveries` is shifted during prepend so ready-page tracking remains correct.
+- Validation:
+  - Build passed:
+    - `.\gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Actual UX comic selection test passed:
+    - Test: `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`
+    - Path: `/manhwa/36525/1807424`
+    - First drawable: `3025ms`
+    - Strict ACK proof: `bridge-ack-200` and `native-fetch-ack-200`
+    - `ntk_webview_ack_preflight_done ... success=true,ms=10108`
+  - Target generated strict fresh repro passed:
+    - Test: `NtkRandomStressInstrumentedTest#randomNtkEpisodesOpenAndScroll`
+    - Path: `/manhwa/25169/303163`
+    - Target title path: `/manhwa/25169`
+    - Target image episode id: `224781`
+    - Mode: `generated`
+    - First drawable: `4043ms`
+    - Strict current ACK: `bridge-ack-200` then `guard-fetch-ack-200`
+    - Proof: `ntk_ack_proof {"scope":"/manhwa/25169/303163","source":"guard-fetch-ack-200"}`
+    - `ntk_webview_ack_preflight_done ... success=true,ms=13127`
+    - `ntk_true_random_ack_wait ... strictProof=true,ms=0`
+    - All visible coverage samples had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - Previous prepend succeeded immediately after fix: `before=28,after=41,step=0`, previous path `/manhwa/25169/301085`.
+- Environment recovery:
+  - The first test retry failed before app execution because stale UTP result logs held `utp.0.log`.
+  - Then emulator `package` service disappeared while ADB still reported `device`.
+  - Fixed by killing/restarting `MangaViewerApi35`; package service came back and tests ran normally.
+- Bad/risky approaches to avoid:
+  - Do not count `ad_ack_c` challenge-cookie records as ACK success. Those remain `strictAdAck=false`.
+  - Do not restore the 7.2s ACK-only guard timeout as a hard failure; logs showed guard import can complete after that and still produce real `/api/ad/ack` proof.
+  - Do not gate previous prepend `onPagesPrepended` until the first prepended drawable is ready. That hides the structural append from tests/UX and can stall previous-episode navigation even while images are already downloading.
+  - Do not use stale Gradle/UTP output directories after a killed/timed-out run; clear `app/build/outputs/androidTest-results/connected/debug`.
+  - Do not trust ADB `device` alone. If `cmd package` says service missing, restart the emulator before judging app behavior.
+

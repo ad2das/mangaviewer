@@ -509,6 +509,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ntkAckPreflightGeneration.incrementAndGet()
         currentManga?.ntkEpisodePath?.let { path ->
             ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "destroy")
+            ReaderImageCache.clearNtkAckRecoveryPriority(path, "destroy")
         }
         if (isCurrentNtkReader()) {
             getHttpClient().cancelNtkWebViewFallbacks()
@@ -1593,6 +1594,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 val strictProof = client.hasRecentStrictNtkAdAckProof(path)
                 if (webViewOk || strictProof) {
                     ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "ack_preflight_success")
+                    ReaderImageCache.clearNtkAckRecoveryPriority(path, "ack_preflight_success")
                 }
                 if (!webViewOk && client.hasRecentCloudflareChallenge()) {
                     Log.d(TAG, "reader_ntk_ack_captcha_suppressed reason=webview_ack_cloudflare,path=$path")
@@ -1669,6 +1671,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 )
                 if (ok || proof) {
                     ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "prepared_native_ack_success")
+                    ReaderImageCache.clearNtkAckRecoveryPriority(path, "prepared_native_ack_success")
                 } else if (ackGeneration == ntkAckPreflightGeneration.get() && !destroyed && !isFinishing) {
                     deferredNtkAckPreflightManga = manga
                     startDeferredNtkAckPreflight("${reason}_native_failed")
@@ -1710,6 +1713,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val path = manga.ntkEpisodePath ?: return false
         if (getHttpClient().hasRecentStrictNtkAdAckProof(path)) {
             ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "initial_strict_ack_ready")
+            ReaderImageCache.clearNtkAckRecoveryPriority(path, "initial_strict_ack_ready")
             return false
         }
         return path.startsWith("/webtoon/") || path.startsWith("/manhwa/")
@@ -1975,6 +1979,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val retryManga = manga ?: currentManga ?: return false
         if (client.hasRecentStrictNtkAdAckProof(path)) {
             ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "retry_strict_ack_ready")
+            ReaderImageCache.clearNtkAckRecoveryPriority(path, "retry_strict_ack_ready")
         }
         Log.d(TAG, "reader_ntk_captcha_retry_after_proof path=$path,count=$ntkInitialProofRetryCount")
         statusHandler.post {
@@ -2010,8 +2015,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 "reader_activity_start_session path=$ntkPath,clear=$clearViewImmediately"
             )
             getHttpClient().cancelNtkWebViewFallbacks()
+            ReaderImageCache.prioritizeNtkAckRecovery(ntkPath)
             if (getHttpClient().hasRecentStrictNtkAdAckProof(ntkPath)) {
                 ReaderImageCache.clearNtkAckRecoveryLaunchHold(ntkPath, "session_strict_ack_ready")
+                ReaderImageCache.clearNtkAckRecoveryPriority(ntkPath, "session_strict_ack_ready")
             } else {
                 ReaderImageCache.holdNtkAckRecoveryUntilFirstDrawable(ntkPath)
             }
@@ -2692,6 +2699,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ntkAckPreflightGeneration.incrementAndGet()
         currentManga?.ntkEpisodePath?.let { path ->
             ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "test-next-launch")
+            ReaderImageCache.clearNtkAckRecoveryPriority(path, "test-next-launch")
         }
         progressHandler.removeCallbacks(saveProgressRunnable)
         statusHandler.removeCallbacks(showInitialStatusRunnable)
