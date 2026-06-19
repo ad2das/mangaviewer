@@ -286,6 +286,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private boolean turnstileAutoClickStarted = false;
     private boolean accessVerificationInFlight = false;
     private boolean waitingForNtkAdAckBeforeFinish = false;
+    private boolean ntkWebViewAdAckProofInFlight = false;
     private boolean turnstileEvaluationInFlight = false;
     private boolean disableTurnstileAutomationForDiagnostics = false;
     private boolean disableNtkRootBootstrapForDiagnostics = false;
@@ -293,6 +294,7 @@ public class CaptchaActivity extends AppCompatActivity {
     private long lastNtkNormalProbeAt = 0;
     private long lastTurnstileTouchAt = 0;
     private long lastNtkCaptchaEnvironmentLogAt = 0;
+    private long lastNtkWebViewAdAckProofStartedAt = 0;
     private String lastTurnstileClickSignature = "";
     private long lastTurnstileRepeatTouchAt = 0;
     private int turnstileRepeatTouchCount = 0;
@@ -2034,7 +2036,9 @@ public class CaptchaActivity extends AppCompatActivity {
         if(source == null)
             return result;
         for(String key : source.keySet()) {
-            if(key == null || "set-cookie".equalsIgnoreCase(key))
+            if(key == null || "set-cookie".equalsIgnoreCase(key)
+                    || "content-security-policy".equalsIgnoreCase(key)
+                    || "content-security-policy-report-only".equalsIgnoreCase(key))
                 continue;
             List<String> values = source.get(key);
             if(values != null && values.size() > 0 && values.get(0) != null)
@@ -2750,10 +2754,15 @@ public class CaptchaActivity extends AppCompatActivity {
             AppDispatchers.runOnMain(() -> {
                 if(isFinishing || !waitingForNtkAdAckBeforeFinish)
                     return;
-                if(hasNtkAdAckCookie(baseUrl + path, targetUrl)) {
-                    android.util.Log.d("CaptchaActivity", "NTK native ad ack verified before finish: " + path);
+                if(hasStrictNtkAdAckProof(targetUrl)) {
+                    android.util.Log.d("CaptchaActivity", "NTK strict native ad ack verified before finish: " + path);
                     waitingForNtkAdAckBeforeFinish = false;
                     finishWithVerifiedClearance();
+                } else {
+                    android.util.Log.d("CaptchaActivity",
+                            "NTK native ad ack returned without strict proof; continuing WebView proof wait: "
+                                    + path);
+                    waitForNtkAdAckAndFinish(baseUrl + path, targetUrl, 1);
                 }
             });
         });
@@ -2766,12 +2775,65 @@ public class CaptchaActivity extends AppCompatActivity {
         return path.length() > 0 && getHttpClient().hasUsableNtkAdAckCookieForPath(path);
     }
 
+    private boolean hasStrictNtkAdAckProof(String targetUrl) {
+        String path = targetUrl == null || targetUrl.length() == 0
+                ? "" : ntkVerificationUrl(targetUrl, targetUrl);
+        return path.length() > 0 && getHttpClient().hasRecentStrictNtkAdAckProof(path);
+    }
+
+    private void startNtkWebViewAdAckProofBeforeFinish(String targetUrl, int attempt) {
+        if(targetUrl == null || targetUrl.length() == 0 || !isNtkEpisodeUrl(targetUrl))
+            return;
+        final String path = ntkVerificationUrl(targetUrl, targetUrl);
+        if(path == null || path.length() == 0 || hasStrictNtkAdAckProof(targetUrl))
+            return;
+        long now = System.currentTimeMillis();
+        if(ntkWebViewAdAckProofInFlight || now - lastNtkWebViewAdAckProofStartedAt < 2500L)
+            return;
+        ntkWebViewAdAckProofInFlight = true;
+        lastNtkWebViewAdAckProofStartedAt = now;
+        android.util.Log.d("CaptchaActivity", "NTK WebView ad ack proof before finish start path="
+                + path + ",attempt=" + attempt);
+        AppDispatchers.runIo(() -> {
+            boolean ok = false;
+            try {
+                ok = getHttpClient().performNtkWebViewAckPreflight(path);
+            } catch (Exception e) {
+                android.util.Log.d("CaptchaActivity",
+                        "NTK WebView ad ack proof before finish failed path=" + path, e);
+            }
+            boolean success = ok;
+            AppDispatchers.runOnMain(() -> {
+                ntkWebViewAdAckProofInFlight = false;
+                if(isFinishing)
+                    return;
+                android.util.Log.d("CaptchaActivity",
+                        "NTK WebView ad ack proof before finish done path=" + path
+                                + ",success=" + success
+                                + ",strict=" + hasStrictNtkAdAckProof(targetUrl));
+                if(success || hasStrictNtkAdAckProof(targetUrl)) {
+                    waitingForNtkAdAckBeforeFinish = false;
+                    finishWithVerifiedClearance();
+                }
+            });
+        });
+    }
+
     private void waitForNtkAdAckAndFinish(String purl, String currentUrl, int attempt) {
         if(isFinishing)
             return;
         String targetUrl = ntkAckTargetUrlForFinish(purl, currentUrl);
         if(attempt == 0 && startNtkNativeAdAckBeforeFinish(purl, currentUrl, targetUrl))
             return;
+        if(hasStrictNtkAdAckProof(targetUrl)) {
+            android.util.Log.d("CaptchaActivity", "NTK strict ad ack verified before finish attempt="
+                    + attempt);
+            waitingForNtkAdAckBeforeFinish = false;
+            finishWithVerifiedClearance();
+            return;
+        }
+        if(attempt <= 1 || attempt % 8 == 0)
+            startNtkWebViewAdAckProofBeforeFinish(targetUrl, attempt);
         if(attempt == 0 && shouldLoadNtkAckTargetBeforeFinish(targetUrl)) {
             android.util.Log.d("CaptchaActivity", "NTK ad guard ack loading target before finish: " + targetUrl);
             ntkRootBootstrapReturnUrl = null;
@@ -2790,16 +2852,13 @@ public class CaptchaActivity extends AppCompatActivity {
             handler.postDelayed(() -> waitForNtkAdAckAndFinish(purl, webView == null ? currentUrl : webView.getUrl(), attempt + 1), 500L);
             return;
         }
-        if(hasNtkAdAckCookie(purl, currentUrl)) {
-            android.util.Log.d("CaptchaActivity", "NTK ad guard ack verified before finish attempt=" + attempt);
-            waitingForNtkAdAckBeforeFinish = false;
-            finishWithVerifiedClearance();
-            return;
-        }
         if(attempt >= 14) {
-            android.util.Log.d("CaptchaActivity", "NTK ad guard ack not observed before finish; continuing after wait");
-            waitingForNtkAdAckBeforeFinish = false;
-            finishWithVerifiedClearance();
+            android.util.Log.d("CaptchaActivity",
+                    "NTK strict ad ack not observed before finish; keeping captcha open attempt="
+                            + attempt + ",cookie=" + hasNtkAdAckCookie(purl, currentUrl)
+                            + ",proofInFlight=" + ntkWebViewAdAckProofInFlight);
+            handler.postDelayed(() -> waitForNtkAdAckAndFinish(
+                    purl, webView == null ? currentUrl : webView.getUrl(), attempt + 1), 500L);
             return;
         }
         handler.postDelayed(() -> waitForNtkAdAckAndFinish(purl, currentUrl, attempt + 1), 250L);
@@ -2825,19 +2884,20 @@ public class CaptchaActivity extends AppCompatActivity {
             } catch (Exception e) {
                 android.util.Log.d("CaptchaActivity", "NTK ad guard native ack before finish failed", e);
             }
-            boolean completed = ok || getHttpClient().hasUsableNtkAdAckCookieForPath(path);
+            boolean nativeOk = ok;
+            boolean strictProof = getHttpClient().hasRecentStrictNtkAdAckProof(path);
             AppDispatchers.runOnMain(() -> {
                 if(isFinishing)
                     return;
-                if(completed) {
+                if(strictProof) {
                     android.util.Log.d("CaptchaActivity",
-                            "NTK ad guard native ack verified before finish path=" + path);
+                            "NTK strict ad guard native ack verified before finish path=" + path);
                     waitingForNtkAdAckBeforeFinish = false;
                     finishWithVerifiedClearance();
                 } else {
                     android.util.Log.d("CaptchaActivity",
-                            "NTK ad guard native ack before finish missed; falling back to WebView wait path="
-                                    + path);
+                            "NTK ad guard native ack before finish missing strict proof; falling back to WebView wait path="
+                                    + path + ",nativeOk=" + nativeOk);
                     waitForNtkAdAckAndFinish(purl, currentUrl, 1);
                 }
             });

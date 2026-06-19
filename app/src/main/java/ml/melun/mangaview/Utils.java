@@ -30,6 +30,7 @@ import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.View;
+import android.webkit.CookieManager;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.Spinner;
@@ -1736,10 +1737,12 @@ public class Utils {
     public static Map<String, String> viewerImageRequestHeaders(String image, int baseMode) {
         String referer = getHttpClient().getUrl(baseMode);
         String url = normalizeImageUrl(image, baseMode);
-        boolean ntkImage = getHttpClient().isNtkUrl(url) || isProtectedImageHost(url);
+        boolean ntkSiteUrl = getHttpClient().isNtkUrl(url);
+        boolean protectedImageHost = isProtectedImageHost(url);
+        boolean ntkImage = ntkSiteUrl || protectedImageHost;
         if(ntkImage)
             referer = getSiteRoot(baseMode);
-        String cookie = getHttpClient().getCookieHeader();
+        String cookie = cookieHeaderForViewerImage(url, baseMode, ntkSiteUrl, protectedImageHost);
         LinkedHashMap<String, String> headers = new LinkedHashMap<>();
         headers.put("Referer", referer);
         headers.put("User-Agent", getHttpClient().agent);
@@ -1759,10 +1762,12 @@ public class Utils {
     public static GlideUrl getGlideUrl(String image, int baseMode){
         String referer = getHttpClient().getUrl(baseMode);
         String url = normalizeImageUrl(image, baseMode);
-        boolean ntkImage = getHttpClient().isNtkUrl(url) || isProtectedImageHost(url);
+        boolean ntkSiteUrl = getHttpClient().isNtkUrl(url);
+        boolean protectedImageHost = isProtectedImageHost(url);
+        boolean ntkImage = ntkSiteUrl || protectedImageHost;
         if(ntkImage)
             referer = getSiteRoot(baseMode);
-        String cookie = getHttpClient().getCookieHeader();
+        String cookie = cookieHeaderForViewerImage(url, baseMode, ntkSiteUrl, protectedImageHost);
         String cacheKey = baseMode + "|" + url + "|" + referer + "|" + getHttpClient().agent + "|" + (cookie == null ? "" : cookie);
         synchronized (glideUrlCache) {
             GlideUrl cached = glideUrlCache.get(cacheKey);
@@ -1811,7 +1816,11 @@ public class Utils {
             host = host.toLowerCase(Locale.ROOT);
             return host.matches("y\\d+stm\\.com")
                     || host.matches("w\\d+cloud\\.com")
-                    || host.matches("i\\d+\\.imgcloud\\d+\\.com");
+                    || host.matches("i\\d+\\.imgcloud\\d+\\.com")
+                    || host.matches("flysky\\d*m\\.com")
+                    || "moamoabon.com".equals(host)
+                    || host.matches("fvcdn\\d*\\.com")
+                    || host.matches("aws-cdn\\d*\\.site");
         } catch (Exception e) {
             return false;
         }
@@ -1863,12 +1872,17 @@ public class Utils {
                 return url;
             String lowerHost = host.toLowerCase(Locale.ROOT);
             String lowerPath = path.toLowerCase(Locale.ROOT);
-            if(!lowerHost.matches("aws-cdn\\d*\\.site"))
+            if(!lowerHost.matches("aws-cdn\\d*\\.site")
+                    && !lowerHost.matches("flysky\\d*m\\.com")
+                    && !"moamoabon.com".equals(lowerHost)
+                    && !lowerHost.matches("fvcdn\\d*\\.com"))
                 return url;
             if(!isSafeNtkPageImagePath(lowerPath))
                 return url;
             String query = parsed.getEncodedQuery();
-            return "https://flysky3m.com" + path + (query == null || query.length() == 0 ? "" : "?" + query);
+            String canonicalHost = "moamoabon.com";
+            return "https://" + canonicalHost + path
+                    + (query == null || query.length() == 0 ? "" : "?" + query);
         } catch(Exception ignored) {
             return url;
         }
@@ -1893,9 +1907,63 @@ public class Utils {
                 || lower.contains("/ad/"))
             return false;
         return lower.contains("/blacktoon/episodes/")
+                || lower.contains("/black/episodes/")
                 || lower.contains("/manhwa/")
                 || lower.contains("/webtoon/")
                 || lower.contains("/wt/episodes/");
+    }
+
+    private static String cookieHeaderForViewerImage(String url, int baseMode,
+                                                     boolean ntkSiteUrl,
+                                                     boolean protectedImageHost) {
+        String nativeCookie = getHttpClient().getCookieHeader();
+        if(!protectedImageHost || ntkSiteUrl || !isSafeNtkPageImageUrl(url))
+            return nativeCookie;
+        LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+        mergeCookieHeader(merged, nativeCookie);
+        try {
+            CookieManager manager = CookieManager.getInstance();
+            mergeCookieHeader(merged, manager.getCookie(getSiteRoot(baseMode)));
+            mergeCookieHeader(merged, manager.getCookie(url));
+        } catch(Exception ignored) {
+        }
+        StringBuilder builder = new StringBuilder();
+        for(Map.Entry<String, String> entry : merged.entrySet()) {
+            if(entry.getKey() == null || entry.getKey().length() == 0
+                    || entry.getValue() == null || entry.getValue().length() == 0)
+                continue;
+            if(builder.length() > 0)
+                builder.append("; ");
+            builder.append(entry.getKey()).append('=').append(entry.getValue());
+        }
+        return builder.toString();
+    }
+
+    private static boolean isSafeNtkPageImageUrl(String url) {
+        if(url == null || url.length() == 0)
+            return false;
+        try {
+            Uri parsed = Uri.parse(url);
+            String path = parsed.getEncodedPath();
+            return path != null && isSafeNtkPageImagePath(path);
+        } catch(Exception ignored) {
+            return false;
+        }
+    }
+
+    private static void mergeCookieHeader(LinkedHashMap<String, String> out, String header) {
+        if(out == null || header == null || header.length() == 0)
+            return;
+        String[] parts = header.split(";");
+        for(String part : parts) {
+            if(part == null)
+                continue;
+            String trimmed = part.trim();
+            int split = trimmed.indexOf('=');
+            if(split <= 0 || split >= trimmed.length() - 1)
+                continue;
+            out.put(trimmed.substring(0, split).trim(), trimmed.substring(split + 1).trim());
+        }
     }
 
     private static String getSiteRoot(int baseMode) {

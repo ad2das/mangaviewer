@@ -566,6 +566,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 hideBoundaryStatus()
                 pageCount = count
                 renderView.appendPageCount(count)
+                flushPendingPageCallbacks()
                 Log.d(TAG, "pages_appended total=$count currentPage=$currentPage")
                 updateCurrentEpisode(currentPage)
             }
@@ -663,7 +664,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageReady(index: Int, bitmap: Bitmap) {
         MainThreadStallMonitor.trace("reader_on_page_ready") {
-            if (pagesReady) {
+            if (pagesReady && index < pageCount) {
                 applyPageBitmap(index, bitmap)
             } else {
                 rememberPendingPageBitmap(index, bitmap)
@@ -673,7 +674,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
         MainThreadStallMonitor.trace("reader_on_page_tiles_ready") {
-            if (pagesReady) {
+            if (pagesReady && index < pageCount) {
                 applyPageTiles(index, pageWidth, pageHeight, tiles)
             } else {
                 rememberPendingPageTiles(index, pageWidth, pageHeight, tiles)
@@ -683,7 +684,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageCard(index: Int, title: String) {
         MainThreadStallMonitor.trace("reader_on_page_card") {
-            if (pagesReady) {
+            if (pagesReady && index < pageCount) {
                 applyPageCard(index, title)
             } else {
                 rememberPendingPageCard(index, title)
@@ -693,7 +694,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageError(index: Int, message: String) {
         MainThreadStallMonitor.trace("reader_on_page_error") {
-            if (pagesReady) {
+            if (pagesReady && index < pageCount) {
                 applyPageError(index, message)
             } else {
                 rememberPendingPageError(index, message)
@@ -1785,6 +1786,27 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             TAG,
             "reader_ntk_ack_preflight_initial_cf_probe path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare,prepared=$preparedChallenge,preparing=$preparingChallenge"
         )
+        val ntkEpisodePath = !path.isNullOrBlank() &&
+            (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"))
+        val hasStrictProof = try {
+            !path.isNullOrBlank() && getHttpClient().hasRecentStrictNtkAdAckProof(path)
+        } catch (_: Exception) {
+            false
+        }
+        if (ntkEpisodePath && !hasStrictProof &&
+            (hasCloudflare || preparingChallenge || deferredNtkAckPreflightBlockProbeAttempts >= 2)
+        ) {
+            Log.d(
+                TAG,
+                "reader_ntk_ack_preflight_initial_hardblock_before_first_drawable path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare,prepared=$preparedChallenge,preparing=$preparingChallenge"
+            )
+            maybeStartDeferredNtkAckForInitialBlock(
+                deferred,
+                "initial_hardblock_before_first_drawable",
+                allowBeforeFirstDrawable = true
+            )
+            return
+        }
         if (preparedChallenge && startPreparedNtkNativeAckPreflight(deferred, "prepared_challenge")) {
             return
         }

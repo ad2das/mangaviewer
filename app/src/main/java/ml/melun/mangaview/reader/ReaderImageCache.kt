@@ -2439,6 +2439,8 @@ object ReaderImageCache {
         if (lower.startsWith("toonflix.app/") || lower.startsWith("//toonflix.app/")) return true
         if (Regex("^flysky\\d*m\\.com/").containsMatchIn(lower) ||
             Regex("^//flysky\\d*m\\.com/").containsMatchIn(lower) ||
+            lower.startsWith("moamoabon.com/") ||
+            lower.startsWith("//moamoabon.com/") ||
             Regex("^fvcdn\\d*\\.com/").containsMatchIn(lower) ||
             Regex("^//fvcdn\\d*\\.com/").containsMatchIn(lower) ||
             Regex("^aws-cdn\\d*\\.site/").containsMatchIn(lower) ||
@@ -2448,6 +2450,7 @@ object ReaderImageCache {
             val host = Uri.parse(value).host?.lowercase().orEmpty()
             host == "toonflix.app" || host.endsWith(".toonflix.app") ||
                 Regex("^flysky\\d*m\\.com$").matches(host) ||
+                host == "moamoabon.com" ||
                 Regex("^fvcdn\\d*\\.com$").matches(host) ||
                 Regex("^aws-cdn\\d*\\.site$").matches(host)
         } catch (_: Exception) {
@@ -2480,10 +2483,12 @@ object ReaderImageCache {
         return (lower.contains("://toonflix.app/") ||
             lower.contains("://i.toonflix.app/") ||
             Regex("://flysky\\d*m\\.com/").containsMatchIn(lower) ||
+            lower.contains("://moamoabon.com/") ||
             Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower) ||
             Regex("://aws-cdn\\d*\\.site/").containsMatchIn(lower)) &&
             (
                 Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
                 )
@@ -2791,10 +2796,10 @@ object ReaderImageCache {
         anchorHedge: Boolean = false
     ): Request {
         val requestBuilder = Request.Builder().url(Utils.viewerImageRequestUrl(image, manga.baseMode))
-        val generatedReferer = ntkGeneratedImageReferer(manga, image)
+        val ntkEpisodeReferer = ntkEpisodeImageReferer(manga, image)
         for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
-            if (generatedReferer != null && entry.key.equals("Referer", ignoreCase = true)) {
-                requestBuilder.addHeader(entry.key, generatedReferer)
+            if (ntkEpisodeReferer != null && entry.key.equals("Referer", ignoreCase = true)) {
+                requestBuilder.addHeader(entry.key, ntkEpisodeReferer)
             } else {
                 requestBuilder.addHeader(entry.key, entry.value)
             }
@@ -2811,8 +2816,10 @@ object ReaderImageCache {
         return requestBuilder.build()
     }
 
-    private fun ntkGeneratedImageReferer(manga: Manga, image: String): String? {
-        ntkGeneratedTarget(image) ?: return null
+    private fun ntkEpisodeImageReferer(manga: Manga, image: String): String? {
+        if (ntkGeneratedTarget(image) == null && !isTrustedNtkImageUrl(Utils.viewerImageRequestUrl(image, manga.baseMode))) {
+            return null
+        }
         val path = manga.ntkEpisodePath?.trim().orEmpty()
         if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return null
         val root = try {
@@ -5372,6 +5379,20 @@ object ReaderImageCache {
                 val result = future.get()
                 val response = result.response
                 if (response.isSuccessful) {
+                    if (!validateNtkImageResponseUrl(manga, image, response, true, "foreground_race")) {
+                        failure = IOException("Rejected foreground race image URL")
+                        logCacheEvent(
+                            "foreground_race_untrusted_actual_miss",
+                            manga,
+                            image,
+                            true,
+                            "transport=${result.attempt.transport},completed=$completedIndex,total=$totalAttempts," +
+                                "code=${response.code},actual=${safeImageName(response.request.url.toString())}," +
+                                "ms=${SystemClock.elapsedRealtime() - startedAt}"
+                        )
+                        response.close()
+                        return@repeat
+                    }
                     if (response.header("x-mangaviewer-partial-image") == "1") {
                         failure = IOException("Partial foreground image response")
                         logCacheEvent(
@@ -5524,9 +5545,11 @@ object ReaderImageCache {
         return (lower.contains("://toonflix.app/")
                 || lower.contains("://i.toonflix.app/")
                 || Regex("://flysky\\d*m\\.com/").containsMatchIn(lower)
+                || lower.contains("://moamoabon.com/")
                 || Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower))
             && (
                 Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
                     Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
                 )
@@ -5548,7 +5571,7 @@ object ReaderImageCache {
             val page = numericMatch.groupValues[5].toIntOrNull() ?: return null
             return NtkGeneratedTarget(numericMatch.groupValues[1], "/$segment/$workId/$episodeId", page)
         }
-        val blacktoonMatch = Regex("^(https?://[^/]+)/blacktoon/episodes/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+        val blacktoonMatch = Regex("^(https?://[^/]+)/(?:blacktoon|black)/episodes/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
             .find(image)
         if (blacktoonMatch != null) {
             val workId = blacktoonMatch.groupValues[2]
@@ -5583,6 +5606,8 @@ object ReaderImageCache {
         return when {
             image.contains("/blacktoon/episodes/", ignoreCase = true) ->
                 "${target.baseUrl}/blacktoon/episodes/$activeWork/$activeEpisode/$pageName"
+            image.contains("/black/episodes/", ignoreCase = true) ->
+                "${target.baseUrl}/black/episodes/$activeWork/$activeEpisode/$pageName"
             image.contains("/wt/episodes/", ignoreCase = true) ->
                 "${target.baseUrl}/wt/episodes/$activeWork/$activeEpisode/$pageName"
             else ->
@@ -5602,7 +5627,7 @@ object ReaderImageCache {
             val key = "${numericMatch.groupValues[1].lowercase()}/${numericMatch.groupValues[2]}/${numericMatch.groupValues[3]}"
             return NtkGeneratedImageRef(key, numericMatch.groupValues[5].lowercase())
         }
-        val blacktoonMatch = Regex("^(?:https?://[^/]+)/blacktoon/episodes/(\\d+)/([^/?#]+)/p(\\d{3})\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+        val blacktoonMatch = Regex("^(?:https?://[^/]+)/(?:blacktoon|black)/episodes/(\\d+)/([^/?#]+)/p(\\d{3})\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
             .find(image)
         if (blacktoonMatch != null) {
             val key = "webtoon/${blacktoonMatch.groupValues[1]}/${blacktoonMatch.groupValues[2]}"
@@ -5963,6 +5988,7 @@ object ReaderImageCache {
         return host == "toonflix.app" ||
             host.endsWith(".toonflix.app") ||
             Regex("^flysky\\d*m\\.com$").matches(host) ||
+            host == "moamoabon.com" ||
             Regex("^fvcdn\\d*\\.com$").matches(host) ||
             Regex("^aws-cdn\\d*\\.site$").matches(host) ||
             host.startsWith("img.") ||

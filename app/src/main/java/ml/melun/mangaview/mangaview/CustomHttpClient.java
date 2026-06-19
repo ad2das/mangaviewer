@@ -5203,13 +5203,16 @@ public class CustomHttpClient {
             return false;
         if(isNtkDnsProtectedHost(parsed.host()))
             return isTrustedNtkPrimaryImagePath(path) || looksLikeRootHashImage(path);
-        if(host.matches("\\d{5,10}\\.com") || host.matches("flysky\\d*m\\.com"))
+        if(host.matches("\\d{5,10}\\.com") || host.matches("flysky\\d*m\\.com")
+                || "moamoabon.com".equals(host))
             return path.contains("/blacktoon/episodes/")
+                    || path.contains("/black/episodes/")
                     || path.contains("/manhwa/")
                     || path.contains("/webtoon/")
                     || path.contains("/wt/episodes/");
         return host.matches("fvcdn\\d*\\.com")
                 && (path.contains("/blacktoon/episodes/")
+                || path.contains("/black/episodes/")
                 || path.contains("/manhwa/")
                 || path.contains("/webtoon/")
                 || path.contains("/wt/episodes/")
@@ -5235,6 +5238,7 @@ public class CustomHttpClient {
             return false;
         return (host.matches("fvcdn\\d*\\.com")
                 || host.matches("flysky\\d*m\\.com")
+                || "moamoabon.com".equals(host)
                 || host.matches("aws-cdn\\d*\\.site"))
                 && (isTrustedNtkPrimaryImagePath(path) || looksLikeRootHashImage(path));
     }
@@ -5247,6 +5251,7 @@ public class CustomHttpClient {
         if(path == null || path.length() == 0 || isDisallowedNtkPrimaryImagePath(path))
             return false;
         return path.contains("/blacktoon/episodes/")
+                || path.contains("/black/episodes/")
                 || path.contains("/manhwa/")
                 || path.contains("/webtoon/")
                 || path.contains("/wt/episodes/")
@@ -7086,7 +7091,8 @@ public class CustomHttpClient {
             String host = parsed.host().toLowerCase(Locale.ROOT);
             return host.equals("i.toonflix.app")
                     || host.endsWith(".toonflix.app")
-                    || host.matches("flysky\\d*m\\.com");
+                    || host.matches("flysky\\d*m\\.com")
+                    || "moamoabon.com".equals(host);
         } catch(Exception ignored) {
             return false;
         }
@@ -7713,6 +7719,13 @@ public class CustomHttpClient {
         return path.matches("^/(manhwa|webtoon)/\\d+/\\d+(?:[/?#].*)?$");
     }
 
+    private static boolean shouldPreferHiddenViewerImagesForSlug(String kind, String path) {
+        if(!"webtoon".equals(kind) || path == null)
+            return false;
+        Matcher matcher = Pattern.compile("^/webtoon/\\d+/([^/?#]+)").matcher(path);
+        return matcher.find() && !matcher.group(1).matches("\\d+");
+    }
+
     private List<String> fetchNtkViewerImageUrlsUncached(String kind, String endpoint,
                                                          String baseUrl, String path,
                                                          String cookiePath,
@@ -8003,6 +8016,27 @@ public class CustomHttpClient {
                     if(nativeAckCompleted) {
                         if(webViewRace != null)
                             webViewRace.cancel(true);
+                        if(shouldPreferHiddenViewerImagesForSlug(kind, path) && context != null) {
+                            ArrayList<String> slugWebViewUrls = NtkWebViewFallbackManager.get(context)
+                                    .fetchViewerImageUrls(agent, baseUrl, path, cookiePath, headers,
+                                            kind, workId, episodeId, imagesToken,
+                                            getCookieHeaderForNtkPath(cookiePath), viewerBody);
+                            Log.d(TAG, "ntk_images_api_slug_hidden_first_after_ack path=" + path
+                                    + ",count=" + slugWebViewUrls.size()
+                                    + ",ms=" + (System.currentTimeMillis() - ackStartedAt));
+                            urls.addAll(slugWebViewUrls);
+                            if(urls.size() > 0) {
+                                if(areInitialNtkViewerImageUrlsReachable(urls, baseUrl, path)) {
+                                    cacheNtkViewerImageUrls(cacheKey, urls);
+                                    return urls;
+                                }
+                                Log.d(TAG, "ntk_images_api_slug_hidden_first_after_ack_invalid path="
+                                        + path + ",count=" + urls.size());
+                                NtkWebViewFallbackManager.get(context).dropCachedViewerImageUrls(
+                                        kind, workId, episodeId, path);
+                                urls.clear();
+                            }
+                        }
                         String nvAfterAckProof = getCookie("nv");
                         if(!isNtkNvValid(nvAfterAckProof)) {
                             issueNtkNvCookie(baseUrl);
@@ -8222,6 +8256,27 @@ public class CustomHttpClient {
             }
             if(isNtkNvValid(nvAfterAck))
                 nv = nvAfterAck;
+            if(modernGuardRoot && shouldPreferHiddenViewerImagesForSlug(kind, path) && context != null) {
+                ArrayList<String> slugWebViewUrls = NtkWebViewFallbackManager.get(context)
+                        .fetchViewerImageUrls(agent, baseUrl, path, cookiePath, headers, kind,
+                                workId, episodeId, imagesToken, getCookieHeaderForNtkPath(cookiePath),
+                                viewerBody);
+                Log.d(TAG, "ntk_images_api_slug_hidden_first path=" + path
+                        + ",count=" + slugWebViewUrls.size()
+                        + ",ms=" + (System.currentTimeMillis() - ackStartedAt));
+                urls.addAll(slugWebViewUrls);
+                if(urls.size() > 0) {
+                    if(areInitialNtkViewerImageUrlsReachable(urls, baseUrl, path)) {
+                        cacheNtkViewerImageUrls(cacheKey, urls);
+                        return urls;
+                    }
+                    Log.d(TAG, "ntk_images_api_slug_hidden_first_invalid path="
+                            + path + ",count=" + urls.size());
+                    NtkWebViewFallbackManager.get(context).dropCachedViewerImageUrls(
+                            kind, workId, episodeId, path);
+                    urls.clear();
+                }
+            }
             JSONObject payload = ntkViewerImagesPayload(workId, episodeId, imagesToken, nv);
             NtkQuicFetcher.Result result = fetchNtkViewerImagesApi(baseUrl, endpoint, path,
                     cookiePath, headers, payload, trustedUrlsCallback);
@@ -8420,10 +8475,9 @@ public class CustomHttpClient {
         if(requestKeyId == null || requestKeyId.length() == 0)
             return false;
         try {
-            payload.put("requestKeyId", requestKeyId);
             if(headers != null)
                 headers.put("x-ntk-key-id", requestKeyId);
-            Log.d(TAG, "ntk_images_api_request_key_attached path=" + cookiePath
+            Log.d(TAG, "ntk_images_api_request_key_header_attached path=" + cookiePath
                     + ",keyId=" + summarizeKeyId(requestKeyId));
             return true;
         } catch (Exception ignored) {
@@ -8438,6 +8492,10 @@ public class CustomHttpClient {
         headers.remove("x-ntk-ts");
         headers.remove("x-ntk-nonce");
         headers.remove("x-ntk-sig");
+    }
+
+    private static boolean shouldPreferUnsignedNtkViewerImagesApi(String path, String endpoint) {
+        return false;
     }
 
     private static boolean looksLikeNtkWebViewViewerBody(String body) {
@@ -8468,21 +8526,67 @@ public class CustomHttpClient {
         Map<String, String> requestHeaders = headers == null
                 ? new HashMap<>()
                 : new HashMap<>(headers);
-        clearNtkViewerSignatureHeaders(requestHeaders);
-        boolean nativeSigned = applyNtkViewerImagesSignature(baseUrl, endpoint, path, cookiePath,
-                requestHeaders, payload, "p1363");
-        boolean recentKeyAttached = !nativeSigned
-                && applyRecentNtkRequestKey(cookiePath, requestHeaders, payload);
-        for(int attempt = 0; attempt < 1; attempt++) {
+        JSONObject unsignedPayload = null;
+        try {
+            unsignedPayload = new JSONObject(payload.toString());
+        } catch(Exception ignored) {
+        }
+        boolean preferUnsignedFirst = shouldPreferUnsignedNtkViewerImagesApi(path, endpoint);
+        if(preferUnsignedFirst && unsignedPayload != null) {
             try {
-                byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
+                Map<String, String> unsignedHeaders = headers == null
+                        ? new HashMap<>()
+                        : new HashMap<>(headers);
+                clearNtkViewerSignatureHeaders(unsignedHeaders);
+                byte[] unsignedBody = unsignedPayload.toString().getBytes(StandardCharsets.UTF_8);
+                String cookieHeader = getMergedNtkCookieHeaderForUrl(baseUrl, cookiePath);
+                NtkQuicFetcher.Result unsignedResult = fetchNtkViewerImagesApiRace(baseUrl,
+                        endpoint, cookieHeader, unsignedHeaders, unsignedBody, path,
+                        trustedUrlsCallback);
+                Log.d(TAG, "ntk_images_api_unsigned_first endpoint=" + endpoint
+                        + ",code=" + (unsignedResult == null ? 0 : unsignedResult.code)
+                        + ",error=" + (unsignedResult == null ? "" : unsignedResult.error)
+                        + ",imageCount=" + ntkViewerImagesCount(unsignedResult));
+                NtkWebViewFallbackManager.rememberViewerImageApiResponse(endpoint, path,
+                        unsignedPayload, unsignedResult, "native-api-unsigned-first");
+                if(unsignedResult != null && unsignedResult.code >= 200
+                        && unsignedResult.code < 300)
+                    return unsignedResult;
+            } catch(InterruptedException e) {
+                Log.d(TAG, "ntk_images_api_unsigned_first_interrupted endpoint=" + endpoint);
+                Thread.interrupted();
+                return null;
+            } catch(Exception e) {
+                Log.d(TAG, "ntk_images_api_unsigned_first_error endpoint=" + endpoint
+                        + ",error=" + e);
+            }
+        }
+        for(int attempt = 0; attempt < 2; attempt++) {
+            Map<String, String> attemptHeaders = new HashMap<>(requestHeaders);
+            JSONObject attemptPayload;
+            try {
+                attemptPayload = new JSONObject(payload.toString());
+            } catch(org.json.JSONException e) {
+                Log.d(TAG, "ntk_images_api_payload_clone_error endpoint=" + endpoint
+                        + ",error=" + e);
+                return null;
+            }
+            clearNtkViewerSignatureHeaders(attemptHeaders);
+            String signatureFormat = attempt == 0 ? "p1363" : "der";
+            boolean nativeSigned = applyNtkViewerImagesSignature(baseUrl, endpoint, path, cookiePath,
+                    attemptHeaders, attemptPayload, signatureFormat);
+            boolean recentKeyAttached = !nativeSigned
+                    && applyRecentNtkRequestKey(cookiePath, attemptHeaders, attemptPayload);
+            try {
+                byte[] body = attemptPayload.toString().getBytes(StandardCharsets.UTF_8);
                 String cookieHeader = getMergedNtkCookieHeaderForUrl(baseUrl, cookiePath);
                 NtkQuicFetcher.Result result = fetchNtkViewerImagesApiRace(baseUrl, endpoint,
-                        cookieHeader, requestHeaders, body, path, trustedUrlsCallback);
+                        cookieHeader, attemptHeaders, body, path, trustedUrlsCallback);
                 Log.d(TAG, "ntk_images_api_primary endpoint=" + endpoint
                         + ",attempt=" + attempt
                         + ",signed=" + nativeSigned
                         + ",recentKey=" + recentKeyAttached
+                        + ",format=" + signatureFormat
                         + ",code=" + (result == null ? 0 : result.code)
                         + ",error=" + (result == null ? "" : result.error)
                         + ",imageCount=" + ntkViewerImagesCount(result)
@@ -8492,6 +8596,34 @@ public class CustomHttpClient {
                 if(result != null && result.body != null && result.code >= 400)
                     Log.d(TAG, "ntk_images_api_primary_body="
                             + result.body.substring(0, Math.min(500, result.body.length())));
+                if(result != null && attempt == 0
+                        && (result.code == 403 || result.code == 428)) {
+                    Log.d(TAG, "ntk_images_api_primary_retry_der endpoint=" + endpoint
+                            + ",code=" + result.code
+                            + ",path=" + path);
+                    continue;
+                }
+                if(result != null && result.code == 403 && shouldPreferUnsignedNtkViewerImagesApi(path, endpoint)
+                        && (nativeSigned || recentKeyAttached) && unsignedPayload != null) {
+                    Map<String, String> unsignedHeaders = headers == null
+                            ? new HashMap<>()
+                            : new HashMap<>(headers);
+                    clearNtkViewerSignatureHeaders(unsignedHeaders);
+                    byte[] unsignedBody = unsignedPayload.toString().getBytes(StandardCharsets.UTF_8);
+                    NtkQuicFetcher.Result unsignedResult = fetchNtkViewerImagesApiRace(baseUrl,
+                            endpoint, cookieHeader, unsignedHeaders, unsignedBody, path,
+                            trustedUrlsCallback);
+                    Log.d(TAG, "ntk_images_api_unsigned_retry endpoint=" + endpoint
+                            + ",code=" + (unsignedResult == null ? 0 : unsignedResult.code)
+                            + ",error=" + (unsignedResult == null ? "" : unsignedResult.error)
+                            + ",imageCount=" + ntkViewerImagesCount(unsignedResult)
+                            + ",afterSigned403=true");
+                    NtkWebViewFallbackManager.rememberViewerImageApiResponse(endpoint, path,
+                            unsignedPayload, unsignedResult, "native-api-unsigned-retry");
+                    if(unsignedResult != null && unsignedResult.code >= 200
+                            && unsignedResult.code < 300)
+                        return unsignedResult;
+                }
                 return result;
             } catch (InterruptedException e) {
                 Log.d(TAG, "ntk_images_api_interrupted endpoint=" + endpoint
@@ -8513,7 +8645,6 @@ public class CustomHttpClient {
         try {
             String recentRequestKeyId = NtkWebViewFallbackManager.recentRequestKeyIdForScope(cookiePath);
             if(recentRequestKeyId != null && recentRequestKeyId.length() > 0) {
-                payload.put("requestKeyId", recentRequestKeyId);
                 String recentBodyText = payload.toString();
                 Map<String, String> recentHeaders = NtkWebViewFallbackManager.signRecentRequestKeyForScope(
                         cookiePath, "POST", endpoint, path, recentBodyText, signatureFormat);
@@ -8530,7 +8661,6 @@ public class CustomHttpClient {
             String keyId = ensureNtkViewerBrowserKey(baseUrl, cookiePath);
             if(keyId.length() == 0 || ntkViewerBrowserKeyPair == null)
                 return false;
-            payload.put("requestKeyId", keyId);
             String bodyText = payload.toString();
             String timestamp = String.valueOf(Math.floorDiv(
                     System.currentTimeMillis() + ntkViewerBrowserKeyServerTimeOffsetMs, 1L));
@@ -8557,7 +8687,7 @@ public class CustomHttpClient {
                     + ",sigLen=" + signature.length
                     + ",sigTextLen=" + signatureText.length()
                     + ",bodyLen=" + bodyText.length()
-                    + ",bodyKey=true"
+                    + ",bodyKey=false"
                     + ",serverOffsetMs=" + ntkViewerBrowserKeyServerTimeOffsetMs
                     + ",lowSAdjusted=" + lowSAdjusted);
             return true;
@@ -8595,10 +8725,24 @@ public class CustomHttpClient {
             jwk.put("y", base64Url(fixedUnsigned32(publicKey.getW().getAffineY())));
             JSONObject requestBody = new JSONObject();
             requestBody.put("publicKey", jwk);
-            byte[] body = requestBody.toString().getBytes(StandardCharsets.UTF_8);
             Map<String, String> headers = new HashMap<>();
             headers.put("content-type", "application/json");
             String cookieHeader = getMergedNtkCookieHeaderForUrl(baseUrl, cookiePath);
+            String fp = ntkCookieValue(cookieHeader, "ntk_fp");
+            String pid = ntkCookieValue(cookieHeader, "ntk_pid");
+            String vsid = ntkCookieValue(cookieHeader, "__vsid");
+            if(fp.length() > 0) {
+                requestBody.put("fp", fp);
+                requestBody.put("ntkFp", fp);
+                requestBody.put("fingerprint", fp);
+            }
+            if(pid.length() > 0) {
+                requestBody.put("pid", pid);
+                requestBody.put("ntkPid", pid);
+            }
+            if(vsid.length() > 0)
+                requestBody.put("vsid", vsid);
+            byte[] body = requestBody.toString().getBytes(StandardCharsets.UTF_8);
             NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl,
                     baseUrl + "/api/client-key/register", cookieHeader, headers,
                     "POST", body, 4500L, null);
@@ -8612,7 +8756,10 @@ public class CustomHttpClient {
                     + ",error=" + (result == null ? null : result.error)
                     + ",ok=" + ok
                     + ",keyId=" + summarizeKeyId(keyId)
-                    + ",serverNow=" + response.optLong("serverNow", 0L));
+                    + ",serverNow=" + response.optLong("serverNow", 0L)
+                    + ",fpPresent=" + (fp.length() > 0)
+                    + ",pidPresent=" + (pid.length() > 0)
+                    + ",vsidPresent=" + (vsid.length() > 0));
             if(!ok)
                 return "";
             ntkViewerBrowserKeyPair = keyPair;
@@ -8627,6 +8774,21 @@ public class CustomHttpClient {
                     + ",error=" + e);
             return "";
         }
+    }
+
+    private static String ntkCookieValue(String cookieHeader, String name) {
+        if(cookieHeader == null || name == null || name.length() == 0)
+            return "";
+        String[] parts = cookieHeader.split(";");
+        for(String part : parts) {
+            int eq = part.indexOf('=');
+            if(eq <= 0)
+                continue;
+            String key = part.substring(0, eq).trim();
+            if(name.equals(key))
+                return part.substring(eq + 1).trim();
+        }
+        return "";
     }
 
     private NtkQuicFetcher.Result fetchNtkViewerImagesApiRace(String baseUrl, String endpoint,
@@ -8658,12 +8820,16 @@ public class CustomHttpClient {
                 return;
             if(!partialUrlNotifyCount.compareAndSet(previousCount, partialUrls.size()))
                 return;
+            boolean reachable = areInitialNtkViewerImageUrlsReachable(partialUrls, baseUrl, refererPath);
             Log.d(TAG, "ntk_images_api_partial_urls path=" + refererPath
                     + ",count=" + partialUrls.size()
                     + ",previous=" + previousCount
                     + ",first=" + safeLogUrl(partialUrls.get(0))
+                    + ",reachable=" + reachable
                     + ",partialLen=" + (partialText == null ? 0 : partialText.length())
                     + ",ms=" + (System.currentTimeMillis() - startedAt));
+            if(!reachable)
+                return;
             prepareNtkImageTransportForUrls(partialUrls, refererPath);
             notifyNtkViewerImageUrls(trustedUrlsCallback, partialUrls);
         };
@@ -8903,10 +9069,10 @@ public class CustomHttpClient {
         String pageFile = "p" + pageMatcher.group(1) + "." + extension;
         if("webtoon".equals(kind))
             return String.format(Locale.ROOT,
-                    "https://flysky3m.com/blacktoon/episodes/%s/%s/%s",
+                    "https://moamoabon.com/blacktoon/episodes/%s/%s/%s",
                     workId, episodeId, pageFile);
         return String.format(Locale.ROOT,
-                "https://flysky3m.com/manhwa/%s/%s/%s",
+                "https://moamoabon.com/manhwa/%s/%s/%s",
                 workId, episodeId, pageFile);
     }
 
@@ -8917,13 +9083,22 @@ public class CustomHttpClient {
         if(parsed == null || !"https".equals(parsed.scheme()))
             return "";
         String host = parsed.host() == null ? "" : parsed.host().toLowerCase(Locale.ROOT);
-        if(!host.matches("aws-cdn\\d*\\.site"))
+        if(!host.matches("aws-cdn\\d*\\.site")
+                && !host.matches("flysky\\d*m\\.com")
+                && !"moamoabon.com".equals(host)
+                && !host.matches("fvcdn\\d*\\.com"))
             return "";
         String path = parsed.encodedPath() == null ? "" : parsed.encodedPath();
         if(!isTrustedNtkPrimaryImagePath(path.toLowerCase(Locale.ROOT)))
             return "";
         String query = parsed.encodedQuery();
-        return "https://flysky3m.com" + path + (query == null || query.length() == 0 ? "" : "?" + query);
+        String lowerPath = path.toLowerCase(Locale.ROOT);
+        String canonicalHost = lowerPath.startsWith("/black/episodes/")
+                || lowerPath.startsWith("/blacktoon/episodes/")
+                ? "moamoabon.com"
+                : "moamoabon.com";
+        return "https://" + canonicalHost + path
+                + (query == null || query.length() == 0 ? "" : "?" + query);
     }
 
     private static String firstNtkViewerImageUrlFromPartialApiBody(String body) {
@@ -10887,7 +11062,8 @@ public class CustomHttpClient {
         if(urls == null || urls.isEmpty())
             return false;
         int validationCount = ntkViewerImageInitialValidationCount(urls.size());
-        if(areInitialNtkViewerImageUrlsTrustedCdn(urls, validationCount)) {
+        if(shouldTrustInitialNtkViewerImageUrlsWithoutProbe(refererPath)
+                && areInitialNtkViewerImageUrlsTrustedCdn(urls, validationCount)) {
             Log.d(TAG, "ntk_images_api_trusted_cdn_urls path=" + refererPath
                     + ",count=" + urls.size()
                     + ",validated=" + validationCount);
@@ -10910,6 +11086,10 @@ public class CustomHttpClient {
         return true;
     }
 
+    private static boolean shouldTrustInitialNtkViewerImageUrlsWithoutProbe(String refererPath) {
+        return false;
+    }
+
     private static boolean isTrustedNtkViewerApiCdnImageUrl(String url) {
         if(url == null || url.length() == 0)
             return false;
@@ -10922,6 +11102,7 @@ public class CustomHttpClient {
             return false;
         return (host.matches("aws-cdn\\d*\\.site")
                 || host.matches("flysky\\d*m\\.com")
+                || "moamoabon.com".equals(host)
                 || host.matches("fvcdn\\d*\\.com")
                 || host.matches("\\d{5,10}\\.com"))
                 && (isTrustedNtkPrimaryImagePath(path) || looksLikeRootHashImage(path));

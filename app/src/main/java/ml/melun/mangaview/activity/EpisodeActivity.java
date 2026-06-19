@@ -1327,6 +1327,8 @@ public class EpisodeActivity extends AppCompatActivity {
             return;
         if(!ml.melun.mangaview.Utils.consumeFocusedDestinationLaunch(this, DESTINATION_LAUNCH_DEBOUNCE_MS))
             return;
+        ntkLoadTimeoutHandled = true;
+        cancelNtkEpisodeLoadWatchdog();
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
