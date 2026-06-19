@@ -2061,6 +2061,18 @@ public class NtkRandomStressInstrumentedTest {
                                                String mode, Manga episode, Manga previousEpisode,
                                                int maxSteps) {
         int before = readPageCount(reader);
+        if(hasLoadedEpisode(reader, previousEpisode)) {
+            Log.d(TAG, "ntk_true_random_append_previous run=" + run
+                    + ",mode=" + mode
+                    + ",expected=true,success=true,alreadyLoaded=true"
+                    + ",before=" + before
+                    + ",after=" + before
+                    + ",currentPage=" + readCurrentPage(reader)
+                    + ",progress=" + readProgress(reader)
+                    + ",path=" + episode.getNtkEpisodePath()
+                    + ",previousPath=" + previousEpisode.getNtkEpisodePath());
+            return true;
+        }
         ReaderSession.AppendStartResult start = startAppend(reader, ReaderSurfaceView.DIRECTION_PREVIOUS, 0);
         int polls = Math.max(1, maxSteps);
         for(int step = 0; step < polls; step++) {
@@ -2068,11 +2080,13 @@ public class NtkRandomStressInstrumentedTest {
             device.waitForIdle(120L);
             int after = readPageCount(reader);
             int current = readCurrentPage(reader);
-            if(after > before) {
+            boolean alreadyLoaded = hasLoadedEpisode(reader, previousEpisode);
+            if(after > before || alreadyLoaded) {
                 Log.d(TAG, "ntk_true_random_append_previous run=" + run
                         + ",mode=" + mode
                         + ",expected=true,success=true,step=" + step
                         + ",start=" + start
+                        + ",alreadyLoaded=" + alreadyLoaded
                         + ",before=" + before
                         + ",after=" + after
                         + ",currentPage=" + current

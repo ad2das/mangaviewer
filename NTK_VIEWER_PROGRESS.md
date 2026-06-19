@@ -29559,3 +29559,56 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - This validates the observed stale-index append class and a 5-run strict fresh slice. It is still not mathematical proof over all NTK episodes.
   - Strict jank perfection is still not claimed; current close-out remains ACK 200 plus image/scroll stability.
 
+## 2026-06-19 23:38:00 +09:00 Adjacent prepend publish gate and previous-append probe fixed on main
+
+- Continued from context compaction by reading this file and checking the active goal.
+- New post-push strict fresh random failure found:
+  - Failed case: `/manhwa/20336/152897`
+  - Title: `LOVE 이론`
+  - Episode: `LOVE 이론 4권`
+  - Mode: `api-fallback`
+  - `imageEpisodeId=293790`
+  - `imageCount=178`
+  - Failure: after previous adjacent prepend, visible viewport briefly showed `placeholderPx=714`, `loading=1`.
+- Root cause:
+  - Adjacent prepend inserted prior episode pages and called `onPagesPrepended(...)` before enough prepended drawable deliveries existed.
+  - The previous SurfaceView-only `holdUntilReady=3` was not a real publish gate; it still allowed structure visibility before bitmaps were ready.
+  - This was not an ACK failure. Target repro reached strict ACK 200 with `bridge-ack-200` and scoped `guard-fetch-ack-200`.
+- Fix:
+  - `ReaderSession.appendResolvedEpisode(direction < 0)` now warms prepended pages first and defers `onPagesPrepended(...)` until the inserted prepended range has enough contiguous drawable deliveries.
+  - The required ready count is capped by the number of drawable refs actually inserted, so early partial handoff with only one drawable cannot wait forever for three pages.
+  - When the gate opens it logs `append_adjacent_prepend_notify_near_ready` and redelivers already-ready prepended start pages.
+- Secondary validation issue fixed:
+  - Random target `/manhwa/3552/1739980` already auto-prepended expected previous episode `/manhwa/3552/1739904`.
+  - The test then started another previous append from the new top boundary and incorrectly required page count to grow again.
+  - `NtkRandomStressInstrumentedTest.probePreviousAppend(...)` now treats the expected previous episode as success if it is already loaded, matching the existing next-append behavior.
+- Validation:
+  - Build: `.\gradlew.bat --no-daemon :app:assembleDebug` passed.
+  - Target repro 1:
+    - Path: `/manhwa/20336/152897`
+    - Result: `BUILD SUCCESSFUL` in `48s`.
+    - First drawable: `2369ms`.
+    - Strict ACK: `bridge-ack-200` plus scoped `guard-fetch-ack-200`.
+    - Prepend gate: `append_adjacent_prepend_notify_near_ready ... ready=3 required=3 inserted=13 total=27`.
+    - Visible scroll coverage after fix: `placeholderPx=0`, `loading=0`, no post-stop drift.
+  - Target repro 2:
+    - Path: `/manhwa/3552/1739980`
+    - Result: `BUILD SUCCESSFUL` in `51s`.
+    - Strict ACK: `bridge-ack-200` plus scoped `guard-fetch-ack-200`.
+    - Previous append proof: `alreadyLoaded=true` for `/manhwa/3552/1739904`.
+    - Visible scroll coverage after settle: `placeholderPx=0`, `loading=0`, no post-stop drift.
+  - Random strict fresh 3-run:
+    - Result: `BUILD SUCCESSFUL` in `1m44s`.
+    - Cases:
+      - `/webtoon/14747/1483420`, mode `generated`, first drawable `3448ms`, ACK `native-fetch-ack-200`.
+      - `/manhwa/33778/1694460`, mode `native-ack`, first drawable `1471ms`, ACK `native-fetch-ack-200`.
+      - `/webtoon/14567/1382377`, mode `api-fallback`, first drawable `2089ms`, ACK `native-fetch-ack-200`.
+    - Scroll coverage samples across the run showed `placeholderPx=0`, `loading=0`, and no post-stop drift.
+- Bad approaches / do not repeat:
+  - Do not rely on SurfaceView hold-only for prepended adjacent episodes; it is not sufficient to prevent structure exposure before drawable readiness.
+  - Do not let a readiness gate require more pages than the current inserted refs contain; partial early handoff can otherwise wait forever.
+  - Do not treat an already-loaded previous episode as a failed previous-append probe.
+- Remaining risk:
+  - A target `/manhwa/3552/1739980` run still logged one very short busy `reader_visible_loading=1` sample during active touch while current episode pages were expanding, although all asserted settled scroll samples were clean.
+  - The latest random 3-run had no `placeholderPx>0` or `loading>0` samples, but this remains a follow-up class if stricter real-time no-placeholder sampling is required.
+

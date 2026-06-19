@@ -3570,27 +3570,26 @@ class ReaderSession(
                 total = pages.size
                 shiftPageStateForPrepend(inserted)
             }
+            val holdUntilReady = prependedHoldUntilReadyCount(target, refs)
+            val gateNtkPrependNotify =
+                shouldGateAdjacentPrependNotifyUntilNearReady(target, inserted, holdUntilReady)
             val posted = main.post {
-                var shouldWarm = false
-                var finished = false
                 try {
                     finishStructurePublish()
-                    finished = true
-                    if (!cancelled.get()) {
-                        if (warm) {
-                            warmPrependedEpisode(inserted)
-                            warmPrependedEpisodeStart(inserted)
-                        }
-                        listener.onPagesPrepended(
-                            total,
-                            inserted,
-                            prependedHoldUntilReadyCount(target)
-                        )
+                    if (cancelled.get()) return@post
+                    if (warm) {
+                        warmPrependedEpisode(inserted)
+                        warmPrependedEpisodeStart(inserted)
+                    }
+                    if (gateNtkPrependNotify) {
+                        notifyAdjacentPrependWhenNearReady(target, inserted, total, cardOffset, transitionTitle, holdUntilReady)
+                    } else {
+                        listener.onPagesPrepended(total, inserted, holdUntilReady)
                         if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
                         redeliverReadyPrependedStart(inserted)
                     }
                 } finally {
-                    if (!finished) finishStructurePublish()
+                    if (isStructurePublishPending()) finishStructurePublish()
                 }
             }
             if (!posted) finishStructurePublish()
@@ -3671,11 +3670,72 @@ class ReaderSession(
         }
     }
 
-    private fun prependedHoldUntilReadyCount(target: Manga): Int {
+    private fun prependedHoldUntilReadyCount(target: Manga, refs: List<PageRef>): Int {
         if (!isNtkSource(target, title) || !firstBitmapLogged.get()) return 0
-        if (target.ntkImageCount <= 1) return 0
         if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return 0
-        return minOf(NTK_OBSERVED_MANHWA_APPEND_READY_PAGES, target.ntkImageCount)
+        val drawableCount = refs.count { it.transitionTitle == null }
+        if (drawableCount <= 0) return 0
+        val knownCount = when {
+            target.ntkImageCount > 1 -> target.ntkImageCount
+            drawableCount > 1 -> drawableCount
+            else -> 0
+        }
+        if (knownCount <= 1) return 1
+        return minOf(NTK_OBSERVED_MANHWA_APPEND_READY_PAGES, knownCount, drawableCount)
+    }
+
+    private fun shouldGateAdjacentPrependNotifyUntilNearReady(
+        target: Manga,
+        inserted: Int,
+        requiredReady: Int
+    ): Boolean {
+        if (!isNtkSource(manga, title) || !firstBitmapLogged.get()) return false
+        if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return false
+        if (inserted <= 0 || requiredReady <= 0) return false
+        return generatedPrependNearReadyCount(inserted, requiredReady) < requiredReady
+    }
+
+    private fun notifyAdjacentPrependWhenNearReady(
+        target: Manga,
+        inserted: Int,
+        total: Int,
+        cardOffset: Int,
+        transitionTitle: String,
+        requiredReady: Int
+    ) {
+        val notify = object : Runnable {
+            override fun run() {
+                if (cancelled.get()) return
+                val ready = generatedPrependNearReadyCount(inserted, requiredReady)
+                if (ready < requiredReady) {
+                    main.postDelayed(this, NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
+                    return
+                }
+                Log.d(
+                    TAG,
+                    "append_adjacent_prepend_notify_near_ready targetId=${target.id} path=${target.ntkEpisodePath} " +
+                        "ready=$ready required=$requiredReady inserted=$inserted total=$total"
+                )
+                listener.onPagesPrepended(total, inserted, requiredReady)
+                if (cardOffset >= 0) listener.onPageCard(cardOffset, transitionTitle)
+                redeliverReadyPrependedStart(inserted)
+            }
+        }
+        notify.run()
+    }
+
+    private fun generatedPrependNearReadyCount(inserted: Int, requiredReady: Int): Int = synchronized(pagesLock) {
+        if (inserted <= 0 || pages.isEmpty()) return@synchronized 0
+        val last = minOf(inserted - 1, pages.lastIndex)
+        var ready = 0
+        for (index in 0..last) {
+            val page = pages.getOrNull(index) ?: continue
+            if (page.transitionTitle != null) continue
+            if (!hasListenerDrawableDelivery(index)) break
+            ready++
+            if (ready >= requiredReady) break
+        }
+        ready
     }
 
     private fun shouldGateAdjacentAppendNotifyUntilNearReady(target: Manga, cardIndex: Int, total: Int): Boolean {
