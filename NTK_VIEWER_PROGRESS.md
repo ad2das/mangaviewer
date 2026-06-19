@@ -29937,3 +29937,103 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Next action:
   - Commit this validated stability slice on `main` and push.
 
+## 2026-06-20 03:00:00 +09:00 Main post-push strict fresh and actual UX validation
+
+- Continued after context compaction by reading this file and checking the active goal.
+- Confirmed the validated code slice is on the main sync worktree:
+  - Worktree: `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`.
+  - Latest pushed code commit: `905666176 Stabilize NTK slug ACK image handoff`.
+  - `origin/main` and `origin/HEAD` point at `905666176`.
+- GitHub Actions:
+  - Workflow: `Release APK`.
+  - Run: `27839890910`.
+  - Commit: `905666176`.
+  - Result: success.
+  - Note: only warning was Node.js 20 deprecation in Actions, not a build failure.
+- Strict fresh random validation on current main:
+  - Log: `ntk_random3_strict_fresh_post_slug_scope_20260620_023218.logcat`.
+  - Command used `NtkRandomStressInstrumentedTest#randomNtkEpisodesOpenAndScroll`.
+  - Options included strict ACK required, ACK/cache cleared before run, first drawable max 16s, initial continuous pages required, append probe enabled, append steps 50, and `ntkAssertNoJank=false`.
+  - Result: PASS, Gradle exit `0`.
+  - Seed: `14460104`.
+  - Run 0:
+    - Path: `/webtoon/10014/987622`.
+    - Title: `악당의 미학`.
+    - Mode: `api-fallback`.
+    - Image count: `90`.
+    - First drawable: `3033ms`.
+    - Initial continuous: `3031ms`.
+    - ACK proof: `/webtoon/10014/987622`, source `native-fetch-ack-200`.
+    - Next append and previous append succeeded.
+  - Run 1:
+    - Path: `/manhwa/32964/1666769`.
+    - Title: `code：노스트라`.
+    - Mode: `generated`.
+    - Image count metadata: `28`; visible reader page count in this case: `4`.
+    - First drawable: `1890ms`.
+    - Initial continuous: `1888ms`.
+    - ACK proof: `/manhwa/32964/1666769`, source `native-fetch-ack-200`.
+    - Previous append succeeded; next was expected false.
+  - Run 2:
+    - Path: `/webtoon/17995/1505527`.
+    - Title: `요괴괴괴`.
+    - Mode: `native-ack`.
+    - Image count: `60`.
+    - First drawable: `8011ms`.
+    - Initial continuous: `8011ms`.
+    - ACK proof: `/webtoon/17995/1505527`, source `native-fetch-ack-200`.
+    - Next append and previous append succeeded.
+  - Coverage/scroll:
+    - All settled scroll samples had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+    - All post-stop drift samples had `maxPageDelta=0`, `maxOffsetDelta=0`, `changedSamples=0`.
+  - Image/ad check:
+    - `ADLIKE_FIRST_COUNT=0`.
+    - `p001_COUNT=601` in this run is expected for numeric generated NTK episodes. These were valid `moamoabon.com/.../p001.jpg|jpeg|webp` images with successful header probes, not the earlier bad synthetic slug-token false image path.
+- Actual UX selection validation on current main:
+  - Combined actual UX command ran:
+    - `EpisodeActivityNetworkTest#ntkCurrentComicUxSelectionOpensReaderWithAck200`.
+    - `EpisodeActivityNetworkTest#ntkCurrentWebtoonUxSelectionOpensReaderWithAck200`.
+    - `EpisodeActivityNetworkTest#ntkHomeContinueUxSelectionOpensReaderWithAck200`.
+  - Log: `ntk_actual_ux_current_main_20260620_023507.logcat`.
+  - Result: PASS, 3 tests.
+  - Because the tests clear logcat internally, individual reruns were used for full detail.
+- Actual UX webtoon detail:
+  - Source log: `ntk_actual_ux_current_main_20260620_023507.logcat`.
+  - Start: `/webtoon/16968`.
+  - Reader path: `/webtoon/16968/1463195`.
+  - First drawable: `788ms`.
+  - `reader_visible_loading=0`.
+  - Coverage: `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`.
+  - ACK proof: `/webtoon/16968/1463195`, source `native-fetch-ack-200`; bridge also recorded `bridge-ack-200 strictAdAck=true`.
+  - Success line: `ntk_actual_ux_select_success source=ntk,type=webtoon`.
+- Actual UX comic detail:
+  - Log: `ntk_actual_ux_comic_main_20260620_023721.logcat`.
+  - Result: PASS.
+  - Start: `/manhwa/36525`.
+  - Reader path: `/manhwa/36525/1807424`.
+  - First drawable: `3310ms`.
+  - `reader_visible_loading=0`.
+  - Coverage: `drawablePx=1536`, `missingPx=0`, `placeholderPx=0`.
+  - First image: `https://moamoabon.com/manhwa/36525/1807424/p001.jpg`.
+  - ACK proof: `/manhwa/36525/1807424`, source `native-fetch-ack-200`; bridge also recorded `bridge-ack-200 strictAdAck=true`.
+  - Success line: `ntk_actual_ux_select_success source=ntk,type=comic`.
+- Actual home continue UX detail:
+  - Log: `ntk_actual_ux_home_continue_main_20260620_023807.logcat`.
+  - Result: PASS.
+  - Start: `source=ntk,type=webtoon,titlePath=/webtoon/16968,episodePath=/webtoon/16968/1463195`.
+  - First drawable: `2643ms`.
+  - `reader_visible_loading=0`.
+  - Coverage: `drawablePx=2274`, `missingPx=0`, `placeholderPx=0`.
+  - First image: `https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg`.
+  - ACK proof: `/webtoon/16968/1463195`, source `native-fetch-ack-200`; bridge also recorded `bridge-ack-200 strictAdAck=true`.
+  - Success line: `ntk_actual_home_continue_select_success`.
+- Bad approaches / do not repeat:
+  - Do not treat generated numeric `p001` image URLs as the old synthetic slug-token false-image issue. Numeric generated episodes can legitimately use `p001.*`.
+  - Do not interpret `/api/ad/challenge` or `/api/ad/ack` control logs as ad image mixing. Image mixing must be judged from `first=` / `firstImage=` image URL fields and screenshot/content checks.
+  - Do not fail actual UX only because a transient pre-proof 403 or `hardForbidden` appears. It can happen before strict ACK proof; final success requires strict ACK 200 plus clean coverage.
+  - Do not claim strict jank is solved. This validation intentionally used `ntkAssertNoJank=false`; stability/ACK passed, but emulator frame metrics can still show high `missedFrames` or `strictOverBudget`.
+- Current status:
+  - On current `main`, strict fresh random mixed cases, actual comic selection, actual webtoon selection, and actual home continue selection all reached real NTK reader images with strict ACK 200 proof and no settled placeholder/missing pixels or scroll drift.
+  - Remaining risk is performance smoothness strictness, not ACK correctness or settled image visibility in the validated slice.
+
