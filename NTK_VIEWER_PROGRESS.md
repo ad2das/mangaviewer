@@ -31008,3 +31008,62 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - Strict ACK is now proven again in a real UX emulator run, but repeatability should still be watched across additional random/actual cases.
   - First drawable is stable but still around 21.8s in this artifact; speed is now secondary per user direction, but this remains the main UX performance risk if work resumes after ACK stabilization.
+
+## 2026-06-20 09:02 UTC / 18:02 +09:00 Strict ACK repeatability after stale `ad_ack` cleanup on main
+
+- Continued on the correct main worktree:
+  - `C:\Users\Administrator\Downloads\mangaviewer-main-sync`.
+  - Branch: `main`, tracking `origin/main`.
+  - `origin/main` already had `52695cb76 Stabilize NTK strict ACK canary handoff`.
+- Important correction to the previous passing proof:
+  - `build\ntk-actual-ux-direct\20260620_083651` was a real strict ACK pass, but it was not repeatable enough.
+  - Repeat runs showed that a stale `ad_ack` from a prior success could remain in later ad-control requests and make `/api/ad/ack` return `400 {"ok":false,"error":"missing_canary"}`.
+  - Do not treat one `bridge-ack-200` run as final stability proof when stale `ad_ack` is still present in challenge/canary/ack cookies.
+- Failed/recovered evidence before the final cleanup:
+  - `build\ntk-actual-ux-direct\20260620_084304` timed out/hung from the command side. The app had opened the reader and images were visible, but strict ACK did not complete; log showed repeated `missing_canary`.
+  - `build\ntk-actual-ux-direct\20260620_084757` failed strict ACK after only stripping stale `ad_ack` in `submitCanaryBeforeAdAck(...)`; the direct JS `/api/ad/canary` bridge path still sent stale `ad_ack`.
+  - `build\ntk-actual-ux-direct\20260620_085458` timed out after the direct canary path cleanup. Images still rendered:
+    - `reader_open_to_first_drawable ... ms=25169`.
+    - `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0`.
+    - But strict ACK did not complete:
+      - `bridge-ack-200=0`.
+      - `guard-fetch-ack-200=0`.
+      - `missing_canary=20`.
+    - The key remaining bad shape was stale ACK state on `/api/ad/challenge` and `/api/ad/ack` entry cookies:
+      - `/api/ad/canary` had `hasAdAck=false`.
+      - `/api/ad/ack` and `/api/ad/challenge` could still log `hasAdAck=true`.
+- Fix:
+  - `NtkWebViewFallbackManager.NtkQuicBridge.request(...)` now removes stale `ad_guard_l` and stale `ad_ack` from all ad-control bridge entry requests:
+    - `/api/ad/challenge`.
+    - `/api/ad/canary`.
+    - `/api/ad/ack`.
+  - `submitCanaryBeforeAdAck(...)` still performs the fresh canary POST, then merges the fresh `ad_guard_l` Set-Cookie last before submitting ACK.
+  - Scoped `ad_ack_c` is preserved; stale final `ad_ack` is not reused as input for a new proof.
+- Validation after cleanup:
+  - Build:
+    - `.\gradlew.bat --no-daemon :app:compileDebugJavaWithJavac :app:assembleDebug :app:assembleDebugAndroidTest`
+    - Result: `BUILD SUCCESSFUL`.
+  - Installed debug and androidTest APKs on `emulator-5554`.
+  - Actual UX direct webtoon selection run 1:
+    - Artifact: `build\ntk-actual-ux-direct\20260620_085929`.
+    - Result: `OK (1 test)`.
+    - Strict ACK: `bridge-ack-200=2`, `guard-fetch-ack-200=2`.
+    - Stale cleanup observed: `ntk_viewer_ad_bridge_stale_ack_cookie_stripped=10`.
+    - First drawable: `reader_open_to_first_drawable ... ms=28997`.
+    - Coverage: `reader_visible_coverage drawablePx=2274/2275 missingPx=0 placeholderPx=0`.
+    - Final success: `ntk_actual_ux_select_success ... ack=...source=bridge-ack-200;strictAdAck=true`.
+  - Actual UX direct webtoon selection run 2:
+    - Artifact: `build\ntk-actual-ux-direct\20260620_090045`.
+    - Result: `OK (1 test)`.
+    - Strict ACK: `bridge-ack-200=2`, `guard-fetch-ack-200=2`.
+    - Stale cleanup observed: `ntk_viewer_ad_bridge_stale_ack_cookie_stripped=10`.
+    - First drawable: `reader_open_to_first_drawable ... ms=30514`.
+    - Coverage: `reader_visible_coverage drawablePx=2274 missingPx=0 placeholderPx=0`.
+    - Final success: `ntk_actual_ux_select_success ... ack=...source=bridge-ack-200;strictAdAck=true`.
+- Bad approaches / do not repeat:
+  - Do not strip stale ACK only in `submitCanaryBeforeAdAck(...)`; direct browser bridge canary calls are separate and must be handled too.
+  - Do not strip stale ACK only for canary; challenge and ack entry cookies can also carry stale state and poison a fresh proof.
+  - Do not call image stability success an ACK success. The timeout run had images and zero placeholder but no strict ACK 200.
+- Remaining risk:
+  - The latest passing runs still contain transient `missing_canary` retries before final strict ACK 200. This is now recovered repeatably in two actual UX runs, but the 400 retry noise is not fully eliminated.
+  - First drawable remains slow, around `29-30s`, and speed is only being accepted because the current close-out priority is ACK/stability rather than performance perfection.

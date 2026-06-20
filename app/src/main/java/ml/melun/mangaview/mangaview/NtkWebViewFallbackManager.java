@@ -5913,12 +5913,15 @@ final class NtkWebViewFallbackManager {
                 cookieHeader = cookieHeaderWithoutSatisfiedAdAckForChallenge(url, method,
                         headers, body, cookieHeader);
                 cookieHeader = cookieHeaderWithScopedAdAckC(url, method, body, cookieHeader);
-                if(isNtkAdCanaryPost(url, method)) {
-                    String freshCanaryCookieHeader = cookieHeaderWithoutNames(cookieHeader, "ad_guard_l");
-                    if(!freshCanaryCookieHeader.equals(cookieHeader))
-                        Log.d(TAG, "ntk_viewer_ad_bridge_canary_stale_guard_cookie_stripped url="
+                if(isNtkAdChallengePost(url, method)
+                        || isNtkAdCanaryPost(url, method)
+                        || isNtkAdAckPost(url, method)) {
+                    String freshAdControlCookieHeader = cookieHeaderWithoutNames(cookieHeader,
+                            "ad_guard_l", "ad_ack");
+                    if(!freshAdControlCookieHeader.equals(cookieHeader))
+                        Log.d(TAG, "ntk_viewer_ad_bridge_stale_ack_cookie_stripped url="
                                 + url);
-                    cookieHeader = freshCanaryCookieHeader;
+                    cookieHeader = freshAdControlCookieHeader;
                 }
                 String requestUserAgent = bridgeRequestUserAgent(headers);
                 removeHeaderIgnoreCase(headers, "cookie");
@@ -6332,9 +6335,10 @@ final class NtkWebViewFallbackManager {
                 headers.put("referer", origin + path);
                 if(requestKeyId.length() > 0)
                     headers.put("x-ntk-key-id", requestKeyId);
-                String canaryCookieHeader = cookieHeaderWithoutNames(cookieHeader, "ad_guard_l");
+                String canaryCookieHeader = cookieHeaderWithoutNames(cookieHeader,
+                        "ad_guard_l", "ad_ack");
                 if(!canaryCookieHeader.equals(cookieHeader))
-                    Log.d(TAG, "ntk_viewer_ad_bridge_canary_before_ack_stale_guard_cookie_stripped path="
+                    Log.d(TAG, "ntk_viewer_ad_bridge_canary_before_ack_stale_ack_cookie_stripped path="
                             + path);
                 long startMs = SystemClock.uptimeMillis();
                 NtkQuicFetcher.Session session = quicControlSession(canaryUrl);
@@ -6376,8 +6380,10 @@ final class NtkWebViewFallbackManager {
                 String refreshedCookieHeader = bridgeCookieHeader(ackUrl, fallbackCookieHeader,
                         ackHeaders == null ? new HashMap<>() : new HashMap<>(ackHeaders), ackBody);
                 String resultCookieHeader = setCookiesAsHeader(result);
-                String ackBaseCookieHeader = cookieHeaderWithoutNames(cookieHeader, "ad_guard_l");
-                String refreshedWithoutStaleGuard = cookieHeaderWithoutNames(refreshedCookieHeader, "ad_guard_l");
+                String ackBaseCookieHeader = cookieHeaderWithoutNames(cookieHeader,
+                        "ad_guard_l", "ad_ack");
+                String refreshedWithoutStaleGuard = cookieHeaderWithoutNames(refreshedCookieHeader,
+                        "ad_guard_l", "ad_ack");
                 String mergedCookieHeader = mergeCookieHeaders(
                         mergeCookieHeaders(ackBaseCookieHeader, refreshedWithoutStaleGuard),
                         resultCookieHeader);
