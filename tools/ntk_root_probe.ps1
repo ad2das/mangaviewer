@@ -4,6 +4,7 @@ param(
     [string]$Roots = "https://sbxh6.com,https://toonflix.app,https://sbxh4.com",
     [int]$TimeoutMs = 3500,
     [int]$MaxRoots = 16,
+    [string]$UserAgent = "",
     [switch]$IncludeResolvedRoots,
     [switch]$RequireApiJsonRoot,
     [switch]$SkipBuild,
@@ -102,6 +103,7 @@ function Classify-RootProbe($Records) {
         $samples = (($items | ForEach-Object { [string]$_.sample }) -join " ").ToLowerInvariant()
         $errors = (($items | ForEach-Object { [string]$_.error }) -join " ").ToLowerInvariant()
         $types = (($items | ForEach-Object { [string]$_.type }) -join " ").ToLowerInvariant()
+        $locations = (($items | ForEach-Object { [string]$_.location }) -join " ").ToLowerInvariant()
         $challenge = @($items | Where-Object { [string]$_.name -match "challenge" })
         $challengeJsonOk = @($challenge | Where-Object {
             [string]$_.code -eq "200" -and [string]$_.type -match "json"
@@ -112,7 +114,8 @@ function Classify-RootProbe($Records) {
         $kind = "unknown"
         if($challengeJsonOk -or $apiJsonOk) {
             $kind = "api-json-ok"
-        } elseif($samples.Contains("뉴토끼 공식 주소안내") -or $samples.Contains("telegram")) {
+        } elseif(($samples.Contains("뉴토끼 공식 주소안내") -or $samples.Contains("telegram") `
+                -or $locations.Contains("t.me/") -or $locations.Contains("telegram"))) {
             $kind = "address-guide"
         } elseif($codes -contains "403" -or $samples.Contains("just a moment") -or $samples.Contains("cloudflare")) {
             $kind = "cf-block"
@@ -134,6 +137,65 @@ function Classify-RootProbe($Records) {
             errors = (($items | ForEach-Object { [string]$_.error } | Where-Object {
                 $_ -and $_ -ne "-"
             } | Select-Object -First 2) -join " | ")
+        }
+    }
+    return $out
+}
+
+function Classify-TransportProbeRecord($Record) {
+    $name = [string]$Record.name
+    $code = [string]$Record.code
+    $type = ([string]$Record.type).ToLowerInvariant()
+    $sample = ([string]$Record.sample).ToLowerInvariant()
+    $error = ([string]$Record.error).ToLowerInvariant()
+    $location = ([string]$Record.location).ToLowerInvariant()
+    if($code -match "^2\d\d$" -and $type.Contains("json")) {
+        return "api-json-ok"
+    }
+    if(($sample.Contains("뉴토끼 공식 주소안내") -or $sample.Contains("telegram") `
+            -or $location.Contains("t.me/") -or $location.Contains("telegram"))) {
+        return "address-guide"
+    }
+    if($code -match "^2\d\d$") {
+        return "http-ok"
+    }
+    if($code -match "^30\d$") {
+        return "redirect"
+    }
+    if($error.Contains("err_quic_protocol_error") -or $error.Contains("quicexceptionwrapper")) {
+        return "quic-protocol-error"
+    }
+    if($error.Contains("err_connection_reset") -or $error.Contains("connection reset")) {
+        return "connection-reset"
+    }
+    if($error.Contains("timed out") -or $error.Contains("timeout")) {
+        return "timeout"
+    }
+    if($error.Contains("unknownhost") -or $error.Contains("name_not_resolved")) {
+        return "dns-fail"
+    }
+    if($code -eq "403" -or $sample.Contains("cloudflare") -or $sample.Contains("just a moment")) {
+        return "cf-block"
+    }
+    if($error.Length -gt 0) {
+        return "error"
+    }
+    return "unknown"
+}
+
+function Build-TransportOutcomes($Records) {
+    $out = @()
+    foreach($record in $Records) {
+        $out += [pscustomobject][ordered]@{
+            root = [string]$record.root
+            name = [string]$record.name
+            outcome = Classify-TransportProbeRecord $record
+            code = [string]$record.code
+            ms = [string]$record.ms
+            type = [string]$record.type
+            location = [string]$record.location
+            error = [string]$record.error
+            sample = [string]$record.sample
         }
     }
     return $out
@@ -176,6 +238,10 @@ if($ForceStopBeforeRun) {
 & adb -s $DeviceSerial logcat -c | Out-Null
 
 $includeResolvedArg = if($IncludeResolvedRoots) { "true" } else { "false" }
+$quotedUserAgent = ""
+if(-not [string]::IsNullOrWhiteSpace($UserAgent)) {
+    $quotedUserAgent = "'" + $UserAgent.Trim().Replace("'", "'\''") + "'"
+}
 $argsList = @(
     "-s", $DeviceSerial,
     "shell", "am", "instrument", "-w", "-r",
@@ -183,7 +249,12 @@ $argsList = @(
     "-e", "ntkRoots", $Roots,
     "-e", "ntkRootProbeTimeoutMs", [string]$TimeoutMs,
     "-e", "ntkRootProbeMaxRoots", [string]$MaxRoots,
-    "-e", "ntkIncludeResolvedRoots", $includeResolvedArg,
+    "-e", "ntkIncludeResolvedRoots", $includeResolvedArg
+)
+if($quotedUserAgent.Length -gt 0) {
+    $argsList += @("-e", "ntkProbeUserAgent", $quotedUserAgent)
+}
+$argsList += @(
     "-e", "class", "ml.melun.mangaview.mangaview.NtkRootTransportProbeInstrumentedTest#rootTransportVariantsReportStatusCodes",
     "ml.melun.mangaview.test/androidx.test.runner.AndroidJUnitRunner"
 )
@@ -197,6 +268,11 @@ $logcatPath = Join-Path $runDir "logcat.txt"
 $logText = Get-Content -Path $logcatPath -Raw
 $probeRecords = @(Read-RootProbeRecords $logText)
 $rootClasses = @(Classify-RootProbe $probeRecords)
+$transportOutcomes = @(Build-TransportOutcomes $probeRecords)
+$transportOutcomeCounts = [ordered]@{}
+foreach($transportGroup in @($transportOutcomes | Group-Object outcome)) {
+    $transportOutcomeCounts[$transportGroup.Name] = $transportGroup.Count
+}
 $apiJsonRoots = @($rootClasses | Where-Object { $_.class -eq "api-json-ok" } | ForEach-Object { [string]$_.root })
 $rootClassCounts = [ordered]@{}
 foreach($classGroup in @($rootClasses | Group-Object class)) {
@@ -221,7 +297,8 @@ if($apiJsonRoots.Count -gt 0) {
     $liveRoot = $apiJsonRoots[0]
     $nextLiveRandomCommand = ".\tools\ntk_random_perf.ps1 -DeviceSerial $DeviceSerial -Runs 6 -ScrollSteps 10 -AppendSteps 0 -ScreenshotEvery 0 -Mode native-ack -ScrollInputMode programmatic -ScrollPattern mixed -StrictFresh -NoAppendProbe -RequireLiveRandom -NtkSiteRoot `"$liveRoot`" -NtkLockSiteRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
 }
-$nextRootProbeCommand = ".\tools\ntk_root_probe.ps1 -DeviceSerial $DeviceSerial -Roots `"$Roots`" -TimeoutMs $TimeoutMs -MaxRoots $MaxRoots -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
+$userAgentArg = if([string]::IsNullOrWhiteSpace($UserAgent)) { "" } else { " -UserAgent `"$($UserAgent.Trim())`"" }
+$nextRootProbeCommand = ".\tools\ntk_root_probe.ps1 -DeviceSerial $DeviceSerial -Roots `"$Roots`" -TimeoutMs $TimeoutMs -MaxRoots $MaxRoots$userAgentArg -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
 
 $summary = [ordered]@{
     runDir = $runDir
@@ -233,10 +310,12 @@ $summary = [ordered]@{
     verdict = $rootProbeVerdict
     ackBlockedReason = $ackBlockedReason
     rootClassCounts = $rootClassCounts
+    transportOutcomeCounts = $transportOutcomeCounts
     apiJsonRoots = $apiJsonRoots
     nextLiveRandomCommand = $nextLiveRandomCommand
     nextRootProbeCommand = $nextRootProbeCommand
     rootClasses = $rootClasses
+    transportOutcomes = $transportOutcomes
     probes = Marker-Lines $logText "ntk_root_probe root="
     started = Marker-Lines $logText "ntk_root_probe_start" 4
     done = Marker-Lines $logText "ntk_root_probe_done" 4

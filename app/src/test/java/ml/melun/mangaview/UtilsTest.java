@@ -164,6 +164,53 @@ public class UtilsTest {
     }
 
     @Test
+    public void ntkWarpAssistShowsForUnverifiedNonVpnRouteBlocks() {
+        assertTrue(Utils.shouldOfferNtkWarpAssistForFailureForTest(true, false, false, false, false));
+        assertTrue(Utils.shouldOfferNtkWarpAssistForFailureForTest(true, false, false, true, true));
+        assertFalse(Utils.shouldOfferNtkWarpAssistForFailureForTest(true, true, false, false, false));
+        assertFalse(Utils.shouldOfferNtkWarpAssistForFailureForTest(true, false, true, false, false));
+        assertFalse(Utils.shouldOfferNtkWarpAssistForFailureForTest(true, false, false, true, false));
+        assertFalse(Utils.shouldOfferNtkWarpAssistForFailureForTest(false, false, false, false, false));
+    }
+
+    @Test
+    public void cloudflareWarpAssistLaunchIsRecentOnlyWithinWindow() {
+        assertTrue(Utils.hasRecentCloudflareWarpAssistLaunchForTest(1_000L, 1_500L, 1_000L));
+        assertFalse(Utils.hasRecentCloudflareWarpAssistLaunchForTest(1_000L, 2_500L, 1_000L));
+        assertFalse(Utils.hasRecentCloudflareWarpAssistLaunchForTest(0L, 1_500L, 1_000L));
+        assertFalse(Utils.hasRecentCloudflareWarpAssistLaunchForTest(2_000L, 1_500L, 1_000L));
+        assertFalse(Utils.hasRecentCloudflareWarpAssistLaunchForTest(1_000L, 1_500L, 0L));
+    }
+
+    @Test
+    public void warpAssistSkipsEmulatorLicenseCheckerPlayStoreStub() {
+        assertFalse(Utils.isFunctionalPlayStoreForTest("com.android.vending",
+                "/product/app/LicenseChecker/LicenseChecker.apk"));
+        assertTrue(Utils.isFunctionalPlayStoreForTest("com.android.vending",
+                "/product/priv-app/Phonesky/Phonesky.apk"));
+        assertTrue(Utils.isFunctionalPlayStoreForTest("com.android.vending",
+                "/data/app/~~token/com.android.vending-abc/base.apk"));
+        assertFalse(Utils.isFunctionalPlayStoreForTest("com.example.store",
+                "/product/priv-app/Phonesky/Phonesky.apk"));
+    }
+
+    @Test
+    public void warpAssistPrefersVpnSettingsBeforeWebPlayWithoutFunctionalPlayStore() {
+        assertTrue(Utils.shouldPreferVpnSettingsBeforeWebPlayForTest(false));
+        assertFalse(Utils.shouldPreferVpnSettingsBeforeWebPlayForTest(true));
+        assertFalse(Utils.shouldAllowWebPlayFallbackForTest(false));
+        assertTrue(Utils.shouldAllowWebPlayFallbackForTest(true));
+    }
+
+    @Test
+    public void warpAssistAutoOpensOnlyForFreshHardBlockOffer() {
+        assertTrue(Utils.shouldAutoOpenNtkWarpAssistForHardBlockForTest(true, true, false));
+        assertFalse(Utils.shouldAutoOpenNtkWarpAssistForHardBlockForTest(false, true, false));
+        assertFalse(Utils.shouldAutoOpenNtkWarpAssistForHardBlockForTest(true, false, false));
+        assertFalse(Utils.shouldAutoOpenNtkWarpAssistForHardBlockForTest(true, true, true));
+    }
+
+    @Test
     public void exactViewerLaunchDoesNotBlockActivityLaunchForOnlineSources() {
         assertFalse(Utils.shouldWaitForExactFirstFrameForTest("wfwf", false));
         assertFalse(Utils.shouldWaitForExactFirstFrameForTest("ntk", true));

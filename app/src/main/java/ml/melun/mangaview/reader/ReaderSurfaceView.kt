@@ -243,7 +243,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var statsNoCanvasFrames = 0
     private var hasDrawnContentFrame = false
     private var fastBitmapRefineScheduled = false
+    private var firstDrawableContentAtMs = 0L
+    private var initialUploadContinuationFrame = false
+    private val initiallyUploadedDrawableIds = HashSet<Int>()
     private var lastVisibleLoading = -1
+    private val frameStatsFinalizeRunnable = Runnable {
+        val snapshot = synchronized(stateLock) {
+            finalizeActiveFrameStatsLocked(log = true)
+        } ?: return@Runnable
+        logFrameStatsSnapshot(snapshot)
+    }
     private val statsCallbackSpacingMs = ArrayList<Float>(240)
     private val statsPostSpacingMs = ArrayList<Float>(240)
     private val statsLockWaitMs = ArrayList<Float>(240)
@@ -342,6 +351,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastNearStart = false
             lastNearEnd = false
             hasDrawnContentFrame = false
+            firstDrawableContentAtMs = 0L
+            initialUploadContinuationFrame = false
+            initiallyUploadedDrawableIds.clear()
             this.deferInitialEmptyDraw = deferInitialEmptyDraw
             initialViewportHoldUntilMs = 0L
             structuralScrollAdjustUntilMs = 0L
@@ -690,6 +702,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 clearPendingResolveLocked(page)
             }
             hasDrawnContentFrame = false
+            firstDrawableContentAtMs = 0L
+            initialUploadContinuationFrame = false
+            initiallyUploadedDrawableIds.clear()
             layoutDirty = true
             renderRequested = true
             scheduleFrameLocked()
@@ -714,6 +729,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 clearPendingResolveLocked(page)
             }
             hasDrawnContentFrame = false
+            firstDrawableContentAtMs = 0L
+            initialUploadContinuationFrame = false
+            initiallyUploadedDrawableIds.clear()
             layoutDirty = true
             stopRenderThreadLocked()
             stateLock.notifyAll()
@@ -921,6 +939,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    fun requestVisibleCoverageFrame() {
+        synchronized(stateLock) {
+            if (pages.isNotEmpty()) {
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+            }
+        }
+        invalidate()
+    }
+
     fun frameStatsSnapshot(): FrameStatsSnapshot? {
         return synchronized(stateLock) {
             if (lastFrameStatsSnapshot == null && statsActive) {
@@ -934,7 +963,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             lastFrameStatsSnapshot = null
             resetActiveFrameStatsLocked()
+            val nowMs = SystemClock.uptimeMillis()
+            lastScrollInteractionMs = nowMs
+            programmaticScrollStatsUntilMs = nowMs + PROGRAMMATIC_SCROLL_STATS_ACTIVE_MS
+            if (pages.isNotEmpty() && !shouldBlockInitialEmptyFrameLocked()) {
+                renderRequested = true
+                scheduleFrameLocked()
+            }
+            stateLock.notifyAll()
         }
+        invalidate()
     }
 
     override fun onAttachedToWindow() {
@@ -1264,6 +1302,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             nowForStats <= programmaticScrollStatsUntilMs ||
             (nowForStats - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS)
         recordFrameStats(timing, statsActive)
+        scheduleStatsContinuationFrame(statsActive)
     }
 
     private fun drawState(frameTimeNs: Long, callbackStartNs: Long, state: DrawState, canvas: Canvas): DrawTiming {
@@ -1271,14 +1310,54 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var drawEndNs = drawStartNs
         try {
             Trace.beginSection("RSV.draw")
-            canvas.drawColor(PAGE_PLACEHOLDER_COLOR)
+            if (!drawableContentCoversViewport(state)) {
+                canvas.drawColor(PAGE_PLACEHOLDER_COLOR)
+            }
             if (!state.empty) {
                 val fastBitmapDraw = shouldUseFastBitmapDraw(state)
-                for (item in state.items) drawItem(canvas, state, item, fastBitmapDraw)
+                val splitInitialUploads = shouldSplitInitialDrawableUploads(state)
+                val continuationFrame = initialUploadContinuationFrame
+                initialUploadContinuationFrame = false
+                val hasUploadedInitialDrawable = splitInitialUploads && state.items.any { item ->
+                    val drawableId = drawableUploadId(item)
+                    drawableId != null && initiallyUploadedDrawableIds.contains(drawableId)
+                }
+                val hasNewInitialDrawable = splitInitialUploads && state.items.any { item ->
+                    val drawableId = drawableUploadId(item)
+                    drawableId != null && !initiallyUploadedDrawableIds.contains(drawableId)
+                }
+                var newInitialDrawableCount = 0
+                var skippedInitialUpload = false
+                for (item in state.items) {
+                    val drawableId = drawableUploadId(item)
+                    val newDrawable = drawableId != null && !initiallyUploadedDrawableIds.contains(drawableId)
+                    val uploadedDrawable = drawableId != null && initiallyUploadedDrawableIds.contains(drawableId)
+                    if (splitInitialUploads && continuationFrame && hasNewInitialDrawable && uploadedDrawable) {
+                        skippedInitialUpload = true
+                        continue
+                    }
+                    if (splitInitialUploads && newDrawable) {
+                        if (!continuationFrame && hasUploadedInitialDrawable) {
+                            skippedInitialUpload = true
+                            continue
+                        }
+                        if (newInitialDrawableCount >= INITIAL_CONTENT_DRAWABLES_PER_FRAME) {
+                            skippedInitialUpload = true
+                            continue
+                        }
+                        newInitialDrawableCount++
+                    }
+                    drawItem(canvas, state, item, fastBitmapDraw)
+                    if (drawableId != null) initiallyUploadedDrawableIds.add(drawableId)
+                }
+                if (skippedInitialUpload) scheduleInitialDrawableContinuationFrame()
                 if (fastBitmapDraw && hasDrawnContentFrame && !state.busy) scheduleFilteredBitmapRefineFrame()
             }
             drawScrollbar(canvas, state)
-            if (state.hasDrawableContent) hasDrawnContentFrame = true
+            if (state.hasDrawableContent && !hasDrawnContentFrame) {
+                hasDrawnContentFrame = true
+                firstDrawableContentAtMs = SystemClock.uptimeMillis()
+            }
         } finally {
             Trace.endSection()
             drawEndNs = System.nanoTime()
@@ -1299,10 +1378,46 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun shouldUseFastBitmapDraw(state: DrawState): Boolean {
         if (!state.hasDrawableContent) return false
         if (!hasDrawnContentFrame) return true
-        if (state.busy) return true
         val now = SystemClock.uptimeMillis()
+        if (firstDrawableContentAtMs > 0L &&
+            now - firstDrawableContentAtMs <= INITIAL_FAST_BITMAP_DRAW_MS
+        ) {
+            return true
+        }
+        if (state.busy) return true
         return now <= programmaticScrollStatsUntilMs ||
             (lastScrollInteractionMs > 0L && now - lastScrollInteractionMs <= SCROLL_FAST_BITMAP_DRAW_MS)
+    }
+
+    private fun drawableContentCoversViewport(state: DrawState): Boolean {
+        if (state.empty || !state.hasDrawableContent || state.items.isEmpty()) return false
+        var coveredUntil = 0f
+        var sawDrawable = false
+        for (item in state.items) {
+            val visibleTop = max(0f, item.top)
+            val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
+            if (visibleBottom <= visibleTop) continue
+            if (!itemHasDrawable(item)) return false
+            if (!sawDrawable) {
+                if (visibleTop > DRAW_COVERAGE_EPSILON_PX) return false
+                sawDrawable = true
+            } else if (visibleTop - coveredUntil > DRAW_COVERAGE_EPSILON_PX) {
+                return false
+            }
+            coveredUntil = max(coveredUntil, visibleBottom)
+            if (coveredUntil >= state.height - DRAW_COVERAGE_EPSILON_PX) return true
+        }
+        return false
+    }
+
+    private fun shouldSplitInitialDrawableUploads(state: DrawState): Boolean {
+        if (!state.hasDrawableContent) return false
+        val drawableCount = state.items.count { itemHasDrawable(it) }
+        if (drawableCount <= INITIAL_CONTENT_DRAWABLES_PER_FRAME) return false
+        if (!hasDrawnContentFrame) return true
+        val firstAt = firstDrawableContentAtMs
+        if (firstAt <= 0L) return false
+        return SystemClock.uptimeMillis() - firstAt <= INITIAL_UPLOAD_SPLIT_AFTER_FIRST_MS
     }
 
     private fun scheduleFilteredBitmapRefineFrame() {
@@ -1320,6 +1435,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 stateLock.notifyAll()
             }
         }, SCROLL_FAST_BITMAP_REFINE_DELAY_MS)
+    }
+
+    private fun scheduleInitialDrawableContinuationFrame() {
+        mainHandler.post {
+            synchronized(stateLock) {
+                if (!renderRunning || pages.isEmpty()) return@synchronized
+                initialUploadContinuationFrame = true
+                renderRequested = true
+                scheduleFrameLocked()
+                stateLock.notifyAll()
+            }
+        }
     }
 
     private fun drawItem(canvas: Canvas, state: DrawState, item: DrawItem, fastBitmapDraw: Boolean) {
@@ -1641,12 +1768,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pages.size,
             items
         )
-        if (!hasDrawnContentFrame && state.visibleLoading > 0 && shouldHoldInitialViewportRenderLocked()) {
+        val holdInitialViewport = shouldHoldInitialViewportRenderLocked()
+        val firstInitialVisibleItemMissing = !hasDrawnContentFrame &&
+            state.items.firstOrNull()?.let { !itemHasDrawable(it) } == true
+        if (state.visibleLoading > 0 && (!hasDrawnContentFrame || holdInitialViewport || firstInitialVisibleItemMissing)) {
             renderRequested = true
             scheduleFrameLocked()
             return null
         }
-        if (!hasDrawnContentFrame && (state.visibleLoading == 0 || !shouldHoldInitialViewportRenderLocked())) {
+        if (state.visibleLoading == 0 || !holdInitialViewport) {
             clearInitialRenderHoldLocked()
         }
         val nowMs = SystemClock.uptimeMillis()
@@ -1808,6 +1938,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return item.tiles.any { !it.bitmap.isRecycled }
     }
 
+    private fun drawableUploadId(item: DrawItem): Int? {
+        val bitmap = item.bitmap
+        if (bitmap != null && !bitmap.isRecycled) return System.identityHashCode(bitmap)
+        val tile = item.tiles.firstOrNull { !it.bitmap.isRecycled } ?: return null
+        return System.identityHashCode(tile.bitmap)
+    }
+
     private fun shouldHoldInitialAnchorRenderLocked(): Boolean {
         val page = initialRenderHoldPage
         if (page !in 0 until pages.size) return false
@@ -1900,6 +2037,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun isEmpty(): Boolean = synchronized(stateLock) { pages.isEmpty() }
+
+    private fun scheduleStatsContinuationFrame(active: Boolean) {
+        if (!active) return
+        synchronized(stateLock) {
+            if (!renderRunning || pages.isEmpty() || shouldBlockInitialEmptyFrameLocked()) return
+            if (statsTotalMs.isNotEmpty() || statsNoCanvasFrames > 0 || lastFrameStatsSnapshot != null) return
+            val nowMs = SystemClock.uptimeMillis()
+            val withinStatsWindow = nowMs <= programmaticScrollStatsUntilMs ||
+                (lastScrollInteractionMs > 0L &&
+                    nowMs - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS)
+            if (!withinStatsWindow || frameScheduled) return
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+        }
+        invalidate()
+    }
 
     private fun clearInputStateLocked() {
         velocityTracker?.recycle()
@@ -2493,6 +2647,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
             val visibleForJumpCheck = isAttachedToWindow && isShown && windowVisibility == VISIBLE
             if (
+                abs(delta) > 0.5f &&
+                !lockedRestoreActive &&
+                !structuralAdjustActive
+            ) {
+                lastScrollInteractionMs = now
+            }
+            if (
                 abs(delta) >= height * SCROLL_JUMP_LOG_SCREEN_RATIO &&
                 !pointerDown &&
                 !dragging &&
@@ -2602,6 +2763,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun recordFrameStats(timing: DrawTiming, active: Boolean) {
         val pendingInput = synchronized(stateLock) { consumePendingInputLocked() }
         if (active) {
+            mainHandler.removeCallbacks(frameStatsFinalizeRunnable)
+            mainHandler.postDelayed(frameStatsFinalizeRunnable, PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS)
             if (!statsActive) {
                 statsActive = true
                 statsLastCallbackStartNs = timing.callbackStartNs
@@ -2619,6 +2782,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 } else {
                     statsNoCanvasFrames++
                 }
+                logActiveFrameStatsIfReady()
                 return
             }
             if (statsLastCallbackStartNs > 0L && timing.callbackStartNs > statsLastCallbackStartNs) {
@@ -2645,9 +2809,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             statsLastCallbackStartNs = timing.callbackStartNs
             if (timing.posted) statsLastPostEndNs = timing.postEndNs
+            logActiveFrameStatsIfReady()
             return
         }
         if (!statsActive) return
+        mainHandler.removeCallbacks(frameStatsFinalizeRunnable)
+        val snapshot = synchronized(stateLock) {
+            finalizeActiveFrameStatsLocked(log = true)
+        } ?: return
+        logFrameStatsSnapshot(snapshot)
+    }
+
+    private fun logActiveFrameStatsIfReady() {
+        val enoughSamples = statsCallbackSpacingMs.size >= MIN_FRAME_SAMPLES ||
+            statsPostSpacingMs.size >= MIN_FRAME_SAMPLES ||
+            statsTotalMs.size >= MIN_FRAME_SAMPLES
+        if (!statsActive || !enoughSamples) return
+        mainHandler.removeCallbacks(frameStatsFinalizeRunnable)
         val snapshot = synchronized(stateLock) {
             finalizeActiveFrameStatsLocked(log = true)
         } ?: return
@@ -2686,6 +2864,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             nominalBudget
         }
         val frameSamples = if (postIntervals.isNotEmpty()) postIntervals else callbackIntervals
+        val sampleCount = max(frameSamples.size, total.size)
         val strictOverBudget = frameSamples.count { it > nominalBudget }
         val missedThreshold = measuredBudget * MISSED_VSYNC_FACTOR
         val missedIntervals = frameSamples.count { it > missedThreshold }
@@ -2709,7 +2888,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val totalP95 = percentile(total, 0.95f)
         val totalMax = maxOrZero(total)
         val snapshot = FrameStatsSnapshot(
-            samples = frameSamples.size,
+            samples = sampleCount,
             strictOverBudget = strictOverBudget,
             missedIntervals = missedIntervals,
             missedFrames = missedFrames,
@@ -2735,9 +2914,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val strictPercent = if (snapshot.samples == 0) 0f else snapshot.strictOverBudget * 100f / snapshot.samples
         val missedPercent = if (snapshot.samples == 0) 0f else snapshot.missedIntervals * 100f / snapshot.samples
         val droppedPercent = if (snapshot.samples == 0) 0f else snapshot.droppedFrames * 100f / snapshot.samples
+        val renderDropped = snapshot.droppedFrames > 0 ||
+            snapshot.droppedFrameDebt > 0 ||
+            snapshot.totalMax > nominalBudget
         Log.i(
             TAG,
-            "surface_jank_v3 samples=${snapshot.samples} nominalBudget=${fmt(nominalBudget)} measuredBudget=${fmt(nominalBudget)} " +
+            "${if (renderDropped) "surface_jank_v3" else "surface_frame_stats"} " +
+                "samples=${snapshot.samples} nominalBudget=${fmt(nominalBudget)} measuredBudget=${fmt(nominalBudget)} " +
                 "strictOverBudget=${snapshot.strictOverBudget} strictPct=${fmt(strictPercent)} " +
                 "missedIntervals=${snapshot.missedIntervals} missedFrames=${snapshot.missedFrames} missedPct=${fmt(missedPercent)} " +
                 "droppedFrames=${snapshot.droppedFrames} droppedFrameDebt=${snapshot.droppedFrameDebt} droppedPct=${fmt(droppedPercent)} " +
@@ -2896,10 +3079,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_WINDOW_MIN_DISPATCH_MS = 48L
         private const val BUSY_COVERAGE_LOG_INTERVAL_MS = 250L
         private const val SLOW_FRAME_LOG_INTERVAL_MS = 500L
-        private const val PROGRAMMATIC_SCROLL_STATS_RECENT_MS = 700L
+        private const val PROGRAMMATIC_SCROLL_STATS_RECENT_MS = 1800L
         private const val PROGRAMMATIC_SCROLL_STATS_ACTIVE_MS = 6500L
         private const val PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS = 820L
         private const val COVERAGE_EDGE_FILL_PX = 8
+        private const val DRAW_COVERAGE_EPSILON_PX = 1f
         private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
         private const val PREPENDED_BOUNDARY_HOLD_MAX_FRACTION = 0.35f
         private const val SCROLLBAR_TOUCH_WIDTH_PX = 96f
@@ -2932,8 +3116,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
-        private const val SCROLL_FAST_BITMAP_DRAW_MS = 900L
-        private const val SCROLL_FAST_BITMAP_REFINE_DELAY_MS = 950L
+        private const val SCROLL_FAST_BITMAP_DRAW_MS = 3500L
+        private const val SCROLL_FAST_BITMAP_REFINE_DELAY_MS = 2200L
+        private const val INITIAL_CONTENT_DRAWABLES_PER_FRAME = 1
+        private const val INITIAL_UPLOAD_SPLIT_AFTER_FIRST_MS = 2500L
+        private const val INITIAL_FAST_BITMAP_DRAW_MS = 3500L
         private const val PENDING_NONE = 0
         private const val PENDING_BITMAP = 1
         private const val PENDING_TILES = 2

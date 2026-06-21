@@ -1,6 +1,7 @@
 package ml.melun.mangaview.activity;
 
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -127,8 +128,8 @@ final class LocalWebViewProxy {
     }
 
     private void pipeBoth(Socket a, Socket b) {
-        boolean first = executeProxyTask(() -> pipe(a, b));
-        boolean second = executeProxyTask(() -> pipe(b, a));
+        boolean first = executeProxyTask(() -> pipe(a, b, true));
+        boolean second = executeProxyTask(() -> pipe(b, a, false));
         if(!first || !second) {
             closeQuietly(a);
             closeQuietly(b);
@@ -146,20 +147,116 @@ final class LocalWebViewProxy {
         }
     }
 
-    private void pipe(Socket from, Socket to) {
+    private void pipe(Socket from, Socket to, boolean fragmentFirstTlsClientHello) {
         byte[] buffer = new byte[8192];
         try {
             InputStream input = from.getInputStream();
             OutputStream output = to.getOutputStream();
             int read;
+            boolean firstPayload = true;
             while((read = input.read(buffer)) >= 0) {
-                output.write(buffer, 0, read);
-                output.flush();
+                if(firstPayload && fragmentFirstTlsClientHello && looksLikeTlsClientHello(buffer, 0, read)) {
+                    firstPayload = false;
+                    writeFragmentedClientHello(output, buffer, 0, read);
+                } else {
+                    if(read > 0)
+                        firstPayload = false;
+                    output.write(buffer, 0, read);
+                    output.flush();
+                }
             }
         } catch (Exception ignored) {
         } finally {
             closeQuietly(from);
             closeQuietly(to);
+        }
+    }
+
+    private static boolean looksLikeTlsClientHello(byte[] b, int off, int len) {
+        if(b == null || len < 6 || off < 0 || off + len > b.length)
+            return false;
+        return (b[off] & 0xff) == 0x16
+                && (b[off + 1] & 0xff) == 0x03
+                && (b[off + 5] & 0xff) == 0x01;
+    }
+
+    static boolean looksLikeTlsClientHelloForTest(byte[] b) {
+        return looksLikeTlsClientHello(b, 0, b == null ? 0 : b.length);
+    }
+
+    private static void writeFragmentedClientHello(OutputStream output, byte[] b, int off, int len) throws Exception {
+        if(writeFragmentedClientHelloTlsRecords(output, b, off, len)) {
+            android.util.Log.d("CaptchaActivity", "ntk_webview_proxy_sni_tls_record_fragmented bytes=" + len);
+            return;
+        }
+        int first = Math.min(1, len);
+        int second = Math.min(7, Math.max(0, len - first));
+        writeChunk(output, b, off, first);
+        sleepBetweenTlsFragments();
+        writeChunk(output, b, off + first, second);
+        sleepBetweenTlsFragments();
+        if(len - first - second > 0)
+            output.write(b, off + first + second, len - first - second);
+        output.flush();
+        android.util.Log.d("CaptchaActivity", "ntk_webview_proxy_sni_fragmented bytes=" + len);
+    }
+
+    static boolean writeFragmentedClientHelloTlsRecordsForTest(OutputStream output, byte[] b) throws Exception {
+        return writeFragmentedClientHelloTlsRecords(output, b, 0, b == null ? 0 : b.length);
+    }
+
+    private static boolean writeFragmentedClientHelloTlsRecords(OutputStream output, byte[] b, int off, int len) throws Exception {
+        if(b == null || off < 0 || len < 6 || off + len > b.length)
+            return false;
+        int recordPayloadLen = ((b[off + 3] & 0xff) << 8) | (b[off + 4] & 0xff);
+        int recordTotalLen = 5 + recordPayloadLen;
+        if(recordPayloadLen <= 0 || recordTotalLen > len)
+            return false;
+        int payloadOffset = off + 5;
+        int payloadRemaining = recordPayloadLen;
+        int payloadCursor = payloadOffset;
+        while(payloadRemaining > 0) {
+            int chunk = Math.min(4, payloadRemaining);
+            writeTlsRecordChunk(output, b, off, payloadCursor, chunk);
+            payloadCursor += chunk;
+            payloadRemaining -= chunk;
+            sleepBetweenTlsFragments();
+        }
+        if(recordTotalLen < len)
+            output.write(b, off + recordTotalLen, len - recordTotalLen);
+        output.flush();
+        return true;
+    }
+
+    private static void writeTlsRecordChunk(OutputStream output, byte[] b, int recordOff, int payloadOff, int len) throws Exception {
+        if(len <= 0)
+            return;
+        output.write(new byte[]{
+                b[recordOff],
+                b[recordOff + 1],
+                b[recordOff + 2],
+                (byte)((len >>> 8) & 0xff),
+                (byte)(len & 0xff)
+        });
+        output.write(b, payloadOff, len);
+        output.flush();
+    }
+
+    private static void writeChunk(OutputStream output, byte[] b, int off, int len) throws Exception {
+        if(len > 0) {
+            output.write(b, off, len);
+            output.flush();
+        }
+    }
+
+    private static void sleepBetweenTlsFragments() throws Exception {
+        try {
+            Thread.sleep(1L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            InterruptedIOException interrupted = new InterruptedIOException("Interrupted while fragmenting WebView TLS ClientHello");
+            interrupted.initCause(e);
+            throw interrupted;
         }
     }
 

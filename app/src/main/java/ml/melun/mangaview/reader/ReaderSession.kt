@@ -3483,6 +3483,17 @@ class ReaderSession(
         val episodeName = target.name ?: title?.name ?: "회차"
         val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
         var pageRefs = pageRefsForImages(target, urls)
+        val ntkGeneratedAppend = isNtkSource(target, title) &&
+            pageRefs.isNotEmpty() &&
+            pageRefs.all { isNtkGeneratedImageUrl(it.image.orEmpty()) }
+        if (ntkGeneratedAppend) {
+            Log.d(
+                TAG,
+                "reader_repository_stage stage=generated_append_skip_transition_card," +
+                    "path=${target.ntkEpisodePath},count=${pageRefs.size},direction=$direction"
+            )
+            return pageRefs
+        }
         if (isNtkSource(target, title) && pageRefs.any { isNtkBoardUploadImageUrl(it.image) }) {
             logNtkRepositoryStage(
                 target,
@@ -3683,12 +3694,12 @@ class ReaderSession(
                     finishStructurePublish()
                     if (cancelled.get()) return@post
                     if (gateNtkGeneratedNotify) {
-                        warmAppendedEpisode(cardIndex, total)
+                        if (warm && shouldWarmAppendedEpisode(cardIndex)) warmAppendedEpisode(cardIndex, total)
                         notifyAdjacentAppendWhenNearReady(target, cardIndex, total, cardOffset, transitionTitle)
                     } else {
                         listener.onPagesAppended(total)
                         if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
-                        if (warm) warmAppendedEpisode(cardIndex, total)
+                        if (warm && shouldWarmAppendedEpisode(cardIndex)) warmAppendedEpisode(cardIndex, total)
                     }
                 } finally {
                     if (isStructurePublishPending()) finishStructurePublish()
@@ -3804,7 +3815,9 @@ class ReaderSession(
 
     private fun ntkAdjacentPrependPublishDelayMs(): Long {
         if (!isNtkSource(manga, title) || !firstBitmapLogged.get()) return 0L
-        val quietMs = ntkBackgroundPrepareQuietRemainingMs()
+        val backgroundQuietMs = ntkBackgroundPrepareQuietRemainingMs()
+        val touchQuietMs = readerQuietRemainingMs(NTK_APPEND_INITIAL_PUBLISH_TOUCH_QUIET_MS)
+        val quietMs = maxOf(backgroundQuietMs, touchQuietMs)
         if (quietMs > 0L) return quietMs.coerceAtLeast(NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
         val viewportAnchor = currentViewportAnchor.get()
         if (viewportAnchor > 0) return NTK_PREPEND_NOTIFY_BOUNDARY_RECHECK_MS
@@ -3887,6 +3900,20 @@ class ReaderSession(
             if (ready >= NTK_OBSERVED_MANHWA_APPEND_READY_PAGES) break
         }
         ready
+    }
+
+    private fun shouldWarmAppendedEpisode(cardIndex: Int): Boolean {
+        if (!isNtkSource(manga, title)) return true
+        val anchor = currentViewportAnchor.get()
+        if (anchor < 0) return false
+        val near = anchor >= cardIndex - NTK_APPEND_WARM_BOUNDARY_PAGES
+        if (!near) {
+            Log.d(
+                TAG,
+                "append_adjacent_warm_deferred_offscreen cardIndex=$cardIndex,anchor=$anchor,path=${manga.ntkEpisodePath}"
+            )
+        }
+        return near
     }
 
     private fun warmAppendedEpisode(cardIndex: Int, total: Int) {
@@ -6864,7 +6891,14 @@ class ReaderSession(
                 initialContinuousPostedWidths.remove(currentDelivery.index)
                 deliverDecodeResultOnMain(currentDelivery, false)
             }
-            if (!mainImmediate.postAtFrontOfQueue(deliverInitialContinuous)) {
+            val delayMs = (currentDelivery.index - currentStartPage() - 1)
+                .coerceAtLeast(0) * NTK_INITIAL_CONTINUOUS_DELIVERY_STAGGER_MS
+            val posted = if (delayMs > 0L) {
+                mainImmediate.postDelayed(deliverInitialContinuous, delayMs)
+            } else {
+                main.post(deliverInitialContinuous)
+            }
+            if (!posted) {
                 pendingDeliveryWidths.remove(currentDelivery.index)
                 initialContinuousPostedWidths.remove(currentDelivery.index)
                 recycleDecodeResult(currentDelivery.result)
@@ -8192,13 +8226,16 @@ class ReaderSession(
         private const val NTK_INITIAL_SHORT_ANCHOR_VIEWPORT_COALESCE_MS = 1600L
         private const val NTK_INITIAL_ANCHOR_FAST_COALESCE_MAX_DECODE_MS = 700L
         private const val NTK_INITIAL_CONTINUOUS_DIRECT_WINDOW_MS = 5200L
-        private const val NTK_INITIAL_CONTINUOUS_STAGGER_MS = 24L
+        private const val NTK_INITIAL_CONTINUOUS_STAGGER_MS = 360L
+        private const val NTK_INITIAL_CONTINUOUS_DELIVERY_STAGGER_MS = 120L
         private const val NTK_APPEND_EARLY_GENERATED_WAIT_MS = 2600L
         private const val NTK_APPEND_EARLY_API_STRICT_HANDOFF_WAIT_MS = 13500L
         private const val NTK_APPEND_EARLY_API_STRICT_LATE_WAIT_MS = 5200L
         private const val NTK_APPEND_API_STRICT_ACK_RETRY_WAIT_MS = 9000L
         private const val NTK_APPEND_EARLY_GENERATED_POLL_MS = 40L
         private const val NTK_APPEND_EARLY_PUBLISH_PAGES = 12
+        private const val NTK_APPEND_INITIAL_PUBLISH_TOUCH_QUIET_MS = 4200L
+        private const val NTK_APPEND_WARM_BOUNDARY_PAGES = 1
         private const val NTK_PREPEND_NOTIFY_BOUNDARY_RECHECK_MS = 250L
         private val NTK_VIEWER_EPISODE_PATH = Regex("^/(manhwa|webtoon)/([^/?#]+)/([^/?#]+)(?:[/?#].*)?$")
         private val NTK_GENERATED_IMAGE_EXTENSION = Regex("(?i)\\.([a-z0-9]+)(?:[?#].*)?$")

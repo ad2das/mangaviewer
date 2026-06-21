@@ -364,6 +364,10 @@ $summary = [ordered]@{
     rootBootstrapSkipped = Marker-Lines $logText "Skipping NTK root bootstrap for diagnostics" 4
     relaxedWindowSettings = Marker-Lines $logText "Relaxing WebView window settings for NTK diagnostics" 2
     chromeUaMetadata = Marker-Lines $logText "Chrome UA metadata" 4
+    webViewProxyRetry = Marker-Lines $logText "Retrying NTK captcha WebView with local proxy" 4
+    webViewProxyEnabled = Marker-Lines $logText "NTK WebView proxy enabled" 4
+    webViewProxySniFragmented = (Marker-Lines $logText "ntk_webview_proxy_sni_tls_record_fragmented" 8)
+    webViewProxySniChunkFragmented = Marker-Lines $logText "ntk_webview_proxy_sni_fragmented" 8
     instrumentationTimedOut = $instrumentText.Contains("TIMED_OUT_AFTER_MS=")
     exitedWithoutMarker = $instrumentText.Contains("EXITED_WITHOUT_MARKER_EXIT_CODE=")
     instrumentationCrashed = $instrumentText.Contains("Process crashed")

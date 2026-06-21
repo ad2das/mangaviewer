@@ -133,6 +133,13 @@ public class NtkRootTransportProbeInstrumentedTest {
         discovered.addAll(probeOkHttp(client, root, "okhttp_challenge", root + "/api/ad/challenge", "POST",
                 challengeBody.getBytes(StandardCharsets.UTF_8),
                 challengeHeaders(userAgent, root, root + "/", "")));
+        discovered.addAll(probeFragmentedOkHttp(client, root, "okhttp_fragmented_api",
+                root + "/api/manhwa-list?page=1&pageSize=1&withTotal=1",
+                "GET", null, apiHeaders(userAgent, root, root + "/", "")));
+        discovered.addAll(probeFragmentedOkHttp(client, root, "okhttp_fragmented_challenge",
+                root + "/api/ad/challenge", "POST",
+                challengeBody.getBytes(StandardCharsets.UTF_8),
+                challengeHeaders(userAgent, root, root + "/", "")));
         discovered.addAll(probeEngine(context, root, "quic_root", root + "/", userAgent, "GET", null,
                 htmlHeaders(userAgent, root, root, ""), true, timeoutMs));
         discovered.addAll(probeEngine(context, root, "h2_root", root + "/", userAgent, "GET", null,
@@ -175,13 +182,32 @@ public class NtkRootTransportProbeInstrumentedTest {
             log(root, name, response.code(), System.currentTimeMillis() - startedAt,
                     bytes.length, response.header("content-type", ""),
                     summarizeSetCookieHeaders(response.headers("set-cookie")),
-                    "", sample(bytes), joinRoots(candidates));
+                    "", sample(bytes), joinRoots(candidates), response.header("location", ""));
         } catch (Exception e) {
             log(root, name, 0, System.currentTimeMillis() - startedAt, 0,
-                    "", "-", e.getClass().getSimpleName() + ":" + safe(e.getMessage()), "", "-");
+                    "", "-", e.getClass().getSimpleName() + ":" + safe(e.getMessage()), "", "-", "");
         } finally {
             if(response != null)
                 response.close();
+        }
+        return candidates;
+    }
+
+    private static List<String> probeFragmentedOkHttp(CustomHttpClient client, String root, String name, String url,
+                                                      String method, byte[] body, Map<String, String> headers) {
+        List<String> candidates = new ArrayList<>();
+        long startedAt = System.currentTimeMillis();
+        try {
+            CustomHttpClient.PageResponse response =
+                    client.probeNtkFragmentedOkHttpForTest(url, method, headers, body);
+            byte[] bytes = response.body == null ? new byte[0] :
+                    response.body.getBytes(StandardCharsets.UTF_8);
+            candidates = discoveredRootList(bytes);
+            log(root, name, response.code, System.currentTimeMillis() - startedAt,
+                    bytes.length, "", "-", "", sample(bytes), joinRoots(candidates), response.location);
+        } catch (Exception e) {
+            log(root, name, 0, System.currentTimeMillis() - startedAt, 0,
+                    "", "-", e.getClass().getSimpleName() + ":" + safe(e.getMessage()), "", "-", "");
         }
         return candidates;
     }
@@ -206,10 +232,11 @@ public class NtkRootTransportProbeInstrumentedTest {
                             result.error.getClass().getSimpleName() + ":" + safe(result.error.getMessage()),
                     result == null || result.bodyBytes == null ? "" : sample(result.bodyBytes),
                     result == null || result.bodyBytes == null ? "-" :
-                            joinRoots(candidates = discoveredRootList(result.bodyBytes)));
+                            joinRoots(candidates = discoveredRootList(result.bodyBytes)),
+                    result == null ? "" : firstHeader(result.headers, "location"));
         } catch (Exception e) {
             log(root, name, 0, System.currentTimeMillis() - startedAt, 0,
-                    "", "-", e.getClass().getSimpleName() + ":" + safe(e.getMessage()), "", "-");
+                    "", "-", e.getClass().getSimpleName() + ":" + safe(e.getMessage()), "", "-", "");
         }
         return candidates;
     }
@@ -264,7 +291,8 @@ public class NtkRootTransportProbeInstrumentedTest {
     }
 
     private static void log(String root, String name, int code, long ms, int len, String type,
-                            String setCookies, String error, String sample, String candidates) {
+                            String setCookies, String error, String sample, String candidates,
+                            String location) {
         Log.d(TAG, "ntk_root_probe root=" + root
                 + ",name=" + name
                 + ",code=" + code
@@ -273,9 +301,24 @@ public class NtkRootTransportProbeInstrumentedTest {
                 + ",type=" + safe(type)
                 + ",setCookies=" + setCookies
                 + ",candidates=" + safe(candidates)
+                + ",location=" + safe(location)
                 + ",block=" + looksBlocked(code, sample)
                 + ",error=" + safe(error)
                 + ",sample=" + safe(sample));
+    }
+
+    private static String firstHeader(Map<String, List<String>> headers, String name) {
+        if(headers == null || name == null)
+            return "";
+        for(Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            if(entry.getKey() == null || !name.equalsIgnoreCase(entry.getKey()))
+                continue;
+            List<String> values = entry.getValue();
+            if(values == null || values.isEmpty() || values.get(0) == null)
+                return "";
+            return values.get(0);
+        }
+        return "";
     }
 
     private static boolean looksBlocked(int code, String sample) {
@@ -283,7 +326,10 @@ public class NtkRootTransportProbeInstrumentedTest {
         return code == 403
                 || lower.contains("cloudflare")
                 || lower.contains("attention required")
-                || lower.contains("sorry, you have been blocked");
+                || lower.contains("sorry, you have been blocked")
+                || lower.contains("warninge.kcopa.or.kr")
+                || lower.contains("접속차단 안내")
+                || lower.contains("문화체육관광");
     }
 
     private static String summarizeSetCookieHeaders(List<String> cookies) {

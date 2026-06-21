@@ -227,6 +227,8 @@ public class MangaTest {
                 "https://fvcdn3.com/6bf01a3f532d20c6ab5d5899adde24af.jpg"));
         assertTrue(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
                 "https://i.toonflix.app/webtoon/849277/nv-849277-2/p001.jpg"));
+        assertTrue(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
+                "https://www.pl3040.com/kr//07/34732/1812500/rUQHZTa6wJvb.jpg"));
 
         org.junit.Assert.assertFalse(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
                 "https://sbxh6.com/api/m/i?a=token&i=0&t=metric.gif"));
@@ -234,6 +236,13 @@ public class MangaTest {
                 "https://sbxh6.com/api/ad/challenge?scope=/webtoon/1/2"));
         org.junit.Assert.assertFalse(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
                 "https://i.toonflix.app/banner/page001.jpg"));
+    }
+
+    @Test
+    public void numericNtkEpisodesStartImageApiPrefetchFromDirectPayload() {
+        assertTrue(Manga.shouldStartDirectOnlyNtkImageApiPrefetchForTest("/manhwa/34732/1812500"));
+        assertTrue(Manga.shouldStartDirectOnlyNtkImageApiPrefetchForTest("/webtoon/17332/1515337"));
+        assertFalse(Manga.shouldStartDirectOnlyNtkImageApiPrefetchForTest("/webtoon/68630031/kp-68630031-69262979"));
     }
 
     @Test

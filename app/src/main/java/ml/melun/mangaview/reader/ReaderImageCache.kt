@@ -541,6 +541,12 @@ object ReaderImageCache {
         return ntkAckRecoveryLaunchHoldRemainingMs(path) > 0L
     }
 
+    @JvmStatic
+    fun isInitialNtkGeneratedStreamActiveForPath(path: String?): Boolean {
+        return earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L)
+            .any { image -> ntkGeneratedTarget(image) != null }
+    }
+
     fun rememberEarlyNtkImageUrls(path: String?, urls: List<String>?) {
         val key = earlyNtkPathKey(path)
         if (key.isEmpty() || urls.isNullOrEmpty()) return
@@ -3437,6 +3443,7 @@ object ReaderImageCache {
         target: NtkGeneratedTarget
     ): Boolean {
         if (target.page == 1 && isSupportedNtkGeneratedImageExtension(image)) return true
+        if (target.path.startsWith("/manhwa/", ignoreCase = true)) return false
         if (target.path.startsWith("/webtoon/", ignoreCase = true)) return false
         return target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
             ntkGeneratedEpisodeExtensionMatches(image)

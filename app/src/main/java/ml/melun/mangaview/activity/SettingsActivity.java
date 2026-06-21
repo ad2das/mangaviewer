@@ -69,7 +69,6 @@ public class SettingsActivity extends AppCompatActivity {
     public static final String prefExtension = ".mvpref";
     public static final int RESULT_NEED_RESTART = 7;
     private static final String EXTRA_INITIAL_URI = "android.provider.extra.INITIAL_URI";
-
     View.OnClickListener pbtnClear, nbtnClear, pbtnSet, nbtnSet;
 
     @Override
@@ -496,7 +495,9 @@ public class SettingsActivity extends AppCompatActivity {
                 .setView(scrollView)
                 .setPositiveButton("Copy", (dialog, which) -> copyDiagnosticReport(report))
                 .setNegativeButton("Close", null);
-        if(p != null && p.isNtkSite())
+        if(p != null && p.isNtkSite() && getHttpClient().shouldOfferWarpAssistForDiagnosticReport(report))
+            builder.setNeutralButton("Open WARP", (dialog, which) -> Utils.openCloudflareWarpAssist(context));
+        else if(p != null && p.isNtkSite())
             builder.setNeutralButton("Open captcha", (dialog, which) -> openNtkCaptchaFromSettings());
         builder.show();
     }

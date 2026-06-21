@@ -156,6 +156,78 @@ function Last-RawLine($LogText, $Marker) {
     return $last
 }
 
+function Get-DeviceNetworkSnapshot {
+    param(
+        [string]$Serial,
+        [string]$Label,
+        [string]$RunDirectory
+    )
+    $connectivityPath = Join-Path $RunDirectory ("connectivity_{0}.txt" -f $Label)
+    $packagesPath = Join-Path $RunDirectory ("vpn_packages_{0}.txt" -f $Label)
+    $connectivityText = ""
+    $packageText = ""
+    try {
+        $connectivityText = (& adb -s $Serial shell dumpsys connectivity 2>&1) -join "`n"
+        $connectivityText | Set-Content -Path $connectivityPath -Encoding UTF8
+    } catch {
+        $connectivityText = "ERROR: $($_.Exception.Message)"
+        $connectivityText | Set-Content -Path $connectivityPath -Encoding UTF8
+    }
+    try {
+        $packageText = (& adb -s $Serial shell pm list packages 2>&1) -join "`n"
+        $packageText | Set-Content -Path $packagesPath -Encoding UTF8
+    } catch {
+        $packageText = "ERROR: $($_.Exception.Message)"
+        $packageText | Set-Content -Path $packagesPath -Encoding UTF8
+    }
+
+    $activeNetwork = ""
+    $activeCapabilities = ""
+    $activeTransports = ""
+    $vpnActive = $false
+    $validated = $false
+    $internet = $false
+    $notVpn = $false
+    $activeMatch = [regex]::Match($connectivityText, "Active default network:\s*(\d+)")
+    if($activeMatch.Success) {
+        $activeNetwork = $activeMatch.Groups[1].Value
+        $capMatch = [regex]::Match($connectivityText,
+            "NetworkAgentInfo\{network\{" + [regex]::Escape($activeNetwork) + "\}[\s\S]*?nc\{\[([^\]]+)\]")
+        if($capMatch.Success) {
+            $activeCapabilities = $capMatch.Groups[1].Value.Trim()
+            $transportMatch = [regex]::Match($activeCapabilities, "Transports:\s*([^ ]+(?:\|[^ ]+)*)")
+            if($transportMatch.Success) {
+                $activeTransports = $transportMatch.Groups[1].Value
+            }
+            $vpnActive = $activeTransports -match "(^|\|)VPN($|\|)"
+            $validated = $activeCapabilities -match "(^|[&\s])VALIDATED($|[&\s])"
+            $internet = $activeCapabilities -match "(^|[&\s])INTERNET($|[&\s])"
+            $notVpn = $activeCapabilities -match "(^|[&\s])NOT_VPN($|[&\s])"
+        }
+    }
+    $vpnPackages = @()
+    foreach($line in ($packageText -split "`r?`n")) {
+        $trimmed = ([string]$line).Trim()
+        if($trimmed -match "(?i)(cloudflare|warp|vpn|onedot)") {
+            $vpnPackages += $trimmed
+        }
+    }
+
+    return [ordered]@{
+        label = $Label
+        activeNetwork = $activeNetwork
+        activeTransports = $activeTransports
+        activeCapabilities = $activeCapabilities
+        vpnActive = $vpnActive
+        validated = $validated
+        internet = $internet
+        notVpn = $notVpn
+        vpnPackages = $vpnPackages
+        connectivityLog = $connectivityPath
+        packageLog = $packagesPath
+    }
+}
+
 function RawLine-TimeMs($Line) {
     if([string]::IsNullOrWhiteSpace($Line)) {
         return $null
@@ -304,6 +376,8 @@ if($ScreenshotEvery -gt 0) {
     & adb -s $DeviceSerial shell "rm -f /sdcard/Android/data/ml.melun.mangaview/cache/ntk-random-scroll-*.png" 2>$null | Out-Null
 }
 
+$deviceNetworkBefore = Get-DeviceNetworkSnapshot $DeviceSerial "before" $runDir
+
 $appendProbe = if($NoAppendProbe) { "false" } else { "true" }
 $clearAckArg = if($ClearAck) { "true" } else { "false" }
 $clearImageCacheArg = if($ClearImageCache) { "true" } else { "false" }
@@ -401,6 +475,8 @@ if(-not $NoAckAssert -and $Mode -eq "native-ack" -and
     }
     $ackTailLines | Set-Content -Path $ackTailLog -Encoding UTF8
 }
+
+$deviceNetworkAfter = Get-DeviceNetworkSnapshot $DeviceSerial "after" $runDir
 
 $screenshotFiles = @()
 if($ScreenshotEvery -gt 0) {
@@ -577,6 +653,7 @@ if(-not $NoAckAssert) {
         $hasReaderDone = $false
         $hasStrictProof = $false
         $hasNativeBridgeAck200 = $false
+        $hasScopedAdBridgeAckRequest = $false
         $hasFalseDone = $false
         for($li = [int]$case.index; $li -lt $end; $li++) {
             $line = $logLines[$li]
@@ -602,6 +679,14 @@ if(-not $NoAckAssert) {
                 $hasStrictProof = $true
             }
             if($line -match "ntk_native_ack_bridge_submit code=200,path=$pathRe(\b|,|$)") {
+                $hasNativeBridgeAck200 = $true
+                $hasStrictProof = $true
+            }
+            if($line -match "ntk_viewer_quic_bridge_request method=POST,url=https://[^/]+/api/ad/ack,.*scope=$pathRe(\b|,|$)") {
+                $hasScopedAdBridgeAckRequest = $true
+            }
+            if($hasScopedAdBridgeAckRequest -and
+                $line -match "ntk_viewer_ad_bridge_response method=POST,path=/api/ad/ack,code=200,.*body=\{`"ok`":true") {
                 $hasNativeBridgeAck200 = $true
                 $hasStrictProof = $true
             }
@@ -758,6 +843,8 @@ $summary = [ordered]@{
     targetImageCount = $TargetImageCount
     ntkSiteRoot = $NtkSiteRoot
     ntkLockSiteRoot = [bool]$NtkLockSiteRoot
+    deviceNetworkBefore = $deviceNetworkBefore
+    deviceNetworkAfter = $deviceNetworkAfter
     uniqueEpisodePathCount = $uniqueCasePaths.Count
     uniqueEpisodePaths = $uniqueCasePaths
     uniqueTitlePathCount = $uniqueTitlePaths.Count
@@ -794,6 +881,13 @@ Write-Host ""
 Write-Host "NTK random perf summary"
 Write-Host ("  passed={0} exitCode={1} seed={2}" -f $summary.passed, $exitCode, $Seed)
 Write-Host ("  cases={0} firstDrawable={1} scroll={2} slowSignals={3} failures={4}" -f $cases.Count, $firstDrawable.Count, $scroll.Count, $slowFrames.Count, $failureLines.Count)
+Write-Host ("  network before={0}/vpn={1}/notVpn={2} after={3}/vpn={4}/notVpn={5}" -f `
+    $summary.deviceNetworkBefore.activeTransports, `
+    $summary.deviceNetworkBefore.vpnActive, `
+    $summary.deviceNetworkBefore.notVpn, `
+    $summary.deviceNetworkAfter.activeTransports, `
+    $summary.deviceNetworkAfter.vpnActive, `
+    $summary.deviceNetworkAfter.notVpn)
 Write-Host ("  pipeline ackMs={0} apiMs={1} earlyUrlsMs={2} fgStart={3} join={4} fgMs={5} streamMs={6} decodeMs={7} drawableMs={8}" -f `
     (Metric-Value $pipeline.webViewAckPreflightDone "ms"), `
     (Metric-Value $pipeline.imageApiAfterAckProof "ms"), `

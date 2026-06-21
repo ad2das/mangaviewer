@@ -166,6 +166,85 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkDiagnosticsOfferWarpWhenSniBlockedWithoutVpn() {
+        String report = "network: cellular,validated=true,internet=true\n"
+                + "vpn_active: false\n"
+                + "active_site: NTK\n"
+                + "app_dns_sbxh8.com: ok 12ms 138.199.46.65\n"
+                + "ntk_quic_sni: code=0,ms=501,error=NetworkExceptionWrapper(net_error=-100)\n"
+                + "ntk_api_direct: fail 4001ms SocketException(Connection reset)\n";
+
+        assertTrue(CustomHttpClient.shouldOfferWarpAssistForDiagnosticReportForTest(report));
+    }
+
+    @Test
+    public void ntkDiagnosticsDoNotOfferWarpWhenVpnAlreadyActive() {
+        String report = "network: cellular,vpn,validated=true,internet=true\n"
+                + "vpn_active: true\n"
+                + "active_site: NTK\n"
+                + "app_dns_sbxh8.com: ok 12ms 138.199.46.65\n"
+                + "ntk_quic_sni: code=0,ms=501,error=NetworkExceptionWrapper(net_error=-100)\n";
+
+        assertFalse(CustomHttpClient.shouldOfferWarpAssistForDiagnosticReportForTest(report));
+    }
+
+    @Test
+    public void ntkMovedApiFallbackSkipsBlockedRetryResponses() {
+        assertTrue(CustomHttpClient.isBlockedNtkMovedApiRetryResultForTest(451, ""));
+        assertTrue(CustomHttpClient.isBlockedNtkMovedApiRetryResultForTest(200,
+                "<html>warninge.kcopa.or.kr 접속차단 안내 문화체육관광</html>"));
+        assertTrue(CustomHttpClient.isBlockedNtkMovedApiRetryResultForTest(403,
+                "<html>Verifying you are human. Cloudflare security service.</html>"));
+        assertFalse(CustomHttpClient.isBlockedNtkMovedApiRetryResultForTest(404,
+                "{\"error\":\"not_found\"}"));
+    }
+
+    @Test
+    public void ntkMovedApiRedirectFollowsOnlyNtkApiLocations() {
+        assertEquals("https://sbxh8.com/api/ad/challenge/",
+                CustomHttpClient.resolveNtkMovedApiRedirectUrlForTest(301,
+                        "/api/ad/challenge/", "https://sbxh8.com/api/ad/challenge"));
+        assertEquals("https://sbxh9.com/api/ad/challenge",
+                CustomHttpClient.resolveNtkMovedApiRedirectUrlForTest(302,
+                        "https://sbxh9.com/api/ad/challenge",
+                        "https://sbxh8.com/api/ad/challenge"));
+        assertNull(CustomHttpClient.resolveNtkMovedApiRedirectUrlForTest(200,
+                "/api/ad/challenge/", "https://sbxh8.com/api/ad/challenge"));
+        assertNull(CustomHttpClient.resolveNtkMovedApiRedirectUrlForTest(301,
+                "https://example.com/api/ad/challenge",
+                "https://sbxh8.com/api/ad/challenge"));
+        assertNull(CustomHttpClient.resolveNtkMovedApiRedirectUrlForTest(301,
+                "/login", "https://sbxh8.com/api/ad/challenge"));
+    }
+
+    @Test
+    public void ntkOfficialAddressRedirectIsRecognized() {
+        assertTrue(CustomHttpClient.isNtkOfficialAddressRedirectForTest("https://t.me/s/newtoki_url"));
+        assertTrue(CustomHttpClient.isNtkOfficialAddressRedirectForTest("https://t.me/newtoki_url?before=1"));
+        assertFalse(CustomHttpClient.isNtkOfficialAddressRedirectForTest("https://t.me/s/other_channel"));
+        assertFalse(CustomHttpClient.isNtkOfficialAddressRedirectForTest("https://sbxh8.com/api/ad/challenge/"));
+        assertFalse(CustomHttpClient.isNtkOfficialAddressRedirectForTest(null));
+    }
+
+    @Test
+    public void ntkMovedApiRedirectCanTryTrailingSlashWhenLocationMissing() {
+        assertEquals("https://sbxh8.com/api/ad/challenge/",
+                CustomHttpClient.resolveNtkMovedApiTrailingSlashUrlForTest(301,
+                        "https://sbxh8.com/api/ad/challenge"));
+        assertEquals("https://sbxh8.com/api/ad/challenge/?x=1",
+                CustomHttpClient.resolveNtkMovedApiTrailingSlashUrlForTest(302,
+                        "https://sbxh8.com/api/ad/challenge?x=1"));
+        assertNull(CustomHttpClient.resolveNtkMovedApiTrailingSlashUrlForTest(200,
+                "https://sbxh8.com/api/ad/challenge"));
+        assertNull(CustomHttpClient.resolveNtkMovedApiTrailingSlashUrlForTest(301,
+                "https://sbxh8.com/api/ad/challenge/"));
+        assertNull(CustomHttpClient.resolveNtkMovedApiTrailingSlashUrlForTest(301,
+                "https://sbxh8.com/manhwa/36525/1807424"));
+        assertNull(CustomHttpClient.resolveNtkMovedApiTrailingSlashUrlForTest(301,
+                "https://example.com/api/ad/challenge"));
+    }
+
+    @Test
     public void ntkWebViewFallbackCoversPageApiAndSearchMisses() {
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/search?q=onepiece"));

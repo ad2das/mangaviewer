@@ -1013,6 +1013,27 @@ public class CustomHttpClient {
         return "Check DNS/API lines above.";
     }
 
+    public boolean shouldOfferWarpAssistForDiagnosticReport(String report) {
+        return shouldOfferWarpAssistForDiagnosticReportInternal(report);
+    }
+
+    private static boolean shouldOfferWarpAssistForDiagnosticReportInternal(String report) {
+        String lower = report == null ? "" : report.toLowerCase(Locale.ROOT);
+        if(!lower.contains("active_site: ntk"))
+            return false;
+        if(lower.contains("vpn_active: true") || lower.contains("network:") && lower.contains("vpn"))
+            return false;
+        if(!containsNtkProtectedDnsState(lower, "app_dns_", ": ok"))
+            return false;
+        if(ntkQuicSniLooksBlocked(lower))
+            return true;
+        return lower.contains("ntk_api_direct: fail")
+                && (lower.contains("socketexception")
+                || lower.contains("connection reset")
+                || lower.contains("ssl")
+                || lower.contains("timeout"));
+    }
+
     private static boolean containsNtkProtectedDnsState(String lowerReport, String prefix, String state) {
         if(lowerReport == null || prefix == null || state == null)
             return false;
@@ -1043,6 +1064,10 @@ public class CustomHttpClient {
 
     static String diagnosticInterpretationForTest(String report) {
         return diagnosticInterpretation(report);
+    }
+
+    static boolean shouldOfferWarpAssistForDiagnosticReportForTest(String report) {
+        return shouldOfferWarpAssistForDiagnosticReportInternal(report);
     }
 
     public OkHttpClient client;

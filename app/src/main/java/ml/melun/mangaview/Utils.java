@@ -113,6 +113,10 @@ public class Utils {
     private static final long NTK_WEBVIEW_COOKIE_SYNC_INTERVAL_MS = 60_000L;
     private static final long CAPTCHA_ACTIVITY_MIN_INTERVAL_MS = 3_000L;
     private static final long NTK_CAPTCHA_ACTIVITY_MIN_INTERVAL_MS = 30_000L;
+    private static final long NTK_WARP_ASSIST_AUTO_LAUNCH_MIN_INTERVAL_MS = 60_000L;
+    private static final String CLOUDFLARE_WARP_PACKAGE = "com.cloudflare.onedotonedotonedotone";
+    private static final String CLOUDFLARE_ONE_PACKAGE = "com.cloudflare.cloudflareoneagent";
+    private static volatile long lastCloudflareWarpAssistStartedAtMs = 0L;
     private static final int GLIDE_URL_CACHE_MAX = 512;
     private static final Map<String, GlideUrl> glideUrlCache = new LinkedHashMap<String, GlideUrl>(GLIDE_URL_CACHE_MAX, 0.75f, true) {
         @Override
@@ -1318,7 +1322,8 @@ public class Utils {
             }
             if(showNtkTurnstileCaptchaIfNeeded(url, context, code, fragment, p))
                 return;
-            boolean autoCaptchaStarted = shouldOpenCloudflareCaptchaAutomatically()
+            boolean offerWarpAssist = shouldOfferNtkWarpAssistForFailure(context);
+            boolean autoCaptchaStarted = !offerWarpAssist && shouldOpenCloudflareCaptchaAutomatically()
                     && startCaptchaActivity(context, code, fragment, url);
             if (autoCaptchaStarted) {
                 markAutoCloudflareCaptchaStarted();
@@ -1336,17 +1341,27 @@ public class Utils {
                 if (new Preference(context).getDarkTheme())
                     builder = new AlertDialog.Builder(context, R.style.darkDialog);
                 else builder = new AlertDialog.Builder(context);
+                if(offerWarpAssist) {
+                    title = "NTK 네트워크 차단";
+                    content = "현재 네트워크에서 NTK TLS/SNI 경로가 차단된 상태입니다. WARP 또는 VPN을 켠 뒤 다시 시도해 주세요.";
+                }
                 builder.setTitle(title)
                         .setMessage(content)
                         .setNeutralButton("확인", (dialogInterface, i) -> {
                             if (force_close) ((Activity) context).finish();
                         })
-                        .setPositiveButton("CAPTCHA 인증", (dialog, which) -> startCaptchaActivity(context, code, fragment, url))
+                        .setPositiveButton(offerWarpAssist ? "WARP 열기" : "CAPTCHA 인증",
+                                (dialog, which) -> {
+                                    if(offerWarpAssist)
+                                        openCloudflareWarpAssist(context);
+                                    else
+                                        startCaptchaActivity(context, code, fragment, url);
+                                })
                         .setNegativeButton("URL 설정", (dialogInterface, i) -> urlSettingPopup(context, p))
                         .setOnCancelListener(dialogInterface -> {
                             if (force_close) ((Activity) context).finish();
                         });
-                if (e != null) {
+                if (e != null && !offerWarpAssist) {
                     builder.setNeutralButton("자세히", (dialog, which) -> showStackTrace(context, e));
                 }
                 safeShowDialog(builder);
@@ -1398,6 +1413,211 @@ public class Utils {
             }
         }
         return false;
+    }
+
+    private static boolean shouldOfferNtkWarpAssistForFailure(Context context) {
+        try {
+            return shouldOfferNtkWarpAssistForFailureForTest(getHttpClient().isNtk(),
+                    activeNetworkHasVpn(context),
+                    getHttpClient().hasNtkAccessProof(),
+                    getHttpClient().hasRecentCloudflareChallenge(),
+                    getHttpClient().hasRecentNtkHardBlock());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    static boolean shouldOfferNtkWarpAssistForFailureForTest(boolean ntk, boolean vpnActive,
+                                                             boolean accessProof,
+                                                             boolean recentChallenge,
+                                                             boolean recentHardBlock) {
+        return ntk && !vpnActive && !accessProof && (!recentChallenge || recentHardBlock);
+    }
+
+    public static boolean hasRecentCloudflareWarpAssistLaunch(long windowMs) {
+        return hasRecentCloudflareWarpAssistLaunchForTest(lastCloudflareWarpAssistStartedAtMs,
+                SystemClock.uptimeMillis(), windowMs);
+    }
+
+    static boolean hasRecentCloudflareWarpAssistLaunchForTest(long startedAtMs, long nowMs, long windowMs) {
+        return startedAtMs > 0L && windowMs > 0L && nowMs >= startedAtMs && nowMs - startedAtMs <= windowMs;
+    }
+
+    private static boolean activeNetworkHasVpn(Context context) {
+        if(context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP)
+            return false;
+        try {
+            ConnectivityManager manager = (ConnectivityManager) context.getApplicationContext()
+                    .getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(manager == null)
+                return false;
+            android.net.Network network = manager.getActiveNetwork();
+            if(network == null)
+                return false;
+            android.net.NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
+            return capabilities != null && capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static boolean openCloudflareWarpAssist(Context context) {
+        if(context == null)
+            return false;
+        if(openInstalledPackage(context, CLOUDFLARE_WARP_PACKAGE))
+            return markCloudflareWarpAssistStarted("installed-warp");
+        if(openInstalledPackage(context, CLOUDFLARE_ONE_PACKAGE))
+            return markCloudflareWarpAssistStarted("installed-cloudflare-one");
+        boolean functionalPlayStore = isFunctionalPlayStoreInstalled(context);
+        if(functionalPlayStore) {
+            if(openPlayStoreMarket(context, CLOUDFLARE_WARP_PACKAGE))
+                return markCloudflareWarpAssistStarted("market-warp");
+            if(openPlayStoreMarket(context, CLOUDFLARE_ONE_PACKAGE))
+                return markCloudflareWarpAssistStarted("market-cloudflare-one");
+        }
+        if(shouldPreferVpnSettingsBeforeWebPlayForTest(functionalPlayStore)
+                && openVpnSettings(context))
+            return markCloudflareWarpAssistStarted("vpn-settings");
+        if(shouldAllowWebPlayFallbackForTest(functionalPlayStore)) {
+            if(openPlayStoreWeb(context, CLOUDFLARE_WARP_PACKAGE))
+                return markCloudflareWarpAssistStarted("web-play-warp");
+            if(openPlayStoreWeb(context, CLOUDFLARE_ONE_PACKAGE))
+                return markCloudflareWarpAssistStarted("web-play-cloudflare-one");
+        }
+        if(functionalPlayStore && openVpnSettings(context))
+            return markCloudflareWarpAssistStarted("vpn-settings-after-market");
+        safeToast(context, "VPN settings could not be opened.", Toast.LENGTH_SHORT);
+        android.util.Log.d("ViewerPerf", "ntk_warp_assist_failed functionalPlayStore=" + functionalPlayStore);
+        return false;
+    }
+
+    public static boolean openCloudflareWarpAssistForCurrentNtkHardBlock(Context context) {
+        try {
+            boolean shouldOffer = shouldOfferNtkWarpAssistForFailure(context);
+            boolean recentLaunch = hasRecentCloudflareWarpAssistLaunch(
+                    NTK_WARP_ASSIST_AUTO_LAUNCH_MIN_INTERVAL_MS);
+            boolean shouldOpen = shouldAutoOpenNtkWarpAssistForHardBlockForTest(
+                    shouldOffer,
+                    getHttpClient().hasRecentNtkHardBlock(),
+                    recentLaunch);
+            android.util.Log.d("ViewerPerf", "ntk_warp_assist_auto_check shouldOffer="
+                    + shouldOffer + ",recentHardBlock=" + getHttpClient().hasRecentNtkHardBlock()
+                    + ",recentLaunch=" + recentLaunch + ",shouldOpen=" + shouldOpen);
+            return shouldOpen && openCloudflareWarpAssist(context);
+        } catch (Exception e) {
+            android.util.Log.d("ViewerPerf", "ntk_warp_assist_auto_error " + e);
+            return false;
+        }
+    }
+
+    static boolean shouldAutoOpenNtkWarpAssistForHardBlockForTest(boolean shouldOffer,
+                                                                  boolean recentHardBlock,
+                                                                  boolean recentLaunch) {
+        return shouldOffer && recentHardBlock && !recentLaunch;
+    }
+
+    static boolean shouldPreferVpnSettingsBeforeWebPlayForTest(boolean functionalPlayStore) {
+        return !functionalPlayStore;
+    }
+
+    static boolean shouldAllowWebPlayFallbackForTest(boolean functionalPlayStore) {
+        return functionalPlayStore;
+    }
+
+    private static boolean markCloudflareWarpAssistStarted(String route) {
+        lastCloudflareWarpAssistStartedAtMs = SystemClock.uptimeMillis();
+        android.util.Log.d("ViewerPerf", "ntk_warp_assist_route route=" + route);
+        return true;
+    }
+
+    private static boolean openInstalledPackage(Context context, String packageName) {
+        try {
+            Intent intent = context.getPackageManager().getLaunchIntentForPackage(packageName);
+            if(intent == null)
+                return false;
+            addNewTaskFlagIfNeeded(context, intent);
+            context.startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean openPlayStoreMarket(Context context, String packageName) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("market://details?id=" + packageName));
+            intent.setPackage("com.android.vending");
+            addNewTaskFlagIfNeeded(context, intent);
+            context.startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean openPlayStoreWeb(Context context, String packageName) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://play.google.com/store/apps/details?id=" + packageName));
+            addNewTaskFlagIfNeeded(context, intent);
+            context.startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean openVpnSettings(Context context) {
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_VPN_SETTINGS);
+            intent.setPackage("com.android.settings");
+            addNewTaskFlagIfNeeded(context, intent);
+            context.startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+        }
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_VPN_SETTINGS);
+            intent.setClassName("com.android.settings", "com.android.settings.Settings$VpnSettingsActivity");
+            addNewTaskFlagIfNeeded(context, intent);
+            context.startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+        }
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_SETTINGS);
+            intent.setPackage("com.android.settings");
+            addNewTaskFlagIfNeeded(context, intent);
+            context.startActivity(intent);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isFunctionalPlayStoreInstalled(Context context) {
+        if(context == null)
+            return false;
+        try {
+            String sourceDir = context.getPackageManager()
+                    .getApplicationInfo("com.android.vending", 0).sourceDir;
+            return isFunctionalPlayStoreForTest("com.android.vending", sourceDir);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static boolean isFunctionalPlayStoreForTest(String packageName, String sourceDir) {
+        if(!"com.android.vending".equals(packageName))
+            return false;
+        String lower = sourceDir == null ? "" : sourceDir.toLowerCase(Locale.ROOT);
+        return !lower.contains("/licensechecker") && !lower.endsWith("licensechecker.apk");
+    }
+
+    private static void addNewTaskFlagIfNeeded(Context context, Intent intent) {
+        if(!(context instanceof Activity))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     }
 
     public static boolean showNtkTurnstileCaptchaIfNeeded(Context context, int code, Fragment fragment, Preference preference) {

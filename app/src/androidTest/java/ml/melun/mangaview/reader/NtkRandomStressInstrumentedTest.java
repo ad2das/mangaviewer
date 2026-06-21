@@ -1731,6 +1731,7 @@ public class NtkRandomStressInstrumentedTest {
         intent.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
         intent.putExtra("viewerLaunchSourceSite", "ntk");
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         return intent;
     }

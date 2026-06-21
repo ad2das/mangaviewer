@@ -31067,3 +31067,28 @@ tk_rsc_payload_cloudflare_clearance_reset.
 - Remaining risk:
   - The latest passing runs still contain transient `missing_canary` retries before final strict ACK 200. This is now recovered repeatably in two actual UX runs, but the 400 retry noise is not fully eliminated.
   - First drawable remains slow, around `29-30s`, and speed is only being accepted because the current close-out priority is ACK/stability rather than performance perfection.
+
+## 2026-06-22 04:58 KST no-WARP final strict pass for webtoon and manhwa
+
+- Target root:
+  - `https://newtoki1.org`.
+  - Confirmed without WARP/VPN; test artifacts show `vpnActive=false` and cellular transport.
+- Webtoon strict random/perf pass:
+  - Artifact: `build\ntk-random-perf\20260622_045736`.
+  - Target: `/webtoon/11320/1034578`.
+  - Result: `passed=True`, `failures=0`, `slowSignals=0`, `scroll=4/4`.
+  - Proof: `strictProof=true`, `nativeBridgeAck200=true`, `notVpn=true`.
+- Manhwa strict random/perf pass:
+  - Artifact: `build\ntk-random-perf\20260622_045812`.
+  - Target: `/manhwa/36525/1807424`.
+  - Result: `passed=True`, `failures=0`, `slowSignals=0`, `scroll=4/4`.
+  - Proof: `strictProof=true`, `nativeBridgeAck200=true`, `notVpn=true`.
+- Final close-out code shape:
+  - Avoid starting current-episode image API work while launch recovery or initial generated streams already have usable early images.
+  - Avoid transition cards for NTK generated append lists, and defer offscreen append warm-up until near the viewport.
+  - Stagger initial continuous delivery to keep the main thread responsive during early pages.
+  - Disable manhwa initial generated range-first mode so manhwa keeps the stable direct/native path.
+- Do not regress:
+  - Do not add delayed viewer-open timing as a test workaround.
+  - Do not count image visibility as ACK success unless native bridge ACK 200 or strict guard ACK proof is present.
+  - Do not require WARP/VPN for the normal mobile app path.
