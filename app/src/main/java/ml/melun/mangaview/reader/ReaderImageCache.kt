@@ -56,7 +56,7 @@ object ReaderImageCache {
     private const val NTK_VERIFIED_ANCHOR_HANDOFF_DELAY_MS = 0L
     private const val FOREGROUND_STREAM_RACE_ATTEMPTS = 1
     private const val FOREGROUND_STREAM_JOIN_TIMEOUT_MS = 1800L
-    private const val FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS = 180L
+    private const val FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS = 1400L
     private const val NTK_GENERATED_INITIAL_RECOVERY_HEDGE_MS = 300L
     private const val NTK_GENERATED_INITIAL_RECOVERY_SAME_URL_HEDGE_MS = 350L
     private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 4
@@ -65,7 +65,7 @@ object ReaderImageCache {
     private const val NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES = 4
     private const val NTK_GENERATED_INITIAL_TRANSIENT_RETRY_DELAY_MS = 180L
     private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_WEBTOON_DELAY_MS = 140L
-    private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS = 900L
+    private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS = 120L
     private const val EARLY_NTK_IMAGE_URL_TTL_MS = 6000L
     private const val EARLY_NTK_APPEND_IMAGE_URL_TTL_MS = 30000L
     private const val EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS = 1200L
@@ -645,6 +645,14 @@ object ReaderImageCache {
             .forEach { rememberNtkGeneratedEpisodeExtension(it) }
     }
 
+    private fun ntkGeneratedInitialRecoveryPages(manga: Manga): Int {
+        return if (manga.ntkEpisodePath.orEmpty().startsWith("/manhwa/", ignoreCase = true)) {
+            3
+        } else {
+            NTK_GENERATED_INITIAL_RECOVERY_PAGES
+        }
+    }
+
     private fun mergeInitialGeneratedPageUrls(existing: List<String>, incoming: List<String>): List<String>? {
         val replacements = LinkedHashMap<Int, String>()
         incoming.forEach { image ->
@@ -818,10 +826,7 @@ object ReaderImageCache {
         ) {
             return false
         }
-        ntkGeneratedPageImage(image, 1)?.let { anchor ->
-            if (cachedImageFile(context, manga, anchor) != null) return true
-        }
-        return false
+        return true
     }
 
     private fun isActiveNearGeneratedPageWithVerifiedAnchor(
@@ -988,18 +993,7 @@ object ReaderImageCache {
         generation: Long
     ) {
         val target = ntkGeneratedTarget(image) ?: return
-        if (target.page !in 1..NTK_GENERATED_INITIAL_RECOVERY_PAGES) return
-        if (target.page == 1) {
-            logCacheEvent(
-                "download_initial_recovery_skip_anchor_range_owner",
-                manga,
-                image,
-                true,
-                "page=${target.page}"
-            )
-            ViewerWarmupManager.logMetric("reader_download_initial_recovery_skip_anchor_range_owner", 1L)
-            return
-        }
+        if (target.page !in 1..ntkGeneratedInitialRecoveryPages(manga)) return
         if (shouldDropMismatchedHintedInitialGenerated(image)) {
             logCacheEvent(
                 "download_initial_recovery_skip_hinted_mismatch",
@@ -1213,6 +1207,12 @@ object ReaderImageCache {
     ): Bitmap? {
         if (!manga.isOnline) return null
         val generatedTarget = ntkGeneratedTarget(image)
+        cancellation?.throwIfCancelled()
+        val appContext = context.applicationContext
+        if (cachedFile(appContext, manga, image) != null) return null
+        awaitForegroundStreamVariantFile(appContext, manga, image, true)?.file?.let {
+            return null
+        }
         if (generatedTarget != null && generatedTarget.page > 1 && permit == null) {
             logCacheEvent(
                 "foreground_decode_missing_permit",
@@ -1222,12 +1222,6 @@ object ReaderImageCache {
                 "page=$pageIndex,generatedPage=${generatedTarget.page}"
             )
             ViewerWarmupManager.logMetric("reader_foreground_decode_missing_permit", pageIndex.toLong())
-            return null
-        }
-        cancellation?.throwIfCancelled()
-        val appContext = context.applicationContext
-        if (cachedFile(appContext, manga, image) != null) return null
-        awaitForegroundStreamVariantFile(appContext, manga, image, true)?.file?.let {
             return null
         }
         val key = foregroundStreamKey(manga.baseMode, image)
@@ -1310,6 +1304,16 @@ object ReaderImageCache {
         foregroundStreamStartedAt[key] = startedAt
         try {
             task.run()
+            decodeForegroundCachedFileIfPresent(
+                appContext,
+                manga,
+                image,
+                startedAt,
+                autoCut,
+                allowSplit,
+                targetWidth,
+                "foreground_stream_run_done"
+            )?.let { return it }
             return decodeForegroundBytes(task, startedAt, autoCut, allowSplit, targetWidth, boundedWait = false)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -1715,7 +1719,29 @@ object ReaderImageCache {
                 ViewerWarmupManager.logMetric("reader_foreground_stream_join_anchor_asset_hit", 1L)
                 return decodeForegroundFile(cached, startedAt, autoCut, allowSplit, targetWidth)
             }
+            cachedImageFile(context, manga, image)?.let { cached ->
+                cached.setLastModified(System.currentTimeMillis())
+                logCacheEvent(
+                    "foreground_stream_join_disk_hit",
+                    manga,
+                    image,
+                    true,
+                    "bytes=${cached.length()},waitMs=${SystemClock.elapsedRealtime() - waitStartedAt}"
+                )
+                ViewerWarmupManager.logMetric("reader_foreground_stream_join_disk_hit", 1L)
+                return decodeForegroundFile(cached, startedAt, autoCut, allowSplit, targetWidth)
+            }
             if (task.isDone) {
+                decodeForegroundCachedFileIfPresent(
+                    context,
+                    manga,
+                    image,
+                    startedAt,
+                    autoCut,
+                    allowSplit,
+                    targetWidth,
+                    "foreground_stream_join_done"
+                )?.let { return it }
                 return decodeForegroundBytes(
                     task,
                     startedAt,
@@ -1732,7 +1758,28 @@ object ReaderImageCache {
                 return null
             }
             try {
-                task.get(minOf(32L, remaining), TimeUnit.MILLISECONDS)
+                val bytes = task.get(minOf(32L, remaining), TimeUnit.MILLISECONDS)
+                if (bytes != null) {
+                    decodeForegroundCachedFileIfPresent(
+                        context,
+                        manga,
+                        image,
+                        startedAt,
+                        autoCut,
+                        allowSplit,
+                        targetWidth,
+                        "foreground_stream_join_completed"
+                    )?.let { return it }
+                    val bitmap = decodeForegroundBytes(
+                        task,
+                        startedAt,
+                        autoCut,
+                        allowSplit,
+                        targetWidth,
+                        boundedWait = false
+                    )
+                    if (bitmap != null) return bitmap
+                }
             } catch (_: java.util.concurrent.TimeoutException) {
                 continue
             } catch (e: InterruptedException) {
@@ -1744,12 +1791,51 @@ object ReaderImageCache {
         }
     }
 
+    private fun decodeForegroundCachedFileIfPresent(
+        context: Context,
+        manga: Manga,
+        image: String,
+        startedAt: Long,
+        autoCut: Boolean,
+        allowSplit: Boolean,
+        targetWidth: Int,
+        stage: String
+    ): Bitmap? {
+        cachedAnchorAssetFile(context, manga, image, foreground = true)?.let { cached ->
+            logCacheEvent(stage + "_anchor_asset_hit", manga, image, true, "bytes=${cached.length()}")
+            ViewerWarmupManager.logMetric("reader_" + stage + "_anchor_asset_hit", 1L)
+            return decodeForegroundFile(
+                cached,
+                startedAt,
+                autoCut,
+                allowSplit,
+                targetWidth,
+                fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+            )
+        }
+        cachedImageFile(context, manga, image)?.let { cached ->
+            cached.setLastModified(System.currentTimeMillis())
+            logCacheEvent(stage + "_disk_hit", manga, image, true, "bytes=${cached.length()}")
+            ViewerWarmupManager.logMetric("reader_" + stage + "_disk_hit", 1L)
+            return decodeForegroundFile(
+                cached,
+                startedAt,
+                autoCut,
+                allowSplit,
+                targetWidth,
+                fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+            )
+        }
+        return null
+    }
+
     private fun decodeForegroundFile(
         file: File,
         startedAt: Long,
         autoCut: Boolean,
         allowSplit: Boolean,
-        targetWidth: Int
+        targetWidth: Int,
+        fastInitialGenerated: Boolean = false
     ): Bitmap? {
         val bytes = try {
             file.readBytes()
@@ -1763,7 +1849,7 @@ object ReaderImageCache {
         val decodeTargetWidth = foregroundDecodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, autoCut, allowSplit)
         val options = BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.ARGB_8888
-            inSampleSize = foregroundSampleSize(bounds.outWidth, decodeTargetWidth)
+            inSampleSize = foregroundSampleSize(bounds.outWidth, decodeTargetWidth, fastInitialGenerated)
         }
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
         val decodedAt = SystemClock.elapsedRealtime()
@@ -2009,8 +2095,13 @@ object ReaderImageCache {
         return if (sourceWidth / sourceHeight.toFloat() >= 0.90f) safeTarget * 2 else safeTarget
     }
 
-    private fun foregroundSampleSize(sourceWidth: Int, targetWidth: Int): Int {
+    private fun foregroundSampleSize(
+        sourceWidth: Int,
+        targetWidth: Int,
+        fastInitialGenerated: Boolean = false
+    ): Int {
         if (sourceWidth <= 0 || targetWidth <= 0) return 1
+        if (fastInitialGenerated && sourceWidth / 2 >= 320) return 2
         var sample = 1
         while (sourceWidth / (sample * 2) >= targetWidth) sample *= 2
         return max(1, sample)
@@ -2490,6 +2581,8 @@ object ReaderImageCache {
         if (lower.startsWith("toonflix.app/") || lower.startsWith("//toonflix.app/")) return true
         if (Regex("^flysky\\d*m\\.com/").containsMatchIn(lower) ||
             Regex("^//flysky\\d*m\\.com/").containsMatchIn(lower) ||
+            Regex("^apihost\\d*\\.com/").containsMatchIn(lower) ||
+            Regex("^//apihost\\d*\\.com/").containsMatchIn(lower) ||
             lower.startsWith("moamoabon.com/") ||
             lower.startsWith("//moamoabon.com/") ||
             Regex("^fvcdn\\d*\\.com/").containsMatchIn(lower) ||
@@ -2507,6 +2600,7 @@ object ReaderImageCache {
             ) return true
             host == "toonflix.app" || host.endsWith(".toonflix.app") ||
                 Regex("^flysky\\d*m\\.com$").matches(host) ||
+                Regex("^apihost\\d*\\.com$").matches(host) ||
                 host == "moamoabon.com" ||
                 Regex("^fvcdn\\d*\\.com$").matches(host) ||
                 Regex("^aws-cdn\\d*\\.site$").matches(host)
@@ -2545,6 +2639,7 @@ object ReaderImageCache {
         return ((lower.contains("://toonflix.app/") ||
             lower.contains("://i.toonflix.app/") ||
             Regex("://flysky\\d*m\\.com/").containsMatchIn(lower) ||
+            Regex("://apihost\\d*\\.com/").containsMatchIn(lower) ||
             lower.contains("://moamoabon.com/") ||
             Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower) ||
             Regex("://aws-cdn\\d*\\.site/").containsMatchIn(lower) ||
@@ -5727,6 +5822,7 @@ object ReaderImageCache {
         return (lower.contains("://toonflix.app/")
                 || lower.contains("://i.toonflix.app/")
                 || Regex("://flysky\\d*m\\.com/").containsMatchIn(lower)
+                || Regex("://apihost\\d*\\.com/").containsMatchIn(lower)
                 || lower.contains("://moamoabon.com/")
                 || Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower))
             && (
@@ -5929,7 +6025,7 @@ object ReaderImageCache {
     private fun rememberEarlyNtkGeneratedSuccess(manga: Manga, image: String) {
         val path = manga.ntkEpisodePath
         val target = ntkGeneratedTarget(image) ?: return
-        if (path.isNullOrBlank() || target.page !in 1..NTK_GENERATED_INITIAL_RECOVERY_PAGES) return
+        if (path.isNullOrBlank() || target.page !in 1..ntkGeneratedInitialRecoveryPages(manga)) return
         val existing = earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L)
         val merged = if (existing.isEmpty()) {
             listOf(image)
@@ -5994,7 +6090,7 @@ object ReaderImageCache {
         image: String,
         target: NtkGeneratedTarget?
     ): Boolean {
-        if (target == null || target.page !in 1..NTK_GENERATED_INITIAL_RECOVERY_PAGES) return false
+        if (target == null || target.page !in 1..ntkGeneratedInitialRecoveryPages(manga)) return false
         if (!ntkGeneratedEpisodeExtensionMatches(image)) return false
         val ref = ntkGeneratedImageRef(image) ?: return false
         val activePath = earlyNtkPathKey(manga.ntkEpisodePath)
@@ -6218,6 +6314,7 @@ object ReaderImageCache {
         return host == "toonflix.app" ||
             host.endsWith(".toonflix.app") ||
             Regex("^flysky\\d*m\\.com$").matches(host) ||
+            Regex("^apihost\\d*\\.com$").matches(host) ||
             host == "moamoabon.com" ||
             Regex("^fvcdn\\d*\\.com$").matches(host) ||
             Regex("^aws-cdn\\d*\\.site$").matches(host) ||

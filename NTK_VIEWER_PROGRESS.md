@@ -31092,3 +31092,35 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - Do not add delayed viewer-open timing as a test workaround.
   - Do not count image visibility as ACK success unless native bridge ACK 200 or strict guard ACK proof is present.
   - Do not require WARP/VPN for the normal mobile app path.
+
+## 2026-06-22 14:52 KST sbxh9.com no-WARP final pass for webtoon and manhwa
+
+- Root/domain update:
+  - Current NTK content root is `https://sbxh9.com`.
+  - `sbxh9.com` is now in the resolver/default/candidate path.
+  - `newtoki1.org` remains as an alias/ad-control fallback for ACK/root reachability, but content root and requested site root are `https://sbxh9.com`.
+- Why the changed address was not detected before:
+  - The app could keep using a persisted/previous root and candidate order that still preferred older roots.
+  - The fix updates the default host, NTK URL constants, resolver candidates, and alias fallback ordering so a changed NTK host can recover without WARP.
+- Final build:
+  - `.\gradlew.bat --no-build-cache --rerun-tasks :app:assembleDebug :app:assembleDebugAndroidTest`
+  - Result: `BUILD SUCCESSFUL`.
+- Final manhwa validation:
+  - Artifact: `build\ntk-random-perf\20260622_145127`.
+  - Target: `/manhwa/36525/1807424`.
+  - Result: `passed=True`, `failures=0`, `slowSignals=0`, `scroll=4/4`.
+  - Network: `CELLULAR`, `vpnActive=false`, `notVpn=true` before and after.
+  - Image timing: `earlyUrlsMs=27`, `fgMs=810`, `streamMs=1803`, `decodeMs=1698`, `drawableMs=2146`.
+  - ACK: `strictProof=true`; preflight completed with `ackMs=21108`.
+- Final webtoon validation:
+  - Artifact: `build\ntk-random-perf\20260622_145227`.
+  - Target: `/webtoon/11320/1034578`.
+  - Result: `passed=True`, `failures=0`, `slowSignals=0`, `scroll=4/4`.
+  - Network: `CELLULAR`, `vpnActive=false`, `notVpn=true` before and after.
+  - Image timing: `earlyUrlsMs=77`, `fgMs=1045`, `streamMs=1254`, `decodeMs=1185`, `drawableMs=2121`.
+  - ACK: `strictProof=true`; preflight completed with `ackMs=21327`.
+- Constraints honored:
+  - No WARP/VPN dependency.
+  - No device identity change.
+  - No delayed viewer-open workaround.
+  - Final proof requires images, scroll, and strict ACK to pass together.

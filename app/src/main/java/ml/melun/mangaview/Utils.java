@@ -2135,6 +2135,7 @@ public class Utils {
                     || host.matches("w\\d+cloud\\.com")
                     || host.matches("i\\d+\\.imgcloud\\d+\\.com")
                     || host.matches("flysky\\d*m\\.com")
+                    || host.matches("apihost\\d*\\.com")
                     || "moamoabon.com".equals(host)
                     || host.matches("fvcdn\\d*\\.com")
                     || host.matches("aws-cdn\\d*\\.site");
@@ -2191,6 +2192,7 @@ public class Utils {
             String lowerPath = path.toLowerCase(Locale.ROOT);
             if(!lowerHost.matches("aws-cdn\\d*\\.site")
                     && !lowerHost.matches("flysky\\d*m\\.com")
+                    && !lowerHost.matches("apihost\\d*\\.com")
                     && !"moamoabon.com".equals(lowerHost)
                     && !lowerHost.matches("fvcdn\\d*\\.com"))
                 return url;

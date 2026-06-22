@@ -802,6 +802,9 @@ public class CaptchaActivity extends AppCompatActivity {
     }
 
     private static boolean shouldReplaceStoredNtkCaptchaUserAgent(String defaultUserAgent, String storedUserAgent) {
+        if(CustomHttpClient.isDesktopUserAgent(storedUserAgent)
+                && !CustomHttpClient.isDesktopUserAgent(defaultUserAgent))
+            return true;
         int defaultMajor = chromeMajor(defaultUserAgent);
         int storedMajor = chromeMajor(storedUserAgent);
         if(defaultMajor <= 0 || storedMajor <= 0)

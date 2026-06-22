@@ -826,7 +826,7 @@ public class Preference {
                 host = host.substring(4);
             if("ntk01.com".equals(host))
                 return true;
-            if(host.matches("sbxh[1-5]\\.com"))
+            if(host.matches("sbxh[1-8]\\.com"))
                 return true;
             return false;
         } catch (Exception e) {

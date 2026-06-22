@@ -150,7 +150,7 @@ internal class NtkEpisodeCoordinator(
 
     companion object {
         private const val TAG = "ViewerPerf"
-        private const val MANHWA_ANCHOR_EXCLUSIVE_FALLBACK_MS = 3000L
+        private const val MANHWA_ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
         private const val WEBTOON_ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
         private const val INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 18
         private val NEXT_EPOCH = AtomicLong()
