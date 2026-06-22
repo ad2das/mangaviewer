@@ -3230,6 +3230,7 @@ public class CustomHttpClient {
             for(String root : resolvedRoots)
                 addNtkRootCandidate(candidates, root, true);
         addNtkRootCandidate(candidates, "https://" + NTK_ALIAS_HOST, true);
+        addLikelyNtkSbxhRootCandidates(candidates, currentRoot);
         addNtkRootCandidate(candidates, NTK_WEBTOON_URL);
         addNtkRootCandidate(candidates, currentRoot);
         addNtkRootCandidate(candidates, "https://" + PREVIOUS_NTK_HOST);
@@ -4266,6 +4267,17 @@ public class CustomHttpClient {
                 && lower.contains("\"token\""))
             return hasUsableNtkViewerPayloadToken(body);
         return false;
+    }
+
+    private void addLikelyNtkSbxhRootCandidates(List<String> candidates, String currentRoot) {
+        for(String root : NtkDomainResolver.generatedSbxhRoots(
+                NTK_WEBTOON_URL,
+                currentRoot,
+                "https://" + PREVIOUS_NTK_HOST,
+                "https://" + OLDER_NTK_HOST,
+                "https://" + OLDEST_NTK_HOST,
+                "https://" + LEGACY_NTK_HOST))
+            addNtkRootCandidate(candidates, root);
     }
 
     private static boolean hasUsableNtkViewerPayloadToken(String body) {
@@ -7910,6 +7922,7 @@ public class CustomHttpClient {
         ArrayList<String> candidates = new ArrayList<>();
         addNtkRootCandidate(candidates, "https://" + NTK_ALIAS_HOST, true);
         addNtkRootCandidate(candidates, ntkWebViewAckBaseUrl(path), true);
+        addLikelyNtkSbxhRootCandidates(candidates, ntkWebViewAckBaseUrl(path));
         addNtkRootCandidate(candidates, NTK_WEBTOON_URL, true);
         addNtkRootCandidate(candidates, "https://" + PREVIOUS_NTK_HOST, true);
         addNtkRootCandidate(candidates, "https://" + OLDER_NTK_HOST, true);

@@ -26,6 +26,8 @@ public class NtkDomainResolver {
             CHANNEL_URL
     };
     private static final long RESOLVE_TIMEOUT_MS = 8_000L;
+    private static final int SBXH_FUTURE_PROBE_WINDOW = 3;
+    private static final int SBXH_PAST_PROBE_WINDOW = 8;
 
     public static String resolve(OkHttpClient client, Map<String, String> headers) {
         return resolve(client, headers, null);
@@ -123,13 +125,31 @@ public class NtkDomainResolver {
                 continue;
             for(Element link : message.select("a[href]")) {
                 String root = normalizeRoot(link.attr("href"));
-                if(isCandidate(root, link.text())) {
-                    roots.remove(root);
-                    roots.add(0, root);
-                    break;
-                }
+                if(isCandidate(root, link.text()))
+                    addPriorityRootCandidate(roots, root);
+            }
+            for(String token : text.split("\\s+")) {
+                String root = normalizeRoot(cleanAddressToken(token));
+                if(isCandidate(root, token))
+                    addPriorityRootCandidate(roots, root);
             }
         }
+        return roots;
+    }
+
+    public static List<String> generatedSbxhRoots(String... seedRoots) {
+        ArrayList<String> roots = new ArrayList<>();
+        int max = 0;
+        if(seedRoots != null) {
+            for(String seed : seedRoots)
+                max = Math.max(max, sbxhNumber(seed));
+        }
+        if(max <= 0)
+            max = 9;
+        int upper = max + SBXH_FUTURE_PROBE_WINDOW;
+        int lower = Math.max(1, max - SBXH_PAST_PROBE_WINDOW);
+        for(int number = upper; number >= lower; number--)
+            addRootCandidate(roots, "https://sbxh" + number + ".com");
         return roots;
     }
 
@@ -193,12 +213,15 @@ public class NtkDomainResolver {
         if(text == null)
             return false;
         String compact = text.replaceAll("\\s+", "");
+        String lower = compact.toLowerCase(Locale.ROOT);
         return compact.contains("\uD604\uC7AC\uC8FC\uC18C")
                 || compact.contains("\uC811\uC18D\uC8FC\uC18C")
                 || compact.contains("\uC2E4\uC2DC\uAC04\uC811\uC18D\uC8FC\uC18C")
                 || compact.contains("\uCD5C\uC2E0\uC8FC\uC18C")
                 || compact.contains("\uC0C8\uC8FC\uC18C")
-                || compact.contains("\uACF5\uC2DD\uC8FC\uC18C");
+                || compact.contains("\uACF5\uC2DD\uC8FC\uC18C")
+                || lower.contains("newtoki")
+                || lower.contains("sbxh");
     }
 
     private static boolean isCandidate(String root, String label) {
@@ -232,6 +255,61 @@ public class NtkDomainResolver {
         root = normalizeRoot(root);
         if(root != null && root.length() > 0 && !roots.contains(root))
             roots.add(root);
+    }
+
+    private static void addPriorityRootCandidate(List<String> roots, String root) {
+        root = normalizeRoot(root);
+        if(root == null || root.length() == 0)
+            return;
+        roots.remove(root);
+        roots.add(0, root);
+    }
+
+    private static String cleanAddressToken(String token) {
+        if(token == null)
+            return "";
+        String cleaned = token.replace("`", "").trim();
+        while(cleaned.length() > 0) {
+            char first = cleaned.charAt(0);
+            if(first == '(' || first == '[' || first == '<' || first == '"' || first == '\'')
+                cleaned = cleaned.substring(1);
+            else
+                break;
+        }
+        while(cleaned.length() > 0) {
+            char last = cleaned.charAt(cleaned.length() - 1);
+            if(last == ')' || last == ']' || last == '>' || last == '"' || last == '\''
+                    || last == '.' || last == ',' || last == ';' || last == ':')
+                cleaned = cleaned.substring(0, cleaned.length() - 1);
+            else
+                break;
+        }
+        return cleaned;
+    }
+
+    private static int sbxhNumber(String root) {
+        try {
+            root = normalizeRoot(root);
+            if(root == null || root.length() == 0)
+                return 0;
+            String host = URI.create(root).getHost();
+            if(host == null)
+                return 0;
+            host = host.toLowerCase(Locale.ROOT);
+            if(host.startsWith("www."))
+                host = host.substring(4);
+            if(!host.startsWith("sbxh") || !host.endsWith(".com"))
+                return 0;
+            String number = host.substring(4, host.length() - 4);
+            if(number.length() == 0)
+                return 0;
+            for(int i = 0; i < number.length(); i++)
+                if(!Character.isDigit(number.charAt(i)))
+                    return 0;
+            return Integer.parseInt(number);
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private static boolean isAddressGuideRoot(String root) {

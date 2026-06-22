@@ -826,11 +826,39 @@ public class Preference {
                 host = host.substring(4);
             if("ntk01.com".equals(host))
                 return true;
-            if(host.matches("sbxh[1-8]\\.com"))
-                return true;
+            int currentSbxh = sbxhHostNumber(NTK_WEBTOON_URL);
+            int hostSbxh = sbxhHostNumber(host);
+            if(currentSbxh > 0 && hostSbxh > 0)
+                return hostSbxh < currentSbxh;
             return false;
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    private static int sbxhHostNumber(String rootOrHost) {
+        try {
+            String host = rootOrHost;
+            if(host == null || host.length() == 0)
+                return 0;
+            if(host.contains("://"))
+                host = URI.create(normalizeHttpUrl(host, "")).getHost();
+            if(host == null)
+                return 0;
+            host = host.toLowerCase(Locale.ROOT);
+            if(host.startsWith("www."))
+                host = host.substring(4);
+            if(!host.startsWith("sbxh") || !host.endsWith(".com"))
+                return 0;
+            String number = host.substring(4, host.length() - 4);
+            if(number.length() == 0)
+                return 0;
+            for(int i = 0; i < number.length(); i++)
+                if(!Character.isDigit(number.charAt(i)))
+                    return 0;
+            return Integer.parseInt(number);
+        } catch (Exception e) {
+            return 0;
         }
     }
 

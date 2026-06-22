@@ -56,6 +56,15 @@ public class NtkDomainResolverTest {
     }
 
     @Test
+    public void parsesPlainTextTelegramAddressWithoutAnchor() {
+        String html = "<div class=\"tgme_widget_message_text\">"
+                + "\uB274\uD1A0\uB07C \uCD5C\uC2E0 \uC8FC\uC18C (https://sbxh10.com)."
+                + "</div>";
+
+        assertEquals("https://sbxh10.com", NtkDomainResolver.parseLatestRoot(html));
+    }
+
+    @Test
     public void acceptsAlternateNewtokiChannelFormat() {
         String html = "<div class=\"tgme_widget_message_text\">"
                 + "\uB274\uD1A0\uB07C \uD604\uC7AC\uC8FC\uC18C <a href=\"https://Newtoki552.com/\">Newtoki552.com</a>"
@@ -81,6 +90,16 @@ public class NtkDomainResolverTest {
                 + "<a href=\"https://odd-address.example/\">odd-address.example</a></div>";
 
         assertEquals("https://odd-address.example", NtkDomainResolver.parseLatestRoot(html));
+    }
+
+    @Test
+    public void generatesLikelySbxhSuccessorsFromCurrentRoot() {
+        List<String> roots = NtkDomainResolver.generatedSbxhRoots("https://sbxh9.com");
+
+        assertEquals("https://sbxh12.com", roots.get(0));
+        assertTrue(roots.contains("https://sbxh10.com"));
+        assertTrue(roots.contains("https://sbxh9.com"));
+        assertTrue(roots.contains("https://sbxh1.com"));
     }
 
     @Test
