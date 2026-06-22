@@ -3503,9 +3503,14 @@ public class CustomHttpClient {
             return false;
         String sample = body == null ? "" : body.trim().toLowerCase(Locale.ROOT);
         String type = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
-        if(code == 405 && (type.contains("application/json") || sample.contains("\"method\"")))
-            return true;
-        return code == 200 && (type.contains("application/json") || sample.startsWith("{"));
+        if(code != 200)
+            return false;
+        if(!type.contains("application/json") && !sample.startsWith("{"))
+            return false;
+        return sample.contains("\"ok\"")
+                && (sample.contains("\"challenge\"")
+                || sample.contains("\"trusted\"")
+                || sample.contains("\"token\""));
     }
 
     static boolean isReachableNtkChallengeTransportResponseForTest(int code, String location,

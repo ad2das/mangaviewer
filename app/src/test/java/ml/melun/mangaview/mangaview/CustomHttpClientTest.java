@@ -949,6 +949,28 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkChallengeProbeRejectsGenericJsonRoots() {
+        assertTrue(CustomHttpClient.isReachableNtkChallengeTransportResponseForTest(
+                200, "", "application/json",
+                "{\"ok\":true,\"challenge\":{\"token\":\"abc\"}}"));
+        assertTrue(CustomHttpClient.isReachableNtkChallengeTransportResponseForTest(
+                200, "", "application/json",
+                "{\"ok\":true,\"trusted\":true}"));
+        assertFalse(CustomHttpClient.isReachableNtkChallengeTransportResponseForTest(
+                405, "", "application/json",
+                "{\"message\":\"method not allowed\"}"));
+        assertFalse(CustomHttpClient.isReachableNtkChallengeTransportResponseForTest(
+                200, "", "application/json",
+                "{\"status\":\"ok\"}"));
+        assertFalse(CustomHttpClient.isReachableNtkChallengeTransportResponseForTest(
+                200, "", "application/json",
+                "{\"ok\":true,\"message\":\"parking\"}"));
+        assertFalse(CustomHttpClient.isReachableNtkChallengeTransportResponseForTest(
+                302, "https://t.me/newtoki_url", "application/json",
+                "{\"ok\":true,\"challenge\":{\"token\":\"abc\"}}"));
+    }
+
+    @Test
     public void ntkDomainThrottleDoesNotHidePresetRootChanges() {
         long now = 10_000L;
 
