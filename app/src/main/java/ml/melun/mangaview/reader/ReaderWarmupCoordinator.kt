@@ -137,6 +137,75 @@ object ReaderWarmupCoordinator {
     }
 
     @JvmStatic
+    fun primeKnownUrls(
+        context: Context?,
+        manga: Manga?,
+        title: Title?,
+        viewerWidth: Int,
+        exactEpisode: Boolean,
+        images: List<String>?,
+        startPage: Int,
+        decodeLimit: Int
+    ): String? {
+        if (context == null || manga == null || images.isNullOrEmpty()) return null
+        val appContext = context.applicationContext
+        val launchTitle = title ?: manga.title
+        attachTitle(manga, launchTitle)
+        val width = normalizeWidth(appContext, viewerWidth)
+        val resolvedStart = startPage.coerceIn(0, images.lastIndex)
+        val key = stableKey(manga, launchTitle, resolvedStart, width, exactEpisode)
+        val entry = ReaderPreparedStore.createOrGet(
+            key,
+            manga,
+            launchTitle,
+            resolvedStart,
+            width,
+            pinStartBitmap = true
+        )
+        val safeImages = ArrayList(images)
+        entry.setImages(safeImages, resolvedStart)
+        val safeDecodeLimit = decodeLimit.coerceIn(0, safeImages.size)
+        if (safeDecodeLimit > 0) {
+            AppDispatchers.submitUserAction {
+                val decoded = HashSet<Int>()
+                val order = launchDecodeOrder(resolvedStart, safeImages.size, safeDecodeLimit)
+                try {
+                    for ((position, index) in order.withIndex()) {
+                        val bitmap = decodePage(appContext, manga, index, safeImages[index], width)
+                        decoded.add(index)
+                        entry.putBitmap(index, bitmap, index == resolvedStart, position == order.lastIndex)
+                    }
+                    for (index in launchDecodeOrder(resolvedStart, safeImages.size, safeDecodeLimit + 2)) {
+                        if (index !in decoded) fetchImageFile(appContext, manga, safeImages[index])
+                    }
+                } catch (e: Exception) {
+                    ml.melun.mangaview.glide.ViewerWarmupManager.logMetric("prepared_known_urls_soft_fail", 1L)
+                }
+            }
+        }
+        return key
+    }
+
+    @JvmStatic
+    fun pendingKey(
+        context: Context?,
+        manga: Manga?,
+        title: Title?,
+        viewerWidth: Int,
+        exactEpisode: Boolean
+    ): String? {
+        if (context == null || manga == null) return null
+        val launchTitle = title ?: manga.title
+        attachTitle(manga, launchTitle)
+        val width = normalizeWidth(context.applicationContext, viewerWidth)
+        val startPage = requestedStartPage(manga, exactEpisode)
+        val key = stableKey(manga, launchTitle, startPage, width, exactEpisode)
+        if (ReaderPreparedStore.get(key) != null) return key
+        if (ReaderPreparedStore.findReadyCompatible(key) != null) return key
+        return null
+    }
+
+    @JvmStatic
     fun primeAdjacent(context: Context?, manga: Manga?, title: Title?) {
         if (isNtkWarmup(title ?: manga?.title)) return
         val profile = if (p != null && p.getDataSave()) WarmupProfile.FIRST_BYTE else WarmupProfile.LAUNCH_WINDOW

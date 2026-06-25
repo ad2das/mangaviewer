@@ -40,7 +40,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
+import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
+import java.net.Proxy;
 import java.net.URI;
 import java.net.URL;
 import java.util.Collections;
@@ -63,6 +65,10 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.Search;
 import ml.melun.mangaview.runtime.AppDispatchers;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -321,6 +327,8 @@ public class CaptchaActivity extends AppCompatActivity {
     private String ntkRootBootstrapReturnUrl = null;
     private long ntkRootBootstrapStartedAt = 0L;
     private volatile boolean ntkRootBootstrapMainFrameError = false;
+    private volatile boolean invalidClearanceRootBootstrapInFlight = false;
+    private volatile String ntkBridgeUserAgent = null;
     private boolean ntkReloadedAckTargetAfterStaleRootError = false;
     private static final long NTK_ROOT_BOOTSTRAP_STAGE_LOG_MS = 8_000L;
 
@@ -561,7 +569,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     String url = request.getUrl() == null ? "" : request.getUrl().toString();
                     int code = errorResponse == null ? 0 : errorResponse.getStatusCode();
                     String reason = errorResponse == null ? "" : errorResponse.getReasonPhrase();
-                    if(request.isForMainFrame() && isCurrentNtkRootBootstrapUrl(url) && code >= 400) {
+                    if(request.isForMainFrame() && isCurrentNtkRootBootstrapUrl(url) && code >= 400
+                            && !isExpectedNtkRootBootstrapChallengeStatus(code)) {
                         ntkRootBootstrapMainFrameError = true;
                         android.util.Log.d("CaptchaActivity", "NTK root bootstrap main-frame HTTP error: code="
                                 + code + ",url=" + url);
@@ -651,6 +660,7 @@ public class CaptchaActivity extends AppCompatActivity {
         };
 
         webView.setWebViewClient(client);
+        ntkBridgeUserAgent = webView.getSettings() == null ? null : webView.getSettings().getUserAgentString();
 
 //        webView.setOnTouchListener((view, motionEvent) -> true);
 
@@ -1013,6 +1023,7 @@ public class CaptchaActivity extends AppCompatActivity {
         String returnUrl = ntkRootBootstrapReturnUrl;
         ntkRootBootstrapReturnUrl = null;
         ntkRootBootstrapStartedAt = 0L;
+        invalidClearanceRootBootstrapInFlight = false;
         syncCaptchaCookiesToHttpClient(rootUrl, returnUrl);
         android.util.Log.d("CaptchaActivity", "NTK root bootstrap finished; loading original captcha URL: " + returnUrl);
         webView.loadUrl(returnUrl);
@@ -1381,6 +1392,11 @@ public class CaptchaActivity extends AppCompatActivity {
                         30000L);
                 if(result == null)
                     return bridgeError("empty result");
+                if(result.error != null && shouldRetryNtkBridgePostWithLocalProxy(url, method)) {
+                    android.util.Log.d("CaptchaActivity", "NTK JS bridge retrying with local proxy transport: method="
+                            + method + ",error=" + result.error + ",url=" + url);
+                    result = fetchNtkBridgeViaLocalProxy(url, method, headers, cookieHeader, body, 18000L);
+                }
                 if(result.error != null)
                     return bridgeError(String.valueOf(result.error));
                 if(isFinishing || isDestroyed())
@@ -1406,6 +1422,20 @@ public class CaptchaActivity extends AppCompatActivity {
                                 + method + ",code=" + retry.code + ",error=" + retry.error + ",url=" + url);
                     }
                 }
+                if(shouldRetryNtkBridgePostWithLocalProxy(url, method, result)) {
+                    android.util.Log.d("CaptchaActivity", "NTK JS bridge retrying with local proxy transport: method="
+                            + method + ",code=" + result.code + ",url=" + url);
+                    NtkQuicFetcher.Result retry = fetchNtkBridgeViaLocalProxy(
+                            url, method, headers, cookieHeader, body, 18000L);
+                    if(retry != null && retry.error == null && retry.code > 0 && retry.code < 500) {
+                        result = retry;
+                        android.util.Log.d("CaptchaActivity", "NTK JS bridge local proxy retry selected: method="
+                                + method + ",code=" + result.code + ",len=" + result.bodyBytes.length + ",url=" + url);
+                    } else if(retry != null) {
+                        android.util.Log.d("CaptchaActivity", "NTK JS bridge local proxy retry ignored: method="
+                                + method + ",code=" + retry.code + ",error=" + retry.error + ",url=" + url);
+                    }
+                }
                 recordNtkBridgeAckProofIfNeeded(url, method, body, result);
                 applyQuicCaptchaCookiesOnMain(url, result);
                 finishAfterQuicClearanceIfPresent(url, result);
@@ -1417,6 +1447,112 @@ public class CaptchaActivity extends AppCompatActivity {
                 return bridgeError(String.valueOf(e));
             }
         }
+    }
+
+    private static boolean shouldRetryNtkBridgePostWithLocalProxy(String url, String method) {
+        if(method == null || !"POST".equalsIgnoreCase(method))
+            return false;
+        return isNtkCloudflareChallengeResource(url);
+    }
+
+    private static boolean shouldRetryNtkBridgePostWithLocalProxy(String url, String method, NtkQuicFetcher.Result result) {
+        if(!shouldRetryNtkBridgePostWithLocalProxy(url, method))
+            return false;
+        return result == null || result.error != null || result.code == 0 || result.code >= 500;
+    }
+
+    private NtkQuicFetcher.Result fetchNtkBridgeViaLocalProxy(String url,
+                                                              String method,
+                                                              Map<String, String> headers,
+                                                              String cookieHeader,
+                                                              byte[] body,
+                                                              long timeoutMs) {
+        LocalWebViewProxy proxy = null;
+        Response response = null;
+        try {
+            proxy = LocalWebViewProxy.start();
+            OkHttpClient client = new OkHttpClient.Builder()
+                    .proxy(new Proxy(Proxy.Type.HTTP, new InetSocketAddress("127.0.0.1", proxy.port())))
+                    .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                    .followRedirects(true)
+                    .followSslRedirects(true)
+                    .build();
+            Request.Builder builder = new Request.Builder()
+                    .url(url)
+                    .header("User-Agent", userAgentForNtkBridgeLocalProxy(headers));
+            if(headers != null) {
+                for(String key : headers.keySet()) {
+                    String value = headers.get(key);
+                    if(shouldForwardNtkBridgeLocalProxyHeader(key) && value != null && value.length() > 0)
+                        builder.header(key, value);
+                }
+            }
+            if(cookieHeader != null && cookieHeader.length() > 0)
+                builder.header("Cookie", cookieHeader);
+            byte[] requestBody = body == null ? new byte[0] : body;
+            if("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method)) {
+                builder.method(method, null);
+            } else {
+                builder.method(method == null || method.length() == 0 ? "POST" : method,
+                        RequestBody.create(requestBody, MediaType.parse(contentTypeForBridgeRequest(headers))));
+            }
+            response = client.newCall(builder.build()).execute();
+            byte[] responseBytes = response.body() == null ? new byte[0] : response.body().bytes();
+            android.util.Log.d("CaptchaActivity", "NTK JS bridge local proxy request: method="
+                    + method + ",code=" + response.code() + ",len=" + responseBytes.length + ",url=" + url);
+            return NtkQuicFetcher.Result.fromBytes(response.code(), responseBytes, response.headers().toMultimap());
+        } catch (Exception e) {
+            android.util.Log.d("CaptchaActivity", "NTK JS bridge local proxy request failed: " + url, e);
+            return NtkQuicFetcher.Result.error(e);
+        } finally {
+            if(response != null)
+                response.close();
+            if(proxy != null)
+                proxy.close();
+        }
+    }
+
+    private static boolean shouldForwardNtkBridgeLocalProxyHeader(String name) {
+        if(name == null)
+            return false;
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return !"user-agent".equals(lower)
+                && !"cookie".equals(lower)
+                && !"host".equals(lower)
+                && !"connection".equals(lower)
+                && !"content-length".equals(lower)
+                && !"accept-encoding".equals(lower);
+    }
+
+    private static String contentTypeForBridgeRequest(Map<String, String> headers) {
+        if(headers != null) {
+            for(String key : headers.keySet()) {
+                if("content-type".equalsIgnoreCase(key)) {
+                    String value = headers.get(key);
+                    if(value != null && value.trim().length() > 0)
+                        return value;
+                }
+            }
+        }
+        return "application/octet-stream";
+    }
+
+    private String userAgentForNtkBridgeLocalProxy(Map<String, String> headers) {
+        if(headers != null) {
+            for(String key : headers.keySet()) {
+                if("user-agent".equalsIgnoreCase(key)) {
+                    String value = headers.get(key);
+                    if(value != null && value.trim().length() > 0)
+                        return value;
+                }
+            }
+        }
+        String webViewUa = ntkBridgeUserAgent;
+        if(webViewUa != null && webViewUa.trim().length() > 0)
+            return webViewUa;
+        return getHttpClient().agent;
     }
 
     private static boolean shouldRetryNtkBridgePostWithHttp2(String url, String method, NtkQuicFetcher.Result result) {
@@ -2740,6 +2876,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     return;
                 if(verified) {
                     android.util.Log.d("CaptchaActivity", "NTK clearance verified by app HTTP client");
+                    getHttpClient().markNtkAccessVerified();
+                    getHttpClient().saveClearanceToDisk();
                     if(shouldWaitForNtkAdAckBeforeFinish(purl, currentUrl)) {
                         if(!waitingForNtkAdAckBeforeFinish) {
                             waitingForNtkAdAckBeforeFinish = true;
@@ -2756,6 +2894,18 @@ public class CaptchaActivity extends AppCompatActivity {
                     if(clearanceValue != null) {
                         android.util.Log.d("CaptchaActivity",
                                 "NTK clearance preserved after transient verification failure");
+                    }
+                    if(webView != null && p != null && p.isNtkSite() && !invalidClearanceRootBootstrapInFlight) {
+                        String reloadUrl = ntkAckTargetUrlForFinish(purl, currentUrl);
+                        if(reloadUrl.length() == 0)
+                            reloadUrl = currentUrl == null || currentUrl.length() == 0 ? captchaLoadUrl : currentUrl;
+                        final String targetReloadUrl = reloadUrl;
+                        handler.postDelayed(() -> {
+                            if(!isFinishing && !isDestroyed() && webView != null) {
+                                clearWebViewProxy();
+                                loadCaptchaUrl(targetReloadUrl);
+                            }
+                        }, 250L);
                     }
                 }
             });
@@ -2775,6 +2925,12 @@ public class CaptchaActivity extends AppCompatActivity {
                 + ",loadUrl=" + captchaLoadUrl);
         if(targetUrl.length() == 0)
             return false;
+        if(path != null && path.length() > 0
+                && getHttpClient().hasUsableNtkAdAckCookieForPath(path)) {
+            android.util.Log.d("CaptchaActivity",
+                    "NTK ad guard ack wait skipped; final ad_ack cookie already usable path=" + path);
+            return false;
+        }
         return wait;
     }
 
@@ -2839,7 +2995,8 @@ public class CaptchaActivity extends AppCompatActivity {
         if(targetUrl == null || targetUrl.length() == 0 || !isNtkEpisodeUrl(targetUrl))
             return;
         final String path = ntkVerificationUrl(targetUrl, targetUrl);
-        if(path == null || path.length() == 0 || hasStrictNtkAdAckProof(targetUrl))
+        if(path == null || path.length() == 0 || hasStrictNtkAdAckProof(targetUrl)
+                || getHttpClient().hasUsableNtkAdAckCookieForPath(path))
             return;
         long now = System.currentTimeMillis();
         if(ntkWebViewAdAckProofInFlight || now - lastNtkWebViewAdAckProofStartedAt < 2500L)
@@ -2881,6 +3038,13 @@ public class CaptchaActivity extends AppCompatActivity {
             return;
         if(hasStrictNtkAdAckProof(targetUrl)) {
             android.util.Log.d("CaptchaActivity", "NTK strict ad ack verified before finish attempt="
+                    + attempt);
+            waitingForNtkAdAckBeforeFinish = false;
+            finishWithVerifiedClearance();
+            return;
+        }
+        if(hasNtkAdAckCookie(purl, currentUrl)) {
+            android.util.Log.d("CaptchaActivity", "NTK final ad_ack cookie verified before finish attempt="
                     + attempt);
             waitingForNtkAdAckBeforeFinish = false;
             finishWithVerifiedClearance();
@@ -3084,6 +3248,8 @@ public class CaptchaActivity extends AppCompatActivity {
                     && !getHttpClient().isCloudflareChallengeResponse(code, body);
             if(!ok)
                 logNtkVerificationFailure("NTK document verification failed", path, code, body);
+            if(!ok && result != null && getHttpClient().isCloudflareChallengeResponse(code, body))
+                rejectInvalidNtkClearanceAfterVerificationChallenge(path);
             if(!ok)
                 return false;
             boolean rscOk = verifyNtkRscPath(path);
@@ -3095,6 +3261,54 @@ public class CaptchaActivity extends AppCompatActivity {
             android.util.Log.d("CaptchaActivity", "NTK document verification request failed", e);
             return false;
         }
+    }
+
+    private static boolean isExpectedNtkRootBootstrapChallengeStatus(int code) {
+        return code == 403 || code == 503;
+    }
+
+    private void rejectInvalidNtkClearanceAfterVerificationChallenge(String path) {
+        try {
+            String baseUrl = getHttpClient().getUrl(path);
+            String targetUrl = baseUrl + path;
+            String cookieHeader = getHttpClient().getCookieHeader();
+            String clearance = extractCookieValueForTest(cookieHeader, "cf_clearance");
+            if(isValidClearanceValue(clearance))
+                getHttpClient().rejectCloudflareClearance(clearance);
+            getHttpClient().clearCloudflareWebViewCookiesAggressively(baseUrl, targetUrl, captchaLoadUrl);
+            lastVerificationClearanceValue = null;
+            lastClearanceVerificationAt = 0L;
+            invalidClearanceRootBootstrapInFlight = true;
+            AppDispatchers.runOnMain(() -> forceNtkRootBootstrapAfterInvalidClearance(targetUrl));
+            android.util.Log.d("CaptchaActivity", "NTK invalid clearance rejected after verification challenge path="
+                    + path + ",hadClearance=" + isValidClearanceValue(clearance));
+        } catch (Exception e) {
+            android.util.Log.d("CaptchaActivity", "NTK invalid clearance reject failed path=" + path, e);
+        }
+    }
+
+    private void forceNtkRootBootstrapAfterInvalidClearance(String targetUrl) {
+        if(isFinishing || isDestroyed() || webView == null)
+            return;
+        String target = targetUrl != null && targetUrl.length() > 0 ? targetUrl : captchaLoadUrl;
+        String rootUrl = ntkRootBootstrapUrl(target);
+        if(rootUrl == null || rootUrl.length() == 0 || rootUrl.equals(target)) {
+            invalidClearanceRootBootstrapInFlight = false;
+            return;
+        }
+        retriedCaptchaWithNtkRootBootstrap = true;
+        ntkRootBootstrapReturnUrl = target;
+        ntkRootBootstrapStartedAt = SystemClock.elapsedRealtime();
+        ntkRootBootstrapMainFrameError = false;
+        ntkReloadedAckTargetAfterStaleRootError = false;
+        hideCaptchaLoadError();
+        clearWebViewProxy();
+        quicCaptchaHtmlActive = false;
+        android.util.Log.d("CaptchaActivity", "Forcing NTK root bootstrap after invalid clearance: root="
+                + rootUrl + ",return=" + target);
+        webView.loadUrl(rootUrl);
+        installShadowHookIfAllowed();
+        scheduleNtkRootBootstrapStageLog(rootUrl, target, ntkRootBootstrapStartedAt);
     }
 
     private NtkQuicFetcher.Result fetchNtkDocumentVerification(String path) {
@@ -3129,6 +3343,30 @@ public class CaptchaActivity extends AppCompatActivity {
                     + ",code=" + (result == null ? 0 : result.code)
                     + ",bytes=" + body.length()
                     + ",error=" + (result == null ? null : result.error));
+            if(result == null || result.error != null || result.code == 0 || result.code >= 500) {
+                NtkQuicFetcher.Result retry = fetchNtkBridgeViaLocalProxy(
+                        targetUrl,
+                        "GET",
+                        headers,
+                        getHttpClient().getCookieHeader(),
+                        null,
+                        7000L);
+                String retryBody = retry == null || retry.body == null ? "" : retry.body;
+                if(retry != null) {
+                    try {
+                        getHttpClient().rememberNtkViewerPageFromWebView(targetUrl, retry.code, retryBody);
+                    } catch (Exception e) {
+                        android.util.Log.d("CaptchaActivity", "Failed to hand off NTK local proxy verification body: "
+                                + targetUrl + "," + e);
+                    }
+                }
+                android.util.Log.d("CaptchaActivity", "NTK document verification local proxy path=" + path
+                        + ",code=" + (retry == null ? 0 : retry.code)
+                        + ",bytes=" + retryBody.length()
+                        + ",error=" + (retry == null ? null : retry.error));
+                if(retry != null && retry.error == null && retry.code > 0)
+                    return retry;
+            }
             return result;
         } catch(Exception e) {
             android.util.Log.d("CaptchaActivity", "NTK document verification direct failed path="

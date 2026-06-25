@@ -143,15 +143,23 @@ internal class NtkEpisodeCoordinator(
     }
 
     private fun isInitialNearPage(pageIndex: Int, image: String?): Boolean {
-        if (image?.contains("/p00") != true) return false
+        val nearImage = image?.contains("/p00") == true ||
+            image?.contains("://image-comic.pstatic.net/webtoon/", ignoreCase = true) == true
+        if (!nearImage) return false
         if (pageIndex == anchorPageIndex - 1) return true
-        return pageIndex in (anchorPageIndex + 1)..(anchorPageIndex + INITIAL_NEAR_PAGE_FALLBACK_AHEAD)
+        val maxAhead = if (path.startsWith("/webtoon/", ignoreCase = true)) {
+            WEBTOON_INITIAL_NEAR_PAGE_FALLBACK_AHEAD
+        } else {
+            INITIAL_NEAR_PAGE_FALLBACK_AHEAD
+        }
+        return pageIndex in (anchorPageIndex + 1)..(anchorPageIndex + maxAhead)
     }
 
     companion object {
         private const val TAG = "ViewerPerf"
         private const val MANHWA_ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
         private const val WEBTOON_ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
+        private const val WEBTOON_INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 1
         private const val INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 18
         private val NEXT_EPOCH = AtomicLong()
     }

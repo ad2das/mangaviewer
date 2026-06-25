@@ -122,9 +122,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var initialDrawGateListener: ViewTreeObserver.OnPreDrawListener? = null
     private var viewerLaunchStartedAtMs = 0L
     private var viewerLaunchSourceSite = ""
+    @Volatile
     private var firstDrawableMetricLogged = false
+    @Volatile
     private var firstDrawableLoggedAtMs = 0L
+    @Volatile
     private var firstDrawableLoggedElapsedAtMs = 0L
+    @Volatile
     private var firstDrawableElapsedMsForTest = -1L
     private var initialDrawGateNtkTimeoutDeferrals = 0
     private var drawableReadyDescriptionPosted = false
@@ -135,6 +139,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val pendingPageTiles = LinkedHashMap<Int, PendingPageTiles>()
     private val pendingPageCards = LinkedHashMap<Int, String>()
     private val pendingPageErrors = LinkedHashMap<Int, String>()
+    @Volatile
+    private var preRenderedInitialDrawableIndex = -1
+    @Volatile
+    private var preRenderedInitialBitmap: Bitmap? = null
+    @Volatile
+    private var preRenderedInitialTiles: List<ReaderTile>? = null
     private var deferredNtkAckPreflightManga: Manga? = null
     private var ntkAckCaptchaRequested = false
     private var pendingInitialNtkCaptchaDeferrals = 0
@@ -251,10 +261,31 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             title.eps?.let { manga.setEps(it) }
         }
         ReaderChromeStyler.applyReaderWindow(this)
-        manga.startNtkVerifiedInitialImageProbe(getHttpClient())
+        val ntkLaunchPreflightStarted = intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)
+        val naverOriginalLaunchPreflight = ntkLaunchPreflightStarted &&
+            isNaverOriginalNtkEpisodePath(manga.ntkEpisodePath)
+        if (naverOriginalLaunchPreflight) {
+            Log.d(TAG, "reader_ntk_early_viewer_api_prefetch_skip reason=launch_preflight_naver_original,path=${manga.ntkEpisodePath}")
+        } else {
+            if (isSlugWebtoonNtkPath(manga.ntkEpisodePath)) {
+                getHttpClient().startModernWebtoonDirectAdAckWarmupAllowLaunchHold(manga.ntkEpisodePath)
+                Log.d(TAG, "reader_ntk_direct_adack_warmup_start reason=slug_launch_hold,path=${manga.ntkEpisodePath}")
+            }
+            manga.startNtkVerifiedInitialImageProbe(getHttpClient())
+            if (shouldSkipImmediateNtkEarlyViewerApiPrefetch(manga)) {
+                Log.d(TAG, "reader_ntk_early_viewer_api_prefetch_skip reason=generated_slug_initial_stream,path=${manga.ntkEpisodePath}")
+            } else {
+                manga.startNtkEarlyViewerApiPrefetch(getHttpClient())
+            }
+        }
+        if (ntkLaunchPreflightStarted) {
+            Log.d(TAG, "reader_ntk_early_viewer_api_prefetch_parallel reason=launch_preflight,path=${manga.ntkEpisodePath}")
+        }
+        val allowInitialAckBeforeFirstDrawable = shouldAllowInitialNtkAckBeforeFirstDrawable(manga)
         if (shouldDeferInitialNtkAckPreflight(manga)) {
             deferredNtkAckPreflightManga = manga
             deferredNtkAckPreflightBlockProbeAttempts = 0
+            ReaderImageCache.holdNtkAckRecoveryUntilFirstDrawable(manga.ntkEpisodePath)
             Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_wait_first_drawable path=${manga.ntkEpisodePath}")
             Log.d(TAG, "ntk_ack_blocked_before_first_drawable reason=initial_setup,path=${manga.ntkEpisodePath}")
             statusHandler.postDelayed(
@@ -265,10 +296,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 deferredNtkAckPreflightBlockProbeRunnable,
                 NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MS
             )
-            val existing = intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)
+            val existing = ntkLaunchPreflightStarted
             Log.d(TAG, "reader_ntk_ack_preflight_deferred path=${manga.ntkEpisodePath},nativeStarted=$existing")
         } else {
-            startCurrentNtkAckPreflight(manga)
+            startCurrentNtkAckPreflight(manga, allowInitialAckBeforeFirstDrawable)
         }
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -295,6 +326,37 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         val preparedKey = intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY)
         val startAtFirstPage = intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
+        renderView.setPageGapPx(pageGapForBaseMode(manga.baseMode))
+        status.text = displayEpisodeTitle(manga, title)
+        readerRoot = root
+        ensureRenderViewAttached()
+        root.addView(status, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ))
+        if (
+            viewerLaunchStartedAtMs > 0L &&
+            manga.isOnline
+        ) {
+            val ntkLaunch = viewerLaunchSourceSite.equals("ntk", ignoreCase = true) ||
+                manga.ntkEpisodePath?.isNotBlank() == true
+            val gateTimeoutMs = if (ntkLaunch) {
+                0L
+            } else if (viewerLaunchSourceSite.equals("ntk", ignoreCase = true)) {
+                NTK_INITIAL_DRAW_GATE_TIMEOUT_MS
+            } else {
+                INITIAL_DRAW_GATE_TIMEOUT_MS
+            }
+            if (gateTimeoutMs > 0L) {
+                installInitialDrawGate(root, gateTimeoutMs)
+            } else {
+                Log.d(TAG, "initial_draw_gate_skip reason=ntk,path=${manga.ntkEpisodePath}")
+            }
+        }
+        setContentView(root)
+        if (viewerLaunchStartedAtMs > 0L) {
+            Log.d("ViewerPerf", "reader_activity_create_from_launch source=$viewerLaunchSourceSite ms=${SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs}")
+        }
         startReaderSession(
             manga,
             title,
@@ -304,126 +366,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (deferredNtkAckPreflightManga === manga) {
             prepareDeferredNtkAckChallenge(manga)
         }
-        renderView.setPageGapPx(pageGapForBaseMode(manga.baseMode))
-        status.text = displayEpisodeTitle(manga, title)
-        root.addView(renderView, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT
-        ))
-        root.addView(status, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT
-        ))
-        readerRoot = root
-        if (
-            viewerLaunchStartedAtMs > 0L &&
-            manga.isOnline
-        ) {
-            val gateTimeoutMs = if (viewerLaunchSourceSite.equals("ntk", ignoreCase = true)) {
-                NTK_INITIAL_DRAW_GATE_TIMEOUT_MS
-            } else {
-                INITIAL_DRAW_GATE_TIMEOUT_MS
-            }
-            installInitialDrawGate(root, gateTimeoutMs)
+        if (!shouldDeferInitialToolbarAttach()) {
+            ensureToolbarCreated(manga, title)
+            attachToolbarIfNeeded()
         }
-        setContentView(root)
-        if (viewerLaunchStartedAtMs > 0L) {
-            Log.d("ViewerPerf", "reader_activity_create_from_launch source=$viewerLaunchSourceSite ms=${SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs}")
-        }
-        topBar = LinearLayout(this).apply {
-            id = R.id.viewerToolbar
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
-            setBackgroundColor(0xee111111.toInt())
-            visibility = View.GONE
-        }
-        bottomBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
-            setBackgroundColor(0xee111111.toInt())
-            visibility = View.GONE
-        }
-        titleView = TextView(this).apply {
-            id = R.id.toolbar_title
-            setTextColor(Color.WHITE)
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.MARQUEE
-            marqueeRepeatLimit = -1
-            isSelected = true
-            setPadding(12.dp(), 0, 12.dp(), 0)
-            background = roundedBackground(0xff282828.toInt(), 0xff555555.toInt(), 10.dp())
-        }
-        pageView = TextView(this).apply {
-            setTextColor(0xffdddddd.toInt())
-            textSize = 14f
-            gravity = Gravity.CENTER
-        }
-        val backButton = Button(this).apply {
-            text = "<"
-            setOnClickListener { finish() }
-        }
-        prevButton = Button(this).apply {
-            id = R.id.toolbar_previous
-            text = "이전"
-            setOnClickListener {
-                Log.d(TAG, "toolbar_prev_click")
-                openAdjacent(false)
-            }
-        }
-        episodeButton = Button(this).apply {
-            id = R.id.toolbar_spinner
-            text = "회차"
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            background = roundedBackground(0xff2f6df6.toInt(), 0x55ffffff, 8.dp())
-            setOnClickListener {
-                Log.d(TAG, "toolbar_episode_click")
-                showEpisodePicker()
-            }
-        }
-        nextButton = Button(this).apply {
-            id = R.id.toolbar_next
-            text = "다음"
-            setOnClickListener {
-                Log.d(TAG, "toolbar_next_click")
-                openAdjacent(true)
-            }
-        }
-        autoCutButton = Button(this).apply {
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setOnClickListener { toggleAutoCut() }
-        }
-        updateAutoCutButton()
-        titleView.text = displayEpisodeTitle(manga, title)
-        topBar.addView(backButton, LinearLayout.LayoutParams(52.dp(), 44.dp()))
-        topBar.addView(titleView, LinearLayout.LayoutParams(0, 40.dp(), 1f).apply {
-            leftMargin = 8.dp()
-        })
-        bottomBar.addView(pageView, LinearLayout.LayoutParams(0, 44.dp(), 1f))
-        bottomBar.addView(autoCutButton, LinearLayout.LayoutParams(108.dp(), 44.dp()).apply {
-            rightMargin = 8.dp()
-        })
-        bottomBar.addView(prevButton, LinearLayout.LayoutParams(64.dp(), 44.dp()))
-        bottomBar.addView(episodeButton, LinearLayout.LayoutParams(64.dp(), 44.dp()).apply {
-            leftMargin = 6.dp()
-        })
-        bottomBar.addView(nextButton, LinearLayout.LayoutParams(64.dp(), 44.dp()).apply {
-            leftMargin = 6.dp()
-        })
-        installToolbarTouchForwarder(
-            topBar,
-            bottomBar,
-            titleView,
-            pageView
-        )
-        if (!shouldDeferInitialToolbarAttach()) attachToolbarIfNeeded()
         updateResultEpisode(manga)
         if (!manga.isOnline) p?.removeViewerBookmark(manga)
     }
@@ -548,14 +494,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialStatusPending = false
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         hideBoundaryStatus()
+        val preservePreRenderedInitial = shouldPreservePreRenderedInitialDrawable(count)
         pageCount = count
-        renderView.setPageCount(
-            count,
-            deferInitialEmptyDraw = viewerLaunchSourceSite.equals("ntk", ignoreCase = true) &&
-                !firstDrawableMetricLogged
-        )
+        if (preservePreRenderedInitial) {
+            renderView.appendPageCount(count)
+            Log.d(TAG, "reader_pages_ready_preserve_initial_prerender count=$count")
+        } else {
+            renderView.setPageCount(
+                count,
+                deferInitialEmptyDraw = viewerLaunchSourceSite.equals("ntk", ignoreCase = true) &&
+                    !firstDrawableMetricLogged
+            )
+        }
         updateCurrentEpisode(currentPage)
         flushPendingPageCallbacks()
+        clearPreRenderedInitialDrawable()
         val elapsed = SystemClock.elapsedRealtime() - startedAt
         if (elapsed > 32L) {
             Log.d(TAG, "reader_on_pages_ready_ms count=$count,ms=$elapsed,pendingBitmaps=${pendingPageBitmaps.size},pendingTiles=${pendingPageTiles.size}")
@@ -666,6 +619,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageReady(index: Int, bitmap: Bitmap) {
         MainThreadStallMonitor.trace("reader_on_page_ready") {
+            if (!pagesReady && isPreRenderedInitialBitmap(index, bitmap)) {
+                Log.d(TAG, "page_ready_deferred_skip_prerender index=$index")
+                return@trace
+            }
             if (pagesReady && index < pageCount) {
                 applyPageBitmap(index, bitmap)
             } else {
@@ -676,6 +633,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
         MainThreadStallMonitor.trace("reader_on_page_tiles_ready") {
+            if (!pagesReady && isPreRenderedInitialTiles(index, tiles)) {
+                Log.d(TAG, "page_tiles_deferred_skip_prerender index=$index")
+                return@trace
+            }
             if (pagesReady && index < pageCount) {
                 applyPageTiles(index, pageWidth, pageHeight, tiles)
             } else {
@@ -706,6 +667,174 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onPageCleared(index: Int) {
         if (pagesReady) renderView.clearPageBitmap(index)
+    }
+
+    override fun onInitialPageDecoded(index: Int, bitmap: Bitmap): ReaderSession.InitialPrerenderResult {
+        if (!canPreRenderInitialDrawable(index) || bitmap.isRecycled) {
+            return ReaderSession.InitialPrerenderResult.NOT_RENDERED
+        }
+        val coversInitialViewport =
+            drawableCoversInitialViewport(bitmap.width, bitmap.height) ||
+                shouldCommitNaverOriginalInitialDrawable()
+        val countToSet = synchronized(this) {
+            if (!canPreRenderInitialDrawableLocked(index)) {
+                return ReaderSession.InitialPrerenderResult.NOT_RENDERED
+            }
+            preRenderedInitialDrawableIndex = index
+            preRenderedInitialBitmap = bitmap
+            preRenderedInitialTiles = null
+            if (pageCount <= index) {
+                pageCount = index + 1
+                pageCount
+            } else {
+                0
+            }
+        }
+        return try {
+            if (countToSet > 0) renderView.setPageCount(countToSet)
+            renderView.setPageBitmap(index, bitmap)
+            if (coversInitialViewport) {
+                logFirstDrawableMetricFromAnyThread(index, "bitmap-prerender")
+                Log.d(TAG, "reader_initial_anchor_prerender_bitmap index=$index count=$pageCount")
+                ReaderSession.InitialPrerenderResult.RENDERED_AND_COMMIT
+            } else {
+                logInitialPrerenderDeferredMetricFromAnyThread(index, "bitmap-prerender")
+                Log.d(
+                    TAG,
+                    "reader_initial_anchor_prerender_bitmap_defer_metric index=$index " +
+                        "count=$pageCount,width=${bitmap.width},height=${bitmap.height}"
+                )
+                ReaderSession.InitialPrerenderResult.RENDERED_ONLY
+            }
+        } catch (e: Throwable) {
+            clearPreRenderedInitialDrawable()
+            Log.d(TAG, "reader_initial_anchor_prerender_bitmap_error index=$index,error=${e.javaClass.simpleName}")
+            ReaderSession.InitialPrerenderResult.NOT_RENDERED
+        }
+    }
+
+    override fun onInitialPageTilesDecoded(
+        index: Int,
+        pageWidth: Int,
+        pageHeight: Int,
+        tiles: List<ReaderTile>
+    ): ReaderSession.InitialPrerenderResult {
+        if (!canPreRenderInitialDrawable(index) || tiles.isEmpty() || tiles.any { it.bitmap.isRecycled }) {
+            return ReaderSession.InitialPrerenderResult.NOT_RENDERED
+        }
+        val coversInitialViewport =
+            drawableCoversInitialViewport(pageWidth, pageHeight) ||
+                shouldCommitNaverOriginalInitialDrawable()
+        val countToSet = synchronized(this) {
+            if (!canPreRenderInitialDrawableLocked(index)) {
+                return ReaderSession.InitialPrerenderResult.NOT_RENDERED
+            }
+            preRenderedInitialDrawableIndex = index
+            preRenderedInitialBitmap = null
+            preRenderedInitialTiles = tiles
+            if (pageCount <= index) {
+                pageCount = index + 1
+                pageCount
+            } else {
+                0
+            }
+        }
+        return try {
+            if (countToSet > 0) renderView.setPageCount(countToSet)
+            renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
+            if (coversInitialViewport) {
+                logFirstDrawableMetricFromAnyThread(index, "tiles-prerender")
+                Log.d(TAG, "reader_initial_anchor_prerender_tiles index=$index count=$pageCount tiles=${tiles.size}")
+                ReaderSession.InitialPrerenderResult.RENDERED_AND_COMMIT
+            } else {
+                logInitialPrerenderDeferredMetricFromAnyThread(index, "tiles-prerender")
+                Log.d(
+                    TAG,
+                    "reader_initial_anchor_prerender_tiles_defer_metric index=$index " +
+                        "count=$pageCount,pageWidth=$pageWidth,pageHeight=$pageHeight,tiles=${tiles.size}"
+                )
+                ReaderSession.InitialPrerenderResult.RENDERED_ONLY
+            }
+        } catch (e: Throwable) {
+            clearPreRenderedInitialDrawable()
+            Log.d(TAG, "reader_initial_anchor_prerender_tiles_error index=$index,error=${e.javaClass.simpleName}")
+            ReaderSession.InitialPrerenderResult.NOT_RENDERED
+        }
+    }
+
+    private fun canPreRenderInitialDrawable(index: Int): Boolean {
+        if (!::renderView.isInitialized) {
+            Log.d(TAG, "reader_initial_anchor_prerender_skip index=$index,reason=render_uninitialized")
+            return false
+        }
+        if (renderView.parent == null) {
+            Log.d(TAG, "reader_initial_anchor_prerender_skip index=$index,reason=render_detached")
+            return false
+        }
+        val allowed = synchronized(this) { canPreRenderInitialDrawableLocked(index) }
+        if (!allowed) {
+            Log.d(
+                TAG,
+                "reader_initial_anchor_prerender_skip index=$index,reason=state," +
+                    "pagesReady=$pagesReady,firstDrawableMetricLogged=$firstDrawableMetricLogged," +
+                    "preRendered=$preRenderedInitialDrawableIndex,currentPage=$currentPage," +
+                    "initialStart=$initialStartAtFirstPage"
+            )
+        }
+        return allowed
+    }
+
+    private fun canPreRenderInitialDrawableLocked(index: Int): Boolean {
+        return isCurrentNtkReader() &&
+            initialStartAtFirstPage &&
+            !pagesReady &&
+            !firstDrawableMetricLogged &&
+            (preRenderedInitialDrawableIndex < 0 || preRenderedInitialDrawableIndex == index) &&
+            index == currentPage &&
+            index == 0
+    }
+
+    private fun shouldSkipImmediateNtkEarlyViewerApiPrefetch(manga: Manga): Boolean {
+        val path = manga.ntkEpisodePath ?: return false
+        val match = Regex("^/webtoon/([^/?#]+)/([^/?#]+)").find(path) ?: return false
+        val slugWebtoon = match.groupValues[1].any { !it.isDigit() } ||
+            match.groupValues[2].any { !it.isDigit() }
+        if (!slugWebtoon) return false
+        val imageWorkId = manga.ntkImageWorkId?.trim().orEmpty()
+        if (!Regex("^\\d{1,12}$").matches(imageWorkId)) return false
+        return try {
+            ReaderImageCache.earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L).isNotEmpty()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun shouldPreservePreRenderedInitialDrawable(count: Int): Boolean {
+        return synchronized(this) {
+            val index = preRenderedInitialDrawableIndex
+            index >= 0 &&
+                count > index &&
+                pageCount == index + 1
+        }
+    }
+
+    private fun isPreRenderedInitialBitmap(index: Int, bitmap: Bitmap): Boolean {
+        return synchronized(this) {
+            preRenderedInitialDrawableIndex == index && preRenderedInitialBitmap === bitmap
+        }
+    }
+
+    private fun isPreRenderedInitialTiles(index: Int, tiles: List<ReaderTile>): Boolean {
+        return synchronized(this) {
+            preRenderedInitialDrawableIndex == index && preRenderedInitialTiles === tiles
+        }
+    }
+
+    @Synchronized
+    private fun clearPreRenderedInitialDrawable() {
+        preRenderedInitialDrawableIndex = -1
+        preRenderedInitialBitmap = null
+        preRenderedInitialTiles = null
     }
 
     private fun rememberPendingPageBitmap(index: Int, bitmap: Bitmap) {
@@ -744,7 +873,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             pageCount = index + 1
             renderView.setPageCount(pageCount)
         }
-        pendingPageBitmaps.remove(index)
         Log.d(TAG, "page_ready_deferred_bootstrap index=$index count=$pageCount")
         applyPageBitmap(index, bitmap)
     }
@@ -761,7 +889,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             pageCount = index + 1
             renderView.setPageCount(pageCount)
         }
-        pendingPageTiles.remove(index)
         Log.d(TAG, "page_tiles_deferred_bootstrap index=$index count=$pageCount tiles=${tiles.size}")
         applyPageTiles(index, pageWidth, pageHeight, tiles)
     }
@@ -801,8 +928,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingPageErrors.clear()
     }
 
+    private fun ensureRenderViewAttached() {
+        if (!::renderView.isInitialized || renderView.parent != null) return
+        val root = readerRoot ?: return
+        root.addView(
+            renderView,
+            0,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        Log.d(TAG, "reader_render_attached_for_drawable")
+    }
+
     private fun applyPageBitmap(index: Int, bitmap: Bitmap) {
         hideBoundaryStatus()
+        ensureRenderViewAttached()
         renderView.setPageBitmap(index, bitmap)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         val coversInitialViewport = visibleInitialDrawable &&
@@ -810,8 +952,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
             !coversInitialViewport
         val launchMetricDeferred = maybePostInitialContinuousDrawableMetric(index, "bitmap")
+        if (visibleInitialDrawable && !waitForContinuous) logFirstDrawableMetric(index, "bitmap")
         if (visibleInitialDrawable) logLaunchDrawableMetric(index, "bitmap")
-        if (visibleInitialDrawable) logFirstDrawableMetric(index, "bitmap")
         if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
         if (waitForContinuous) {
             maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
@@ -829,6 +971,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun applyPageTiles(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
         hideBoundaryStatus()
+        ensureRenderViewAttached()
         renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         val coversInitialViewport = visibleInitialDrawable &&
@@ -836,8 +979,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
             !coversInitialViewport
         val launchMetricDeferred = maybePostInitialContinuousDrawableMetric(index, "tiles")
+        if (visibleInitialDrawable && !waitForContinuous) logFirstDrawableMetric(index, "tiles")
         if (visibleInitialDrawable) logLaunchDrawableMetric(index, "tiles")
-        if (visibleInitialDrawable) logFirstDrawableMetric(index, "tiles")
         if (index == pendingInitialRestorePage) applyPendingInitialRestoreIfReady()
         if (waitForContinuous) {
             maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
@@ -883,17 +1026,65 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun logFirstDrawableMetric(index: Int, kind: String) {
-        if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return
+        if (!markFirstDrawableMetric(index, kind)) return
+        afterFirstDrawableMetricOnMain(index)
+    }
+
+    private fun logFirstDrawableMetricFromAnyThread(index: Int, kind: String) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            logFirstDrawableMetric(index, kind)
+            return
+        }
+        if (!markFirstDrawableMetric(index, kind)) return
+        statusHandler.post { afterFirstDrawableMetricOnMain(index) }
+    }
+
+    private fun logInitialPrerenderDeferredMetricFromAnyThread(index: Int, kind: String) {
+        recordFirstImageDrawableElapsedForTest(index, kind)
+        statusHandler.post {
+            if (destroyed || isFinishing || firstDrawableMetricLogged) return@post
+            logLaunchDrawableMetric(index, kind)
+            maybeReleaseInitialNtkContinuousGateOrViewport("initial_prerender")
+            scheduleNtkDrawableReadyPolling()
+        }
+    }
+
+    @Synchronized
+    private fun markFirstDrawableMetric(index: Int, kind: String): Boolean {
+        if (firstDrawableMetricLogged || viewerLaunchStartedAtMs <= 0L) return false
         firstDrawableMetricLogged = true
         firstDrawableLoggedAtMs = SystemClock.uptimeMillis()
         firstDrawableLoggedElapsedAtMs = SystemClock.elapsedRealtime()
-        scheduleDrawableReadyDescription(index)
+        val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
+        if (firstDrawableElapsedMsForTest < 0L || elapsed < firstDrawableElapsedMsForTest) {
+            firstDrawableElapsedMsForTest = elapsed
+        }
+        Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+        if (launchDrawableMetricPages.add(index)) {
+            launchDrawableElapsedMsByPage[index] = elapsed
+            Log.d("ViewerPerf", "reader_open_to_near_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
+        }
+        ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(currentManga?.ntkEpisodePath)
+        return true
+    }
+
+    @Synchronized
+    private fun recordFirstImageDrawableElapsedForTest(index: Int, kind: String) {
+        if (firstDrawableElapsedMsForTest >= 0L || firstDrawableMetricLogged) return
+        if (viewerLaunchStartedAtMs <= 0L) return
+        if (!isCurrentNtkReader() || !initialStartAtFirstPage || index != 0) return
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         firstDrawableElapsedMsForTest = elapsed
-        Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
-        ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(currentManga?.ntkEpisodePath)
+        Log.d(
+            "ViewerPerf",
+            "reader_open_to_first_image_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed"
+        )
+    }
+
+    private fun afterFirstDrawableMetricOnMain(index: Int) {
+        scheduleDrawableReadyDescription(index)
         scheduleDeferredNtkAckAfterFirstDrawable("first_drawable")
-        statusHandler.post { attachToolbarIfNeeded() }
+        attachToolbarIfNeeded()
         maybeStartDeferredNtkAckAfterInitialContinuous()
     }
 
@@ -912,6 +1103,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val snapshot = renderView.visibleCoverageSnapshot() ?: return false
         if (
             snapshot.drawablePx > 0 &&
+            snapshot.drawablePx >= (snapshot.viewportPx - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX).coerceAtLeast(1) &&
             snapshot.visibleLoading == 0 &&
             snapshot.missingPx == 0 &&
             snapshot.placeholderPx == 0
@@ -924,20 +1116,26 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun drawableCoversInitialViewport(pageWidth: Int, pageHeight: Int): Boolean {
         if (!isCurrentNtkReader()) return false
         if (pageWidth <= 0 || pageHeight <= 0) return false
-        val viewWidth = renderView.width
-        val viewHeight = renderView.height
+        val viewWidth = if (renderView.width > 0) renderView.width else resources.displayMetrics.widthPixels
+        val viewHeight = if (renderView.height > 0) renderView.height else resources.displayMetrics.heightPixels
         if (viewWidth <= 0 || viewHeight <= 0) return false
         val drawHeight = viewWidth * (pageHeight / pageWidth.toFloat())
         return drawHeight >= viewHeight - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX
     }
 
+    private fun shouldCommitNaverOriginalInitialDrawable(): Boolean {
+        return isNaverOriginalNtkEpisodePath(currentManga?.ntkEpisodePath)
+    }
+
+    private fun isNaverOriginalNtkEpisodePath(path: String?): Boolean {
+        if (path.isNullOrBlank()) return false
+        return Regex("^/webtoon/\\d+/(?:nv|naver)-\\d{5,}-\\d+$", RegexOption.IGNORE_CASE)
+            .matches(path)
+    }
+
     private fun isInitialContinuousScrollReady(): Boolean {
         if (pageCount <= 0) return launchDrawableMetricPages.isNotEmpty()
-        val readyAhead = if (currentManga?.baseMode == MTitle.base_webtoon) {
-            INITIAL_READY_WEBTOON_AHEAD_PAGES
-        } else {
-            INITIAL_READY_MANHWA_AHEAD_PAGES
-        }
+        val readyAhead = initialReadyAheadPages()
         val firstRequired = if (!firstDrawableMetricLogged && initialStartAtFirstPage) 0 else currentPage
         val lastRequired = minOf(pageCount - 1, firstRequired + readyAhead)
         for (page in firstRequired..lastRequired) {
@@ -946,8 +1144,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return true
     }
 
+    private fun initialReadyAheadPages(): Int {
+        return if (currentManga?.baseMode == MTitle.base_webtoon) {
+            INITIAL_READY_WEBTOON_AHEAD_PAGES
+        } else {
+            INITIAL_READY_MANHWA_AHEAD_PAGES
+        }
+    }
+
     private fun shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable: Boolean): Boolean {
-        return visibleInitialDrawable && requiresInitialNtkWebtoonViewportReady()
+        if (!visibleInitialDrawable || !isCurrentNtkReader()) return false
+        if (!initialStartAtFirstPage || firstDrawableMetricLogged) return false
+        val path = currentManga?.ntkEpisodePath
+        return currentManga?.baseMode == MTitle.base_webtoon ||
+            path?.startsWith("/webtoon/", ignoreCase = true) == true ||
+            path?.startsWith("/manhwa/", ignoreCase = true) == true
     }
 
     private fun maybeReleaseInitialNtkContinuousGate(reason: String) {
@@ -962,12 +1173,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun maybeReleaseInitialNtkContinuousGateOrViewport(reason: String) {
         if (!isCurrentNtkReader()) return
-        if (isVisibleViewportReady()) {
+        val requireScrollCushion = requiresInitialNtkWebtoonViewportReady()
+        if (isVisibleViewportReady() && (!requireScrollCushion || isInitialContinuousScrollReady())) {
             if (!firstDrawableMetricLogged) logVisibleViewportReadyMetric() else postDrawableReadyDescription()
             releaseInitialDrawGate("viewport")
             return
         }
-        if (requiresInitialNtkWebtoonViewportReady()) return
+        if (requireScrollCushion) return
         maybeReleaseInitialNtkContinuousGate(reason)
     }
 
@@ -979,9 +1191,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun requiresInitialNtkWebtoonViewportReady(): Boolean {
+        val path = currentManga?.ntkEpisodePath
         return isCurrentNtkReader() &&
             !firstDrawableMetricLogged &&
-            currentManga?.ntkEpisodePath?.startsWith("/webtoon/", ignoreCase = true) == true
+            (currentManga?.baseMode == MTitle.base_webtoon ||
+                path?.startsWith("/webtoon/", ignoreCase = true) == true ||
+                path?.startsWith("/manhwa/", ignoreCase = true) == true)
     }
 
     private fun postDrawableReadyDescription() {
@@ -998,7 +1213,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             firstDrawableLoggedAtMs = SystemClock.uptimeMillis()
             firstDrawableLoggedElapsedAtMs = SystemClock.elapsedRealtime()
             val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
-            firstDrawableElapsedMsForTest = elapsed
+            if (firstDrawableElapsedMsForTest < 0L || elapsed < firstDrawableElapsedMsForTest) {
+                firstDrawableElapsedMsForTest = elapsed
+            }
             Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=viewport page=$currentPage ms=$elapsed")
             ReaderImageCache.releaseNtkAckRecoveryAfterFirstDrawable(currentManga?.ntkEpisodePath)
             scheduleDeferredNtkAckAfterFirstDrawable("viewport_drawable")
@@ -1011,7 +1228,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun logLaunchDrawableMetric(index: Int, kind: String) {
         if (viewerLaunchStartedAtMs <= 0L) return
         val first = if (!firstDrawableMetricLogged && initialStartAtFirstPage) 0 else currentPage
-        if (index < first || index > first + 2) return
+        if (index < first || index > first + initialReadyAheadPages()) return
         val elapsed = SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs
         if (kind == "error" && isCurrentNtkReader()) {
             Log.d("ViewerPerf", "reader_open_to_near_drawable source=$viewerLaunchSourceSite kind=$kind page=$index ms=$elapsed")
@@ -1099,6 +1316,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 remaining,
                 lastActiveMs + NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS - now
             )
+        }
+        if (::renderView.isInitialized && isCurrentNtkAckPath()) {
+            val programmaticRemaining = renderView.programmaticScrollActiveRemainingMs(now)
+            if (programmaticRemaining > 0L) {
+                remaining = maxOf(remaining, programmaticRemaining + NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS)
+            }
         }
         return remaining.coerceAtLeast(0L)
     }
@@ -1220,13 +1443,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                         "progress=$progressPage offset=$progressOffset busy=$busy current=$currentPage"
                 )
             }
+            val pageChanged = progressPage != currentPage
             currentPage = progressPage
             MainThreadStallMonitor.trace("reader_request_window_async") {
                 session?.requestWindowAsync(firstPage, lastPage, anchorPage, busy)
             }
             if (busy) {
                 readerWindowBusy = true
-                lastReaderBusyMs = SystemClock.uptimeMillis()
+                lastReaderBusyMs = now
+                lastReaderInteractionMs = now
                 ReaderImageCache.extendNtkAckRecoveryQuiet(
                     currentManga?.ntkEpisodePath,
                     NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS,
@@ -1235,6 +1460,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
                 pendingAnchorAfterBusy = progressPage
                 return@trace
+            }
+            if (pageChanged) {
+                lastReaderInteractionMs = now
+                ReaderImageCache.extendNtkAckRecoveryQuiet(
+                    currentManga?.ntkEpisodePath,
+                    NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS,
+                    "window_progress"
+                )
             }
             readerWindowBusy = false
             statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
@@ -1553,6 +1786,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun updateAutoCutButton() {
+        if (!::autoCutButton.isInitialized) return
         autoCutButton.text = if (autoCut) "자동분할 ON" else "자동분할 OFF"
         autoCutButton.contentDescription = if (autoCut) "자동분할 켜짐" else "자동분할 꺼짐"
         autoCutButton.setTextColor(Color.WHITE)
@@ -1567,7 +1801,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val path = manga.ntkEpisodePath
         if (path.isNullOrBlank()) return
         if (!isCurrentNtkReader()) return
-        if (!firstDrawableMetricLogged) {
+        if (!firstDrawableMetricLogged && !allowBeforeFirstDrawable) {
             if (path.startsWith("/webtoon/")) {
                 deferredNtkAckPreflightManga = manga
                 ReaderImageCache.holdNtkAckRecoveryUntilFirstDrawable(path)
@@ -1767,7 +2001,19 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ReaderImageCache.clearNtkAckRecoveryPriority(path, "initial_strict_ack_ready")
             return false
         }
+        if (shouldAllowInitialNtkAckBeforeFirstDrawable(manga)) return false
         return path.startsWith("/webtoon/")
+    }
+
+    private fun shouldAllowInitialNtkAckBeforeFirstDrawable(manga: Manga): Boolean {
+        return false
+    }
+
+    private fun isSlugWebtoonNtkPath(path: String?): Boolean {
+        if (path.isNullOrBlank()) return false
+        val match = Regex("^/webtoon/([^/?#]+)/([^/?#]+)").find(path) ?: return false
+        return match.groupValues[1].any { !it.isDigit() } ||
+            match.groupValues[2].any { !it.isDigit() }
     }
 
     private fun startDeferredNtkAckPreflight(reason: String, allowBeforeFirstDrawable: Boolean = false) {
@@ -1848,9 +2094,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } catch (_: Exception) {
             false
         }
-        if (ntkEpisodePath && !hasStrictProof &&
-            (hasCloudflare || preparingChallenge || deferredNtkAckPreflightBlockProbeAttempts >= 2)
-        ) {
+        if (ntkEpisodePath && !hasStrictProof && hasCloudflare) {
             Log.d(
                 TAG,
                 "reader_ntk_ack_preflight_initial_hardblock_before_first_drawable path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare,prepared=$preparedChallenge,preparing=$preparingChallenge"
@@ -1858,7 +2102,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             maybeStartDeferredNtkAckForInitialBlock(
                 deferred,
                 "initial_hardblock_before_first_drawable",
-                allowBeforeFirstDrawable = false
+                allowBeforeFirstDrawable = shouldAllowInitialNtkAckBeforeFirstDrawable(deferred)
             )
             return
         }
@@ -2089,9 +2333,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             )
             getHttpClient().cancelNtkWebViewFallbacks()
             ReaderImageCache.prioritizeNtkAckRecovery(ntkPath)
+            val slugWebtoonPath = Regex("^/webtoon/([^/?#]+)/([^/?#]+)").find(ntkPath)?.let {
+                it.groupValues[1].any { ch -> !ch.isDigit() } ||
+                    it.groupValues[2].any { ch -> !ch.isDigit() }
+            } == true
             if (getHttpClient().hasRecentStrictNtkAdAckProof(ntkPath)) {
                 ReaderImageCache.clearNtkAckRecoveryLaunchHold(ntkPath, "session_strict_ack_ready")
                 ReaderImageCache.clearNtkAckRecoveryPriority(ntkPath, "session_strict_ack_ready")
+            } else if (slugWebtoonPath) {
+                ReaderImageCache.holdNtkAckRecoveryUntilFirstDrawable(ntkPath)
             } else {
                 ReaderImageCache.holdNtkAckRecoveryUntilFirstDrawable(ntkPath)
             }
@@ -2118,6 +2368,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         status.visibility = TextView.GONE
         status.text = displayEpisodeTitle(manga, title)
+        clearPreRenderedInitialDrawable()
         firstDrawableMetricLogged = false
         firstDrawableLoggedAtMs = 0L
         firstDrawableLoggedElapsedAtMs = 0L
@@ -2147,6 +2398,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun updateAdjacentButtons() {
+        if (!::prevButton.isInitialized || !::nextButton.isInitialized) return
         val manga = currentManga
         val title = currentTitle ?: manga?.title
         if (adjacentNavigationInFlight) {
@@ -2173,6 +2425,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun setAdjacentButtonState(previous: Boolean, next: Boolean) {
+        if (!::prevButton.isInitialized || !::nextButton.isInitialized) return
         prevButton.isEnabled = previous
         nextButton.isEnabled = next
         prevButton.alpha = if (previous) 1f else 0.35f
@@ -2194,6 +2447,106 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun readerHeightPx(): Int {
         return maxOf(1, renderView.height, resources.displayMetrics.heightPixels)
+    }
+
+    private fun ensureToolbarCreated(manga: Manga? = currentManga, title: Title? = currentTitle): Boolean {
+        if (::topBar.isInitialized && ::bottomBar.isInitialized) return true
+        val source = manga ?: currentManga ?: return false
+        val resolvedTitle = title ?: source.title ?: currentTitle
+        topBar = LinearLayout(this).apply {
+            id = R.id.viewerToolbar
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
+            setBackgroundColor(0xee111111.toInt())
+            visibility = View.GONE
+        }
+        bottomBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(12.dp(), 8.dp(), 12.dp(), 8.dp())
+            setBackgroundColor(0xee111111.toInt())
+            visibility = View.GONE
+        }
+        titleView = TextView(this).apply {
+            id = R.id.toolbar_title
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.MARQUEE
+            marqueeRepeatLimit = -1
+            isSelected = true
+            setPadding(12.dp(), 0, 12.dp(), 0)
+            background = roundedBackground(0xff282828.toInt(), 0xff555555.toInt(), 10.dp())
+        }
+        pageView = TextView(this).apply {
+            setTextColor(0xffdddddd.toInt())
+            textSize = 14f
+            gravity = Gravity.CENTER
+        }
+        val backButton = Button(this).apply {
+            text = "<"
+            setOnClickListener { finish() }
+        }
+        prevButton = Button(this).apply {
+            id = R.id.toolbar_previous
+            text = "이전"
+            setOnClickListener {
+                Log.d(TAG, "toolbar_prev_click")
+                openAdjacent(false)
+            }
+        }
+        episodeButton = Button(this).apply {
+            id = R.id.toolbar_spinner
+            text = "회차"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            background = roundedBackground(0xff2f6df6.toInt(), 0x55ffffff, 8.dp())
+            setOnClickListener {
+                Log.d(TAG, "toolbar_episode_click")
+                showEpisodePicker()
+            }
+        }
+        nextButton = Button(this).apply {
+            id = R.id.toolbar_next
+            text = "다음"
+            setOnClickListener {
+                Log.d(TAG, "toolbar_next_click")
+                openAdjacent(true)
+            }
+        }
+        autoCutButton = Button(this).apply {
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setOnClickListener { toggleAutoCut() }
+        }
+        updateAutoCutButton()
+        titleView.text = displayEpisodeTitle(source, resolvedTitle)
+        topBar.addView(backButton, LinearLayout.LayoutParams(52.dp(), 44.dp()))
+        topBar.addView(titleView, LinearLayout.LayoutParams(0, 40.dp(), 1f).apply {
+            leftMargin = 8.dp()
+        })
+        bottomBar.addView(pageView, LinearLayout.LayoutParams(0, 44.dp(), 1f))
+        bottomBar.addView(autoCutButton, LinearLayout.LayoutParams(108.dp(), 44.dp()).apply {
+            rightMargin = 8.dp()
+        })
+        bottomBar.addView(prevButton, LinearLayout.LayoutParams(64.dp(), 44.dp()))
+        bottomBar.addView(episodeButton, LinearLayout.LayoutParams(64.dp(), 44.dp()).apply {
+            leftMargin = 6.dp()
+        })
+        bottomBar.addView(nextButton, LinearLayout.LayoutParams(64.dp(), 44.dp()).apply {
+            leftMargin = 6.dp()
+        })
+        installToolbarTouchForwarder(
+            topBar,
+            bottomBar,
+            titleView,
+            pageView
+        )
+        return true
     }
 
     private fun roundedBackground(fill: Int, stroke: Int, radius: Int): GradientDrawable {
@@ -2394,10 +2747,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     ?: displayEpisodeTitle(info.manga, currentTitle).takeIf { it.isNotBlank() }
                     ?: "회차"
             }
-            if (episodeChanged || titleView.text.toString() != displayTitle) {
-                titleView.text = displayTitle
+            if (episodeChanged || lastDisplayedEpisodeKey != displayKey) {
                 lastDisplayedEpisodeKey = displayKey
                 lastDisplayedEpisodeTitle = displayTitle
+            }
+            if (::titleView.isInitialized && titleView.text.toString() != displayTitle) {
+                titleView.text = displayTitle
             }
             setPageText(if (info.transitionCard) {
                 "회차 전환"
@@ -2424,6 +2779,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun setPageText(text: String) {
         if (lastDisplayedPageText == text) return
         lastDisplayedPageText = text
+        if (!::pageView.isInitialized) return
         pageView.text = text
     }
 
@@ -2596,8 +2952,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun setToolbarVisible(visible: Boolean) {
-        if (visible) attachToolbarIfNeeded()
         toolbarVisible = visible
+        if (visible) {
+            if (!ensureToolbarCreated()) return
+            attachToolbarIfNeeded()
+        }
+        if (!::topBar.isInitialized || !::bottomBar.isInitialized) {
+            renderView.setScrollbarVisible(visible)
+            return
+        }
         val visibility = if (visible) View.VISIBLE else View.GONE
         topBar.visibility = visibility
         bottomBar.visibility = visibility
@@ -2615,7 +2978,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun attachToolbarIfNeeded() {
         if (toolbarAttached) return
         val root = readerRoot ?: return
-        if (!::topBar.isInitialized || !::bottomBar.isInitialized) return
+        if (!ensureToolbarCreated()) return
         if (topBar.parent == null) {
             root.addView(topBar, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -2705,24 +3068,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (!isCurrentNtkReader() || firstDrawableMetricLogged) return false
         if (initialDrawGateNtkTimeoutDeferrals >= NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX) {
             val snapshot = renderView.visibleCoverageSnapshot()
-            val hasRenderableFallback = snapshot != null &&
-                (snapshot.visibleErrors > 0 || snapshot.visibleCards > 0)
-            val stillExposesUndrawnContent = snapshot == null ||
-                snapshot.visibleLoading > 0 ||
-                snapshot.placeholderPx > 0 ||
-                snapshot.missingPx > 0 ||
-                snapshot.drawablePx <= 0
-            if (stillExposesUndrawnContent && !hasRenderableFallback) {
-                Log.d(
-                    TAG,
-                    "initial_draw_gate_timeout_deferred reason=ntk_viewport_not_ready_after_cap," +
-                        "loading=${snapshot?.visibleLoading ?: -1}," +
-                        "placeholderPx=${snapshot?.placeholderPx ?: -1}," +
-                        "missingPx=${snapshot?.missingPx ?: -1}," +
-                        "drawablePx=${snapshot?.drawablePx ?: -1}"
-                )
-                return true
-            }
+            Log.d(
+                TAG,
+                "initial_draw_gate_timeout_open reason=ntk_cap_reached," +
+                    "loading=${snapshot?.visibleLoading ?: -1}," +
+                    "placeholderPx=${snapshot?.placeholderPx ?: -1}," +
+                    "missingPx=${snapshot?.missingPx ?: -1}," +
+                    "drawablePx=${snapshot?.drawablePx ?: -1}"
+            )
             return false
         }
         return true
@@ -2902,14 +3255,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
         private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_MS = 4200L
         private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MS = 700L
-        private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX = 45
+        private const val NTK_INITIAL_DRAW_GATE_TIMEOUT_DEFER_MAX = 1
         private const val NTK_INITIAL_CAPTCHA_DEFER_MS = 1800L
         private const val NTK_INITIAL_CAPTCHA_MAX_DEFERS = 2
         private const val NTK_INITIAL_CAPTCHA_PROGRESS_MAX_DEFERS = 5
         private const val DEFERRED_NTK_ACK_PREFLIGHT_TIMEOUT_MS = 45000L
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS = 450L
         private const val NTK_ACK_PREFLIGHT_AFTER_FIRST_DRAWABLE_QUIET_MS_STRICT_FRESH = 1_500L
-        private const val NTK_ACK_PREFLIGHT_INITIAL_NO_INTERACTION_QUIET_MS = 4_500L
+        private const val NTK_ACK_PREFLIGHT_INITIAL_NO_INTERACTION_QUIET_MS = 14_000L
         private const val NTK_ACK_PREFLIGHT_SCROLL_QUIET_MS = 4_500L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_MS = 650L
         private const val NTK_ACK_PREFLIGHT_INITIAL_BLOCK_PROBE_RETRY_MS = 450L
@@ -2922,7 +3275,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
         private const val DRAWABLE_READY_CHECK_INTERVAL_MS = 80L
         private const val INITIAL_READY_WEBTOON_AHEAD_PAGES = 2
-        private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 2
+        private const val INITIAL_READY_MANHWA_AHEAD_PAGES = 3
         private const val INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX = 2
         private const val CAPTCHA_RETRY_READER = 0
         private const val CAPTCHA_RETRY_TOOLBAR_ADJACENT = 1

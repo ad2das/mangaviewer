@@ -551,13 +551,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
             if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
                 if (hasCurrentDrawable) {
-                    page.bitmap = bitmap
-                    page.tiles = emptyList()
+                    page.pendingResolveType = PENDING_BITMAP
+                    page.pendingBitmap = bitmap
+                    page.width = max(1, bitmap.width)
+                    page.height = max(1, bitmap.height)
+                    noteResolvedPageAspectLocked(page.width, page.height)
+                    applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
                     page.loading = false
                     page.cardText = null
                     page.errorText = null
-                    page.pendingResolveType = PENDING_SIZE
-                    page.pendingBitmap = null
                 } else {
                     page.pendingResolveType = PENDING_BITMAP
                     page.pendingBitmap = bitmap
@@ -608,13 +610,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
             if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
                 if (hasCurrentDrawable) {
-                    page.bitmap = null
-                    page.tiles = tiles
+                    page.pendingResolveType = PENDING_TILES
+                    page.pendingTiles = tiles
+                    page.width = max(1, pageWidth)
+                    page.height = max(1, pageHeight)
+                    noteResolvedPageAspectLocked(page.width, page.height)
+                    applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
                     page.loading = false
                     page.cardText = null
                     page.errorText = null
-                    page.pendingResolveType = PENDING_SIZE
-                    page.pendingTiles = emptyList()
                 } else {
                     page.pendingResolveType = PENDING_TILES
                     page.pendingTiles = tiles
@@ -950,13 +954,25 @@ class ReaderSurfaceView @JvmOverloads constructor(
         invalidate()
     }
 
-    fun frameStatsSnapshot(): FrameStatsSnapshot? {
+    fun programmaticScrollActiveRemainingMs(nowMs: Long = SystemClock.uptimeMillis()): Long {
         return synchronized(stateLock) {
+            (programmaticScrollStatsUntilMs - nowMs).coerceAtLeast(0L)
+        }
+    }
+
+    fun frameStatsSnapshot(): FrameStatsSnapshot? {
+        var requestRender = false
+        val snapshot = synchronized(stateLock) {
             if (lastFrameStatsSnapshot == null && statsActive) {
                 finalizeActiveFrameStatsLocked(log = false)
             }
+            if (lastFrameStatsSnapshot == null) {
+                requestRender = ensureScrollStatsFrameLocked(SystemClock.uptimeMillis())
+            }
             lastFrameStatsSnapshot
         }
+        if (requestRender) invalidate()
+        return snapshot
     }
 
     fun resetFrameStatsSnapshot() {
@@ -1018,6 +1034,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     if (startScrollbarDragLocked(event.x, event.y)) {
                         noteInputLocked(event)
                         lastScrollInteractionMs = event.eventTime
+                        activateScrollStatsLocked(event.eventTime)
                         scroller.forceFinished(true)
                         activeScrollerOffsetShift = 0f
                         pointerDown = true
@@ -1040,6 +1057,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     velocityTracker = null
                     dispatchWindowRequest(scrollbarRequest)
                     requestRender()
+                    scheduleTouchScrollStatsFallbacks()
                     return true
                 }
                 velocityTracker?.recycle()
@@ -1047,6 +1065,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val downRequest = synchronized(stateLock) {
                     noteInputLocked(event)
                     lastScrollInteractionMs = event.eventTime
+                    activateScrollStatsLocked(event.eventTime)
                     scroller.forceFinished(true)
                     activeScrollerOffsetShift = 0f
                     lastY = event.y
@@ -1068,6 +1087,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 dispatchWindowRequest(downRequest)
                 requestRender()
+                scheduleTouchScrollStatsFallbacks()
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -1527,9 +1547,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val dstLeft = (state.width - drawWidth) / 2
             val dstTop = floor(visibleTop).toInt()
             val dstBottom = ceil(visibleBottom).toInt().coerceAtLeast(dstTop + 1)
-            dstInt.set(dstLeft, dstTop, dstLeft + drawWidth, dstBottom)
             prepareBitmapPaint(fastBitmapDraw)
-            canvas.drawBitmap(bitmap, src, dstInt, paint)
+            if (drawWidth == bitmap.width && abs(item.pageHeight - bitmap.height.toFloat()) <= 1f) {
+                val save = canvas.save()
+                canvas.clipRect(0f, visibleTop, state.width.toFloat(), visibleBottom)
+                canvas.drawBitmap(bitmap, dstLeft.toFloat(), item.top, paint)
+                canvas.restoreToCount(save)
+            } else {
+                dstInt.set(dstLeft, dstTop, dstLeft + drawWidth, dstBottom)
+                canvas.drawBitmap(bitmap, src, dstInt, paint)
+            }
             return
         }
         if (item.tiles.isNotEmpty()) {
@@ -1701,6 +1728,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
         clampScrollLocked()
         rebuildLayoutLocked()
         if (shouldHoldInitialAnchorRenderLocked()) {
+            if (SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
+                Log.d(
+                    TAG,
+                    "reader_test_scroll_build_null reason=initial_anchor_hold " +
+                        "holdPage=$initialRenderHoldPage drawable=${pageHasDrawableContentLocked(initialRenderHoldPage)} " +
+                        "anyDrawable=${hasAnyDrawableContentLocked()}"
+                )
+            }
             renderRequested = true
             scheduleFrameLocked()
             return null
@@ -1786,10 +1821,24 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pages.size,
             items
         )
+        val nowMs = SystemClock.uptimeMillis()
+        val recentScroll = nowMs <= programmaticScrollStatsUntilMs ||
+            nowMs - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS
         val holdInitialViewport = shouldHoldInitialViewportRenderLocked()
         val firstInitialVisibleItemMissing = !hasDrawnContentFrame &&
             state.items.firstOrNull()?.let { !itemHasDrawable(it) } == true
-        if (state.visibleLoading > 0 && (!hasDrawnContentFrame || holdInitialViewport || firstInitialVisibleItemMissing)) {
+        if (state.visibleLoading > 0 &&
+            (!hasDrawnContentFrame || holdInitialViewport || firstInitialVisibleItemMissing) &&
+            !(recentScroll && state.hasDrawableContent)
+        ) {
+            if (SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
+                Log.d(
+                    TAG,
+                    "reader_test_scroll_build_null reason=visible_loading " +
+                        "loading=${state.visibleLoading} drawn=$hasDrawnContentFrame viewportHold=$holdInitialViewport " +
+                        "firstMissing=$firstInitialVisibleItemMissing recent=$recentScroll drawable=${state.hasDrawableContent}"
+                )
+            }
             renderRequested = true
             scheduleFrameLocked()
             return null
@@ -1797,10 +1846,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (state.visibleLoading == 0 || !holdInitialViewport) {
             clearInitialRenderHoldLocked()
         }
-        val nowMs = SystemClock.uptimeMillis()
-        val recentScroll = nowMs <= programmaticScrollStatsUntilMs ||
-            nowMs - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS
         if (hasDrawnContentFrame && !state.hasDrawableContent && !recentScroll) {
+            if (SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
+                Log.d(
+                    TAG,
+                    "reader_test_scroll_build_null reason=no_drawable_after_draw " +
+                        "loading=${state.visibleLoading} recent=$recentScroll items=${state.items.size}"
+                )
+            }
             renderRequested = true
             scheduleFrameLocked()
             return null
@@ -1860,6 +1913,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun updateVisibleCoverageSnapshot(state: DrawState) {
         val coverage = coverageStats(state)
+        val visibleContentPx = visibleContentPx(state)
         var visibleErrors = 0
         var visibleCards = 0
         for (item in state.items) {
@@ -1867,7 +1921,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (item.cardText != null) visibleCards++
         }
         val snapshot = VisibleCoverageSnapshot(
-            viewportPx = state.height,
+            viewportPx = visibleContentPx,
             drawablePx = coverage.drawablePx,
             missingPx = coverage.missingPx,
             placeholderPx = coverage.placeholderPx,
@@ -1910,13 +1964,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun coverageStats(state: DrawState): CoverageStats {
-        if (state.empty) return CoverageStats(0, state.height, 0, 0, 0)
-        val visibleContentPx = ceil(
-            min(
-                state.height.toFloat(),
-                max(0f, state.contentHeight - state.scrollOffset)
-            )
-        ).toInt().coerceIn(0, state.height)
+        if (state.empty) return CoverageStats(0, visibleContentPx(state), 0, 0, 0)
+        val visibleContentPx = visibleContentPx(state)
         var drawablePx = 0
         var placeholderPx = 0
         var drawableItems = 0
@@ -1949,6 +1998,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         )
     }
 
+    private fun visibleContentPx(state: DrawState): Int {
+        return ceil(
+            min(
+                state.height.toFloat(),
+                max(0f, state.contentHeight - state.scrollOffset)
+            )
+        ).toInt().coerceIn(0, state.height)
+    }
+
     private fun itemHasDrawable(item: DrawItem): Boolean {
         if (item.cardText != null) return true
         val bitmap = item.bitmap
@@ -1971,12 +2029,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             clearInitialRenderHoldLocked()
             return false
         }
+        if (isRecentScrollStatsActiveLocked(now) && hasAnyDrawableContentLocked()) {
+            clearInitialRenderHoldLocked()
+            return false
+        }
         if (!pageHasDrawableContentLocked(page)) return true
         return false
     }
 
     private fun shouldHoldInitialViewportRenderLocked(): Boolean {
-        return SystemClock.uptimeMillis() <= max(initialRenderHoldUntilMs, initialViewportHoldUntilMs)
+        val now = SystemClock.uptimeMillis()
+        if (isRecentScrollStatsActiveLocked(now) && hasAnyDrawableContentLocked()) return false
+        return now <= max(initialRenderHoldUntilMs, initialViewportHoldUntilMs)
     }
 
     private fun clearInitialRenderHoldLocked() {
@@ -2010,6 +2074,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (pageHasDrawableContentLocked(index)) return true
         }
         return false
+    }
+
+    private fun isRecentScrollStatsActiveLocked(nowMs: Long): Boolean {
+        return nowMs <= programmaticScrollStatsUntilMs ||
+            (lastScrollInteractionMs > 0L &&
+                nowMs - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS)
     }
 
     private fun pageHasDrawableContentLocked(index: Int): Boolean {
@@ -2054,6 +2124,31 @@ class ReaderSurfaceView @JvmOverloads constructor(
         invalidate()
     }
 
+    private fun activateScrollStatsLocked(eventTimeMs: Long) {
+        programmaticScrollStatsUntilMs = max(
+            programmaticScrollStatsUntilMs,
+            eventTimeMs + PROGRAMMATIC_SCROLL_STATS_ACTIVE_MS
+        )
+    }
+
+    private fun scheduleTouchScrollStatsFallbacks() {
+        mainHandler.postDelayed({ forceProgrammaticScrollRenderForTest() }, 32L)
+        mainHandler.postDelayed({ forceProgrammaticScrollRenderForTest() }, 160L)
+        mainHandler.postDelayed({ forceProgrammaticScrollRenderForTest() }, PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS)
+    }
+
+    private fun ensureScrollStatsFrameLocked(nowMs: Long): Boolean {
+        if (pages.isEmpty()) return false
+        val recentScroll = nowMs <= programmaticScrollStatsUntilMs ||
+            (lastScrollInteractionMs > 0L &&
+                nowMs - lastScrollInteractionMs <= PROGRAMMATIC_SCROLL_STATS_RECENT_MS)
+        if (!recentScroll || shouldBlockInitialEmptyFrameLocked()) return false
+        renderRequested = true
+        scheduleFrameLocked()
+        stateLock.notifyAll()
+        return true
+    }
+
     private fun isEmpty(): Boolean = synchronized(stateLock) { pages.isEmpty() }
 
     private fun scheduleStatsContinuationFrame(active: Boolean) {
@@ -2085,11 +2180,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (lastBusy == busy) return null
         lastBusy = busy
         if (busy) {
+            val nowMs = SystemClock.uptimeMillis()
             resetActiveFrameStatsLocked()
             lastFrameStatsSnapshot = null
+            lastScrollInteractionMs = nowMs
+            activateScrollStatsLocked(nowMs)
         }
         if (!busy) applyPendingPageResolvesLocked()
         renderRequested = true
+        if (busy) scheduleTouchScrollStatsFallbacks()
         return windowRequestLocked(busy)
     }
 

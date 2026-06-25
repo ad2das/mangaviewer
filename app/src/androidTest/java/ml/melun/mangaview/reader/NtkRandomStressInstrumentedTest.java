@@ -171,6 +171,8 @@ public class NtkRandomStressInstrumentedTest {
             MainApplication.p.setNtkSitePresetForDiagnostics(siteRoot);
         else
             MainApplication.p.setNtkSitePreset(siteRoot);
+        if(!lockSiteRoot)
+            client.resolveNtkDomainNow();
         String customUserAgent = arg(args, "ntkUserAgent", "");
         if(customUserAgent.trim().length() > 0) {
             client.agent = customUserAgent.trim();
@@ -1332,8 +1334,19 @@ public class NtkRandomStressInstrumentedTest {
                 continue;
             episode.setTitle(title);
             episode.setTitleId(title.getId());
-            if(targetImageEpisodeId != null && targetImageEpisodeId.trim().length() > 0)
-                episode.setNtkImageEpisodeId(targetImageEpisodeId.trim());
+            String requestedImageEpisodeId = targetImageEpisodeId == null ? "" : targetImageEpisodeId.trim();
+            String parsedImageEpisodeId = episode.getNtkImageEpisodeId() == null
+                    ? "" : episode.getNtkImageEpisodeId().trim();
+            if(requestedImageEpisodeId.length() > 0) {
+                if(isNtkNumericId(parsedImageEpisodeId) && !isNtkNumericId(requestedImageEpisodeId)) {
+                    Log.d(TAG, "ntk_true_random_direct_target_metadata_preserve_numeric_image_episode"
+                            + " path=" + episodePath
+                            + ",parsed=" + parsedImageEpisodeId
+                            + ",requested=" + requestedImageEpisodeId);
+                } else {
+                    episode.setNtkImageEpisodeId(requestedImageEpisodeId);
+                }
+            }
             if(targetImageWorkId != null && targetImageWorkId.trim().length() > 0)
                 episode.setNtkImageWorkId(targetImageWorkId.trim());
             if(targetImageCount > 0)
@@ -1487,6 +1500,7 @@ public class NtkRandomStressInstrumentedTest {
             nextEpisode = episode.nextEp();
             previousEpisode = episode.prevEp();
             Manga.setNtkViewerFetchModeOverrideForTest(mode);
+            boolean launchPreflightStarted = Utils.startNtkViewerLaunchPreflight(episode, title);
             Log.d(TAG, "ntk_true_random_case_start run=" + run
                     + ",mode=" + mode
                     + ",baseMode=" + title.getBaseMode()
@@ -1500,9 +1514,11 @@ public class NtkRandomStressInstrumentedTest {
                     + ",episode=" + episode.getName()
                     + ",scrollInputMode=" + scrollInputMode
                     + ",scrollPattern=" + scrollPattern
+                    + ",launchPreflightStarted=" + launchPreflightStarted
                     + ",hasNext=" + (nextEpisode != null)
                     + ",hasPrevious=" + (previousEpisode != null));
-            activity = startReaderActivityWithoutIdle(context, viewerIntent(context, title, episode), 12_000L);
+            activity = startReaderActivityWithoutIdle(context,
+                    viewerIntent(context, title, episode, launchPreflightStarted), 12_000L);
             ReaderV2Activity reader = activity instanceof ReaderV2Activity ? (ReaderV2Activity) activity : null;
             long firstDrawableWaitMs = firstDrawableMaxMs > 0L
                     ? Math.max(1500L, firstDrawableMaxMs + 1000L)
@@ -1722,12 +1738,19 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static Intent viewerIntent(Context context, Title title, Manga episode) {
+        return viewerIntent(context, title, episode, false);
+    }
+
+    private static Intent viewerIntent(Context context, Title title, Manga episode,
+                                       boolean launchPreflightStarted) {
         Intent intent = new Intent(context, ReaderV2Activity.class);
         intent.putExtra("online", true);
         intent.putExtra("title", Utils.toViewerTitleJsonForReader(title, episode, true));
         intent.putExtra("manga", Utils.toViewerMangaJson(episode, title, false));
         intent.putExtra(ViewerIntentContract.EXTRA_EXACT_EPISODE, true);
         intent.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
+        if(launchPreflightStarted)
+            intent.putExtra("viewerNtkAckPreflightStarted", true);
         intent.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
         intent.putExtra("viewerLaunchSourceSite", "ntk");
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -2638,6 +2661,10 @@ public class NtkRandomStressInstrumentedTest {
         } catch (Exception ignored) {
             return fallback;
         }
+    }
+
+    private static boolean isNtkNumericId(String value) {
+        return value != null && value.trim().matches("\\d{1,12}");
     }
 
     private static int parseNonNegativeInt(String value, int fallback) {

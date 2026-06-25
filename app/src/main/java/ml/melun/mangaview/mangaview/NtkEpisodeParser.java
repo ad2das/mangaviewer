@@ -24,6 +24,7 @@ final class NtkEpisodeParser {
         int titleId = title == null ? parsePositiveInt(titleKey) : title.getId();
         String imageCountMetadata = normalizeEmbeddedText(document.html());
         result.definitiveEmptyEpisodeList = looksLikeDefinitiveEmptyEpisodeList(imageCountMetadata);
+        boolean preserveViewerPayloadHint = shouldPreserveViewerPayloadHint(imageCountMetadata);
         Set<String> seenEpisodePaths = new HashSet<>();
         for(Element link : document.select("a[href]")) {
             if(link.hasClass("cta"))
@@ -46,8 +47,13 @@ final class NtkEpisodeParser {
             manga.setTitle(title);
             manga.setTitleId(titleId);
             manga.setNtkEpisodePath(epPath);
-            manga.setNtkImageEpisodeId(extractImageEpisodeId(imageCountMetadata, epPath));
-            manga.setNtkImageCount(extractImageCount(imageCountMetadata, epPath));
+            String imageEpisodeId = extractImageEpisodeId(imageCountMetadata, epPath);
+            int imageCount = extractImageCount(imageCountMetadata, epPath);
+            manga.setNtkImageEpisodeId(imageEpisodeId);
+            manga.setNtkImageCount(imageCount);
+            if(preserveViewerPayloadHint)
+                manga.setNtkViewerPayloadHint(compactViewerPayloadHint(
+                        imageCountMetadata, epPath, titleId, imageEpisodeId, imageCount));
             result.episodes.add(manga);
         }
         appendEmbeddedEpisodes(result, imageCountMetadata, seenEpisodePaths, segment, titleKey, baseMode, title, titleId);
@@ -294,16 +300,145 @@ final class NtkEpisodeParser {
             imageCount = extractImageCount(imageCountMetadata, epPath);
         manga.setNtkImageCount(imageCount);
         if(shouldPreserveViewerPayloadHint(imageCountMetadata))
-            manga.setNtkViewerPayloadHint(imageCountMetadata);
+            manga.setNtkViewerPayloadHint(compactViewerPayloadHint(
+                    imageCountMetadata, epPath, titleId, manga.getNtkImageEpisodeId(), imageCount));
         result.episodes.add(manga);
+    }
+
+    private static String compactViewerPayloadHint(String html, String epPath, int titleId,
+                                                   String imageEpisodeId, int imageCount) {
+        if(html == null || html.length() == 0)
+            return "";
+        String imageApiHint = compactViewerImageApiPayloadHint(html, epPath, imageCount);
+        if(imageApiHint.length() > 0)
+            return imageApiHint;
+        if(html.length() <= 48_000 && !hasEpisodeMetadataPayload(html))
+            return html;
+        String episodeId = "";
+        if(epPath != null) {
+            int slash = epPath.lastIndexOf('/');
+            if(slash >= 0 && slash + 1 < epPath.length())
+                episodeId = epPath.substring(slash + 1);
+        }
+        StringBuilder builder = new StringBuilder(256);
+        builder.append("{\"sourceWorkId\":\"").append(titleId).append("\"");
+        if(episodeId.length() > 0)
+            builder.append(",\"episodeId\":\"").append(jsonEscape(episodeId)).append("\"");
+        if(imageEpisodeId != null && imageEpisodeId.length() > 0)
+            builder.append(",\"sourceEpisodeId\":\"").append(jsonEscape(imageEpisodeId)).append("\"");
+        if(epPath != null && epPath.length() > 0)
+            builder.append(",\"episodePath\":\"").append(jsonEscape(epPath)).append("\"");
+        if(imageCount > 0)
+            builder.append(",\"imageCount\":").append(imageCount);
+        builder.append(",\"episodes\":true}");
+        return builder.toString();
+    }
+
+    private static String compactViewerImageApiPayloadHint(String html, String epPath, int imageCount) {
+        if(html == null || html.length() == 0)
+            return "";
+        String lower = html.toLowerCase(java.util.Locale.ROOT);
+        if(!lower.contains("imageapipath")
+                || (!lower.contains("/api/webtoon-images") && !lower.contains("/api/manhwa-images")))
+            return "";
+        String sourceWorkId = firstJsonStringField(html, "sourceWorkId");
+        String episodeId = firstJsonStringField(html, "episodeId");
+        String token = firstJsonStringField(html, "token");
+        if(token.length() == 0)
+            token = firstJsonStringField(html, "imagesToken");
+        String imageApiPath = firstJsonStringField(html, "imageApiPath");
+        if(sourceWorkId.length() == 0 || episodeId.length() == 0
+                || token.length() == 0 || imageApiPath.length() == 0)
+            return "";
+        String scopePath = firstJsonStringField(html, "scopePath");
+        if(scopePath.length() == 0 && epPath != null)
+            scopePath = epPath;
+        int pageCount = imageCount > 0 ? imageCount : countViewerImagePages(html);
+        StringBuilder builder = new StringBuilder(Math.max(256, pageCount * 32));
+        builder.append("{\"sourceWorkId\":\"").append(jsonEscape(sourceWorkId)).append("\"");
+        builder.append(",\"episodeId\":\"").append(jsonEscape(episodeId)).append("\"");
+        builder.append(",\"token\":\"").append(jsonEscape(token)).append("\"");
+        builder.append(",\"imageApiPath\":\"").append(jsonEscape(imageApiPath)).append("\"");
+        if(scopePath.length() > 0)
+            builder.append(",\"scopePath\":\"").append(jsonEscape(scopePath)).append("\"");
+        builder.append(",\"images\":[");
+        int safePageCount = Math.max(1, Math.min(pageCount <= 0 ? 1 : pageCount, 400));
+        for(int page = 1; page <= safePageCount; page++) {
+            if(page > 1)
+                builder.append(',');
+            builder.append("{\"page\":").append(page).append('}');
+        }
+        builder.append("]}");
+        return builder.toString();
+    }
+
+    private static String firstJsonStringField(String html, String field) {
+        if(html == null || html.length() == 0 || field == null || field.length() == 0)
+            return "";
+        Matcher matcher = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*\"([^\"]*)\"")
+                .matcher(html);
+        if(matcher.find())
+            return matcher.group(1);
+        matcher = Pattern.compile("\\\\\"" + Pattern.quote(field) + "\\\\\"\\s*:\\s*\\\\\"([^\\\\\"]*)\\\\\"")
+                .matcher(html);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private static int countViewerImagePages(String html) {
+        if(html == null || html.length() == 0)
+            return 0;
+        int maxPage = 0;
+        Matcher matcher = Pattern.compile("\"page\"\\s*:\\s*(\\d{1,4})").matcher(html);
+        while(matcher.find()) {
+            try {
+                maxPage = Math.max(maxPage, Integer.parseInt(matcher.group(1)));
+            } catch(Exception ignored) {
+            }
+        }
+        matcher = Pattern.compile("data-theme-page=\"(\\d{1,4})\"").matcher(html);
+        while(matcher.find()) {
+            try {
+                maxPage = Math.max(maxPage, Integer.parseInt(matcher.group(1)));
+            } catch(Exception ignored) {
+            }
+        }
+        return maxPage;
+    }
+
+    private static boolean hasEpisodeMetadataPayload(String html) {
+        if(html == null || html.length() == 0)
+            return false;
+        String lower = html.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("sourceworkid")
+                && (lower.contains("episodeid")
+                || lower.contains("sourceepisodeid")
+                || lower.contains("episodes")
+                || lower.contains("latestepisodenumber")
+                || lower.contains("\"slug\"")
+                || lower.contains("\\\"slug\\\""));
+    }
+
+    private static String jsonEscape(String value) {
+        if(value == null || value.length() == 0)
+            return "";
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static boolean shouldPreserveViewerPayloadHint(String html) {
         if(html == null || html.length() == 0)
             return false;
         String lower = html.toLowerCase(java.util.Locale.ROOT);
-        if(!lower.contains("\"imagestoken\"") || !lower.contains("\"imagemetas\""))
+        boolean hasImagesTokenPayload = lower.contains("imagestoken") && lower.contains("imagemetas");
+        boolean hasImageApiPayload = lower.contains("imageapipath")
+                && (lower.contains("/api/webtoon-images") || lower.contains("/api/manhwa-images"))
+                && lower.contains("sourceworkid")
+                && lower.contains("episodeid")
+                && (lower.contains("imagestoken") || lower.contains("\"token\"") || lower.contains("\\\"token\\\""));
+        boolean hasEpisodeMetadataPayload = hasEpisodeMetadataPayload(html);
+        if(!hasImagesTokenPayload && !hasImageApiPayload && !hasEpisodeMetadataPayload)
             return false;
+        if(lower.contains("sourceepisodeid") || lower.contains("episodeid"))
+            return true;
         if(lower.contains("/webtoon_uploads/")
                 || lower.contains("/manhwa_uploads/")
                 || lower.contains("/comic_uploads/"))

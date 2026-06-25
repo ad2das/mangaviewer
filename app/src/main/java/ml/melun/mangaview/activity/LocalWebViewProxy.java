@@ -16,12 +16,12 @@ import java.util.concurrent.RejectedExecutionException;
 
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 
-final class LocalWebViewProxy {
+public final class LocalWebViewProxy {
     private final ServerSocket serverSocket;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private volatile boolean closed = false;
 
-    static LocalWebViewProxy start() throws Exception {
+    public static LocalWebViewProxy start() throws Exception {
         ServerSocket socket = new ServerSocket();
         socket.bind(new InetSocketAddress("127.0.0.1", 0));
         LocalWebViewProxy proxy = new LocalWebViewProxy(socket);
@@ -33,7 +33,7 @@ final class LocalWebViewProxy {
         this.serverSocket = serverSocket;
     }
 
-    int port() {
+    public int port() {
         return serverSocket.getLocalPort();
     }
 
@@ -277,7 +277,7 @@ final class LocalWebViewProxy {
         return builder.length() == 0 ? null : builder.toString();
     }
 
-    void close() {
+    public void close() {
         closed = true;
         closeQuietly(serverSocket);
         executor.shutdownNow();

@@ -31124,3 +31124,173 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - No device identity change.
   - No delayed viewer-open workaround.
   - Final proof requires images, scroll, and strict ACK to pass together.
+
+## 2026-06-22 22:32 KST sbxh9 slug webtoon target still failing no-WARP
+
+- Active target remains `/webtoon/u-bt-Tmfprlskavusdlghs-574c7d96/bt-Tmfprlskavusdlghs-12`, seed `1782116539898`, device `emulator-5556`, no WARP/VPN.
+- Confirmed failures after multiple focused runs:
+  - `build\ntk-random-perf\20260622_222605`: first drawable `5975ms`, ACK strict true, root `newtoki1.org`.
+  - `build\ntk-random-perf\20260622_222719`: first drawable `6155ms`, root `newtoki1.org`.
+  - `build\ntk-random-perf\20260622_222917`: resolver misclassified `sbxh9.com` as `siteRoot`; target page hit Cloudflare challenge and ACK did not start.
+  - `build\ntk-random-perf\20260622_223052`: same sbxh9 misclassification shape; ACK did not start.
+  - `build\ntk-random-perf\20260622_223222`: root corrected back to `newtoki1.org`, first drawable `7484ms`; ACK eventually strict true, but image API still timed out.
+- Applied local fixes during this loop:
+  - Slug webtoon hidden image WebView now uses a minimal same-origin shell instead of loading the full real HTML, avoiding external script load contention.
+  - Slug webtoon generated direct path probe is skipped in favor of API-first, because all guessed `i.toonflix.app`/`moamoabon.com` candidates for this target are 403/timeout.
+  - Persisted/resolved `sbxh*.com` roots are no longer trusted as first-class resolved roots; this prevents a dead `sbxh9.com` from being treated as live ahead of the working alias/root path.
+- Current evidence:
+  - `siteRoot=https://newtoki1.org` is restored in the latest run.
+  - Generated CDN guesses are no longer the primary blocker, but `/api/webtoon-images` still returns timeout/403 through native/shared/okhttp-sni paths.
+  - Hidden WebView reaches the right origin and logs `viewerImagesWebtoonEntry`, but `viewerImagesWebtoonFetch` does not produce usable image URLs before the first drawable assertion.
+- Next action:
+  - Do not broaden random tests yet.
+  - Focus next on the `/api/webtoon-images` transport/SNI/browser-fetch path for slug webtoon: compare exact page JS fetch headers/cookies with hidden shell fetch, then make the browser/WebView API response observable or make native transport match it. Do not use delayed viewer open, WARP, device identity changes, or hardcoded episode exceptions.
+
+## 2026-06-23 16:30 KST random manhwa generated-image and first-scroll fixes
+
+- Goal remains no WARP/VPN, no delayed viewer-open workaround, no ACK false positive, and no dead-root misclassification.
+- Root probe after the sbxh9/sbxh10 changes:
+  - Artifact: `build\ntk-root-probe\20260623_161835_fcf9fe`.
+  - `sbxh10.com` and `sbxh9.com` are classified as `cf-block` instead of live roots.
+  - `newtoki1.org` is classified as `api-json-ok` and remains the selected live API root.
+- Fixed a failing manhwa generated-image case:
+  - Failure artifact before fix: `build\ntk-random-perf\20260623_161217`.
+  - Target: `/manhwa/9515/1655959`.
+  - Problem: synthetic initial generated `.jpg` URLs were trusted too broadly for manhwa, while RSC payload skip and direct foreground initial requests were optimized for webtoon.
+  - Fix: RSC initial-generated payload skip and direct initial generated foreground fetch are now webtoon-scoped, so manhwa does not skip useful verification based only on synthetic generated URLs.
+  - Retest artifact: `build\ntk-random-perf\20260623_161707`.
+  - Result: `passed=True`, `failures=0`, `slowSignals=0`, `scroll=10/10`, `drawableMs=3269`, `notVpn=true`, strict ACK passed.
+- Fixed a first-scroll jank case:
+  - Failure artifact before fix: `build\ntk-random-perf\20260623_162055`.
+  - Target: `/manhwa/32903/1662324`.
+  - Problem: short first manhwa page reported first-drawable readiness before the visible viewport was fully drawable; page 1/2 commits could then collide with the first scroll frame.
+  - Fix: NTK manhwa/webtoon first-drawable readiness now waits for the visible viewport when the first page does not cover it; manhwa initial generated p002/p003 requests are allowed before anchor completion when early URLs are fresh, keeping the full viewport inside the 3500 ms budget.
+  - Retest artifact: `build\ntk-random-perf\20260623_162859`.
+  - Result: `passed=True`, `failures=0`, `slowSignals=0`, `scroll=10/10`, `drawableMs=2998`, `notVpn=true`, strict ACK passed.
+- Regression checks already passing after these changes:
+  - Webtoon target `/webtoon/13265/1180652`: `build\ntk-random-perf\20260623_161924`, `drawableMs=1312`, `scroll=10/10`, strict ACK passed.
+  - Manhwa target `/manhwa/24997/1770945`: `build\ntk-random-perf\20260623_161959`, `drawableMs=2212`, `scroll=10/10`, strict ACK passed.
+- Still required before commit/push:
+  - Re-run focused webtoon/manhwa after the latest readiness + manhwa pre-anchor change.
+  - Re-run root probe.
+  - Re-run random multi-case test with no failures and no inconclusive result.
+## 2026-06-23 23:49 KST slug webtoon target still failing, launch API contention reduced
+
+- Target remains `/webtoon/845463/nv-845463-2`, forced `imageWorkId=18978`, `imageEpisodeId=nv-845463-2`, root locked to `https://newtoki1.org`, no VPN/WARP.
+- Builds continued to pass after each patch with:
+  - `.\gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest`
+- Failed focused runs and findings:
+  - `build\ntk-random-perf\20260623_233526`: failed firstDrawable `10351ms`; API returned 87 images and early callback now published 6 URLs instead of 2, but anchor stream was still blocked by `foreground_stream_skip_fast_okhttp_initial`.
+  - `build\ntk-random-perf\20260623_233736`: failed firstDrawable `14770ms`; allowing permit p001 helped later stream start, but API/early URL arrived too late.
+  - `build\ntk-random-perf\20260623_234001`: failed firstDrawable `17051ms`; allowing parallel slug prefetch worsened network contention and produced 403/timeouts. Reverted.
+  - `build\ntk-random-perf\20260623_234206`: failed firstDrawable `10399ms`; after reverting parallel prefetch, p001 eventually streamed and cached, but after the firstDrawable assertion.
+  - `build\ntk-random-perf\20260623_234507`: failed firstDrawable `5123ms`; skipping slug API prefetch during launch reduced contention and improved the target materially, but still missed 3500ms.
+  - `build\ntk-random-perf\20260623_234655`: failed firstDrawable `6732ms`; direct-only mobile document fetch was worse than the existing race. Reverted.
+  - `build\ntk-random-perf\20260623_234849`: failed firstDrawable `7510ms`; reducing tokenized ACK join to `800ms` caused 403/retry delay. Reverted to `2800ms`.
+- Current retained changes from this loop:
+  - `notifyFirstNtkViewerImageUrl(...)` now publishes the first 3 API image entries, preserving original + canonical trusted variants, instead of only first URL variants.
+  - `ReaderImageCache.startForegroundStreamFetch(...)` no longer blocks page-1 generated anchor streams merely because they are fast OkHttp initial generated URLs; p002+ remain protected.
+  - `Utils.startNtkViewerLaunchPreflight(...)` skips slug-webtoon API prefetch during launch and leaves the reader lifecycle to start the API prefetch, avoiding a timeout-prone pre-reader flight.
+- Current conclusion:
+  - This target is not yet passable. Best observed focused result is `5123ms`, still over `3500ms`.
+  - The remaining critical path is: reader starts document/token fetch, then `fetchNtkViewerImageUrlsUncached(...)` waits for tokenized slug ACK/key proof before `/api/webtoon-images`; when the API finally returns, p001 itself can be fetched in roughly 1-2s.
+  - Do not commit/push. Do not run broad random tests yet; the focused slug target still fails.
+- Next action:
+  - Keep launch slug API prefetch skipped.
+  - Find a safe way to start `/api/webtoon-images` earlier without repeating the `800ms` 403 regression, likely by separating signed request-key readiness from the full observation ACK wait or by using the successful `okhttp-direct-ack-cookie` path as soon as the scoped challenge cookie is recorded.
+
+### 2026-06-23 23:53 KST follow-up attempts
+
+- `build\ntk-random-perf\20260623_234655`: direct-only mobile document fetch looked attractive because `api-direct` is the successful transport, but focused run failed at `6732ms`; reverted the direct-only change.
+- `build\ntk-random-perf\20260623_234849`: tokenized slug ACK join reduced from `2800ms` to `800ms`; focused run failed at `7510ms` because early API calls regressed to 403/retry. Reverted to `2800ms`.
+- `build\ntk-random-perf\20260623_235159`: reader-entry `startModernWebtoonBridgeChallengeWarmup(...)` with launch-hold allowance failed at `13681ms`; warmup during first-draw hold still contends badly. Reverted.
+- Current retained patches remain:
+  - launch slug API prefetch skip in `Utils.startNtkViewerLaunchPreflight(...)`;
+  - p001 generated anchor stream no longer blocked by fast-OkHttp initial guard;
+  - first API image callback publishes first 3 API image entries as trusted variants.
+- Current best target result remains `5123ms` (`20260623_234507`), not pass.
+
+### 2026-06-24 00:17 KST rejected slug-webtoon experiments
+
+- Focus remained `/webtoon/845463/nv-845463-2`, root locked to `https://newtoki1.org`, no WARP/VPN, no device identity change.
+- Rejected and reverted experiments:
+  - `build\ntk-random-perf\20260623_235751`: early `okhttp-direct-ack-cookie-wait` lane failed at `7881ms`; image API race itself started after the firstDrawable assertion, so this did not address the real critical path.
+  - `build\ntk-random-perf\20260624_000203`: mobile document streaming observer found payload early but failed at `9344ms`; tokenized ACK still delayed API and the added partial string work hurt the run.
+  - `build\ntk-random-perf\20260624_000442`: allowing full initial WebView ACK before first drawable improved to `6389ms`, but WebView preflight proof took ~8.7s and remained too heavy. Reverted.
+  - `build\ntk-random-perf\20260624_000641`: tokenized ACK join `1200ms` failed at `8981ms`; early API regressed to 403/retry again. Reverted to `2800ms`.
+  - `build\ntk-random-perf\20260624_000856`: launch fast-only `/api/ad/challenge` warmup failed at `13287ms`; it still contended with document/API work. Reverted.
+  - `build\ntk-random-perf\20260624_001156`: slug document `api-direct` only plus streaming failed at `16243ms`; single-lane document fetch was less reliable under emulator network. Reverted.
+- External checks:
+  - `Range: bytes=240000-` is ignored by `newtoki1.org`; server returns `200` full `345778` byte HTML, so tail-range token fetch is not available.
+  - RSC-style `Accept: text/x-component`/`RSC: 1` also returns full HTML for this route, not compact route data.
+  - `/api/works/845463/episode/nv-845463-2/unlock` is `405` on GET and `401` on unauthenticated POST; it cannot replace the viewer document/API token flow.
+- Current retained code should remain the earlier best-shape patch set only:
+  - launch slug API prefetch skip;
+  - p001 generated anchor stream not blocked by fast-OkHttp initial guard;
+  - first API callback publishes first 3 API image entries as trusted variants.
+- Current best target result remains `5123ms` (`20260623_234507`), still not pass. Do not run broad random or commit/push yet.
+
+## 2026-06-26 08:00 KST final no-WARP target/root/random proof
+
+- Device: `emulator-5554`.
+- Build passed before final validation:
+  - `.\gradlew.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest`
+- Constraints verified in final runs:
+  - No WARP/VPN: network before/after reported `vpnActive=false`, `notVpn=true`.
+  - No device identity change: `ntkChangeDeviceIdentityBeforeRun=false`.
+  - No delayed viewer-open workaround: reader was launched normally by instrumentation; first-draw timing was measured from open.
+
+### Focused target strict pass
+
+- Artifact: `build\ntk-random-perf\20260626_075108`.
+- Target: `/webtoon/61871569/kp-61871569-69132187`.
+- Image identifiers: `imageWorkId=13576`, `imageEpisodeId=kp-61871569-69132187`.
+- Root locked to `https://newtoki1.org`.
+- Result: `passed=true`, `failures=[]`.
+- First drawable: `2735ms` under the `3500ms` budget.
+- Image path timing:
+  - early URLs ready: `1300ms`.
+  - foreground race win: `673ms`.
+  - foreground stream done: `1125ms`.
+  - decode ready: `21ms`.
+- Scroll: `10/10`, with no missing/placeholder/error coverage.
+- ACK: `strictProof=true`, `passed=true`, `falseDone=false`.
+
+### Root/address proof after sbxh9 change
+
+- Artifact: `build\ntk-root-probe\20260626_075233_7f2033`.
+- Probe command locked and checked:
+  - `https://sbxh9.com`
+  - `https://sbxh10.com`
+  - `https://newtoki1.org`
+  - `https://ntk01.com`
+- Verdict: `live-api-root-available`.
+- Live API JSON root: `https://newtoki1.org`.
+- Dead/blocked roots were not misclassified:
+  - `https://sbxh9.com` => `cf-block`, challenge `403`.
+  - `https://sbxh10.com` => `cf-block`, challenge `403`.
+  - `https://ntk01.com` => `cf-block`, challenge `403`.
+  - `https://newtoki1.org` => `api-json-ok`, challenge `200`.
+
+### Random mixed manga/webtoon strict pass
+
+- Artifact: `build\ntk-random-perf\20260626_075410`.
+- Command shape:
+  - `Runs=6`, `ScrollSteps=10`, `Mode=native-ack`, `StrictFresh`, `RequireLiveRandom`, `NtkLockSiteRoot`, root `https://newtoki1.org`.
+- Result: `passed=True`, `exitCode=0`, `failures=0`, `slowSignals=0`.
+- Random coverage:
+  - 6 unique episode paths.
+  - 6 unique title paths.
+  - 3 `/manhwa/` cases and 3 `/webtoon/` cases.
+  - title source coverage: `api=6`, `live-random`.
+- Scroll proof:
+  - `60` total scroll checks across 6 cases.
+  - each logged coverage had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+  - frame stats showed `missedFrames=0`, `droppedFrames=0`.
+- ACK proof:
+  - all 6 ACK checks: `passed=true`, `strictProof=true`, `falseDone=false`.
+- Network proof:
+  - before: `CELLULAR`, `vpnActive=false`, `notVpn=true`.
+  - after: `CELLULAR`, `vpnActive=false`, `notVpn=true`.
+
+Current status: target, dead-root detection, automatic live-root selection, mixed random manga/webtoon image loading, scroll, and ACK proof are all passing without WARP/VPN and without device-identity changes.
