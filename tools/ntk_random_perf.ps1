@@ -32,6 +32,8 @@ param(
     [switch]$NoAckAssert,
     [switch]$NoDiversityAssert,
     [switch]$RequireLiveRandom,
+    [switch]$RequireAllPagesDrawable,
+    [int]$AllPagesDrawableMaxMs = 60000,
     [switch]$NoAppendProbe,
     [switch]$ChangeDeviceIdentityBeforeRun,
     [switch]$ResetDeviceIdentityBeforeRun,
@@ -402,6 +404,8 @@ $argsList = @(
     "-e", "ntkInitialContinuousPages", [string]$InitialContinuousPages,
     "-e", "ntkInitialContinuousMaxMs", [string]$InitialContinuousMaxMs,
     "-e", "ntkHoldAfterFirstDrawableMs", [string]$HoldAfterFirstDrawableMs,
+    "-e", "ntkRequireAllPagesDrawable", ([string]([bool]$RequireAllPagesDrawable)).ToLowerInvariant(),
+    "-e", "ntkAllPagesDrawableMaxMs", [string]$AllPagesDrawableMaxMs,
     "-e", "ntkPostStopDriftMs", [string]$PostStopDriftMs,
     "-e", "ntkEnsureAccessBefore", $ensureAccessBeforeArg,
     "-e", "ntkEnsureAccessMaxMs", [string]$EnsureAccessMaxMs,
@@ -510,6 +514,7 @@ $titleSourceNumericProbe = @(Read-MetricLines $logText "ntk_true_random_numeric_
     (Metric-Value $_ "result") -eq "0" -and $episodesText -match "^\d+$" -and [int]$episodesText -gt 0
 })
 $firstDrawable = @(Read-MetricLines $logText "ntk_true_random_first_drawable")
+$allPagesDrawable = @(Read-MetricLines $logText "ntk_true_random_all_pages_drawable")
 $scroll = @(Read-MetricLines $logText "ntk_true_random_scroll")
 $appendNext = @(Read-MetricLines $logText "ntk_true_random_append_next")
 $appendPrev = @(Read-MetricLines $logText "ntk_true_random_append_previous")
@@ -756,6 +761,9 @@ $reproArgs = @(
     "-HoldAfterFirstDrawableMs", [string]$HoldAfterFirstDrawableMs,
     "-TargetEpisodePath", $reproPath
 )
+if($RequireAllPagesDrawable) {
+    $reproArgs += @("-RequireAllPagesDrawable", "-AllPagesDrawableMaxMs", [string]$AllPagesDrawableMaxMs)
+}
 if($reproImageEpisodeId -and $reproImageEpisodeId.Trim().Length -gt 0) {
     $reproArgs += @("-TargetImageEpisodeId", $reproImageEpisodeId.Trim())
 }
@@ -857,6 +865,7 @@ $summary = [ordered]@{
     started = $starts
     cases = $cases
     firstDrawable = $firstDrawable
+    allPagesDrawable = $allPagesDrawable
     pipeline = $pipeline
     ackPhases = $ackPhases
     ackPreflightStages = $ackPreflightStages

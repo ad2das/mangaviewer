@@ -56,7 +56,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleErrors: Int,
         val visibleCards: Int,
         val busy: Boolean,
-        val pageCount: Int
+        val pageCount: Int,
+        val widthFillFailures: Int = 0
+    )
+
+    data class PageReadinessSnapshot(
+        val pageCount: Int,
+        val drawablePages: Int,
+        val loadingPages: Int,
+        val errorPages: Int,
+        val cardPages: Int,
+        val unresolvedPages: Int,
+        val loadingIndexes: String = "",
+        val unresolvedIndexes: String = ""
     )
 
     data class FrameStatsSnapshot(
@@ -340,10 +352,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastRequestedBusy = false
             pendingWindowRequest = null
             windowDispatchPosted = false
+            val preservedPages = pages.toList()
             pages.clear()
             prependedRevealHoldPage = -1
             clearPrependedReadyHoldLocked()
-            repeat(max(0, count)) { pages.add(newPageLocked()) }
+            repeat(max(0, count)) { index ->
+                val preserved = preservedPages.getOrNull(index)
+                pages.add(
+                    preserved?.copy(
+                        pendingTiles = preserved.pendingTiles.toList()
+                    ) ?: newPageLocked()
+                )
+            }
             setScrollOffsetLocked(0f)
             boundaryArmedDirection = 0
             boundaryDispatchInFlight = false
@@ -940,6 +960,48 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun visibleCoverageSnapshot(): VisibleCoverageSnapshot? {
         return synchronized(stateLock) {
             lastVisibleCoverageSnapshot
+        }
+    }
+
+    fun pageReadinessSnapshot(): PageReadinessSnapshot {
+        return synchronized(stateLock) {
+            var drawable = 0
+            var loading = 0
+            var errors = 0
+            var cards = 0
+            var unresolved = 0
+            val loadingIndexes = ArrayList<Int>()
+            val unresolvedIndexes = ArrayList<Int>()
+            for ((index, page) in pages.withIndex()) {
+                when {
+                    page.errorText != null -> errors++
+                    page.cardText != null -> {
+                        cards++
+                        drawable++
+                    }
+                    page.bitmap != null || page.tiles.isNotEmpty() -> drawable++
+                    page.loading -> {
+                        loading++
+                        unresolved++
+                        loadingIndexes.add(index)
+                        unresolvedIndexes.add(index)
+                    }
+                    else -> {
+                        unresolved++
+                        unresolvedIndexes.add(index)
+                    }
+                }
+            }
+            PageReadinessSnapshot(
+                pageCount = pages.size,
+                drawablePages = drawable,
+                loadingPages = loading,
+                errorPages = errors,
+                cardPages = cards,
+                unresolvedPages = unresolved,
+                loadingIndexes = loadingIndexes.joinToString("|"),
+                unresolvedIndexes = unresolvedIndexes.joinToString("|")
+            )
         }
     }
 
@@ -1543,7 +1605,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 .toInt()
                 .coerceIn(sourceTop + 1, bitmap.height)
             src.set(0, sourceTop, bitmap.width, sourceBottom)
-            val drawWidth = min(state.width, bitmap.width)
+            val drawWidth = state.width
             val dstLeft = (state.width - drawWidth) / 2
             val dstTop = floor(visibleTop).toInt()
             val dstBottom = ceil(visibleBottom).toInt().coerceAtLeast(dstTop + 1)
@@ -1596,7 +1658,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val dstBottom = if (drawBottom < visibleBottom) drawBottom + TILE_SEAM_OVERLAP_PX else drawBottom
             val dstTopInt = floor(dstTop).toInt()
             val dstBottomInt = ceil(dstBottom).toInt().coerceAtLeast(dstTopInt + 1)
-            val drawWidth = min(state.width, bitmap.width)
+            val drawWidth = state.width
             val dstLeft = (state.width - drawWidth) / 2
             dstInt.set(dstLeft, dstTopInt, dstLeft + drawWidth, dstBottomInt)
             canvas.drawBitmap(bitmap, src, dstInt, paint)
@@ -2445,7 +2507,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (page.cardText != null) return TRANSITION_CARD_PAGE_HEIGHT_PX
         if (page.errorText != null) return TRANSITION_CARD_PAGE_HEIGHT_PX
         if (page.width > 0 && page.height > 0) {
-            val drawWidth = min(viewWidth, page.width)
+            val drawWidth = viewWidth
             return max(1f, drawWidth * (page.height / page.width.toFloat()))
         }
         return max(1f, viewWidth * page.placeholderRatio)
@@ -2491,7 +2553,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun resolvedPageDrawHeightLocked(pageWidth: Int, pageHeight: Int): Float {
         val viewWidth = max(1, width)
         if (pageWidth > 0 && pageHeight > 0) {
-            val drawWidth = min(viewWidth, pageWidth)
+            val drawWidth = viewWidth
             return max(1f, drawWidth * (pageHeight / pageWidth.toFloat()))
         }
         return max(1f, viewWidth * placeholderPageHeightRatio)

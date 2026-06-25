@@ -31294,3 +31294,57 @@ tk_rsc_payload_cloudflare_clearance_reset.
   - after: `CELLULAR`, `vpnActive=false`, `notVpn=true`.
 
 Current status: target, dead-root detection, automatic live-root selection, mixed random manga/webtoon image loading, scroll, and ACK proof are all passing without WARP/VPN and without device-identity changes.
+
+## 2026-06-26 08:55 KST full-episode readiness and full-width follow-up
+
+- User-raised gap: the earlier pass proved first-visible and scroll-visible frames, but not that every page in the current episode was already source-ready before close. It also left one draw-height path using intrinsic image width, so narrow images could fail to fill the screen.
+- Fixes added:
+  - `ReaderSurfaceView` now draws bitmap and tile pages at viewport width, and `pageDrawHeightLocked`/resolved height use viewport width as well.
+  - `setPageCount()` preserves already-rendered page state when a 1-page early bootstrap expands to the full episode, preventing the first drawable from being dropped during full-list publish.
+  - `ReaderSession` now exposes a full-episode readiness snapshot based on delivered/pending drawable state plus cached source files, not only the currently retained render-view bitmaps.
+  - NTK full-episode warm now retries stale loading states and force-prefetches missing page source files, including generated pages discovered after the initial 3-page bootstrap.
+  - Instrumentation gained `-RequireAllPagesDrawable` / `-AllPagesDrawableMaxMs`, logs `ntk_true_random_all_pages_drawable`, and fails on unresolved page indexes.
+
+### Target full-episode strict pass
+
+- Artifact: `build\ntk-random-perf\20260626_084315`.
+- Target: `/webtoon/61871569/kp-61871569-69132187`.
+- Result: `passed=True`, `failures=0`.
+- First drawable: `1784ms` under the `3500ms` budget.
+- Full episode readiness: `pages=103;drawable=103;loading=0;errors=0;unresolved=0`.
+- Scroll: `10/10`; visible coverage had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, and `widthFillFailures=0`.
+- ACK: `passed=True`, `strictProof=True`, `falseDone=False`.
+- Network: before/after `vpnActive=false`, `notVpn=true`.
+
+### Generated webtoon regression repro pass
+
+- Artifact: `build\ntk-random-perf\20260626_084835`.
+- Target: `/webtoon/824995/1353997`.
+- This previously failed with only `3/18` pages ready after the generated list expanded.
+- Result after source-prefetch fix: `passed=True`, `failures=0`.
+- First drawable: `984ms`.
+- Full episode readiness: all `18` pages resolved before close.
+- Scroll/ACK/network checks passed under the same no-WARP, locked-root, strict-fresh conditions.
+
+### Random mixed full-episode strict pass
+
+- Artifact: `build\ntk-random-perf\20260626_084917`.
+- Command shape:
+  - `Runs=6`, `ScrollSteps=10`, `Mode=native-ack`, `StrictFresh`, `RequireLiveRandom`, `RequireAllPagesDrawable`, root locked to `https://newtoki1.org`.
+- Result: `passed=True`, `exitCode=0`, `failures=0`, `slowSignals=0`.
+- Coverage:
+  - 6 unique live-random episode paths and 6 unique title paths.
+  - Random source coverage: `api=6`, `live-random`.
+  - Mixed `/webtoon/` and `/manhwa/` cases.
+- Full-episode readiness:
+  - All 6 `ntk_true_random_all_pages_drawable` lines had `ready=true`.
+  - Snapshots included `18/18`, `4/4`, `3/3`, `4/4`, `3/3`, and `4/4` pages ready with `unresolved=0`.
+- Scroll proof:
+  - `60` total scroll checks.
+  - Coverage stayed at `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`.
+  - Every sampled coverage reported `widthFillFailures=0`.
+  - Frame stats reported `missedFrames=0`, `droppedFrames=0`.
+- ACK proof:
+  - All 6 ACK checks passed with `strictProof=true` and `falseDone=false`.
+- Network proof:
+  - before/after: `CELLULAR`, `vpnActive=false`, `notVpn=true`.

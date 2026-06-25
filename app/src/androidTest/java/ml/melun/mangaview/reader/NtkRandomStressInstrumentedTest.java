@@ -141,6 +141,10 @@ public class NtkRandomStressInstrumentedTest {
                 firstDrawableMaxMs);
         long holdAfterFirstDrawableMs = parseNonNegativeLong(
                 arg(args, "ntkHoldAfterFirstDrawableMs", "0"), 0L);
+        boolean requireAllPagesDrawable = Boolean.parseBoolean(arg(args,
+                "ntkRequireAllPagesDrawable", "false"));
+        long allPagesDrawableMaxMs = parseNonNegativeLong(arg(args,
+                "ntkAllPagesDrawableMaxMs", "60000"), 60000L);
         boolean requireStrictAck = Boolean.parseBoolean(arg(args, "ntkRequireStrictAck",
                 requireLiveRandom ? "true" : "false"));
         boolean assertNoJank = Boolean.parseBoolean(arg(args, "ntkAssertNoJank", "true"));
@@ -247,7 +251,8 @@ public class NtkRandomStressInstrumentedTest {
                         firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
                         assertNoJank, maxMissedFrames, maxDroppedFrames,
                         swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs,
-                        holdAfterFirstDrawableMs, requireStrictAck, scrollInputMode, scrollPattern);
+                        holdAfterFirstDrawableMs, requireStrictAck, requireAllPagesDrawable,
+                        allPagesDrawableMaxMs, scrollInputMode, scrollPattern);
             }
             return;
         }
@@ -345,7 +350,8 @@ public class NtkRandomStressInstrumentedTest {
                     firstDrawableMaxMs, initialContinuousPages, initialContinuousMaxMs,
                     assertNoJank, maxMissedFrames, maxDroppedFrames,
                     swipeInputSteps, assertNoSchedulerGap, renderFrameMaxMs,
-                    holdAfterFirstDrawableMs, requireStrictAck, scrollInputMode, scrollPattern);
+                    holdAfterFirstDrawableMs, requireStrictAck, requireAllPagesDrawable,
+                    allPagesDrawableMaxMs, scrollInputMode, scrollPattern);
             completedRuns++;
         }
         assertTrue("Expected NTK episode list for all runs completed=" + completedRuns
@@ -1488,6 +1494,7 @@ public class NtkRandomStressInstrumentedTest {
                                       int maxDroppedFrames, int swipeInputSteps,
                                       boolean assertNoSchedulerGap, float renderFrameMaxMs,
                                       long holdAfterFirstDrawableMs, boolean requireStrictAck,
+                                      boolean requireAllPagesDrawable, long allPagesDrawableMaxMs,
                                       String scrollInputMode, String scrollPattern) {
         Activity activity = null;
         long startedAt = SystemClock.elapsedRealtime();
@@ -1591,6 +1598,8 @@ public class NtkRandomStressInstrumentedTest {
                     maxMissedFrames, maxDroppedFrames, swipeInputSteps,
                     assertNoSchedulerGap, renderFrameMaxMs, scrollInputMode,
                     scrollPattern);
+            if(requireAllPagesDrawable)
+                waitForAllPagesDrawableBeforeClose(run, mode, episode, reader, allPagesDrawableMaxMs);
             if(requireStrictAck || "native-ack".equals(mode))
                 waitForStrictNtkAckProofBeforeClose(run, mode, episode, 70_000L);
             if(appendProbe && reader != null)
@@ -1652,6 +1661,73 @@ public class NtkRandomStressInstrumentedTest {
                         + " elapsedMs=" + ms
                         + " maxMs=" + timeoutMs,
                 proof);
+    }
+
+    private static void waitForAllPagesDrawableBeforeClose(int run, String mode, Manga episode,
+                                                           ReaderV2Activity reader, long timeoutMs) {
+        String path = episode == null ? "" : episode.getNtkEpisodePath();
+        long startedAt = SystemClock.elapsedRealtime();
+        ReaderSurfaceView.PageReadinessSnapshot snapshot = null;
+        long deadline = startedAt + Math.max(0L, timeoutMs);
+        while(SystemClock.elapsedRealtime() < deadline) {
+            snapshot = readPageReadiness(reader);
+            if(isAllPagesDrawable(snapshot))
+                break;
+            if(reader != null)
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                        () -> {
+                            reader.testRequestAllPagesWarm();
+                            reader.testVisibleCoverageSnapshot();
+                        });
+            SystemClock.sleep(250L);
+        }
+        snapshot = readPageReadiness(reader);
+        long ms = SystemClock.elapsedRealtime() - startedAt;
+        Log.d(TAG, "ntk_true_random_all_pages_drawable run=" + run
+                + ",mode=" + mode
+                + ",path=" + path
+                + ",ready=" + isAllPagesDrawable(snapshot)
+                + ",ms=" + ms
+                + ",maxMs=" + timeoutMs
+                + ",snapshot=" + formatPageReadiness(snapshot));
+        assertTrue("Expected all NTK pages drawable before closing reader run=" + run
+                        + " mode=" + mode
+                        + " path=" + path
+                        + " elapsedMs=" + ms
+                        + " maxMs=" + timeoutMs
+                        + " snapshot=" + formatPageReadiness(snapshot),
+                isAllPagesDrawable(snapshot));
+    }
+
+    private static ReaderSurfaceView.PageReadinessSnapshot readPageReadiness(ReaderV2Activity activity) {
+        final ReaderSurfaceView.PageReadinessSnapshot[] value =
+                new ReaderSurfaceView.PageReadinessSnapshot[]{null};
+        if(activity == null)
+            return null;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> value[0] = activity.testPageReadinessSnapshot());
+        return value[0];
+    }
+
+    private static boolean isAllPagesDrawable(ReaderSurfaceView.PageReadinessSnapshot snapshot) {
+        return snapshot != null
+                && snapshot.getPageCount() > 0
+                && snapshot.getErrorPages() == 0
+                && snapshot.getUnresolvedPages() == 0
+                && snapshot.getDrawablePages() >= snapshot.getPageCount();
+    }
+
+    private static String formatPageReadiness(ReaderSurfaceView.PageReadinessSnapshot snapshot) {
+        if(snapshot == null)
+            return "null";
+        return "pages=" + snapshot.getPageCount()
+                + ";drawable=" + snapshot.getDrawablePages()
+                + ";loading=" + snapshot.getLoadingPages()
+                + ";errors=" + snapshot.getErrorPages()
+                + ";cards=" + snapshot.getCardPages()
+                + ";unresolved=" + snapshot.getUnresolvedPages()
+                + ";loadingIndexes=" + snapshot.getLoadingIndexes()
+                + ";unresolvedIndexes=" + snapshot.getUnresolvedIndexes();
     }
 
     private static void runPreviousAppendCase(Context context, UiDevice device, int run, String mode,
@@ -2517,7 +2593,8 @@ public class NtkRandomStressInstrumentedTest {
                 + ";errors=" + coverage.getVisibleErrors()
                 + ";cards=" + coverage.getVisibleCards()
                 + ";busy=" + coverage.getBusy()
-                + ";pages=" + coverage.getPageCount();
+                + ";pages=" + coverage.getPageCount()
+                + ";widthFillFailures=" + coverage.getWidthFillFailures();
     }
 
     private static long swipeReader(UiDevice device, ReaderV2Activity reader,

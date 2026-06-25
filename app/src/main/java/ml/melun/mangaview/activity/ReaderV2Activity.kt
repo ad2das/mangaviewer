@@ -3188,6 +3188,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return renderView.visibleCoverageSnapshot()
     }
 
+    fun testPageReadinessSnapshot(): ReaderSurfaceView.PageReadinessSnapshot {
+        return session?.pageReadinessSnapshotForTest() ?: renderView.pageReadinessSnapshot()
+    }
+
+    fun testRequestAllPagesWarm() {
+        session?.requestAllPagesForTest()
+    }
+
     fun testFrameStatsSnapshot(): ReaderSurfaceView.FrameStatsSnapshot? {
         return renderView.frameStatsSnapshot()
     }

@@ -238,6 +238,7 @@ class ReaderSession(
     private val pagesLock = Object()
     private val loading = ConcurrentHashMap.newKeySet<Int>()
     private val loadingPages = ConcurrentHashMap<Int, PageRef>()
+    private val loadingStartedAtMs = ConcurrentHashMap<Int, Long>()
     private val urgentLoading = ConcurrentHashMap.newKeySet<Int>()
     private val urgentLoadingPages = ConcurrentHashMap<Int, PageRef>()
     private val bytePrefetching = ConcurrentHashMap.newKeySet<Int>()
@@ -286,6 +287,7 @@ class ReaderSession(
     private val firstDrawableDelivered = AtomicBoolean(false)
     private val firstBitmapFollowupsStarted = AtomicBoolean(false)
     private val initialFanoutStarted = AtomicBoolean(false)
+    private val ntkFullEpisodeWarmRetries = AtomicInteger(0)
     private val initialNearAfterAnchorDecodeStarted = AtomicBoolean(false)
     @Volatile
     private var ntkCoordinator: NtkEpisodeCoordinator? = null
@@ -1941,6 +1943,7 @@ class ReaderSession(
                 }
                 loading.clear()
                 loadingPages.clear()
+                loadingStartedAtMs.clear()
                 urgentLoading.clear()
                 urgentLoadingPages.clear()
                 inFlightWidths.clear()
@@ -2714,6 +2717,171 @@ class ReaderSession(
             }
         }
         prefetchNtkInitialNextBytes(anchor, count)
+        scheduleNtkFullEpisodeWarmRetry(startPage)
+    }
+
+    fun requestAllPagesForTest() {
+        requestAllUndeliveredNtkPages("test")
+    }
+
+    fun pageReadinessSnapshotForTest(): ReaderSurfaceView.PageReadinessSnapshot {
+        val refs = synchronized(pagesLock) { pages.toList() }
+        var ready = 0
+        var loadingCount = 0
+        var errorCount = 0
+        var cardCount = 0
+        var unresolved = 0
+        val loadingIndexes = ArrayList<Int>()
+        val unresolvedIndexes = ArrayList<Int>()
+        refs.forEachIndexed { index, page ->
+            val card = page.transitionTitle != null
+            val cached = hasPageSourceReady(index, page)
+            val delivered = hasDeliveredBitmap(index) || (pendingDeliveryWidths[index] ?: 0) > 0
+            val failed = failedPages.contains(index)
+            val loadingActive =
+                loading.contains(index) ||
+                    loadingPages.containsKey(index) ||
+                    urgentLoading.contains(index) ||
+                    urgentLoadingPages.containsKey(index) ||
+                    inFlightWidths.containsKey(index)
+            when {
+                card -> {
+                    cardCount++
+                    ready++
+                }
+                delivered || cached -> ready++
+                failed -> {
+                    errorCount++
+                    unresolved++
+                    unresolvedIndexes.add(index)
+                }
+                loadingActive -> {
+                    loadingCount++
+                    unresolved++
+                    loadingIndexes.add(index)
+                    unresolvedIndexes.add(index)
+                }
+                else -> {
+                    unresolved++
+                    unresolvedIndexes.add(index)
+                }
+            }
+        }
+        return ReaderSurfaceView.PageReadinessSnapshot(
+            pageCount = refs.size,
+            drawablePages = ready,
+            loadingPages = loadingCount,
+            errorPages = errorCount,
+            cardPages = cardCount,
+            unresolvedPages = unresolved,
+            loadingIndexes = loadingIndexes.joinToString("|"),
+            unresolvedIndexes = unresolvedIndexes.joinToString("|")
+        )
+    }
+
+    private fun scheduleNtkFullEpisodeWarmRetry(startPage: Int) {
+        if (!isNtkSource(manga, title)) return
+        val attempt = ntkFullEpisodeWarmRetries.incrementAndGet()
+        if (attempt > NTK_FULL_EPISODE_WARM_RETRY_MAX) return
+        val delayMs = NTK_FULL_EPISODE_WARM_RETRY_MS * attempt
+        main.postDelayed({
+            if (cancelled.get()) return@postDelayed
+            requestAllUndeliveredNtkPages("retry_$attempt")
+            warmNtkInitialPages(startPage)
+        }, delayMs)
+    }
+
+    private fun requestAllUndeliveredNtkPages(reason: String) {
+        if (!isNtkSource(manga, title)) return
+        val indexes = synchronized(pagesLock) { pages.indices.toList() }
+        var requested = 0
+        var staleCleared = 0
+        val requestedIndexes = ArrayList<Int>()
+        val staleIndexes = ArrayList<Int>()
+        val now = SystemClock.elapsedRealtime()
+        for (index in indexes) {
+            if (hasDeliveredBitmap(index)) continue
+            val page = pageRef(index)
+            if (page != null && hasPageSourceReady(index, page)) continue
+            if (page != null) forcePrefetchNtkPageSource(index, page, reason)
+            val hasActiveLoadState =
+                loading.contains(index) ||
+                    loadingPages.containsKey(index) ||
+                    urgentLoading.contains(index) ||
+                    urgentLoadingPages.containsKey(index) ||
+                    inFlightWidths.containsKey(index) ||
+                    pendingDeliveryWidths.containsKey(index)
+            val loadingStartedAt = loadingStartedAtMs[index]
+            val loadingAge = loadingStartedAt?.let { now - it } ?: if (hasActiveLoadState) Long.MAX_VALUE else 0L
+            if (loadingAge >= NTK_FULL_EPISODE_STALE_LOADING_MS || failedPages.contains(index)) {
+                loading.remove(index)
+                loadingPages.remove(index)
+                loadingStartedAtMs.remove(index)
+                urgentLoading.remove(index)
+                urgentLoadingPages.remove(index)
+                inFlightWidths.remove(index)
+                pendingDeliveryWidths.remove(index)
+                failedPages.remove(index)
+                staleCleared++
+                if (staleIndexes.size < 32) staleIndexes.add(index)
+            }
+            requestPage(index, busy = false, anchor = false, generation = PRIME_WARM_GENERATION)
+            requested++
+            if (requestedIndexes.size < 32) requestedIndexes.add(index)
+        }
+        Log.d(
+            TAG,
+            "reader_ntk_full_episode_warm reason=$reason,requested=$requested," +
+                "staleCleared=$staleCleared,total=${indexes.size}," +
+                "requestedIndexes=${requestedIndexes.joinToString("|")}," +
+                "staleIndexes=${staleIndexes.joinToString("|")}"
+        )
+    }
+
+    private fun forcePrefetchNtkPageSource(index: Int, page: PageRef, reason: String) {
+        if (!isNtkSource(page.manga, title)) return
+        if (page.transitionTitle != null || page.image.isNullOrEmpty()) return
+        if (hasPageSourceReady(index, page)) return
+        if (!bytePrefetching.add(index)) return
+        try {
+            network.execute {
+                val startedAt = SystemClock.elapsedRealtime()
+                try {
+                    if (!cancelled.get() && pageRef(index) == page && !hasPageSourceReady(index, page)) {
+                        prefetchImageFile(
+                            index,
+                            page,
+                            foreground = false,
+                            visiblePriority = false
+                        )
+                        logNtkPagePerf(
+                            index,
+                            "full_episode_source_prefetch_done",
+                            "reason=$reason,ms=${SystemClock.elapsedRealtime() - startedAt}"
+                        )
+                    }
+                } catch (e: Exception) {
+                    if (isExpectedCancellation(e)) {
+                        logNtkPagePerf(
+                            index,
+                            "full_episode_source_prefetch_cancelled",
+                            "reason=$reason,ms=${SystemClock.elapsedRealtime() - startedAt}"
+                        )
+                    } else {
+                        logNtkPagePerf(
+                            index,
+                            "full_episode_source_prefetch_error",
+                            "reason=$reason,ms=${SystemClock.elapsedRealtime() - startedAt},error=${e.javaClass.simpleName}"
+                        )
+                        recordIfUnexpected(e)
+                    }
+                } finally {
+                    bytePrefetching.remove(index)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            bytePrefetching.remove(index)
+        }
     }
 
     private fun warmNtkGeneratedInitialPagesLimited(startPage: Int, loadStartedAt: Long) {
@@ -5067,6 +5235,7 @@ class ReaderSession(
         inFlightWidths.clear()
         loading.clear()
         loadingPages.clear()
+        loadingStartedAtMs.clear()
         urgentLoading.clear()
         urgentLoadingPages.clear()
         bytePrefetching.clear()
@@ -5234,6 +5403,7 @@ class ReaderSession(
         if (ownsLoading) {
             loadingPages[index] = page
             inFlightWidths[index] = targetWidth
+            loadingStartedAtMs[index] = SystemClock.elapsedRealtime()
         }
         if (urgent) {
             urgentLoadingPages[index] = page
@@ -5618,6 +5788,7 @@ class ReaderSession(
                 loadingPages.remove(index, loadingPage)
                 loading.remove(index)
                 inFlightWidths.remove(index)
+                loadingStartedAtMs.remove(index)
             }
         }
         urgentLoadingPages[index]?.let { urgentPage ->
@@ -5633,6 +5804,7 @@ class ReaderSession(
             loadingPages.remove(index, page)
             loading.remove(index)
             inFlightWidths.remove(index)
+            loadingStartedAtMs.remove(index)
         }
         if (urgent && urgentLoadingPages[index] === page) {
             urgentLoadingPages.remove(index, page)
@@ -6581,6 +6753,19 @@ class ReaderSession(
             }
         } else {
             File(image)
+        }
+    }
+
+    private fun hasPageSourceReady(index: Int, page: PageRef): Boolean {
+        val image = page.image ?: return false
+        if (!page.manga.isOnline) return true
+        return try {
+            ReaderImageCache.cachedFile(appContext, page.manga, image) != null
+        } catch (e: Exception) {
+            if (!isExpectedCancellation(e)) {
+                logNtkPagePerf(index, "source_ready_probe_error", "error=${e.javaClass.simpleName}")
+            }
+            false
         }
     }
 
@@ -9721,12 +9906,15 @@ class ReaderSession(
         private val NTK_GENERATED_IMAGE_EXTENSION = Regex("(?i)\\.([a-z0-9]+)(?:[?#].*)?$")
         private const val NTK_INITIAL_BOOT_PRIORITY_PAGES = 16
         private const val NTK_INITIAL_BOOT_URGENT_PAGES = 16
-        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 18
+        private const val NTK_INITIAL_BOOT_BACKGROUND_PAGES = 96
         private const val NTK_WEBTOON_INITIAL_BOOT_PRIORITY_PAGES = 2
         private const val NTK_WEBTOON_INITIAL_BOOT_URGENT_PAGES = 2
-        private const val NTK_WEBTOON_INITIAL_BOOT_BACKGROUND_PAGES = 3
-        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 24
-        private const val NTK_WEBTOON_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 16
+        private const val NTK_WEBTOON_INITIAL_BOOT_BACKGROUND_PAGES = 160
+        private const val NTK_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 96
+        private const val NTK_WEBTOON_INITIAL_BYTE_PREFETCH_AHEAD_PAGES = 160
+        private const val NTK_FULL_EPISODE_WARM_RETRY_MAX = 8
+        private const val NTK_FULL_EPISODE_WARM_RETRY_MS = 1800L
+        private const val NTK_FULL_EPISODE_STALE_LOADING_MS = 10_000L
         private const val NTK_GENERATED_INITIAL_LIMITED_WARM_PAGES = 3
         private const val NTK_GENERATED_INITIAL_LIMITED_FOREGROUND_PAGES = 2
         private const val NTK_GENERATED_INITIAL_LIMITED_BUSY_PAGES = 1
