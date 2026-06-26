@@ -2481,7 +2481,6 @@ object ReaderImageCache {
         fastInitialGenerated: Boolean = false
     ): Int {
         if (sourceWidth <= 0 || targetWidth <= 0) return 1
-        if (fastInitialGenerated && sourceWidth / 2 >= 320) return 2
         var sample = 1
         while (sourceWidth / (sample * 2) >= targetWidth) sample *= 2
         return max(1, sample)

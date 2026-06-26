@@ -2569,7 +2569,9 @@ public class NtkRandomStressInstrumentedTest {
         if(coverage == null
                 || coverage.getPlaceholderPx() != 0
                 || coverage.getVisibleLoading() != 0
-                || coverage.getVisibleErrors() != 0)
+                || coverage.getVisibleErrors() != 0
+                || coverage.getWidthFillFailures() != 0
+                || coverage.getLowResolutionItems() != 0)
             return false;
         if(coverage.getMissingPx() <= 2
                 && coverage.getDrawablePx() >= Math.max(1, coverage.getViewportPx() - 2))
@@ -2594,7 +2596,9 @@ public class NtkRandomStressInstrumentedTest {
                 + ";cards=" + coverage.getVisibleCards()
                 + ";busy=" + coverage.getBusy()
                 + ";pages=" + coverage.getPageCount()
-                + ";widthFillFailures=" + coverage.getWidthFillFailures();
+                + ";widthFillFailures=" + coverage.getWidthFillFailures()
+                + ";lowResolutionItems=" + coverage.getLowResolutionItems()
+                + ";minDrawableSourceWidth=" + coverage.getMinDrawableSourceWidth();
     }
 
     private static long swipeReader(UiDevice device, ReaderV2Activity reader,

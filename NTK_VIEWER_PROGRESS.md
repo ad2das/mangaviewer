@@ -31348,3 +31348,49 @@ Current status: target, dead-root detection, automatic live-root selection, mixe
   - All 6 ACK checks passed with `strictProof=true` and `falseDone=false`.
 - Network proof:
   - before/after: `CELLULAR`, `vpnActive=false`, `notVpn=true`.
+
+## 2026-06-26 09:35 KST rendered-quality and smooth-scroll strict follow-up
+
+- User-raised gap: the previous pass still allowed visually bad frames. The app could briefly show NTK generated images decoded at 345/425/534px and stretch them to the 1080px viewport, so "full width" was not the same as "sharp/native-looking". The previous `widthFillFailures` field also was not wired into a real source-width quality check.
+- Fixes added:
+  - Removed the NTK generated initial display downsample path that used 49.5%/60% viewport targets.
+  - Removed foreground stream forced half-sampling for initial generated pages, which was producing `690 -> 345px` first-visible bitmaps.
+  - Initial generated file decode now uses ARGB_8888 and normal target-width sampling instead of RGB_565 preview decode.
+  - `ReaderSurfaceView` now reports `lowResolutionItems` and `minDrawableSourceWidth` for visible drawable content.
+  - Instrumentation now fails visible coverage if `widthFillFailures != 0` or `lowResolutionItems != 0`.
+  - Scroll fast-draw is still used for smoothness, but its real-user post-scroll/initial duration was reduced from 3500ms to 180ms/220ms so filtered rendering returns quickly after movement.
+
+### Generated webtoon low-resolution repro strict pass
+
+- Artifact: `build\ntk-random-perf\20260626_092108`.
+- Target: `/webtoon/824995/1353997`.
+- Result: `passed=True`, `failures=0`.
+- First drawable: `957ms`.
+- Full episode readiness: `18/18` pages drawable in `3423ms`.
+- Scroll: `20/20`; every checkpoint had `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, `widthFillFailures=0`, `lowResolutionItems=0`.
+- Decode proof: foreground stream decoded page 0 at `width=690`, not the previous `345`.
+- No `scale_generated_for_draw` or `generated_initial_decode_sample` entries were present.
+
+### Long target full-episode scroll strict pass
+
+- Artifact: `build\ntk-random-perf\20260626_092257`.
+- Target: `/webtoon/61871569/kp-61871569-69132187`.
+- Result: `passed=True`, `failures=0`.
+- Scroll: `80/80`; scroll checkpoint coverage had no missing/placeholder/loading/error pixels and `lowResolutionItems=0`.
+- The log grep found no failing `lowResolutionItems`, `widthFillFailures`, `missingPx`, `placeholderPx`, `loading`, `errors`, or generated downscale entries in strict scroll checkpoints.
+- Network: before/after `vpnActive=false`, `notVpn=true`.
+
+### Random mixed manga/webtoon rendered-quality strict pass
+
+- Artifact: `build\ntk-random-perf\20260626_092517`.
+- Command shape:
+  - `Runs=6`, `ScrollSteps=20`, `Mode=native-ack`, `StrictFresh`, `RequireLiveRandom`, `RequireAllPagesDrawable`, root locked to `https://newtoki1.org`.
+- Result: `passed=True`, `exitCode=0`, `failures=0`, `slowSignals=0`.
+- Coverage:
+  - 6 unique live-random episode paths and 6 unique title paths.
+  - 120 scroll checkpoints.
+  - Log grep found zero `lowResolutionItems`, `widthFillFailures`, `missingPx`, `placeholderPx`, `loading`, `errors`, `scale_generated_for_draw`, or `generated_initial_decode_sample` failures.
+- Full-episode readiness and ACK checks:
+  - 6 `ntk_true_random_all_pages_drawable` lines plus 120 scroll lines were logged.
+  - All 6 ACK checks passed with strict proof and no false-done.
+- Network: before/after `CELLULAR`, `vpnActive=false`, `notVpn=true`.

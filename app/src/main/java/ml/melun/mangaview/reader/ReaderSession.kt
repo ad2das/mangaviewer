@@ -7754,16 +7754,9 @@ class ReaderSession(
             return result
         }
         val decodeTargetWidth = decodeTargetWidth(bounds.outWidth, bounds.outHeight, targetWidth, page.allowAutoSplit)
-        val initialGeneratedDisplayDecode = shouldUseNtkInitialGeneratedDisplayDecode(index, page)
-        val baseSample = sampleSize(bounds.outWidth, decodeTargetWidth)
-        val sample = if (initialGeneratedDisplayDecode) {
-            ntkInitialGeneratedDisplaySample(index, page, bounds.outWidth, targetWidth, baseSample)
-        } else {
-            baseSample
-        }
         val options = BitmapFactory.Options().apply {
-            inPreferredConfig = if (initialGeneratedDisplayDecode) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
-            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inSampleSize = sampleSize(bounds.outWidth, decodeTargetWidth)
         }
         val raw = if (page.manga.isOnline || file.exists()) {
             BitmapFactory.decodeFile(file.absolutePath, options)
@@ -7832,36 +7825,6 @@ class ReaderSession(
             path.startsWith("/manhwa/", ignoreCase = true)
     }
 
-    private fun ntkInitialGeneratedDisplaySample(
-        index: Int,
-        page: PageRef,
-        sourceWidth: Int,
-        targetWidth: Int,
-        baseSample: Int
-    ): Int {
-        val desiredWidth = ntkInitialGeneratedDisplayTargetWidth(page, targetWidth) ?: return baseSample
-        val displaySample = sampleSize(sourceWidth, desiredWidth)
-        val sample = max(baseSample, displaySample)
-        if (sample > baseSample) {
-            logNtkPagePerf(
-                index,
-                "generated_initial_decode_sample",
-                "source=$sourceWidth,target=$targetWidth,desired=$desiredWidth,base=$baseSample,sample=$sample"
-            )
-        }
-        return sample
-    }
-
-    private fun ntkInitialGeneratedDisplayTargetWidth(page: PageRef, targetWidth: Int): Int? {
-        val path = page.manga.ntkEpisodePath.orEmpty()
-        val requested = targetWidth.coerceAtLeast(1)
-        return when {
-            path.startsWith("/webtoon/", ignoreCase = true) -> maxOf(1, requested * 600 / 1000)
-            path.startsWith("/manhwa/", ignoreCase = true) -> maxOf(1, requested * 495 / 1000)
-            else -> null
-        }
-    }
-
     private fun drawableResult(bitmap: Bitmap, splitForDraw: Boolean = true): PageDecodeResult {
         if (!splitForDraw || !shouldSplitDecodedBitmapForDraw(bitmap)) return PageDecodeResult.Full(bitmap)
         val tiles = ArrayList<ReaderTile>()
@@ -7917,40 +7880,7 @@ class ReaderSession(
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return bitmap
         val start = currentStartPage()
         if (index >= 0 && index > start + NTK_INITIAL_DIRECT_DELIVERY_PAGES) return bitmap
-        val path = page.manga.ntkEpisodePath.orEmpty()
-        val requestedTarget = targetWidth.coerceAtLeast(1)
-        val safeTarget = if (path.startsWith("/webtoon/", ignoreCase = true)) {
-            minOf(requestedTarget, bitmap.width, maxOf(1, requestedTarget * 600 / 1000))
-        } else if (path.startsWith("/manhwa/", ignoreCase = true)) {
-            minOf(requestedTarget, maxOf(1, requestedTarget * 495 / 1000))
-        } else {
-            return bitmap
-        }
-        if (bitmap.width >= safeTarget && bitmap.config == Bitmap.Config.RGB_565) return bitmap
-        val scaledHeight = (bitmap.height.toLong() * safeTarget / bitmap.width).coerceAtLeast(1L)
-        if (scaledHeight > Int.MAX_VALUE) return bitmap
-        val sourceWidth = bitmap.width
-        return try {
-            val scaled = Bitmap.createBitmap(safeTarget, scaledHeight.toInt(), Bitmap.Config.RGB_565)
-            Canvas(scaled).drawBitmap(
-                bitmap,
-                Rect(0, 0, bitmap.width, bitmap.height),
-                Rect(0, 0, scaled.width, scaled.height),
-                Paint(Paint.FILTER_BITMAP_FLAG).apply {
-                    isFilterBitmap = false
-                    isDither = false
-                }
-            )
-            if (scaled !== bitmap && !bitmap.isRecycled) bitmap.recycle()
-            logNtkPagePerf(
-                index.coerceAtLeast(start),
-                "scale_generated_for_draw",
-                "from=$sourceWidth,to=${scaled.width},height=${scaled.height}"
-            )
-            scaled
-        } catch (_: Throwable) {
-            bitmap
-        }
+        return bitmap
     }
 
     private fun decodeTargetWidth(sourceWidth: Int, sourceHeight: Int, targetWidth: Int, allowSplit: Boolean): Int {

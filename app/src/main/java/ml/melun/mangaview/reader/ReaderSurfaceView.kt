@@ -57,7 +57,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleCards: Int,
         val busy: Boolean,
         val pageCount: Int,
-        val widthFillFailures: Int = 0
+        val widthFillFailures: Int = 0,
+        val lowResolutionItems: Int = 0,
+        val minDrawableSourceWidth: Int = 0
     )
 
     data class PageReadinessSnapshot(
@@ -143,7 +145,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val missingPx: Int,
         val placeholderPx: Int,
         val drawableItems: Int,
-        val totalItems: Int
+        val totalItems: Int,
+        val lowResolutionItems: Int,
+        val minDrawableSourceWidth: Int
     )
 
     private data class WindowRequest(
@@ -1959,7 +1963,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 TAG,
                 "reader_visible_coverage drawablePx=${coverage.drawablePx} " +
                     "missingPx=${coverage.missingPx} placeholderPx=${coverage.placeholderPx} " +
-                    "drawableItems=${coverage.drawableItems} items=${coverage.totalItems}"
+                    "drawableItems=${coverage.drawableItems} items=${coverage.totalItems} " +
+                    "lowResItems=${coverage.lowResolutionItems} minSourceWidth=${coverage.minDrawableSourceWidth}"
             )
             if (coverage.missingPx > COVERAGE_EDGE_FILL_PX) {
                 Log.i(
@@ -1993,7 +1998,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             visibleErrors = visibleErrors,
             visibleCards = visibleCards,
             busy = state.busy,
-            pageCount = state.pageCount
+            pageCount = state.pageCount,
+            lowResolutionItems = coverage.lowResolutionItems,
+            minDrawableSourceWidth = coverage.minDrawableSourceWidth
         )
         synchronized(stateLock) {
             lastVisibleCoverageSnapshot = snapshot
@@ -2026,12 +2033,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun coverageStats(state: DrawState): CoverageStats {
-        if (state.empty) return CoverageStats(0, visibleContentPx(state), 0, 0, 0)
+        if (state.empty) return CoverageStats(0, visibleContentPx(state), 0, 0, 0, 0, 0)
         val visibleContentPx = visibleContentPx(state)
         var drawablePx = 0
         var placeholderPx = 0
         var drawableItems = 0
+        var lowResolutionItems = 0
+        var minDrawableSourceWidth = Int.MAX_VALUE
         var coveredPx = 0
+        val minimumReadableSourceWidth = max(1, state.width * MIN_READABLE_SOURCE_WIDTH_PERMILLE / 1000)
         for (item in state.items) {
             val top = floor(max(0f, item.top)).toInt().coerceIn(0, visibleContentPx)
             val bottom = ceil(min(visibleContentPx.toFloat(), item.top + item.pageHeight)).toInt().coerceIn(top, visibleContentPx)
@@ -2041,6 +2051,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (itemHasDrawable(item)) {
                 drawablePx += px
                 drawableItems++
+                val sourceWidth = drawableSourceWidth(item)
+                if (sourceWidth > 0) {
+                    minDrawableSourceWidth = min(minDrawableSourceWidth, sourceWidth)
+                    if (sourceWidth < minimumReadableSourceWidth) lowResolutionItems++
+                }
             } else {
                 placeholderPx += px
             }
@@ -2056,7 +2071,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             missingPx = missingPx,
             placeholderPx = placeholderPx,
             drawableItems = drawableItems,
-            totalItems = state.items.size
+            totalItems = state.items.size,
+            lowResolutionItems = lowResolutionItems,
+            minDrawableSourceWidth = if (minDrawableSourceWidth == Int.MAX_VALUE) 0 else minDrawableSourceWidth
         )
     }
 
@@ -2074,6 +2091,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bitmap = item.bitmap
         if (bitmap != null && !bitmap.isRecycled) return true
         return item.tiles.any { !it.bitmap.isRecycled }
+    }
+
+    private fun drawableSourceWidth(item: DrawItem): Int {
+        if (item.cardText != null) return Int.MAX_VALUE
+        val bitmap = item.bitmap
+        if (bitmap != null && !bitmap.isRecycled) return bitmap.width
+        return item.tiles
+            .asSequence()
+            .filter { !it.bitmap.isRecycled }
+            .map { if (it.sourceWidth > 0) it.sourceWidth else it.bitmap.width }
+            .minOrNull() ?: 0
     }
 
     private fun drawableUploadId(item: DrawItem): Int? {
@@ -3286,6 +3314,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val DRAW_COVERAGE_EPSILON_PX = 1f
         private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
+        private const val MIN_READABLE_SOURCE_WIDTH_PERMILLE = 600
         private const val PREPENDED_BOUNDARY_HOLD_MAX_FRACTION = 0.35f
         private const val SCROLLBAR_TOUCH_WIDTH_PX = 96f
         private const val SCROLLBAR_RIGHT_MARGIN_PX = 10f
@@ -3317,11 +3346,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BUSY_RESOLVE_RENDER_EXTRA_PAGES = 2
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
-        private const val SCROLL_FAST_BITMAP_DRAW_MS = 3500L
+        private const val SCROLL_FAST_BITMAP_DRAW_MS = 180L
         private const val SCROLL_FAST_BITMAP_REFINE_DELAY_MS = 2200L
         private const val INITIAL_CONTENT_DRAWABLES_PER_FRAME = 1
         private const val INITIAL_UPLOAD_SPLIT_AFTER_FIRST_MS = 2500L
-        private const val INITIAL_FAST_BITMAP_DRAW_MS = 3500L
+        private const val INITIAL_FAST_BITMAP_DRAW_MS = 220L
         private const val PENDING_NONE = 0
         private const val PENDING_BITMAP = 1
         private const val PENDING_TILES = 2
