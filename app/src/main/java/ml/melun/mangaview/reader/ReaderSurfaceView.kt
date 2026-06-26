@@ -491,10 +491,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     fun removePageRange(startIndex: Int, removedCount: Int) {
         if (removedCount <= 0) return
-        val request = synchronized(stateLock) {
+        val result = synchronized(stateLock) {
             if (startIndex !in pages.indices) return
             val endExclusive = min(pages.size, startIndex + removedCount)
             if (endExclusive <= startIndex) return
+            val wasAtEnd = height > 0 &&
+                scrollOffset >= maxScrollLocked() - BOUNDARY_EPSILON_PX
             rebuildLayoutLocked()
             val viewportAnchor = progressPositionLocked()
             repeat(endExclusive - startIndex) { pages.removeAt(startIndex) }
@@ -548,9 +550,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
-            windowRequestLocked(lastBusy)
+            val window = windowRequestLocked(lastBusy)
+            val boundary = if (
+                wasAtEnd &&
+                pages.isNotEmpty() &&
+                height > 0 &&
+                SystemClock.uptimeMillis() - lastScrollInteractionMs <= BOUNDARY_REMOVE_RECENT_SCROLL_MS &&
+                scrollOffset >= maxScrollLocked() - BOUNDARY_EPSILON_PX
+            ) {
+                boundaryArmedDirection = DIRECTION_NEXT
+                boundaryRequestLocked()
+            } else {
+                null
+            }
+            window to boundary
         }
-        dispatchWindowRequest(request)
+        dispatchWindowRequest(result.first)
+        dispatchBoundaryRequest(result.second)
     }
 
     fun setPageLoading(index: Int) {
@@ -2504,13 +2520,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun maxScrollLocked(): Float {
         val fullMaxScroll = max(0f, totalHeightLocked() - height)
         if (!limitScrollToDrawablePrefix || pages.isEmpty() || height <= 0) return fullMaxScroll
-        val hasDrawablePage = pages.any { page ->
-            page.cardText != null ||
-                page.errorText != null ||
-                page.bitmap != null ||
-                page.tiles.isNotEmpty()
+        val lastDrawablePage = pages.indices.lastOrNull { index ->
+            pageHasDrawableContentLocked(index)
         }
-        if (hasDrawablePage) return fullMaxScroll
+        if (lastDrawablePage != null) {
+            val hasUnresolvedTail = ((lastDrawablePage + 1)..pages.lastIndex).any { index ->
+                !pageHasDrawableContentLocked(index)
+            }
+            if (!hasUnresolvedTail) return fullMaxScroll
+            val drawableBottom = pageTopOrElseLocked(lastDrawablePage, 0f) + pageDrawHeightLocked(pages[lastDrawablePage])
+            return min(fullMaxScroll, max(0f, drawableBottom - height))
+        }
         val firstBlocked = pages.indexOfFirst { page ->
             page.cardText == null &&
                 page.errorText == null &&
@@ -2527,7 +2547,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val direction = boundaryArmedDirection
         if (clearDirection) boundaryArmedDirection = 0
         if (direction == 0 || pages.isEmpty() || width <= 0 || height <= 0) return null
-        val maxScroll = max(0f, totalHeightLocked() - height)
+        val maxScroll = maxScrollLocked()
         val atStart = scrollOffset <= BOUNDARY_EPSILON_PX
         val atEnd = scrollOffset >= maxScroll - BOUNDARY_EPSILON_PX
         val request = when {
@@ -2918,7 +2938,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             height * BOUNDARY_CANCEL_MIN_DRAG_SCREEN_RATIO
         )
         if (dragDistance < minDistance) return false
-        val maxScroll = max(0f, totalHeightLocked() - height)
+        val maxScroll = maxScrollLocked()
         return when (direction) {
             DIRECTION_PREVIOUS -> scrollOffset <= BOUNDARY_EPSILON_PX
             DIRECTION_NEXT -> scrollOffset >= maxScroll - BOUNDARY_EPSILON_PX
@@ -3323,6 +3343,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val SUSTAINED_SLOW_FRAME_LOG_BUDGET_MS = 32f
         private const val SLOW_FRAME_LOG_INTERVAL_MS = 500L
         private const val PROGRAMMATIC_SCROLL_STATS_RECENT_MS = 1800L
+        private const val BOUNDARY_REMOVE_RECENT_SCROLL_MS = 5000L
         private const val PROGRAMMATIC_SCROLL_STATS_ACTIVE_MS = 6500L
         private const val PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS = 820L
         private const val COVERAGE_EDGE_FILL_PX = 8

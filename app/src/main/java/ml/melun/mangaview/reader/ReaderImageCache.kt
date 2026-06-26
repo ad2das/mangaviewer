@@ -689,7 +689,7 @@ object ReaderImageCache {
 
     private fun shouldReplaceWithVerifiedGeneratedSubset(existing: List<String>, incoming: List<String>): Boolean {
         if (existing.isEmpty() || incoming.isEmpty()) return false
-        if (existing.size > incoming.size) return false
+        if (existing.size <= incoming.size) return false
         val incomingTargets = incoming.map { ntkGeneratedTarget(it) ?: return false }
         val existingTargets = existing.map { ntkGeneratedTarget(it) ?: return false }
         val path = incomingTargets.first().path

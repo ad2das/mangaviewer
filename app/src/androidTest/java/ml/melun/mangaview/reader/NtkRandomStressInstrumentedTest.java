@@ -1735,6 +1735,8 @@ public class NtkRandomStressInstrumentedTest {
         String lower = path.toLowerCase(Locale.ROOT);
         if(!lower.startsWith("/webtoon/") && !lower.startsWith("/manhwa/"))
             return 0;
+        if(isNumericNtkEpisodePath(path))
+            return 0;
         int imageCount = episode.getNtkImageCount();
         if(imageCount <= 3)
             return 0;

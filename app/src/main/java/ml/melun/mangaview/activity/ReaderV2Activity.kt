@@ -420,7 +420,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     pendingBoundaryCaptchaRetry = true
                     pendingCaptchaRetryDirection = retryDirection
                     pendingCaptchaRetryAnchor = retryAnchor
-                    val retryStart = session?.appendAdjacentEpisode(retryAnchor, retryDirection)
+                    val retryStart = session?.appendAdjacentEpisode(retryAnchor, retryDirection, skipStartDelay = true)
                     markPrependRevealRequest(retryDirection, retryStart)
                     if (retryStart != ReaderSession.AppendStartResult.STARTED && retryStart != ReaderSession.AppendStartResult.BUSY) {
                         clearPendingBoundaryCaptchaRetry()
@@ -1416,7 +1416,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 pendingBoundaryCaptchaRetry = true
                 pendingCaptchaRetryDirection = direction
                 pendingCaptchaRetryAnchor = anchor
-                val retryStart = session?.appendAdjacentEpisode(anchor, direction)
+                val retryStart = session?.appendAdjacentEpisode(anchor, direction, skipStartDelay = true)
                 markPrependRevealRequest(direction, retryStart)
                 if (retryStart != ReaderSession.AppendStartResult.STARTED && retryStart != ReaderSession.AppendStartResult.BUSY) {
                     clearPendingBoundaryCaptchaRetry()
@@ -1576,7 +1576,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingBoundaryStartInteractionMs = lastReaderInteractionMs
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
-        val startResult = session?.appendAdjacentEpisode(anchorPage, direction)
+        val startResult = session?.appendAdjacentEpisode(anchorPage, direction, skipStartDelay = true)
         markPrependRevealRequest(direction, startResult)
         if (startResult != ReaderSession.AppendStartResult.STARTED && startResult != ReaderSession.AppendStartResult.BUSY) {
             clearPendingBoundaryCaptchaRetry()
@@ -3119,7 +3119,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     fun testStartBoundaryAppend(direction: Int, anchorPage: Int): ReaderSession.AppendStartResult? {
         val anchor = anchorPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-        val startResult = session?.appendAdjacentEpisode(anchor, direction)
+        val startResult = session?.appendAdjacentEpisode(anchor, direction, skipStartDelay = true)
         markPrependRevealRequest(direction, startResult)
         return startResult
     }

@@ -1412,8 +1412,7 @@ class ReaderSession(
 
     private fun shouldKeepManhwaGeneratedEarlyToObservedUrls(target: Manga, urls: List<String>): Boolean {
         if (!isNtkSource(target, title)) return false
-        if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return false
-        if (urls.size != 1) return false
+        if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
         return urls.all { isNtkGeneratedImageUrl(it) }
     }
 
@@ -1440,6 +1439,7 @@ class ReaderSession(
     private fun expandVerifiedGeneratedEarlyUrls(target: Manga, urls: List<String>): List<String> {
         if (!isNtkSource(target, title) || urls.isEmpty()) return urls
         val seed = urls.firstOrNull { isNtkGeneratedImageUrl(it) } ?: return urls
+        if (isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return urls
         val knownCount = target.ntkImageCount
         val desiredCount = ntkGeneratedEarlyExpandCount(target, urls.size, knownCount)
         if (desiredCount <= urls.size) return urls
@@ -1461,6 +1461,7 @@ class ReaderSession(
     private fun expandInitialVerifiedGeneratedEarlyUrls(target: Manga, urls: List<String>): List<String> {
         if (!isNtkSource(target, title) || urls.isEmpty()) return urls
         val seed = urls.firstOrNull { isNtkGeneratedImageUrl(it) } ?: return urls
+        if (isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return urls
         val knownCount = target.ntkImageCount
         val desiredCount = when {
             knownCount > urls.size && knownCount <= NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD -> knownCount
@@ -1515,11 +1516,7 @@ class ReaderSession(
             }
         }
         if (isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) {
-            if (knownCount > 0) return knownCount
-            return when {
-                knownCount > currentCount -> knownCount
-                else -> maxOf(currentCount, NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD)
-            }
+            return currentCount
         }
         return when {
             knownCount > currentCount -> knownCount
@@ -1910,7 +1907,9 @@ class ReaderSession(
             sourceUrls.all { isNtkGeneratedImageUrl(it) }
         ) {
             val installedForEpisode = installedDrawablePageCountForEpisode(target)
-            if (installedForEpisode > sourceUrls.size) {
+            if (installedForEpisode > sourceUrls.size &&
+                !shouldAllowNtkGeneratedVerifiedShrink(target, sourceUrls)
+            ) {
                 Log.d(
                     TAG,
                     "reader_ntk_generated_full_skip_late_shrink path=${target.ntkEpisodePath}," +
@@ -1957,12 +1956,14 @@ class ReaderSession(
                 firstBitmapLogged.get() &&
                 fullRefs.size < pages.size
             ) {
-                logNtkRepositoryStage(
-                    target,
-                    "early_urls_refresh_full_skip_active_generated_shrink",
-                    "from=${pages.size},to=${fullRefs.size},ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
-                )
-                return
+                if (!shouldAllowNtkGeneratedVerifiedShrink(target, sourceUrls)) {
+                    logNtkRepositoryStage(
+                        target,
+                        "early_urls_refresh_full_skip_active_generated_shrink",
+                        "from=${pages.size},to=${fullRefs.size},ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                    )
+                    return
+                }
             }
             val replaceGeneratedSeedWithFullBoard =
                 pages.size < fullRefs.size &&
@@ -3648,14 +3649,19 @@ class ReaderSession(
         deferredAdjacentPrepareScheduled.set(false)
         if (anchor >= 0 && direction != 0) {
             if (!isNtkSilentAdjacentStillNearBoundary(anchor, direction)) return
-            appendAdjacentEpisode(anchor, direction, silentMissing = silentMissing)
+            appendAdjacentEpisode(anchor, direction, silentMissing = silentMissing, skipStartDelay = true)
         }
     }
 
-    fun appendAdjacentEpisode(anchor: Int, direction: Int, silentMissing: Boolean = false): AppendStartResult {
+    fun appendAdjacentEpisode(
+        anchor: Int,
+        direction: Int,
+        silentMissing: Boolean = false,
+        skipStartDelay: Boolean = false
+    ): AppendStartResult {
         if (cancelled.get()) return AppendStartResult.CANCELLED
         if (isNtkSource(manga, title) && !firstBitmapLogged.get()) return AppendStartResult.CANCELLED
-        if (isNtkSource(manga, title)) {
+        if (isNtkSource(manga, title) && !skipStartDelay) {
             val quietMs = ntkAdjacentAppendStartDelayMs()
             if (quietMs > 0L) {
                 Log.d(
@@ -6334,6 +6340,16 @@ class ReaderSession(
         val latest = ReaderImageCache.earlyNtkImageUrls(manga.ntkEpisodePath, 0L)
         if (latest.isEmpty()) return
         val installedCount = synchronized(pagesLock) { pages.size }
+        if (latest.size < installedCount && shouldAllowNtkGeneratedVerifiedShrink(manga, latest)) {
+            appendInitialNtkUrlsAfterEarlyInstall(manga, latest, loadStartedAt, allowFirstBitmapDefer = true)
+            logNtkRepositoryStage(
+                manga,
+                "early_urls_latest_shrink_after_first_bitmap",
+                "from=$installedCount,to=${latest.size},ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+            )
+            requestInitialContinuousPagesFromEarlyUrls(currentStartPage(), latest.size)
+            return
+        }
         if (latest.size <= installedCount) return
         appendInitialNtkUrlsAfterEarlyInstall(manga, latest, loadStartedAt, allowFirstBitmapDefer = true)
         if (latest.all { isNtkGeneratedImageUrl(it) } && generatedFullAppendQuietRemainingMs() > 0L) {
@@ -6350,6 +6366,15 @@ class ReaderSession(
             "from=$installedCount,to=${latest.size},ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
         )
         requestInitialContinuousPagesFromEarlyUrls(currentStartPage(), latest.size)
+    }
+
+    private fun shouldAllowNtkGeneratedVerifiedShrink(target: Manga, urls: List<String>): Boolean {
+        if (!isNtkSource(target, title)) return false
+        if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
+        if (urls.size <= 1 || urls.any { !isNtkGeneratedImageUrl(it) }) return false
+        val latest = ReaderImageCache.earlyNtkImageUrls(target.ntkEpisodePath, SystemClock.elapsedRealtime() - 30000L)
+        if (latest.size != urls.size || latest.any { !isNtkGeneratedImageUrl(it) }) return false
+        return latest.toSet() == urls.toSet()
     }
 
     private fun scheduleNtkSecondaryInitialWarmAfterFirstBitmap() {
