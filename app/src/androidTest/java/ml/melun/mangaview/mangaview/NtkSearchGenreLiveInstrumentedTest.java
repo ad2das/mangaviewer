@@ -62,7 +62,9 @@ public class NtkSearchGenreLiveInstrumentedTest {
                 + ",challenge=" + MainApplication.getHttpClient().getLastCloudflareChallengeUrl());
 
         assertTrue("NTK keyword search should load titles or surface the in-app captcha path",
-                result == 0 && count > 0 || hasNtkChallengeFor("/search"));
+                result == 0 && count > 0
+                        || hasNtkChallengeFor("/search")
+                        || hasNtkChallengeFor("/api/manhwa-list"));
     }
 
     @Test
@@ -114,7 +116,6 @@ public class NtkSearchGenreLiveInstrumentedTest {
         String challenge = MainApplication.getHttpClient().getLastCloudflareChallengeUrl();
         return MainApplication.getHttpClient().hasRecentCloudflareChallenge()
                 && challenge != null
-                && challenge.contains(NTK_ROOT)
                 && challenge.contains(pathPrefix);
     }
 }

@@ -931,7 +931,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return synchronized(stateLock) {
             val progress = progressPositionLocked() ?: return@synchronized null
             val busy = lastBusy || pointerDown || dragging || !scroller.isFinished
-            val maxScroll = max(0f, totalHeightLocked() - height).toInt()
+            val maxScroll = maxScrollLocked().toInt()
             ScrollPositionSnapshot(progress.page, progress.offset, scrollOffset.toInt(), contentHeight.toInt(), maxScroll, busy)
         }
     }
@@ -939,7 +939,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun testScrollByPixels(deltaPx: Float) {
         val request = synchronized(stateLock) {
             rebuildLayoutLocked()
-            val maxScroll = max(0f, totalHeightLocked() - height)
+            val maxScroll = maxScrollLocked()
             setScrollOffsetLocked((scrollOffset + deltaPx).coerceIn(0f, maxScroll))
             scroller.forceFinished(true)
             lastScrollInteractionMs = SystemClock.uptimeMillis()
@@ -2497,6 +2497,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun maxScrollLocked(): Float {
         val fullMaxScroll = max(0f, totalHeightLocked() - height)
         if (!limitScrollToDrawablePrefix || pages.isEmpty() || height <= 0) return fullMaxScroll
+        val hasDrawablePage = pages.any { page ->
+            page.cardText != null ||
+                page.errorText != null ||
+                page.bitmap != null ||
+                page.tiles.isNotEmpty()
+        }
+        if (hasDrawablePage) return fullMaxScroll
         val firstBlocked = pages.indexOfFirst { page ->
             page.cardText == null &&
                 page.errorText == null &&

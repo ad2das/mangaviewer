@@ -1568,6 +1568,7 @@ public class Search {
         if(client != null && client.isNtk()) {
             int before = target.size();
             int beforePage = page;
+            Exception captchaError = null;
             try {
                 boolean useKeywordApi = shouldUseNtkKeywordApi(client.isNtk(), mode);
                 boolean done = useKeywordApi
@@ -1583,6 +1584,8 @@ public class Search {
                         if(target.size() > before)
                             return htmlDone;
                     } catch (Exception htmlError) {
+                        if(isCaptchaRequiredException(htmlError))
+                            captchaError = htmlError;
                         if(shouldReportSearchFailure(htmlError))
                             ml.melun.mangaview.report.CrashReporter.record(htmlError);
                     }
@@ -1590,12 +1593,17 @@ public class Search {
             } catch (Exception e) {
                 if(mode != 0)
                     throw e;
+                if(isCaptchaRequiredException(e))
+                    captchaError = e;
                 if(shouldReportSearchFailure(e))
                     ml.melun.mangaview.report.CrashReporter.record(e);
             }
             int added = appendNtkClassificationKeywordResults(target, targetBaseMode, limit);
             if(added > 0)
                 return true;
+            if(target.size() == before &&
+                    (captchaError != null || client.hasRecentCloudflareChallenge()))
+                throw new NtkCaptchaRequiredException();
             if(target.size() == before)
                 return true;
             return true;

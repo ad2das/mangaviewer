@@ -1428,8 +1428,7 @@ class ReaderSession(
         if (!isNtkSource(target, title)) return false
         if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
         if (urls.none { isNtkGeneratedImageUrl(it) }) return false
-        if (isNtkWebtoonEpisodePath(target.ntkEpisodePath)) return false
-        return target.ntkImageCount >= urls.size
+        return true
     }
 
     private fun isInitialGeneratedFullAppendReadyForImmediatePublish(target: Manga, total: Int): Boolean {
