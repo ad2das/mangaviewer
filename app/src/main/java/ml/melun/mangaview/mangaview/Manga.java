@@ -4349,15 +4349,6 @@ public class Manga {
         String cached = cachedFreshNtkGeneratedImageExtension(cacheKey);
         if(cached != null)
             return cached;
-        if(shouldTrustImmediateNtkManhwaJpg(segment, workId, episodeId, probePage)) {
-            cacheNtkGeneratedImageExtension(cacheKey, "jpg");
-            Log.d(TAG, "ntk_generated_direct_extension_probe_trust_initial_manhwa_jpg path="
-                    + getNtkEpisodePath()
-                    + ",workId=" + workId
-                    + ",episodeId=" + episodeId
-                    + ",probePage=" + probePage);
-            return "jpg";
-        }
         final FutureTask<String>[] taskHolder = new FutureTask[1];
         FutureTask<String> task = new FutureTask<String>(() ->
                 reachableEarlyNtkGeneratedImageExtensionForPageUnshared(
@@ -4444,19 +4435,6 @@ public class Manga {
         if(result.length() > 0)
             publishVerifiedEarlyNtkGeneratedImages(client, segment, workId, episodeId, result, probePage, 1);
         return result;
-    }
-
-    private boolean shouldTrustImmediateNtkManhwaJpg(String segment, String workId,
-                                                     String episodeId, int probePage) {
-        if(probePage != 1 || !"manhwa".equalsIgnoreCase(segment)
-                || !isNumericNtkId(workId) || !isNumericNtkId(episodeId))
-            return false;
-        String path = getNtkEpisodePath();
-        Matcher matcher = Pattern.compile("^/manhwa/(\\d+)/(\\d+)(?:[/?#].*)?$")
-                .matcher(path == null ? "" : path);
-        return matcher.find()
-                && workId.equals(matcher.group(1))
-                && episodeId.equals(matcher.group(2));
     }
 
     private void publishVerifiedEarlyNtkGeneratedImages(CustomHttpClient client, String segment,

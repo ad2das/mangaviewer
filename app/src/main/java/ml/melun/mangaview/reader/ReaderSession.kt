@@ -1953,6 +1953,18 @@ class ReaderSession(
             previousTotal = pages.size
             fullRefs = replaceNtkBoardUploadsWithGeneratedFullRefs(target, fullRefs)
             generatedOnlyRefs = isGeneratedOnlyNtkRefs(fullRefs)
+            if (
+                generatedOnlyRefs &&
+                firstBitmapLogged.get() &&
+                fullRefs.size < pages.size
+            ) {
+                logNtkRepositoryStage(
+                    target,
+                    "early_urls_refresh_full_skip_active_generated_shrink",
+                    "from=${pages.size},to=${fullRefs.size},ms=${SystemClock.elapsedRealtime() - loadStartedAt}"
+                )
+                return
+            }
             val replaceGeneratedSeedWithFullBoard =
                 pages.size < fullRefs.size &&
                     pages.all { it.transitionTitle != null || isNtkGeneratedImageUrl(it.image.orEmpty()) } &&
@@ -2066,7 +2078,7 @@ class ReaderSession(
                 }
                 requestGeneratedPublishWarmPages("generated_full_publish")
                 if (gateGeneratedAppendNotify) {
-                    notifyGeneratedAppendWhenNearReady(target, total, loadStartedAt)
+                    notifyGeneratedAppendWhenNearReady(target, startIndex, total, loadStartedAt)
                 }
             } else {
                 warmNtkInitialPages(currentStartPage())
@@ -2077,14 +2089,12 @@ class ReaderSession(
 
     private fun shouldGateGeneratedAppendNotifyUntilNearReady(startIndex: Int, total: Int): Boolean {
         if (!isNtkSource(manga, title)) return false
-        val start = currentStartPage()
-        val firstNearDrawable = firstGeneratedAppendDrawableIndex(start, total) ?: return false
+        val firstNearDrawable = firstGeneratedAppendDrawableIndex(startIndex, total) ?: return false
         return !hasListenerDrawableDelivery(firstNearDrawable)
     }
 
-    private fun notifyGeneratedAppendWhenNearReady(target: Manga, total: Int, loadStartedAt: Long) {
-        val start = currentStartPage()
-        val firstNearDrawable = firstGeneratedAppendDrawableIndex(start, total) ?: return
+    private fun notifyGeneratedAppendWhenNearReady(target: Manga, startIndex: Int, total: Int, loadStartedAt: Long) {
+        val firstNearDrawable = firstGeneratedAppendDrawableIndex(startIndex, total) ?: return
         val notify = object : Runnable {
             override fun run() {
                 if (cancelled.get()) return
@@ -2127,10 +2137,10 @@ class ReaderSession(
         }
     }
 
-    private fun firstGeneratedAppendDrawableIndex(start: Int, total: Int): Int? = synchronized(pagesLock) {
-        if (start + 1 >= total) return@synchronized null
+    private fun firstGeneratedAppendDrawableIndex(startIndex: Int, total: Int): Int? = synchronized(pagesLock) {
+        if (startIndex >= total) return@synchronized null
         val last = minOf(total - 1, pages.lastIndex)
-        for (index in (start + 1)..last) {
+        for (index in startIndex..last) {
             val page = pages.getOrNull(index) ?: continue
             if (page.transitionTitle == null) return@synchronized index
         }
