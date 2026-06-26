@@ -33,7 +33,7 @@ final class NtkKeywordSearchPolicy {
     }
 
     static int keywordPageSize(int limit) {
-        return limit > 0 ? Math.min(KEYWORD_PAGE_SIZE, Math.max(10, limit)) : KEYWORD_PAGE_SIZE;
+        return KEYWORD_PAGE_SIZE;
     }
 
     static int perKindLimit(int targetBaseMode, int limit) {

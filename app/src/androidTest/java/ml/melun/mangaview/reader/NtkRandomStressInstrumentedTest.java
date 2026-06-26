@@ -432,11 +432,10 @@ public class NtkRandomStressInstrumentedTest {
                 ? CustomHttpClient.NTK_WEBTOON_URL : MainApplication.p.getWebtoonUrl();
         String url = client.getLastCloudflareChallengeUrl();
         if(isNtkApiChallengeUrl(url)) {
-            Log.d(TAG, "ntk_true_random_captcha_skip_api_challenge baseMode=" + baseMode
+            Log.d(TAG, "ntk_true_random_captcha_api_challenge_root_recover baseMode=" + baseMode
                     + ",url=" + url
-                    + ",reason=api_list_challenge_not_viewer_ack_proof");
-            client.clearLastCloudflareChallenge();
-            return;
+                    + ",root=" + webtoonRoot);
+            url = webtoonRoot + "/";
         }
         if(url == null || url.length() == 0 || url.startsWith("/api/"))
             url = webtoonRoot + "/";

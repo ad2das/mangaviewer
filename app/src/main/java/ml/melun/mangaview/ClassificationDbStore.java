@@ -225,6 +225,49 @@ public final class ClassificationDbStore {
         return result;
     }
 
+    public static ArrayList<Title> searchTitles(Context context, boolean comic, String sourceSite,
+                                                 String query, int offset, int limit) {
+        String name = normalizeName(query);
+        if(name.length() == 0)
+            return new ArrayList<>();
+        SQLiteDatabase db = openReadOnly(context);
+        if(db == null)
+            return new ArrayList<>();
+        ArrayList<Title> result = new ArrayList<>();
+        Cursor cursor = null;
+        String kind = kind(comic);
+        String site = normalizeSourceSite(sourceSite);
+        try {
+            cursor = db.rawQuery(
+                    "SELECT id,path,name,thumb,release FROM classification_titles " +
+                            "WHERE kind=? AND source_site=? AND normalized_name LIKE ? " +
+                            "ORDER BY CASE WHEN normalized_name=? THEN 0 " +
+                            "WHEN normalized_name LIKE ? THEN 1 ELSE 2 END,id LIMIT ? OFFSET ?",
+                    new String[]{
+                            kind,
+                            site,
+                            "%" + name + "%",
+                            name,
+                            name + "%",
+                            String.valueOf(limit > 0 ? limit : 1000000),
+                            String.valueOf(Math.max(0, offset))
+                    });
+            int baseMode = comic ? base_comic : base_webtoon;
+            while(cursor.moveToNext()) {
+                int id = cursor.getInt(0);
+                result.add(titleFromClassificationRow(baseMode, site, id, cursor.getString(1),
+                        cursor.getString(2), cursor.getString(3), cursor.getString(4),
+                        readTags(db, kind, site, id)));
+            }
+        } catch (Exception e) {
+            result.clear();
+        } finally {
+            if(cursor != null)
+                cursor.close();
+        }
+        return result;
+    }
+
     public static int getTitleCount(Context context, boolean comic, String sourceSite) {
         SQLiteDatabase db = openReadOnly(context);
         if(db == null)

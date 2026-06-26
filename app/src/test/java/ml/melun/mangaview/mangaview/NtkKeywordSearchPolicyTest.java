@@ -24,7 +24,7 @@ public class NtkKeywordSearchPolicyTest {
         assertTrue(auto.get(0).contains("pageSize=120"));
         assertEquals(1, webtoon.size());
         assertTrue(webtoon.get(0).startsWith("/api/works?"));
-        assertTrue(webtoon.get(0).contains("pageSize=10"));
+        assertTrue(webtoon.get(0).contains("pageSize=120"));
         assertEquals(1, comic.size());
         assertTrue(comic.get(0).startsWith("/api/manhwa-list?"));
     }

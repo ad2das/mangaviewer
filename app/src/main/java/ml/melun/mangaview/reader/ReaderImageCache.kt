@@ -624,6 +624,21 @@ object ReaderImageCache {
             return
         }
         if (existing != null) {
+            val preservedVerified = preserveExistingVerifiedPageImages(trusted, existing.urls)
+            if (preservedVerified != null && preservedVerified != trusted) {
+                earlyNtkImageUrls[key] = EarlyNtkImageUrls(
+                    Collections.unmodifiableList(ArrayList(preservedVerified)),
+                    SystemClock.elapsedRealtime()
+                )
+                prepareEarlyNtkImageTransport(key, preservedVerified)
+                rememberInitialGeneratedExtensions(preservedVerified)
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_remember_preserve_verified_images path=$key," +
+                        "existing=${existing.urls.size},incoming=${trusted.size},first=${safeImageName(preservedVerified.firstOrNull())}"
+                )
+                return
+            }
             val preserved = preserveExistingInitialGeneratedVariants(trusted, existing.urls)
             if (preserved != null && preserved != trusted) {
                 earlyNtkImageUrls[key] = EarlyNtkImageUrls(
@@ -746,6 +761,29 @@ object ReaderImageCache {
             if (!seenPages.contains(page)) {
                 val insertIndex = (page - 1).coerceIn(0, merged.size)
                 merged.add(insertIndex, image)
+                changed = true
+            }
+        }
+        return if (changed) merged else null
+    }
+
+    private fun preserveExistingVerifiedPageImages(
+        incoming: List<String>,
+        existing: List<String>
+    ): List<String>? {
+        if (incoming.isEmpty() || existing.isEmpty()) return null
+        if (incoming.none { ntkGeneratedTarget(it) != null }) return null
+        val merged = ArrayList(incoming)
+        var changed = false
+        val limit = minOf(existing.size, merged.size)
+        for (index in 0 until limit) {
+            val verified = existing[index]
+            if (ntkGeneratedTarget(verified) != null) continue
+            if (!isTrustedNtkImageUrl(verified) && !isNaverWebtoonPageImage(verified)) continue
+            val incomingTarget = ntkGeneratedTarget(merged[index]) ?: continue
+            if (incomingTarget.page > NTK_GENERATED_INITIAL_RECOVERY_PAGES) continue
+            if (merged[index] != verified) {
+                merged[index] = verified
                 changed = true
             }
         }

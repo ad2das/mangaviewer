@@ -450,13 +450,13 @@ public class MainPageWebtoonTest {
 
     @Test
     public void ntkSearchPathsMatchSiteKindFilters() {
-        assertEquals("/search?q=%EC%9B%90%ED%94%BC",
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC&field=title&match=contains",
                 Search.ntkSearchPathForTest("원피", MTitle.base_auto, 1));
-        assertEquals("/search?q=%EC%9B%90%ED%94%BC&kind=manhwa",
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC&field=title&match=contains&kind=manhwa",
                 Search.ntkSearchPathForTest("원피", base_comic, 1));
-        assertEquals("/search?q=%EC%9B%90%ED%94%BC&kind=webtoon",
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC&field=title&match=contains&kind=webtoon",
                 Search.ntkSearchPathForTest("원피", base_webtoon, 1));
-        assertEquals("/search?q=%EC%9B%90%ED%94%BC&kind=manhwa&page=2",
+        assertEquals("/search?q=%EC%9B%90%ED%94%BC&field=title&match=contains&kind=manhwa&page=2",
                 Search.ntkSearchPathForTest("원피", base_comic, 2));
     }
 

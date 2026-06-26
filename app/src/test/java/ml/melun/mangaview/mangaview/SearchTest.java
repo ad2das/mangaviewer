@@ -93,10 +93,10 @@ public class SearchTest {
         assertEquals(1, comic.size());
         assertTrue(webtoon.get(0).startsWith("/api/works?"));
         assertTrue(webtoon.get(0).contains("page=2"));
-        assertTrue(webtoon.get(0).contains("pageSize=12"));
+        assertTrue(webtoon.get(0).contains("pageSize=120"));
         assertTrue(comic.get(0).startsWith("/api/manhwa-list?"));
         assertTrue(comic.get(0).contains("page=3"));
-        assertTrue(comic.get(0).contains("pageSize=12"));
+        assertTrue(comic.get(0).contains("pageSize=120"));
     }
 
     @Test

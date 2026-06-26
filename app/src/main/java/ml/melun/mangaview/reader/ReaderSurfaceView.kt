@@ -3314,7 +3314,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val DRAW_COVERAGE_EPSILON_PX = 1f
         private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
-        private const val MIN_READABLE_SOURCE_WIDTH_PERMILLE = 600
+        private const val MIN_READABLE_SOURCE_WIDTH_PERMILLE = 450
         private const val PREPENDED_BOUNDARY_HOLD_MAX_FRACTION = 0.35f
         private const val SCROLLBAR_TOUCH_WIDTH_PX = 96f
         private const val SCROLLBAR_RIGHT_MARGIN_PX = 10f
