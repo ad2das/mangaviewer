@@ -2585,9 +2585,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val direction = boundaryArmedDirection
         if (clearDirection) boundaryArmedDirection = 0
         if (direction == 0 || pages.isEmpty() || width <= 0 || height <= 0) return null
-        val maxScroll = maxScrollLocked()
+        val cappedMaxScroll = maxScrollLocked()
+        val fullMaxScroll = max(0f, totalHeightLocked() - height)
         val atStart = scrollOffset <= BOUNDARY_EPSILON_PX
-        val atEnd = scrollOffset >= maxScroll - BOUNDARY_EPSILON_PX
+        val atEnd = scrollOffset >= fullMaxScroll - BOUNDARY_EPSILON_PX
+        if (
+            direction == DIRECTION_NEXT &&
+            limitScrollToDrawablePrefix &&
+            cappedMaxScroll < fullMaxScroll - BOUNDARY_EPSILON_PX
+        ) {
+            Log.d(
+                TAG,
+                "reader_boundary_next_blocked_unresolved_tail " +
+                    "scroll=${scrollOffset.toInt()} capped=${cappedMaxScroll.toInt()} full=${fullMaxScroll.toInt()}"
+            )
+            return null
+        }
         val request = when {
             direction == DIRECTION_PREVIOUS && atStart -> BoundaryRequest(direction, anchorPageLocked())
             direction == DIRECTION_NEXT && atEnd -> BoundaryRequest(direction, anchorPageLocked())

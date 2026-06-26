@@ -582,21 +582,23 @@ object ReaderImageCache {
         val trustedRaw = urls.mapNotNull {
             it?.trim()?.takeIf { value -> isTrustedNtkImageUrl(value) || isNaverWebtoonPageImage(value) }
         }
-        val trusted = compactEarlyNtkGeneratedPageUrls(trustedRaw)
+        val trusted = compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(trustedRaw))
         if (trusted.isEmpty()) return
         val existing = earlyNtkImageUrls[key]
         if (existing != null && existing.urls.size > trusted.size) {
-            if (shouldReplaceWithVerifiedGeneratedSubset(existing.urls, trusted)) {
+            val verifiedSubset = verifiedGeneratedSubsetReplacement(existing.urls, trusted)
+            if (verifiedSubset != null) {
                 earlyNtkImageUrls[key] = EarlyNtkImageUrls(
-                    Collections.unmodifiableList(ArrayList(trusted)),
+                    Collections.unmodifiableList(ArrayList(verifiedSubset)),
                     SystemClock.elapsedRealtime()
                 )
-                prepareEarlyNtkImageTransport(key, trusted)
-                rememberInitialGeneratedExtensions(trusted)
+                prepareEarlyNtkImageTransport(key, verifiedSubset)
+                rememberInitialGeneratedExtensions(verifiedSubset)
                 Log.d(
                     TAG,
                     "reader_early_ntk_urls_remember_replace_verified_subset path=$key," +
-                        "existing=${existing.urls.size},incoming=${trusted.size},first=${safeImageName(trusted.firstOrNull())}"
+                        "existing=${existing.urls.size},incoming=${trusted.size}," +
+                        "replacement=${verifiedSubset.size},first=${safeImageName(verifiedSubset.firstOrNull())}"
                 )
                 return
             }
@@ -687,19 +689,66 @@ object ReaderImageCache {
         return if (changed) compacted else urls
     }
 
+    private fun compactEarlyNtkEquivalentUrls(urls: List<String>): List<String> {
+        if (urls.size <= 1) return urls
+        val seen = LinkedHashSet<String>()
+        val compacted = ArrayList<String>(urls.size)
+        var changed = false
+        urls.forEach { url ->
+            val key = url
+                .trim()
+                .replace(Regex("(?i)^https?://"), "//")
+                .substringBefore('#')
+            if (!seen.add(key)) {
+                changed = true
+                return@forEach
+            }
+            compacted.add(url)
+        }
+        if (changed) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_compact_equivalent before=${urls.size},after=${compacted.size}," +
+                    "first=${safeImageName(compacted.firstOrNull())}"
+            )
+        }
+        return if (changed) compacted else urls
+    }
+
     private fun shouldReplaceWithVerifiedGeneratedSubset(existing: List<String>, incoming: List<String>): Boolean {
-        if (existing.isEmpty() || incoming.isEmpty()) return false
-        if (existing.size <= incoming.size) return false
-        val incomingTargets = incoming.map { ntkGeneratedTarget(it) ?: return false }
-        val existingTargets = existing.map { ntkGeneratedTarget(it) ?: return false }
+        return verifiedGeneratedSubsetReplacement(existing, incoming) != null
+    }
+
+    private fun verifiedGeneratedSubsetReplacement(existing: List<String>, incoming: List<String>): List<String>? {
+        if (existing.isEmpty() || incoming.isEmpty()) return null
+        if (existing.size <= incoming.size) return null
+        val incomingTargets = incoming.map { ntkGeneratedTarget(it) ?: return null }
+        val existingTargets = existing.map { ntkGeneratedTarget(it) ?: return null }
         val path = incomingTargets.first().path
-        if (incomingTargets.any { it.path != path } || existingTargets.any { it.path != path }) return false
-        if (incomingTargets.none { it.page == 1 }) return false
+        if (incomingTargets.any { it.path != path } || existingTargets.any { it.path != path }) return null
         val incomingPages = incomingTargets.map { it.page }.toSet()
         val existingPages = existingTargets.map { it.page }.toSet()
-        if (!existingPages.containsAll(incomingPages)) return false
-        if (incomingPages.size == existingPages.size) return false
-        return incomingPages.size > 1
+        if (!existingPages.containsAll(incomingPages)) return null
+        if (incomingPages.size == existingPages.size) return null
+        if (incomingPages.size <= 1) return null
+        val sortedIncoming = incomingPages.sorted()
+        val firstIncoming = sortedIncoming.first()
+        if (firstIncoming > 2) return null
+        if (sortedIncoming != (firstIncoming..sortedIncoming.last()).toList()) return null
+        val mergedByPage = LinkedHashMap<Int, String>()
+        existing.forEachIndexed { position, image ->
+            val target = existingTargets.getOrNull(position) ?: return null
+            mergedByPage[target.page] = image
+        }
+        incoming.forEachIndexed { position, image ->
+            val target = incomingTargets.getOrNull(position) ?: return null
+            mergedByPage[target.page] = image
+        }
+        return compactEarlyNtkGeneratedPageUrls(
+            mergedByPage.entries
+                .sortedBy { it.key }
+                .map { it.value }
+        )
     }
 
     @JvmStatic
@@ -3494,7 +3543,19 @@ object ReaderImageCache {
             ""
         }.trimEnd('/')
         if (!root.startsWith("http")) return null
-        return root + path
+        return root + ntkEncodedPath(path)
+    }
+
+    private fun ntkEncodedPath(path: String): String {
+        val queryIndex = path.indexOf('?')
+        val rawPath = if (queryIndex >= 0) path.substring(0, queryIndex) else path
+        val suffix = if (queryIndex >= 0) path.substring(queryIndex) else ""
+        val normalized = if (rawPath.startsWith("/")) rawPath else "/$rawPath"
+        return normalized
+            .split("/")
+            .joinToString("/") { segment ->
+                if (segment.isEmpty()) "" else Uri.encode(Uri.decode(segment))
+            } + suffix
     }
 
     private fun naverWebtoonImageReferer(image: String): String? {
@@ -6777,6 +6838,7 @@ object ReaderImageCache {
     ): Boolean {
         val normalizedExtension = extension?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
         val path = ntkGeneratedStatePath(ref)
+        if (ntkGeneratedNotFoundPages.contains("$path|${ref.page}|$normalizedExtension")) return true
         return (1..NTK_GENERATED_INITIAL_RECOVERY_PAGES)
             .any { page -> ntkGeneratedNotFoundPages.contains("$path|$page|$normalizedExtension") }
     }
@@ -6882,11 +6944,22 @@ object ReaderImageCache {
     }
 
     private fun ntkGeneratedHintedExtension(ref: NtkGeneratedImageRef): String? {
+        if (ref.extension != "jpg" && hasNtkGeneratedNotFoundInitialExtension(ref, ref.extension)) {
+            return "jpg"
+        }
         val pageExtension = ntkGeneratedPageExtensions[ref.pageKey]
             ?.takeUnless { it != "jpg" && hasNtkGeneratedNotFoundInitialExtension(ref, it) }
         val episodeExtension = ntkGeneratedEpisodeExtensions[ref.episodeKey]
             ?.takeUnless { it != "jpg" && hasNtkGeneratedNotFoundInitialExtension(ref, it) }
-        if (pageExtension == "jpg" && episodeExtension != null && episodeExtension != "jpg") {
+        if (episodeExtension == "jpg" && pageExtension != null && pageExtension != "jpg") {
+            return "jpg"
+        }
+        if (
+            pageExtension == "jpg" &&
+            episodeExtension != null &&
+            episodeExtension != "jpg" &&
+            !ref.episodeKey.startsWith("webtoon/", ignoreCase = true)
+        ) {
             return episodeExtension
         }
         return pageExtension ?: episodeExtension

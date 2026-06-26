@@ -4703,8 +4703,7 @@ public class Manga {
             return false;
         String knownImageWorkId = ntkApiEpisodeIdForPath(getNtkImageWorkId());
         String knownImageEpisodeId = ntkApiEpisodeIdForPath(getNtkImageEpisodeId());
-        boolean trustedKnownSlugMetadata = shouldSkipNtkGeneratedForEpisodePath(path)
-                && getNtkImageCount() > 0
+        boolean trustedKnownSlugMetadata = getNtkImageCount() > 0
                 && isNumericNtkId(knownImageWorkId)
                 && isNumericNtkId(knownImageEpisodeId)
                 && knownImageEpisodeId.equals(episodeId)
