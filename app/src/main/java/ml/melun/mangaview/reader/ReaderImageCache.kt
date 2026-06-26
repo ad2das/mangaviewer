@@ -674,6 +674,7 @@ object ReaderImageCache {
 
     private fun shouldReplaceWithVerifiedGeneratedSubset(existing: List<String>, incoming: List<String>): Boolean {
         if (existing.isEmpty() || incoming.isEmpty()) return false
+        if (existing.size > incoming.size) return false
         val incomingTargets = incoming.map { ntkGeneratedTarget(it) ?: return false }
         val existingTargets = existing.map { ntkGeneratedTarget(it) ?: return false }
         val path = incomingTargets.first().path
@@ -684,6 +685,11 @@ object ReaderImageCache {
         if (!existingPages.containsAll(incomingPages)) return false
         if (incomingPages.size == existingPages.size) return false
         return incomingPages.size > 1
+    }
+
+    @JvmStatic
+    fun shouldReplaceWithVerifiedGeneratedSubsetForTest(existing: List<String>, incoming: List<String>): Boolean {
+        return shouldReplaceWithVerifiedGeneratedSubset(existing, incoming)
     }
 
     private fun prepareEarlyNtkImageTransport(key: String, urls: List<String>) {

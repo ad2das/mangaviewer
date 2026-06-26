@@ -2,6 +2,10 @@ package ml.melun.mangaview.reader;
 
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -71,5 +75,23 @@ public class ReaderPipelinePolicyTest {
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(true, false, 1600, 1200));
         assertFalse(ReaderSession.shouldSplitPreparedBitmapForTest(false, true, 1600, 1200));
         assertTrue(ReaderSession.shouldSplitPreparedBitmapForTest(true, true, 1600, 1200));
+    }
+
+    @Test
+    public void earlyNtkPartialSubsetDoesNotReplaceFullGeneratedList() {
+        List<String> full = generatedNtkWebtoonImages(57);
+        List<String> partial = full.subList(0, 3);
+
+        assertFalse(ReaderImageCache.shouldReplaceWithVerifiedGeneratedSubsetForTest(full, partial));
+    }
+
+    private static List<String> generatedNtkWebtoonImages(int count) {
+        ArrayList<String> images = new ArrayList<>();
+        for(int page = 1; page <= count; page++) {
+            images.add(String.format(Locale.ROOT,
+                    "https://fifa.worldcup73.xyz/black/episodes/12046/1186913/p%03d.jpg",
+                    page));
+        }
+        return images;
     }
 }

@@ -1514,7 +1514,7 @@ class ReaderSession(
         if (isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) {
             val earlyLimit = maxOf(currentCount, NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES)
             return when {
-                knownCount > currentCount -> minOf(knownCount, earlyLimit)
+                knownCount > currentCount -> knownCount
                 else -> currentCount
             }
         }
@@ -2054,7 +2054,7 @@ class ReaderSession(
                     )
                     warmNtkGeneratedInitialPagesLimited(currentStartPage(), loadStartedAt)
                 }
-                requestAllUndeliveredNtkPages("generated_full_publish")
+                requestGeneratedPublishWarmPages("generated_full_publish")
                 if (gateGeneratedAppendNotify) {
                     notifyGeneratedAppendWhenNearReady(target, total, loadStartedAt)
                 }
@@ -2153,6 +2153,8 @@ class ReaderSession(
         if (!isNtkSource(target, title)) return false
         if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return false
         if (urls.size <= 1 || urls.any { !isNtkGeneratedImageUrl(it) }) return false
+        val knownCount = target.ntkImageCount
+        if (knownCount >= urls.size) return false
         val observed = observedInitialManhwaGeneratedUrls(target, urls)
         return observed.isNotEmpty() && observed.size < urls.size
     }
@@ -2877,6 +2879,37 @@ class ReaderSession(
                 "staleCleared=$staleCleared,total=${indexes.size}," +
                 "requestedIndexes=${requestedIndexes.joinToString("|")}," +
                 "staleIndexes=${staleIndexes.joinToString("|")}"
+        )
+    }
+
+    private fun requestGeneratedPublishWarmPages(reason: String) {
+        if (!isNtkSource(manga, title)) return
+        val refs = synchronized(pagesLock) { pages.toList() }
+        if (refs.isEmpty()) return
+        if (!isGeneratedOnlyNtkRefs(refs) || refs.size <= NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES) {
+            requestAllUndeliveredNtkPages(reason)
+            return
+        }
+        val anchor = currentStartPage().coerceIn(0, refs.lastIndex)
+        val first = max(0, anchor - NTK_INITIAL_CONTINUOUS_PREVIOUS_PAGES)
+        val last = minOf(refs.lastIndex, anchor + NTK_INITIAL_CONTINUOUS_REQUIRED_PAGES - 1)
+        var requested = 0
+        val requestedIndexes = ArrayList<Int>()
+        for (index in first..last) {
+            if (hasDeliveredBitmap(index)) continue
+            val page = refs.getOrNull(index) ?: continue
+            if (page.transitionTitle != null) continue
+            if (!hasPageSourceReady(index, page)) {
+                forcePrefetchNtkPageSource(index, page, reason)
+            }
+            requestPage(index, busy = index != anchor, anchor = index == anchor, generation = PRIME_WARM_GENERATION)
+            requested++
+            if (requestedIndexes.size < 32) requestedIndexes.add(index)
+        }
+        Log.d(
+            TAG,
+            "reader_ntk_generated_publish_window_warm reason=$reason,requested=$requested," +
+                "range=$first-$last,total=${refs.size},requestedIndexes=${requestedIndexes.joinToString("|")}"
         )
     }
 
@@ -6852,8 +6885,8 @@ class ReaderSession(
 
     private fun postPageError(index: Int, page: PageRef, e: Exception) {
         if (postNtkImageCloudflareCaptcha(index, page, e)) return
-        if (trimNtkGeneratedTail(index, page, e)) return
         if (refreshNtkGeneratedPageImage(index, page, e)) return
+        if (trimNtkGeneratedTail(index, page, e)) return
         if (removeInvalidNtkGeneratedPage(index, page, e)) return
         if (retryTransientNtkGeneratedPageError(index, page, e)) return
         if (pageRef(index) != page) return
@@ -6883,6 +6916,21 @@ class ReaderSession(
         val knownCount = page.manga.ntkImageCount
         val pastGeneratedTail = (e.message ?: "").startsWith("Generated image past tail:")
         if (knownCount <= 0) return false
+        if (!pastGeneratedTail && isNtkGeneratedImageUrl(page.image ?: "")) {
+            val displayTotalPages = synchronized(pagesLock) {
+                pages.count { ref ->
+                    ref.transitionTitle == null && Manga.sameEpisodeIdentity(ref.manga, page.manga)
+                }
+            }
+            if (displayTotalPages > knownCount) {
+                Log.d(
+                    TAG,
+                    "trim_generated_tail_skip_partial_known_count known=$knownCount,displayTotal=$displayTotalPages," +
+                        "errorPage=$index,source=${page.sourceIndex},path=${page.manga.ntkEpisodePath},error=${e.message}"
+                )
+                return false
+            }
+        }
         val firstTailSourceIndex = when {
             knownCount > 0 && page.sourceIndex >= knownCount -> knownCount
             pastGeneratedTail && page.sourceIndex >= knownCount -> page.sourceIndex
