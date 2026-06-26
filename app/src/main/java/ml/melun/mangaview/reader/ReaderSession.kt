@@ -5025,11 +5025,12 @@ class ReaderSession(
                     main.postDelayed(this, NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
                     return
                 }
+                val ready = generatedAppendNearReadyCount(cardIndex, total)
+                val required = requiredGeneratedAppendReadyPages(target)
                 Log.d(
                     TAG,
                     "append_adjacent_notify_near_ready targetId=${target.id} path=${target.ntkEpisodePath} " +
-                        "firstNear=$firstNearDrawable ready=${generatedAppendNearReadyCount(cardIndex, total)} " +
-                        "required=${requiredGeneratedAppendReadyPages(target)} total=$total"
+                        "firstNear=$firstNearDrawable ready=$ready required=$required total=$total"
                 )
                 listener.onPagesAppended(total)
                 if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
@@ -5043,8 +5044,11 @@ class ReaderSession(
     }
 
     private fun requiredGeneratedAppendReadyPages(target: Manga): Int {
-        if (isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath) && target.ntkImageCount > 1) {
-            return minOf(NTK_OBSERVED_MANHWA_APPEND_READY_PAGES, target.ntkImageCount)
+        if (isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) {
+            if (target.ntkImageCount > 1) {
+                return minOf(NTK_OBSERVED_MANHWA_APPEND_READY_PAGES, target.ntkImageCount)
+            }
+            return minOf(NTK_OBSERVED_MANHWA_APPEND_READY_PAGES, NTK_APPEND_EARLY_PUBLISH_PAGES)
         }
         return 1
     }
@@ -5058,7 +5062,7 @@ class ReaderSession(
             if (page.transitionTitle != null) continue
             if (!hasListenerDrawableDelivery(index)) break
             ready++
-            if (ready >= NTK_OBSERVED_MANHWA_APPEND_READY_PAGES) break
+            if (ready >= requiredGeneratedAppendReadyPages(page.manga)) break
         }
         ready
     }
@@ -10286,7 +10290,7 @@ class ReaderSession(
         private const val NTK_INITIAL_JPG_HEDGE_RECHECK_MS = 220L
         private const val NTK_INITIAL_JPG_HEDGE_MAX_WAIT_MS = 2200L
         private const val NTK_OBSERVED_MANHWA_APPEND_AFTER_FIRST_BITMAP_WAIT_MS = 4500L
-        private const val NTK_OBSERVED_MANHWA_APPEND_READY_PAGES = 3
+        private const val NTK_OBSERVED_MANHWA_APPEND_READY_PAGES = 12
         private const val NTK_TRACE_AHEAD_PAGES = 8
         private const val NTK_BACKGROUND_PREPARE_QUIET_MS = 120L
         private const val NTK_BACKGROUND_PREPARE_AFTER_FIRST_BITMAP_QUIET_MS = 3500L

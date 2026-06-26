@@ -1090,6 +1090,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun scheduleDrawableReadyDescription(index: Int) {
         if (drawableReadyDescriptionPosted) return
+        if (requiresInitialNtkWebtoonViewportReady() && !isInitialContinuousScrollReady()) {
+            scheduleNtkDrawableReadyPolling()
+            return
+        }
         statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
         if (initialStartAtFirstPage && index == 0) {
             postDrawableReadyDescription()
@@ -1208,6 +1212,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun logVisibleViewportReadyMetric() {
+        if (requiresInitialNtkWebtoonViewportReady() && !isInitialContinuousScrollReady()) {
+            scheduleNtkDrawableReadyPolling()
+            return
+        }
         if (!firstDrawableMetricLogged && viewerLaunchStartedAtMs > 0L) {
             firstDrawableMetricLogged = true
             firstDrawableLoggedAtMs = SystemClock.uptimeMillis()

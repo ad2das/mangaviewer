@@ -85,8 +85,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val prepP95: Float,
         val prepMax: Float,
         val drawP95: Float,
+        val drawMax: Float,
         val totalP95: Float,
         val totalMax: Float,
+        val maxMissingPx: Int,
+        val maxPlaceholderPx: Int,
+        val maxVisibleLoading: Int,
         val noCanvas: Int,
         val coalesced: Int
     )
@@ -257,6 +261,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastSlowFrameLogMs = 0L
     private var statsCoalescedRequests = 0
     private var statsNoCanvasFrames = 0
+    private var statsMaxMissingPx = 0
+    private var statsMaxPlaceholderPx = 0
+    private var statsMaxVisibleLoading = 0
     private var hasDrawnContentFrame = false
     private var fastBitmapRefineScheduled = false
     private var firstDrawableContentAtMs = 0L
@@ -596,6 +603,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val viewportAnchor = progressPositionLocked()
             val newHeight = resolvedPageDrawHeightLocked(bitmap.width, bitmap.height)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            if (hasCurrentDrawable && shouldDeferDrawableReplacementLocked()) {
+                page.pendingResolveType = PENDING_BITMAP
+                page.pendingBitmap = bitmap
+                page.pendingTiles = emptyList()
+                page.pendingWidth = max(1, bitmap.width)
+                page.pendingHeight = max(1, bitmap.height)
+                page.loading = false
+                page.errorText = null
+                schedulePendingResolveRetryLocked()
+                return@synchronized null
+            }
             if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
                 if (hasCurrentDrawable) {
                     page.pendingResolveType = PENDING_BITMAP
@@ -655,6 +673,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val viewportAnchor = progressPositionLocked()
             val newHeight = resolvedPageDrawHeightLocked(pageWidth, pageHeight)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
+            if (hasCurrentDrawable && shouldDeferDrawableReplacementLocked()) {
+                page.pendingResolveType = PENDING_TILES
+                page.pendingBitmap = null
+                page.pendingTiles = tiles
+                page.pendingWidth = max(1, pageWidth)
+                page.pendingHeight = max(1, pageHeight)
+                page.loading = false
+                page.errorText = null
+                schedulePendingResolveRetryLocked()
+                return@synchronized null
+            }
             if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
                 if (hasCurrentDrawable) {
                     page.pendingResolveType = PENDING_TILES
@@ -2156,6 +2185,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return now <= max(initialRenderHoldUntilMs, initialViewportHoldUntilMs)
     }
 
+    private fun shouldDeferDrawableReplacementLocked(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        return lastBusy ||
+            pointerDown ||
+            dragging ||
+            !scroller.isFinished ||
+            isRecentScrollStatsActiveLocked(now)
+    }
+
     private fun clearInitialRenderHoldLocked() {
         initialRenderHoldPage = -1
         initialRenderHoldUntilMs = 0L
@@ -2964,10 +3002,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             boundaryArmedDirection = direction
             lastScrollInteractionMs = SystemClock.uptimeMillis()
         }
+        val before = scrollOffset
         setScrollOffsetLocked(scrollOffset + dy * DRAG_SCROLL_MULTIPLIER)
         clampScrollLocked()
         lastY = y
-        return true
+        return abs(scrollOffset - before) > SCROLL_OFFSET_EPSILON_PX
     }
 
     private fun isNearVisibleLocked(index: Int, extraPages: Int): Boolean {
@@ -3011,6 +3050,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun recordFrameStats(timing: DrawTiming, active: Boolean) {
         val pendingInput = synchronized(stateLock) { consumePendingInputLocked() }
+        val coverage = synchronized(stateLock) { lastVisibleCoverageSnapshot }
         if (active) {
             mainHandler.removeCallbacks(frameStatsFinalizeRunnable)
             mainHandler.postDelayed(frameStatsFinalizeRunnable, PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS)
@@ -3031,6 +3071,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 } else {
                     statsNoCanvasFrames++
                 }
+                recordFrameCoverageStats(coverage)
                 logActiveFrameStatsIfReady()
                 return
             }
@@ -3056,6 +3097,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             } else {
                 statsNoCanvasFrames++
             }
+            recordFrameCoverageStats(coverage)
             statsLastCallbackStartNs = timing.callbackStartNs
             if (timing.posted) statsLastPostEndNs = timing.postEndNs
             logActiveFrameStatsIfReady()
@@ -3094,6 +3136,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val inputNewest = ArrayList(statsInputNewestMs)
         val noCanvas = statsNoCanvasFrames
         val coalesced = statsCoalescedRequests
+        val maxMissingPx = statsMaxMissingPx
+        val maxPlaceholderPx = statsMaxPlaceholderPx
+        val maxVisibleLoading = statsMaxVisibleLoading
         statsActive = false
         statsLastCallbackStartNs = 0L
         statsLastPostEndNs = 0L
@@ -3147,8 +3192,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val prepP95 = percentile(lockWait, 0.95f)
         val prepMax = maxOrZero(lockWait)
         val drawP95 = percentile(draw, 0.95f)
+        val drawMax = maxOrZero(draw)
         val totalP95 = percentile(renderTotal, 0.95f)
-        val totalMax = totalP95
+        val totalMax = maxOrZero(renderTotal)
         val snapshot = FrameStatsSnapshot(
             samples = sampleCount,
             strictOverBudget = strictOverBudget,
@@ -3161,8 +3207,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             prepP95 = prepP95,
             prepMax = prepMax,
             drawP95 = drawP95,
+            drawMax = drawMax,
             totalP95 = totalP95,
             totalMax = totalMax,
+            maxMissingPx = maxMissingPx,
+            maxPlaceholderPx = maxPlaceholderPx,
+            maxVisibleLoading = maxVisibleLoading,
             noCanvas = noCanvas,
             coalesced = coalesced
         )
@@ -3187,9 +3237,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 "droppedFrames=${snapshot.droppedFrames} droppedFrameDebt=${snapshot.droppedFrameDebt} droppedPct=${fmt(droppedPercent)} " +
                 "callbackP95=${fmt(snapshot.callbackP95)} callbackMax=${fmt(snapshot.callbackMax)} " +
                 "prepP95=${fmt(snapshot.prepP95)} prepMax=${fmt(snapshot.prepMax)} " +
-                "drawP95=${fmt(snapshot.drawP95)} totalP95=${fmt(snapshot.totalP95)} totalMax=${fmt(snapshot.totalMax)} " +
+                "drawP95=${fmt(snapshot.drawP95)} drawMax=${fmt(snapshot.drawMax)} " +
+                "totalP95=${fmt(snapshot.totalP95)} totalMax=${fmt(snapshot.totalMax)} " +
+                "maxMissingPx=${snapshot.maxMissingPx} maxPlaceholderPx=${snapshot.maxPlaceholderPx} " +
+                "maxVisibleLoading=${snapshot.maxVisibleLoading} " +
                 "noCanvas=${snapshot.noCanvas} coalesced=${snapshot.coalesced}"
         )
+    }
+
+    private fun recordFrameCoverageStats(coverage: VisibleCoverageSnapshot?) {
+        if (coverage == null) return
+        statsMaxMissingPx = max(statsMaxMissingPx, coverage.missingPx)
+        statsMaxPlaceholderPx = max(statsMaxPlaceholderPx, coverage.placeholderPx)
+        statsMaxVisibleLoading = max(statsMaxVisibleLoading, coverage.visibleLoading)
     }
 
     private fun clearStatsSamples() {
@@ -3203,6 +3263,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         statsInputNewestMs.clear()
         statsNoCanvasFrames = 0
         statsCoalescedRequests = 0
+        statsMaxMissingPx = 0
+        statsMaxPlaceholderPx = 0
+        statsMaxVisibleLoading = 0
     }
 
     private fun resetActiveFrameStatsLocked() {
@@ -3364,6 +3427,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val SCROLLBAR_GRIP_RADIUS_PX = 2f
         private const val BOUNDARY_EPSILON_PX = 2f
         private const val BOUNDARY_FLING_EXTEND_EPSILON_PX = 4
+        private const val SCROLL_OFFSET_EPSILON_PX = 0.5f
         private const val BOUNDARY_FLING_MIN_VELOCITY_MULTIPLIER = 2f
         private const val BOUNDARY_CANCEL_MIN_DRAG_SCREEN_RATIO = 0.08f
         private const val BOUNDARY_CANCEL_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 4f

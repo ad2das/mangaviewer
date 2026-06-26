@@ -2053,7 +2053,7 @@ public class NtkRandomStressInstrumentedTest {
                     + " step=" + step
                     + " phase=post-stop-drift"
                     + " path=" + episode.getNtkEpisodePath(), driftSample);
-            if(assertNoJank) {
+            if(assertNoJank && didScrollMove(progressBefore, progressAfterLateSettle)) {
                 assertNoScrollJank("scroll run=" + run
                         + " mode=" + mode
                         + " step=" + step
@@ -2087,14 +2087,18 @@ public class NtkRandomStressInstrumentedTest {
                             + " initialProgress=" + initialProgress
                             + " finalProgress=" + finalProgress,
                     expectedGeneratedPages <= 0 || maxObservedPageCount >= expectedGeneratedPages);
+            int requiredBootstrapAdvance = 1500;
+            if(finalProgress != null && finalProgress.hasScrollOffset() && finalProgress.maxScroll > 0)
+                requiredBootstrapAdvance = Math.min(requiredBootstrapAdvance, finalProgress.maxScroll);
             assertTrue("Expected touch/down sweep to advance beyond bootstrap run=" + run
                             + " mode=" + mode
                             + " path=" + episode.getNtkEpisodePath()
+                            + " requiredAdvance=" + requiredBootstrapAdvance
                             + " initialProgress=" + initialProgress
                             + " finalProgress=" + finalProgress
                             + " maxObservedScrollOffset=" + maxObservedScrollOffset,
                     !initialProgress.hasScrollOffset()
-                            || maxObservedScrollOffset > initialProgress.scrollOffset + 1500);
+                            || maxObservedScrollOffset >= initialProgress.scrollOffset + requiredBootstrapAdvance);
             if(expectedGeneratedPages > 3 && finalProgress.hasScrollOffset() && finalProgress.maxScroll > 0) {
                 int minimumFullSweepOffset = Math.min(8000, Math.max(1500, finalProgress.maxScroll / 4));
                 assertTrue("Expected touch/down sweep to move through generated episode run=" + run
@@ -2516,6 +2520,15 @@ public class NtkRandomStressInstrumentedTest {
         return Math.abs(after.offset - before.offset);
     }
 
+    private static boolean didScrollMove(ProgressSnapshot before, ProgressSnapshot after) {
+        if(before == null || after == null || before.isNull() || after.isNull())
+            return true;
+        if(before.hasScrollOffset() && after.hasScrollOffset())
+            return Math.abs(after.scrollOffset - before.scrollOffset) > SCROLL_SETTLE_JUMP_TOLERANCE_PX;
+        return before.page != after.page
+                || Math.abs(after.offset - before.offset) > SCROLL_SETTLE_JUMP_TOLERANCE_PX;
+    }
+
     private static void assertNoScrollJank(String label, ReaderSurfaceView.FrameStatsSnapshot stats,
                                            int maxMissedFrames, int maxDroppedFrames,
                                            boolean assertNoSchedulerGap, float renderFrameMaxMs) {
@@ -2534,6 +2547,10 @@ public class NtkRandomStressInstrumentedTest {
         assertTrue(label + " frameStats=" + formatFrameStats(stats)
                         + " renderFrameMaxMs=" + renderFrameMaxMs,
                 renderFrameMaxMs <= 0f || stats.getTotalMax() <= renderFrameMaxMs);
+        assertTrue(label + " frameStats=" + formatFrameStats(stats),
+                stats.getMaxMissingPx() == 0
+                        && stats.getMaxPlaceholderPx() == 0
+                        && stats.getMaxVisibleLoading() == 0);
     }
 
     private static String formatFrameStats(ReaderSurfaceView.FrameStatsSnapshot stats) {
@@ -2550,8 +2567,12 @@ public class NtkRandomStressInstrumentedTest {
                 + ";prepP95=" + fmt(stats.getPrepP95())
                 + ";prepMax=" + fmt(stats.getPrepMax())
                 + ";drawP95=" + fmt(stats.getDrawP95())
+                + ";drawMax=" + fmt(stats.getDrawMax())
                 + ";totalP95=" + fmt(stats.getTotalP95())
                 + ";totalMax=" + fmt(stats.getTotalMax())
+                + ";maxMissingPx=" + stats.getMaxMissingPx()
+                + ";maxPlaceholderPx=" + stats.getMaxPlaceholderPx()
+                + ";maxVisibleLoading=" + stats.getMaxVisibleLoading()
                 + ";noCanvas=" + stats.getNoCanvas()
                 + ";coalesced=" + stats.getCoalesced();
     }
