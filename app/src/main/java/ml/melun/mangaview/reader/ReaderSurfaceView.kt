@@ -424,6 +424,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
+    fun finishBoundaryDispatch() {
+        synchronized(stateLock) {
+            boundaryArmedDirection = 0
+            boundaryDispatchInFlight = false
+        }
+    }
+
     fun prependPageCount(
         count: Int,
         insertedCount: Int,
@@ -3320,7 +3327,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PROGRAMMATIC_SCROLL_STATS_FINALIZE_MS = 820L
         private const val COVERAGE_EDGE_FILL_PX = 8
         private const val DRAW_COVERAGE_EPSILON_PX = 1f
-        private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 96
+        private const val COVERAGE_EDGE_PLACEHOLDER_FILL_PX = 192
         private const val MIN_READABLE_SOURCE_WIDTH_PERMILLE = 450
         private const val PREPENDED_BOUNDARY_HOLD_MAX_FRACTION = 0.35f
         private const val SCROLLBAR_TOUCH_WIDTH_PX = 96f

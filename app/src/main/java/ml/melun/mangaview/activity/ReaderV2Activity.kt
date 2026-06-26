@@ -1408,8 +1408,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onBoundaryAppendFinished(anchor: Int, direction: Int, silent: Boolean, suppressedCaptcha: Boolean) {
-        if (pendingCaptchaRetryAnchor == anchor && pendingCaptchaRetryDirection == direction) {
-            val retryBoundaryAfterSilent = silent && suppressedCaptcha && pendingBoundaryStatus && pendingBoundaryCaptchaRetry
+        val samePendingDirection = pendingCaptchaRetryDirection == direction
+        if (samePendingDirection || pendingBoundaryStatus) {
+            val retryBoundaryAfterSilent = silent && suppressedCaptcha && pendingBoundaryStatus && pendingBoundaryCaptchaRetry && samePendingDirection
             clearPendingBoundaryCaptchaRetry()
             if (retryBoundaryAfterSilent && !destroyed && !isFinishing) {
                 pendingBoundaryCaptchaRetry = true
@@ -1420,7 +1421,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 if (retryStart != ReaderSession.AppendStartResult.STARTED && retryStart != ReaderSession.AppendStartResult.BUSY) {
                     clearPendingBoundaryCaptchaRetry()
                 }
+                return
             }
+            hideBoundaryStatus()
+            renderView.finishBoundaryDispatch()
         }
     }
 

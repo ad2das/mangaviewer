@@ -5485,8 +5485,26 @@ class ReaderSession(
                         "target=$effectiveTargetWidth,urgent=${urgentLoading.contains(index)},generation=$generation"
                 )
                 hedgeVisibleGeneratedByteFetch(index, page, "active_skip")
+                if (
+                    isNtkGeneratedImageUrl(page.image.orEmpty()) &&
+                    !urgentLoading.contains(index) &&
+                    loadingPages[index] === page
+                ) {
+                    loading.remove(index)
+                    loadingPages.remove(index, page)
+                    loadingStartedAtMs.remove(index)
+                    inFlightWidths.remove(index)
+                    Log.d(
+                        TAG,
+                        "reader_visible_request_promote_active page=$index,target=$effectiveTargetWidth," +
+                            "image=${page.image?.substringAfterLast('/')}"
+                    )
+                } else {
+                    return
+                }
+            } else {
+                return
             }
-            return
         }
         val ownsLoading = loading.add(index)
         val urgent = !ownsLoading &&
@@ -6906,6 +6924,7 @@ class ReaderSession(
         if (postNtkImageCloudflareCaptcha(index, page, e)) return
         if (refreshNtkGeneratedPageImage(index, page, e)) return
         if (trimNtkGeneratedTail(index, page, e)) return
+        if (trimEarlyInvalidNtkGeneratedTail(index, page, e)) return
         if (removeInvalidNtkGeneratedPage(index, page, e)) return
         if (retryTransientNtkGeneratedPageError(index, page, e)) return
         if (pageRef(index) != page) return
@@ -7021,6 +7040,83 @@ class ReaderSession(
         return true
     }
 
+    private fun trimEarlyInvalidNtkGeneratedTail(index: Int, page: PageRef, e: Exception): Boolean {
+        if (!isNtkSource(page.manga, title)) return false
+        if (!isNtkManhwaOrWebtoonEpisodePath(page.manga.ntkEpisodePath)) return false
+        if (!isNtkGeneratedImageUrl(page.image.orEmpty())) return false
+        if (!isImageNotFoundError(e)) return false
+        val firstTailSourceIndex = page.sourceIndex
+        if (firstTailSourceIndex !in NTK_GENERATED_EARLY_TAIL_MISSING_SOURCE_MIN..NTK_GENERATED_EARLY_TAIL_MISSING_SOURCE_MAX) {
+            return false
+        }
+        val ranges = ArrayList<Pair<Int, Int>>()
+        val total: Int
+        var displayTotalPages = 0
+        var removedCount = 0
+        synchronized(pagesLock) {
+            val removeIndexes = pages.withIndex()
+                .filter { item ->
+                    item.value.transitionTitle == null &&
+                        item.value.sourceIndex >= firstTailSourceIndex &&
+                        Manga.sameEpisodeIdentity(item.value.manga, page.manga)
+                }
+                .map { it.index }
+            if (removeIndexes.size < NTK_GENERATED_EARLY_TAIL_MISSING_MIN_REMOVE) return false
+            beginStructurePublish()
+            var start = removeIndexes.first()
+            var previous = start
+            for (i in 1 until removeIndexes.size) {
+                val current = removeIndexes[i]
+                if (current == previous + 1) {
+                    previous = current
+                } else {
+                    ranges.add(start to previous)
+                    start = current
+                    previous = current
+                }
+            }
+            ranges.add(start to previous)
+            for ((rangeStart, rangeEnd) in ranges.asReversed()) {
+                val count = rangeEnd - rangeStart + 1
+                repeat(count) { pages.removeAt(rangeStart) }
+                removePageStateRange(rangeStart, count)
+                removedCount += count
+            }
+            pages.forEachIndexed { pageIndex, ref -> ref.pageIndex = pageIndex }
+            displayTotalPages = pages.count { ref ->
+                ref.transitionTitle == null && Manga.sameEpisodeIdentity(ref.manga, page.manga)
+            }
+            if (displayTotalPages > 0) {
+                page.manga.setNtkImageCount(displayTotalPages)
+                pages.forEach { ref ->
+                    if (ref.transitionTitle == null && Manga.sameEpisodeIdentity(ref.manga, page.manga)) {
+                        ref.totalPages = displayTotalPages
+                    }
+                }
+            }
+            total = pages.size
+        }
+        for ((start, end) in ranges.asReversed()) {
+            val count = end - start + 1
+            main.post {
+                if (!cancelled.get()) listener.onPagesRemoved(start, count, total)
+            }
+        }
+        if (!main.post {
+                finishStructurePublish()
+                requestRetainedWindowAfterStructureChange()
+            }) {
+            finishStructurePublish()
+            requestRetainedWindowAfterStructureChange()
+        }
+        Log.d(
+            TAG,
+            "trim_early_invalid_generated_tail index=$index,source=$firstTailSourceIndex,removed=$removedCount," +
+                "displayTotal=$displayTotalPages,path=${page.manga.ntkEpisodePath},error=${e.message}"
+        )
+        return true
+    }
+
     private fun refreshNtkGeneratedPageImage(index: Int, page: PageRef, e: Exception): Boolean {
         if (!isNtkSource(page.manga, title)) return false
         val originalImage = page.image ?: return false
@@ -7088,7 +7184,9 @@ class ReaderSession(
         val image = page.image ?: return false
         if (!isNtkGeneratedImageUrl(image)) return false
         if (!isImageNotFoundError(e)) return false
-        if (!firstBitmapLogged.get() && index == currentStartPage()) {
+        val currentIndex = currentIndexForPageRef(index, page)
+        if (currentIndex < 0) return false
+        if (!firstBitmapLogged.get() && currentIndex == currentStartPage()) {
             val replacement = ntkReplacementImageUrlForPage(
                 page.manga,
                 image,
@@ -7097,7 +7195,7 @@ class ReaderSession(
             )
             if (!replacement.isNullOrBlank() && replacement != image) {
                 synchronized(pagesLock) {
-                    if (index !in pages.indices || pages[index] != page) return false
+                    if (currentIndex !in pages.indices || pages[currentIndex] !== page) return false
                     for (ref in pages) {
                         if (
                             ref.transitionTitle == null &&
@@ -7118,15 +7216,15 @@ class ReaderSession(
                 inFlightWidths.remove(index)
                 Log.d(
                     TAG,
-                    "remove_invalid_generated_page_retarget_anchor index=$index,source=${page.sourceIndex}," +
+                    "remove_invalid_generated_page_retarget_anchor index=$currentIndex,source=${page.sourceIndex}," +
                         "path=${page.manga.ntkEpisodePath},from=$image,to=$replacement,error=${e.message}"
                 )
-                requestPage(index, busy = true, anchor = true, generation = FOREGROUND_PRIME_WARM_GENERATION)
+                requestPage(currentIndex, busy = true, anchor = true, generation = FOREGROUND_PRIME_WARM_GENERATION)
                 return true
             }
             Log.d(
                 TAG,
-                "remove_invalid_generated_page_defer_anchor index=$index,source=${page.sourceIndex}," +
+                "remove_invalid_generated_page_defer_anchor index=$currentIndex,source=${page.sourceIndex}," +
                     "path=${page.manga.ntkEpisodePath},image=$image,error=${e.message}"
             )
             return true
@@ -7135,9 +7233,14 @@ class ReaderSession(
         val total: Int
         val displayTotalPages: Int
         synchronized(pagesLock) {
-            if (index !in pages.indices || pages[index] != page) return false
+            val latestIndex = if (currentIndex in pages.indices && pages[currentIndex] === page) {
+                currentIndex
+            } else {
+                pages.indexOfFirst { it === page }
+            }
+            if (latestIndex < 0) return false
             beginStructurePublish()
-            removeIndex = index
+            removeIndex = latestIndex
             pages.removeAt(removeIndex)
             pages.forEachIndexed { pageIndex, ref -> ref.pageIndex = pageIndex }
             displayTotalPages = pages.count { ref ->
@@ -7171,6 +7274,13 @@ class ReaderSession(
                 "path=${page.manga.ntkEpisodePath},image=$image,error=${e.message}"
         )
         return true
+    }
+
+    private fun currentIndexForPageRef(index: Int, page: PageRef): Int {
+        synchronized(pagesLock) {
+            if (index in pages.indices && pages[index] === page) return index
+            return pages.indexOfFirst { it === page }
+        }
     }
 
     private fun requestRetainedWindowAfterStructureChange() {
@@ -10010,6 +10120,9 @@ class ReaderSession(
         private const val URGENT_VISIBLE_PIPELINE_PARALLELISM = 8
         private const val PRIME_PIPELINE_PARALLELISM = 8
         private const val ADJACENT_PIPELINE_PARALLELISM = 3
+        private const val NTK_GENERATED_EARLY_TAIL_MISSING_SOURCE_MIN = 3
+        private const val NTK_GENERATED_EARLY_TAIL_MISSING_SOURCE_MAX = 12
+        private const val NTK_GENERATED_EARLY_TAIL_MISSING_MIN_REMOVE = 2
         private const val NTK_FOREGROUND_PRIME_HEDGE_DELAY_MS = 1400L
         private const val NTK_VISIBLE_GENERATED_BYTE_HEDGE_DELAY_MS = 0L
         private const val NTK_WEBTOON_ANCHOR_PRIME_AFTER_DRAW_DELAY_MS = 96L
