@@ -31394,3 +31394,33 @@ Current status: target, dead-root detection, automatic live-root selection, mixe
   - 6 `ntk_true_random_all_pages_drawable` lines plus 120 scroll lines were logged.
   - All 6 ACK checks passed with strict proof and no false-done.
 - Network: before/after `CELLULAR`, `vpnActive=false`, `notVpn=true`.
+
+## 2026-06-26 10:30 KST real touch-scroll initial-page delivery fix
+
+- User-raised gap: the previous strict run still missed a real UX failure shape. Short generated webtoon episodes could render the first image and fetch p002/p003 bytes, but the actual reader remained clamped to the drawable prefix, so touch scroll appeared stuck after the first few images.
+- Repro failure before fix:
+  - Artifact: `build\ntk-random-perf\20260626_101713`.
+  - Target: `/webtoon/11537/1219385`.
+  - Failure: `Expected touch/down sweep to advance beyond bootstrap`.
+  - Evidence: p002/p003 `.jpg` byte fetches succeeded, but p003 was deferred before anchor delivery and the surface stayed at `maxObservedScrollOffset=306`.
+- Fixes added:
+  - Webtoon generated initial runs now expand the initial continuous request beyond the first page once the generated run is verified or hinted.
+  - `requestPage()` now re-reads the current `PageRef` after applying a generated extension hint, so decode does not continue on stale `.jpeg` state.
+  - Pre-anchor verified generated runs are allowed through stream/decode gates based on same-episode early URL proof, not only a narrow coordinator permit.
+  - Delayed pre-anchor and adjacent decode retries now survive generated URL hint replacement by matching the same episode/source slot instead of object identity.
+- Target retest:
+  - Artifact: `build\ntk-random-perf\20260626_102343`.
+  - Result: `passed=True`, `failures=0`.
+  - First drawable: `906ms`.
+  - Touch scroll: `30/30`; `maxObservedScrollOffset=1596`, so the short episode reached its real end instead of staying at the bootstrap prefix.
+  - Coverage: `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, `widthFillFailures=0`, `lowResolutionItems=0`, `minDrawableSourceWidth=1080`.
+  - All pages: `pages=3;drawable=3;unresolved=0`.
+- Mixed random no-WARP retest:
+  - Artifact: `build\ntk-random-perf\20260626_102507`.
+  - Command shape: `Runs=4`, `ScrollSteps=30`, `Mode=native-ack`, `ScrollInputMode=touch`, `ScrollPattern=down`, `StrictFresh`, `RequireLiveRandom`, `RequireAllPagesDrawable`, root locked to `https://newtoki1.org`.
+  - Result: `passed=True`, `exitCode=0`, `failures=0`, `slowSignals=0`.
+  - Coverage: 4 live-random episodes, mixed `/webtoon/` and `/manhwa/`: `/webtoon/3838/1436557`, `/manhwa/34852/1748796`, `/webtoon/17080/1442492`, `/manhwa/12840/134506`.
+  - Scroll: `120` touch scroll checkpoints; logs show `missedFrames=0`, `droppedFrames=0`, `missingPx=0`, `placeholderPx=0`, `loading=0`, `errors=0`, `widthFillFailures=0`, `lowResolutionItems=0`.
+  - All-pages drawable: all 4 cases reported `ready=true`.
+  - Network: before/after `CELLULAR`, `vpnActive=false`, `notVpn=true`.
+  - ACK: strict ACK proof passed; no loose/dead-address success was accepted.
