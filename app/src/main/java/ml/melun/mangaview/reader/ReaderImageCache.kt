@@ -1265,8 +1265,6 @@ object ReaderImageCache {
             if (target.page !in 1..NTK_GENERATED_INITIAL_RECOVERY_PAGES) return@forEach
             val ref = ntkGeneratedImageRef(image) ?: return@forEach
             if (ref.extension != "jpg" &&
-                !ref.episodeKey.startsWith("webtoon/") &&
-                !ref.episodeKey.startsWith("wt/") &&
                 !hasNtkGeneratedNotFoundInitialExtension(ref, ref.extension)
             ) {
                 preferredByPage[target.page] = image

@@ -1193,6 +1193,8 @@ public class Utils {
     }
 
     private static String ntkGeneratedInitialExtension(String segment, String pathEpisodeId) {
+        if("webtoon".equals(segment) && pathEpisodeId != null && pathEpisodeId.matches("\\d{1,12}"))
+            return "jpeg";
         return "jpg";
     }
 

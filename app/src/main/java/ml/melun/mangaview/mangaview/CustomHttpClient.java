@@ -13470,12 +13470,59 @@ public class CustomHttpClient {
         if(path == null || path.length() == 0 || !isNtk())
             return;
         try {
-            String baseUrl = getUrl(path);
-            startNtkNativeAckChallengePrepare(baseUrl, path, true);
-            Log.d(TAG, "ntk_ack_pre_start path=" + path);
+            String ackPath = ntkNativeAckScopePath(path);
+            String baseUrl = ntkWebViewAckBaseUrl(ackPath);
+            syncCookiesFromWebView(baseUrl, true);
+            syncCookiesFromWebView(baseUrl + ackPath, true);
+            if(hasRecentStrictNtkAdAckProof(ackPath)) {
+                Log.d(TAG, "ntk_ack_pre_start_skip_strict path=" + ackPath);
+                return;
+            }
+            startNtkNativeAckChallengePrepare(baseUrl, ackPath, true);
+            boolean completed = completePreparedNtkAckForPrewarm(ackPath, 1800L);
+            Log.d(TAG, "ntk_ack_pre_start path=" + ackPath
+                    + ",completed=" + completed
+                    + ",cfClearance=" + hasCloudflareClearance()
+                    + ",strictProof=" + hasRecentStrictNtkAdAckProof(ackPath));
         } catch(Exception e) {
             Log.d(TAG, "ntk_ack_pre_start_error path=" + path + "," + e);
         }
+    }
+
+    private boolean completePreparedNtkAckForPrewarm(String path, long timeoutMs) {
+        long startedAt = System.currentTimeMillis();
+        long deadline = startedAt + Math.max(0L, timeoutMs);
+        boolean attempted = false;
+        while(System.currentTimeMillis() <= deadline) {
+            if(hasRecentStrictNtkAdAckProof(path))
+                return true;
+            if(hasRecentPreparedNtkNativeAckChallenge(path)) {
+                attempted = true;
+                boolean ok = performPreparedNtkNativeAck(path);
+                if(ok || hasRecentStrictNtkAdAckProof(path)) {
+                    Log.d(TAG, "ntk_ack_pre_start_native_done path=" + path
+                            + ",ok=" + ok
+                            + ",ms=" + (System.currentTimeMillis() - startedAt));
+                    return true;
+                }
+            }
+            if(!isPreparedNtkNativeAckChallengeInFlight(path) && attempted)
+                break;
+            try {
+                Thread.sleep(80L);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        boolean strict = hasRecentStrictNtkAdAckProof(path);
+        Log.d(TAG, "ntk_ack_pre_start_native_wait_done path=" + path
+                + ",strict=" + strict
+                + ",attempted=" + attempted
+                + ",prepared=" + hasRecentPreparedNtkNativeAckChallenge(path)
+                + ",inFlight=" + isPreparedNtkNativeAckChallengeInFlight(path)
+                + ",ms=" + (System.currentTimeMillis() - startedAt));
+        return strict;
     }
 
     public void refreshCloudflareClearance(String path) {
@@ -14016,8 +14063,26 @@ public class CustomHttpClient {
             if(ntkChallengeIssuedAdAckCookie(challenge)) {
                 rememberNtkNativeAckChallengeBody(path, challenge.body,
                         "native-challenge-cookie");
+                boolean scopedAckCookie = false;
+                String challengeAdAck = getCookie("ad_ack");
+                if(ntkAckCookieUsableForPath("ad_ack", challengeAdAck, path)) {
+                    NtkWebViewFallbackManager.rememberScopedAdAck(
+                            path, challengeAdAck, "native-challenge-cookie");
+                    scopedAckCookie = true;
+                }
+                String challengeAdAckC = getCookie("ad_ack_c");
+                if(ntkAckCookieUsableForPath("ad_ack_c", challengeAdAckC, path)) {
+                    NtkWebViewFallbackManager.rememberScopedAdAckC(
+                            path, challengeAdAckC, "native-challenge-cookie");
+                    scopedAckCookie = true;
+                }
+                if(scopedAckCookie || hasNtkAdAckCookieForPath(path)) {
+                    NtkWebViewFallbackManager.rememberExternalServerAckSuccess(
+                            path, "native-fast-ack-ok");
+                }
                 NTK_ACK_CACHE.put(cacheKey, System.currentTimeMillis());
                 Log.d(TAG, "ntk_native_ack_challenge_cookie_success path=" + path
+                        + ",strict=" + NtkWebViewFallbackManager.hasRecentStrictAdAckSuccess(path)
                         + ",totalMs=" + (System.currentTimeMillis() - startedMs));
                 return true;
             }

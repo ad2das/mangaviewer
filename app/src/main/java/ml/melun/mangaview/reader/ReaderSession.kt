@@ -1109,7 +1109,7 @@ class ReaderSession(
         recordedImageEpisodeId: String
     ): String {
         if (segment != "webtoon") return ntkGeneratedInitialExtension(segment, pathEpisodeToken)
-        return "jpg"
+        return ntkGeneratedInitialExtension(segment, pathEpisodeToken)
     }
 
     private fun immediateGeneratedInitialUrls(
@@ -1346,6 +1346,7 @@ class ReaderSession(
     }
 
     private fun ntkGeneratedInitialExtension(segment: String, pathEpisodeToken: String): String {
+        if (segment == "webtoon" && pathEpisodeToken.matches(Regex("\\d{1,12}"))) return "jpeg"
         return "jpg"
     }
 

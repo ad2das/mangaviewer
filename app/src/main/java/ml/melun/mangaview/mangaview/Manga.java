@@ -5594,6 +5594,8 @@ public class Manga {
     }
 
     private String unverifiedInitialNtkGeneratedExtension(String segment) {
+        if("webtoon".equalsIgnoreCase(segment))
+            return "jpeg";
         return "jpg";
     }
 

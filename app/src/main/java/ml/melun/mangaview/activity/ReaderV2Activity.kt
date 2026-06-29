@@ -124,6 +124,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchStartedAtMs = 0L
     private var viewerLaunchSourceSite = ""
     @Volatile
+    private var ntkLaunchPreflightPath: String? = null
+    @Volatile
     private var firstDrawableMetricLogged = false
     @Volatile
     private var firstDrawableLoggedAtMs = 0L
@@ -266,6 +268,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         primeSlugWebtoonInitialImageAtActivityStart(manga)
         ReaderChromeStyler.applyReaderWindow(this)
         val ntkLaunchPreflightStarted = intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)
+        if (ntkLaunchPreflightStarted) {
+            ntkLaunchPreflightPath = manga.ntkEpisodePath
+        }
         val naverOriginalLaunchPreflight = ntkLaunchPreflightStarted &&
             isNaverOriginalNtkEpisodePath(manga.ntkEpisodePath)
         if (naverOriginalLaunchPreflight) {
@@ -1310,7 +1315,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (numericWebtoon && !imageWorkId.matches(Regex("\\d{1,12}"))) return false
         val knownCount = manga.ntkImageCount
         if (numericWebtoon && knownCount > 0 && imageWorkId.matches(Regex("\\d{1,12}"))) {
-            val first = "http://fifa.worldcup73.xyz/black/episodes/$imageWorkId/$episodeToken/p001.jpg"
+            val first = "http://fifa.worldcup73.xyz/black/episodes/$imageWorkId/$episodeToken/p001.jpeg"
             ReaderImageCache.rememberEarlyNtkImageUrls(path, listOf(first))
             val started = ReaderImageCache.startForegroundStreamFetch(
                 applicationContext,
@@ -1337,8 +1342,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             else -> NTK_ACTIVITY_INITIAL_CONTINUOUS_PRIME_PAGES
         }
         val urls = ArrayList<String>(launchCount)
+        val initialExtension = if (numericWebtoon) "jpeg" else "jpg"
         for (page in 1..launchCount) {
-            val pageName = "p%03d.jpg".format(Locale.ROOT, page)
+            val pageName = "p%03d.%s".format(Locale.ROOT, page, initialExtension)
             val url = if (numericWebtoon) {
                 "http://fifa.worldcup73.xyz/black/episodes/$imageWorkId/$episodeToken/$pageName"
             } else {
@@ -2780,13 +2786,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingInitialNtkCaptchaDeferrals = 0
         val ntkPath = manga.ntkEpisodePath
         if (ntkPath?.let { it.startsWith("/webtoon/") || it.startsWith("/manhwa/") } == true) {
-            ntkAckPreflightGeneration.incrementAndGet()
+            val preserveLaunchPreflight = ntkLaunchPreflightPath == ntkPath
+            if (!preserveLaunchPreflight) {
+                ntkAckPreflightGeneration.incrementAndGet()
+            }
             Log.d(
                 "ViewerPerf",
-                "reader_activity_start_session path=$ntkPath,clear=$clearViewImmediately"
+                "reader_activity_start_session path=$ntkPath,clear=$clearViewImmediately,preserveLaunchPreflight=$preserveLaunchPreflight"
             )
             ReaderImageCache.cancelOtherNtkEpisodeVolatile(ntkPath, "start_session")
-            getHttpClient().cancelNtkWebViewFallbacks()
+            if (!preserveLaunchPreflight) {
+                getHttpClient().cancelNtkWebViewFallbacks()
+            }
             Log.d(
                 "ViewerPerf",
                 "reader_ntk_unsigned_generated_prefetch_skip reason=session_cancel_uses_tokenized_prefetch,path=$ntkPath"
