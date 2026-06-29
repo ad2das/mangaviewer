@@ -74,7 +74,7 @@ final class NtkWebViewFallbackManager {
     private static final long WEBVIEW_LOAD_TIMEOUT_MS = 22_000L;
     private static final long CALLER_WAIT_TIMEOUT_MS = 38_000L;
     private static final long DOCUMENT_READY_WAIT_MS = 18_000L;
-    private static final long HIDDEN_CHALLENGE_WAIT_MS = 2_500L;
+    private static final long HIDDEN_CHALLENGE_WAIT_MS = 10_000L;
     private static final long ACK_ONLY_CALLER_WAIT_TIMEOUT_MS = 58_000L;
     private static final long ACK_ONLY_WEBVIEW_FINISH_TIMEOUT_MS = 58_500L;
     private static final long PRIORITY_WOLF_DOCUMENT_READY_WAIT_MS = 2_500L;
@@ -446,6 +446,13 @@ final class NtkWebViewFallbackManager {
                     if(urls.size() > 0) {
                         cancelViewerImageFetch(cancelRef);
                         return urls;
+                    }
+                    if(result.body != null && result.body.length() > 0
+                            && viewerImagesBridgeResultIsTerminalFailure(result.body)) {
+                        Log.d(TAG, "ntk_webview_viewer_images_terminal_result path=" + path
+                                + ",bodyLen=" + result.body.length());
+                        cancelViewerImageFetch(cancelRef);
+                        break;
                     }
                 }
                 if(SystemClock.elapsedRealtime() >= deadline) {
@@ -872,16 +879,20 @@ final class NtkWebViewFallbackManager {
             done.countDown();
             return;
         }
-        if(viewerImageFetchGeneration.get() != generation) {
-            Log.d(TAG, "ntk_images_api_hidden_skip_cancelled path=" + path
-                    + ",queueMs=" + (SystemClock.elapsedRealtime() - postedAt));
-            done.countDown();
-            return;
-        }
         final boolean ackOnlyFrame = "__ack_only__".equals(imagesToken);
+        if(viewerImageFetchGeneration.get() != generation) {
+            if(ackOnlyFrame) {
+                Log.d(TAG, "ntk_images_api_hidden_skip_cancelled path=" + path
+                        + ",ackOnly=true,queueMs=" + (SystemClock.elapsedRealtime() - postedAt));
+                done.countDown();
+                return;
+            }
+            Log.d(TAG, "ntk_images_api_hidden_continue_after_generation_cancel path=" + path
+                    + ",queueMs=" + (SystemClock.elapsedRealtime() - postedAt));
+        }
         final boolean directWebViewImageApiFrame = !ackOnlyFrame
                 && isModernNtkGuardRoot(baseUrl)
-                && isSlugWebtoonImagePath(kind, path);
+                && isWebtoonViewerImagePath(kind, path);
         Log.d(TAG, "ntk_images_api_hidden_main_entry path=" + path
                 + ",ackOnly=" + ackOnlyFrame
                 + ",directWebViewImageApiFrame=" + directWebViewImageApiFrame
@@ -904,6 +915,8 @@ final class NtkWebViewFallbackManager {
         final boolean[] finished = {false};
         final boolean[] requested = {false};
         final int[] scriptRequests = {0};
+        final ArrayList<String> scoutedViewerImageUrls = new ArrayList<>();
+        final Object scoutedViewerImageLock = new Object();
         final String shellGuardVersion = ntkGuardVersionFromText(shellHtml);
         rememberGuardVersion(context, shellGuardVersion);
         Runnable finish = new Runnable() {
@@ -956,7 +969,7 @@ final class NtkWebViewFallbackManager {
             cookieManager.setAcceptThirdPartyCookies(view, true);
             String shellUrl = baseUrl + path;
             boolean modernGuardRoot = isModernNtkGuardRoot(baseUrl);
-            boolean realSlugWebtoonImageFrame = !ackOnlyFrame && isSlugWebtoonImagePath(kind, path);
+            boolean realSlugWebtoonImageFrame = !ackOnlyFrame && isWebtoonViewerImagePath(kind, path);
             boolean realImageFrame = modernGuardRoot && !ackOnlyFrame && !realSlugWebtoonImageFrame;
             boolean ackOnlySlugWebtoonFrame = false;
             boolean realMainFrame = modernGuardRoot
@@ -1008,7 +1021,12 @@ final class NtkWebViewFallbackManager {
                         + ",merged=" + summarizeNtkCookieHeaderForLog(mergedCookies));
             }
             installViewerImageBridges(view, result, finish, ackOnlyFrame, quicBridge,
-                    ackScopePath, generation);
+                    ackScopePath, directWebViewImageApiFrame ? -1 : generation);
+            if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame) {
+                view.addJavascriptInterface(new ViewerImageScoutBridge(this, kind, workId,
+                        episodeId, path, scoutedViewerImageUrls, scoutedViewerImageLock),
+                        "NtkImageScoutBridge");
+            }
             if(ackOnlyPlainCloudflarePass) {
                 view.setTag(ACK_ONLY_PLAIN_CF_TAG);
                 Log.d(TAG, "ntk_ack_only_plain_cf_stage path=" + path
@@ -1043,6 +1061,12 @@ final class NtkWebViewFallbackManager {
                 @Override
                 public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
                     super.onPageStarted(view, url, favicon);
+                    if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame) {
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 40L, true);
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 160L, true);
+                    }
                     if(ackOnlyFrame && isAckOnlyPlainCloudflarePending(view.getTag())
                             && !ackOnlyPlainCloudflarePass) {
                         installAckOnlyTurnstileShadowHook(view, finished, path, "page-start");
@@ -1063,6 +1087,17 @@ final class NtkWebViewFallbackManager {
                 @Override
                 public void onPageCommitVisible(WebView view, String url) {
                     super.onPageCommitVisible(view, url);
+                    if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame) {
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 0L, true);
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 120L, true);
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 260L, true);
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 520L, true);
+                        return;
+                    }
                     if(finished[0] || !isFinishedDocumentUrl(url, baseUrl, path))
                         return;
                     Log.d(TAG, "ntk_images_api_hidden_commit url=" + url
@@ -1084,6 +1119,15 @@ final class NtkWebViewFallbackManager {
                             + ",match=" + isFinishedDocumentUrl(url, baseUrl, path));
                     if(ackOnlyFrame && !isAckOnlyPlainCloudflareFlow(view.getTag()))
                         installAckOnlyCloudflareBridge(view, finished, path, "page-finished");
+                    if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame) {
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 0L, true);
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 180L, true);
+                        scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, 420L, true);
+                        return;
+                    }
                     if(requested[0] || finished[0] || !isFinishedDocumentUrl(url, baseUrl, path))
                         return;
                     if(ackOnlyPlainCloudflarePass && isAckOnlyPlainCloudflarePending(view.getTag())) {
@@ -1147,6 +1191,9 @@ final class NtkWebViewFallbackManager {
 
                 @Override
                 public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                    if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame)
+                        recordScoutedViewerImageRequest(kind, workId, episodeId, path, request,
+                                scoutedViewerImageUrls, scoutedViewerImageLock, "request");
                     if(!realMainFrame && request != null && request.isForMainFrame()
                             && isFinishedDocumentUrl(request.getUrl() == null ? "" : request.getUrl().toString(),
                             baseUrl, path)) {
@@ -1169,7 +1216,8 @@ final class NtkWebViewFallbackManager {
                     }
                     if(realMainFrame && ackOnlyFrame && shouldBlockHiddenAckOnlyHeavyRequest(request))
                         return emptyWebViewResponse("text/plain");
-                    if(realSlugWebtoonImageFrame && shouldUseDirectWebViewForSlugWebtoonApi(request))
+                    if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame
+                            && shouldUseDirectWebViewForSlugWebtoonApi(request))
                         return super.shouldInterceptRequest(view, request);
                     if(realMainFrame && ackOnlyFrame && shouldUseDirectWebViewForAckOnlyApi(request))
                         return super.shouldInterceptRequest(view, request);
@@ -1356,15 +1404,21 @@ final class NtkWebViewFallbackManager {
                     scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 32_000L);
                     scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 42_000L);
                     scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 52_000L);
-                } else if(realSlugWebtoonImageFrame && modernGuardRoot) {
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 40L);
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 100L);
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 160L);
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 260L);
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 500L);
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 1_100L);
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 2_900L);
-                    scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 6_500L);
+                } else if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame && modernGuardRoot) {
+                    scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                            scoutedViewerImageUrls, scoutedViewerImageLock, 40L, true);
+                    scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                            scoutedViewerImageUrls, scoutedViewerImageLock, 120L, true);
+                    scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                            scoutedViewerImageUrls, scoutedViewerImageLock, 260L, true);
+                    scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                            scoutedViewerImageUrls, scoutedViewerImageLock, 520L, true);
+                    scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                            scoutedViewerImageUrls, scoutedViewerImageLock, 900L, true);
+                    scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                            scoutedViewerImageUrls, scoutedViewerImageLock, 1_400L, true);
+                    scheduleViewerImageScout(view, finished, kind, workId, episodeId, path,
+                            scoutedViewerImageUrls, scoutedViewerImageLock, 2_200L, true);
                 } else {
                     scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 120L);
                     scheduleViewerImageFetch(view, finished, scriptRequests, baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken, 450L);
@@ -1412,23 +1466,25 @@ final class NtkWebViewFallbackManager {
                             900L, "shell-load-900");
                 }
             } else {
-                if(realSlugWebtoonImageFrame && modernGuardRoot) {
-                    String startupScript = buildViewerImageFetchScriptForFrame(baseUrl, path,
-                            ackScopePath, kind, workId, episodeId, imagesToken);
-                    Log.d(TAG, "ntk_images_api_slug_webtoon_origin_shell_load path=" + path
+                if(realSlugWebtoonImageFrame && !directWebViewImageApiFrame && modernGuardRoot) {
+                    Log.d(TAG, "ntk_images_api_slug_webtoon_real_page_scout_load path=" + path
                             + ",url=" + shellUrl
                             + ",guardVersion=" + shellGuardVersion
                             + ",htmlLen=" + (shellHtml == null ? 0 : shellHtml.length())
-                            + ",minimal=true"
-                            + ",startupLen=" + startupScript.length());
-                    view.loadDataWithBaseURL(shellUrl,
-                            viewerImageApiShellHtml(shellGuardVersion, startupScript),
-                            "text/html", "UTF-8", shellUrl);
-                } else if(realImageFrame && modernGuardRoot) {
+                            + ",minimalScout=true");
+                    if(shellHtml != null && shellHtml.length() > 0) {
+                        view.loadDataWithBaseURL(shellUrl,
+                                viewerShellHtml(shellHtml, shellGuardVersion),
+                                "text/html", "UTF-8", shellUrl);
+                    } else {
+                        view.loadUrl(shellUrl, webViewHeaders(headers));
+                    }
+                } else if((realImageFrame || directWebViewImageApiFrame) && modernGuardRoot) {
                     Log.d(TAG, "ntk_images_api_real_image_shell_load path=" + path
                             + ",url=" + shellUrl
                             + ",guardVersion=" + shellGuardVersion
-                            + ",htmlLen=" + (shellHtml == null ? 0 : shellHtml.length()));
+                            + ",htmlLen=" + (shellHtml == null ? 0 : shellHtml.length())
+                            + ",directWebtoonApi=" + directWebViewImageApiFrame);
                     view.loadDataWithBaseURL(shellUrl,
                             ackOnlySyntheticShellHtml(path),
                             "text/html", "UTF-8", shellUrl);
@@ -1595,6 +1651,159 @@ final class NtkWebViewFallbackManager {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private static boolean viewerImagesBridgeResultIsTerminalFailure(String value) {
+        if(value == null || value.length() == 0)
+            return false;
+        try {
+            JSONObject envelope = new JSONObject(value);
+            int code = envelope.optInt("code", 0);
+            JSONObject body = envelope.optJSONObject("body");
+            if(body == null && envelope.optString("body", "").startsWith("{"))
+                body = new JSONObject(envelope.optString("body"));
+            String error = body == null ? envelope.optString("error", "")
+                    : body.optString("error", "");
+            return code == 401 || code == 403 || code == 428
+                    || "missing_token".equals(error)
+                    || "manifest_missing_token".equals(error)
+                    || "missing_images_token".equals(error)
+                    || "missing_nv".equals(error)
+                    || "bridge_only_failed".equals(error)
+                    || "compact_failed".equals(error);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void scheduleViewerImageScout(WebView view, boolean[] finished, String kind,
+                                          String workId, String episodeId, String path,
+                                          ArrayList<String> scoutedUrls, Object lock,
+                                          long delayMs, boolean scroll) {
+        mainHandler.postDelayed(() -> {
+            if(finished[0] || view == null)
+                return;
+            try {
+                view.evaluateJavascript(buildViewerImageScoutScript(scroll), null);
+                if(scroll)
+                    Log.d(TAG, "ntk_viewer_image_scout_eval path=" + path
+                            + ",delayMs=" + delayMs);
+            } catch(Exception e) {
+                Log.d(TAG, "ntk_viewer_image_scout_eval_error path=" + path + "," + e);
+            }
+        }, delayMs);
+    }
+
+    private static String buildViewerImageScoutScript(boolean scroll) {
+        return "(function(){try{"
+                + "function post(a){try{if(a&&a.length&&window.NtkImageScoutBridge)"
+                + "window.NtkImageScoutBridge.onScoutImages(JSON.stringify({urls:a}));}catch(_){}}"
+                + "function abs(u){try{return new URL(String(u||''),location.href).href;}catch(_){return '';}}"
+                + "var out=[],seen={};function add(u){u=abs(u);if(!u||seen[u])return;seen[u]=1;out.push(u);}"
+                + "function one(e){try{if(!e)return;if(e.currentSrc)add(e.currentSrc);if(e.src)add(e.src);"
+                + "var ss=e.srcset||e.getAttribute&&e.getAttribute('srcset')||'';"
+                + "if(ss)ss.split(',').forEach(function(p){add(String(p).trim().split(/\\s+/)[0]);});"
+                + "['data-src','data-original','data-url','data-lazy-src'].forEach(function(a){"
+                + "try{var v=e.getAttribute&&e.getAttribute(a);if(v)add(v);}catch(_){}});}catch(_){}}"
+                + "function scan(){try{document.querySelectorAll('img,source,picture').forEach(one);post(out.splice(0,out.length));}catch(_){}}"
+                + "if(!window.__ntkImageScoutInstalled&&document.documentElement){window.__ntkImageScoutInstalled=1;"
+                + "try{new MutationObserver(function(ms){try{ms.forEach(function(m){"
+                + "if(m.target)one(m.target);if(m.addedNodes)m.addedNodes.forEach(function(n){"
+                + "if(n.querySelectorAll)n.querySelectorAll('img,source,picture').forEach(one);one(n);});});"
+                + "post(out.splice(0,out.length));}catch(_){}}).observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','srcset','data-src','data-original','data-url','data-lazy-src']});}catch(_){}}"
+                + "scan();"
+                + (scroll
+                ? "try{var h=Math.max(900,Math.floor((window.innerHeight||720)*2.2));window.scrollBy(0,h);}catch(_){}setTimeout(scan,35);setTimeout(scan,120);"
+                : "")
+                + "}catch(e){try{window.NtkImageScoutBridge&&window.NtkImageScoutBridge.onScoutError(String(e));}catch(_){}}})()";
+    }
+
+    private void recordScoutedViewerImageRequest(String kind, String workId, String episodeId,
+                                                 String path, WebResourceRequest request,
+                                                 ArrayList<String> scoutedUrls, Object lock,
+                                                 String source) {
+        if(request == null || request.getUrl() == null)
+            return;
+        String url = request.getUrl().toString();
+        if(!looksLikeScoutedViewerImageUrl(url, request.getRequestHeaders()))
+            return;
+        recordScoutedViewerImageUrls(kind, workId, episodeId, path,
+                Collections.singletonList(url), scoutedUrls, lock, source);
+    }
+
+    private void recordScoutedViewerImageUrls(String kind, String workId, String episodeId,
+                                              String path, List<String> urls,
+                                              ArrayList<String> scoutedUrls, Object lock,
+                                              String source) {
+        if(path == null || path.length() == 0 || urls == null || urls.isEmpty())
+            return;
+        ArrayList<String> snapshot = null;
+        synchronized (lock) {
+            for(String raw : urls) {
+                String url = normalizeScoutedViewerImageUrl(raw);
+                if(url.length() == 0 || !looksLikeScoutedViewerImageUrl(url, null))
+                    continue;
+                if(!scoutedUrls.contains(url))
+                    scoutedUrls.add(url);
+            }
+            if(!scoutedUrls.isEmpty())
+                snapshot = new ArrayList<>(scoutedUrls);
+        }
+        if(snapshot == null || snapshot.isEmpty())
+            return;
+        cacheViewerImageUrls(kind, workId, episodeId, path, snapshot, "scout-" + source);
+        if(snapshot.size() <= 4 || snapshot.size() % 8 == 0) {
+            Log.d(TAG, "ntk_viewer_image_scout_urls path=" + path
+                    + ",count=" + snapshot.size()
+                    + ",source=" + source
+                    + ",first=" + snapshot.get(0).substring(0,
+                    Math.min(140, snapshot.get(0).length())));
+        }
+    }
+
+    private static String normalizeScoutedViewerImageUrl(String raw) {
+        if(raw == null)
+            return "";
+        String value = raw.trim();
+        if(value.length() == 0 || value.startsWith("data:") || value.startsWith("blob:"))
+            return "";
+        if(value.startsWith("//"))
+            value = "https:" + value;
+        return value;
+    }
+
+    private static boolean looksLikeScoutedViewerImageUrl(String raw, Map<String, String> headers) {
+        String url = normalizeScoutedViewerImageUrl(raw);
+        if(url.length() == 0)
+            return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        if(!(lower.startsWith("https://") || lower.startsWith("http://")))
+            return false;
+        if(lower.contains("banner") || lower.contains("advert")
+                || lower.contains("sponsor") || lower.contains("favicon")
+                || lower.contains("/_next/") || lower.contains("/api/")
+                || lower.contains("ad-guard") || lower.contains("turnstile"))
+            return false;
+        boolean imageAccept = false;
+        if(headers != null) {
+            for(Map.Entry<String, String> entry : headers.entrySet()) {
+                if(entry.getKey() != null && "accept".equalsIgnoreCase(entry.getKey())
+                        && entry.getValue() != null
+                        && entry.getValue().toLowerCase(Locale.ROOT).contains("image/")) {
+                    imageAccept = true;
+                    break;
+                }
+            }
+        }
+        boolean imageExtension = lower.matches(".*\\.(jpg|jpeg|png|webp)(?:[?#].*)?$");
+        boolean knownImagePath = lower.contains("/webtoon_uploads/")
+                || lower.contains("/manhwa_uploads/")
+                || lower.contains("/comic_uploads/")
+                || lower.contains("/board_uploads/")
+                || lower.contains("/blacktoon/episodes/")
+                || lower.contains("/wt/episodes/")
+                || lower.matches(".*/p\\d{2,4}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$");
+        return knownImagePath || (imageAccept && imageExtension);
     }
 
     private boolean fastPromoteAckOnlySyntheticShell(WebView view, boolean[] finished,
@@ -2426,6 +2635,9 @@ final class NtkWebViewFallbackManager {
         if(source == null)
             return false;
         String normalized = source.toLowerCase(Locale.US);
+        if("bridge-challenge-200".equals(normalized)
+                || "native-webtoon-observation-challenge-200".equals(normalized))
+            return true;
         if(normalized.contains("challenge") || normalized.contains("cookie")
                 || normalized.contains("observation"))
             return false;
@@ -2434,10 +2646,9 @@ final class NtkWebViewFallbackManager {
                 || "captcha-webview-ack-200".equals(normalized)
                 || "captcha-bridge-ack-200".equals(normalized)
                 || "bridge-ack-200".equals(normalized)
-                || "bridge-challenge-200".equals(normalized)
                 || "compact-ack-200".equals(normalized)
+                || "compact-ack-valid".equals(normalized)
                 || "guard-global-ack-ok".equals(normalized)
-                || "native-webtoon-observation-challenge-200".equals(normalized)
                 || normalized.endsWith("-ack-ok")
                 || normalized.endsWith("-bridge-ack-200")
                 || normalized.endsWith("-fetch-ack-200")
@@ -3010,12 +3221,59 @@ final class NtkWebViewFallbackManager {
         }
         if(finished[0] || scriptRequests[0] >= viewerScriptRequestLimit(imagesToken) || view == null)
             return;
+        if(slugWebtoonImages) {
+            view.evaluateJavascript(
+                    "(function(){try{return !!window.__ntkBridgeOnlyWebtoonRunning"
+                            + "&&Date.now()-Number(window.__ntkBridgeOnlyWebtoonRunningAt||0)<1400}"
+                            + "catch(_){return false}})()",
+                    value -> {
+                        if("true".equals(value)) {
+                            Log.d(TAG, "ntk_images_api_slug_eval_running_deferred path=" + path
+                                    + ",url=" + view.getUrl()
+                                    + ",attempts=" + scriptRequests[0]);
+                            return;
+                        }
+                        evaluateViewerImageFetchScriptAfterRunningProbe(view, finished,
+                                scriptRequests, baseUrl, path, ackScopePath, kind, workId,
+                                episodeId, imagesToken);
+                    });
+            return;
+        }
+        evaluateViewerImageFetchScriptAfterRunningProbe(view, finished, scriptRequests, baseUrl,
+                path, ackScopePath, kind, workId, episodeId, imagesToken);
+    }
+
+    private void evaluateViewerImageFetchScriptAfterRunningProbe(WebView view, boolean[] finished,
+                                                                 int[] scriptRequests,
+                                                                 String baseUrl, String path,
+                                                                 String ackScopePath,
+                                                                 String kind, String workId,
+                                                                 String episodeId,
+                                                                 String imagesToken) {
+        if(finished[0] || scriptRequests[0] >= viewerScriptRequestLimit(imagesToken) || view == null)
+            return;
         scriptRequests[0]++;
         String proofScope = ackScopePath == null || ackScopePath.length() == 0
                 ? path : ackScopePath;
         boolean serverAckProof = !"__ack_only__".equals(imagesToken)
                 && hasRecentStrictAdAckSuccess(proofScope);
         boolean ackOnly = "__ack_only__".equals(imagesToken);
+        boolean slugWebtoonImages = !ackOnly && isSlugWebtoonViewerImagePath(kind, path);
+        boolean directMetadataWebtoonApi = slugWebtoonImages
+                && workId != null && workId.matches("\\d+")
+                && episodeId != null && episodeId.matches("\\d+")
+                && path != null && path.matches("^/webtoon/\\d+/[^/?#]+(?:[/?#].*)?$");
+        if(directMetadataWebtoonApi && scriptRequests[0] == 1) {
+            view.evaluateJavascript("(function(){try{window.NtkViewerBridge.onAckState(JSON.stringify({viewerImagesDirectProbe:true,bridge:!!window.NtkViewerBridge,href:String(location.href||'').slice(0,120)}));return 'probe-ok';}catch(e){return 'probe-error:'+String(e).slice(0,120);}})()",
+                    value -> Log.d(TAG, "ntk_images_api_direct_probe_result path=" + path
+                            + ",value=" + (value == null ? "" : value)));
+        }
+        if(slugWebtoonImages && !directMetadataWebtoonApi && scriptRequests[0] > 0) {
+            Log.d(TAG, "ntk_images_api_slug_eval_single_flight path=" + path
+                    + ",url=" + view.getUrl()
+                    + ",attempts=" + scriptRequests[0]);
+            return;
+        }
         String script = buildViewerImageFetchScriptForFrame(baseUrl, path, ackScopePath,
                 kind, workId, episodeId, imagesToken, serverAckProof);
         Log.d(TAG, "ntk_images_api_eval_script path=" + path
@@ -3047,7 +3305,7 @@ final class NtkWebViewFallbackManager {
     }
 
     private static int viewerScriptRequestLimit(String imagesToken) {
-        return "__ack_only__".equals(imagesToken) ? 3 : 14;
+        return "__ack_only__".equals(imagesToken) ? 3 : 4;
     }
 
     private static String buildViewerImageFetchScriptForFrame(String baseUrl, String path,
@@ -3067,8 +3325,8 @@ final class NtkWebViewFallbackManager {
                                                               boolean serverAckProof) {
         if(!"__ack_only__".equals(imagesToken)
                 && isModernNtkGuardRoot(baseUrl)
-                && isSlugWebtoonViewerImagePath(kind, path)) {
-            return buildBridgeDirectWebtoonViewerImageApiScript(baseUrl, path,
+                && isWebtoonViewerImagePath(kind, path)) {
+            return buildBridgeOnlyViewerImageApiScript(baseUrl, path, "/api/webtoon-images",
                     workId, episodeId, imagesToken);
         }
         return buildViewerImageFetchScript(baseUrl, path, ackScopePath, kind, workId,
@@ -3099,6 +3357,15 @@ final class NtkWebViewFallbackManager {
                 .matcher(path);
         return matcher.find()
                 && (!matcher.group(1).matches("\\d+") || !matcher.group(2).matches("\\d+"));
+    }
+
+    private static boolean isWebtoonViewerImagePath(String kind, String path) {
+        if(!"webtoon".equals(kind) || path == null)
+            return false;
+        return java.util.regex.Pattern
+                .compile("^/webtoon/([^/?#]+)/([^/?#]+)")
+                .matcher(path)
+                .find();
     }
 
     private static int chromeMajorVersion(String userAgent) {
@@ -4050,6 +4317,7 @@ final class NtkWebViewFallbackManager {
     private static boolean shouldNavigateDocument(String path) {
         return path != null && (path.startsWith("/webtoon/")
                 || path.startsWith("/manhwa/")
+                || isNtkSearchDocumentPath(path)
                 || isNtkCategoryDocumentPath(path)
                 || CustomHttpClient.isWolfEpisodeDocumentPath(path));
     }
@@ -4086,10 +4354,19 @@ final class NtkWebViewFallbackManager {
             int basePort = base.getPort();
             if(!scheme.equals(baseScheme) || !host.equals(baseHost) || port != basePort)
                 return false;
-            String decodedPath = parsed.getPath();
+            String decodedPath = parsed.getRawPath();
+            if(decodedPath == null || decodedPath.length() == 0)
+                decodedPath = parsed.getPath();
             String expectedPath = path.startsWith("/") ? path : "/" + path;
-            return decodedPath != null && (decodedPath.equals(expectedPath)
-                    || decodedPath.equals(expectedPath + "/"));
+            String rawQuery = parsed.getRawQuery();
+            String actual = decodedPath == null ? "" : decodedPath;
+            if(rawQuery != null && rawQuery.length() > 0)
+                actual += "?" + rawQuery;
+            if(matchesFinishedDocumentUrl(actual, expectedPath))
+                return true;
+            if(expectedPath.indexOf('?') >= 0 || expectedPath.indexOf('#') >= 0)
+                return false;
+            return decodedPath != null && matchesFinishedDocumentUrl(decodedPath, expectedPath);
         } catch (Exception ignored) {
             return false;
         }
@@ -4142,8 +4419,10 @@ final class NtkWebViewFallbackManager {
     private static long webViewLoadTimeoutMs(FetchTask task) {
         if(task == null)
             return WEBVIEW_LOAD_TIMEOUT_MS;
-        if(isNtkTitleDocumentPath(task.path) || isNtkSearchDocumentPath(task.path))
+        if(isNtkTitleDocumentPath(task.path))
             return 8_000L;
+        if(isNtkSearchDocumentPath(task.path))
+            return WEBVIEW_LOAD_TIMEOUT_MS;
         if(task.highPriority && isNtkEpisodeDocumentPath(task.path))
             return 45_000L;
         return webViewLoadTimeoutMs(task.highPriority, CustomHttpClient.isWolfEpisodeDocumentPath(task.path));
@@ -4277,9 +4556,11 @@ final class NtkWebViewFallbackManager {
                 + "function ensureRows(ch){try{var urls=(ch&&ch.impressionUrls)||[],token=String(ch&&ch.token||''),slot=Math.max(Number(ch&&ch.slotCount||0),urls.length,4),root=document.getElementById('__ntk_guard_rows'),host=ensureHost();if(!host){log({compactAckRowsNoHost:true});return;}if(!root||root.getAttribute('data-ntk-token')!==token){if(root&&root.parentNode)root.parentNode.removeChild(root);root=document.createElement('section');root.id='__ntk_guard_rows';root.setAttribute('data-ntk-token',token);root.setAttribute('data-br','1');root.setAttribute('data-brs','header');root.setAttribute('data-br-n',String(slot));root.style.cssText='display:grid;grid-template-columns:repeat(4,78px);gap:8px;position:relative;opacity:1;visibility:visible;width:390px;min-height:76px';for(var i=0;i<slot;i++){var b=document.createElement('button');b.type='button';b.setAttribute(i===0?'data-bs':'data-bp','1');b.style.cssText='display:block;width:78px;height:48px;padding:0;margin:0;border:0;background:transparent';var img=document.createElement('img');img.width=78;img.height=48;img.loading='eager';img.decoding='sync';img.alt='';img.src=urls.length?abs(urls[i%urls.length]):'data:image/gif;base64,R0lGODlhTgAwAPAAAP///wAAACH5BAAAAAAALAAAAABOADAAAAIKjI+py+0Po5yUFQA7';b.appendChild(img);root.appendChild(b);}host.insertBefore(root,host.firstChild||null);}var de=document.documentElement||host,ab=de.getAttribute('data-ab')||'__bSeen',rb=de.getAttribute('data-rb')||ab;de.setAttribute('data-ab',ab);de.setAttribute('data-rb',rb);window.__bSeen=Math.max(Number(window.__bSeen||0),slot);window[ab]=Math.max(Number(window[ab]||0),slot);window[rb]=Math.max(Number(window[rb]||0),slot);log({compactAckRows:true,slot:slot,imps:urls.length,seen:Number(window.__bSeen||window[ab]||window[rb]||0),hasBody:!!document.body});}catch(e){log({compactAckRowsError:String(e)});}}"
                 + "async function fireImps(ch){var seen=0,imps=(ch&&ch.impressionUrls)||[],target=Math.max(1,Math.min(imps.length,Number(ch&&ch.slotCount||imps.length||4)));await Promise.all(imps.slice(0,target).map(function(u,i){return bridgeReq(u,'GET',null,{'accept':'image/gif,image/*,*/*'}).then(function(r){if((r.status||0)>=200&&(r.status||0)<300)seen++;log({compactAckImp:i,status:r.status,seen:seen,target:target});}).catch(function(e){log({compactAckImpError:i,error:String(e)});});}));return seen;}"
                 + "async function browserReq(url,method,body){var u=abs(url),bodyText=body?JSON.stringify(body):'',f=window.__ntkNativeFetch||window.fetch,r=null,t='',j={};try{r=await f.call(window,u,{method:method||'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','accept':'application/json','origin':baseOrigin(),'referer':pageUrl()},body:bodyText});t=await r.text().catch(function(){return '';});try{j=JSON.parse(t||'{}');}catch(_){}log({compactAckBrowserReq:true,path:(new URL(u)).pathname,status:r.status,ok:!!(j&&j.ok),hasChallenge:!!(j&&j.challenge),text:String(t||'').slice(0,120)});return{status:r.status,body:j,text:t,browser:true};}catch(e){try{log({compactAckBrowserReqError:String(e),path:(new URL(u)).pathname});}catch(_){}return null;}}"
+                + "async function fireObsBatch(ch){try{var u=ch&&ch.observationBatchUrl;if(!u)return 0;var urls=(ch.impressionUrls||[]).slice(0,Math.max(1,Number(ch.minSeen||1))),token=String(ch.token||''),r=await bridgeReq(u,'POST',{challengeToken:token,token:token,path:scope,urls:urls});log({compactAckObsBatch:true,status:r&&r.status||0,count:urls.length,ok:!!(r&&r.body&&r.body.ok)});return r&&r.status||0;}catch(e){log({compactAckObsBatchError:String(e)});return 0;}}"
+                + "async function validateSeenAck(ch,seen){try{var minSeen=Math.max(1,Number(ch&&ch.minSeen||2));if((seen||0)<minSeen)return false;var c=await bridgeReq('/api/ad/challenge','POST',{path:scope,force:false});if(!c||c.status!==200||!c.body||(!c.body.ackValid&&!c.body.trusted)){var bc=await browserReq('/api/ad/challenge','POST',{path:scope,force:false});if(bc)c=bc;}var b=c&&c.body?c.body:{};log({compactAckValidateSeen:true,status:c&&c.status||0,ackValid:!!b.ackValid,trusted:!!b.trusted,hasChallenge:!!b.challenge,seen:seen,minSeen:minSeen});if(c&&c.status===200&&b&&(b.ackValid===true||b.trusted&&!b.challenge)){markProof('compact-ack-valid','seen');return true;}}catch(e){log({compactAckValidateSeenError:String(e)});}return false;}"
                 + "async function guardProof(token){try{var mod=await loadGuard();if(!mod||!token)return '';var args=[token,JSON.stringify({token:token,path:scope}),scope],fns=[];if(mod._vc)fns.push(['_vc',mod._vc.bind(mod)]);if(mod._hk)fns.push(['_hk',mod._hk.bind(mod)]);for(var fi=0;fi<fns.length;fi++){for(var i=0;i<args.length;i++){try{var name=fns[fi][0],fn=fns[fi][1],v=fn(args[i],scope);if(v&&v.then)v=await v;v=String(v||'');log({compactAckProofTry:i,fn:name,len:v.length,value:v.slice(0,16)});if(v&&v!=='true'&&v!=='false')return v;}catch(e){log({compactAckProofTryError:i,fn:fns[fi]&&fns[fi][0],error:String(e)});}}}}catch(e){log({compactAckProofError:String(e)});}return '';}"
                 + "async function runGuardI4(ch){try{log({compactAckI4Enter:true});var mod=await loadGuard();if(!mod||!mod.__i4||!ch){log({compactAckI4Missing:true,hasMod:!!mod,hasI4:!!(mod&&mod.__i4),hasChallenge:!!ch});return false;}var arg=JSON.stringify(ch),before=proofed();log({compactAckI4Loaded:true,argLen:arg.length,before:before});try{installGuardAckBridge();log({compactAckI4BridgeReady:true});}catch(ie){log({compactAckI4BridgeInstallThrown:String(ie)});}log({compactAckI4Start:true,argLen:arg.length,before:before});try{var r=mod.__i4(arg,scope);if(r&&r.then)await Promise.race([r,sleep(900)]);}catch(e){log({compactAckI4CallError:String(e)});}var ok=await waitProof(2200);log({compactAckI4Done:true,proofed:ok});return ok;}catch(e){log({compactAckI4Error:String(e)});return false;}}"
-                + "async function run(){var started=Date.now(),attempt=0;try{window.__ntkAckOnlyRunning=scope;window.__ntkAckOnlyRunningAt=Date.now();delete window.__ntk_ad_ack_proof_200;delete window.__ntk_ad_ack_scope;delete window.__ntk_ad_ack_last;log({compactAckStart:true,scope:scope,hasViewer:!!window.NtkViewerBridge,hasNativeViewer:!!window.__NtkViewerBridgeNative,hasNamedViewer:!!window.MangaViewerNativeViewerBridge});for(attempt=1;attempt<=2&&!proofed();attempt++){var c=null;try{var nt=String(bcall('getNativeAckChallenge',scope)||'');if(nt){var nj=JSON.parse(nt||'{}');if(nj&&nj.ok&&nj.challenge)c={status:200,body:nj,text:nt,native:true};}}catch(e){log({compactAckNativeChallengeError:String(e)});}if(!c||c.status!==200||!c.body||!c.body.ok||!c.body.challenge)c=await bridgeReq('/api/ad/challenge','POST',{path:scope});log({compactAckChallenge:true,status:c&&c.status||0,ok:!!(c&&c.body&&c.body.ok),hasChallenge:!!(c&&c.body&&c.body.challenge),native:!!(c&&c.native),browser:!!(c&&c.browser)});if(!c||c.status!==200||!c.body||!c.body.ok)continue;if(c.body.trusted&&!c.body.challenge){markProof('compact-ack-200','');send({code:200,body:{ok:true,ackOnly:true,softTrusted:true,proofed:true,attempts:attempt}});return;}var ch=c.body.challenge;if(!ch)continue;ensureRows(ch);var token=String(ch.token||'');log({compactAckProofFirst:true});await loadGuard();var tp=await Promise.race([guardProof(token),sleep(900).then(function(){return '';})]);var seen=await Promise.race([fireImps(ch),sleep(700).then(function(){return 0;})]);if(!tp||tp==='true'||tp==='false')tp=await Promise.race([guardProof(token),sleep(900).then(function(){return '';})]);log({compactAckProofDone:true,tpLen:String(tp||'').length,seen:seen});if(!tp||tp==='true'||tp==='false'){var i4Ok=await runGuardI4(ch);log({compactAckI4Fallback:true,ok:!!i4Ok});if(i4Ok)break;continue;}var minSeen=Math.max(1,Number(ch.minSeen||2)),total=Math.max(Number(ch.slotCount||0),(ch.impressionUrls||[]).length,4),visible=Math.max(minSeen,Math.min(total,seen||minSeen));await bridgeReq('/api/ad/canary','POST',{adGuardLoaded:true,adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:total,visible:visible,path:scope,td:0,tp:tp});var b=a&&a.body?a.body:{};log({compactAckResponse:true,status:a&&a.status||0,body:b,tpLen:String(tp||'').length,total:total,visible:visible});if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markProof('compact-bridge-ack-200',tp);break;}await sleep(180);}var ok=proofed();send({code:ok?200:0,body:{ok:ok,ackOnly:true,compact:true,proofed:ok,attempts:attempt-1,ms:Date.now()-started}});}catch(e){log({compactAckError:String(e)});send({code:0,error:String(e),body:{ok:false,ackOnly:true,compact:true}});}}run();})()";
+                + "async function run(){var started=Date.now(),attempt=0;try{window.__ntkAckOnlyRunning=scope;window.__ntkAckOnlyRunningAt=Date.now();delete window.__ntk_ad_ack_proof_200;delete window.__ntk_ad_ack_scope;delete window.__ntk_ad_ack_last;log({compactAckStart:true,scope:scope,hasViewer:!!window.NtkViewerBridge,hasNativeViewer:!!window.__NtkViewerBridgeNative,hasNamedViewer:!!window.MangaViewerNativeViewerBridge});for(attempt=1;attempt<=2&&!proofed();attempt++){var c=null;try{var nt=String(bcall('getNativeAckChallenge',scope)||'');if(nt){var nj=JSON.parse(nt||'{}');if(nj&&nj.ok&&nj.challenge)c={status:200,body:nj,text:nt,native:true};}}catch(e){log({compactAckNativeChallengeError:String(e)});}if(!c||c.status!==200||!c.body||!c.body.ok||!c.body.challenge){c=await browserReq('/api/ad/challenge','POST',{path:scope});if(!c||c.status!==200||!c.body||!c.body.ok||(!c.body.challenge&&c.body.ackValid!==true))c=await bridgeReq('/api/ad/challenge','POST',{path:scope});}log({compactAckChallenge:true,status:c&&c.status||0,ok:!!(c&&c.body&&c.body.ok),ackValid:!!(c&&c.body&&c.body.ackValid),hasChallenge:!!(c&&c.body&&c.body.challenge),native:!!(c&&c.native),browser:!!(c&&c.browser)});if(!c||c.status!==200||!c.body||!c.body.ok)continue;if(c.body.ackValid===true&&(!c.body.scope||String(c.body.scope)===scope)){markProof('compact-ack-valid','ackValid');send({code:200,body:{ok:true,ackOnly:true,ackValid:true,proofed:true,attempts:attempt}});return;}if(c.body.trusted&&!c.body.challenge){markProof('compact-ack-200','');send({code:200,body:{ok:true,ackOnly:true,softTrusted:true,proofed:true,attempts:attempt}});return;}var ch=c.body.challenge;if(!ch)continue;ensureRows(ch);var token=String(ch.token||'');log({compactAckProofFirst:true});await loadGuard();var tp=await Promise.race([guardProof(token),sleep(900).then(function(){return '';})]);await Promise.race([fireObsBatch(ch),sleep(450).then(function(){return 0;})]);var seen=await Promise.race([fireImps(ch),sleep(900).then(function(){return 0;})]);if(!tp||tp==='true'||tp==='false')tp=await Promise.race([guardProof(token),sleep(900).then(function(){return '';})]);log({compactAckProofDone:true,tpLen:String(tp||'').length,seen:seen});if((!tp||tp==='true'||tp==='false')&&await validateSeenAck(ch,seen)){send({code:200,body:{ok:true,ackOnly:true,ackValid:true,proofed:true,seen:seen,attempts:attempt}});return;}if(!tp||tp==='true'||tp==='false'){var i4Ok=await runGuardI4(ch);log({compactAckI4Fallback:true,ok:!!i4Ok});if(i4Ok)break;continue;}var minSeen=Math.max(1,Number(ch.minSeen||2)),total=Math.max(Number(ch.slotCount||0),(ch.impressionUrls||[]).length,4),visible=Math.max(minSeen,Math.min(total,seen||minSeen));await bridgeReq('/api/ad/canary','POST',{adGuardLoaded:true,adAckCanary:true,challengeToken:token,token:token,path:scope});var a=await bridgeReq('/api/ad/ack','POST',{challengeToken:token,total:total,visible:visible,path:scope,td:0,tp:tp});var b=a&&a.body?a.body:{};log({compactAckResponse:true,status:a&&a.status||0,body:b,tpLen:String(tp||'').length,total:total,visible:visible});if(a&&a.status===200&&(b.ok||b.acked||b.status==='ok'||b.status==='acked')){markProof('compact-bridge-ack-200',tp);break;}await sleep(180);}var ok=proofed();send({code:ok?200:0,body:{ok:ok,ackOnly:true,compact:true,proofed:ok,attempts:attempt-1,ms:Date.now()-started}});}catch(e){log({compactAckError:String(e)});send({code:0,error:String(e),body:{ok:false,ackOnly:true,compact:true}});}}run();})()";
     }
 
     private static boolean isUnusableNtkEpisodeDocumentResult(String path, String body) {
@@ -4536,8 +4817,9 @@ final class NtkWebViewFallbackManager {
                 + "function enc(s){try{return btoa(unescape(encodeURIComponent(String(s||''))));}catch(_){return '';}}function dec(x){try{return decodeURIComponent(escape(atob(x||'')));}catch(e){try{return atob(x||'');}catch(_){return '';}}}"
                 + "function seedCookies(){try{if(!raw('ntk_fp'))setC('ntk_fp',rnd(32),31536000);var p=raw('ntk_pid');if(!/^[a-f0-9]{32}$/i.test(p)){p=rnd(32);setC('ntk_pid',p,62208000);try{localStorage.setItem('ntk_pid',p);}catch(_){}}var v=raw('__vsid');if(!v){var x=rnd(32);v=x.slice(0,8)+'-'+x.slice(8,12)+'-4'+x.slice(13,16)+'-'+((parseInt(x.slice(16,18),16)&63)|128).toString(16).padStart(2,'0')+x.slice(18,20)+'-'+x.slice(20,32);setC('__vsid',v,31536000);}}catch(e){log({viewerImagesBridgeDirectCookieSeedError:String(e).slice(0,120)});}}"
                 + "function srcWork(){try{var m=String(scope||'').match(/^\\/webtoon\\/([^\\/?#]+)\\/([^\\/?#]+)/);if(m&&m[1]&&!/^\\d+$/.test(m[1]))return m[1];}catch(_){}return workId;}"
+                + "function srcEpisode(){try{var m=String(scope||'').match(/^\\/webtoon\\/([^\\/?#]+)\\/([^\\/?#]+)/);if(m&&/^\\d+$/.test(m[2]))return m[2];}catch(_){}return episodeId;}"
                 + "function nonce(){return Math.random().toString(36).slice(2)+Date.now().toString(36)+Math.random().toString(36).slice(2);}"
-                + "(function(){try{if(window.__ntkBridgeDirectWebtoonRunning){log({viewerImagesBridgeDirectSkip:true,age:Date.now()-Number(window.__ntkBridgeDirectWebtoonRunningAt||0)});return;}window.__ntkBridgeDirectWebtoonRunning=1;window.__ntkBridgeDirectWebtoonRunningAt=Date.now();var ua=String(navigator.userAgent||''),uaData='';try{uaData=navigator.userAgentData?JSON.stringify({brands:navigator.userAgentData.brands,mobile:navigator.userAgentData.mobile,platform:navigator.userAgentData.platform}):'';}catch(_){}log({viewerImagesBridgeDirectEntry:true,href:String(location.href||'').slice(0,140),ready:String(document.readyState||''),ua:ua.slice(0,160),uaData:uaData.slice(0,260),bridge:!!window.NtkQuicBridge});seedCookies();var nv=ck('nv');if(!nv||(nv.split('.')[0]||'').length<40){send({code:401,body:{ok:false,error:'missing_nv'}});return;}var n=nonce(),proof='';try{proof=String(window.NtkQuicBridge&&window.NtkQuicBridge.hmacSha256?window.NtkQuicBridge.hmacSha256(nv,token+'.'+n+'.'+ua):'');}catch(e){log({viewerImagesBridgeDirectHmacError:String(e).slice(0,120)});}if(!proof||!window.NtkQuicBridge||!window.NtkQuicBridge.request){send({code:401,body:{ok:false,error:'missing_bridge_or_proof'}});return;}var body={workId:srcWork(),episodeId:episodeId,token:token,nonce:n,proof:proof},text=JSON.stringify(body),h={'content-type':'application/json','accept':'*/*','x-images-client':'viewer-v1','origin':base,'referer':base+scope,'user-agent':ua,'sec-ch-ua':'\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not)A;Brand\";v=\"24\"','sec-ch-ua-mobile':'?1','sec-ch-ua-platform':'\"Android\"'};log({viewerImagesBridgeDirectStart:true,workId:body.workId,episodeId:body.episodeId,bodyLen:text.length,proofLen:String(proof||'').length,adAck:!!ck('ad_ack'),adAckC:!!ck('ad_ack_c'),fp:!!raw('ntk_fp'),pid:!!raw('ntk_pid'),vsid:!!raw('__vsid')});var rawResp=window.NtkQuicBridge.request(base+'/api/webtoon-images','POST',JSON.stringify(h),enc(text)),o=JSON.parse(String(rawResp||'{}')),txt=dec(o.bodyBase64||''),j={};try{j=JSON.parse(txt||'{}');}catch(_){}log({viewerImagesBridgeDirectDone:true,status:o.status||0,ok:!!j.ok,count:j.images&&j.images.length||0,text:String(txt||'').slice(0,180)});send({code:o.status||0,body:j&&Object.keys(j).length?j:{ok:false,error:String(txt||'').slice(0,120)}});}catch(e){log({viewerImagesBridgeDirectError:String(e).slice(0,180)});send({code:0,body:{ok:false,error:String(e)}});}})();})()";
+                + "(function(){try{if(window.__ntkBridgeDirectWebtoonRunning){log({viewerImagesBridgeDirectSkip:true,age:Date.now()-Number(window.__ntkBridgeDirectWebtoonRunningAt||0)});return;}window.__ntkBridgeDirectWebtoonRunning=1;window.__ntkBridgeDirectWebtoonRunningAt=Date.now();var ua=String(navigator.userAgent||''),uaData='';try{uaData=navigator.userAgentData?JSON.stringify({brands:navigator.userAgentData.brands,mobile:navigator.userAgentData.mobile,platform:navigator.userAgentData.platform}):'';}catch(_){}log({viewerImagesBridgeDirectEntry:true,href:String(location.href||'').slice(0,140),ready:String(document.readyState||''),ua:ua.slice(0,160),uaData:uaData.slice(0,260),bridge:!!window.NtkQuicBridge});seedCookies();var nv=ck('nv');if(!nv||(nv.split('.')[0]||'').length<40){send({code:401,body:{ok:false,error:'missing_nv'}});return;}var n=nonce(),proof='';try{proof=String(window.NtkQuicBridge&&window.NtkQuicBridge.hmacSha256?window.NtkQuicBridge.hmacSha256(nv,token+'.'+n+'.'+ua):'');}catch(e){log({viewerImagesBridgeDirectHmacError:String(e).slice(0,120)});}if(!proof||!window.NtkQuicBridge||!window.NtkQuicBridge.request){send({code:401,body:{ok:false,error:'missing_bridge_or_proof'}});return;}var body={workId:srcWork(),episodeId:srcEpisode(),token:token,nonce:n,proof:proof},text=JSON.stringify(body),h={'content-type':'application/json','accept':'*/*','x-images-client':'viewer-v1','origin':base,'referer':base+scope,'user-agent':ua,'sec-ch-ua':'\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not)A;Brand\";v=\"24\"','sec-ch-ua-mobile':'?1','sec-ch-ua-platform':'\"Android\"'};log({viewerImagesBridgeDirectStart:true,workId:body.workId,episodeId:body.episodeId,bodyLen:text.length,proofLen:String(proof||'').length,adAck:!!ck('ad_ack'),adAckC:!!ck('ad_ack_c'),fp:!!raw('ntk_fp'),pid:!!raw('ntk_pid'),vsid:!!raw('__vsid')});var rawResp=window.NtkQuicBridge.request(base+'/api/webtoon-images','POST',JSON.stringify(h),enc(text)),o=JSON.parse(String(rawResp||'{}')),txt=dec(o.bodyBase64||''),j={};try{j=JSON.parse(txt||'{}');}catch(_){}log({viewerImagesBridgeDirectDone:true,status:o.status||0,ok:!!j.ok,count:j.images&&j.images.length||0,text:String(txt||'').slice(0,180)});send({code:o.status||0,body:j&&Object.keys(j).length?j:{ok:false,error:String(txt||'').slice(0,120)}});}catch(e){log({viewerImagesBridgeDirectError:String(e).slice(0,180)});send({code:0,body:{ok:false,error:String(e)}});}})();})()";
     }
 
     private static String buildBrowserFetchWebtoonViewerImageApiScript(String baseUrl, String path,
@@ -4668,14 +4950,16 @@ final class NtkWebViewFallbackManager {
                 + ",workId=" + jsonQuote(workId)
                 + ",episodeId=" + jsonQuote(episodeId)
                 + ",token=" + jsonQuote(imagesToken) + ";"
-                + "var sent=false;function call(n,v){var a=[window.NtkViewerBridge,window.NtkAckBridge,window.MangaViewerNativeViewerBridge,window.MangaViewerNativeAckBridge,window.__NtkViewerBridgeNative,window.__NtkAckBridgeNative];for(var i=0;i<a.length;i++){try{if(a[i]&&typeof a[i][n]==='function')return a[i][n](v);}catch(_){}}}"
+                + "var sent=false;function call(n,v){var a=[window.NtkViewerBridge,window.NtkAckBridge,window.MangaViewerNativeViewerBridge,window.MangaViewerNativeAckBridge,window.__NtkViewerBridgeNative,window.__NtkAckBridgeNative];for(var i=0;i<a.length;i++){try{if(a[i]&&a[i][n])return a[i][n](v);}catch(_){}}try{if(window.NtkViewerBridge)return window.NtkViewerBridge[n](v);}catch(_){}try{if(window.NtkAckBridge)return window.NtkAckBridge[n](v);}catch(_){}return null;}"
                 + "function log(o){try{call('onAckState',JSON.stringify(o));}catch(_){}}"
                 + "function send(o){if(sent)return;sent=true;try{if(endpoint==='/api/webtoon-images')delete window.__ntkBridgeOnlyWebtoonRunning;}catch(_){}try{call('onViewerImages',JSON.stringify(o));}catch(_){}}"
                 + "function enc(s){try{return btoa(unescape(encodeURIComponent(String(s||''))));}catch(_){return '';}}"
                 + "function dec(x){try{return decodeURIComponent(escape(atob(x||'')));}catch(e){try{return atob(x||'');}catch(_){return '';}}}"
                 + "function ck(n){try{var m=String(document.cookie||'').match(new RegExp('(?:^|;\\\\s*)'+n+'=([^;]*)'));return m?decodeURIComponent(m[1]):'';}catch(_){return '';}}"
                 + "function nonce(){return Math.random().toString(36).slice(2)+Date.now().toString(36)+Math.random().toString(36).slice(2);}"
-                + "function webtoonWorkId(){try{var m=String(scope||'').match(/^\\/webtoon\\/([^\\/?#]+)\\/([^\\/?#]+)/);if(m&&m[1]&&!/^\\d+$/.test(m[1]))return m[1];}catch(_){}return workId;}"
+                + "function webtoonPathIds(){try{var m=String(scope||'').match(/^\\/webtoon\\/([^\\/?#]+)\\/([^\\/?#]+)/);return{work:(m&&/^\\d{1,12}$/.test(m[1]||''))?m[1]:workId,episode:(m&&/^\\d{1,12}$/.test(m[2]||''))?m[2]:episodeId};}catch(_){return{work:workId,episode:episodeId};}}"
+                + "function webtoonWorkId(){return webtoonPathIds().work;}"
+                + "function webtoonEpisodeId(){return webtoonPathIds().episode;}"
                 + "async function ensureWebtoonAdAck(){try{if(endpoint!=='/api/webtoon-images')return true;if(ck('ad_ack')||ck('ad_ack_c')){window.__ntk_ad_ack_scope=scope;window.__ntk_ad_ack_proof_200=scope;log({viewerImagesBridgeOnlyWebtoonAck:true,source:'cookie-precheck',adAck:!!ck('ad_ack'),adAckC:!!ck('ad_ack_c')});return true;}if(window.__ntk_ad_ack_scope===scope&&window.__ntk_ad_ack_proof_200===scope){log({viewerImagesBridgeOnlyWebtoonAck:true,source:'scope-cache-proof'});return true;}log({viewerImagesBridgeOnlyWebtoonAck:false,source:'wait-native-cookie'});return false;}catch(e){log({viewerImagesBridgeOnlyWebtoonAckError:String(e).slice(0,200)});return false;}}"
                 + "if(endpoint==='/api/webtoon-images'){var runningAge=Date.now()-Number(window.__ntkBridgeOnlyWebtoonRunningAt||0);if(window.__ntkBridgeOnlyWebtoonRunning&&runningAge<3200){log({viewerImagesBridgeOnlyWebtoonRunningSkip:true,age:runningAge,scope:scope});return 'running';}window.__ntkBridgeOnlyWebtoonRunning=1;window.__ntkBridgeOnlyWebtoonRunningAt=Date.now();}"
                 + "log({viewerImagesBridgeOnlyEntry:true,href:String(location.href||'').slice(0,120),bridge:!!window.NtkQuicBridge,endpoint:endpoint,scope:scope});"
@@ -4684,17 +4968,21 @@ final class NtkWebViewFallbackManager {
                 + "function ensureSiteCookies(){try{var ok=false;if(!/(?:^|;\\s*)ntk_fp=[a-fA-F0-9]{16,}/.test(document.cookie||'')){function h(seed,text){var r=seed>>>0;for(var i=0;i<text.length;i++){r^=text.charCodeAt(i);r=Math.imul(r,16777619)>>>0;}return('00000000'+(r>>>0).toString(16)).slice(-8);}var nav=navigator||{},seed=[nav.userAgent||'',nav.language||'',Array.isArray(nav.languages)?nav.languages.join(','):'',String(nav.hardwareConcurrency||0),String(nav.deviceMemory||0),nav.platform||'',String(nav.maxTouchPoints||0),window.screen?(screen.width||0)+'x'+(screen.height||0)+'x'+(screen.colorDepth||0):'',String(new Date().getTimezoneOffset()),(window.Intl&&Intl.DateTimeFormat)?Intl.DateTimeFormat().resolvedOptions().timeZone:'',String(Math.random()),String(Date.now())].join('|');setRootCookie('ntk_fp',h(2166136261,seed)+h(3141592653,seed)+h(2654435761,seed)+h(1597334677,seed),31536000);}var pid=ck('ntk_pid');try{pid=pid||localStorage.getItem('ntk_pid')||'';}catch(_){}if(!/^[a-f0-9]{32}$/.test(pid))pid=randHex(32);setRootCookie('ntk_pid',pid,62208000);try{localStorage.setItem('ntk_pid',pid);}catch(_){}var vs=ck('__vsid');if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(vs)){var x=randHex(32);vs=x.slice(0,8)+'-'+x.slice(8,12)+'-4'+x.slice(13,16)+'-'+((parseInt(x.slice(16,18),16)&63)|128).toString(16).padStart(2,'0')+x.slice(18,20)+'-'+x.slice(20,32);}setRootCookie('__vsid',vs,31536000);ok=/(?:^|;\\s*)ntk_fp=[a-fA-F0-9]{16,}/.test(document.cookie||'')&&/ntk_pid=/.test(document.cookie||'')&&/__vsid=/.test(document.cookie||'');log({viewerImagesBridgeOnlyIdentity:true,ok:!!ok,fp:!!ck('ntk_fp'),pid:!!ck('ntk_pid'),vsid:!!ck('__vsid')});return ok;}catch(e){log({viewerImagesBridgeOnlyIdentityError:String(e).slice(0,120)});return false;}}"
                 + "function ub64(a){var s='',u=new Uint8Array(a),c=0x8000;for(var i=0;i<u.length;i+=c)s+=String.fromCharCode.apply(null,u.subarray(i,i+c));return btoa(s).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');}"
                 + "async function hmacWeb(k,m){try{if(!window.crypto||!crypto.subtle)return '';var e=new TextEncoder(),key=await crypto.subtle.importKey('raw',e.encode(String(k||'')),{name:'HMAC',hash:'SHA-256'},false,['sign']);return ub64(await crypto.subtle.sign('HMAC',key,e.encode(String(m||''))));}catch(_){return '';}}"
-                + "if(endpoint==='/api/webtoon-images'){ensureSiteCookies();var wnv=ck('nv');log({viewerImagesBridgeOnlyNvCookie:true,len:String(wnv||'').length,pureFetch:true});if(!wnv||(wnv.split('.')[0]||'').length<40){try{var nctrl=null,nopt={method:'POST',credentials:'same-origin',cache:'no-store'};if(window.AbortController){nctrl=new AbortController();nopt.signal=nctrl.signal;setTimeout(function(){try{nctrl.abort();}catch(_){}},900);}var nr=await fetch('/api/nv-issue',nopt).catch(function(e){log({viewerImagesBridgeOnlyNvIssueFetchError:String(e).slice(0,120),pureFetch:true});return null;});log({viewerImagesBridgeOnlyNvIssueFetch:true,status:nr?nr.status:0,pureFetch:true});}catch(ne){log({viewerImagesBridgeOnlyNvIssueError:String(ne).slice(0,120),pureFetch:true});}wnv=ck('nv');log({viewerImagesBridgeOnlyNvCookieAfter:true,len:String(wnv||'').length,pureFetch:true});}if(!wnv||(wnv.split('.')[0]||'').length<40){send({code:401,body:{ok:false,error:'missing_nv'}});return 'missing_nv';}var wn=nonce(),wp=await hmacWeb(wnv,token+'.'+wn+'.'+String(navigator.userAgent||''));try{if(!wp&&window.NtkQuicBridge&&window.NtkQuicBridge.hmacSha256)wp=String(window.NtkQuicBridge.hmacSha256(wnv,token+'.'+wn+'.'+String(navigator.userAgent||''))||'');}catch(_){}var wb={workId:webtoonWorkId(),episodeId:episodeId,token:token,nonce:wn,proof:wp},wtext=JSON.stringify(wb);try{var ackReady=await ensureWebtoonAdAck();if(!ackReady){for(var wi=0;wi<12;wi++){await new Promise(function(r){setTimeout(r,60);});ackReady=await ensureWebtoonAdAck();if(ackReady)break;}}log({viewerImagesBridgeOnlyWebtoonAckReady:!!ackReady,scope:scope,warmOnly:false,pureFetch:true});}catch(wfe){log({viewerImagesBridgeOnlyWebtoonAckReadyError:String(wfe).slice(0,160),name:String(wfe&&wfe.name||''),pureFetch:true});}try{var ctrl=null,to=null,opt={method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-images-client':'viewer-v1'},body:wtext};log({viewerImagesBridgeOnlyWebtoonFetchStart:true,bodyLen:wtext.length,workId:wb.workId,episodeId:wb.episodeId,proofLen:String(wb.proof||'').length,ackReady:!!ackReady,pureFetch:true,cookieLen:String(document.cookie||'').length});if(window.AbortController){ctrl=new AbortController();opt.signal=ctrl.signal;to=setTimeout(function(){try{ctrl.abort();}catch(_){}},3200);}var wr=await fetch(endpoint,opt);if(to)clearTimeout(to);var wt=await wr.text().catch(function(){return '';});var wj={};try{wj=JSON.parse(wt||'{}');}catch(_){}log({viewerImagesBridgeOnlyWebtoonFetch:true,status:wr.status||0,ok:!!wj.ok,count:wj.images&&wj.images.length||0,text:String(wt||'').slice(0,180),pureFetch:true});send({code:wr.status||0,body:wj&&Object.keys(wj).length?wj:{ok:false,error:String(wt||'').slice(0,120)}});return 'webtoon-pure-fetch';}catch(wfe2){try{delete window.__ntkBridgeOnlyWebtoonRunning;}catch(_){}log({viewerImagesBridgeOnlyWebtoonFetchError:String(wfe2).slice(0,160),name:String(wfe2&&wfe2.name||''),pureFetch:true});send({code:0,body:{ok:false,error:String(wfe2)}});return 'webtoon-pure-fetch-error';}}"
+                + "function unesc(s){try{return String(s||'').replace(/\\\\u0026/g,'&').replace(/\\\\\\\"/g,'\\\"').replace(/\\\\\\\\/g,'\\\\');}catch(_){return String(s||'');}}"
+                + "function tokenFromText(t){try{var x=unesc(t),m=x.match(/(?:\\\"|\\\\\\\")imagesToken(?:\\\"|\\\\\\\")\\s*:\\s*(?:\\\"|\\\\\\\")([^\\\"\\\\]{12,})(?:\\\"|\\\\\\\")/);if(m&&m[1])return m[1];m=x.match(/(?:\\\"|\\\\\\\")token(?:\\\"|\\\\\\\")\\s*:\\s*(?:\\\"|\\\\\\\")([^\\\"\\\\]{20,})(?:\\\"|\\\\\\\")/);if(m&&m[1]&&x.indexOf('imageMetas')>=0)return m[1];}catch(_){}return '';}"
+                + "function numericScope(){try{if(endpoint!=='/api/webtoon-images')return '';var w=String(webtoonWorkId()||''),e=String(webtoonEpisodeId()||episodeId||'');if(/^\\d{1,12}$/.test(w)&&/^\\d{1,12}$/.test(e))return '/webtoon/'+w+'/'+e;}catch(_){}return '';}"
+                + "async function resolveImagesToken(){if(String(token||'').length>10)return token;if(endpoint!=='/api/webtoon-images')return token;var paths=[],seen={};function addPath(p){if(!p||seen[p])return;seen[p]=1;paths.push(p);}var alias=numericScope();if(alias&&alias!==scope){addPath(alias);addPath(alias+'?_rsc='+randHex(8));}addPath(scope);addPath(scope+(scope.indexOf('?')>=0?'&':'?')+'_rsc='+randHex(8));async function probeTokenPath(p){try{var basePath=(p.split('?')[0]||p),ctl=null,opt={method:'GET',credentials:'same-origin',cache:'no-store',headers:{'accept':'text/x-component','rsc':'1','next-url':basePath}};if(window.AbortController){ctl=new AbortController();opt.signal=ctl.signal;setTimeout(function(c){try{c.abort();}catch(_){}},520,ctl);}var rr=await fetch(p,opt);var rt=await rr.text().catch(function(){return '';});var found=tokenFromText(rt);log({viewerImagesBridgeOnlyRscToken:true,status:rr.status||0,bytes:String(rt||'').length,tokenLen:String(found||'').length,path:p.slice(0,120),alias:!!(alias&&p.indexOf(alias)===0)});return found||'';}catch(re){log({viewerImagesBridgeOnlyRscTokenError:String(re).slice(0,140),path:p.slice(0,120),alias:!!(alias&&p.indexOf(alias)===0)});return '';}}for(var ri=0;ri<paths.length;ri++){var found=await probeTokenPath(paths[ri]);if(String(found||'').length>10){token=String(found);return token;}}return token;}"
+                + "if(endpoint==='/api/webtoon-images'){ensureSiteCookies();token=await resolveImagesToken();var wnv=ck('nv');log({viewerImagesBridgeOnlyNvCookie:true,len:String(wnv||'').length,pureFetch:true,tokenLen:String(token||'').length});if(!wnv||(wnv.split('.')[0]||'').length<40){try{var nctrl=null,nopt={method:'POST',credentials:'same-origin',cache:'no-store'};if(window.AbortController){nctrl=new AbortController();nopt.signal=nctrl.signal;setTimeout(function(){try{nctrl.abort();}catch(_){}},650);}var nr=await fetch('/api/nv-issue',nopt).catch(function(e){log({viewerImagesBridgeOnlyNvIssueFetchError:String(e).slice(0,120),pureFetch:true});return null;});log({viewerImagesBridgeOnlyNvIssueFetch:true,status:nr?nr.status:0,pureFetch:true});}catch(ne){log({viewerImagesBridgeOnlyNvIssueError:String(ne).slice(0,120),pureFetch:true});}wnv=ck('nv');log({viewerImagesBridgeOnlyNvCookieAfter:true,len:String(wnv||'').length,pureFetch:true});}if(wnv&&(wnv.split('.')[0]||'').length>=40&&String(token||'').length>10){var wn=nonce(),wp=await hmacWeb(wnv,token+'.'+wn+'.'+String(navigator.userAgent||''));try{if(!wp&&window.NtkQuicBridge&&window.NtkQuicBridge.hmacSha256)wp=String(window.NtkQuicBridge.hmacSha256(wnv,token+'.'+wn+'.'+String(navigator.userAgent||''))||'');}catch(_){}var wb={workId:webtoonWorkId(),episodeId:webtoonEpisodeId(),path:scope,token:token,nonce:wn,proof:wp},wtext=JSON.stringify(wb);try{var ackReady=await ensureWebtoonAdAck();if(!ackReady){for(var wi=0;wi<8;wi++){await new Promise(function(r){setTimeout(r,40);});ackReady=await ensureWebtoonAdAck();if(ackReady)break;}}log({viewerImagesBridgeOnlyWebtoonAckReady:!!ackReady,scope:scope,warmOnly:false,pureFetch:true});}catch(wfe){log({viewerImagesBridgeOnlyWebtoonAckReadyError:String(wfe).slice(0,160),name:String(wfe&&wfe.name||''),pureFetch:true});}try{var ctrl=null,to=null,opt={method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-images-client':'viewer-v1'},body:wtext};log({viewerImagesBridgeOnlyWebtoonFetchStart:true,bodyLen:wtext.length,workId:wb.workId,episodeId:wb.episodeId,proofLen:String(wb.proof||'').length,ackReady:!!ackReady,pureFetch:true,cookieLen:String(document.cookie||'').length,tokenLen:String(token||'').length});if(window.AbortController){ctrl=new AbortController();opt.signal=ctrl.signal;to=setTimeout(function(){try{ctrl.abort();}catch(_){}},1100);}var wr=await fetch(endpoint,opt);if(to)clearTimeout(to);var wt=await wr.text().catch(function(){return '';});var wj={};try{wj=JSON.parse(wt||'{}');}catch(_){}log({viewerImagesBridgeOnlyWebtoonFetch:true,status:wr.status||0,ok:!!wj.ok,count:wj.images&&wj.images.length||0,text:String(wt||'').slice(0,180),pureFetch:true});if((wr.status||0)>=200&&(wr.status||0)<300&&wj&&wj.ok&&wj.images&&wj.images.length){send({code:wr.status||200,body:wj});return 'ok-webtoon-pure-fetch';}}catch(wfe2){log({viewerImagesBridgeOnlyWebtoonFetchError:String(wfe2).slice(0,160),name:String(wfe2&&wfe2.name||''),pureFetch:true});}}else{var missReason=String(token||'').length<=10?'missing_token':'missing_nv';log({viewerImagesBridgeOnlyWebtoonPureSkip:true,reason:missReason});send({code:428,body:{ok:false,error:'manifest_missing_token',reason:missReason}});return 'manifest_missing_token';}}"
                 + "if(!window.NtkQuicBridge){send({code:0,error:'missing_bridge'});return 'missing_bridge';}"
                 + "var nv=ck('nv');log({viewerImagesBridgeOnlyNvCookie:true,len:String(nv||'').length});if(!nv||(nv.split('.')[0]||'').length<40){try{var ctrl=null,opt={method:'POST',credentials:'same-origin',cache:'no-store'};if(window.AbortController){ctrl=new AbortController();opt.signal=ctrl.signal;setTimeout(function(){try{ctrl.abort();}catch(_){}},700);}var nr=await fetch('/api/nv-issue',opt).catch(function(e){log({viewerImagesBridgeOnlyNvIssueFetchError:String(e).slice(0,120)});return null;});log({viewerImagesBridgeOnlyNvIssueFetch:true,status:nr?nr.status:0});}catch(e){log({viewerImagesBridgeOnlyNvIssueError:String(e).slice(0,120)});}nv=ck('nv');log({viewerImagesBridgeOnlyNvCookieAfter:true,len:String(nv||'').length});}"
                 + "if(!nv||(nv.split('.')[0]||'').length<40){send({code:401,body:{ok:false,error:'missing_nv'}});return 'missing_nv';}"
                 + "var keyRaw='{}';try{if(window.NtkQuicBridge.recentViewerBrowserKeyId)keyRaw=window.NtkQuicBridge.recentViewerBrowserKeyId(base+scope);var keyProbe={};try{keyProbe=JSON.parse(String(keyRaw||'{}'));}catch(_){}if(!keyProbe||!keyProbe.keyId)keyRaw=window.NtkQuicBridge.ensureViewerBrowserKeyForUserAgent?window.NtkQuicBridge.ensureViewerBrowserKeyForUserAgent(base+scope,String(navigator.userAgent||'')):window.NtkQuicBridge.ensureViewerBrowserKey(base+scope);}catch(ke){log({viewerImagesBridgeOnlyKeyError:String(ke).slice(0,120)});}"
                 + "var key={};try{key=JSON.parse(String(keyRaw||'{}'));}catch(_){}var kid=String(key.keyId||'');log({viewerImagesBridgeOnlyKey:true,ok:!!key.ok,status:key.status||0,keyId:kid.slice(0,12)});"
-                + "var n=nonce(),proof='';try{proof=String(window.NtkQuicBridge.hmacSha256(nv,token+'.'+n+'.'+String(navigator.userAgent||''))||'');}catch(he){log({viewerImagesBridgeOnlyHmacError:String(he).slice(0,120)});}"
-                + "var body={workId:(endpoint==='/api/webtoon-images'?webtoonWorkId():workId),episodeId:episodeId,token:token,nonce:n,proof:proof};var unsignedBodyText=JSON.stringify(body);if(kid)body.requestKeyId=kid;var bodyText=JSON.stringify(body),lastStatus=0,lastBody={};"
-                + "if(endpoint==='/api/webtoon-images'){try{var ackReady=await ensureWebtoonAdAck();if(!ackReady){for(var wi=0;wi<16;wi++){await new Promise(function(r){setTimeout(r,75);});ackReady=await ensureWebtoonAdAck();if(ackReady)break;}}log({viewerImagesBridgeOnlyWebtoonAckReady:!!ackReady,scope:scope,warmOnly:false});}catch(wfe){log({viewerImagesBridgeOnlyWebtoonAckReadyError:String(wfe).slice(0,160),name:String(wfe&&wfe.name||'')});}try{var ctrl=null,to=null,opt={method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-images-client':'viewer-v1'},body:unsignedBodyText};log({viewerImagesBridgeOnlyWebtoonFetchStart:true,bodyLen:unsignedBodyText.length,workId:body.workId,episodeId:body.episodeId,proofLen:String(body.proof||'').length,ackReady:!!ackReady});if(window.AbortController){ctrl=new AbortController();opt.signal=ctrl.signal;to=setTimeout(function(){try{ctrl.abort();}catch(_){}},2600);}var wr=await fetch(endpoint,opt);if(to)clearTimeout(to);var wt=await wr.text().catch(function(){return '';});var wj={};try{wj=JSON.parse(wt||'{}');}catch(_){}log({viewerImagesBridgeOnlyWebtoonFetch:true,status:wr.status||0,ok:!!wj.ok,count:wj.images&&wj.images.length||0,text:String(wt||'').slice(0,180)});if((wr.status||0)>=200&&(wr.status||0)<300&&wj&&wj.ok){send({code:wr.status||200,body:wj});return 'ok-webtoon-fetch';}}catch(wfe2){try{delete window.__ntkBridgeOnlyWebtoonRunning;}catch(_){}log({viewerImagesBridgeOnlyWebtoonFetchError:String(wfe2).slice(0,160),name:String(wfe2&&wfe2.name||'')});}}"
+                + "token=await resolveImagesToken();if(endpoint==='/api/webtoon-images'&&String(token||'').length<=10){log({viewerImagesBridgeOnlyManifestMissing:true,scope:scope});send({code:428,body:{ok:false,error:'manifest_missing_token'}});return 'manifest_missing_token';}var n=nonce(),proof='';try{proof=String(window.NtkQuicBridge.hmacSha256(nv,token+'.'+n+'.'+String(navigator.userAgent||''))||'');}catch(he){log({viewerImagesBridgeOnlyHmacError:String(he).slice(0,120)});}"
+                + "var body={workId:(endpoint==='/api/webtoon-images'?webtoonWorkId():workId),episodeId:(endpoint==='/api/webtoon-images'?webtoonEpisodeId():episodeId),path:scope,token:token,nonce:n,proof:proof};var unsignedBodyText=JSON.stringify(body);if(kid)body.requestKeyId=kid;var bodyText=JSON.stringify(body),lastStatus=0,lastBody={};"
+                + "if(endpoint==='/api/webtoon-images'){try{var ackReady=await ensureWebtoonAdAck();if(!ackReady){for(var wi=0;wi<8;wi++){await new Promise(function(r){setTimeout(r,40);});ackReady=await ensureWebtoonAdAck();if(ackReady)break;}}log({viewerImagesBridgeOnlyWebtoonAckReady:!!ackReady,scope:scope,warmOnly:false});}catch(wfe){log({viewerImagesBridgeOnlyWebtoonAckReadyError:String(wfe).slice(0,160),name:String(wfe&&wfe.name||'')});}try{var ctrl=null,to=null,opt={method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json','x-images-client':'viewer-v1'},body:unsignedBodyText};log({viewerImagesBridgeOnlyWebtoonFetchStart:true,bodyLen:unsignedBodyText.length,workId:body.workId,episodeId:body.episodeId,proofLen:String(body.proof||'').length,ackReady:!!ackReady});if(window.AbortController){ctrl=new AbortController();opt.signal=ctrl.signal;to=setTimeout(function(){try{ctrl.abort();}catch(_){}},900);}var wr=await fetch(endpoint,opt);if(to)clearTimeout(to);var wt=await wr.text().catch(function(){return '';});var wj={};try{wj=JSON.parse(wt||'{}');}catch(_){}log({viewerImagesBridgeOnlyWebtoonFetch:true,status:wr.status||0,ok:!!wj.ok,count:wj.images&&wj.images.length||0,text:String(wt||'').slice(0,180)});if((wr.status||0)>=200&&(wr.status||0)<300&&wj&&wj.ok&&wj.images&&wj.images.length){send({code:wr.status||200,body:wj});return 'ok-webtoon-fetch';}}catch(wfe2){log({viewerImagesBridgeOnlyWebtoonFetchError:String(wfe2).slice(0,160),name:String(wfe2&&wfe2.name||'')});}}"
                 + "for(var ai=0;ai<2;ai++){var fmt=ai===0?'p1363':'der',h={'content-type':'application/json','accept':'application/json','x-images-client':'viewer-v1','origin':base,'referer':base+scope};try{var signRaw=window.NtkQuicBridge.signViewerRequestFormat?window.NtkQuicBridge.signViewerRequestFormat('POST',endpoint,scope,bodyText,fmt):window.NtkQuicBridge.signViewerRequest('POST',endpoint,scope,bodyText),sig=JSON.parse(String(signRaw||'{}'));if(sig&&sig.headers)Object.keys(sig.headers).forEach(function(k){h[k]=sig.headers[k];});log({viewerImagesBridgeOnlySigned:true,ok:!!(sig&&sig.ok),format:fmt,keyHeader:!!h['x-ntk-key-id'],error:sig&&sig.error?String(sig.error).slice(0,100):''});}catch(se){log({viewerImagesBridgeOnlySignError:String(se).slice(0,120),format:fmt});}"
-                + "try{var raw=window.NtkQuicBridge.request(base+endpoint,'POST',JSON.stringify(h),enc(bodyText)),o=JSON.parse(String(raw||'{}')),txt=dec(o.bodyBase64||''),bj={};try{bj=JSON.parse(txt||'{}');}catch(_){}lastStatus=o.status||0;lastBody=bj;log({viewerImagesBridgeOnlyResponse:true,status:lastStatus,ok:!!bj.ok,count:bj.images&&bj.images.length||0,text:String(txt||'').slice(0,180),format:fmt,keyHeader:!!h['x-ntk-key-id']});if(lastStatus>=200&&lastStatus<300&&bj&&bj.ok){send({code:lastStatus,body:bj});return 'ok';}}catch(be){log({viewerImagesBridgeOnlyRequestError:String(be).slice(0,160),format:fmt});}}"
+                + "try{var raw=window.NtkQuicBridge.request(base+endpoint,'POST',JSON.stringify(h),enc(bodyText)),o=JSON.parse(String(raw||'{}')),txt=dec(o.bodyBase64||''),bj={};try{bj=JSON.parse(txt||'{}');}catch(_){}lastStatus=o.status||0;lastBody=bj;log({viewerImagesBridgeOnlyResponse:true,status:lastStatus,ok:!!bj.ok,count:bj.images&&bj.images.length||0,text:String(txt||'').slice(0,180),format:fmt,keyHeader:!!h['x-ntk-key-id']});if(lastStatus>=200&&lastStatus<300&&bj&&bj.ok&&(endpoint!=='/api/webtoon-images'||(bj.images&&bj.images.length))){send({code:lastStatus,body:bj});return 'ok';}}catch(be){log({viewerImagesBridgeOnlyRequestError:String(be).slice(0,160),format:fmt});}}"
                 + "send({code:lastStatus||403,body:lastBody&&Object.keys(lastBody).length?lastBody:{ok:false,error:'bridge_only_failed'}});return 'done';"
                 + "}catch(e){try{var msg=String(e).slice(0,200);var a=[window.NtkViewerBridge,window.NtkAckBridge,window.MangaViewerNativeViewerBridge,window.MangaViewerNativeAckBridge,window.__NtkViewerBridgeNative,window.__NtkAckBridgeNative];for(var i=0;i<a.length;i++){try{if(a[i]&&typeof a[i].onAckState==='function')a[i].onAckState(JSON.stringify({viewerImagesBridgeOnlyError:msg}));}catch(_){}}}catch(_){}return 'ERR:'+String(e);}})()";
     }
@@ -5807,6 +6095,56 @@ final class NtkWebViewFallbackManager {
         }
     }
 
+    private static final class ViewerImageScoutBridge {
+        private final NtkWebViewFallbackManager manager;
+        private final String kind;
+        private final String workId;
+        private final String episodeId;
+        private final String path;
+        private final ArrayList<String> scoutedUrls;
+        private final Object lock;
+
+        ViewerImageScoutBridge(NtkWebViewFallbackManager manager, String kind, String workId,
+                               String episodeId, String path, ArrayList<String> scoutedUrls,
+                               Object lock) {
+            this.manager = manager;
+            this.kind = kind == null ? "" : kind;
+            this.workId = workId == null ? "" : workId;
+            this.episodeId = episodeId == null ? "" : episodeId;
+            this.path = path == null ? "" : path;
+            this.scoutedUrls = scoutedUrls;
+            this.lock = lock;
+        }
+
+        @JavascriptInterface
+        public void onScoutImages(String value) {
+            if(manager == null || value == null || value.length() == 0)
+                return;
+            try {
+                JSONObject object = new JSONObject(value);
+                JSONArray urls = object.optJSONArray("urls");
+                if(urls == null || urls.length() == 0)
+                    return;
+                ArrayList<String> parsed = new ArrayList<>(urls.length());
+                for(int i = 0; i < urls.length(); i++) {
+                    String url = urls.optString(i, "");
+                    if(url.length() > 0)
+                        parsed.add(url);
+                }
+                manager.recordScoutedViewerImageUrls(kind, workId, episodeId, path,
+                        parsed, scoutedUrls, lock, "dom");
+            } catch(Exception e) {
+                Log.d(TAG, "ntk_viewer_image_scout_bridge_error path=" + path + "," + e);
+            }
+        }
+
+        @JavascriptInterface
+        public void onScoutError(String value) {
+            Log.d(TAG, "ntk_viewer_image_scout_js_error path=" + path
+                    + ",error=" + (value == null ? "" : value));
+        }
+    }
+
     private static final class ViewerImageBridge {
         private final ViewerImageResult result;
         private final Runnable finish;
@@ -5837,7 +6175,8 @@ final class NtkWebViewFallbackManager {
             Log.d(TAG, "ntk_viewer_images_bridge_result len=" + result.body.length()
                     + ",body=" + (result.body.length() > 240
                     ? result.body.substring(0, 240) : result.body));
-            if(!finishOnAckProof && !viewerImagesBridgeResultHasImages(result.body)) {
+            if(!finishOnAckProof && !viewerImagesBridgeResultHasImages(result.body)
+                    && !viewerImagesBridgeResultIsTerminalFailure(result.body)) {
                 Log.d(TAG, "ntk_viewer_images_bridge_result_ignored_empty len="
                         + result.body.length());
                 return;
@@ -5999,7 +6338,7 @@ final class NtkWebViewFallbackManager {
         }
 
         private boolean isCancelled() {
-            return generationSource != null && generationSource.get() != generation;
+            return generation >= 0 && generationSource != null && generationSource.get() != generation;
         }
     }
 
@@ -6883,13 +7222,30 @@ final class NtkWebViewFallbackManager {
                     return bridgeJsonOkResponse();
                 }
                 boolean adControlPost = shouldUseHttp2ForNtkAdControlPost(url, method);
-                if(isNtkAdAckPost(url, method))
-                    cookieHeader = submitCanaryBeforeAdAck(url, headers, cookieHeader, body);
                 NtkQuicFetcher.Result result = null;
                 if(isNtkAdAckPost(url, method)) {
-                    Log.d(TAG, "ntk_viewer_ad_bridge_native_submit_skip_bridge_authoritative url="
-                            + url);
+                    try {
+                        CustomHttpClient client = MainApplication.getHttpClient();
+                        if(client != null) {
+                            long nativeStartMs = SystemClock.uptimeMillis();
+                            NtkQuicFetcher.Result nativeResult =
+                                    client.submitNtkAdAckFromBridge(url, headers, body, cookieHeader);
+                            Log.d(TAG, "ntk_viewer_ad_bridge_native_submit code="
+                                    + (nativeResult == null ? -1 : nativeResult.code)
+                                    + ",accepted=" + isSuccessfulAdAckResult(nativeResult)
+                                    + ",error=" + (nativeResult == null ? "null" : nativeResult.error)
+                                    + ",elapsedMs=" + (SystemClock.uptimeMillis() - nativeStartMs)
+                                    + ",url=" + url);
+                            if(isSuccessfulAdAckResult(nativeResult))
+                                result = nativeResult;
+                        }
+                    } catch (Exception e) {
+                        Log.d(TAG, "ntk_viewer_ad_bridge_native_submit_error url="
+                                + url + "," + e);
+                    }
                 }
+                if(result == null && isNtkAdAckPost(url, method))
+                    cookieHeader = submitCanaryBeforeAdAck(url, headers, cookieHeader, body);
                 if(result == null) {
                     if(adControlPost) {
                         long startMs = SystemClock.uptimeMillis();
@@ -7064,15 +7420,19 @@ final class NtkWebViewFallbackManager {
                 String localGuard = result.code >= 400 ? localGuardModuleResponse(url) : null;
                 if(localGuard != null)
                     return localGuard;
-                rememberGuardModuleResponse(url, result.bodyBytes);
                 if(isNtkAdGuardModuleUrl(url)) {
-                    String strippedGuard = strippedVersionedGuardJsResponse(url, result);
-                    if(strippedGuard != null)
-                        return strippedGuard;
-                    String decodedGuard = decodedVersionedGuardWasmResponse(url, result);
-                    if(decodedGuard != null)
-                        return decodedGuard;
+                    byte[] guardBytes = guardModuleBytesForBridge(url, result.bodyBytes);
+                    if(guardBytes == null) {
+                        String fallbackGuard = localGuardModuleResponse(url);
+                        if(fallbackGuard != null)
+                            return fallbackGuard;
+                        return bridgeError("invalid guard module");
+                    }
+                    rememberGuardModuleResponse(url, result.bodyBytes);
+                    return guardModuleBridgeObject(guardBytes,
+                            "/api/ad/guard-wasm".equals(URI.create(url).getPath())).toString();
                 }
+                rememberGuardModuleResponse(url, result.bodyBytes);
                 applyWebViewCookies(url, result, !adControlPost);
                 syncBridgeAckCookies(url, body, result);
                 rememberSuccessfulAdCanary(url, method, body, result);
@@ -7161,9 +7521,37 @@ final class NtkWebViewFallbackManager {
                             item.put("error", result == null ? "null" : String.valueOf(result.error));
                             item.put("len", result == null || result.bodyBytes == null ? 0 : result.bodyBytes.length);
                             if(result != null && result.bodyBytes != null) {
-                                rememberGuardModuleResponse(url, result.bodyBytes);
+                                byte[] bodyBytes = result.bodyBytes;
+                                if(isNtkAdGuardModuleUrl(url)) {
+                                    byte[] guardBytes = guardModuleBytesForBridge(url, result.bodyBytes);
+                                    if(guardBytes == null) {
+                                        String localGuard = localGuardModuleResponse(url);
+                                        if(localGuard != null) {
+                                            JSONObject local = new JSONObject(localGuard);
+                                            bodyBytes = Base64.decode(local.optString("bodyBase64", ""),
+                                                    Base64.DEFAULT);
+                                            item.put("ok", local.optBoolean("ok", true));
+                                            item.put("status", local.optInt("status", 200));
+                                            item.put("error", JSONObject.NULL);
+                                            item.put("headers", local.optJSONObject("headers"));
+                                            item.put("bodyBase64", local.optString("bodyBase64", ""));
+                                            item.put("source", "local_guard");
+                                            item.put("len", bodyBytes.length);
+                                            return item;
+                                        } else {
+                                            item.put("ok", false);
+                                            item.put("status", 0);
+                                            item.put("error", "invalid guard module");
+                                            item.put("len", result.bodyBytes.length);
+                                            return item;
+                                        }
+                                    }
+                                    rememberGuardModuleResponse(url, result.bodyBytes);
+                                    bodyBytes = guardBytes;
+                                }
                                 item.put("headers", new JSONObject(responseHeaders(result.headers)));
-                                item.put("bodyBase64", Base64.encodeToString(result.bodyBytes, Base64.NO_WRAP));
+                                item.put("bodyBase64", Base64.encodeToString(bodyBytes, Base64.NO_WRAP));
+                                item.put("len", bodyBytes.length);
                             }
                             return item;
                         }));
@@ -7251,6 +7639,22 @@ final class NtkWebViewFallbackManager {
                 return false;
             try {
                 return "/api/ad/ack".equals(URI.create(url).getPath());
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        private static boolean isSuccessfulAdAckResult(NtkQuicFetcher.Result result) {
+            if(result == null || result.error != null || result.code != 200
+                    || result.bodyBytes == null || result.bodyBytes.length == 0)
+                return false;
+            try {
+                JSONObject response = new JSONObject(new String(result.bodyBytes,
+                        java.nio.charset.StandardCharsets.UTF_8));
+                return response.optBoolean("ok", false)
+                        || response.optBoolean("acked", false)
+                        || "ok".equals(response.optString("status", ""))
+                        || "acked".equals(response.optString("status", ""));
             } catch (Exception e) {
                 return false;
             }
@@ -8118,8 +8522,6 @@ final class NtkWebViewFallbackManager {
             if(!isNtkAdGuardModuleUrl(url))
                 return null;
             try {
-                if(ntkGuardVersionFromUrl(url).length() > 0)
-                    return null;
                 String path = URI.create(url).getPath();
                 boolean wasm = "/api/ad/guard-wasm".equals(path);
                 byte[] bytes = readAssetBytes(context, wasm
@@ -8139,6 +8541,8 @@ final class NtkWebViewFallbackManager {
                 } else {
                     bytes = stripEncryptedGuardLoader(bytes);
                 }
+                if(!isUsableGuardModuleBytes(bytes, wasm))
+                    return null;
                 JSONObject object = new JSONObject();
                 object.put("ok", true);
                 object.put("status", 200);
@@ -8166,6 +8570,8 @@ final class NtkWebViewFallbackManager {
                 if(!"/api/ad/guard-js".equals(uri.getPath()))
                     return null;
                 byte[] stripped = stripEncryptedGuardLoader(result.bodyBytes);
+                if(!isUsableGuardModuleBytes(stripped, false))
+                    return null;
                 if(stripped != result.bodyBytes) {
                     Log.d(TAG, "ntk_viewer_quic_bridge_stripped_guard_js url=" + url
                             + ",rawBytes=" + result.bodyBytes.length
@@ -8195,10 +8601,37 @@ final class NtkWebViewFallbackManager {
                     raw = decryptLocalGuardWasm(result.bodyBytes);
                 if(raw == null || raw.length <= 4)
                     return null;
+                if(!isUsableGuardModuleBytes(raw, true))
+                    return null;
                 Log.d(TAG, "ntk_viewer_quic_bridge_decoded_guard_wasm url=" + url
                         + ",encryptedBytes=" + result.bodyBytes.length
                         + ",plainBytes=" + raw.length);
                 return guardModuleBridgeObject(raw, true).toString();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        private byte[] guardModuleBytesForBridge(String url, byte[] bytes) {
+            if(bytes == null || bytes.length == 0 || !isNtkAdGuardModuleUrl(url))
+                return null;
+            try {
+                URI uri = URI.create(url);
+                boolean wasm = "/api/ad/guard-wasm".equals(uri.getPath());
+                String version = ntkGuardVersionFromUrl(url);
+                byte[] out = bytes;
+                if(wasm) {
+                    if(version.length() > 0 && guardLoaderNeedsDecryptedWasm(version)) {
+                        byte[] raw = decryptVersionedGuardWasm(version, bytes);
+                        if(raw == null || raw.length <= 4)
+                            raw = decryptLocalGuardWasm(bytes);
+                        if(raw != null && raw.length > 4)
+                            out = raw;
+                    }
+                } else {
+                    out = stripEncryptedGuardLoader(bytes);
+                }
+                return isUsableGuardModuleBytes(out, wasm) ? out : null;
             } catch (Exception e) {
                 return null;
             }
@@ -8230,6 +8663,15 @@ final class NtkWebViewFallbackManager {
                     }
                 } else {
                     bytes = stripEncryptedGuardLoader(bytes);
+                }
+                if(!isUsableGuardModuleBytes(bytes, wasm)) {
+                    deleteCachedGuardModule(version, wasm);
+                    if(!wasm)
+                        guardLoaderByVersion.remove(version);
+                    Log.d(TAG, "ntk_viewer_quic_bridge_cached_guard_invalid url=" + url
+                            + ",wasm=" + wasm
+                            + ",len=" + bytes.length);
+                    return null;
                 }
                 JSONObject object = guardModuleBridgeObject(bytes, wasm);
                 Log.d(TAG, "ntk_viewer_quic_bridge_cached_guard url=" + url
@@ -8268,6 +8710,80 @@ final class NtkWebViewFallbackManager {
             object.put("headers", headers);
             object.put("bodyBase64", Base64.encodeToString(bytes, Base64.NO_WRAP));
             return object;
+        }
+
+        private static boolean isUsableGuardModuleBytes(byte[] bytes, boolean wasm) {
+            if(bytes == null || bytes.length == 0)
+                return false;
+            if(looksLikeHtmlOrTextError(bytes))
+                return false;
+            if(wasm)
+                return hasWasmMagic(bytes) || !looksLikePlainText(bytes);
+            try {
+                String text = new String(bytes, 0, Math.min(bytes.length, 4096),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                String trimmed = text.trim();
+                if(trimmed.startsWith("<"))
+                    return false;
+                return text.contains("export")
+                        || text.contains("__i4")
+                        || text.contains("_vc")
+                        || text.contains("_hk")
+                        || text.contains("WebAssembly")
+                        || text.contains("function");
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        private static boolean looksLikeHtmlOrTextError(byte[] bytes) {
+            if(bytes == null || bytes.length == 0)
+                return true;
+            try {
+                String text = new String(bytes, 0, Math.min(bytes.length, 1024),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                String lower = text.trim().toLowerCase(Locale.ROOT);
+                if(lower.length() == 0)
+                    return true;
+                return lower.startsWith("<")
+                        || lower.contains("<!doctype")
+                        || lower.contains("<html")
+                        || lower.contains("<title>")
+                        || lower.startsWith("{") && lower.contains("\"error\"")
+                        || lower.startsWith("error")
+                        || lower.startsWith("forbidden")
+                        || lower.contains("just a moment")
+                        || lower.contains("webpage not available")
+                        || lower.contains("403 forbidden")
+                        || lower.contains("502 bad gateway")
+                        || lower.contains("cloudflare") && lower.contains("security service");
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        private static boolean looksLikePlainText(byte[] bytes) {
+            if(bytes == null || bytes.length == 0)
+                return true;
+            int count = Math.min(bytes.length, 512);
+            int printable = 0;
+            int controls = 0;
+            for(int i = 0; i < count; i++) {
+                int value = bytes[i] & 0xff;
+                if(value == 9 || value == 10 || value == 13 || value >= 32 && value <= 126)
+                    printable++;
+                else if(value < 32)
+                    controls++;
+            }
+            return printable >= Math.max(16, count * 9 / 10) && controls <= count / 20;
+        }
+
+        private static boolean hasWasmMagic(byte[] bytes) {
+            return bytes != null && bytes.length >= 4
+                    && bytes[0] == 0x00
+                    && bytes[1] == 0x61
+                    && bytes[2] == 0x73
+                    && bytes[3] == 0x6d;
         }
 
         private static byte[] readFileBytes(java.io.File file) {
@@ -8396,6 +8912,19 @@ final class NtkWebViewFallbackManager {
             return null;
         }
 
+        private void deleteCachedGuardModule(String version, boolean wasm) {
+            if(version == null || version.length() == 0)
+                return;
+            try {
+                java.io.File file = new java.io.File(new java.io.File(context.getCacheDir(), "ntk_guard_cache"),
+                        (wasm ? "guard-wasm-" : "guard-js-") + version + (wasm ? ".bin" : ".js"));
+                if(file.isFile() && !file.delete())
+                    Log.d(TAG, "ntk_viewer_quic_bridge_guard_cache_delete_failed file="
+                            + file.getAbsolutePath());
+            } catch (Exception ignored) {
+            }
+        }
+
         private void rememberGuardModuleResponse(String url, byte[] bytes) {
             if(bytes == null || bytes.length == 0 || !isNtkAdGuardModuleUrl(url))
                 return;
@@ -8405,6 +8934,16 @@ final class NtkWebViewFallbackManager {
                     return;
                 String path = URI.create(url).getPath();
                 boolean wasm = "/api/ad/guard-wasm".equals(path);
+                boolean usable = wasm
+                        ? !looksLikeHtmlOrTextError(bytes)
+                        : guardModuleBytesForBridge(url, bytes) != null;
+                if(!usable) {
+                    deleteCachedGuardModule(version, wasm);
+                    Log.d(TAG, "ntk_viewer_quic_bridge_guard_cache_reject url=" + url
+                            + ",wasm=" + wasm
+                            + ",len=" + bytes.length);
+                    return;
+                }
                 if(!wasm)
                     guardLoaderByVersion.put(version, bytes);
                 java.io.File dir = new java.io.File(context.getCacheDir(), "ntk_guard_cache");

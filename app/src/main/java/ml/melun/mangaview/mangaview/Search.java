@@ -52,6 +52,8 @@ public class Search {
     private static final int NTK_RESULT_CACHE_MAX_ENTRIES = 80;
     private static final int NTK_KEYWORD_API_CACHE_MAX_ENTRIES = 80;
     private static final int NTK_KEYWORD_SCAN_PARALLELISM = 8;
+    private static final String NTK_ALIAS_WEBTOON_URL = "https://newtoki1.org";
+    private static final String NTK_ALIAS_COMIC_URL = NTK_ALIAS_WEBTOON_URL + "/manhwa";
     private static final Pattern WFWF_FAST_LINK_PATTERN = Pattern.compile("(?is)<a\\b[^>]*href\\s*=\\s*(['\"])(.*?)\\1[^>]*>(.*?)</a>");
     private static final Pattern WFWF_FAST_HEADING_PATTERN = Pattern.compile("(?is)<h[1-6]\\b[^>]*>(.*?)</h[1-6]>");
     private static final Pattern WFWF_FAST_IMG_PATTERN = Pattern.compile("(?is)<img\\b([^>]*)>");
@@ -636,10 +638,106 @@ public class Search {
                                                                  boolean suppressWebViewFallback) throws Exception {
         if(client == null)
             throw new Exception("Missing HTTP client");
+        if(client.isNtk() && shouldTryNtkAliasSearchFallback(path)) {
+            CustomHttpClient.PageResponse directPage = null;
+            Exception directError = null;
+            try {
+                directPage = fetchSearchPageNoWebView(client, path);
+                if(!shouldRetryNtkSearchWithAlias(client, directPage, null, path))
+                    return directPage;
+            } catch (Exception e) {
+                if(!shouldRetryNtkSearchWithAlias(client, null, e, path))
+                    throw e;
+                directError = e;
+            }
+            CustomHttpClient.PageResponse aliasPage = null;
+            try {
+                aliasPage = fetchNtkAliasSearchPage(client, path);
+                if(!shouldRetryNtkSearchWithAlias(client, aliasPage, null, path))
+                    return aliasPage;
+            } catch (Exception aliasError) {
+                Log.d(TAG, "ntk_search_alias_error path=" + ntkMetricPath(path)
+                        + ",type=" + aliasError.getClass().getSimpleName()
+                        + ",message=" + aliasError.getMessage());
+                if(suppressWebViewFallback) {
+                    if(directError != null)
+                        throw directError;
+                    throw aliasError;
+                }
+            }
+            if(suppressWebViewFallback) {
+                if(directPage != null)
+                    return directPage;
+                if(directError != null)
+                    throw directError;
+                return aliasPage;
+            }
+            if(directError == null)
+                Log.d(TAG, "ntk_search_alias_fallback_to_webview path=" + ntkMetricPath(path)
+                        + ",directCode=" + (directPage == null ? 0 : directPage.code)
+                        + ",aliasCode=" + (aliasPage == null ? 0 : aliasPage.code));
+        }
         if(!suppressWebViewFallback)
             return client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        return fetchSearchPageNoWebView(client, path);
+    }
+
+    private static CustomHttpClient.PageResponse fetchSearchPageNoWebView(CustomHttpClient client,
+                                                                          String path) throws Exception {
         return client.runWithFetchMode(CustomHttpClient.FetchMode.SEARCH_NO_WEBVIEW,
                 () -> client.mgetCachedPage(path, PAGE_CACHE_TTL_MS));
+    }
+
+    private static CustomHttpClient.PageResponse fetchNtkAliasSearchPage(CustomHttpClient client,
+                                                                         String path) throws Exception {
+        long startedAt = PerfTrace.start("ntk_search_alias_fetch_ms");
+        try {
+            CustomHttpClient.PageResponse page = client.runWithSitePreset(
+                    NTK_ALIAS_COMIC_URL, NTK_ALIAS_WEBTOON_URL,
+                    () -> client.mgetNtkDesktopSearchPage(path, PAGE_CACHE_TTL_MS));
+            traceSearchMetric("ntk_search_alias_fetch_ms", startedAt,
+                    ",path=" + ntkMetricPath(path)
+                            + ",code=" + (page == null ? 0 : page.code)
+                            + ",bodyLen=" + (page == null || page.body == null ? 0 : page.body.length()));
+            if(page != null && page.code >= 200 && page.code < 400
+                    && !client.isCloudflareChallengeResponse(page.code, page.body))
+                client.applyResolvedNtkRootFromSearch(NTK_ALIAS_WEBTOON_URL);
+            return page;
+        } catch (Exception e) {
+            traceSearchMetric("ntk_search_alias_error_ms", startedAt,
+                    ",path=" + ntkMetricPath(path)
+                            + ",type=" + e.getClass().getSimpleName());
+            throw e;
+        }
+    }
+
+    private static boolean shouldTryNtkAliasSearchFallback(String path) {
+        if(path == null)
+            return false;
+        String normalized = path.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("/api/works")
+                || normalized.startsWith("/api/manhwa-list")
+                || normalized.startsWith("/search?");
+    }
+
+    private static boolean shouldRetryNtkSearchWithAlias(CustomHttpClient client,
+                                                         CustomHttpClient.PageResponse page,
+                                                         Exception error,
+                                                         String path) {
+        if(client == null || !client.isNtk() || !shouldTryNtkAliasSearchFallback(path))
+            return false;
+        if(error != null)
+            return isCaptchaRequiredException(error)
+                    || String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT).contains("cloudflare");
+        if(page == null)
+            return true;
+        return page.code == 0
+                || page.code == 403
+                || client.isCloudflareChallengeResponse(page.code, page.body);
+    }
+
+    static boolean shouldTryNtkAliasSearchFallbackForTest(String path) {
+        return shouldTryNtkAliasSearchFallback(path);
     }
 
     static boolean isNtkSearchNoWebViewPathForTest(String path) {
@@ -1855,7 +1953,53 @@ public class Search {
     private PageTitles fetchNtkHybridKeywordResults(CustomHttpClient client, int targetBaseMode, int limit, int currentPage) throws Exception {
         if(client == null)
             return new PageTitles(new ArrayList<>(), null, true, false, 0);
-        return fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage);
+        String htmlPath = ntkSearchPath(query, targetBaseMode, currentPage);
+        CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
+        NtkHybridPart apiPart = null;
+        NtkHybridPart htmlPart = null;
+        CompletionService<NtkHybridPart> completion = AppDispatchers.ioCompletionService();
+        ArrayList<Future<NtkHybridPart>> running = new ArrayList<>();
+        try {
+            running.add(completion.submit(AppDispatchers.safeCallable(() ->
+                    fetchNtkHybridPart(client, requestGroup, "api",
+                            () -> fetchNtkKeywordApiResults(client, targetBaseMode, limit, currentPage)))));
+            running.add(completion.submit(AppDispatchers.safeCallable(() ->
+                    fetchNtkHybridPart(client, requestGroup, "html",
+                            () -> fetchNtkSearchResults(client, htmlPath, targetBaseMode, limit, currentPage)))));
+            for(int i = 0; i < running.size(); i++) {
+                NtkHybridPart part = completion.take().get();
+                if(part == null)
+                    continue;
+                if("api".equals(part.kind))
+                    apiPart = part;
+                else if("html".equals(part.kind))
+                    htmlPart = part;
+                if(part.pageTitles.titles.size() > 0)
+                    publishPartialResults(part.pageTitles.titles);
+            }
+        } finally {
+            for(Future<NtkHybridPart> future : running)
+                if(future != null && !future.isDone())
+                    future.cancel(true);
+        }
+        if(apiPart == null)
+            apiPart = new NtkHybridPart("api", new PageTitles(new ArrayList<>(), null, true, false, 0), false);
+        if(htmlPart == null)
+            htmlPart = new NtkHybridPart("html", new PageTitles(new ArrayList<>(), null, true, false, 0), false);
+        PageTitles merged = mergeNtkHybridKeywordResults(htmlPart.pageTitles, apiPart.pageTitles);
+        Log.d(TAG, "ntk_search_hybrid_keyword apiSuccess=" + apiPart.success
+                + ",apiCaptcha=" + apiPart.captchaRequired
+                + ",apiCount=" + apiPart.pageTitles.titles.size()
+                + ",htmlSuccess=" + htmlPart.success
+                + ",htmlCaptcha=" + htmlPart.captchaRequired
+                + ",htmlCount=" + htmlPart.pageTitles.titles.size()
+                + ",merged=" + merged.titles.size()
+                + ",htmlPath=" + ntkMetricPath(htmlPath));
+        if(merged.titles.size() == 0
+                && apiPart.captchaRequired
+                && htmlPart.captchaRequired)
+            throw new NtkCaptchaRequiredException();
+        return merged;
     }
 
     private void publishPartialResults(ArrayList<Title> titles) {

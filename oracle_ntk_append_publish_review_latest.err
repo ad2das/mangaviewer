@@ -1,0 +1,12 @@
+error: too many arguments. Expected 1 argument but got 133.
+(use --help for usage)
+[oracle-wrapper] post-failure submission verification: {"state":"not_submitted","session":"we-are-debugging-an-android-23","reason":"matched browser session errored before any submitted runtime, live-state, or generation evidence","liveRead":{"ok":false,"status":1,"stdout":"","stderr":"No live ChatGPT tab could be read. Attempts: []\n"}}
+[oracle-wrapper] The prompt appears not submitted after live verification. Attempting automatic live-submit recovery.
+[oracle-wrapper] live-submit recovery result: {"ok":false,"status":2,"stderr":"Session has no Chrome port or prompt to submit. port=false prompt=true\n"}
+[oracle-wrapper] Automatic recovery did not submit the prompt. Retrying once because submission was verified not_submitted.
+error: too many arguments. Expected 1 argument but got 133.
+(use --help for usage)
+[oracle-wrapper] post-failure submission verification: {"state":"not_submitted","session":"we-are-debugging-an-android-23","reason":"matched browser session errored before any submitted runtime, live-state, or generation evidence","liveRead":{"ok":false,"status":1,"stdout":"","stderr":"No live ChatGPT tab could be read. Attempts: []\n"}}
+[oracle-wrapper] The prompt appears not submitted after live verification. Attempting automatic live-submit recovery.
+[oracle-wrapper] live-submit recovery result: {"ok":false,"status":2,"stderr":"Session has no Chrome port or prompt to submit. port=false prompt=true\n"}
+[oracle-wrapper] Automatic recovery did not submit the prompt after the one allowed retry.

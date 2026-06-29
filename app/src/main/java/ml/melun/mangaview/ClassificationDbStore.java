@@ -6,6 +6,8 @@ import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteException;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,6 +21,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 
 public final class ClassificationDbStore {
     public static final String DB_FILE_NAME = "classification.sqlite";
+    private static final String SEED_DB_ASSET_NAME = "classification.sqlite";
     private static final int CACHE_LIMIT = 256;
     private static final Object lock = new Object();
     private static SQLiteDatabase database;
@@ -410,8 +413,11 @@ public final class ClassificationDbStore {
             return null;
         File file = dbFile(context.getApplicationContext());
         if(file == null || !file.exists() || file.length() <= 0) {
-            ClassificationDbUpdater.start(context);
-            return null;
+            installSeedDatabaseIfAvailable(context.getApplicationContext(), file);
+            if(file == null || !file.exists() || file.length() <= 0) {
+                ClassificationDbUpdater.start(context);
+                return null;
+            }
         }
         String path = file.getAbsolutePath();
         synchronized (lock) {
@@ -427,6 +433,75 @@ public final class ClassificationDbStore {
                 ClassificationDbUpdater.start(context);
                 return null;
             }
+        }
+    }
+
+    private static void installSeedDatabaseIfAvailable(Context context, File target) {
+        if(context == null || target == null)
+            return;
+        synchronized (lock) {
+            if(target.exists() && target.length() > 0)
+                return;
+            File dir = target.getParentFile();
+            if(dir == null || (!dir.exists() && !dir.mkdirs()))
+                return;
+            File tmp = new File(dir, DB_FILE_NAME + ".seed");
+            deleteIfExists(tmp);
+            try(InputStream input = context.getAssets().open(SEED_DB_ASSET_NAME);
+                FileOutputStream output = new FileOutputStream(tmp)) {
+                byte[] buffer = new byte[8192];
+                while(true) {
+                    int read = input.read(buffer);
+                    if(read < 0)
+                        break;
+                    output.write(buffer, 0, read);
+                }
+                output.flush();
+                if(!isReadableSeedDatabase(tmp)) {
+                    deleteIfExists(tmp);
+                    return;
+                }
+                deleteIfExists(target);
+                if(!tmp.renameTo(target)) {
+                    copySeedFile(tmp, target);
+                    deleteIfExists(tmp);
+                }
+            } catch (Exception ignored) {
+                deleteIfExists(tmp);
+            }
+        }
+    }
+
+    private static boolean isReadableSeedDatabase(File file) {
+        if(file == null || !file.exists() || file.length() <= 0)
+            return false;
+        SQLiteDatabase db = null;
+        Cursor cursor = null;
+        try {
+            db = SQLiteDatabase.openDatabase(file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+            cursor = db.rawQuery("SELECT COUNT(*) FROM classification_titles", null);
+            return cursor.moveToFirst() && cursor.getInt(0) > 0;
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if(cursor != null)
+                cursor.close();
+            if(db != null)
+                db.close();
+        }
+    }
+
+    private static void copySeedFile(File source, File target) throws Exception {
+        try(InputStream input = new java.io.FileInputStream(source);
+            FileOutputStream output = new FileOutputStream(target)) {
+            byte[] buffer = new byte[8192];
+            while(true) {
+                int read = input.read(buffer);
+                if(read < 0)
+                    break;
+                output.write(buffer, 0, read);
+            }
+            output.flush();
         }
     }
 

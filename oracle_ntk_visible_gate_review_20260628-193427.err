@@ -1,0 +1,10 @@
+Refusing to start a new Oracle browser run because a previous ChatGPT run may still be generating.
+Reason: stored browser session is still running
+Session: review-update-no-attached-huge
+Title: review-update-no-attached-huge
+URL: https://chatgpt.com/c/6a40f896-49c0-83ee-821b-af92af14d431
+Observed: 2026-06-28T10:33:35.278Z
+Recover it first with:
+  node "C:\Users\Administrator\.codex\skills\oracle-patched-package\scripts\read-live-chatgpt.mjs" --session "review-update-no-attached-huge" --tail 40000
+  node "C:\Users\Administrator\.codex\skills\oracle-patched-package\scripts\run-oracle.mjs" session "review-update-no-attached-huge" --render
+To intentionally override this guard, set ORACLE_ALLOW_BROWSER_DUPLICATE=1.

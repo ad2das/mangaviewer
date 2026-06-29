@@ -44,6 +44,8 @@ public class Title extends MTitle {
     public static final int LOAD_ERROR = 2;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
+    private static final String NTK_ALIAS_WEBTOON_URL = "https://newtoki1.org";
+    private static final String NTK_ALIAS_COMIC_URL = NTK_ALIAS_WEBTOON_URL + "/manhwa";
 
 
     public Title(String n, String t, String a, List<String> tg, String r, int id, int baseMode) {
@@ -207,6 +209,23 @@ public class Title extends MTitle {
                 titlePath = ntkTitlePath(segment);
             }
             String titleKey = ntkTitleKey(segment);
+            NtkEpisodeParser.ParseResult apiEpisodes = parseNtkEpisodesFromApi(client, segment, titleKey, baseMode);
+            if(apiEpisodes.episodes.size() > 0) {
+                eps = apiEpisodes.episodes;
+                Log.d(TAG, "ntk_episode_parse reason=episode_api,id=" + id
+                        + ",segment=" + segment
+                        + ",path=" + titlePath
+                        + ",episodes=" + eps.size());
+                return LOAD_OK;
+            }
+            if(apiEpisodes.definitiveEmptyEpisodeList) {
+                ntkEpisodeListConfirmedEmpty = true;
+                eps = apiEpisodes.episodes;
+                Log.d(TAG, "ntk_episode_parse reason=episode_api_empty_confirmed,id=" + id
+                        + ",segment=" + segment
+                        + ",path=" + titlePath);
+                return LOAD_OK;
+            }
             if(shouldPreferNtkRscTitlePayload(titlePath)) {
                 NtkEpisodeParser.ParseResult payloadOnly = parseNtkEpisodesFromNextPayloads(client, titlePath, "",
                         segment, titleKey, baseMode);
@@ -424,6 +443,93 @@ public class Title extends MTitle {
             return LOAD_ERROR;
         }
         return LOAD_OK;
+    }
+
+    private NtkEpisodeParser.ParseResult parseNtkEpisodesFromApi(CustomHttpClient client, String segment,
+                                                                 String titleKey, int baseMode) {
+        NtkEpisodeParser.ParseResult empty = new NtkEpisodeParser.ParseResult();
+        if(client == null || segment == null || titleKey == null
+                || segment.length() == 0 || titleKey.length() == 0)
+            return empty;
+        String apiPath = "/api/" + segment + "/" + titleKey + "/episodes";
+        try {
+            CustomHttpClient.PageResponse page = fetchNtkEpisodeApiPage(client, apiPath);
+            Log.d(TAG, "ntk_episode_api path=" + apiPath
+                    + ",code=" + (page == null ? 0 : page.code)
+                    + ",bodyLen=" + (page == null || page.body == null ? 0 : page.body.length()));
+            if(page == null || page.code >= 400 || page.body == null || page.body.length() == 0
+                    || client.isCloudflareChallengeResponse(page.code, page.body))
+                return empty;
+            JsonElement rootElement = JsonParser.parseString(page.body);
+            if(rootElement == null || !rootElement.isJsonObject())
+                return empty;
+            JsonObject root = rootElement.getAsJsonObject();
+            JsonArray items = root.has("episodes") && root.get("episodes").isJsonArray()
+                    ? root.getAsJsonArray("episodes") : null;
+            if(items == null)
+                return empty;
+            int titleId = parsePositiveInt(titleKey);
+            if(titleId <= 0)
+                titleId = id;
+            for(JsonElement element : items) {
+                if(element == null || !element.isJsonObject())
+                    continue;
+                JsonObject item = element.getAsJsonObject();
+                String sourceEpisodeId = firstNonEmpty(jsonString(item, "sourceEpisodeId"),
+                        jsonString(item, "episodeId"));
+                if(sourceEpisodeId.length() == 0)
+                    continue;
+                int epId = parsePositiveInt(jsonString(item, "epNo"));
+                if(epId <= 0)
+                    epId = parsePositiveInt(jsonString(item, "number"));
+                if(epId <= 0)
+                    epId = parsePositiveInt(sourceEpisodeId);
+                if(epId <= 0)
+                    epId = empty.episodes.size() + 1;
+                String epTitle = firstNonEmpty(jsonString(item, "title"), epId + "\uD654");
+                Manga manga = new Manga(epId, epTitle, jsonString(item, "date"), baseMode);
+                manga.setMode(0);
+                manga.setTitle(this);
+                manga.setTitleId(titleId);
+                manga.setNtkEpisodePath("/" + segment + "/" + titleKey + "/" + sourceEpisodeId);
+                manga.setNtkImageWorkId(titleKey);
+                manga.setNtkImageEpisodeId(sourceEpisodeId);
+                int imageCount = parsePositiveInt(jsonString(item, "imageCount"));
+                if(imageCount > 0)
+                    manga.setNtkImageCount(imageCount);
+                empty.episodes.add(manga);
+            }
+            EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(empty.episodes);
+            if(empty.episodes.size() == 0 && root.has("ok") && root.has("total")) {
+                try {
+                    empty.definitiveEmptyEpisodeList = root.get("ok").getAsBoolean()
+                            && root.get("total").getAsInt() == 0;
+                } catch (Exception ignored) {
+                }
+            }
+            return empty;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_episode_api_failed path=" + apiPath + "," + e);
+            return empty;
+        }
+    }
+
+    private CustomHttpClient.PageResponse fetchNtkEpisodeApiPage(CustomHttpClient client, String apiPath)
+            throws Exception {
+        try {
+            CustomHttpClient.PageResponse page = client.mgetNtkDesktopSearchPage(apiPath, PAGE_CACHE_TTL_MS);
+            if(page != null && page.code >= 200 && page.code < 400
+                    && !client.isCloudflareChallengeResponse(page.code, page.body))
+                return page;
+        } catch(Exception ignored) {
+        }
+        CustomHttpClient.PageResponse aliasPage = client.runWithSitePreset(
+                NTK_ALIAS_COMIC_URL, NTK_ALIAS_WEBTOON_URL,
+                () -> client.mgetNtkDesktopSearchPage(apiPath, PAGE_CACHE_TTL_MS));
+        if(aliasPage != null && aliasPage.code >= 200 && aliasPage.code < 400
+                && !client.isCloudflareChallengeResponse(aliasPage.code, aliasPage.body))
+            client.applyResolvedNtkRootFromSearch(NTK_ALIAS_WEBTOON_URL);
+        return aliasPage;
     }
 
     private static boolean shouldEnrichNtkEpisodeImageCounts(List<Manga> episodes) {

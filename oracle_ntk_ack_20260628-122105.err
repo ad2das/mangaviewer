@@ -1,0 +1,5 @@
+[oracle-wrapper] Found live Oracle Chrome DevTools port 52095; attaching instead of launching a second browser.
+error: too many arguments. Expected 1 argument but got 119.
+(use --help for usage)
+[oracle-wrapper] post-failure submission verification: {"state":"completed","session":"review-aaa-user-js-for-3","reason":"matched browser session is already completed; render/recover its answer","usage":{"inputTokens":4359,"outputTokens":2360,"reasoningTokens":0,"totalTokens":6719}}
+[oracle-wrapper] The matched browser session completed despite the CLI failure. Rendering/recovering the answer now.

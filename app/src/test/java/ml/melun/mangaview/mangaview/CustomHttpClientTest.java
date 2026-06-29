@@ -518,7 +518,7 @@ public class CustomHttpClientTest {
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/ing?page=2"));
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/manhwa-end?sort=hot"));
         assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/api/manhwa-list"));
-        assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/search?q=onepiece"));
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/search?q=onepiece"));
         assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/cm?type1=genre"));
     }
 

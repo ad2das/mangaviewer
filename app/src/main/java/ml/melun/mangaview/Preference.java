@@ -453,6 +453,10 @@ public class Preference {
         return resolvedWfwfRoot(rememberedRoot, webtoonUrl, defUrl, url);
     }
 
+    static boolean isLegacyNtkRedirectRootForTest(String root) {
+        return isLegacyNtkRedirectRoot(root);
+    }
+
     private static String normalizeComicUrl(String sourceUrl) {
         return normalizeComicUrl(sourceUrl, NTK_WEBTOON_URL);
     }
@@ -825,6 +829,10 @@ public class Preference {
             if(host.startsWith("www."))
                 host = host.substring(4);
             if("ntk01.com".equals(host))
+                return true;
+            String defaultHost = ntkHost(NTK_WEBTOON_URL);
+            if(defaultHost.length() > 0 && !host.equals(defaultHost) &&
+                    (host.startsWith("newto") || host.startsWith("newtoki") || host.contains("newtoki")))
                 return true;
             int currentSbxh = sbxhHostNumber(NTK_WEBTOON_URL);
             int hostSbxh = sbxhHostNumber(host);

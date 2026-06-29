@@ -92,6 +92,64 @@ public class MainApplication extends MultiDexApplication implements Configuratio
         super.onCreate();
         PerfTrace.end("app_super_on_create_ms", superStartedAt);
         PerfTrace.end("app_on_create_ms", appStartedAt);
+        AppDispatchers.runIo(() -> preWarmNtkAck());
+    }
+
+    private static volatile java.util.concurrent.ScheduledExecutorService ntkTrustRefresher;
+
+    private void preWarmNtkAck() {
+        try {
+            if(p == null || !p.isNtkSite())
+                return;
+            java.util.List<ml.melun.mangaview.mangaview.MTitle> recent = p.getRecent();
+            if(recent == null || recent.isEmpty())
+                return;
+            ml.melun.mangaview.mangaview.MTitle item = recent.get(0);
+            if(item == null)
+                return;
+            ml.melun.mangaview.mangaview.Title title = item instanceof ml.melun.mangaview.mangaview.Title
+                    ? (ml.melun.mangaview.mangaview.Title) item
+                    : new ml.melun.mangaview.mangaview.Title(item);
+            ml.melun.mangaview.mangaview.Manga manga = ml.melun.mangaview.activity.ViewerResumeResolver.resumeManga(title);
+            if(manga == null || !manga.isOnline())
+                return;
+            manga.setTitle(title);
+            manga.setTitleId(title.getId());
+            manga.ensureNtkEpisodePathFromIdentity();
+            String ntkPath = manga.getNtkEpisodePath();
+            if(ntkPath == null || ntkPath.length() == 0)
+                return;
+            CustomHttpClient client = getHttpClient();
+            if(client == null || !client.isNtk())
+                return;
+            android.util.Log.d("MainApplication", "ntk_prewarm_ack_start path=" + ntkPath);
+            client.preStartNtkAckForPath(ntkPath);
+            ml.melun.mangaview.runtime.ContinueReadinessCoordinator.primeColdStart(appContext);
+            startNtkTrustRefresher(ntkPath);
+        } catch(Exception e) {
+            android.util.Log.d("MainApplication", "ntk_prewarm_ack_error " + e);
+        }
+    }
+
+    private void startNtkTrustRefresher(String path) {
+        if(ntkTrustRefresher != null)
+            return;
+        ntkTrustRefresher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "ntk-trust-refresher");
+            t.setDaemon(true);
+            return t;
+        });
+        ntkTrustRefresher.scheduleAtFixedRate(() -> {
+            try {
+                CustomHttpClient client = getHttpClient();
+                if(client == null || !client.isNtk())
+                    return;
+                android.util.Log.d("MainApplication", "ntk_trust_refresh path=" + path);
+                client.preStartNtkAckForPath(path);
+            } catch(Exception e) {
+                android.util.Log.d("MainApplication", "ntk_trust_refresh_error " + e);
+            }
+        }, 4, 4, java.util.concurrent.TimeUnit.MINUTES);
     }
 
     public static CustomHttpClient getHttpClient() {

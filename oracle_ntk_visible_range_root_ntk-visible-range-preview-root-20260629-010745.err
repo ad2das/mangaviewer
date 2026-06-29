@@ -1,0 +1,5 @@
+[oracle-wrapper] Found live Oracle Chrome DevTools port 60758; attaching instead of launching a second browser.
+error: unknown option '--session-id'
+(use --help for usage)
+[oracle-wrapper] post-failure submission verification: {"state":"completed","session":"android-kotlin-ntk-manga-webtoon-4","reason":"matched browser session is already completed; render/recover its answer"}
+[oracle-wrapper] The matched browser session completed despite the CLI failure. Rendering/recovering the answer now.

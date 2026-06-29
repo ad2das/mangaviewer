@@ -21,6 +21,7 @@ public class NtkWebViewFallbackManagerTest {
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/end?sort=hot"));
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/manhwa?page=2"));
         assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/manhwa-end?g=%EC%95%A1%EC%85%98"));
+        assertTrue(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/search?q=%EB%91%98%EC%A7%B8"));
         assertFalse(NtkWebViewFallbackManager.shouldNavigateDocumentForTest("/api/manhwa-list"));
     }
 
@@ -43,6 +44,12 @@ public class NtkWebViewFallbackManagerTest {
                 "about:blank", "https://sbxh1.com", "/webtoon/1/2"));
         assertFalse(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
                 "https://sbxh1.com/", "https://sbxh1.com", "/webtoon/1/2"));
+        assertTrue(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
+                "https://sbxh1.com/search?q=%EB%91%98%EC%A7%B8&kind=webtoon",
+                "https://sbxh1.com", "/search?q=%EB%91%98%EC%A7%B8&kind=webtoon"));
+        assertFalse(NtkWebViewFallbackManager.isFinishedDocumentUrlForTest(
+                "https://sbxh1.com/search", "https://sbxh1.com",
+                "/search?q=%EB%91%98%EC%A7%B8&kind=webtoon"));
     }
 
     @Test
@@ -118,10 +125,10 @@ public class NtkWebViewFallbackManagerTest {
         assertEquals("https://moamoabon.com/blacktoon/episodes/16968/1463195/p002.webp",
                 NtkWebViewFallbackManager.normalizeViewerImageApiSrcForTest(
                         "moamoabon.com/p002.webp", "webtoon", "16968", "1463195"));
-        assertEquals("https://moamoabon.com/manhwa/36525/1807424/p001.jpg",
+        assertEquals("http://apihost93.com/manhwa/36525/1807424/p001.jpg",
                 NtkWebViewFallbackManager.normalizeViewerImageApiSrcForTest(
                         "/p001.jpg", "manhwa", "36525", "1807424"));
-        assertEquals("https://moamoabon.com/blacktoon/episodes/16968/1463195/p001.jpg",
+        assertEquals("https://moamoabon.com/black/episodes/16968/1463195/p001.jpg",
                 NtkWebViewFallbackManager.normalizeViewerImageApiSrcForTest(
                         "https://moamoabon.com/black/episodes/16968/1463195/p001.jpg",
                         "webtoon", "16968", "1463195"));

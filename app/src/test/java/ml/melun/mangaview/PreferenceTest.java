@@ -40,6 +40,13 @@ public class PreferenceTest {
     }
 
     @Test
+    public void staleNewtokiRootMigratesToCurrentNtkPreset() {
+        assertTrue(Preference.isLegacyNtkRedirectRootForTest("https://newtoki1.org"));
+        assertTrue(Preference.isLegacyNtkRedirectRootForTest("https://newtoki1.org/manhwa"));
+        assertFalse(Preference.isLegacyNtkRedirectRootForTest(NTK_WEBTOON_URL));
+    }
+
+    @Test
     public void siteUrlNormalizationRepairsWolfManhwaPath() {
         assertEquals("https://wfwf455.com/cm", Preference.normalizeComicUrlForTest("https://wfwf455.com/manhwa"));
         assertEquals("https://wfwf455.com", Preference.normalizeWebtoonUrlForTest("https://wfwf455.com/manhwa"));

@@ -6,6 +6,8 @@ param(
     [int]$AppendSteps = 12,
     [int]$ScreenshotEvery = 0,
     [string]$Mode = "native-ack",
+    [string]$NtkSource = "",
+    [string]$NtkBaseMode = "",
     [string]$ScrollInputMode = "touch",
     [string]$ScrollPattern = "mixed",
     [string]$TargetEpisodePath = "",
@@ -388,6 +390,7 @@ $ensureAccessBeforeArg = if($EnsureAccessBefore) { "true" } else { "false" }
 $changeDeviceIdentityArg = if($ChangeDeviceIdentityBeforeRun) { "true" } else { "false" }
 $resetDeviceIdentityArg = if($ResetDeviceIdentityBeforeRun) { "true" } else { "false" }
 $requireLiveRandomArg = if($RequireLiveRandom) { "true" } else { "false" }
+$requireStrictAckArg = if($NoAckAssert) { "false" } else { "true" }
 
 $argsList = @(
     "-s", $DeviceSerial,
@@ -406,6 +409,7 @@ $argsList = @(
     "-e", "ntkHoldAfterFirstDrawableMs", [string]$HoldAfterFirstDrawableMs,
     "-e", "ntkRequireAllPagesDrawable", ([string]([bool]$RequireAllPagesDrawable)).ToLowerInvariant(),
     "-e", "ntkAllPagesDrawableMaxMs", [string]$AllPagesDrawableMaxMs,
+    "-e", "ntkRequireStrictAck", $requireStrictAckArg,
     "-e", "ntkPostStopDriftMs", [string]$PostStopDriftMs,
     "-e", "ntkEnsureAccessBefore", $ensureAccessBeforeArg,
     "-e", "ntkEnsureAccessMaxMs", [string]$EnsureAccessMaxMs,
@@ -425,6 +429,12 @@ $argsList = @(
 
 if($Mode -and $Mode.Trim().Length -gt 0 -and $Mode -ne "mixed") {
     $argsList += @("-e", "ntkMode", $Mode.Trim())
+}
+if($NtkSource -and $NtkSource.Trim().Length -gt 0) {
+    $argsList += @("-e", "ntkSource", $NtkSource.Trim())
+}
+if($NtkBaseMode -and $NtkBaseMode.Trim().Length -gt 0) {
+    $argsList += @("-e", "ntkBaseMode", $NtkBaseMode.Trim())
 }
 if($NtkSiteRoot -and $NtkSiteRoot.Trim().Length -gt 0) {
     $argsList += @("-e", "ntkSiteRoot", $NtkSiteRoot.Trim())
@@ -776,6 +786,12 @@ if($reproImageCount -and $reproImageCount.Trim().Length -gt 0 -and $reproImageCo
 if($TargetImageCount -gt 0) {
     $reproArgs += @("-TargetImageCount", [string]$TargetImageCount)
 }
+if($NtkSource -and $NtkSource.Trim().Length -gt 0) {
+    $reproArgs += @("-NtkSource", $NtkSource.Trim())
+}
+if($NtkBaseMode -and $NtkBaseMode.Trim().Length -gt 0) {
+    $reproArgs += @("-NtkBaseMode", $NtkBaseMode.Trim())
+}
 if($NtkSiteRoot -and $NtkSiteRoot.Trim().Length -gt 0) {
     $reproArgs += @("-NtkSiteRoot", $NtkSiteRoot.Trim())
 }
@@ -841,6 +857,8 @@ $summary = [ordered]@{
     ensureAccessBefore = [bool]$EnsureAccessBefore
     ensureAccessMaxMs = $EnsureAccessMaxMs
     mode = $Mode
+    ntkSource = $NtkSource
+    ntkBaseMode = $NtkBaseMode
     scrollInputMode = $ScrollInputMode
     scrollPattern = $ScrollPattern
     assertSchedulerGap = [bool]$AssertSchedulerGap

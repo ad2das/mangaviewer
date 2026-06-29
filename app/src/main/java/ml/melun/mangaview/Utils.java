@@ -53,7 +53,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -327,6 +329,12 @@ public class Utils {
         }
         ml.melun.mangaview.runtime.BackgroundPrefetchBudget.suppressForUserNavigation();
         if(online && manga.isOnline()) {
+            String ntkPath = manga.getNtkEpisodePath();
+            if(ntkPath != null && ntkPath.length() > 0) {
+                CustomHttpClient client = getHttpClient();
+                if(client != null && client.isNtk())
+                    client.preStartNtkAckForPath(ntkPath);
+            }
             if(exactEpisode && shouldWaitForExactFirstFrame(launchTitle)) {
                 ViewerWarmupManager.logMetric("viewer_exact_prepare_gate", manga.getId());
                 launchExactWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
@@ -695,7 +703,6 @@ public class Utils {
                 } catch(Exception ignored) {
                 }
                 try {
-                    startImmediateNtkGeneratedInitialPrime(client, manga, path);
                     if(slugWebtoon) {
                         boolean naverOriginal = path.matches("(?i)^/webtoon/[^/?#]+/(?:naver|nv)-\\d{5,}-\\d+(?:[/?#].*)?$");
                         if(naverOriginal) {
@@ -704,12 +711,13 @@ public class Utils {
                                     "viewer_ntk_webtoon_launch_api_prefetch_start path=" + path
                                             + ",naverOriginal=true");
                         } else {
+                            startImmediateNtkGeneratedInitialPrime(client, manga, path);
                             android.util.Log.d("ViewerPerf",
-                                    "viewer_ntk_webtoon_launch_api_prefetch_skip path=" + path
-                                            + ",reason=slug_launch_contention");
+                                    "viewer_ntk_webtoon_launch_api_prefetch_defer path=" + path
+                                            + ",reason=activity_first");
                         }
                     } else {
-                        manga.startNtkEarlyViewerApiPrefetch(client);
+                        startImmediateNtkGeneratedInitialPrime(client, manga, path);
                     }
                 } catch(Exception e) {
                     android.util.Log.d("ViewerPerf", "viewer_ntk_image_api_preflight_error path=" + path + "," + e);
@@ -727,6 +735,18 @@ public class Utils {
         return true;
     }
 
+    public static void startImmediateNtkGeneratedInitialPrimeForLaunch(Context context, Manga manga) {
+        if(context == null || manga == null)
+            return;
+        CustomHttpClient client = getHttpClient();
+        if(client == null)
+            return;
+        String path = manga.getNtkEpisodePath();
+        if(path == null || path.length() == 0)
+            return;
+        startImmediateNtkGeneratedInitialPrime(client, manga, path);
+    }
+
     private static void startImmediateNtkGeneratedInitialPrime(CustomHttpClient client, Manga manga, String path) {
         if(client == null || manga == null || path == null || path.length() == 0)
             return;
@@ -742,25 +762,190 @@ public class Utils {
         String segment = matcher.group(1).toLowerCase(Locale.ROOT);
         String pathWorkId = matcher.group(2).trim();
         String pathEpisodeId = matcher.group(3).trim();
+        if("webtoon".equals(segment) && !pathEpisodeId.matches("\\d{1,12}")) {
+            android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_skip path=" + path
+                    + ",reason=slug_webtoon_non_numeric_episode");
+            return;
+        }
+        if("webtoon".equals(segment) && !pathWorkId.matches("\\d{1,12}")) {
+            if(!pathEpisodeId.matches("\\d{1,12}")) {
+                android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_skip path=" + path
+                        + ",reason=slug_webtoon_non_numeric_episode");
+                return;
+            }
+            int count = manga.getNtkImageCount() > 0 ? manga.getNtkImageCount() : 1;
+            ArrayList<String> urls = new ArrayList<>(count);
+            for(int page = 1; page <= count; page++) {
+                String pageName = String.format(Locale.ROOT, "p%03d.jpeg", page);
+                urls.add("https://fifa.worldcup73.xyz/wt/episodes/" + pathWorkId + "/" + pathEpisodeId + "/" + pageName);
+            }
+            if(urls.size() > 1)
+                ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, urls);
+            String first = urls.isEmpty() ? "" : urls.get(0);
+            int immediateCount = Math.min(1, urls.size());
+            int startedCount = 0;
+            for(int index = 0; index < immediateCount; index++) {
+                String image = urls.get(index);
+                if(image == null || image.length() == 0)
+                    continue;
+                if(ReaderImageCache.INSTANCE.startForegroundStreamFetch(
+                        context.getApplicationContext(), manga, image, null, false, null, index, true))
+                    startedCount++;
+            }
+            if(urls.size() > 1) {
+                final Context appContext = context.getApplicationContext();
+                final ArrayList<String> initialUrls = new ArrayList<>(urls.subList(0, Math.min(4, urls.size())));
+                Thread adjacentThread = new Thread(() -> {
+                    try {
+                        Thread.sleep(80L);
+                    } catch(InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    int adjacentStarted = 0;
+                    for(int i = immediateCount; i < initialUrls.size(); i++) {
+                        if(ReaderImageCache.INSTANCE.startForegroundStreamFetch(
+                                appContext, manga, initialUrls.get(i), null, false, null, i, true))
+                            adjacentStarted++;
+                    }
+                    android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_slug_generated_adjacent_prime path=" + path
+                            + ",count=" + initialUrls.size()
+                            + ",adjacentStarted=" + adjacentStarted);
+                }, "NtkInitialAdjacentPrime");
+                adjacentThread.setPriority(Thread.MAX_PRIORITY);
+                adjacentThread.start();
+                startImmediateNtkGeneratedForwardPrime(appContext, manga, path, urls, 4, 24, 120L,
+                        "viewer_ntk_immediate_slug_generated_forward_prime");
+            }
+            android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_slug_generated_initial_prime path=" + path
+                    + ",count=" + urls.size()
+                    + ",started=" + (startedCount > 0)
+                    + ",startedCount=" + startedCount
+                    + ",first=" + (first.length() == 0 ? "" : first.substring(first.lastIndexOf('/') + 1)));
+            return;
+        }
+        boolean largeUntrustedWebtoonCount = "webtoon".equals(segment) && manga.getNtkImageCount() > 64;
+        if(largeUntrustedWebtoonCount && !pathEpisodeId.matches("\\d{1,12}")) {
+            android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_skip path=" + path
+                    + ",reason=untrusted_large_webtoon_count,count=" + manga.getNtkImageCount());
+            return;
+        } else if(largeUntrustedWebtoonCount) {
+            android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_limited path=" + path
+                    + ",reason=untrusted_large_webtoon_count_initial_only,count=" + manga.getNtkImageCount());
+        }
         String imageWorkId = manga.getNtkImageWorkId() == null ? "" : manga.getNtkImageWorkId().trim();
         if(imageWorkId.length() == 0)
             imageWorkId = pathWorkId;
-        String imageEpisodeId = manga.getNtkImageEpisodeId() == null ? "" : manga.getNtkImageEpisodeId().trim();
-        if(imageEpisodeId.length() == 0 && pathEpisodeId.matches("\\d{1,12}"))
+        String recordedImageEpisodeId = manga.getNtkImageEpisodeId() == null ? "" : manga.getNtkImageEpisodeId().trim();
+        CustomHttpClient.NtkCachedImageIdentity cachedIdentity =
+                CustomHttpClient.cachedNtkImageIdentity(path);
+        if("webtoon".equals(segment)
+                && pathWorkId.matches("\\d{1,12}")
+                && cachedIdentity != null
+                && cachedIdentity.workId != null
+                && cachedIdentity.workId.length() > 0
+                && !cachedIdentity.workId.matches("\\d{1,12}")
+                && cachedIdentity.episodeId != null
+                && cachedIdentity.episodeId.matches("\\d{1,12}")
+                && cachedIdentity.count > 0
+                && cachedIdentity.count <= 128) {
+            int cachedCount = Math.min(cachedIdentity.count, 64);
+            ArrayList<String> cachedWtUrls = new ArrayList<>(cachedCount);
+            for(int page = 1; page <= cachedCount; page++) {
+                cachedWtUrls.add("https://fifa.worldcup73.xyz/wt/episodes/"
+                        + cachedIdentity.workId + "/" + cachedIdentity.episodeId
+                        + "/p" + String.format(Locale.ROOT, "%03d", page) + ".jpeg");
+            }
+            ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, cachedWtUrls);
+            int immediateCachedCount = Math.min(4, cachedWtUrls.size());
+            int cachedStarted = 0;
+            for(int index = 0; index < immediateCachedCount; index++) {
+                boolean started = ReaderImageCache.INSTANCE.startForegroundStreamFetch(
+                        context.getApplicationContext(), manga, cachedWtUrls.get(index), null, false, null, index, true);
+                if(started)
+                    cachedStarted++;
+            }
+            if(cachedWtUrls.size() > immediateCachedCount) {
+                startImmediateNtkGeneratedForwardPrime(context.getApplicationContext(), manga, path,
+                        cachedWtUrls, immediateCachedCount, 24, 120L,
+                        "viewer_ntk_immediate_cached_wt_forward_prime");
+            }
+            android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_cached_wt_initial_prime path=" + path
+                    + ",slug=" + cachedIdentity.workId
+                    + ",episodeId=" + cachedIdentity.episodeId
+                    + ",count=" + cachedWtUrls.size()
+                    + ",startedCount=" + cachedStarted);
+            return;
+        }
+        String imageEpisodeId;
+        if("webtoon".equals(segment) && pathEpisodeId.matches("\\d{1,12}")
+                && !pathEpisodeId.equals(recordedImageEpisodeId))
             imageEpisodeId = pathEpisodeId;
+        else {
+            imageEpisodeId = recordedImageEpisodeId;
+            if(imageEpisodeId.length() == 0 && pathEpisodeId.matches("\\d{1,12}"))
+                imageEpisodeId = pathEpisodeId;
+        }
         if(!imageWorkId.matches("\\d{1,12}") || !imageEpisodeId.matches("\\d{1,12}"))
             return;
-        int initialLimit = "webtoon".equals(segment) ? 3 : 4;
+        boolean canPrimePathEpisodeWithImageWork = "webtoon".equals(segment)
+                && imageWorkId.matches("\\d{1,12}")
+                && pathEpisodeId.matches("\\d{1,12}");
+        if("webtoon".equals(segment)
+                && pathEpisodeId.matches("\\d{1,12}")
+                && (largeUntrustedWebtoonCount || recordedImageEpisodeId.matches("\\d{1,12}"))
+                && !canPrimePathEpisodeWithImageWork
+                && ReaderImageCache.INSTANCE.earlyNtkGeneratedSuccessImageUrls(
+                        path, SystemClock.elapsedRealtime() - 30000L).isEmpty()) {
+            android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_defer_unverified path=" + path
+                    + ",workId=" + imageWorkId
+                    + ",pathEpisodeId=" + pathEpisodeId
+                    + ",recordedEpisodeId=" + recordedImageEpisodeId
+                    + ",count=" + manga.getNtkImageCount());
+            return;
+        }
+        boolean useWtEpisodeUrls = "webtoon".equals(segment)
+                && !pathWorkId.matches("\\d{1,12}")
+                && imageWorkId.equals(pathWorkId)
+                && recordedImageEpisodeId.matches("\\d{1,12}")
+                && !recordedImageEpisodeId.equals(pathEpisodeId)
+                && manga.getNtkImageCount() > 0
+                && manga.getNtkImageCount() <= 64;
+        int initialLimit = "webtoon".equals(segment) && manga.getNtkImageCount() > 0
+                ? manga.getNtkImageCount()
+                : 4;
         int count = manga.getNtkImageCount() > 0
                 ? Math.min(initialLimit, manga.getNtkImageCount())
                 : initialLimit;
         ArrayList<String> urls = new ArrayList<>(count);
-        String initialExtension = ntkGeneratedInitialExtension(segment, pathEpisodeId);
+        String initialExtension = useWtEpisodeUrls ? "jpeg" : ntkGeneratedInitialExtension(segment, pathEpisodeId);
+        boolean shouldVerifyBeforeGeneratedPrime = "webtoon".equals(segment)
+                && "jpg".equals(initialExtension)
+                && manga.getNtkImageCount() > 0
+                && imageWorkId.matches("\\d{1,12}")
+                && imageEpisodeId.matches("\\d{1,12}")
+                && ReaderImageCache.INSTANCE.earlyNtkGeneratedSuccessImageUrls(
+                        path, SystemClock.elapsedRealtime() - 30000L).isEmpty();
+        if(shouldVerifyBeforeGeneratedPrime) {
+            manga.startNtkVerifiedInitialImageProbe(client);
+            android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_defer_verify path=" + path
+                    + ",segment=" + segment
+                    + ",workId=" + imageWorkId
+                    + ",pathWorkId=" + pathWorkId
+                    + ",imageEpisodeId=" + imageEpisodeId
+                    + ",count=" + manga.getNtkImageCount());
+            return;
+        }
         for(int page = 1; page <= count; page++) {
             String pageName = String.format(Locale.ROOT, "p%03d.%s", page, initialExtension);
-            String url = "webtoon".equals(segment)
-                    ? "http://fifa.worldcup73.xyz/black/episodes/" + imageWorkId + "/" + imageEpisodeId + "/" + pageName
-                    : "http://apihost93.com/" + segment + "/" + imageWorkId + "/" + imageEpisodeId + "/" + pageName;
+            String url;
+            if("webtoon".equals(segment)) {
+                url = useWtEpisodeUrls
+                        ? "https://fifa.worldcup73.xyz/wt/episodes/" + pathWorkId + "/" + pathEpisodeId + "/" + pageName
+                        : "http://fifa.worldcup73.xyz/black/episodes/" + imageWorkId + "/" + imageEpisodeId + "/" + pageName;
+            } else {
+                url = "http://apihost93.com/" + segment + "/" + imageWorkId + "/" + imageEpisodeId + "/" + pageName;
+            }
             urls.add(url);
         }
         ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, urls);
@@ -777,10 +962,75 @@ public class Utils {
             if(started)
                 startedCount++;
         }
+        if(webtoon && immediateCount < Math.min(4, urls.size())) {
+            final Context appContext = context.getApplicationContext();
+            final int adjacentLimit = Math.min(4, urls.size());
+            final ArrayList<String> initialUrls = new ArrayList<>(urls.subList(0, adjacentLimit));
+            AppDispatchers.runIoDelayed(() -> {
+                int adjacentStarted = 0;
+                for(int index = immediateCount; index < initialUrls.size(); index++) {
+                    String image = initialUrls.get(index);
+                    if(image == null || image.length() == 0)
+                        continue;
+                    if(ReaderImageCache.INSTANCE.startForegroundStreamFetch(
+                            appContext, manga, image, null, false, null, index, true))
+                        adjacentStarted++;
+                }
+                android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_adjacent_prime path=" + path
+                        + ",delayMs=80,count=" + initialUrls.size()
+                        + ",adjacentStarted=" + adjacentStarted);
+            }, 80L);
+        }
+        int hedgeStartedCount = 0;
+        int hedgeScheduledCount = 0;
+        ArrayList<String> immediateExtensionHedgeUrls = new ArrayList<>();
+        if(webtoon && immediateCount > 0 && "jpg".equals(initialExtension)) {
+            immediateExtensionHedgeUrls = ntkGeneratedExtensionUrls(
+                    new ArrayList<>(urls.subList(0, immediateCount)),
+                    "jpeg");
+            long scheduledAtMs = SystemClock.elapsedRealtime();
+            for(int index = 0; index < immediateExtensionHedgeUrls.size(); index++) {
+                String image = immediateExtensionHedgeUrls.get(index);
+                if(image == null || image.length() == 0 || image.equals(urls.get(index)))
+                    continue;
+                boolean scheduled = scheduleDelayedInitialJpgHedge(
+                        context.getApplicationContext(),
+                        manga,
+                        path,
+                        urls.get(index),
+                        image,
+                        scheduledAtMs,
+                        index);
+                if(scheduled)
+                    hedgeScheduledCount++;
+            }
+        }
+        int wtHedgeStartedCount = 0;
+        if(false && webtoon && immediateCount > 0
+                && pathWorkId.matches("\\d{1,12}")
+                && pathEpisodeId.matches("\\d{1,12}")) {
+            for(int index = 0; index < immediateCount; index++) {
+                String pageName = String.format(Locale.ROOT, "p%03d.%s", index + 1, initialExtension);
+                String image = "https://fifa.worldcup73.xyz/wt/episodes/"
+                        + pathWorkId + "/" + pathEpisodeId + "/" + pageName;
+                boolean started = ReaderImageCache.INSTANCE.startForegroundStreamFetch(
+                        context.getApplicationContext(), manga, image, null, false, null, index, true);
+                if(started)
+                    wtHedgeStartedCount++;
+            }
+        }
+        if(false && webtoon && urls.size() > immediateCount) {
+            startImmediateNtkGeneratedForwardPrime(context.getApplicationContext(), manga, path, urls,
+                    immediateCount, 24, 160L, "viewer_ntk_immediate_generated_forward_prime");
+            ArrayList<String> extensionHedgeUrls = ntkGeneratedExtensionUrls(urls,
+                    "jpg".equals(initialExtension) ? "jpeg" : "jpg");
+            startImmediateNtkGeneratedForwardPrime(context.getApplicationContext(), manga, path, extensionHedgeUrls,
+                    immediateCount, 24, 160L, "viewer_ntk_immediate_generated_forward_prime_extension_hedge");
+        }
         boolean jpgHedgeStarted = false;
         boolean jpgHedgeScheduled = false;
-        if(webtoon && "jpeg".equals(initialExtension) && !urls.isEmpty()) {
-            String jpgHedge = replaceNtkGeneratedImageExtension(urls.get(0), "jpg");
+        if(webtoon && "jpg".equals(initialExtension) && !urls.isEmpty() && hedgeScheduledCount == 0) {
+            String jpgHedge = replaceNtkGeneratedImageExtension(urls.get(0), "jpeg");
             if(jpgHedge.length() > 0 && !jpgHedge.equals(urls.get(0))) {
                 jpgHedgeScheduled = scheduleDelayedInitialJpgHedge(
                         context.getApplicationContext(),
@@ -788,8 +1038,11 @@ public class Utils {
                         path,
                         urls.get(0),
                         jpgHedge,
-                        SystemClock.elapsedRealtime());
+                        SystemClock.elapsedRealtime(),
+                        0);
             }
+        } else if(hedgeScheduledCount > 0) {
+            jpgHedgeScheduled = true;
         }
         android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_prime path=" + path
                 + ",segment=" + segment
@@ -798,9 +1051,63 @@ public class Utils {
                 + ",count=" + urls.size()
                 + ",started=" + (startedCount > 0)
                 + ",startedCount=" + startedCount
+                + ",hedgeStartedCount=" + hedgeStartedCount
+                + ",hedgeScheduledCount=" + hedgeScheduledCount
+                + ",wtHedgeStartedCount=" + wtHedgeStartedCount
                 + ",jpgHedgeStarted=" + jpgHedgeStarted
                 + ",jpgHedgeScheduled=" + jpgHedgeScheduled
                 + ",first=" + (first.length() == 0 ? "" : first.substring(first.lastIndexOf('/') + 1)));
+    }
+
+    private static void startImmediateNtkGeneratedForwardPrime(Context appContext,
+                                                               Manga manga,
+                                                               String path,
+                                                               ArrayList<String> urls,
+                                                               int startIndex,
+                                                               int maxCount,
+                                                               long delayMs,
+                                                               String logStage) {
+        if(appContext == null || manga == null || urls == null || urls.size() <= startIndex || maxCount <= 0)
+            return;
+        final int safeStart = Math.max(0, startIndex);
+        final int safeEnd = Math.min(urls.size(), safeStart + maxCount);
+        if(safeStart >= safeEnd)
+            return;
+        Thread forwardThread = new Thread(() -> {
+            try {
+                if(delayMs > 0L)
+                    Thread.sleep(delayMs);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            int started = 0;
+            for(int i = safeStart; i < safeEnd; i++) {
+                String image = urls.get(i);
+                if(image == null || image.length() == 0)
+                    continue;
+                if(ReaderImageCache.INSTANCE.startForegroundStreamFetch(
+                        appContext, manga, image, null, false, null, i, true))
+                    started++;
+            }
+            android.util.Log.d("ViewerPerf", logStage + " path=" + path
+                    + ",start=" + safeStart
+                    + ",end=" + safeEnd
+                    + ",started=" + started);
+        }, "NtkGeneratedForwardPrime");
+        forwardThread.setPriority(Thread.NORM_PRIORITY + 1);
+        forwardThread.start();
+    }
+
+    private static ArrayList<String> ntkGeneratedExtensionUrls(ArrayList<String> urls, String extension) {
+        ArrayList<String> variants = new ArrayList<>();
+        if(urls == null || urls.isEmpty() || extension == null || extension.length() == 0)
+            return variants;
+        for(String url : urls) {
+            String variant = replaceNtkGeneratedImageExtension(url, extension);
+            variants.add(variant.length() == 0 ? url : variant);
+        }
+        return variants;
     }
 
     private static boolean scheduleDelayedInitialJpgHedge(Context appContext,
@@ -808,12 +1115,13 @@ public class Utils {
                                                           String path,
                                                           String first,
                                                           String jpgHedge,
-                                                          long scheduledAtMs) {
+                                                          long scheduledAtMs,
+                                                          int pageIndex) {
         if(appContext == null || manga == null || first == null || first.length() == 0
                 || jpgHedge == null || jpgHedge.length() == 0)
             return false;
         AppDispatchers.runIoDelayed(() -> maybeStartDelayedInitialJpgHedge(
-                appContext, manga, path, first, jpgHedge, scheduledAtMs), NTK_INITIAL_JPG_HEDGE_DELAY_MS);
+                appContext, manga, path, first, jpgHedge, scheduledAtMs, pageIndex), NTK_INITIAL_JPG_HEDGE_DELAY_MS);
         android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_jpg_hedge_scheduled path=" + path
                 + ",delayMs=" + NTK_INITIAL_JPG_HEDGE_DELAY_MS
                 + ",first=" + first.substring(first.lastIndexOf('/') + 1)
@@ -826,7 +1134,8 @@ public class Utils {
                                                          String path,
                                                          String first,
                                                          String jpgHedge,
-                                                         long scheduledAtMs) {
+                                                         long scheduledAtMs,
+                                                         int pageIndex) {
         long elapsedMs = SystemClock.elapsedRealtime() - scheduledAtMs;
         if(ReaderImageCache.INSTANCE.cachedExactFile(appContext, manga, first) != null
                 || hasRecentInitialGeneratedSuccess(path, first)) {
@@ -836,10 +1145,28 @@ public class Utils {
                     + ",first=" + first.substring(first.lastIndexOf('/') + 1));
             return;
         }
+        if(!ReaderImageCache.INSTANCE.isKnownNtkGeneratedNotFound(manga, first)) {
+            if(elapsedMs < NTK_INITIAL_JPG_HEDGE_MAX_WAIT_MS) {
+                AppDispatchers.runIoDelayed(() -> maybeStartDelayedInitialJpgHedge(
+                        appContext, manga, path, first, jpgHedge, scheduledAtMs, pageIndex),
+                        NTK_INITIAL_JPG_HEDGE_RECHECK_MS);
+                android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_jpg_hedge_wait path=" + path
+                        + ",reason=primary_not_failed"
+                        + ",elapsedMs=" + elapsedMs
+                        + ",recheckMs=" + NTK_INITIAL_JPG_HEDGE_RECHECK_MS
+                        + ",first=" + first.substring(first.lastIndexOf('/') + 1));
+            } else {
+                android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_jpg_hedge_skip path=" + path
+                        + ",reason=primary_not_failed"
+                        + ",elapsedMs=" + elapsedMs
+                        + ",first=" + first.substring(first.lastIndexOf('/') + 1));
+            }
+            return;
+        }
         if(ReaderImageCache.INSTANCE.hasActiveFetch(manga, first)
                 && elapsedMs < NTK_INITIAL_JPG_HEDGE_MAX_WAIT_MS) {
             AppDispatchers.runIoDelayed(() -> maybeStartDelayedInitialJpgHedge(
-                    appContext, manga, path, first, jpgHedge, scheduledAtMs), NTK_INITIAL_JPG_HEDGE_RECHECK_MS);
+                    appContext, manga, path, first, jpgHedge, scheduledAtMs, pageIndex), NTK_INITIAL_JPG_HEDGE_RECHECK_MS);
             android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_jpg_hedge_wait path=" + path
                     + ",elapsedMs=" + elapsedMs
                     + ",recheckMs=" + NTK_INITIAL_JPG_HEDGE_RECHECK_MS
@@ -847,7 +1174,7 @@ public class Utils {
             return;
         }
         boolean started = ReaderImageCache.INSTANCE.startForegroundStreamFetch(
-                appContext, manga, jpgHedge, null, false, null, 0, true);
+                appContext, manga, jpgHedge, null, false, null, pageIndex, true);
         android.util.Log.d("ViewerPerf", "viewer_ntk_immediate_generated_initial_jpg_hedge_start path=" + path
                 + ",started=" + started
                 + ",elapsedMs=" + elapsedMs
@@ -866,10 +1193,31 @@ public class Utils {
     }
 
     private static String ntkGeneratedInitialExtension(String segment, String pathEpisodeId) {
-        if(!"webtoon".equals(segment))
-            return "jpg";
-        String episodeToken = pathEpisodeId == null ? "" : pathEpisodeId.trim();
-        return episodeToken.matches("\\d{1,12}") ? "jpeg" : "jpg";
+        return "jpg";
+    }
+
+    private static boolean isNtkImageUrlReachableQuickly(String url, int timeoutMs) {
+        if(url == null || url.length() == 0)
+            return false;
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setRequestMethod("HEAD");
+            connection.setConnectTimeout(Math.max(250, timeoutMs));
+            connection.setReadTimeout(Math.max(250, timeoutMs));
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Mobile Safari/537.36");
+            int code = connection.getResponseCode();
+            String type = connection.getContentType();
+            return code >= 200 && code < 300 && type != null && type.toLowerCase(Locale.ROOT).startsWith("image/");
+        } catch(Exception ignored) {
+            return false;
+        } finally {
+            if(connection != null)
+                connection.disconnect();
+        }
     }
 
     private static String replaceNtkGeneratedImageExtension(String url, String extension) {

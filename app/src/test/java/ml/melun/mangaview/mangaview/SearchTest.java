@@ -195,6 +195,15 @@ public class SearchTest {
     }
 
     @Test
+    public void ntkSearchAliasFallbackCoversKeywordApiAndSearchDocumentsOnly() {
+        assertTrue(Search.shouldTryNtkAliasSearchFallbackForTest("/api/works?keyword=hero"));
+        assertTrue(Search.shouldTryNtkAliasSearchFallbackForTest("/api/manhwa-list?keyword=hero"));
+        assertTrue(Search.shouldTryNtkAliasSearchFallbackForTest("/search?q=hero"));
+        assertFalse(Search.shouldTryNtkAliasSearchFallbackForTest("/webtoon/1/2"));
+        assertFalse(Search.shouldTryNtkAliasSearchFallbackForTest("/manhwa?page=2"));
+    }
+
+    @Test
     public void ntkApiParserNormalizesSearchResultGenres() throws Exception {
         ArrayList<Title> titles = Search.parseNtkApiTitlesForTest(
                 "{\"works\":["

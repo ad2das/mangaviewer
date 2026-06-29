@@ -9,15 +9,15 @@ public class ViewerPreloadPolicyTest {
     public void firstFrameWindowQueuesNearbyPagesAndFirstDecode() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.firstFrameWindow(false);
 
-        assertEquals(2, window.decodedLimit);
-        assertEquals(6, window.immediateLimit);
-        assertEquals(12, window.highLimit);
-        assertEquals(18, window.totalLimit);
+        assertEquals(4, window.decodedLimit);
+        assertEquals(12, window.immediateLimit);
+        assertEquals(32, window.highLimit);
+        assertEquals(64, window.totalLimit);
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 0));
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 1));
-        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 2));
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 6));
-        assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 12));
+        assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 2));
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 6));
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 12));
     }
 
     @Test
@@ -57,25 +57,25 @@ public class ViewerPreloadPolicyTest {
     public void episodeEntryWarmupWindowPrimesFirstPageWithoutDecodeStorm() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.episodeEntryWarmupWindow(false);
 
-        assertEquals(2, window.decodedLimit);
-        assertEquals(4, window.immediateLimit);
-        assertEquals(8, window.highLimit);
-        assertEquals(12, window.totalLimit);
+        assertEquals(4, window.decodedLimit);
+        assertEquals(8, window.immediateLimit);
+        assertEquals(16, window.highLimit);
+        assertEquals(32, window.totalLimit);
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 0));
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 1));
-        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 2));
-        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 4));
-        assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 8));
+        assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 2));
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 4));
+        assertEquals(ViewerPreloadPolicy.TIER_HIGH, ViewerPreloadPolicy.tierForOffset(window, 8));
     }
 
     @Test
     public void immediateDisplayWindowOnlyPrimesTheFirstViewport() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.immediateDisplayWindow(false);
 
-        assertEquals(2, window.decodedLimit);
-        assertEquals(5, window.immediateLimit);
-        assertEquals(8, window.highLimit);
-        assertEquals(10, window.totalLimit);
+        assertEquals(4, window.decodedLimit);
+        assertEquals(10, window.immediateLimit);
+        assertEquals(20, window.highLimit);
+        assertEquals(64, window.totalLimit);
     }
 
     @Test
@@ -92,13 +92,13 @@ public class ViewerPreloadPolicyTest {
     public void scrollAheadWindowPrimesVisibleFlingRange() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.scrollAheadWindow(false);
 
-        assertEquals(4, window.decodedLimit);
-        assertEquals(10, window.immediateLimit);
-        assertEquals(18, window.highLimit);
-        assertEquals(30, window.totalLimit);
+        assertEquals(8, window.decodedLimit);
+        assertEquals(20, window.immediateLimit);
+        assertEquals(40, window.highLimit);
+        assertEquals(300, window.totalLimit);
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 0));
         assertEquals(ViewerPreloadPolicy.TIER_DECODED, ViewerPreloadPolicy.tierForOffset(window, 1));
-        assertEquals(ViewerPreloadPolicy.TIER_NORMAL, ViewerPreloadPolicy.tierForOffset(window, 18));
+        assertEquals(ViewerPreloadPolicy.TIER_IMMEDIATE, ViewerPreloadPolicy.tierForOffset(window, 18));
     }
 
     @Test
@@ -115,9 +115,9 @@ public class ViewerPreloadPolicyTest {
     public void nextEpisodeWindowCoversFastFlingBoundaryWithDecodedPreview() {
         ViewerPreloadPolicy.Window window = ViewerPreloadPolicy.nextEpisodeWindow(false);
 
-        assertEquals(2, window.decodedLimit);
-        assertEquals(8, window.immediateLimit);
-        assertEquals(16, window.highLimit);
-        assertEquals(24, window.totalLimit);
+        assertEquals(4, window.decodedLimit);
+        assertEquals(12, window.immediateLimit);
+        assertEquals(24, window.highLimit);
+        assertEquals(64, window.totalLimit);
     }
 }
