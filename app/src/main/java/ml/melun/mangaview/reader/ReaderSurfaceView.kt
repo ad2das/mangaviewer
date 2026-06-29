@@ -141,7 +141,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val scrollOffset: Float,
         val contentHeight: Float,
         val pageCount: Int,
-        val items: List<DrawItem>
+        val items: List<DrawItem>,
+        val visibleContentPxOverride: Int = -1
     )
 
     private data class CoverageStats(
@@ -1294,7 +1295,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     val dragDistance = abs(event.y - downY)
                     val cancelledBoundaryDrag = event.actionMasked == MotionEvent.ACTION_CANCEL &&
                         shouldDispatchCancelledBoundaryLocked(dragDistance)
-                    val canFling = shouldStartFling(dragDistance, velocityY, minVelocity, touchSlop)
+                    val suppressPrefixFling = shouldSuppressDrawablePrefixFlingLocked(wasReleased, dragDistance)
+                    val canFling = !suppressPrefixFling &&
+                        shouldStartFling(dragDistance, velocityY, minVelocity, touchSlop)
                     if (wasTap) {
                         boundaryArmedDirection = 0
                         setBusyLocked(false) to null
@@ -1327,7 +1330,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         stateLock.notifyAll()
                         (busyRequest ?: windowRequestLocked(true)) to boundaryRequestLocked()
                     } else {
-                        if (wasReleased && dragDistance > touchSlop && abs(velocityY) > minVelocity) {
+                        if (suppressPrefixFling && abs(velocityY) > minVelocity) {
+                            Log.d(
+                                TAG,
+                                "reader_fling_suppressed_prefix drag=${dragDistance.toInt()} velocity=$velocityY " +
+                                    "minVelocity=$minVelocity touchSlop=$touchSlop offset=${scrollOffset.toInt()}"
+                            )
+                        } else if (wasReleased && dragDistance > touchSlop && abs(velocityY) > minVelocity) {
                             Log.d(
                                 TAG,
                                 "reader_fling_suppressed drag=${dragDistance.toInt()} velocity=$velocityY " +
@@ -1676,7 +1685,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val dstTop = floor(visibleTop).toInt()
             val dstBottom = ceil(visibleBottom).toInt().coerceAtLeast(dstTop + 1)
             prepareBitmapPaint(fastBitmapDraw)
-            if (drawWidth == bitmap.width && abs(item.pageHeight - bitmap.height.toFloat()) <= 1f) {
+            val canDrawWholeBitmap = drawWidth == bitmap.width &&
+                abs(item.pageHeight - bitmap.height.toFloat()) <= 1f &&
+                bitmap.height <= state.height * WHOLE_BITMAP_DRAW_MAX_VIEWPORTS
+            if (canDrawWholeBitmap) {
                 val save = canvas.save()
                 canvas.clipRect(0f, visibleTop, state.width.toFloat(), visibleBottom)
                 canvas.drawBitmap(bitmap, dstLeft.toFloat(), item.top, paint)
@@ -1963,6 +1975,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 ((!hasDrawnContentFrame || holdInitialViewport || firstInitialVisibleItemMissing) &&
                     !(recentScroll && state.hasDrawableContent)))
         if (shouldHoldVisibleLoadingFrame) {
+            val prefixState = drawablePrefixDrawStateOrNull(state, viewHeight)
+            if (prefixState != null) {
+                return prefixState
+            }
             if (SystemClock.uptimeMillis() <= programmaticScrollStatsUntilMs) {
                 Log.d(
                     TAG,
@@ -2144,12 +2160,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun visibleContentPx(state: DrawState): Int {
+        if (state.visibleContentPxOverride > 0) {
+            return state.visibleContentPxOverride.coerceIn(0, state.height)
+        }
         return ceil(
             min(
                 state.height.toFloat(),
                 max(0f, state.contentHeight - state.scrollOffset)
             )
         ).toInt().coerceIn(0, state.height)
+    }
+
+    private fun drawablePrefixDrawStateOrNull(state: DrawState, viewHeight: Int): DrawState? {
+        if (!limitScrollToDrawablePrefix || state.items.isEmpty()) return null
+        val prefixItems = ArrayList<DrawItem>()
+        for (item in state.items) {
+            if (!itemHasDrawable(item)) break
+            prefixItems.add(item)
+        }
+        if (prefixItems.isEmpty()) return null
+        val readyBottom = prefixItems.maxOf { item ->
+            ceil(min(viewHeight.toFloat(), item.top + item.pageHeight)).toInt()
+        }.coerceIn(1, viewHeight)
+        return state.copy(
+            visibleLoading = 0,
+            hasDrawableContent = true,
+            items = prefixItems,
+            visibleContentPxOverride = readyBottom
+        )
     }
 
     private fun itemHasDrawable(item: DrawItem): Boolean {
@@ -2585,7 +2623,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun maxScrollLocked(): Float {
         val fullMaxScroll = max(0f, totalHeightLocked() - height)
         if (!limitScrollToDrawablePrefix || pages.isEmpty() || height <= 0) return fullMaxScroll
-        if (shouldAllowDrawablePrefixBypassLocked()) return fullMaxScroll
         val firstRelevant = firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
         val firstBlocked = (firstRelevant..pages.lastIndex).firstOrNull { index ->
             !pageHasDrawablePrefixContentLocked(index)
@@ -2603,13 +2640,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return min(fullMaxScroll, max(0f, drawableBottom - height))
     }
 
-    private fun shouldAllowDrawablePrefixBypassLocked(): Boolean {
+    private fun shouldSuppressDrawablePrefixFlingLocked(wasReleased: Boolean, dragDistance: Float): Boolean {
+        if (!wasReleased || !limitScrollToDrawablePrefix || dragDistance <= touchSlop) return false
+        if (width <= 0 || height <= 0 || pages.isEmpty()) return false
         if (!hasDrawnContentFrame && !hasAnyDrawableContentLocked()) return false
-        val now = SystemClock.uptimeMillis()
-        val activeScroll = lastBusy || pointerDown || dragging || !scroller.isFinished
-        val recentScroll = lastScrollInteractionMs > 0L &&
-            now - lastScrollInteractionMs <= PREFIX_LIMIT_FAST_SCROLL_GRACE_MS
-        return activeScroll || recentScroll || now <= programmaticScrollStatsUntilMs
+        return true
     }
 
     private fun boundaryRequestLocked(clearDirection: Boolean = true): BoundaryRequest? {
@@ -3538,9 +3573,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val MOVE_VELOCITY_SAMPLE_MS = 16L
         private const val RENDER_THREAD_STOP_JOIN_MS = 500L
         private const val SCROLL_FAST_BITMAP_DRAW_MS = 180L
+        private const val WHOLE_BITMAP_DRAW_MAX_VIEWPORTS = 1.35f
         private const val SCROLL_FAST_BITMAP_REFINE_DELAY_MS = 2200L
         private const val INITIAL_CONTENT_DRAWABLES_PER_FRAME = 1
-        private const val INITIAL_UPLOAD_SPLIT_AFTER_FIRST_MS = 2500L
+        private const val INITIAL_UPLOAD_SPLIT_AFTER_FIRST_MS = 9000L
         private const val INITIAL_FAST_BITMAP_DRAW_MS = 220L
         private const val PENDING_NONE = 0
         private const val PENDING_BITMAP = 1

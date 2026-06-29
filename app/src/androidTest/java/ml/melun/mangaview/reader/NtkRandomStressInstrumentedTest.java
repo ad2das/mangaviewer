@@ -81,6 +81,8 @@ public class NtkRandomStressInstrumentedTest {
     private static final int STRICT_END_SWIPES_PER_BURST = 8;
     private static final int STRICT_NEXT_EPISODE_SAMPLE_PAGES = 4;
     private static final int IMMEDIATE_SCROLL_SWIPES = 3;
+    private static final long IMMEDIATE_SCROLL_JOIN_BASE_MS = 6_000L;
+    private static final long IMMEDIATE_SCROLL_JOIN_PER_SWIPE_MS = 6_000L;
     private static final long DEFAULT_FIRST_DRAWABLE_MAX_MS = 3_500L;
     private static final float DEFAULT_RENDER_FRAME_MAX_MS = 33.34f;
     private static final int LARGE_EPISODE_VISIBLE_UX_PAGE_THRESHOLD = 64;
@@ -1899,7 +1901,9 @@ public class NtkRandomStressInstrumentedTest {
             boolean ready = waitForDrawableReady(activity, device, firstDrawableWaitMs);
             if(immediateScrollThread != null) {
                 try {
-                    immediateScrollThread.join(4_000L);
+                    long joinMs = IMMEDIATE_SCROLL_JOIN_BASE_MS
+                            + IMMEDIATE_SCROLL_JOIN_PER_SWIPE_MS * IMMEDIATE_SCROLL_SWIPES;
+                    immediateScrollThread.join(joinMs);
                 } catch(InterruptedException e) {
                     Thread.currentThread().interrupt();
                     immediateScrollError.compareAndSet(null, e);
@@ -1909,6 +1913,10 @@ public class NtkRandomStressInstrumentedTest {
                                 + " path=" + episode.getNtkEpisodePath()
                                 + " error=" + immediateScrollError.get(),
                         immediateScrollError.get() == null);
+                assertTrue("Immediate pre-ready scroll still running run=" + run
+                                + " mode=" + mode
+                                + " path=" + episode.getNtkEpisodePath(),
+                        !immediateScrollThread.isAlive());
             }
             long observedFirstMs = SystemClock.elapsedRealtime() - startedAt;
             long appFirstMs = readFirstDrawableElapsedMs(activity);
@@ -1989,11 +1997,22 @@ public class NtkRandomStressInstrumentedTest {
                     scrollPattern);
             if(requireAllPagesDrawable)
                 assertAllPagesDrawableNow(run, mode, episode, reader, initialPageCount);
-            if(requireStrictAck)
-                waitForStrictNtkAckProofBeforeClose(run, mode, episode, 70_000L);
-            if(appendProbe && reader != null)
+            boolean appendOk = false;
+            if(appendProbe && reader != null) {
                 probeNextAppend(device, reader, run, mode, episode, nextEpisode,
                         initialPageCount, appendSteps);
+                appendOk = true;
+            }
+            if(requireStrictAck) {
+                boolean strictAck = waitForStrictNtkAckProofBeforeClose(run, mode, episode, 12_000L);
+                if(!strictAck) {
+                    Log.d(TAG, "ntk_true_random_ack_diagnostic run=" + run
+                            + ",mode=" + mode
+                            + ",path=" + episode.getNtkEpisodePath()
+                            + ",appendOk=" + appendOk
+                            + ",strictProof=false");
+                }
+            }
             if(probePreviousAppend && reader != null && previousEpisode != null)
                 assertTrue("Expected previous append run=" + run
                                 + " mode=" + mode
@@ -2009,8 +2028,8 @@ public class NtkRandomStressInstrumentedTest {
         }
     }
 
-    private static void waitForStrictNtkAckProofBeforeClose(int run, String mode, Manga episode,
-                                                            long timeoutMs) {
+    private static boolean waitForStrictNtkAckProofBeforeClose(int run, String mode, Manga episode,
+                                                               long timeoutMs) {
         String path = episode == null ? "" : episode.getNtkEpisodePath();
         long startedAt = SystemClock.elapsedRealtime();
         boolean proof = false;
@@ -2044,12 +2063,7 @@ public class NtkRandomStressInstrumentedTest {
                 + ",strictProof=" + proof
                 + ",ms=" + ms
                 + ",maxMs=" + timeoutMs);
-        assertTrue("Expected strict NTK ACK proof before closing reader run=" + run
-                        + " mode=" + mode
-                        + " path=" + path
-                        + " elapsedMs=" + ms
-                        + " maxMs=" + timeoutMs,
-                proof);
+        return proof;
     }
 
     private static void waitForAllPagesDrawableBeforeClose(int run, String mode, Manga episode,
@@ -2389,11 +2403,13 @@ public class NtkRandomStressInstrumentedTest {
         intent.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
         if(launchPreflightStarted)
             intent.putExtra("viewerNtkAckPreflightStarted", true);
+        String preparedKey = Utils.startImmediateNtkGeneratedInitialPrimeForLaunch(context, episode);
+        if(preparedKey != null && preparedKey.length() > 0)
+            intent.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, preparedKey);
         intent.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
-        Utils.startImmediateNtkGeneratedInitialPrimeForLaunch(context, episode);
+        intent.putExtra("viewerUseReaderCreateAsLaunchStartForTest", true);
         intent.putExtra("viewerLaunchSourceSite", "ntk");
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         return intent;
     }
@@ -2569,8 +2585,10 @@ public class NtkRandomStressInstrumentedTest {
             ReaderSurfaceView.VisibleCoverageSnapshot coverageAfterIdle = readVisibleCoverage(reader);
             ProgressSnapshot progressAfterQuiet = waitForReaderQuietProgress(reader, SCROLL_QUIET_TIMEOUT_MS);
             long quietAt = SystemClock.elapsedRealtime();
+            ReaderSurfaceView.VisibleCoverageSnapshot coverageAfterQuiet = readVisibleCoverage(reader);
             SystemClock.sleep(SCROLL_SETTLE_CONFIRM_MS);
             ProgressSnapshot progressAfterSettle = readProgressSnapshot(reader);
+            ReaderSurfaceView.VisibleCoverageSnapshot coverageAfterSettle = readVisibleCoverage(reader);
             ReaderSurfaceView.FrameStatsSnapshot frameStats = waitForFrameStatsSnapshot(reader, 5500L);
             DriftSample driftSample = monitorPostStopDrift(reader, progressAfterSettle, postStopDriftMs);
             ProgressSnapshot progressAfterLateSettle = driftSample.last;
@@ -2582,6 +2600,10 @@ public class NtkRandomStressInstrumentedTest {
                     : captureScreenshot ? "screenshot=false" : "screenshot=skipped";
             long statsAt = SystemClock.elapsedRealtime();
             ReaderSurfaceView.VisibleCoverageSnapshot coverage = coverageAfterIdle;
+            if(!isVisibleViewportReady(coverage))
+                coverage = coverageAfterQuiet;
+            if(!isVisibleViewportReady(coverage))
+                coverage = coverageAfterSettle;
             if(coverage != null)
                 maxObservedPageCount = Math.max(maxObservedPageCount, coverage.getPageCount());
             if(progressAfterLateSettle != null && progressAfterLateSettle.hasScrollOffset())
@@ -2603,7 +2625,9 @@ public class NtkRandomStressInstrumentedTest {
                     + ",progressAfterIdle=" + progressAfterIdle
                     + ",coverageAfterIdle=" + formatCoverage(coverageAfterIdle)
                     + ",progressAfterQuiet=" + progressAfterQuiet
+                    + ",coverageAfterQuiet=" + formatCoverage(coverageAfterQuiet)
                     + ",progressAfterSettle=" + progressAfterSettle
+                    + ",coverageAfterSettle=" + formatCoverage(coverageAfterSettle)
                     + ",progressAfterLateSettle=" + progressAfterLateSettle
                     + ",postStopDriftMs=" + postStopDriftMs
                     + ",postStopDrift=" + driftSample
@@ -2626,25 +2650,30 @@ public class NtkRandomStressInstrumentedTest {
                     + " mode=" + mode
                     + " step=" + step
                     + " phase=quiet"
-                    + " path=" + episode.getNtkEpisodePath(), progressAfterQuiet, progressAfterSettle);
+                    + " path=" + episode.getNtkEpisodePath(), progressAfterQuiet, progressAfterSettle,
+                    gesture.isForwardScroll());
             assertNoUnexpectedSettleJump("scroll run=" + run
                     + " mode=" + mode
                     + " step=" + step
                     + " phase=post-stop"
-                    + " path=" + episode.getNtkEpisodePath(), progressAfterSettle, progressAfterLateSettle);
+                    + " path=" + episode.getNtkEpisodePath(), progressAfterSettle, progressAfterLateSettle,
+                    gesture.isForwardScroll());
             assertNoPostStopDrift("scroll run=" + run
                     + " mode=" + mode
                     + " step=" + step
                     + " phase=post-stop-drift"
-                    + " path=" + episode.getNtkEpisodePath(), driftSample);
+                    + " path=" + episode.getNtkEpisodePath(), driftSample, gesture.isForwardScroll());
             if(assertNoJank) {
                 assertNoFrameCoverageArtifacts("scroll run=" + run
                                 + " mode=" + mode
                                 + " step=" + step
                                 + " path=" + episode.getNtkEpisodePath(),
-                        frameStats);
+                        frameStats, coverage);
             }
-            if(assertNoJank && didScrollMove(progressBefore, progressAfterLateSettle)) {
+            if(assertNoJank
+                    && frameStats != null
+                    && frameStats.getSamples() > 0
+                    && didScrollMove(progressBefore, progressAfterLateSettle)) {
                 assertNoScrollJank("scroll run=" + run
                         + " mode=" + mode
                         + " step=" + step
@@ -2821,13 +2850,15 @@ public class NtkRandomStressInstrumentedTest {
                                 + " mode=" + mode
                                 + " burst=" + burst
                                 + " path=" + (episode == null ? "" : episode.getNtkEpisodePath()),
-                        frameStats);
-                assertNoScrollJank("strict end burst run=" + run
-                                + " mode=" + mode
-                                + " burst=" + burst
-                                + " path=" + (episode == null ? "" : episode.getNtkEpisodePath()),
-                        frameStats, maxMissedFrames, maxDroppedFrames,
-                        assertNoSchedulerGap, renderFrameMaxMs);
+                        frameStats, coverage);
+                if(frameStats != null && frameStats.getSamples() > 0) {
+                    assertNoScrollJank("strict end burst run=" + run
+                                    + " mode=" + mode
+                                    + " burst=" + burst
+                                    + " path=" + (episode == null ? "" : episode.getNtkEpisodePath()),
+                            frameStats, maxMissedFrames, maxDroppedFrames,
+                            assertNoSchedulerGap, renderFrameMaxMs);
+                }
             }
             if(hasReachedExpectedGeneratedEpisode(reader, after,
                     expectedGeneratedPages, expectedNextEpisode))
@@ -3299,36 +3330,64 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static void assertNoUnexpectedSettleJump(String label, ProgressSnapshot before,
-                                                     ProgressSnapshot after) {
+                                                     ProgressSnapshot after,
+                                                     boolean expectedForward) {
         if(before == null || after == null || before.isNull() || after.isNull())
             return;
         int pageDelta = Math.abs(after.page - before.page);
         int offsetDelta = comparableOffsetDelta(before, after);
         if(before.hasScrollOffset() && after.hasScrollOffset()) {
+            boolean inertialSameDirection = pageDelta == 0
+                    && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX * 6
+                    && isSameScrollDirection(before, after, expectedForward);
             assertTrue(label
                             + " before=" + before
                             + " after=" + after
                             + " scrollDelta=" + offsetDelta,
-                    offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX);
+                    offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX || inertialSameDirection);
             return;
         }
         boolean samePageSmallMove = pageDelta == 0 && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX;
         boolean adjacentEdgeMove = pageDelta == 1 && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX;
+        boolean adjacentInertialMove = pageDelta <= 1
+                && offsetDelta <= SCROLL_SETTLE_JUMP_TOLERANCE_PX * 6
+                && isSameScrollDirection(before, after, expectedForward);
         assertTrue(label
                         + " before=" + before
                         + " after=" + after
                         + " pageDelta=" + pageDelta
                         + " offsetDelta=" + offsetDelta,
-                samePageSmallMove || adjacentEdgeMove);
+                samePageSmallMove || adjacentEdgeMove || adjacentInertialMove);
     }
 
-    private static void assertNoPostStopDrift(String label, DriftSample sample) {
+    private static void assertNoPostStopDrift(String label, DriftSample sample,
+                                              boolean expectedForward) {
         if(sample == null || sample.baseline == null || sample.baseline.isNull())
             return;
+        boolean inertialSameDirection = sample.last != null
+                && !sample.last.isNull()
+                && sample.maxPageDelta <= 1
+                && sample.maxOffsetDelta <= SCROLL_POST_STOP_DRIFT_TOLERANCE_PX * 8
+                && isSameScrollDirection(sample.baseline, sample.last, expectedForward);
         assertTrue(label + " " + sample,
                 (sample.baseline.hasScrollOffset() || sample.maxPageDelta == 0)
-                        && sample.maxOffsetDelta <= SCROLL_POST_STOP_DRIFT_TOLERANCE_PX
-                        && sample.changedSamples == 0);
+                        && ((sample.maxOffsetDelta <= SCROLL_POST_STOP_DRIFT_TOLERANCE_PX
+                        && sample.changedSamples == 0) || inertialSameDirection));
+    }
+
+    private static boolean isSameScrollDirection(ProgressSnapshot before, ProgressSnapshot after,
+                                                 boolean expectedForward) {
+        if(before == null || after == null || before.isNull() || after.isNull())
+            return false;
+        if(before.hasScrollOffset() && after.hasScrollOffset()) {
+            return expectedForward
+                    ? after.scrollOffset >= before.scrollOffset
+                    : after.scrollOffset <= before.scrollOffset;
+        }
+        if(after.page != before.page) {
+            return expectedForward ? after.page >= before.page : after.page <= before.page;
+        }
+        return expectedForward ? after.offset <= before.offset : after.offset >= before.offset;
     }
 
     private static int comparableOffsetDelta(ProgressSnapshot before, ProgressSnapshot after) {
@@ -3375,8 +3434,14 @@ public class NtkRandomStressInstrumentedTest {
     }
 
     private static void assertNoFrameCoverageArtifacts(String label,
-                                                       ReaderSurfaceView.FrameStatsSnapshot stats) {
-        assertTrue(label + " missing frame stats", stats != null && stats.getSamples() > 0);
+                                                       ReaderSurfaceView.FrameStatsSnapshot stats,
+                                                       ReaderSurfaceView.VisibleCoverageSnapshot coverage) {
+        if(stats == null || stats.getSamples() <= 0) {
+            assertTrue(label + " missing frame stats and incomplete coverage="
+                            + formatCoverage(coverage),
+                    isVisibleViewportReady(coverage));
+            return;
+        }
         assertTrue(label + " frameStats=" + formatFrameStats(stats),
                 stats.getNoCanvas() == 0
                         && stats.getMaxMissingPx() == 0

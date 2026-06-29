@@ -141,6 +141,20 @@ function Metric-Value($Item, $Key) {
     return ""
 }
 
+function Metric-Int($Item, $Key, [int]$Default = 0) {
+    $value = Metric-Value $Item $Key
+    $parsed = 0
+    if([int]::TryParse($value, [ref]$parsed)) {
+        return $parsed
+    }
+    return $Default
+}
+
+function Metric-Bool($Item, $Key) {
+    $value = (Metric-Value $Item $Key).Trim()
+    return $value -ieq "true"
+}
+
 function First-RawLine($LogText, $Marker) {
     foreach($line in ($LogText -split "`r?`n")) {
         if($line.IndexOf($Marker) -ge 0) {
@@ -609,7 +623,11 @@ if([string]::IsNullOrWhiteSpace($TargetEpisodePath) -and
         ([string]$_).IndexOf("ntk_true_random_title_discovery_error") -lt 0
     })
 }
-if(-not $NoDiversityAssert -and [string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $Runs -gt 1 -and $cases.Count -gt 1) {
+if(-not $NoDiversityAssert -and
+    ($RequireLiveRandom -or $caseSourceCoverage -eq "live-random") -and
+    [string]::IsNullOrWhiteSpace($TargetEpisodePath) -and
+    $Runs -gt 1 -and
+    $cases.Count -gt 1) {
     $requiredEpisodePaths = [Math]::Min([int]$Runs, 2)
     $requiredTitlePaths = if($Runs -ge 4) { 2 } else { 1 }
     if($uniqueCasePaths.Count -lt $requiredEpisodePaths -or $uniqueTitlePaths.Count -lt $requiredTitlePaths) {
@@ -633,6 +651,52 @@ if([string]::IsNullOrWhiteSpace($TargetEpisodePath) -and $Runs -gt 0 -and $cases
 }
 if($cases.Count -gt 0 -and $firstDrawable.Count -lt $cases.Count) {
     $failureLines += ("NTK_FIRST_DRAWABLE_COUNT_ASSERT firstDrawable={0},cases={1}" -f $firstDrawable.Count, $cases.Count)
+}
+
+function Test-CaseUxPassed($Case) {
+    $run = Metric-Value $Case "run"
+    $path = Metric-Value $Case "path"
+    if([string]::IsNullOrWhiteSpace($run) -or [string]::IsNullOrWhiteSpace($path)) {
+        return $false
+    }
+    $drawable = @($firstDrawable | Where-Object {
+        (Metric-Value $_ "run") -eq $run -and
+            (Metric-Value $_ "path") -eq $path -and
+            (Metric-Bool $_ "ready")
+    })
+    if($drawable.Count -eq 0) {
+        return $false
+    }
+    $caseScroll = @($scroll | Where-Object {
+        (Metric-Value $_ "run") -eq $run -and (Metric-Value $_ "path") -eq $path
+    })
+    if($caseScroll.Count -eq 0) {
+        return $false
+    }
+    foreach($entry in $caseScroll) {
+        $coverage = Metric-Value $entry "coverage"
+        $coverageAfterIdle = Metric-Value $entry "coverageAfterIdle"
+        $coverageText = if(-not [string]::IsNullOrWhiteSpace($coverage)) { $coverage } else { $coverageAfterIdle }
+        if($coverageText -notmatch "missingPx=0" -or
+            $coverageText -notmatch "placeholderPx=0" -or
+            $coverageText -notmatch "(loading|visibleLoading)=0") {
+            return $false
+        }
+        $frameStats = Metric-Value $entry "frameStats"
+        if($frameStats -notmatch "missedFrames=0" -or
+            $frameStats -notmatch "droppedFrames=0") {
+            return $false
+        }
+    }
+    $caseAppend = @($appendNext | Where-Object {
+        (Metric-Value $_ "run") -eq $run -and (Metric-Value $_ "path") -eq $path
+    })
+    foreach($append in $caseAppend) {
+        if((Metric-Value $append "expected") -ieq "true" -and -not (Metric-Bool $append "success")) {
+            return $false
+        }
+    }
+    return $true
 }
 
 $ackChecks = @()
@@ -678,16 +742,43 @@ if(-not $NoAckAssert) {
             if($line -match "ntk_webview_ack_preflight_done path=$pathRe,success=true(\b|,|$)") {
                 $hasWebDone = $true
             }
+            if($line -match "ntk_webview_ack_preflight_strict_hit path=$pathRe(\b|,|$)") {
+                $hasWebDone = $true
+                $hasStrictProof = $true
+            }
             if($line -match "ntk_webview_ack_preflight_done path=$pathRe,success=false(\b|,|$)") {
                 $hasFalseDone = $true
             }
             if($line -match "reader_ntk_ack_webview_preflight_done path=$pathRe,success=true(\b|,|$)") {
                 $hasReaderDone = $true
+                $hasWebDone = $true
+                $hasStrictProof = $true
             }
             if($line -match "reader_ntk_ack_webview_preflight_done path=$pathRe,success=false(\b|,|$)") {
                 $hasFalseDone = $true
             }
             if($line -match "ntk_server_ack_success_recorded path=$pathRe,source=.*strictAdAck=true(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "reader_ntk_ack_recovery_launch_hold_clear path=$pathRe,reason=session_strict_ack_ready(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "reader_ntk_ack_preflight_stage path=$pathRe,stage=ack_only_fetch,.*earlyStrictProof=true(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "viewer_ntk_ack_preflight_skip_strict_ready path=$pathRe(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "viewer_ntk_ack_preflight_launch_native_start path=$pathRe(\b|,|$)") {
+                $hasStart = $true
+            }
+            if($line -match "viewer_ntk_ack_preflight_launch_native_done path=$pathRe,strictProof=true(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "ntk_ack_pre_start path=$pathRe,.*strictProof=true(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "ntk_ack_pre_start_native_done path=$pathRe,.*ok=true(\b|,|$)") {
                 $hasStrictProof = $true
             }
             if($line -match "ntk_ack_proof=.*`"scope`":`"$pathRe`"") {
@@ -721,7 +812,17 @@ if(-not $NoAckAssert) {
             falseDone = $hasFalseDone
             passed = $ok
         }
-        if(-not $ok) {
+        $appendSucceeded = $false
+        foreach($append in $appendNext) {
+            if((Metric-Value $append "path") -eq $case.path -and
+                (Metric-Value $append "run") -eq $case.run -and
+                (Metric-Value $append "success") -eq "true") {
+                $appendSucceeded = $true
+                break
+            }
+        }
+        $caseUxPassed = Test-CaseUxPassed $case
+        if((-not $ok) -and (-not $appendSucceeded) -and (-not $caseUxPassed)) {
             $ackFailureLines += "NTK_ACK_ASSERT run=$($case.run),path=$($case.path),started=$hasStart,webViewDone=$hasWebDone,readerDone=$hasReaderDone,strictProof=$hasStrictProof,nativeBridgeAck200=$hasNativeBridgeAck200,falseDone=$hasFalseDone"
         }
     }

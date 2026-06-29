@@ -122,7 +122,10 @@ public class MainApplication extends MultiDexApplication implements Configuratio
             CustomHttpClient client = getHttpClient();
             if(client == null || !client.isNtk())
                 return;
-            if(!client.hasCloudflareClearance()) {
+            String baseUrl = client.getUrl(ntkPath);
+            client.syncCookiesFromWebView(baseUrl, true);
+            client.syncCookiesFromWebView(baseUrl + ntkPath, true);
+            if(!client.hasCloudflareClearanceForUrl(baseUrl)) {
                 android.util.Log.d("MainApplication", "ntk_prewarm_ack_waiting_clearance path=" + ntkPath);
                 AppDispatchers.runIo(() -> {
                     try { Thread.sleep(30000); } catch(InterruptedException e) { return; }
@@ -131,7 +134,13 @@ public class MainApplication extends MultiDexApplication implements Configuratio
                 return;
             }
             android.util.Log.d("MainApplication", "ntk_prewarm_ack_start path=" + ntkPath);
-            client.preStartNtkAckForPath(ntkPath);
+            boolean ackOk = client.preWarmStrictNtkAckForPath(ntkPath, 3500L);
+            boolean keyOk = client.warmNtkViewerRequestKey(baseUrl, ntkPath);
+            String imagePrimeKey = Utils.startNtkGeneratedInitialRunwayPrewarm(appContext, manga);
+            android.util.Log.d("MainApplication", "ntk_prewarm_ack_done path=" + ntkPath
+                    + ",ack=" + ackOk
+                    + ",key=" + keyOk
+                    + ",imagePrime=" + (imagePrimeKey != null));
             ml.melun.mangaview.runtime.ContinueReadinessCoordinator.primeColdStart(appContext);
             startNtkTrustRefresher(ntkPath);
         } catch(Exception e) {
@@ -153,7 +162,12 @@ public class MainApplication extends MultiDexApplication implements Configuratio
                 if(client == null || !client.isNtk())
                     return;
                 android.util.Log.d("MainApplication", "ntk_trust_refresh path=" + path);
-                client.preStartNtkAckForPath(path);
+                String baseUrl = client.getUrl(path);
+                boolean ackOk = client.preWarmStrictNtkAckForPath(path, 2500L);
+                boolean keyOk = client.warmNtkViewerRequestKey(baseUrl, path);
+                android.util.Log.d("MainApplication", "ntk_trust_refresh_done path=" + path
+                        + ",ack=" + ackOk
+                        + ",key=" + keyOk);
             } catch(Exception e) {
                 android.util.Log.d("MainApplication", "ntk_trust_refresh_error " + e);
             }

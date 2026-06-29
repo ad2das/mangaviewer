@@ -908,8 +908,16 @@ final class NtkWebViewFallbackManager {
                 ? ackOnlySeedCookieHeader(fallbackCookies) : fallbackCookies;
         final String defaultWebViewUserAgent = WebSettings.getDefaultUserAgent(context);
         final String requestedUserAgent = userAgent;
-        final String effectiveUserAgent =
-                webViewUserAgentForTask(requestedUserAgent, baseUrl, path, defaultWebViewUserAgent);
+        final boolean modernGuardRoot = isModernNtkGuardRoot(baseUrl);
+        final boolean ackOnlySlugWebtoonFrame =
+                ackOnlyFrame && isWebtoonViewerImagePath(kind, path);
+        final String effectiveUserAgent = ackOnlySlugWebtoonFrame
+                && modernGuardRoot
+                && defaultWebViewUserAgent != null
+                && defaultWebViewUserAgent.trim().length() > 0
+                ? defaultWebViewUserAgent.trim()
+                : webViewUserAgentForTask(requestedUserAgent, baseUrl, path,
+                defaultWebViewUserAgent);
         final NtkQuicBridge quicBridge = NtkQuicFetcher.isAvailable()
                 ? new NtkQuicBridge(context, effectiveUserAgent, webViewSeedCookies) : null;
         final boolean[] finished = {false};
@@ -968,14 +976,12 @@ final class NtkWebViewFallbackManager {
             cookieManager.setAcceptCookie(true);
             cookieManager.setAcceptThirdPartyCookies(view, true);
             String shellUrl = baseUrl + path;
-            boolean modernGuardRoot = isModernNtkGuardRoot(baseUrl);
             boolean realSlugWebtoonImageFrame = !ackOnlyFrame && isWebtoonViewerImagePath(kind, path);
             boolean realImageFrame = modernGuardRoot && !ackOnlyFrame && !realSlugWebtoonImageFrame;
-            boolean ackOnlySlugWebtoonFrame = false;
             boolean realMainFrame = modernGuardRoot
                     && (realImageFrame || realSlugWebtoonImageFrame || ackOnlySlugWebtoonFrame);
             boolean visibleRealMainFrame = ackOnlyFrame && realMainFrame
-                    && (ackOnlySlugWebtoonFrame || isAckOnlyVisibleWebViewProbeEnabled());
+                    && isAckOnlyVisibleWebViewProbeEnabled();
             final boolean ackOnlyPlainCloudflarePass =
                     ACK_ONLY_CLOUDFLARE_NATIVE_FLOW_ONLY && ackOnlyFrame && realMainFrame;
             if((realImageFrame || !ackOnlyFrame) && !realSlugWebtoonImageFrame) {
@@ -1264,6 +1270,10 @@ final class NtkWebViewFallbackManager {
                 view.setFocusableInTouchMode(visibleRealMainFrame || ackOnlyInteractiveCloudflareFrame);
                 FrameLayout.LayoutParams params = (realImageFrame || realSlugWebtoonImageFrame)
                         ? new FrameLayout.LayoutParams(390, 720, Gravity.TOP | Gravity.LEFT)
+                        : (ackOnlyFrame && realMainFrame)
+                        ? new FrameLayout.LayoutParams(
+                        Math.max(390, decor.getWidth()), Math.max(720, decor.getHeight()),
+                        Gravity.TOP | Gravity.LEFT)
                         : (!ackOnlyFrame || !visibleRealMainFrame)
                         ? new FrameLayout.LayoutParams(1, 1, Gravity.TOP | Gravity.LEFT)
                         : new FrameLayout.LayoutParams(
@@ -1969,6 +1979,43 @@ final class NtkWebViewFallbackManager {
                 return;
             }
             if(hasClearance && cloudflarePage) {
+                if(readyComplete && !hasGuardCookie && isLateAckOnlyPlainCloudflareProbe(reason)) {
+                    Log.d(TAG, "ntk_ack_only_plain_cf_reject_stale_clearance path=" + path
+                            + ",reason=" + reason
+                            + ",url=" + view.getUrl()
+                            + ",cookie=" + bridgeCookieSummary);
+                    try {
+                        CustomHttpClient client = MainApplication.getHttpClient();
+                        if(client != null) {
+                            client.clearCloudflareWebViewCookiesAggressively(baseUrl, baseUrl + path,
+                                    shellUrl);
+                            client.markCloudflareChallenge(baseUrl + path);
+                        }
+                    } catch (Exception e) {
+                        ml.melun.mangaview.report.CrashReporter.record(e);
+                    }
+                    if(clearanceReloaded != null && !clearanceReloaded[0]) {
+                        clearanceReloaded[0] = true;
+                        requested[0] = false;
+                        scriptRequests[0] = 0;
+                        try {
+                            view.stopLoading();
+                            view.clearCache(false);
+                        } catch (Exception ignored) {
+                        }
+                        Log.d(TAG, "ntk_ack_only_plain_cf_reload_after_stale_clearance path=" + path
+                                + ",url=" + shellUrl);
+                        mainHandler.postDelayed(() -> {
+                            if(!finished[0] && view != null
+                                    && isAckOnlyPlainCloudflarePending(view.getTag())) {
+                                view.loadUrl(shellUrl, webViewHeaders(headers));
+                            }
+                        }, 120L);
+                        return;
+                    }
+                    finish.run();
+                    return;
+                }
                 if(cloudflareUrl) {
                     Log.d(TAG, "ntk_ack_only_plain_cf_wait_challenge path=" + path
                             + ",reason=" + reason
@@ -2029,6 +2076,23 @@ final class NtkWebViewFallbackManager {
             mainHandler.post(() -> evaluateViewerImageFetchScript(view, finished, scriptRequests,
                     baseUrl, path, ackScopePath, kind, workId, episodeId, imagesToken));
         });
+    }
+
+    private static boolean isLateAckOnlyPlainCloudflareProbe(String reason) {
+        if(reason == null)
+            return false;
+        if(reason.startsWith("page-finished"))
+            return false;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?:delay-|shell-load-)(\\d+)")
+                .matcher(reason);
+        if(!matcher.find())
+            return false;
+        try {
+            return Long.parseLong(matcher.group(1)) >= 2500L;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private static String buildAckOnlyPlainCloudflareProbeScript() {
@@ -3395,6 +3459,10 @@ final class NtkWebViewFallbackManager {
     private static void applyChromeUaMetadata(WebSettings settings, String userAgent) {
         if(settings == null)
             return;
+        if(isAndroidWebViewUserAgent(userAgent)) {
+            Log.d(TAG, "ntk_webview_chrome_ua_metadata_skip_webview_ua");
+            return;
+        }
         try {
             if(!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
                 Log.d(TAG, "ntk_webview_chrome_ua_metadata unsupported");
@@ -3438,6 +3506,13 @@ final class NtkWebViewFallbackManager {
         } catch (Exception e) {
             Log.d(TAG, "ntk_webview_chrome_ua_metadata failed", e);
         }
+    }
+
+    private static boolean isAndroidWebViewUserAgent(String userAgent) {
+        if(userAgent == null)
+            return false;
+        String ua = userAgent.toLowerCase(Locale.ROOT);
+        return ua.contains("; wv") || ua.contains(" wv") || ua.contains("version/4.0");
     }
 
     private static void suppressRequestedWithHeader(WebSettings settings) {

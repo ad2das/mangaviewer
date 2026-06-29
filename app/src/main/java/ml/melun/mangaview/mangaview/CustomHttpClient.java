@@ -1527,6 +1527,42 @@ public class CustomHttpClient {
         return false;
     }
 
+    public boolean hasCloudflareClearanceForUrl(String url) {
+        if(url == null || url.length() == 0)
+            return hasCloudflareClearance();
+        if(hasRecentCloudflareChallengeForUrl(url))
+            return false;
+        try {
+            CookieManager manager = CookieManager.getInstance();
+            String webViewCookie = safeWebViewCookieHeader(manager, url);
+            if(hasCookieName(webViewCookie, "cf_clearance")) {
+                syncCookiesFromWebView(url, true);
+                return true;
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+        }
+        return false;
+    }
+
+    private boolean hasRecentCloudflareChallengeForUrl(String url) {
+        if(url == null || url.length() == 0 || lastCloudflareChallengeUrl == null
+                || lastCloudflareChallengeUrl.length() == 0)
+            return false;
+        if(System.currentTimeMillis() - lastCloudflareChallengeAt > 45 * 1000L)
+            return false;
+        try {
+            Uri requested = Uri.parse(url);
+            Uri challenge = Uri.parse(lastCloudflareChallengeUrl);
+            String requestedHost = requested.getHost();
+            String challengeHost = challenge.getHost();
+            return requestedHost != null && challengeHost != null
+                    && requestedHost.equalsIgnoreCase(challengeHost);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     public synchronized boolean hasNtkAccessProof() {
         return hasCloudflareClearance() && hasRecentNtkAccessVerification();
     }
@@ -9839,6 +9875,11 @@ public class CustomHttpClient {
         return performNtkWebViewAckPreflight(path, false, shouldCancel);
     }
 
+    public boolean performNtkWebViewAckPreflightAllowLaunchHold(String path,
+            BooleanSupplier shouldCancel) {
+        return performNtkWebViewAckPreflight(path, true, shouldCancel);
+    }
+
     private boolean performNtkWebViewAckPreflight(String path, boolean allowLaunchHold) {
         return performNtkWebViewAckPreflight(path, allowLaunchHold, null);
     }
@@ -9866,6 +9907,7 @@ public class CustomHttpClient {
         if(!canRunAutomaticNtkWebViewAck(path)) {
             Log.d(TAG, "ntk_webview_ack_preflight_skip_no_clearance path=" + path
                     + ",cfClearance=" + hasCloudflareClearance()
+                    + ",cfForBase=" + hasCloudflareClearanceForUrl(ntkWebViewAckBaseUrl(path))
                     + ",strictProof=" + hasRecentStrictNtkAdAckProof(path));
             return false;
         }
@@ -9921,7 +9963,12 @@ public class CustomHttpClient {
     }
 
     private boolean canRunAutomaticNtkWebViewAck(String path) {
-        return hasCloudflareClearance() || hasRecentStrictNtkAdAckProof(path);
+        if(hasRecentStrictNtkAdAckProof(path))
+            return true;
+        String baseUrl = ntkWebViewAckBaseUrl(path);
+        if(isModernNtkGuardRoot(baseUrl))
+            return true;
+        return hasCloudflareClearanceForUrl(baseUrl);
     }
 
     private boolean performNtkWebViewAckPreflightOnBase(String path, String kind,
@@ -10436,6 +10483,24 @@ public class CustomHttpClient {
             boolean skipHiddenImageApiForGeneratedInitial = modernGuardRoot
                     && generatedDirectNumeric
                     && shouldSkipNtkViewerImageApiForReachableGeneratedInitial(baseUrl, path);
+            int authoritativeEarlyCount = 0;
+            NtkCachedImageIdentity cachedIdentity = cachedNtkImageIdentity(path);
+            if(cachedIdentity != null && cachedIdentity.count > 0
+                    && cachedIdentity.episodeId != null
+                    && cachedIdentity.episodeId.equals(episodeId)) {
+                authoritativeEarlyCount = cachedIdentity.count;
+            }
+            if(authoritativeEarlyCount > 0
+                    && ReaderImageCache.INSTANCE.hasAuthoritativeCompleteEarlyNtkImageUrls(
+                    path, authoritativeEarlyCount, SystemClock.elapsedRealtime() - 30_000L)) {
+                List<String> earlyUrls = ReaderImageCache.INSTANCE.earlyNtkImageUrls(
+                        path, SystemClock.elapsedRealtime() - 30_000L);
+                if(earlyUrls.size() >= authoritativeEarlyCount) {
+                    Log.d(TAG, "ntk_images_api_skip_authoritative_early_urls path=" + path
+                            + ",count=" + earlyUrls.size());
+                    return new ArrayList<>(earlyUrls);
+                }
+            }
             if(canonicalMetadataSyntheticWebtoonNoToken) {
                 Log.d(TAG, "ntk_images_api_hidden_skip_canonical_metadata path=" + path
                         + ",generatedNumeric=" + generatedDirectNumeric);
@@ -12203,6 +12268,34 @@ public class CustomHttpClient {
         }
     }
 
+    public boolean warmNtkViewerRequestKey(String baseUrl, String cookiePath) {
+        if(baseUrl == null || cookiePath == null || baseUrl.length() == 0 || cookiePath.length() == 0)
+            return false;
+        try {
+            String keyId = ensureNtkViewerBrowserKey(baseUrl, cookiePath);
+            boolean ok = keyId != null && keyId.length() > 0;
+            if(ok) {
+                synchronized (this) {
+                    if(ntkViewerBrowserKeyPair != null) {
+                        NtkWebViewFallbackManager.rememberExternalRequestKeyMaterial(
+                                baseUrl + ntkNativeAckScopePath(cookiePath),
+                                keyId,
+                                ntkViewerBrowserKeyPair,
+                                ntkViewerBrowserKeyServerTimeOffsetMs,
+                                ntkViewerBrowserKeyExpiresAt);
+                    }
+                }
+            }
+            Log.d(TAG, "ntk_viewer_request_key_warm path=" + cookiePath
+                    + ",ok=" + ok
+                    + ",keyId=" + summarizeKeyId(keyId));
+            return ok;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_viewer_request_key_warm_error path=" + cookiePath + "," + e);
+            return false;
+        }
+    }
+
     private String ensureNtkViewerBrowserKey(String baseUrl, String cookiePath) {
         try {
             synchronized (this) {
@@ -13500,6 +13593,51 @@ public class CustomHttpClient {
                     + ",strictProof=" + hasRecentStrictNtkAdAckProof(ackPath));
         } catch(Exception e) {
             Log.d(TAG, "ntk_ack_pre_start_error path=" + path + "," + e);
+        }
+    }
+
+    public boolean preWarmStrictNtkAckForPath(String path, long webViewFallbackTimeoutMs) {
+        if(path == null || path.length() == 0 || !isNtk())
+            return false;
+        long startedAt = System.currentTimeMillis();
+        String ackPath = ntkNativeAckScopePath(path);
+        String baseUrl = ntkWebViewAckBaseUrl(ackPath);
+        try {
+            syncCookiesFromWebView(baseUrl, true);
+            syncCookiesFromWebView(baseUrl + ackPath, true);
+            if(hasRecentStrictNtkAdAckProof(ackPath))
+                return true;
+            if(!hasCloudflareClearanceForUrl(baseUrl)) {
+                Log.d(TAG, "ntk_strict_ack_prewarm_skip_no_base_clearance path=" + ackPath
+                        + ",base=" + baseUrl
+                        + ",globalCf=" + hasCloudflareClearance());
+                return false;
+            }
+            preStartNtkAckForPath(ackPath);
+            if(hasRecentStrictNtkAdAckProof(ackPath))
+                return true;
+            boolean directOk = ackPath.startsWith("/webtoon/")
+                    && performModernWebtoonDirectAdAckWarmup(ackPath, true);
+            if(directOk || hasRecentStrictNtkAdAckProof(ackPath))
+                return true;
+            boolean nativeOk = performNtkNativeAckBypass(baseUrl, ackPath);
+            if(nativeOk || hasRecentStrictNtkAdAckProof(ackPath))
+                return true;
+            long deadline = System.currentTimeMillis() + Math.max(0L, webViewFallbackTimeoutMs);
+            boolean webViewOk = performNtkWebViewAckPreflightAllowLaunchHold(ackPath,
+                    () -> System.currentTimeMillis() >= deadline);
+            boolean strict = hasRecentStrictNtkAdAckProof(ackPath);
+            Log.d(TAG, "ntk_strict_ack_prewarm_done path=" + ackPath
+                    + ",direct=" + directOk
+                    + ",native=" + nativeOk
+                    + ",webView=" + webViewOk
+                    + ",strict=" + strict
+                    + ",ms=" + (System.currentTimeMillis() - startedAt));
+            return strict;
+        } catch(Exception e) {
+            Log.d(TAG, "ntk_strict_ack_prewarm_error path=" + ackPath + "," + e
+                    + ",ms=" + (System.currentTimeMillis() - startedAt));
+            return hasRecentStrictNtkAdAckProof(ackPath);
         }
     }
 
