@@ -1112,6 +1112,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             drawableCoversInitialViewport(bitmap.width, bitmap.height)
         val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
             !coversInitialViewport
+        if (visibleInitialDrawable && waitForContinuous) {
+            recordFirstImageDrawableElapsedForTest(index, "bitmap")
+        }
         val launchMetricDeferred = maybePostInitialContinuousDrawableMetric(index, "bitmap")
         if (visibleInitialDrawable && !waitForContinuous) logFirstDrawableMetric(index, "bitmap")
         if (visibleInitialDrawable) logLaunchDrawableMetric(index, "bitmap")
@@ -1139,6 +1142,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             drawableCoversInitialViewport(pageWidth, pageHeight)
         val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
             !coversInitialViewport
+        if (visibleInitialDrawable && waitForContinuous) {
+            recordFirstImageDrawableElapsedForTest(index, "tiles")
+        }
         val launchMetricDeferred = maybePostInitialContinuousDrawableMetric(index, "tiles")
         if (visibleInitialDrawable && !waitForContinuous) logFirstDrawableMetric(index, "tiles")
         if (visibleInitialDrawable) logLaunchDrawableMetric(index, "tiles")

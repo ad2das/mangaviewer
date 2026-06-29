@@ -993,10 +993,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             rebuildLayoutLocked()
             val maxScroll = maxScrollLocked()
-            setScrollOffsetLocked((scrollOffset + deltaPx).coerceIn(0f, maxScroll))
-            scroller.forceFinished(true)
             lastScrollInteractionMs = SystemClock.uptimeMillis()
             programmaticScrollStatsUntilMs = lastScrollInteractionMs + PROGRAMMATIC_SCROLL_STATS_ACTIVE_MS
+            setScrollOffsetLocked((scrollOffset + deltaPx).coerceIn(0f, maxScroll))
+            scroller.forceFinished(true)
             renderRequested = true
             scheduleFrameLocked()
             Log.d(
@@ -3013,6 +3013,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val lockedRestoreActive = lockedRestorePage >= 0 &&
                 now <= lockedRestoreUntilMs
             val structuralAdjustActive = now <= structuralScrollAdjustUntilMs
+            val programmaticScrollActive = now <= programmaticScrollStatsUntilMs
             val recentUserScrollActive = lastScrollInteractionMs > 0L &&
                 now - lastScrollInteractionMs <= HEIGHT_CHANGE_SCROLL_ADJUST_QUIET_MS
             val visibleForJumpCheck = isAttachedToWindow && isShown && windowVisibility == VISIBLE
@@ -3031,6 +3032,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 visibleForJumpCheck &&
                 !lockedRestoreActive &&
                 !structuralAdjustActive &&
+                !programmaticScrollActive &&
                 !recentUserScrollActive
             ) {
                 Log.w(
