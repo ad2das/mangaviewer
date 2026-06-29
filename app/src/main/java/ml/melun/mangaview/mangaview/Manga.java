@@ -2664,7 +2664,9 @@ public class Manga {
         Thread thread = new Thread(() -> {
             fetch.started.countDown();
             try {
-                fetch.completed = client != null && client.performNtkWebViewAckPreflight(path);
+                fetch.completed = client != null
+                        && (client.hasCloudflareClearance() || client.hasRecentStrictNtkAdAckProof(path))
+                        && client.performNtkWebViewAckPreflight(path);
             } catch (Exception e) {
                 fetch.error = e;
             } finally {

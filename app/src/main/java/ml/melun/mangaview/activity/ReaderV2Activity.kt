@@ -2186,6 +2186,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val path = manga.ntkEpisodePath
         if (path.isNullOrBlank()) return
         if (!isCurrentNtkReader()) return
+        if (!canRunAutomaticNtkAck(path)) {
+            Log.d(TAG, "reader_ntk_ack_preflight_skip_no_clearance path=$path")
+            return
+        }
         if (path.startsWith("/webtoon/") && firstDrawableMetricLogged && hasInitialNtkDrawableProgress()) {
             Log.d(TAG, "reader_ntk_ack_preflight_skip_webtoon_drawable_progress path=$path")
             return
@@ -2276,6 +2280,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun prepareDeferredNtkAckChallenge(manga: Manga) {
         val path = manga.ntkEpisodePath ?: return
+        if (!canRunAutomaticNtkAck(path)) {
+            Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_skip_no_clearance path=$path")
+            return
+        }
         if (!firstDrawableMetricLogged && (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"))) {
             Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_wait_first_drawable path=$path")
             return
@@ -2307,6 +2315,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun startInitialNtkWebViewAckOnlyPreflight(manga: Manga) {
         if (!shouldDeferInitialNtkAckPreflight(manga)) return
         val path = manga.ntkEpisodePath ?: return
+        if (!canRunAutomaticNtkAck(path)) {
+            Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_skip_no_clearance path=$path")
+            return
+        }
         if (path.startsWith("/webtoon/") && firstDrawableMetricLogged && hasInitialNtkDrawableProgress()) {
             Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_skip_webtoon_drawable path=$path")
             return
@@ -2340,6 +2352,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun startPreparedNtkNativeAckPreflight(manga: Manga, reason: String): Boolean {
         val path = manga.ntkEpisodePath ?: return false
         if (!isCurrentNtkReader() || destroyed || isFinishing) return false
+        if (!canRunAutomaticNtkAck(path)) {
+            Log.d(TAG, "reader_ntk_ack_prepared_native_preflight_skip_no_clearance reason=$reason,path=$path")
+            return false
+        }
         if (shouldWaitForInitialContinuousBeforeNtkAck(path)) {
             deferredNtkAckPreflightManga = manga
             waitForInitialContinuousBeforeNtkAck("prepared_native_$reason", path)
@@ -2416,6 +2432,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return false
     }
 
+    private fun canRunAutomaticNtkAck(path: String?): Boolean {
+        if (path.isNullOrBlank()) return false
+        return try {
+            val client = getHttpClient()
+            client.hasCloudflareClearance() || client.hasRecentStrictNtkAdAckProof(path)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun isSlugWebtoonNtkPath(path: String?): Boolean {
         if (path.isNullOrBlank()) return false
         val match = Regex("^/webtoon/([^/?#]+)/([^/?#]+)").find(path) ?: return false
@@ -2482,7 +2508,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         val path = deferred.ntkEpisodePath
-        val hasCloudflare = try {
+        val hasCloudflareClearance = try {
+            getHttpClient().hasCloudflareClearance()
+        } catch (_: Exception) {
+            false
+        }
+        val hasCloudflareChallenge = try {
             getHttpClient().hasRecentCloudflareChallenge()
         } catch (_: Exception) {
             false
@@ -2500,7 +2531,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         deferredNtkAckPreflightBlockProbeAttempts++
         Log.d(
             TAG,
-            "reader_ntk_ack_preflight_initial_cf_probe path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare,prepared=$preparedChallenge,preparing=$preparingChallenge"
+            "reader_ntk_ack_preflight_initial_cf_probe path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cfClearance=$hasCloudflareClearance,cfChallenge=$hasCloudflareChallenge,prepared=$preparedChallenge,preparing=$preparingChallenge"
         )
         val ntkEpisodePath = !path.isNullOrBlank() &&
             (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"))
@@ -2509,7 +2540,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } catch (_: Exception) {
             false
         }
-        if (ntkEpisodePath && !hasStrictProof && hasCloudflare) {
+        if (ntkEpisodePath && !hasStrictProof && hasCloudflareChallenge && !hasCloudflareClearance) {
             val hasEarlyImages = try {
                 !path.isNullOrBlank() &&
                     ReaderImageCache.earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L).isNotEmpty()
@@ -2534,7 +2565,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             Log.d(
                 TAG,
-                "reader_ntk_ack_preflight_initial_hardblock_before_first_drawable path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cf=$hasCloudflare,prepared=$preparedChallenge,preparing=$preparingChallenge"
+                "reader_ntk_ack_preflight_initial_hardblock_before_first_drawable path=$path,attempt=$deferredNtkAckPreflightBlockProbeAttempts,cfClearance=$hasCloudflareClearance,cfChallenge=$hasCloudflareChallenge,prepared=$preparedChallenge,preparing=$preparingChallenge"
             )
             statusHandler.postDelayed(
                 deferredNtkAckPreflightBlockProbeRunnable,
@@ -2546,7 +2577,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             startPreparedNtkNativeAckPreflight(deferred, "prepared_challenge")) {
             return
         }
-        if (hasCloudflare) {
+        if (hasCloudflareClearance) {
             val hasEarlyImages = try {
                 !path.isNullOrBlank() &&
                     ReaderImageCache.earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L).isNotEmpty()

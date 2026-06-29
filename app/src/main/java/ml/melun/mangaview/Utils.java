@@ -328,20 +328,22 @@ public class Utils {
             manga.ensureNtkEpisodePathFromIdentity();
         }
         ml.melun.mangaview.runtime.BackgroundPrefetchBudget.suppressForUserNavigation();
+        boolean ntkViewerLaunch = false;
         if(online && manga.isOnline()) {
             String ntkPath = manga.getNtkEpisodePath();
             if(ntkPath != null && ntkPath.length() > 0) {
                 CustomHttpClient client = getHttpClient();
-                if(client != null && client.isNtk())
+                ntkViewerLaunch = client != null && client.isNtk();
+                if(ntkViewerLaunch)
                     client.preStartNtkAckForPath(ntkPath);
             }
-            if(exactEpisode && shouldWaitForExactFirstFrame(launchTitle)) {
+            if(!ntkViewerLaunch && exactEpisode && shouldWaitForExactFirstFrame(launchTitle)) {
                 ViewerWarmupManager.logMetric("viewer_exact_prepare_gate", manga.getId());
                 launchExactWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                         launchTitle, includeTitleEpisodes, launchToken);
                 return;
             }
-            if(!exactEpisode && shouldWaitForContinueFirstFrame(waitForFirstFrame, recent, launchTitle)) {
+            if(!ntkViewerLaunch && !exactEpisode && shouldWaitForContinueFirstFrame(waitForFirstFrame, recent, launchTitle)) {
                 ViewerWarmupManager.logMetric("viewer_continue_prepare_gate", manga.getId());
                 launchWhenFirstFrameReady(context, manga, code, returnToEpisodes, online, recent,
                         launchTitle, includeTitleEpisodes, launchToken);
@@ -722,8 +724,12 @@ public class Utils {
                 } catch(Exception e) {
                     android.util.Log.d("ViewerPerf", "viewer_ntk_image_api_preflight_error path=" + path + "," + e);
                 }
-                if(!slugWebtoon)
+                if(!slugWebtoon && (client.hasCloudflareClearance()
+                        || client.hasRecentStrictNtkAdAckProof(path))) {
                     client.performNtkNativeAckBypass(client.getUrl(path), path);
+                } else if(!slugWebtoon) {
+                    android.util.Log.d("ViewerPerf", "viewer_ntk_ack_preflight_skip_no_clearance path=" + path);
+                }
             } catch(Exception e) {
                 android.util.Log.d("ViewerPerf", "viewer_ntk_ack_preflight_error path=" + path + "," + e);
             }

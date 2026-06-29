@@ -9863,6 +9863,12 @@ public class CustomHttpClient {
             Log.d(TAG, "ntk_webview_ack_preflight_skip_launch_hold path=" + path);
             return false;
         }
+        if(!canRunAutomaticNtkWebViewAck(path)) {
+            Log.d(TAG, "ntk_webview_ack_preflight_skip_no_clearance path=" + path
+                    + ",cfClearance=" + hasCloudflareClearance()
+                    + ",strictProof=" + hasRecentStrictNtkAdAckProof(path));
+            return false;
+        }
         if(allowLaunchHold && "webtoon".equals(matcher.group(1))) {
             Log.d(TAG, "ntk_webview_ack_preflight_allow_launch_hold path=" + path);
         }
@@ -9912,6 +9918,10 @@ public class CustomHttpClient {
         if(!attempted)
             Log.d(TAG, "ntk_webview_ack_preflight_no_root path=" + path);
         return false;
+    }
+
+    private boolean canRunAutomaticNtkWebViewAck(String path) {
+        return hasCloudflareClearance() || hasRecentStrictNtkAdAckProof(path);
     }
 
     private boolean performNtkWebViewAckPreflightOnBase(String path, String kind,
@@ -13476,6 +13486,10 @@ public class CustomHttpClient {
             syncCookiesFromWebView(baseUrl + ackPath, true);
             if(hasRecentStrictNtkAdAckProof(ackPath)) {
                 Log.d(TAG, "ntk_ack_pre_start_skip_strict path=" + ackPath);
+                return;
+            }
+            if(!hasCloudflareClearance()) {
+                Log.d(TAG, "ntk_ack_pre_start_skip_no_clearance path=" + ackPath);
                 return;
             }
             startNtkNativeAckChallengePrepare(baseUrl, ackPath, true);

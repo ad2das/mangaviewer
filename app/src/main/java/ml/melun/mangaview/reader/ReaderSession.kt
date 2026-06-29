@@ -6317,7 +6317,15 @@ class ReaderSession(
                     TAG,
                     "ntk_adjacent_ack_preflight_start sourcePath=$sourcePath targetPath=$path delayMs=$delayMs"
                 )
-                val ok = MainApplication.getHttpClient().performNtkWebViewAckPreflight(path) {
+                val client = MainApplication.getHttpClient()
+                if (!client.hasCloudflareClearance() && !client.hasRecentStrictNtkAdAckProof(path)) {
+                    Log.d(
+                        TAG,
+                        "ntk_adjacent_ack_preflight_skip_no_clearance sourcePath=$sourcePath targetPath=$path"
+                    )
+                    return@Thread
+                }
+                val ok = client.performNtkWebViewAckPreflight(path) {
                     cancelled.get()
                 }
                 if (cancelled.get()) {
@@ -6890,7 +6898,16 @@ class ReaderSession(
         if (path.isEmpty() || cancelled.get()) return false
         val startedAt = SystemClock.elapsedRealtime()
         return try {
-            val ok = MainApplication.getHttpClient().performNtkWebViewAckPreflight(path) {
+            val client = MainApplication.getHttpClient()
+            if (!client.hasCloudflareClearance() && !client.hasRecentStrictNtkAdAckProof(path)) {
+                Log.d(
+                    TAG,
+                    "append_adjacent_api_strict_ack_preflight_skip_no_clearance path=$path " +
+                        "ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
+                return false
+            }
+            val ok = client.performNtkWebViewAckPreflight(path) {
                 cancelled.get()
             }
             Log.d(

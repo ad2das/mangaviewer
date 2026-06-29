@@ -66,7 +66,7 @@ object ReaderImageCache {
     private const val NTK_GENERATED_INITIAL_RECOVERY_SAME_URL_HEDGE_MS = 350L
     private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 8
     private const val NTK_GENERATED_PREVIEW_RANGE_CANDIDATES = 3
-    private const val NTK_GENERATED_INITIAL_COMPLETE_RACE_ANCHOR_CANDIDATES = 5
+    private const val NTK_GENERATED_INITIAL_COMPLETE_RACE_ANCHOR_CANDIDATES = 1
     private const val NTK_GENERATED_INITIAL_COMPLETE_RACE_NEAR_CANDIDATES = 3
     private const val NTK_GENERATED_VISIBLE_RANGE_PREVIEW_DEADLINE_MS = 1800L
     private const val NTK_GENERATED_INITIAL_FOREGROUND_RACE_CANDIDATES = 1
@@ -7641,8 +7641,19 @@ object ReaderImageCache {
                 true,
                 "path=$path"
             )
+            val client = getHttpClient()
+            if (!client.hasCloudflareClearance() && !client.hasRecentStrictNtkAdAckProof(path)) {
+                logCacheEvent(
+                    "generated_webview_ack_recovery_skip_no_clearance",
+                    manga,
+                    image,
+                    true,
+                    "path=$path,ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
+                return@FutureTask false
+            }
             val ok = try {
-                getHttpClient().performNtkWebViewAckPreflight(path)
+                client.performNtkWebViewAckPreflight(path)
             } catch (_: Exception) {
                 false
             }

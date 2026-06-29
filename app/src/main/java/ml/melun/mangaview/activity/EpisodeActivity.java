@@ -1269,6 +1269,46 @@ public class EpisodeActivity extends AppCompatActivity {
             episode.setTitleId(title.getId());
         }
         title.setEps(loadedEpisodes);
+        preWarmEpisodeAcks(loadedEpisodes);
+    }
+
+    private void preWarmEpisodeAcks(List<Manga> episodes) {
+        if(episodes == null || episodes.isEmpty())
+            return;
+        if(!isNtkTitle())
+            return;
+        AppDispatchers.submitIo(() -> {
+            CustomHttpClient client = getHttpClient();
+            if(client == null || !client.isNtk())
+                return;
+            android.util.Log.d("EpisodeActivity", "ntk_prewarm_episode_list count=" + episodes.size());
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(5, r -> {
+                Thread t = new Thread(r, "ntk-ack-episode-list");
+                t.setDaemon(true);
+                return t;
+            });
+            for(Manga ep : episodes) {
+                if(ep == null)
+                    continue;
+                ep.setTitle(title);
+                ep.setTitleId(title.getId());
+                ep.ensureNtkEpisodePathFromIdentity();
+                String epPath = ep.getNtkEpisodePath();
+                if(epPath == null || epPath.length() == 0)
+                    continue;
+                pool.submit(() -> {
+                    try {
+                        Thread.sleep(30);
+                        client.preStartNtkAckForPath(epPath);
+                    } catch(InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch(Exception e) {
+                        android.util.Log.d("EpisodeActivity", "ntk_prewarm_episode_error path=" + epPath + "," + e);
+                    }
+                });
+            }
+            pool.shutdown();
+        });
     }
 
     private static ArrayList<Manga> normalizeEpisodeSnapshot(List<Manga> loadedEpisodes, Title title) {

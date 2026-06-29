@@ -122,70 +122,24 @@ public class MainApplication extends MultiDexApplication implements Configuratio
             CustomHttpClient client = getHttpClient();
             if(client == null || !client.isNtk())
                 return;
+            if(!client.hasCloudflareClearance()) {
+                android.util.Log.d("MainApplication", "ntk_prewarm_ack_waiting_clearance path=" + ntkPath);
+                AppDispatchers.runIo(() -> {
+                    try { Thread.sleep(30000); } catch(InterruptedException e) { return; }
+                    preWarmNtkAck();
+                });
+                return;
+            }
             android.util.Log.d("MainApplication", "ntk_prewarm_ack_start path=" + ntkPath);
             client.preStartNtkAckForPath(ntkPath);
             ml.melun.mangaview.runtime.ContinueReadinessCoordinator.primeColdStart(appContext);
-            preWarmAllEpisodeAcks(title, manga);
-            startNtkTrustRefresher(ntkPath, title, manga);
+            startNtkTrustRefresher(ntkPath);
         } catch(Exception e) {
             android.util.Log.d("MainApplication", "ntk_prewarm_ack_error " + e);
         }
     }
 
-    private java.util.List<String> collectAllEpisodePaths(ml.melun.mangaview.mangaview.Title title,
-                                                           ml.melun.mangaview.mangaview.Manga resumeManga) {
-        java.util.List<String> paths = new java.util.ArrayList<>();
-        try {
-            java.util.List<ml.melun.mangaview.mangaview.Manga> episodes = ml.melun.mangaview.Utils.snapshotEpisodes(title);
-            if(episodes == null || episodes.isEmpty())
-                return paths;
-            for(ml.melun.mangaview.mangaview.Manga ep : episodes) {
-                if(ep == null)
-                    continue;
-                ep.setTitle(title);
-                ep.setTitleId(title.getId());
-                ep.ensureNtkEpisodePathFromIdentity();
-                String epPath = ep.getNtkEpisodePath();
-                if(epPath != null && epPath.length() > 0)
-                    paths.add(epPath);
-            }
-        } catch(Exception e) {
-            android.util.Log.d("MainApplication", "ntk_collect_episode_paths_error " + e);
-        }
-        return paths;
-    }
-
-    private void preWarmAllEpisodeAcks(ml.melun.mangaview.mangaview.Title title,
-                                       ml.melun.mangaview.mangaview.Manga resumeManga) {
-        java.util.List<String> allPaths = collectAllEpisodePaths(title, resumeManga);
-        if(allPaths.isEmpty())
-            return;
-        android.util.Log.d("MainApplication", "ntk_prewarm_all_episodes count=" + allPaths.size());
-        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(5, r -> {
-            Thread t = new Thread(r, "ntk-ack-prewarm-all");
-            t.setDaemon(true);
-            return t;
-        });
-        CustomHttpClient client = getHttpClient();
-        if(client == null)
-            return;
-        for(String path : allPaths) {
-            pool.submit(() -> {
-                try {
-                    Thread.sleep(50);
-                    client.preStartNtkAckForPath(path);
-                } catch(InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } catch(Exception e) {
-                    android.util.Log.d("MainApplication", "ntk_prewarm_episode_error path=" + path + "," + e);
-                }
-            });
-        }
-        pool.shutdown();
-    }
-
-    private void startNtkTrustRefresher(String path, ml.melun.mangaview.mangaview.Title title,
-                                        ml.melun.mangaview.mangaview.Manga resumeManga) {
+    private void startNtkTrustRefresher(String path) {
         if(ntkTrustRefresher != null)
             return;
         ntkTrustRefresher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
@@ -200,7 +154,6 @@ public class MainApplication extends MultiDexApplication implements Configuratio
                     return;
                 android.util.Log.d("MainApplication", "ntk_trust_refresh path=" + path);
                 client.preStartNtkAckForPath(path);
-                preWarmAllEpisodeAcks(title, resumeManga);
             } catch(Exception e) {
                 android.util.Log.d("MainApplication", "ntk_trust_refresh_error " + e);
             }
