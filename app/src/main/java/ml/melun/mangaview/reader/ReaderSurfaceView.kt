@@ -59,7 +59,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val pageCount: Int,
         val widthFillFailures: Int = 0,
         val lowResolutionItems: Int = 0,
-        val minDrawableSourceWidth: Int = 0
+        val minDrawableSourceWidth: Int = 0,
+        val physicalViewportPx: Int = 0
     )
 
     data class PageReadinessSnapshot(
@@ -328,7 +329,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             if (limitScrollToDrawablePrefix == enabled) return
             limitScrollToDrawablePrefix = enabled
-            clampScrollLocked()
             renderRequested = pages.isNotEmpty()
             if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
@@ -1323,7 +1323,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                             0,
                             0,
                             0,
-                            max(0, (totalHeightLocked() - height).toInt())
+                            forwardScrollLimitLocked().toInt()
                         )
                         renderRequested = true
                         scheduleFrameLocked()
@@ -1385,7 +1385,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (scrolling) {
                 lastScrollInteractionMs = SystemClock.uptimeMillis()
                 setScrollOffsetLocked(scroller.currY.toFloat() + activeScrollerOffsetShift)
-                clampScrollLocked()
+                clampForwardScrollLocked()
                 renderRequested = true
                 request = windowRequestLocked(true)
                 boundary = boundaryRequestLocked(clearDirection = false)
@@ -1715,6 +1715,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         prepareBitmapPaint(fastBitmapDraw)
         val sourceHeight = item.tiles.firstOrNull()?.sourceHeight?.takeIf { it > 0 } ?: return
         val pageScale = item.pageHeight / sourceHeight.toFloat()
+        val directTileDraw = abs(pageScale - 1f) <= DIRECT_TILE_DRAW_SCALE_EPSILON
         for (tile in item.tiles) {
             val tileTop = item.top + tile.sourceTop * pageScale
             val tileBottom = item.top + tile.sourceBottom * pageScale
@@ -1725,6 +1726,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val drawTop = max(visibleTop, tileTop)
             val drawBottom = min(visibleBottom, tileBottom)
             if (drawBottom <= drawTop || tileBottom <= tileTop) continue
+            val drawWidth = state.width
+            val dstLeft = (state.width - drawWidth) / 2
+            if (directTileDraw && bitmap.width == drawWidth) {
+                val srcTop = floor(drawTop - tileTop).toInt().coerceIn(0, bitmap.height - 1)
+                val srcBottom = ceil(drawBottom - tileTop).toInt().coerceIn(srcTop + 1, bitmap.height)
+                val dstTopInt = floor(drawTop).toInt()
+                val dstBottomInt = (dstTopInt + (srcBottom - srcTop)).coerceAtLeast(dstTopInt + 1)
+                src.set(0, srcTop, bitmap.width, srcBottom)
+                dstInt.set(dstLeft, dstTopInt, dstLeft + drawWidth, dstBottomInt)
+                canvas.drawBitmap(bitmap, src, dstInt, paint)
+                continue
+            }
             val srcTop = ((drawTop - tileTop) / (tileBottom - tileTop) * bitmap.height)
                 .toInt()
                 .coerceIn(0, bitmap.height - 1)
@@ -1736,8 +1749,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val dstBottom = if (drawBottom < visibleBottom) drawBottom + TILE_SEAM_OVERLAP_PX else drawBottom
             val dstTopInt = floor(dstTop).toInt()
             val dstBottomInt = ceil(dstBottom).toInt().coerceAtLeast(dstTopInt + 1)
-            val drawWidth = state.width
-            val dstLeft = (state.width - drawWidth) / 2
             dstInt.set(dstLeft, dstTopInt, dstLeft + drawWidth, dstBottomInt)
             canvas.drawBitmap(bitmap, src, dstInt, paint)
         }
@@ -2082,7 +2093,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             busy = state.busy,
             pageCount = state.pageCount,
             lowResolutionItems = coverage.lowResolutionItems,
-            minDrawableSourceWidth = coverage.minDrawableSourceWidth
+            minDrawableSourceWidth = coverage.minDrawableSourceWidth,
+            physicalViewportPx = state.height
         )
         synchronized(stateLock) {
             lastVisibleCoverageSnapshot = snapshot
@@ -2182,11 +2194,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val readyBottom = prefixItems.maxOf { item ->
             ceil(min(viewHeight.toFloat(), item.top + item.pageHeight)).toInt()
         }.coerceIn(1, viewHeight)
+        if (readyBottom < viewHeight - COVERAGE_EDGE_FILL_PX) return null
         return state.copy(
             visibleLoading = 0,
             hasDrawableContent = true,
-            items = prefixItems,
-            visibleContentPxOverride = readyBottom
+            items = prefixItems
         )
     }
 
@@ -2294,13 +2306,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun pageHasDrawablePrefixContentLocked(index: Int): Boolean {
-        val page = pages.getOrNull(index) ?: return false
-        if (pageHasDrawableContentLocked(index)) return true
-        return when (page.pendingResolveType) {
-            PENDING_BITMAP -> page.pendingBitmap?.let { !it.isRecycled } == true
-            PENDING_TILES -> page.pendingTiles.any { !it.bitmap.isRecycled }
-            else -> false
-        }
+        return pageHasDrawableContentLocked(index)
     }
 
     fun requestRender() {
@@ -2598,6 +2604,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
         setScrollOffsetLocked(scrollOffset.coerceIn(minScroll, maxScroll))
     }
 
+    private fun clampForwardScrollLocked() {
+        val maxScroll = if (limitScrollToDrawablePrefix) forwardScrollLimitLocked() else maxScrollLocked()
+        val minScroll = if (prependedRevealHoldPage in pages.indices) {
+            min(pageTopOrElseLocked(prependedRevealHoldPage, 0f), maxScroll)
+        } else {
+            0f
+        }
+        val before = scrollOffset
+        setScrollOffsetLocked(scrollOffset.coerceIn(minScroll, maxScroll))
+        if (limitScrollToDrawablePrefix && scrollOffset < before - SCROLL_OFFSET_EPSILON_PX) {
+            scheduleBlockedForwardWindowRequestLocked()
+        }
+    }
+
     private fun maybeReleasePrependedReadyHoldLocked(index: Int) {
         if (prependedReadyHoldRequired <= 0 || prependedReadyHoldInserted <= 0) return
         if (index !in 0 until prependedReadyHoldInserted) return
@@ -2621,23 +2641,69 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun maxScrollLocked(): Float {
-        val fullMaxScroll = max(0f, totalHeightLocked() - height)
+        return max(0f, totalHeightLocked() - height)
+    }
+
+    private fun forwardScrollLimitLocked(): Float {
+        val fullMaxScroll = maxScrollLocked()
         if (!limitScrollToDrawablePrefix || pages.isEmpty() || height <= 0) return fullMaxScroll
         val firstRelevant = firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
-        val firstBlocked = (firstRelevant..pages.lastIndex).firstOrNull { index ->
-            !pageHasDrawablePrefixContentLocked(index)
+        var readyBottom = scrollOffset + height
+        for (index in firstRelevant..pages.lastIndex) {
+            val page = pages[index]
+            val pageTop = pageTopOrElseLocked(index, 0f)
+            val pageBottom = pageTop + pageDrawHeightLocked(page)
+            if (!pageHasDrawableContentLocked(index)) {
+                scheduleBlockedForwardWindowRequestLocked()
+                break
+            }
+            readyBottom = max(readyBottom, pageBottom)
+            if (readyBottom >= scrollOffset + height * DRAWABLE_PREFIX_FORWARD_RUNWAY_SCREENFULS) {
+                break
+            }
         }
-        if (firstBlocked == null) return fullMaxScroll
-        val previousDrawable = (firstBlocked - 1 downTo 0).firstOrNull { index ->
-            pageHasDrawablePrefixContentLocked(index)
+        return min(fullMaxScroll, max(scrollOffset, readyBottom - height))
+    }
+
+    private fun scheduleBlockedForwardWindowRequestLocked() {
+        if (pages.isEmpty() || width <= 0 || height <= 0) return
+        val anchor = anchorPageLocked()
+        val firstBlocked = (anchor..pages.lastIndex).firstOrNull { index ->
+            !pageHasDrawableContentLocked(index)
+        } ?: return
+        renderRequested = true
+        scheduleFrameLocked()
+        lastAnchor = -1
+        pendingWindowRequest = WindowRequest(
+            firstPage = max(0, firstBlocked - 1),
+            lastPage = min(pages.lastIndex, firstBlocked + ReaderPipelinePolicy.windowAfter(true)),
+            anchorPage = firstBlocked,
+            progressPage = firstBlocked,
+            progressOffset = pageOffsetLocked(firstBlocked),
+            busy = true,
+            nearStart = false,
+            nearEnd = firstBlocked >= pages.size - NEAR_BOUNDARY_PAGE_THRESHOLD
+        )
+        if (windowDispatchPosted) return
+        windowDispatchPosted = true
+        mainHandler.post {
+            val latest = synchronized(stateLock) {
+                windowDispatchPosted = false
+                val next = pendingWindowRequest
+                pendingWindowRequest = null
+                next
+            } ?: return@post
+            val currentListener = listener ?: return@post
+            currentListener.onWindowChanged(
+                latest.firstPage,
+                latest.lastPage,
+                latest.anchorPage,
+                latest.progressPage,
+                latest.progressOffset,
+                latest.busy
+            )
+            if (latest.nearEnd) currentListener.onNearBoundary(DIRECTION_NEXT, latest.anchorPage)
         }
-        val drawableBottom = if (previousDrawable != null) {
-            val previous = previousDrawable
-            pageTopOrElseLocked(previous, 0f) + pageDrawHeightLocked(pages[previous])
-        } else {
-            pageTopOrElseLocked(firstBlocked, 0f)
-        }
-        return min(fullMaxScroll, max(0f, drawableBottom - height))
     }
 
     private fun shouldSuppressDrawablePrefixFlingLocked(wasReleased: Boolean, dragDistance: Float): Boolean {
@@ -2989,6 +3055,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun applyPageHeightChangeLocked(index: Int, oldTop: Float, oldHeight: Float, delta: Float) {
         if (abs(delta) <= 0.01f) return
+        structuralScrollAdjustUntilMs = max(
+            structuralScrollAdjustUntilMs,
+            SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
+        )
         val oldBottom = oldTop + oldHeight
         val recentScrollSettling = isRecentScrollSettlingLocked()
         if (shouldAdjustScrollForChangedPageHeight(
@@ -3123,13 +3193,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastScrollInteractionMs = SystemClock.uptimeMillis()
         }
         val before = scrollOffset
-        val dragMultiplier = if (limitScrollToDrawablePrefix) {
-            PREFIX_LIMIT_DRAG_SCROLL_MULTIPLIER
-        } else {
-            DRAG_SCROLL_MULTIPLIER
-        }
+        val dragMultiplier = DRAG_SCROLL_MULTIPLIER
         setScrollOffsetLocked(scrollOffset + dy * dragMultiplier)
-        clampScrollLocked()
+        clampForwardScrollLocked()
         lastY = y
         return abs(scrollOffset - before) > SCROLL_OFFSET_EPSILON_PX
     }
@@ -3141,6 +3207,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun noteInputLocked(event: MotionEvent) {
+        lastScrollInteractionMs = max(lastScrollInteractionMs, SystemClock.uptimeMillis())
         fun addInputTime(uptimeMs: Long) {
             val eventNs = uptimeMsToNanoTime(uptimeMs)
             if (pendingOldestInputNs == 0L || eventNs < pendingOldestInputNs) pendingOldestInputNs = eventNs
@@ -3558,8 +3625,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_CANCEL_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 4f
         private const val PROGRESS_PAGE_PROBE_SCREEN_RATIO = 0.35f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
-        private const val PREFIX_LIMIT_DRAG_SCROLL_MULTIPLIER = 1.04f
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
+        private const val DRAWABLE_PREFIX_FORWARD_RUNWAY_SCREENFULS = 2.0f
         private const val FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 1.0f
         private const val FLING_MIN_VELOCITY_MULTIPLIER = 1
         private const val RESTORE_POSITION_LOCK_MS = 4000L
@@ -3575,6 +3642,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val SCROLL_FAST_BITMAP_DRAW_MS = 180L
         private const val WHOLE_BITMAP_DRAW_MAX_VIEWPORTS = 1.35f
         private const val SCROLL_FAST_BITMAP_REFINE_DELAY_MS = 2200L
+        private const val DIRECT_TILE_DRAW_SCALE_EPSILON = 0.01f
         private const val INITIAL_CONTENT_DRAWABLES_PER_FRAME = 1
         private const val INITIAL_UPLOAD_SPLIT_AFTER_FIRST_MS = 9000L
         private const val INITIAL_FAST_BITMAP_DRAW_MS = 220L

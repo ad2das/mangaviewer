@@ -24,6 +24,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.security.MessageDigest
 import java.util.Collections
 import java.util.Locale
@@ -76,7 +77,7 @@ object ReaderImageCache {
     private const val NTK_GENERATED_INITIAL_TRANSIENT_RETRY_DELAY_MS = 180L
     private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_WEBTOON_DELAY_MS = 140L
     private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS = 120L
-    private const val EARLY_NTK_IMAGE_URL_TTL_MS = 6000L
+    private const val EARLY_NTK_IMAGE_URL_TTL_MS = 120000L
     private const val EARLY_NTK_APPEND_IMAGE_URL_TTL_MS = 30000L
     private const val EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS = 1200L
     private const val EARLY_NTK_IMAGE_TRANSPORT_SYNC_LIMIT = 12
@@ -110,6 +111,7 @@ object ReaderImageCache {
     private val activeNtkEpisodeCalls = ConcurrentHashMap<String, Call>()
     private val activeNtkEpisodeCallIds = AtomicLong(0L)
     private val earlyNtkImageUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
+    private val speculativeNtkGeneratedUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
     private val earlyNtkImageUrlListeners = CopyOnWriteArrayList<(String, List<String>) -> Unit>()
     private val trustedNtkImageApiCounts = ConcurrentHashMap<String, TrustedNtkImageApiCount>()
     private val earlyNtkGeneratedSuccessUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
@@ -268,6 +270,7 @@ object ReaderImageCache {
         ntkInitialGeneratedAssetListeners.clear()
         foregroundStreamStartedAt.clear()
         earlyNtkImageUrls.clear()
+        speculativeNtkGeneratedUrls.clear()
         trustedNtkImageApiCounts.clear()
         earlyNtkGeneratedSuccessUrls.clear()
         ntkApiFallbackFlights.values.forEach { it.cancel(true) }
@@ -310,6 +313,7 @@ object ReaderImageCache {
         val cancelledApi = cancelFutureTasks(ntkApiFallbackFlights) { it.endsWith(fallbackSuffix) }
         val cancelledAck = cancelFutureTasks(ntkGeneratedAckRecoveryFlights) { it.endsWith(fallbackSuffix) }
         earlyNtkImageUrls.remove(path)
+        speculativeNtkGeneratedUrls.remove(path)
         trustedNtkImageApiCounts.remove(path)
         earlyNtkGeneratedSuccessUrls.remove(path)
         ntkApiFallbackImages.keys.removeAll { it.endsWith(fallbackSuffix) }
@@ -845,6 +849,38 @@ object ReaderImageCache {
         val existing = earlyNtkImageUrls[key]
         val incomingAuthoritative = isAuthoritativeEarlyNtkGeneratedUrlList(key, trusted)
         val existingAuthoritative = existing?.urls?.let { isAuthoritativeEarlyNtkGeneratedUrlList(key, it) } ?: false
+        val incomingGenerated = trusted.any { ntkGeneratedTarget(it) != null }
+        val incomingGeneratedManhwa = trusted.any {
+            ntkGeneratedTarget(it)?.path?.trimStart('/')?.startsWith("manhwa/", ignoreCase = true) == true
+        }
+        if (
+            existing != null &&
+            existingAuthoritative &&
+            incomingGenerated &&
+            trusted.size <= existing.urls.size &&
+            generatedUrlPagePrefixMatches(existing.urls, trusted)
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_speculative_generated_skip_authoritative path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (incomingGeneratedManhwa || (incomingGenerated && !incomingAuthoritative)) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                SystemClock.elapsedRealtime()
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_speculative_generated_hold path=$key," +
+                    "count=${trusted.size},manhwa=$incomingGeneratedManhwa," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
         if (existing != null && existing.urls == trusted) {
             Log.d(
                 TAG,
@@ -992,6 +1028,83 @@ object ReaderImageCache {
         Log.d(TAG, "reader_early_ntk_urls_remember path=$key,count=${trusted.size},first=${safeImageName(trusted.firstOrNull())}")
     }
 
+    @JvmStatic
+    fun rememberAuthoritativeNtkImageUrlsFromBrowser(path: String?, urls: List<String>?, source: String?) {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty() || urls.isNullOrEmpty()) return
+        val trustedRaw = urls.mapNotNull {
+            val value = it?.trim()?.takeIf { candidate ->
+                isTrustedNtkImageUrl(candidate) || isNaverWebtoonPageImage(candidate)
+            } ?: return@mapNotNull null
+            if (!authoritativeBrowserImageMatchesPath(key, value)) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_authoritative_browser_skip_mismatch path=$key," +
+                        "source=${source.orEmpty()},image=${safeImageName(value)}"
+                )
+                return@mapNotNull null
+            }
+            value
+        }
+        val trusted = compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(trustedRaw))
+        if (trusted.isEmpty()) return
+        val existing = earlyNtkImageUrls[key]
+        val incomingAuthoritative = isAuthoritativeEarlyNtkGeneratedUrlList(key, trusted)
+        val existingAuthoritative = existing?.urls?.let { isAuthoritativeEarlyNtkGeneratedUrlList(key, it) } ?: false
+        if (
+            existing != null &&
+            existingAuthoritative &&
+            incomingAuthoritative &&
+            trusted.size < existing.urls.size &&
+            generatedUrlPagePrefixMatches(existing.urls, trusted)
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_shrink path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "source=${source.orEmpty()},first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (existing != null && existing.urls == trusted) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_identical path=$key," +
+                    "count=${trusted.size},source=${source.orEmpty()}"
+            )
+            return
+        }
+        speculativeNtkGeneratedUrls.remove(key)
+        trustedNtkImageApiCounts[key] = TrustedNtkImageApiCount(trusted.size, SystemClock.elapsedRealtime())
+        trusted.forEach { rememberNtkGeneratedResolvedPage(it, "browser_${source.orEmpty()}") }
+        publishEarlyNtkImageUrls(key, trusted)
+        Log.d(
+            TAG,
+            "reader_early_ntk_urls_authoritative_browser path=$key,count=${trusted.size}," +
+                "source=${source.orEmpty()},first=${safeImageName(trusted.firstOrNull())}"
+        )
+    }
+
+    private fun authoritativeBrowserImageMatchesPath(key: String, image: String): Boolean {
+        val normalizedKey = key.trim('/').lowercase()
+        if (normalizedKey.isBlank()) return false
+        val generatedTarget = ntkGeneratedTarget(image)
+        if (generatedTarget != null) {
+            val targetKey = generatedTarget.path.trim('/').lowercase()
+            return targetKey == normalizedKey
+        }
+        if (isNaverWebtoonPageImage(image)) {
+            return normalizedKey.startsWith("webtoon/")
+        }
+        if (!isTrustedNtkImageUrl(image)) return false
+        val identity = normalizedNtkImageIdentity(image)
+        val directPage = Regex(
+            "(^|/)(manhwa|webtoon)/[^/]+/[^/]+/p\\d{3}\\.(jpg|jpeg|png|webp)$",
+            RegexOption.IGNORE_CASE
+        ).containsMatchIn(identity)
+        return !directPage || identity.contains("/$normalizedKey/")
+    }
+
     private fun generatedUrlPagePrefixMatches(existing: List<String>, incoming: List<String>): Boolean {
         if (incoming.isEmpty() || incoming.size > existing.size) return false
         for (index in incoming.indices) {
@@ -1018,16 +1131,33 @@ object ReaderImageCache {
     private fun isAuthoritativeEarlyNtkGeneratedUrlList(key: String, urls: List<String>): Boolean {
         if (urls.isEmpty()) return false
         var sawGenerated = false
+        var sawTrustedDirect = false
         for (url in urls) {
             val target = ntkGeneratedTarget(url)
             if (target == null) {
-                if (!isTrustedNtkImageUrl(url) && !isNaverWebtoonPageImage(url)) return false
+                if (isTrustedNtkImageUrl(url)) {
+                    sawTrustedDirect = true
+                    continue
+                }
+                if (!isNaverWebtoonPageImage(url)) return false
                 continue
+            }
+            val targetKey = earlyNtkPathKey(target.path)
+            if (targetKey.isNotEmpty() && !targetKey.equals(key, ignoreCase = true)) {
+                val keyParts = key.trim('/').split('/')
+                val targetParts = targetKey.trim('/').split('/')
+                if (keyParts.size < 3 ||
+                    targetParts.size < 3 ||
+                    !keyParts[0].equals(targetParts[0], ignoreCase = true) ||
+                    keyParts[2] != targetParts[2]
+                ) {
+                    return false
+                }
             }
             sawGenerated = true
             if (!isAuthoritativeEarlyNtkGeneratedUrl(key, url, target)) return false
         }
-        return sawGenerated || urls.all { isNaverWebtoonPageImage(it) }
+        return sawGenerated || sawTrustedDirect || urls.all { isNaverWebtoonPageImage(it) }
     }
 
     private fun isAuthoritativeEarlyNtkGeneratedUrl(
@@ -1865,6 +1995,16 @@ object ReaderImageCache {
         visiblePriority: Boolean = true
     ): Boolean {
         if (!manga.isOnline) return false
+        if (isNtkProtectedViewerApiImage(image)) {
+            logCacheEvent(
+                "foreground_stream_skip_protected_api_browser_owned",
+                manga,
+                image,
+                true,
+                "page=$pageIndex"
+            )
+            return false
+        }
         val appContext = context.applicationContext
         val generatedTarget = ntkGeneratedTarget(image)
         val permitlessVerifiedEarlyGenerated = permit == null &&
@@ -2424,6 +2564,16 @@ object ReaderImageCache {
         pageIndex: Int = -1
     ): Bitmap? {
         if (!manga.isOnline) return null
+        if (isNtkProtectedViewerApiImage(image)) {
+            logCacheEvent(
+                "foreground_decode_skip_protected_api_browser_owned",
+                manga,
+                image,
+                true,
+                "page=$pageIndex"
+            )
+            return null
+        }
         val generatedTarget = ntkGeneratedTarget(image)
         cancellation?.throwIfCancelled()
         val appContext = context.applicationContext
@@ -2609,6 +2759,16 @@ object ReaderImageCache {
         generation: Long = cacheGeneration.get(),
         visiblePriority: Boolean = false
     ): ByteArray? {
+        if (isNtkProtectedViewerApiImage(image)) {
+            logCacheEvent(
+                "foreground_stream_fetch_skip_protected_api_browser_owned",
+                manga,
+                image,
+                true,
+                "page=${ntkProtectedApiGeneratedTarget(image)?.page ?: 0}"
+            )
+            return null
+        }
         val useForegroundTransport = shouldUseForegroundTransportForForegroundBytes(image)
         if (!useForegroundTransport) {
             logCacheEvent(
@@ -5562,21 +5722,54 @@ object ReaderImageCache {
         target: NtkGeneratedTarget?
     ) {
         if (target == null) return
-        if (foreground && visiblePriority) {
-            logCacheEvent(
-                "ntk_generated_ack_gate_bypass_visible",
-                manga,
-                image,
-                foreground,
-                "page=${target.page},visiblePriority=true"
-            )
-            return
-        }
         val path = ntkFallbackKeyPath(manga, target)
         val client = try {
             getHttpClient()
         } catch (_: Throwable) {
             return
+        }
+        val expectedCount = when {
+            manga.ntkImageCount > 0 -> manga.ntkImageCount
+            target.page > 0 -> target.page
+            else -> 1
+        }
+        val hasVerifiedSnapshot = hasAuthoritativeCompleteEarlyNtkImageUrls(
+            path,
+            expectedCount,
+            SystemClock.elapsedRealtime() - 30_000L
+        )
+        val hasCompleteDirectManifest = hasCompleteDirectNtkManifestForPage(
+            path,
+            expectedCount,
+            target,
+            image
+        )
+        val hasStrictAck = try {
+            client.hasRecentStrictNtkAdAckProof(path)
+        } catch (_: Throwable) {
+            false
+        }
+        if (foreground && visiblePriority && (hasVerifiedSnapshot || hasCompleteDirectManifest || hasStrictAck)) {
+            logCacheEvent(
+                "ntk_generated_ack_gate_bypass_verified_visible",
+                manga,
+                image,
+                foreground,
+                "page=${target.page},visiblePriority=true,verified=$hasVerifiedSnapshot," +
+                    "directManifest=$hasCompleteDirectManifest,strictAck=$hasStrictAck"
+            )
+            return
+        }
+        if (!hasVerifiedSnapshot && !hasCompleteDirectManifest && !hasStrictAck) {
+            logCacheEvent(
+                "ntk_generated_ack_gate_block_unverified_visible",
+                manga,
+                image,
+                foreground,
+                "page=${target.page},visiblePriority=$visiblePriority," +
+                    "expected=$expectedCount,known=${earlyNtkImageUrls(path, 0L).size}"
+            )
+            throw InterruptedIOException("Waiting for verified NTK snapshot")
         }
         val inFlight = try {
             client.isNtkWebViewAckPreflightInFlight(path)
@@ -6115,11 +6308,54 @@ object ReaderImageCache {
         if (response == null && isCancellationFailure(initialFailure)) {
             throw initialFailure ?: java.io.InterruptedIOException("Reader image request cancelled")
         }
+        val initialFailureCode = imageFailureCode(initialFailure)
+        if (response == null && foreground && isNtkGeneratedChallengeBlockCode(initialFailureCode)) {
+            val target = ntkGeneratedTarget(image)
+            logCacheEvent(
+                "generated_direct_blocked_api_only",
+                manga,
+                image,
+                true,
+                "page=${target?.page ?: 0},code=$initialFailureCode"
+            )
+            val apiFallbackTask = foregroundApiFallbackTask ?: target?.let {
+                startNtkApiFallbackImages(context, manga, it)
+            }
+            if (apiFallbackTask != null) {
+                requestForegroundGeneratedRace(context, manga, image, apiFallbackTask, includeDirectRetries = false)
+                    ?.let { return it }
+                retryNtkGeneratedViaApiFallback(context, manga, image, foreground, apiFallbackTask, cancellation)
+                    ?.let { return it }
+            }
+            throw IOException("Generated direct image blocked before API fallback: code=$initialFailureCode image=$image")
+        }
         if (response != null && response.isSuccessful &&
             acceptNtkGeneratedForegroundResponse(manga, image, response, foreground)
         ) {
             rememberNtkGeneratedEpisodeExtension(response.request.url.toString())
             return response
+        }
+        val responseFailureCode = response?.code ?: 0
+        if (response != null && foreground && isNtkGeneratedChallengeBlockCode(responseFailureCode)) {
+            val target = ntkGeneratedTarget(image)
+            logCacheEvent(
+                "generated_direct_blocked_response_api_only",
+                manga,
+                image,
+                true,
+                "page=${target?.page ?: 0},code=$responseFailureCode"
+            )
+            response.close()
+            val apiFallbackTask = foregroundApiFallbackTask ?: target?.let {
+                startNtkApiFallbackImages(context, manga, it)
+            }
+            if (apiFallbackTask != null) {
+                requestForegroundGeneratedRace(context, manga, image, apiFallbackTask, includeDirectRetries = false)
+                    ?.let { return it }
+                retryNtkGeneratedViaApiFallback(context, manga, image, foreground, apiFallbackTask, cancellation)
+                    ?.let { return it }
+            }
+            throw IOException("Generated direct image blocked before API fallback: code=$responseFailureCode image=$image")
         }
         if (response != null && (response.isSuccessful || !shouldTryNtkGeneratedExtensionFallback(image))) {
             if (response.isSuccessful) response.close()
@@ -7377,6 +7613,17 @@ object ReaderImageCache {
             if (response.code == 200 || response.code == 206) {
                 return response
             }
+            if (isNtkGeneratedChallengeBlockCode(response.code)) {
+                logCacheEvent(
+                    "generated_range_first_chunk_blocked",
+                    manga,
+                    image,
+                    true,
+                    "bytes=$byteCount,code=${response.code}"
+                )
+                response.close()
+                return null
+            }
             if (isPermanentGeneratedMissingCode(response.code)) {
                 rememberNtkGeneratedNotFound(manga, image, "generated_range_first_chunk_${response.code}")
                 logCacheEvent(
@@ -7703,6 +7950,10 @@ object ReaderImageCache {
             current = current.cause
         }
         return 0
+    }
+
+    private fun isNtkGeneratedChallengeBlockCode(code: Int): Boolean {
+        return code == 403 || code == 429 || code == 530
     }
 
     private fun shouldPreferGeneratedApiBeforeOriginalRetry(foreground: Boolean, error: Throwable?): Boolean {
@@ -9183,6 +9434,71 @@ object ReaderImageCache {
         return ntkGeneratedTargetsSameEpisode(candidateTarget, target) && candidateTarget.page == target.page
     }
 
+    private fun hasCompleteDirectNtkManifestForPage(
+        path: String,
+        expectedCount: Int,
+        target: NtkGeneratedTarget,
+        image: String
+    ): Boolean {
+        if (expectedCount <= 0) return false
+        return try {
+            val urls = earlyNtkImageUrls(path, 0L)
+            if (urls.isEmpty()) return false
+            val expectedPath = path.trim().trimStart('/')
+            val requestedIdentity = normalizedNtkImageIdentity(image)
+            val requiredCount = minOf(expectedCount, target.page.coerceAtLeast(1))
+            if (urls.size < requiredCount) return false
+            val expectedAtPage = urls.getOrNull(target.page - 1)
+            if (
+                expectedAtPage != null &&
+                !isNtkProtectedViewerApiImage(expectedAtPage) &&
+                (isTrustedNtkImageUrl(expectedAtPage) || isNaverWebtoonPageImage(expectedAtPage)) &&
+                ntkDirectManifestPageMatches(expectedAtPage, expectedPath, target.page)
+            ) {
+                return true
+            }
+            if (
+                expectedAtPage != null &&
+                !isNtkProtectedViewerApiImage(expectedAtPage) &&
+                normalizedNtkImageIdentity(expectedAtPage) == requestedIdentity
+            ) {
+                return true
+            }
+            for (candidate in urls.take(requiredCount)) {
+                if (isNtkProtectedViewerApiImage(candidate)) return false
+                val candidateIdentity = normalizedNtkImageIdentity(candidate)
+                if (candidateIdentity == requestedIdentity) return true
+                val candidateTarget = ntkGeneratedTarget(candidate)
+                if (candidateTarget != null) {
+                    if (!candidateTarget.path.trimStart('/').equals(expectedPath, ignoreCase = true) &&
+                        !ntkGeneratedTargetsSameEpisode(candidateTarget, target)
+                    ) {
+                        return false
+                    }
+                    continue
+                }
+                if (!isTrustedNtkImageUrl(candidate) && !isNaverWebtoonPageImage(candidate)) return false
+            }
+            false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun ntkDirectManifestPageMatches(image: String, expectedPath: String, page: Int): Boolean {
+        return try {
+            val path = Uri.parse(image).path?.trim('/')?.lowercase().orEmpty()
+            if (path.isBlank()) return false
+            val expected = expectedPath.trim('/').lowercase()
+            val pageName = "p${page.coerceAtLeast(1).toString().padStart(3, '0')}"
+            path.startsWith("$expected/") &&
+                Regex("/${Regex.escape(pageName)}\\.(jpg|jpeg|png|webp)$", RegexOption.IGNORE_CASE)
+                    .containsMatchIn("/$path")
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun ntkGeneratedTargetMatchesMangaEpisode(
         manga: Manga,
         target: NtkGeneratedTarget
@@ -9243,6 +9559,7 @@ object ReaderImageCache {
     )
 
     private fun ntkGeneratedTarget(image: String): NtkGeneratedTarget? {
+        ntkProtectedApiGeneratedTarget(image)?.let { return it }
         val numericMatch = Regex("^(https?://[^/]+)/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
             .find(image)
         if (numericMatch != null) {
@@ -9266,6 +9583,35 @@ object ReaderImageCache {
         val episodeId = slugMatch.groupValues[3]
         val page = slugMatch.groupValues[4].toIntOrNull() ?: return null
         return NtkGeneratedTarget(slugMatch.groupValues[1], "/webtoon/$slug/$episodeId", page)
+    }
+
+    private fun ntkProtectedApiGeneratedTarget(image: String): NtkGeneratedTarget? {
+        return try {
+            val uri = Uri.parse(image)
+            if (!uri.path.equals("/api/m/i", ignoreCase = true)) return null
+            val page = (uri.getQueryParameter("i")?.toIntOrNull() ?: return null) + 1
+            val token = uri.getQueryParameter("a").orEmpty()
+            val payload = token.substringBefore('.', "")
+            if (payload.isEmpty()) return null
+            val padded = payload + "=".repeat((4 - payload.length % 4) % 4)
+            val json = String(
+                android.util.Base64.decode(
+                    padded,
+                    android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP
+                ),
+                Charsets.UTF_8
+            )
+            val scope = Regex("\"scope\"\\s*:\\s*\"([^\"]+)\"").find(json)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.replace("\\/", "/")
+                ?: return null
+            if (!scope.startsWith("/manhwa/") && !scope.startsWith("/webtoon/")) return null
+            val base = "${uri.scheme}://${uri.host}"
+            NtkGeneratedTarget(base, scope, page)
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun canonicalNtkGeneratedImageForActiveEpisode(manga: Manga, image: String): String? {
@@ -9322,6 +9668,14 @@ object ReaderImageCache {
         return image.contains("/black/episodes/", ignoreCase = true) ||
             image.contains("/blacktoon/episodes/", ignoreCase = true) ||
             image.contains("/wt/episodes/", ignoreCase = true)
+    }
+
+    private fun isNtkProtectedViewerApiImage(image: String): Boolean {
+        return try {
+            Uri.parse(image).path.equals("/api/m/i", ignoreCase = true)
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private data class NtkGeneratedImageRef(
@@ -9612,7 +9966,14 @@ object ReaderImageCache {
         val target = ntkGeneratedTarget(image) ?: return
         rememberNtkGeneratedResolvedPage(image, "early_success")
         if (path.isNullOrBlank() || target.page !in 1..ntkGeneratedInitialRecoveryPages(manga)) return
+        val key = earlyNtkPathKey(path)
         val existing = earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30000L)
+            .ifEmpty {
+                speculativeNtkGeneratedUrls[key]
+                    ?.takeIf { SystemClock.elapsedRealtime() - it.createdAtMs <= EARLY_NTK_IMAGE_URL_TTL_MS }
+                    ?.urls
+                    .orEmpty()
+            }
         val existingSuccess = earlyNtkGeneratedSuccessImageUrls(path, SystemClock.elapsedRealtime() - 30000L)
         val mergedBase = if (existing.isEmpty()) {
             listOf(image)

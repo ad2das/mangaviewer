@@ -8,15 +8,15 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 
-final class ViewerEpisodeResolver {
-    interface EpisodeMatcher {
+public final class ViewerEpisodeResolver {
+    public interface EpisodeMatcher {
         boolean sameEpisode(Manga first, Manga second);
     }
 
     private ViewerEpisodeResolver() {
     }
 
-    static List<Manga> episodeListFor(Manga current, List<Manga> viewerEpisodes, Title title) {
+    public static List<Manga> episodeListFor(Manga current, List<Manga> viewerEpisodes, Title title) {
         List<Manga> data = null;
         Title currentTitle = title != null ? title : (current == null ? null : current.getTitle());
         if(current != null)
@@ -29,14 +29,14 @@ final class ViewerEpisodeResolver {
         return data;
     }
 
-    static Manga nextCandidate(Manga current, List<Manga> viewerEpisodes, Title title, EpisodeMatcher matcher) {
+    public static Manga nextCandidate(Manga current, List<Manga> viewerEpisodes, Title title, EpisodeMatcher matcher) {
         if(current == null)
             return null;
         List<Manga> data = episodeListFor(current, viewerEpisodes, title);
         return nextCandidateFromList(current, data, viewerEpisodes, title, matcher);
     }
 
-    static Manga nextCandidateFromList(Manga current, List<Manga> data, List<Manga> viewerEpisodes,
+    public static Manga nextCandidateFromList(Manga current, List<Manga> data, List<Manga> viewerEpisodes,
                                        Title title, EpisodeMatcher matcher) {
         if(current == null)
             return null;
@@ -62,14 +62,14 @@ final class ViewerEpisodeResolver {
         return null;
     }
 
-    static Manga previousCandidate(Manga current, List<Manga> viewerEpisodes, Title title, EpisodeMatcher matcher) {
+    public static Manga previousCandidate(Manga current, List<Manga> viewerEpisodes, Title title, EpisodeMatcher matcher) {
         if(current == null)
             return null;
         List<Manga> data = episodeListFor(current, viewerEpisodes, title);
         return previousCandidateFromList(current, data, viewerEpisodes, title, matcher);
     }
 
-    static Manga previousCandidateFromList(Manga current, List<Manga> data, List<Manga> viewerEpisodes,
+    public static Manga previousCandidateFromList(Manga current, List<Manga> data, List<Manga> viewerEpisodes,
                                            Title title, EpisodeMatcher matcher) {
         if(current == null)
             return null;
@@ -97,7 +97,7 @@ final class ViewerEpisodeResolver {
         return null;
     }
 
-    static Manga prepareCandidate(Manga candidate, Manga source, List<Manga> viewerEpisodes, Title title) {
+    public static Manga prepareCandidate(Manga candidate, Manga source, List<Manga> viewerEpisodes, Title title) {
         return prepareCandidate(candidate, source, viewerEpisodes, title, null);
     }
 
@@ -116,7 +116,7 @@ final class ViewerEpisodeResolver {
         return candidate;
     }
 
-    static int findEpisodeIndex(List<Manga> data, Manga current, EpisodeMatcher matcher) {
+    public static int findEpisodeIndex(List<Manga> data, Manga current, EpisodeMatcher matcher) {
         if(data == null || current == null)
             return RecyclerView.NO_POSITION;
         for(int i = 0; i < data.size(); i++) {

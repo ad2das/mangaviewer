@@ -24,6 +24,7 @@ import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.FrameLayout;
 import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -32,7 +33,13 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
 import ml.melun.mangaview.R;
@@ -42,6 +49,7 @@ import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.model.EpisodeLoadResult;
+import ml.melun.mangaview.reader.ReaderImageCache;
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.CachePolicy;
@@ -75,6 +83,7 @@ public class EpisodeActivity extends AppCompatActivity {
     private static final long VIEWER_PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final long EPISODE_REFRESH_AFTER_CACHE_PROBE_MS = EpisodeWarmupPolicy.REFRESH_AFTER_CACHE_PROBE_MS;
     private static final long INITIAL_VIEWER_TARGET_WARMUP_DELAY_MS = EpisodeWarmupPolicy.INITIAL_VIEWER_TARGET_DELAY_MS;
+    private static final int NTK_DIRECT_INITIAL_PREFETCH_PAGES = 12;
     private static final String CONFIRMED_EMPTY_EPISODE_TITLE = "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4";
     private static final String CONFIRMED_EMPTY_EPISODE_MESSAGE =
             "NTK\uAC00 \uC774 \uC791\uD488\uC758 \uD68C\uCC28 \uBAA9\uB85D\uC744 0\uAC1C\uB85C \uC751\uB2F5\uD588\uC2B5\uB2C8\uB2E4. \uC5C5\uB370\uC774\uD2B8\uB418\uBA74 \uB2E4\uC2DC \uD45C\uC2DC\uB429\uB2C8\uB2E4.";
@@ -112,6 +121,11 @@ public class EpisodeActivity extends AppCompatActivity {
     boolean pendingLoadErrorAfterCacheLookup = false;
     Runnable ntkEpisodeLoadWatchdogRunnable;
     Runnable episodeRefreshRunnable;
+    String pendingBrowserOwnedViewerLaunchPath = "";
+    final Set<String> acceptedCanonicalDirectPaths = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    final Set<String> rejectedCanonicalDirectPaths = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    final Set<String> speculativeCanonicalDirectPrefetchPaths = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    final ConcurrentHashMap<String, ArrayList<String>> acceptedCanonicalDirectImages = new ConcurrentHashMap<>();
     String originalTitleName = "";
     final Runnable initialEpisodeWarmupRunnable = () -> {
         if(!isUiAlive())
@@ -270,8 +284,6 @@ public class EpisodeActivity extends AppCompatActivity {
         overridePendingTransition(0, 0);
         PerformanceMonitor.attach(this);
         PerformanceMonitor.screen("episode");
-        setContentView(R.layout.activity_episode);
-        applyEpisodeWindowChrome();
         Intent intent = getIntent();
         title = parseIntentTitle(intent.getStringExtra("title"));
         if(title == null) {
@@ -281,8 +293,11 @@ public class EpisodeActivity extends AppCompatActivity {
         }
         originalTitleName = title.getName();
         switchToTitleSourceSite();
-        firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         online = intent.getBooleanExtra("online", true);
+        setContentView(R.layout.activity_episode);
+        warmResumeNtkViewerPageEarly();
+        applyEpisodeWindowChrome();
+        firstContentStartedAt = PerfTrace.start("episode_first_content_ms");
         if(title.useBookmark())
             bookmarkId = restoredBookmarkId(title);
         position = intent.getIntExtra("position",0);
@@ -336,7 +351,9 @@ public class EpisodeActivity extends AppCompatActivity {
         if(online) {
             mode = 0;
             fab_container.setVisibility(View.GONE);
-            boolean renderedCachedEpisodes = showCachedEpisodesFromMemory();
+            boolean renderedCachedEpisodes = showProvidedEpisodesFromIntent();
+            if(!renderedCachedEpisodes)
+                renderedCachedEpisodes = showCachedEpisodesFromMemory();
             if(shouldLoadDiskEpisodeCacheAsyncForTest(renderedCachedEpisodes))
                 loadCachedEpisodesAsync();
             episodeViewModel = new ViewModelProvider(this).get(EpisodeViewModel.class);
@@ -431,11 +448,30 @@ public class EpisodeActivity extends AppCompatActivity {
             @Override
             public void onItemClick(int position, Manga selected) {
                 //add local images to manga
+                warmSelectedNtkEpisodeForOpen(selected);
                 saveSelectedEpisodeProgress(position, selected);
                 openViewer(selected,0, true);
             }
             @Override
             public void onItemPress(int position, Manga selected) {
+                if(selected != null && isNtkTitle()) {
+                    selected.setMode(mode);
+                    selected.setTitle(title);
+                    selected.setTitleId(title == null ? selected.getTitleId() : title.getId());
+                    selected.ensureNtkEpisodePathFromIdentity();
+                    installImmediateNtkWebtoonDirectManifest(
+                            selected,
+                            selected.getNtkEpisodePath(),
+                            Math.max(0, selected.getNtkImageCount()),
+                            true,
+                            false);
+                    ml.melun.mangaview.MainApplication.warmNtkBrowserSessionForEpisode(
+                            EpisodeActivity.this, selected, title);
+                }
+            }
+            @Override
+            public void onItemVisible(int position, Manga selected) {
+                warmVisibleNtkEpisode(selected);
             }
             @Override
             public void onStarClick(){
@@ -606,12 +642,89 @@ public class EpisodeActivity extends AppCompatActivity {
         target.setTitle(title);
         target.setTitleId(title == null ? target.getTitleId() : title.getId());
         target.ensureNtkEpisodePathFromIdentity();
+        installImmediateNtkManhwaDirectManifest(
+                target,
+                target.getNtkEpisodePath(),
+                Math.max(0, target.getNtkImageCount()));
+        installImmediateNtkWebtoonDirectManifest(
+                target,
+                target.getNtkEpisodePath(),
+                Math.max(0, target.getNtkImageCount()),
+                true,
+                false);
+        ml.melun.mangaview.MainApplication.warmNtkBrowserSessionForEpisode(this, target, title);
         if(EpisodeWarmupPolicy.shouldDirectWarmupNtkViewerPage(p.isNtkSite(), getHttpClient().isNtk(),
                 target.getNtkEpisodePath())) {
             ReaderWarmupCoordinator.primeExactImmediate(context, target, title);
         } else {
             ViewerWarmupManager.logMetric("ntk_initial_viewer_warmup_skipped", 1L);
         }
+    }
+
+    private void warmResumeNtkViewerPageEarly() {
+        if(!online || title == null || !isNtkTitle())
+            return;
+        String path = title.getResumeNtkEpisodePath();
+        if(path == null || path.length() == 0)
+            return;
+        if(!path.startsWith("/manhwa/") && !path.startsWith("/webtoon/"))
+            return;
+        Manga target = ntkEpisodeFromPathForWarm(path);
+        if(target == null)
+            return;
+        ml.melun.mangaview.MainApplication.warmNtkBrowserSessionForEpisode(this, target, title);
+    }
+
+    private Manga ntkEpisodeFromPathForWarm(String path) {
+        try {
+            String[] parts = path.split("/");
+            if(parts.length < 4)
+                return null;
+            int episodeId = Integer.parseInt(parts[3]);
+            Manga target = new Manga(episodeId, episodeId + "화", "", title.getBaseMode());
+            target.setMode(mode);
+            target.setTitle(title);
+            target.setTitleId(title.getId());
+            target.setNtkEpisodePath(path);
+            return target;
+        } catch(Exception ignored) {
+            return null;
+        }
+    }
+
+    private void warmVisibleNtkEpisode(Manga selected) {
+        if(!online || selected == null || !isNtkTitle())
+            return;
+        selected.setMode(mode);
+        selected.setTitle(title);
+        selected.setTitleId(title == null ? selected.getTitleId() : title.getId());
+        selected.ensureNtkEpisodePathFromIdentity();
+        installImmediateNtkManhwaDirectManifest(
+                selected,
+                selected.getNtkEpisodePath(),
+                Math.max(0, selected.getNtkImageCount()));
+        installImmediateNtkWebtoonDirectManifest(
+                selected,
+                selected.getNtkEpisodePath(),
+                Math.max(0, selected.getNtkImageCount()),
+                false,
+                false);
+        ml.melun.mangaview.MainApplication.warmVisibleNtkBrowserSessionForEpisode(this, selected, title);
+    }
+
+    private void warmSelectedNtkEpisodeForOpen(Manga selected) {
+        if(!online || selected == null || !isNtkTitle())
+            return;
+        selected.setMode(mode);
+        selected.setTitle(title);
+        selected.setTitleId(title == null ? selected.getTitleId() : title.getId());
+        selected.ensureNtkEpisodePathFromIdentity();
+        installImmediateNtkWebtoonDirectManifest(
+                selected,
+                selected.getNtkEpisodePath(),
+                Math.max(0, selected.getNtkImageCount()),
+                true,
+                false);
     }
 
     private void warmupLikelyWfwfViewerPage() {
@@ -958,6 +1071,11 @@ public class EpisodeActivity extends AppCompatActivity {
                 ntkCaptchaLaunchInFlight = false;
                 if(!isUiAlive())
                     return;
+                if(loaded || hasRenderedEpisodes()
+                        || (episodeAdapter != null && episodeAdapter.getItemCount() > 0)) {
+                    Log.d("EpisodeActivity", "skip stale direct NTK captcha launch: episodes already loaded");
+                    return;
+                }
                 Intent captchaIntent = new Intent(context, CaptchaActivity.class);
                 String url = title == null ? null : title.getUrl();
                 if(url != null && url.startsWith("/"))
@@ -1086,6 +1204,31 @@ public class EpisodeActivity extends AppCompatActivity {
             return null;
         EpisodeCachedEpisodes cached = new Gson().fromJson(json, new TypeToken<EpisodeCachedEpisodes>(){}.getType());
         return isUsableCachedEpisodes(cached) ? cached : null;
+    }
+
+    private boolean showProvidedEpisodesFromIntent() {
+        if(title == null || hasRenderedEpisodes())
+            return false;
+        List<Manga> provided = title.getEps();
+        if(provided == null || provided.size() == 0)
+            return false;
+        ArrayList<Manga> intentEpisodes = normalizeEpisodeSnapshot(provided, title);
+        if(intentEpisodes.size() == 0)
+            return false;
+        episodes = intentEpisodes;
+        attachLoadedEpisodesToTitle(episodes);
+        showConfirmedEmptyEpisodeState(false);
+        warmupInitialViewerTargets();
+        episodeAdapter = new EpisodeAdapter(context, episodes, title, mode);
+        afterLoad();
+        ntkLoadTimeoutHandled = true;
+        loaded = true;
+        hideProgress();
+        invalidateOptionsMenu();
+        Log.d("EpisodeActivity", "episode_intent_provided_rendered count=" + episodes.size()
+                + ",titleUrl=" + title.getUrl()
+                + ",resumePath=" + title.getResumeNtkEpisodePath());
+        return true;
     }
 
     private static boolean shouldParseMemoryCacheOnMain(int jsonLength) {
@@ -1365,18 +1508,1247 @@ public class EpisodeActivity extends AppCompatActivity {
     public void openViewer(Manga manga, int code, boolean exactEpisode){
         if(manga == null || title == null)
             return;
-        if(!ml.melun.mangaview.Utils.consumeFocusedDestinationLaunch(this, DESTINATION_LAUNCH_DEBOUNCE_MS))
-            return;
-        ntkLoadTimeoutHandled = true;
-        cancelNtkEpisodeLoadWatchdog();
         manga.setMode(mode);
         manga.setTitle(title);
         manga.setTitleId(title == null ? manga.getTitleId() : title.getId());
+        manga.ensureNtkEpisodePathFromIdentity();
+        String path = manga.getNtkEpisodePath();
+        if(isNtkTitle() && online && path != null
+                && (path.startsWith("/manhwa/") || path.startsWith("/webtoon/"))) {
+            armBrowserOwnedViewerLaunch(manga, code, exactEpisode);
+            return;
+        }
+        launchViewerNow(manga, code, exactEpisode);
+    }
+
+    private void launchViewerNow(Manga manga, int code, boolean exactEpisode) {
+        if(manga == null || title == null)
+            return;
+        if(!ml.melun.mangaview.Utils.consumeFocusedDestinationLaunch(this, DESTINATION_LAUNCH_DEBOUNCE_MS))
+            return;
+        pendingBrowserOwnedViewerLaunchPath = "";
+        ntkLoadTimeoutHandled = true;
+        cancelNtkEpisodeLoadWatchdog();
         if(exactEpisode && !isNtkTitle())
             ReaderWarmupCoordinator.primeExactImmediate(context, manga, title);
         if(!exactEpisode && getHttpClient().isNtk())
             ViewerWarmupManager.warmup(context, manga, title);
         openViewerPrepared(context, manga, code, false, online, true, title, !manga.isOnline(), exactEpisode);
+    }
+
+    private void armBrowserOwnedViewerLaunch(Manga manga, int code, boolean exactEpisode) {
+        if(manga == null || title == null)
+            return;
+        String path = manga.getNtkEpisodePath();
+        if(path == null || path.length() == 0)
+            return;
+        int expected = Math.max(0, manga.getNtkImageCount());
+        ArrayList<String> canonicalImages = buildNtkManhwaDirectManifest(path, expected);
+        if(canonicalImages != null && canonicalImages.size() > 0) {
+            Log.d("EpisodeActivity", "ntk_browser_owned_canonical_direct_manifest path="
+                    + path + ",count=" + canonicalImages.size());
+            prepareCanonicalDirectManifestAndLaunch(manga, code, exactEpisode, path, canonicalImages);
+            return;
+        }
+        if(path.startsWith("/webtoon/")) {
+            ArrayList<String> webtoonImages = buildNtkWebtoonDirectManifest(path, expected);
+            if(webtoonImages != null && webtoonImages.size() > 0) {
+                pendingBrowserOwnedViewerLaunchPath = path;
+                Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_manifest path="
+                        + path + ",count=" + webtoonImages.size());
+                prepareBrowserDirectManifestAndLaunch(
+                        manga,
+                        code,
+                        exactEpisode,
+                        path,
+                        webtoonImages,
+                        "episode-webtoon-canonical-direct");
+                return;
+            }
+            if(expected <= 0 && isLikelyNtkWebtoonDirectFirstImageReachable(path)) {
+                pendingBrowserOwnedViewerLaunchPath = path;
+                prepareUnknownNtkWebtoonDirectManifestAndLaunch(manga, code, exactEpisode, path);
+                return;
+            }
+        }
+        if(expected <= 0 && path.startsWith("/manhwa/")) {
+            prepareUnknownCanonicalDirectManifestAndLaunch(manga, code, exactEpisode, path);
+            return;
+        }
+        final int browserExpected = rejectedCanonicalDirectPaths.contains(path) ? 0 : expected;
+        if(ml.melun.mangaview.activity.NtkBrowserSessionBroker.INSTANCE.isAllDecodedReady(path, browserExpected)) {
+            launchViewerNow(manga, code, exactEpisode);
+            return;
+        }
+        if(path.equals(pendingBrowserOwnedViewerLaunchPath)) {
+            Log.d("EpisodeActivity", "ntk_browser_owned_launch_already_pending path=" + path);
+            return;
+        }
+        FrameLayout parent = findViewById(android.R.id.content);
+        if(parent == null) {
+            launchViewerNow(manga, code, exactEpisode);
+            return;
+        }
+        pendingBrowserOwnedViewerLaunchPath = path;
+        CustomHttpClient client = getHttpClient();
+        String baseUrl = client.getUrl(path);
+        ml.melun.mangaview.activity.NtkBrowserSessionBroker.INSTANCE.attach(
+                this,
+                parent,
+                baseUrl,
+                path,
+                client.agent,
+                java.util.Collections.emptyMap(),
+                false,
+                new ml.melun.mangaview.activity.NtkBrowserSessionBroker.Listener() {
+                    @Override
+                    public void onState(@NonNull String statePath, boolean cloudflare,
+                                        @NonNull String pageTitle, @NonNull String bodySample) {
+                    }
+
+                    @Override
+                    public void onFirstDrawable(@NonNull String drawablePath) {
+                        if(!path.equals(drawablePath))
+                            return;
+                    }
+
+                    @Override
+                    public void onViewportReady(@NonNull String readyPath) {
+                        if(!path.equals(readyPath))
+                            return;
+                        if(shouldPreferCanonicalDirectManifest(path)) {
+                            Log.d("EpisodeActivity", "ntk_browser_owned_viewport_wait_canonical_direct path="
+                                    + path + ",expected=" + browserExpected);
+                            return;
+                        }
+                        if(browserExpected > 0) {
+                            Log.d("EpisodeActivity", "ntk_browser_owned_viewport_wait_manifest path="
+                                    + path + ",expected=" + browserExpected);
+                            return;
+                        }
+                        runOnUiThread(() -> {
+                            if(destroyed || isFinishing())
+                                return;
+                            if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                                return;
+                            launchViewerNow(manga, code, exactEpisode);
+                        });
+                    }
+
+                    @Override
+                    public void onImages(@NonNull ml.melun.mangaview.activity.NtkBrowserSessionBroker.ImageSnapshot snapshot) {
+                        if(!path.equals(snapshot.getPath()))
+                            return;
+                        List<String> images = snapshot.getImages();
+                        if(images == null || images.size() == 0)
+                            return;
+                        boolean browserProtected = false;
+                        for(String image : images) {
+                            if(image != null && image.toLowerCase(java.util.Locale.ROOT).contains("/api/m/i?")) {
+                                browserProtected = true;
+                                break;
+                            }
+                        }
+                        if(browserProtected) {
+                            if(shouldPreferCanonicalDirectManifest(path)) {
+                                Log.d("EpisodeActivity", "ntk_browser_owned_protected_manifest_wait_canonical_direct path="
+                                        + path + ",count=" + images.size()
+                                        + ",expected=" + browserExpected);
+                                return;
+                            }
+                            if(images.size() < Math.max(1, browserExpected))
+                                return;
+                            if(browserExpected <= 0 && images.size() < 4)
+                                return;
+                            Log.d("EpisodeActivity", "ntk_browser_owned_protected_manifest_launch path="
+                                    + path + ",count=" + images.size() + ",expected=" + browserExpected);
+                            runOnUiThread(() -> {
+                                if(destroyed || isFinishing())
+                                    return;
+                                if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                                    return;
+                                launchViewerNow(manga, code, exactEpisode);
+                            });
+                            return;
+                        }
+                        if(shouldPreferCanonicalDirectManifest(path)) {
+                            Log.d("EpisodeActivity", "ntk_browser_owned_direct_manifest_wait_canonical_direct path="
+                                    + path + ",count=" + images.size()
+                                    + ",expected=" + browserExpected);
+                            return;
+                        }
+                        Log.d("EpisodeActivity", "ntk_browser_owned_direct_manifest_prepare path="
+                                + path + ",count=" + images.size() + ",expected=" + expected);
+                        prepareBrowserDirectManifestAndLaunch(
+                                manga,
+                                code,
+                                exactEpisode,
+                                path,
+                                new ArrayList<>(images),
+                                "episode-browser-direct-" + snapshot.getSource());
+                    }
+
+                    @Override
+                    public void onScroll(@NonNull ml.melun.mangaview.activity.NtkBrowserSessionBroker.ScrollSnapshot snapshot) {
+                    }
+
+                    @Override
+                    public void onCoverage(@NonNull ml.melun.mangaview.activity.NtkBrowserSessionBroker.VisibleCoverageSnapshot snapshot) {
+                    }
+
+                    @Override
+                    public void onError(@NonNull String errorPath, @NonNull String message) {
+                        Log.d("EpisodeActivity", "ntk_browser_owned_prepare_error path="
+                                + errorPath + "," + message);
+                    }
+
+                    @Override
+                    public void onNeedsUserVerification(@NonNull String verificationPath) {
+                        Log.d("EpisodeActivity", "ntk_browser_owned_prepare_verification path="
+                                + verificationPath);
+                    }
+                },
+                browserExpected);
+        Log.d("EpisodeActivity", "ntk_browser_owned_launch_armed path=" + path
+                + ",expected=" + browserExpected + ",metadataExpected=" + expected);
+    }
+
+    private void prepareProtectedBrowserManifestAndLaunch(Manga manga, int code, boolean exactEpisode,
+                                                          String path, ArrayList<String> images) {
+        if(manga == null || title == null || path == null || images == null || images.size() == 0)
+            return;
+        final Manga launchManga = manga;
+        final Title launchTitle = title;
+        final ArrayList<String> launchImages = new ArrayList<>(images);
+        final int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        final AtomicBoolean launched = new AtomicBoolean(false);
+        AppDispatchers.submitUserAction(() -> {
+            String preparedKey = null;
+            long startedAt = android.os.SystemClock.elapsedRealtime();
+            try {
+                preparedKey = ReaderWarmupCoordinator.prepareKnownUrlsBlocking(
+                        getApplicationContext(),
+                        launchManga,
+                        launchTitle,
+                        width,
+                        true,
+                        launchImages,
+                        0,
+                        launchImages.size(),
+                        true);
+            } catch(Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+            final String finalPreparedKey = preparedKey;
+            Log.d("EpisodeActivity", "ntk_browser_owned_protected_prepare_done path="
+                    + path + ",count=" + launchImages.size()
+                    + ",prepared=" + (finalPreparedKey != null)
+                    + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+            AppDispatchers.runOnMain(() -> {
+                if(destroyed || isFinishing())
+                    return;
+                if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                    return;
+                if(finalPreparedKey == null)
+                    return;
+                launchViewerNow(launchManga, code, exactEpisode);
+            });
+        });
+    }
+
+    private void prepareBrowserDirectManifestAndLaunch(Manga manga, int code, boolean exactEpisode,
+                                                       String path, ArrayList<String> images, String source) {
+        if(manga == null || title == null || path == null || images == null || images.size() == 0)
+            return;
+        final Manga launchManga = manga;
+        final Title launchTitle = title;
+        final ArrayList<String> launchImages = new ArrayList<>(images);
+        final int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        final AtomicBoolean launched = new AtomicBoolean(false);
+        AppDispatchers.submitUserAction(() -> {
+            String preparedKey = null;
+            long startedAt = android.os.SystemClock.elapsedRealtime();
+            try {
+                launchManga.setNtkImageCount(launchImages.size());
+                acceptedCanonicalDirectPaths.add(path);
+                acceptedCanonicalDirectImages.put(path, new ArrayList<>(launchImages));
+                ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                        path,
+                        launchImages,
+                        source);
+                int startPage = ReaderWarmupCoordinator.requestedLaunchStartPage(launchManga, exactEpisode);
+                preparedKey = ReaderWarmupCoordinator.prepareKnownUrlsViewportBlocking(
+                        getApplicationContext(),
+                        launchManga,
+                        launchTitle,
+                        width,
+                        true,
+                        launchImages,
+                        startPage,
+                        canonicalDirectLaunchDecodeLimit(launchImages.size()),
+                        1.0f);
+            } catch(Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+            final String finalPreparedKey = preparedKey;
+            Log.d("EpisodeActivity", "ntk_browser_owned_direct_prepare_done path="
+                    + path + ",count=" + launchImages.size()
+                    + ",prepared=" + (finalPreparedKey != null)
+                    + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+            AppDispatchers.runOnMain(() -> {
+                if(destroyed || isFinishing())
+                    return;
+                if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                    return;
+                if(finalPreparedKey == null)
+                    return;
+                launched.set(true);
+                launchViewerNow(launchManga, code, exactEpisode);
+                if(path.startsWith("/webtoon/"))
+                    prefetchCanonicalDirectInitialImages(launchManga, launchImages, "browser-direct");
+                else
+                    prefetchCanonicalDirectImages(launchManga, launchImages, "browser-direct");
+            });
+        });
+    }
+
+    private boolean installImmediateNtkManhwaDirectManifest(Manga manga, String path, int expected) {
+        ArrayList<String> images = buildNtkManhwaDirectManifest(path, expected);
+        if(manga == null || images == null || images.size() == 0)
+            return false;
+        if(!acceptedCanonicalDirectPaths.contains(path)) {
+            Log.d("EpisodeActivity", "ntk_canonical_direct_warmup_skip_unvalidated path="
+                    + path + ",count=" + images.size());
+            return false;
+        }
+        ArrayList<String> validated = acceptedCanonicalDirectImages.get(path);
+        if(validated == null || validated.size() == 0) {
+            validated = resolveNtkManhwaDirectManifest(path, images.size());
+            if(validated == null || validated.size() == 0) {
+                acceptedCanonicalDirectPaths.remove(path);
+                rejectedCanonicalDirectPaths.add(path);
+                Log.d("EpisodeActivity", "ntk_canonical_direct_warmup_reject_missing_validated path="
+                        + path + ",expected=" + expected);
+                return false;
+            }
+            acceptedCanonicalDirectImages.put(path, new ArrayList<>(validated));
+        }
+        images = new ArrayList<>(validated);
+        manga.setNtkImageCount(images.size());
+        ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                path,
+                images,
+                "episode-canonical-direct");
+        primeCanonicalDirectPreparedWindow(manga, images, "episode-canonical-direct");
+        Log.d("EpisodeActivity", "ntk_browser_owned_canonical_direct_manifest path="
+                + path + ",count=" + images.size());
+        return true;
+    }
+
+    private boolean installImmediateNtkWebtoonDirectManifest(Manga manga, String path, int expected,
+                                                            boolean prepareInitialImages,
+                                                            boolean prefetchInitialImages) {
+        ArrayList<String> images = buildNtkWebtoonDirectManifest(path, expected);
+        if(manga == null || images == null || images.size() == 0)
+            return false;
+        if(rejectedCanonicalDirectPaths.contains(path))
+            return false;
+        manga.setNtkImageCount(images.size());
+        acceptedCanonicalDirectPaths.add(path);
+        acceptedCanonicalDirectImages.put(path, new ArrayList<>(images));
+        ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                path,
+                images,
+                "episode-webtoon-canonical-direct-warm");
+        if(prepareInitialImages)
+            primeCanonicalDirectPreparedWindow(manga, images, "episode-webtoon-canonical-direct-warm");
+        if(prefetchInitialImages)
+            prefetchCanonicalDirectInitialImages(manga, images, "episode-webtoon-canonical-direct-warm");
+        Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_warmup path="
+                + path + ",count=" + images.size()
+                + ",prepare=" + prepareInitialImages
+                + ",prefetch=" + prefetchInitialImages);
+        return true;
+    }
+
+    private void prefetchLikelyNtkManhwaDirectCandidates(Manga manga, String path, int expected, String reason) {
+        if(manga == null || context == null || path == null || expected <= 0)
+            return;
+        String[] parts = path.split("/");
+        if(parts.length < 4 || !"manhwa".equalsIgnoreCase(parts[1]))
+            return;
+        if(!speculativeCanonicalDirectPrefetchPaths.add(path + ":" + expected))
+            return;
+        final Manga prefetchManga = manga;
+        final Context appContext = getApplicationContext();
+        final String workId = parts[2];
+        final String episodeId = parts[3];
+        final int count = expected;
+        AppDispatchers.submitIo(() -> {
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
+                    Math.min(16, Math.max(1, count * 4)),
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "NtkDirectSpeculativePrefetch");
+                        thread.setDaemon(true);
+                        thread.setPriority(Thread.NORM_PRIORITY + 1);
+                        return thread;
+                    });
+            try {
+                ArrayList<Integer> order = new ArrayList<>();
+                order.add(1);
+                if(count > 1)
+                    order.add(count);
+                int middle = Math.max(1, count / 2);
+                if(!order.contains(middle))
+                    order.add(middle);
+                for(int page = 2; page <= count; page++) {
+                    if(!order.contains(page))
+                        order.add(page);
+                }
+                String[] hosts = new String[]{"booktoki9.org", "booktoki8.org"};
+                String[] extensions = new String[]{"png", "jpg", "webp", "jpeg"};
+                for(Integer pageValue : order) {
+                    final int page = pageValue;
+                    for(String host : hosts) {
+                        for(String extension : extensions) {
+                            final String candidate = String.format(java.util.Locale.ROOT,
+                                    "https://%s/manhwa/%s/%s/p%03d.%s",
+                                    host,
+                                    workId,
+                                    episodeId,
+                                    page,
+                                    extension);
+                            pool.submit(() -> {
+                                try {
+                                    if(!isCanonicalDirectFirstImageReachable(candidate))
+                                        return;
+                                    ReaderImageCache.INSTANCE.getOrFetchFileForeground(
+                                            appContext,
+                                            prefetchManga,
+                                            candidate,
+                                            null,
+                                            false);
+                                } catch(Throwable ignored) {
+                                }
+                            });
+                        }
+                    }
+                }
+            } finally {
+                pool.shutdown();
+                try {
+                    pool.awaitTermination(25, java.util.concurrent.TimeUnit.SECONDS);
+                } catch(InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    pool.shutdownNow();
+                }
+                Log.d("EpisodeActivity", "ntk_canonical_direct_speculative_prefetch_done path="
+                        + path + ",count=" + count + ",reason=" + reason);
+            }
+        });
+        Log.d("EpisodeActivity", "ntk_canonical_direct_speculative_prefetch_start path="
+                + path + ",count=" + expected + ",reason=" + reason);
+    }
+
+    private ArrayList<String> buildNtkManhwaDirectManifest(String path, int expected) {
+        if(path == null || expected <= 0)
+            return null;
+        if(rejectedCanonicalDirectPaths.contains(path))
+            return null;
+        String[] parts = path.split("/");
+        if(parts.length < 4 || !"manhwa".equalsIgnoreCase(parts[1]))
+            return null;
+        String workId = parts[2];
+        String episodeId = parts[3];
+        if(workId.length() == 0 || episodeId.length() == 0)
+            return null;
+        ArrayList<String> images = new ArrayList<>();
+        for(int page = 1; page <= expected; page++) {
+            images.add(String.format(java.util.Locale.ROOT,
+                    "https://booktoki9.org/manhwa/%s/%s/p%03d.png",
+                    workId,
+                    episodeId,
+                    page));
+        }
+        return images;
+    }
+
+    private ArrayList<String> buildNtkWebtoonDirectManifest(String path, int expected) {
+        if(path == null || expected <= 0)
+            return null;
+        if(rejectedCanonicalDirectPaths.contains(path))
+            return null;
+        String[] parts = path.split("/");
+        if(parts.length < 4 || !"webtoon".equalsIgnoreCase(parts[1]))
+            return null;
+        String workId = parts[2];
+        String episodeId = parts[3];
+        if(!workId.matches("\\d{1,12}") || !episodeId.matches("\\d{1,12}"))
+            return null;
+        ArrayList<String> images = new ArrayList<>();
+        for(int page = 1; page <= expected; page++) {
+            images.add(String.format(java.util.Locale.ROOT,
+                    "https://fifa.worldcup73.xyz/black/episodes/%s/%s/p%03d.jpg",
+                    workId,
+                    episodeId,
+                    page));
+        }
+        return images;
+    }
+
+    private boolean isLikelyNtkWebtoonDirectFirstImageReachable(String path) {
+        return firstReachableNtkWebtoonDirectImage(path, 8) != null;
+    }
+
+    private ArrayList<String> resolveNtkWebtoonDirectManifestUnknown(String path, int maxPages) {
+        if(path == null || maxPages <= 0)
+            return null;
+        String[] parts = path.split("/");
+        if(parts.length < 4 || !"webtoon".equalsIgnoreCase(parts[1]))
+            return null;
+        String workId = parts[2];
+        String episodeId = parts[3];
+        if(!workId.matches("\\d{1,12}") || !episodeId.matches("\\d{1,12}"))
+            return null;
+        String first = firstReachableNtkWebtoonDirectImage(path, 8);
+        if(first == null) {
+            Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_unknown_miss_first path=" + path);
+            return null;
+        }
+        long startedAt = android.os.SystemClock.elapsedRealtime();
+        final int parallelism = Math.min(16, Math.max(1, maxPages));
+        final int chunkSize = Math.max(16, parallelism * 3);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
+                parallelism,
+                runnable -> {
+                    Thread thread = new Thread(runnable, "NtkWebtoonDirectProbe");
+                    thread.setDaemon(true);
+                    thread.setPriority(Thread.NORM_PRIORITY + 1);
+                    return thread;
+                });
+        try {
+            ArrayList<String> images = new ArrayList<>();
+            int emptyChunksAfterHit = 0;
+            for(int chunkStart = 1; chunkStart <= maxPages; chunkStart += chunkSize) {
+                int chunkEnd = Math.min(maxPages, chunkStart + chunkSize - 1);
+                ArrayList<java.util.concurrent.Future<String>> futures = new ArrayList<>();
+                for(int page = chunkStart; page <= chunkEnd; page++) {
+                    final int currentPage = page;
+                    futures.add(pool.submit(() -> {
+                        String candidate = String.format(java.util.Locale.ROOT,
+                                "https://fifa.worldcup73.xyz/black/episodes/%s/%s/p%03d.jpg",
+                                workId,
+                                episodeId,
+                                currentPage);
+                        return isCanonicalDirectFirstImageReachable(candidate) ? candidate : null;
+                    }));
+                }
+                int addedInChunk = 0;
+                for(int i = 0; i < futures.size(); i++) {
+                    String found = futures.get(i).get(1600, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if(found != null) {
+                        images.add(found);
+                        addedInChunk++;
+                    }
+                }
+                if(addedInChunk == 0 && images.size() > 0) {
+                    emptyChunksAfterHit++;
+                    if(emptyChunksAfterHit >= 1) {
+                        Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_unknown_tail path="
+                                + path + ",count=" + images.size()
+                                + ",chunkStart=" + chunkStart
+                                + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+                        return images;
+                    }
+                } else if(addedInChunk > 0) {
+                    emptyChunksAfterHit = 0;
+                }
+            }
+            Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_unknown_max path="
+                    + path + ",count=" + images.size()
+                    + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+            return images;
+        } catch(Exception e) {
+            Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_unknown_error path="
+                    + path + "," + e);
+            return null;
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private String firstReachableNtkWebtoonDirectImage(String path, int probePages) {
+        if(path == null || probePages <= 0)
+            return null;
+        String[] parts = path.split("/");
+        if(parts.length < 4 || !"webtoon".equalsIgnoreCase(parts[1]))
+            return null;
+        String workId = parts[2];
+        String episodeId = parts[3];
+        if(!workId.matches("\\d{1,12}") || !episodeId.matches("\\d{1,12}"))
+            return null;
+        for(int page = 1; page <= probePages; page++) {
+            String candidate = String.format(java.util.Locale.ROOT,
+                    "https://fifa.worldcup73.xyz/black/episodes/%s/%s/p%03d.jpg",
+                    workId,
+                    episodeId,
+                    page);
+            if(isCanonicalDirectFirstImageReachable(candidate))
+                return candidate;
+        }
+        return null;
+    }
+
+    private ArrayList<String> resolveNtkManhwaDirectManifest(String path, int expected) {
+        if(path == null || expected <= 0)
+            return null;
+        String[] parts = path.split("/");
+        if(parts.length < 4 || !"manhwa".equalsIgnoreCase(parts[1]))
+            return null;
+        String workId = parts[2];
+        String episodeId = parts[3];
+        if(workId.length() == 0 || episodeId.length() == 0)
+            return null;
+        String[] hosts = new String[]{"booktoki9.org", "booktoki8.org", "mana.apihost93.com"};
+        String[] extensions = new String[]{"png", "jpg", "webp", "jpeg"};
+        ArrayList<String> images = new ArrayList<>(Collections.nCopies(expected, null));
+        long startedAt = android.os.SystemClock.elapsedRealtime();
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
+                Math.min(16, expected),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "NtkDirectManifestResolve");
+                    thread.setDaemon(true);
+                    thread.setPriority(Thread.NORM_PRIORITY + 1);
+                    return thread;
+                });
+        try {
+            ArrayList<java.util.concurrent.Future<String>> futures = new ArrayList<>();
+            for(int page = 1; page <= expected; page++) {
+                final int currentPage = page;
+                futures.add(pool.submit(() -> {
+                    for(String host : hosts) {
+                        for(String extension : extensions) {
+                            String candidate = String.format(java.util.Locale.ROOT,
+                                    "https://%s/manhwa/%s/%s/p%03d.%s",
+                                    host,
+                                    workId,
+                                    episodeId,
+                                    currentPage,
+                                    extension);
+                            if(isCanonicalDirectFirstImageReachable(candidate))
+                                return candidate;
+                        }
+                    }
+                    return null;
+                }));
+            }
+            for(int i = 0; i < futures.size(); i++) {
+                String found = futures.get(i).get(4, java.util.concurrent.TimeUnit.SECONDS);
+                if(found == null) {
+                    if(i > 0 && images.get(0) != null) {
+                        ArrayList<String> prefix = new ArrayList<>();
+                        for(int j = 0; j < i; j++) {
+                            String image = images.get(j);
+                            if(image == null)
+                                break;
+                            prefix.add(image);
+                        }
+                        if(prefix.size() > 0) {
+                            Log.d("EpisodeActivity", "ntk_canonical_direct_resolve_trim path="
+                                    + path + ",expected=" + expected + ",count=" + prefix.size()
+                                    + ",missingPage=" + (i + 1) + ",ms="
+                                    + (android.os.SystemClock.elapsedRealtime() - startedAt)
+                                    + ",first=" + prefix.get(0));
+                            return prefix;
+                        }
+                    }
+                    Log.d("EpisodeActivity", "ntk_canonical_direct_resolve_miss path="
+                            + path + ",page=" + (i + 1) + ",ms="
+                            + (android.os.SystemClock.elapsedRealtime() - startedAt));
+                    return null;
+                }
+                images.set(i, found);
+            }
+        } catch(Exception e) {
+            Log.d("EpisodeActivity", "ntk_canonical_direct_resolve_error path="
+                    + path + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt)
+                    + "," + e);
+            return null;
+        } finally {
+            pool.shutdownNow();
+        }
+        Log.d("EpisodeActivity", "ntk_canonical_direct_resolved path="
+                + path + ",count=" + images.size() + ",ms="
+                + (android.os.SystemClock.elapsedRealtime() - startedAt)
+                + ",first=" + images.get(0));
+        return images;
+    }
+
+    private ArrayList<String> resolveNtkManhwaDirectManifestUnknown(String path, int maxPages) {
+        if(path == null || maxPages <= 0)
+            return null;
+        String[] parts = path.split("/");
+        if(parts.length < 4 || !"manhwa".equalsIgnoreCase(parts[1]))
+            return null;
+        String workId = parts[2];
+        String episodeId = parts[3];
+        if(workId.length() == 0 || episodeId.length() == 0)
+            return null;
+        String[] hosts = new String[]{"booktoki9.org", "booktoki8.org", "mana.apihost93.com"};
+        String[] extensions = new String[]{"jpg", "png", "webp", "jpeg"};
+        long startedAt = android.os.SystemClock.elapsedRealtime();
+        String firstImage = null;
+        String selectedHost = null;
+        String selectedExtension = null;
+        for(String host : hosts) {
+            for(String extension : extensions) {
+                String candidate = String.format(java.util.Locale.ROOT,
+                        "https://%s/manhwa/%s/%s/p001.%s",
+                        host,
+                        workId,
+                        episodeId,
+                        extension);
+                if(isCanonicalDirectFirstImageReachable(candidate)) {
+                    firstImage = candidate;
+                    selectedHost = host;
+                    selectedExtension = extension;
+                    break;
+                }
+            }
+            if(firstImage != null)
+                break;
+        }
+        if(firstImage == null) {
+            Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_resolve_miss_first path="
+                    + path + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+            return null;
+        }
+        final int parallelism = Math.min(16, Math.max(1, maxPages - 1));
+        final int chunkSize = Math.max(16, parallelism * 3);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
+                parallelism,
+                runnable -> {
+                    Thread thread = new Thread(runnable, "NtkDirectManifestProbe");
+                    thread.setDaemon(true);
+                    thread.setPriority(Thread.NORM_PRIORITY + 1);
+                    return thread;
+                });
+        try {
+            final String manifestHost = selectedHost;
+            final String manifestExtension = selectedExtension;
+            ArrayList<String> images = new ArrayList<>();
+            images.add(firstImage);
+            for(int chunkStart = 2; chunkStart <= maxPages; chunkStart += chunkSize) {
+                int chunkEnd = Math.min(maxPages, chunkStart + chunkSize - 1);
+                ArrayList<java.util.concurrent.Future<String>> futures = new ArrayList<>();
+                for(int page = chunkStart; page <= chunkEnd; page++) {
+                    final int currentPage = page;
+                    futures.add(pool.submit(() -> {
+                        String candidate = String.format(java.util.Locale.ROOT,
+                                "https://%s/manhwa/%s/%s/p%03d.%s",
+                                manifestHost,
+                                workId,
+                                episodeId,
+                                currentPage,
+                                manifestExtension);
+                        if(isCanonicalDirectFirstImageReachable(candidate))
+                            return candidate;
+                        return null;
+                    }));
+                }
+                for(int i = 0; i < futures.size(); i++) {
+                    String found = futures.get(i).get(1600, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if(found == null) {
+                        for(java.util.concurrent.Future<String> future : futures)
+                            future.cancel(true);
+                        Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_tail path="
+                                + path + ",count=" + images.size()
+                                + ",missingPage=" + (chunkStart + i)
+                                + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+                        return images;
+                    }
+                    images.add(found);
+                }
+            }
+            if(images.size() == 0)
+                return null;
+            Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_resolved path="
+                    + path + ",count=" + images.size() + ",ms="
+                    + (android.os.SystemClock.elapsedRealtime() - startedAt)
+                    + ",host=" + selectedHost
+                    + ",extension=" + selectedExtension
+                    + ",first=" + images.get(0));
+            return images;
+        } catch(Exception e) {
+            Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_resolve_error path="
+                    + path + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt)
+                    + "," + e);
+            return null;
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private void primeCanonicalDirectPreparedWindow(Manga manga, ArrayList<String> images, String reason) {
+        if(manga == null || images == null || images.size() == 0 || context == null)
+            return;
+        int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        int decodeLimit = canonicalDirectLaunchDecodeLimit(images.size());
+        int startPage = ReaderWarmupCoordinator.requestedLaunchStartPage(manga, false);
+        String key = ReaderWarmupCoordinator.primeKnownUrls(
+                getApplicationContext(),
+                manga,
+                title,
+                width,
+                true,
+                images,
+                startPage,
+                decodeLimit);
+        Log.d("EpisodeActivity", "ntk_canonical_direct_prepare_prime path="
+                + manga.getNtkEpisodePath()
+                + ",count=" + images.size()
+                + ",decodeLimit=" + decodeLimit
+                + ",startPage=" + startPage
+                + ",key=" + (key != null)
+                + ",reason=" + reason);
+    }
+
+    private void prefetchCanonicalDirectImages(Manga manga, ArrayList<String> images, String reason) {
+        if(manga == null || images == null || images.size() == 0 || context == null)
+            return;
+        final Context appContext = getApplicationContext();
+        final Manga prefetchManga = manga;
+        final ArrayList<String> prefetchImages = new ArrayList<>(images);
+        AppDispatchers.submitIo(() -> {
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
+                    Math.min(8, prefetchImages.size()),
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "NtkDirectImagePrefetch");
+                        thread.setDaemon(true);
+                        thread.setPriority(Thread.NORM_PRIORITY + 1);
+                        return thread;
+                    });
+            long startedAt = android.os.SystemClock.elapsedRealtime();
+            try {
+                ArrayList<Integer> order = new ArrayList<>();
+                order.add(0);
+                int last = prefetchImages.size() - 1;
+                if(last > 0)
+                    order.add(last);
+                int middle = Math.max(0, last / 2);
+                if(!order.contains(middle))
+                    order.add(middle);
+                for(int i = 1; i < prefetchImages.size(); i++) {
+                    if(!order.contains(i))
+                        order.add(i);
+                }
+                ArrayList<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+                for(Integer indexValue : order) {
+                    final int index = indexValue;
+                    futures.add(pool.submit(() -> {
+                        try {
+                            ReaderImageCache.INSTANCE.getOrFetchFileForeground(
+                                    appContext,
+                                    prefetchManga,
+                                    prefetchImages.get(index),
+                                    null,
+                                    false);
+                        } catch(Throwable ignored) {
+                        }
+                    }));
+                }
+                for(java.util.concurrent.Future<?> future : futures) {
+                    try {
+                        future.get(6, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch(Exception ignored) {
+                    }
+                }
+            } finally {
+                pool.shutdownNow();
+                Log.d("EpisodeActivity", "ntk_canonical_direct_prefetch_done path="
+                        + prefetchManga.getNtkEpisodePath()
+                        + ",count=" + prefetchImages.size()
+                        + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt)
+                        + ",reason=" + reason);
+            }
+        });
+        Log.d("EpisodeActivity", "ntk_canonical_direct_prefetch_start path="
+                + manga.getNtkEpisodePath()
+                + ",count=" + images.size()
+                + ",reason=" + reason);
+    }
+
+    private void prefetchCanonicalDirectInitialImages(Manga manga, ArrayList<String> images, String reason) {
+        if(manga == null || images == null || images.size() == 0 || context == null)
+            return;
+        String path = manga.getNtkEpisodePath();
+        String key = path + ":initial:" + images.size() + ":" + reason;
+        if(!speculativeCanonicalDirectPrefetchPaths.add(key))
+            return;
+        final Context appContext = getApplicationContext();
+        final Manga prefetchManga = manga;
+        final ArrayList<String> prefetchImages = new ArrayList<>(
+                images.subList(0, Math.min(images.size(), NTK_DIRECT_INITIAL_PREFETCH_PAGES)));
+        AppDispatchers.submitIo(() -> {
+            long startedAt = android.os.SystemClock.elapsedRealtime();
+            java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(
+                    Math.min(6, prefetchImages.size()),
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "NtkDirectInitialPrefetch");
+                        thread.setDaemon(true);
+                        thread.setPriority(Thread.NORM_PRIORITY + 1);
+                        return thread;
+                    });
+            try {
+                ArrayList<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+                for(int i = 0; i < prefetchImages.size(); i++) {
+                    final int index = i;
+                    futures.add(pool.submit(() -> {
+                        try {
+                            ReaderImageCache.INSTANCE.getOrFetchFileForeground(
+                                    appContext,
+                                    prefetchManga,
+                                    prefetchImages.get(index),
+                                    null,
+                                    false);
+                        } catch(Throwable ignored) {
+                        }
+                    }));
+                }
+                for(java.util.concurrent.Future<?> future : futures) {
+                    try {
+                        future.get(4, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch(Exception ignored) {
+                    }
+                }
+            } finally {
+                pool.shutdownNow();
+                Log.d("EpisodeActivity", "ntk_canonical_direct_initial_prefetch_done path="
+                        + prefetchManga.getNtkEpisodePath()
+                        + ",count=" + prefetchImages.size()
+                        + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt)
+                        + ",reason=" + reason);
+            }
+        });
+        Log.d("EpisodeActivity", "ntk_canonical_direct_initial_prefetch_start path="
+                + path
+                + ",count=" + prefetchImages.size()
+                + ",reason=" + reason);
+    }
+
+    private int canonicalDirectLaunchDecodeLimit(int imageCount) {
+        if(imageCount <= 0)
+            return 0;
+        return Math.min(4, imageCount);
+    }
+
+    private boolean shouldPreferCanonicalDirectManifest(String path) {
+        return path != null && path.startsWith("/manhwa/");
+    }
+
+    private void prepareCanonicalDirectManifestAndLaunch(Manga manga, int code, boolean exactEpisode,
+                                                         String path, ArrayList<String> images) {
+        if(manga == null || title == null || path == null || images == null || images.size() == 0)
+            return;
+        if(path.equals(pendingBrowserOwnedViewerLaunchPath)) {
+            Log.d("EpisodeActivity", "ntk_canonical_direct_prepare_already_pending path=" + path);
+            return;
+        }
+        pendingBrowserOwnedViewerLaunchPath = path;
+        final Manga launchManga = manga;
+        final Title launchTitle = title;
+        final ArrayList<String> launchImages = new ArrayList<>(images);
+        final int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        final AtomicBoolean launched = new AtomicBoolean(false);
+        final AtomicBoolean launchSuppressed = new AtomicBoolean(false);
+        AppDispatchers.submitUserAction(() -> {
+            long startedAt = android.os.SystemClock.elapsedRealtime();
+            try {
+                ArrayList<String> resolvedImages = null;
+                boolean firstLaunchImageReachable = isCanonicalDirectFirstImageReachable(launchImages.get(0));
+                if(firstLaunchImageReachable)
+                    resolvedImages = resolveNtkManhwaDirectManifest(path, launchImages.size());
+                if(resolvedImages != null && resolvedImages.size() > 0) {
+                    launchImages.clear();
+                    launchImages.addAll(resolvedImages);
+                    launchManga.setNtkImageCount(launchImages.size());
+                    firstLaunchImageReachable = true;
+                }
+                if(!firstLaunchImageReachable) {
+                    ArrayList<String> recoveredImages = resolveNtkManhwaDirectManifestUnknown(path, 240);
+                    if(recoveredImages != null && recoveredImages.size() > 0) {
+                        launchImages.clear();
+                        launchImages.addAll(recoveredImages);
+                        launchManga.setNtkImageCount(launchImages.size());
+                        Log.d("EpisodeActivity", "ntk_canonical_direct_recovered_unknown path="
+                                + path + ",count=" + launchImages.size()
+                                + ",first=" + launchImages.get(0));
+                    } else {
+                        rejectedCanonicalDirectPaths.add(path);
+                        Log.d("EpisodeActivity", "ntk_canonical_direct_rejected path="
+                                + path + ",first=" + launchImages.get(0));
+                        AppDispatchers.runOnMain(() -> {
+                            if(destroyed || isFinishing())
+                                return;
+                            if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                                return;
+                            pendingBrowserOwnedViewerLaunchPath = "";
+                            armBrowserOwnedViewerLaunch(launchManga, code, exactEpisode);
+                        });
+                        return;
+                    }
+                }
+                acceptedCanonicalDirectPaths.add(path);
+                acceptedCanonicalDirectImages.put(path, new ArrayList<>(launchImages));
+                ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                        path,
+                        launchImages,
+                        "episode-canonical-direct");
+                int startPage = ReaderWarmupCoordinator.requestedLaunchStartPage(launchManga, exactEpisode);
+                String preparedKey = ReaderWarmupCoordinator.prepareKnownUrlsViewportBlocking(
+                        getApplicationContext(),
+                        launchManga,
+                        launchTitle,
+                        width,
+                        true,
+                        launchImages,
+                        startPage,
+                        canonicalDirectLaunchDecodeLimit(launchImages.size()),
+                        1.0f);
+                if(preparedKey == null) {
+                    launchSuppressed.set(true);
+                    Log.d("EpisodeActivity", "ntk_canonical_direct_prepare_incomplete path="
+                            + path + ",count=" + launchImages.size());
+                    return;
+                }
+                AppDispatchers.runOnMain(() -> {
+                    if(destroyed || isFinishing())
+                        return;
+                    if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                        return;
+                    launched.set(true);
+                    launchViewerNow(launchManga, code, exactEpisode);
+                    prefetchCanonicalDirectImages(launchManga, launchImages, "tap-validated");
+                });
+            } catch(Exception e) {
+                launchSuppressed.set(true);
+                Log.d("EpisodeActivity", "ntk_canonical_direct_prepare_error_suppressed path="
+                        + path + ",count=" + launchImages.size()
+                        + ",message=" + e.getClass().getSimpleName());
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+            Log.d("EpisodeActivity", "ntk_canonical_direct_prepare_done path="
+                    + path + ",count=" + launchImages.size()
+                    + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+            AppDispatchers.runOnMain(() -> {
+                if(launched.get())
+                    return;
+                if(launchSuppressed.get())
+                    return;
+                if(destroyed || isFinishing())
+                    return;
+                if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                    return;
+                launchViewerNow(launchManga, code, exactEpisode);
+            });
+        });
+    }
+
+    private void prepareUnknownCanonicalDirectManifestAndLaunch(Manga manga, int code, boolean exactEpisode,
+                                                                String path) {
+        if(manga == null || title == null || path == null || path.length() == 0)
+            return;
+        if(path.equals(pendingBrowserOwnedViewerLaunchPath)) {
+            Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_already_pending path=" + path);
+            return;
+        }
+        pendingBrowserOwnedViewerLaunchPath = path;
+        final Manga launchManga = manga;
+        final AtomicBoolean launched = new AtomicBoolean(false);
+        final AtomicBoolean launchSuppressed = new AtomicBoolean(false);
+        AppDispatchers.submitUserAction(() -> {
+            ArrayList<String> launchImages = null;
+            long startedAt = android.os.SystemClock.elapsedRealtime();
+            try {
+                launchImages = resolveNtkManhwaDirectManifestUnknown(path, 240);
+                if(launchImages == null || launchImages.size() == 0) {
+                    rejectedCanonicalDirectPaths.add(path);
+                    AppDispatchers.runOnMain(() -> {
+                        if(destroyed || isFinishing())
+                            return;
+                        if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                            return;
+                        pendingBrowserOwnedViewerLaunchPath = "";
+                        armBrowserOwnedViewerLaunch(launchManga, code, exactEpisode);
+                    });
+                    return;
+                }
+                launchManga.setNtkImageCount(launchImages.size());
+                acceptedCanonicalDirectPaths.add(path);
+                acceptedCanonicalDirectImages.put(path, new ArrayList<>(launchImages));
+                ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                        path,
+                        launchImages,
+                        "episode-canonical-direct-unknown");
+                int startPage = ReaderWarmupCoordinator.requestedLaunchStartPage(launchManga, exactEpisode);
+                String preparedKey = ReaderWarmupCoordinator.prepareKnownUrlsViewportBlocking(
+                        getApplicationContext(),
+                        launchManga,
+                        title,
+                        Math.max(1, getResources().getDisplayMetrics().widthPixels),
+                        true,
+                        launchImages,
+                        startPage,
+                        canonicalDirectLaunchDecodeLimit(launchImages.size()),
+                        1.0f);
+                if(preparedKey == null) {
+                    launchSuppressed.set(true);
+                    Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_prepare_incomplete path="
+                            + path + ",count=" + launchImages.size());
+                    return;
+                }
+                final ArrayList<String> finalLaunchImages = launchImages;
+                AppDispatchers.runOnMain(() -> {
+                    if(destroyed || isFinishing())
+                        return;
+                    if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                        return;
+                    launched.set(true);
+                    launchViewerNow(launchManga, code, exactEpisode);
+                    prefetchCanonicalDirectImages(launchManga, finalLaunchImages, "tap-unknown-validated");
+                });
+            } catch(Exception e) {
+                launchSuppressed.set(true);
+                int errorCount = launchImages == null ? 0 : launchImages.size();
+                Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_prepare_error_suppressed path="
+                        + path + ",count=" + errorCount
+                        + ",message=" + e.getClass().getSimpleName());
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+            final int finalCount = launchImages == null ? 0 : launchImages.size();
+            Log.d("EpisodeActivity", "ntk_canonical_direct_unknown_prepare_done path="
+                    + path + ",count=" + finalCount
+                    + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+            AppDispatchers.runOnMain(() -> {
+                if(launched.get())
+                    return;
+                if(launchSuppressed.get())
+                    return;
+                if(destroyed || isFinishing())
+                    return;
+                if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                    return;
+                launchViewerNow(launchManga, code, exactEpisode);
+            });
+        });
+    }
+
+    private void prepareUnknownNtkWebtoonDirectManifestAndLaunch(Manga manga, int code, boolean exactEpisode,
+                                                                 String path) {
+        if(manga == null || title == null || path == null || path.length() == 0)
+            return;
+        final Manga launchManga = manga;
+        final Title launchTitle = title;
+        final int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        final AtomicBoolean launched = new AtomicBoolean(false);
+        final AtomicBoolean launchSuppressed = new AtomicBoolean(false);
+        AppDispatchers.submitUserAction(() -> {
+            ArrayList<String> launchImages = null;
+            long startedAt = android.os.SystemClock.elapsedRealtime();
+            try {
+                launchImages = resolveNtkWebtoonDirectManifestUnknown(path, 240);
+                if(launchImages == null || launchImages.size() == 0) {
+                    launchSuppressed.set(true);
+                    rejectedCanonicalDirectPaths.add(path);
+                    return;
+                }
+                launchManga.setNtkImageCount(launchImages.size());
+                acceptedCanonicalDirectPaths.add(path);
+                acceptedCanonicalDirectImages.put(path, new ArrayList<>(launchImages));
+                ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                        path,
+                        launchImages,
+                        "episode-webtoon-canonical-direct-unknown");
+                int startPage = ReaderWarmupCoordinator.requestedLaunchStartPage(launchManga, exactEpisode);
+                String preparedKey = ReaderWarmupCoordinator.prepareKnownUrlsViewportBlocking(
+                        getApplicationContext(),
+                        launchManga,
+                        launchTitle,
+                        width,
+                        true,
+                        launchImages,
+                        startPage,
+                        canonicalDirectLaunchDecodeLimit(launchImages.size()),
+                        1.0f);
+                if(preparedKey == null) {
+                    launchSuppressed.set(true);
+                    Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_unknown_prepare_incomplete path="
+                            + path + ",count=" + launchImages.size());
+                    return;
+                }
+                final ArrayList<String> finalLaunchImages = launchImages;
+                AppDispatchers.runOnMain(() -> {
+                    if(destroyed || isFinishing())
+                        return;
+                    if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                        return;
+                    launched.set(true);
+                    launchViewerNow(launchManga, code, exactEpisode);
+                    prefetchCanonicalDirectImages(launchManga, finalLaunchImages, "webtoon-canonical-direct");
+                });
+            } catch(Exception e) {
+                launchSuppressed.set(true);
+                Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_unknown_prepare_error path="
+                        + path + "," + e);
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            } finally {
+                int count = launchImages == null ? 0 : launchImages.size();
+                Log.d("EpisodeActivity", "ntk_webtoon_canonical_direct_unknown_prepare_done path="
+                        + path + ",count=" + count
+                        + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
+            }
+            AppDispatchers.runOnMain(() -> {
+                if(launched.get() || launchSuppressed.get())
+                    return;
+                if(destroyed || isFinishing())
+                    return;
+                if(!path.equals(pendingBrowserOwnedViewerLaunchPath))
+                    return;
+                launchViewerNow(launchManga, code, exactEpisode);
+            });
+        });
+    }
+
+    private boolean isCanonicalDirectFirstImageReachable(String imageUrl) {
+        if(imageUrl == null || imageUrl.length() == 0)
+            return false;
+        if(isCanonicalDirectImageReachable(imageUrl, "HEAD"))
+            return true;
+        return isCanonicalDirectImageReachable(imageUrl, "GET");
+    }
+
+    private boolean isCanonicalDirectImageReachable(String imageUrl, String method) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(imageUrl);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("User-Agent", getHttpClient().agent);
+            connection.setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+            if("GET".equals(method))
+                connection.setRequestProperty("Range", "bytes=0-0");
+            connection.setConnectTimeout(1200);
+            connection.setReadTimeout(1200);
+            connection.setInstanceFollowRedirects(false);
+            int code = connection.getResponseCode();
+            return code >= 200 && code < 300;
+        } catch(Exception ignored) {
+            return false;
+        } finally {
+            if(connection != null)
+                connection.disconnect();
+        }
     }
 
     private void saveSelectedEpisodeProgress(int adapterPosition, Manga manga) {
@@ -1468,6 +2840,47 @@ public class EpisodeActivity extends AppCompatActivity {
 
     static boolean shouldSwitchEpisodeListForViewerResultForTest(boolean sourceSwitched, String titleJson) {
         return shouldSwitchEpisodeListForViewerResult(sourceSwitched, titleJson);
+    }
+
+    public boolean testHasLoadedEpisodes() {
+        return loaded && episodeAdapter != null && episodeAdapter.getItemCount() > 1;
+    }
+
+    public int testEpisodeAdapterPositionFor(Manga target) {
+        if(target == null || episodes == null || episodes.size() == 0)
+            return -1;
+        String targetPath = target.getNtkEpisodePath();
+        String targetNumber = Manga.visibleEpisodeNumberKey(target.getName());
+        for(int i = 0; i < episodes.size(); i++) {
+            Manga episode = episodes.get(i);
+            if(episode == null)
+                continue;
+            if(target.getId() > 0 && target.getId() == episode.getId())
+                return i + 1;
+            String episodePath = episode.getNtkEpisodePath();
+            if(targetPath != null && targetPath.length() > 0 && targetPath.equals(episodePath))
+                return i + 1;
+            if(targetNumber.length() > 0
+                    && targetNumber.equals(Manga.visibleEpisodeNumberKey(episode.getName())))
+                return i + 1;
+        }
+        return -1;
+    }
+
+    public void testScrollToEpisode(Manga target) {
+        if(episodeList == null)
+            return;
+        int position = testEpisodeAdapterPositionFor(target);
+        if(position > 0)
+            episodeList.scrollToPosition(position);
+    }
+
+    public void testOpenViewerFromPress(Manga manga) {
+        if(manga == null)
+            return;
+        warmSelectedNtkEpisodeForOpen(manga);
+        saveSelectedEpisodeProgress(testEpisodeAdapterPositionFor(manga), manga);
+        openViewer(manga, 0, true);
     }
 
     private static Title parseIntentTitle(String json) {

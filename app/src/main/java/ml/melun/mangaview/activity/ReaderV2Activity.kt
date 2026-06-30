@@ -20,6 +20,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
 import android.view.accessibility.AccessibilityEvent
+import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -126,6 +127,34 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var viewerLaunchSourceSite = ""
     @Volatile
     private var ntkLaunchPreflightPath: String? = null
+    @Volatile
+    private var ntkInitialDiscoveryPath: String? = null
+    @Volatile
+    private var hybridNtkBrowserActive = false
+    @Volatile
+    private var hybridNtkNativeHandoffStarted = false
+    @Volatile
+    private var hybridNtkFirstDrawableReady = false
+    @Volatile
+    private var hybridNtkViewportReady = false
+    private var hybridNtkWebView: WebView? = null
+    @Volatile
+    private var hybridNtkScrollSnapshot: NtkBrowserSessionBroker.ScrollSnapshot? = null
+    @Volatile
+    private var hybridNtkCoverageSnapshot: NtkBrowserSessionBroker.VisibleCoverageSnapshot? = null
+    @Volatile
+    private var hybridNtkAutoNextStartedAtMs = 0L
+    @Volatile
+    private var hybridNtkAckRecoveryPath = ""
+    @Volatile
+    private var hybridNtkAckRecoveryStartedAtMs = 0L
+    private var hybridNtkEarlyUrlPollPath = ""
+    private var hybridNtkEarlyUrlPollAttempts = 0
+    private val hybridNtkEarlyUrlPollRunnable = object : Runnable {
+        override fun run() {
+            pollHybridNtkEarlyImageUrls()
+        }
+    }
     @Volatile
     private var firstDrawableMetricLogged = false
     @Volatile
@@ -273,14 +302,30 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         val preparedKey = intent.getStringExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY)
         val ntkLaunchPreflightStarted = intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)
-        if (preparedKey.isNullOrBlank()) {
+        val ntkPath = manga.ntkEpisodePath?.trim().orEmpty()
+        val hasBrowserProtectedManifest = ntkPath.isNotBlank() &&
+            ReaderImageCache.earlyNtkImageUrls(ntkPath, SystemClock.elapsedRealtime() - 30000L)
+                .any { it.contains("/api/m/i?", ignoreCase = true) }
+        val hasPreparedNativeReader = !preparedKey.isNullOrBlank() && !hasBrowserProtectedManifest
+        val useHybridNtkBrowser = !hasPreparedNativeReader &&
+            (intent.getBooleanExtra("viewerNtkWebViewAuthoritative", false) ||
+                shouldUseNtkHybridBrowserReader(manga))
+        if (preparedKey.isNullOrBlank() && !useHybridNtkBrowser) {
             primeSlugWebtoonInitialImageAtActivityStart(manga, ntkLaunchPreflightStarted)
+        } else if (useHybridNtkBrowser) {
+            Log.d(TAG, "reader_activity_initial_prime_skip_hybrid path=${manga.ntkEpisodePath}")
         } else {
             Log.d(
                 TAG,
                 "reader_activity_initial_prime_skip_prepared path=${manga.ntkEpisodePath}," +
-                    "prepared=true"
+                "prepared=true"
             )
+        }
+        if (!useHybridNtkBrowser) {
+            startInitialNtkImageDiscovery(manga, ntkLaunchPreflightStarted)
+        } else {
+            ntkInitialDiscoveryPath = manga.ntkEpisodePath
+            Log.d(TAG, "reader_ntk_initial_image_discovery_skip_hybrid path=${manga.ntkEpisodePath}")
         }
         ReaderChromeStyler.applyReaderWindow(this)
         if (ntkLaunchPreflightStarted) {
@@ -295,7 +340,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             Log.d(TAG, "reader_ntk_early_viewer_api_prefetch_parallel reason=launch_preflight,path=${manga.ntkEpisodePath}")
         }
         val allowInitialAckBeforeFirstDrawable = shouldAllowInitialNtkAckBeforeFirstDrawable(manga)
-        if (shouldDeferInitialNtkAckPreflight(manga)) {
+        if (useHybridNtkBrowser) {
+            deferredNtkAckPreflightManga = null
+            statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
+            statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+            statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+            Log.d(TAG, "reader_ntk_ack_preflight_skip_hybrid_initial path=${manga.ntkEpisodePath}")
+        } else if (shouldDeferInitialNtkAckPreflight(manga)) {
             deferredNtkAckPreflightManga = manga
             deferredNtkAckPreflightBlockProbeAttempts = 0
             ReaderImageCache.clearNtkAckRecoveryLaunchHold(manga.ntkEpisodePath, "initial_defer_no_first_draw_block")
@@ -316,10 +367,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             it.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             it.contentDescription = null
-            it.setLimitScrollToDrawablePrefix(
-                viewerLaunchSourceSite.equals("ntk", ignoreCase = true) ||
-                    manga.ntkEpisodePath?.isNotBlank() == true
-            )
+            it.setLimitScrollToDrawablePrefix(true)
             it.setWindowListener(this)
         }
         status = TextView(this).apply {
@@ -361,14 +409,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (viewerLaunchStartedAtMs > 0L) {
             Log.d("ViewerPerf", "reader_activity_create_from_launch source=$viewerLaunchSourceSite ms=${SystemClock.elapsedRealtime() - viewerLaunchStartedAtMs}")
         }
-        startReaderSession(
-            manga,
-            title,
-            preparedKey,
-            startAtFirstPage
-        )
-        scheduleInitialNtkApiPrefetchAfterDrawable(manga, naverOriginalLaunchPreflight)
-        if (deferredNtkAckPreflightManga === manga) {
+        if (useHybridNtkBrowser) {
+            startNtkHybridBrowserReader(manga, title, startAtFirstPage)
+        } else {
+            startReaderSession(
+                manga,
+                title,
+                preparedKey,
+                startAtFirstPage
+            )
+            scheduleInitialNtkApiPrefetchAfterDrawable(manga, naverOriginalLaunchPreflight)
+        }
+        if (!useHybridNtkBrowser && deferredNtkAckPreflightManga === manga) {
             prepareDeferredNtkAckChallenge(manga)
         }
         if (!shouldDeferInitialToolbarAttach()) {
@@ -476,6 +528,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
         statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
         statusHandler.removeCallbacks(drawableReadyDescriptionRunnable)
+        statusHandler.removeCallbacks(hybridNtkEarlyUrlPollRunnable)
         missingEpisodePromptState.dismiss()
         removeInitialDrawGateListener()
         saveCurrentReadingProgress()
@@ -1169,7 +1222,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else if (visibleInitialDrawable) {
             releaseInitialDrawGate("page")
         } else if (isCurrentNtkReader() && !firstDrawableMetricLogged) {
-            logLaunchDrawableMetric(index, "bitmap")
+            logFirstDrawableMetric(index, "bitmap")
+            releaseInitialDrawGate("page")
             maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
             scheduleNtkDrawableReadyPolling()
         } else if (!launchMetricDeferred) {
@@ -1199,7 +1253,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else if (visibleInitialDrawable) {
             releaseInitialDrawGate("tiles")
         } else if (isCurrentNtkReader() && !firstDrawableMetricLogged) {
-            logLaunchDrawableMetric(index, "tiles")
+            logFirstDrawableMetric(index, "tiles")
+            releaseInitialDrawGate("tiles")
             maybeReleaseInitialNtkContinuousGateOrViewport("initial_continuous")
             scheduleNtkDrawableReadyPolling()
         } else if (!launchMetricDeferred) {
@@ -1306,6 +1361,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun scheduleDrawableReadyDescription(index: Int) {
         if (drawableReadyDescriptionPosted) return
+        if (hybridNtkBrowserActive && !isVisibleViewportReady()) {
+            scheduleNtkDrawableReadyPolling()
+            return
+        }
         if (requiresInitialNtkWebtoonViewportReady() && !isVisibleViewportReady()) {
             scheduleNtkDrawableReadyPolling()
             return
@@ -1319,11 +1378,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun isVisibleViewportReady(): Boolean {
+        if (hybridNtkBrowserActive) return hybridNtkViewportReady
         if (!::renderView.isInitialized) return false
         val snapshot = renderView.visibleCoverageSnapshot() ?: return false
+        val physicalViewportPx = if (snapshot.physicalViewportPx > 0) {
+            snapshot.physicalViewportPx
+        } else {
+            snapshot.viewportPx
+        }
         if (
             snapshot.drawablePx > 0 &&
-            snapshot.drawablePx >= (snapshot.viewportPx - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX).coerceAtLeast(1) &&
+            snapshot.viewportPx >= (physicalViewportPx - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX).coerceAtLeast(1) &&
+            snapshot.drawablePx >= (physicalViewportPx - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX).coerceAtLeast(1) &&
             snapshot.visibleLoading == 0 &&
             snapshot.missingPx == 0 &&
             snapshot.placeholderPx == 0
@@ -1599,6 +1665,30 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(TAG, "reader_ntk_early_viewer_api_prefetch_deferred path=$path")
     }
 
+    private fun startInitialNtkImageDiscovery(manga: Manga, launchPreflightStarted: Boolean) {
+        if (!manga.isOnline) return
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (path.isBlank() || (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/"))) return
+        if (launchPreflightStarted && hasCompleteEarlyGeneratedUrls(manga, path)) {
+            Log.d(TAG, "reader_ntk_initial_image_discovery_skip reason=launch_preflight_ready,path=$path")
+            return
+        }
+        ntkInitialDiscoveryPath = path
+        AppDispatchers.runIo {
+            try {
+                manga.startNtkVerifiedInitialImageProbe(getHttpClient())
+                manga.startNtkEarlyViewerApiPrefetch(getHttpClient())
+                Log.d(
+                    TAG,
+                    "reader_ntk_initial_image_discovery_start reason=activity_create,path=$path," +
+                        "launchPreflight=$launchPreflightStarted"
+                )
+            } catch (e: Exception) {
+                Log.d(TAG, "reader_ntk_initial_image_discovery_error path=$path,$e")
+            }
+        }
+    }
+
     private fun shouldDeferInitialNtkApiPrefetch(manga: Manga, elapsedMs: Long): Boolean {
         val path = manga.ntkEpisodePath?.trim().orEmpty()
         if (path.isBlank() || (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/"))) {
@@ -1718,6 +1808,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun postDrawableReadyDescription() {
         if (drawableReadyDescriptionPosted) return
         drawableReadyDescriptionPosted = true
+        if (hybridNtkBrowserActive) {
+            hybridNtkWebView?.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            hybridNtkWebView?.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
+            hybridNtkWebView?.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+            return
+        }
         renderView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         renderView.contentDescription = READER_DRAWABLE_READY_DESCRIPTION
         renderView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
@@ -1825,6 +1921,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val path = manga.ntkEpisodePath ?: return
         if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return
         if (!isCurrentNtkReader() || destroyed || isFinishing) return
+        if (hasCompleteNativeDirectManifest(manga)) {
+            Log.d(TAG, "reader_ntk_ack_immediate_native_skip_direct_manifest reason=$reason,path=$path")
+            return
+        }
         val client = getHttpClient()
         if (client.hasRecentStrictNtkAdAckProof(path)) {
             ReaderImageCache.clearNtkAckRecoveryLaunchHold(path, "immediate_native_ack_strict_ready")
@@ -2180,7 +2280,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pendingBoundaryStartInteractionMs = lastReaderInteractionMs
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
-        val startResult = session?.appendAdjacentEpisode(anchorPage, direction, skipStartDelay = true)
+        val effectiveAnchor = if (direction == ReaderSurfaceView.DIRECTION_NEXT) {
+            (pageCount - 1).coerceAtLeast(anchorPage.coerceAtLeast(0))
+        } else {
+            anchorPage
+        }
+        val startResult = session?.appendAdjacentEpisode(effectiveAnchor, direction, skipStartDelay = true)
         markPrependRevealRequest(direction, startResult)
         if (startResult != ReaderSession.AppendStartResult.STARTED && startResult != ReaderSession.AppendStartResult.BUSY) {
             finishSuppressedBoundaryCaptcha("append_not_started")
@@ -2317,6 +2422,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         attachEpisodeList(currentTitle, target, episodes)
         cachedPreviousEpisode = adjacentEpisodeFastPrepared(target, currentTitle, episodes, false)
         cachedNextEpisode = adjacentEpisodeFastPrepared(target, currentTitle, episodes, true)
+        val targetPath = target.ntkEpisodePath?.trim().orEmpty()
+        if (target.isOnline && (targetPath.startsWith("/webtoon/") || targetPath.startsWith("/manhwa/"))) {
+            startNtkHybridBrowserReader(target, currentTitle, startAtFirstPage = true)
+            primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
+            statusHandler.postDelayed({
+                if (!destroyed && !isFinishing) updateAdjacentButtons()
+            }, ADJACENT_BUTTON_REFRESH_DELAY_MS)
+            return
+        }
         startReaderSession(
             target,
             currentTitle,
@@ -2409,6 +2523,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val path = manga.ntkEpisodePath
         if (path.isNullOrBlank()) return
         if (!isCurrentNtkReader()) return
+        if (hasCompleteNativeDirectManifest(manga)) {
+            Log.d(TAG, "reader_ntk_ack_preflight_skip_direct_manifest path=$path")
+            return
+        }
+        if (hybridNtkBrowserActive || shouldUseNtkHybridBrowserReader(manga)) {
+            deferredNtkAckPreflightManga = null
+            statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
+            statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+            statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+            Log.d(TAG, "reader_ntk_ack_preflight_skip_hybrid_owner path=$path")
+            return
+        }
         if (!canRunAutomaticNtkAck(path)) {
             Log.d(TAG, "reader_ntk_ack_preflight_skip_no_clearance path=$path")
             return
@@ -2500,6 +2626,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun prepareDeferredNtkAckChallenge(manga: Manga) {
         val path = manga.ntkEpisodePath ?: return
+        if (hasCompleteNativeDirectManifest(manga)) {
+            Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_skip_direct_manifest path=$path")
+            return
+        }
+        if (hybridNtkBrowserActive || shouldUseNtkHybridBrowserReader(manga)) {
+            Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_skip_hybrid_owner path=$path")
+            return
+        }
         if (!canRunAutomaticNtkAck(path)) {
             Log.d(TAG, "reader_ntk_ack_deferred_native_prepare_skip_no_clearance path=$path")
             return
@@ -2535,6 +2669,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun startInitialNtkWebViewAckOnlyPreflight(manga: Manga) {
         if (!shouldDeferInitialNtkAckPreflight(manga)) return
         val path = manga.ntkEpisodePath ?: return
+        if (hasCompleteNativeDirectManifest(manga)) {
+            Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_skip_direct_manifest path=$path")
+            return
+        }
+        if (hybridNtkBrowserActive || shouldUseNtkHybridBrowserReader(manga)) {
+            Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_skip_hybrid_owner path=$path")
+            return
+        }
         if (!canRunAutomaticNtkAck(path)) {
             Log.d(TAG, "reader_ntk_ack_initial_webview_preflight_skip_no_clearance path=$path")
             return
@@ -2572,6 +2714,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun startPreparedNtkNativeAckPreflight(manga: Manga, reason: String): Boolean {
         val path = manga.ntkEpisodePath ?: return false
         if (!isCurrentNtkReader() || destroyed || isFinishing) return false
+        if (hybridNtkBrowserActive || shouldUseNtkHybridBrowserReader(manga)) {
+            Log.d(TAG, "reader_ntk_ack_prepared_native_preflight_skip_hybrid_owner reason=$reason,path=$path")
+            return false
+        }
         if (!canRunAutomaticNtkAck(path)) {
             Log.d(TAG, "reader_ntk_ack_prepared_native_preflight_skip_no_clearance reason=$reason,path=$path")
             return false
@@ -3025,13 +3171,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         startAtFirstPage: Boolean = false,
         clearViewImmediately: Boolean = true
     ) {
+        hybridNtkBrowserActive = false
+        hybridNtkNativeHandoffStarted = false
+        hybridNtkFirstDrawableReady = false
+        hybridNtkViewportReady = false
+        hybridNtkWebView = null
+        NtkBrowserSessionBroker.detachKeepAlive()
+        if (::renderView.isInitialized) {
+            renderView.id = R.id.strip
+            renderView.visibility = View.VISIBLE
+        }
         pagesReady = false
         pageCount = 0
         currentPage = 0
         pendingInitialNtkCaptchaDeferrals = 0
         val ntkPath = manga.ntkEpisodePath
         if (ntkPath?.let { it.startsWith("/webtoon/") || it.startsWith("/manhwa/") } == true) {
-            val preserveLaunchPreflight = ntkLaunchPreflightPath == ntkPath
+            val preserveLaunchPreflight = ntkLaunchPreflightPath == ntkPath ||
+                ntkInitialDiscoveryPath == ntkPath
             if (!preserveLaunchPreflight) {
                 ntkAckPreflightGeneration.incrementAndGet()
             }
@@ -3110,6 +3267,551 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             statusHandler.postDelayed(showInitialStatusRunnable, INITIAL_STATUS_DELAY_MS)
             it.start()
         }
+    }
+
+    private fun shouldUseNtkHybridBrowserReader(manga: Manga): Boolean {
+        if (!manga.isOnline) return false
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return false
+        val expected = manga.ntkImageCount
+        if (
+            expected > 0 &&
+            ReaderImageCache.hasAuthoritativeCompleteEarlyNtkImageUrls(
+                path,
+                expected,
+                SystemClock.elapsedRealtime() - 30_000L
+            )
+        ) {
+            return false
+        }
+        Log.d(
+            TAG,
+            "reader_ntk_hybrid_gate_blocked_no_complete_manifest path=$path," +
+                "expected=$expected,strictAck=${getHttpClient().hasRecentStrictNtkAdAckProof(path)}"
+        )
+        return true
+    }
+
+    private fun hasCompleteNativeDirectManifest(manga: Manga): Boolean {
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        val expected = manga.ntkImageCount
+        if (expected <= 0 || (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/"))) return false
+        val urls = ReaderImageCache.earlyNtkImageUrls(path, SystemClock.elapsedRealtime() - 30_000L)
+        if (urls.size < expected) return false
+        return urls.take(expected).none { it.contains("/api/m/i?", ignoreCase = true) }
+    }
+
+    private fun startNtkHybridBrowserReader(manga: Manga, title: Title?, startAtFirstPage: Boolean) {
+        val root = readerRoot ?: return
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (path.isBlank()) return
+        if (manga.ntkImageCount <= 0) {
+            val payloadCount = ntkCachedViewerPayloadImageCount(path)
+                .takeIf { it > 0 }
+                ?: ntkViewerPayloadImageCount(manga.ntkViewerPayloadHint)
+            if (payloadCount > 0) manga.ntkImageCount = payloadCount
+        }
+        hybridNtkBrowserActive = true
+        hybridNtkNativeHandoffStarted = false
+        hybridNtkFirstDrawableReady = false
+        hybridNtkViewportReady = false
+        hybridNtkScrollSnapshot = null
+        hybridNtkCoverageSnapshot = null
+        hybridNtkAutoNextStartedAtMs = 0L
+        hybridNtkAckRecoveryPath = ""
+        hybridNtkAckRecoveryStartedAtMs = 0L
+        initialStartAtFirstPage = startAtFirstPage
+        pagesReady = true
+        pageCount = maxOf(1, manga.ntkImageCount)
+        currentPage = 0
+        session?.cancel()
+        session = null
+        renderView.id = View.NO_ID
+        renderView.visibility = View.GONE
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        status.visibility = TextView.VISIBLE
+        status.text = "회차 연결 중"
+        val client = getHttpClient()
+        val baseUrl = client.getUrl(path)
+        val cachedPayload = ntkCachedViewerPayload(path)
+        if (cachedPayload.isNotBlank()) {
+            NtkBrowserSessionBroker.publishViewerPayload(path, cachedPayload, "reader-cached-pre")
+        }
+        startHybridNtkEarlyImageUrlBridge(manga, path)
+        if (!client.hasRecentStrictNtkAdAckProof(path)) {
+            startHybridNtkAckRecovery(path, "viewer_start")
+        }
+        Log.d("ViewerPerf", "reader_ntk_hybrid_start path=$path,base=$baseUrl,count=${manga.ntkImageCount}")
+        primeHybridNtkImageCandidates(manga, path)
+        hybridNtkWebView = NtkBrowserSessionBroker.attach(
+            activity = this,
+            parent = root,
+            baseUrl = baseUrl,
+            path = path,
+            userAgent = client.agent,
+            headers = emptyMap(),
+            visible = true,
+            listener = object : NtkBrowserSessionBroker.Listener {
+                override fun onState(path: String, cloudflare: Boolean, title: String, bodySample: String) {
+                    if (!isCurrentHybridNtkPath(path)) return
+                    if (cloudflare) startHybridNtkAckRecovery(path, "state_cf")
+                    if (isHybridNtkViewerApiBlocked(bodySample)) {
+                        startHybridNtkAckRecovery(path, "viewer_api_blocked")
+                    }
+                    statusHandler.post {
+                        if (!hybridNtkBrowserActive || destroyed || isFinishing) return@post
+                        if (cloudflare && !hybridNtkFirstDrawableReady) {
+                            status.visibility = TextView.VISIBLE
+                            status.text = "브라우저 보안 확인 중"
+                        }
+                    }
+                }
+
+                override fun onNeedsUserVerification(path: String) {
+                    if (!isCurrentHybridNtkPath(path)) return
+                    startHybridNtkAckRecovery(path, "needs_verification")
+                    statusHandler.post {
+                        if (!hybridNtkBrowserActive || destroyed || isFinishing) return@post
+                        status.visibility = TextView.VISIBLE
+                        status.text = "브라우저 보안 확인 중"
+                    }
+                }
+
+                override fun onFirstDrawable(path: String) {
+                    if (!isCurrentHybridNtkPath(path)) return
+                    hybridNtkFirstDrawableReady = true
+                    statusHandler.post {
+                        if (!hybridNtkBrowserActive || destroyed || isFinishing) return@post
+                        if (!isCurrentHybridNtkPath(path)) return@post
+                        hybridNtkFirstDrawableReady = true
+                        logFirstDrawableMetric(0, "hybrid-webview")
+                        if (hybridNtkViewportReady) {
+                            postDrawableReadyDescription()
+                            status.visibility = TextView.GONE
+                        }
+                    }
+                }
+
+                override fun onViewportReady(path: String) {
+                    if (!isCurrentHybridNtkPath(path)) return
+                    hybridNtkViewportReady = true
+                    hybridNtkFirstDrawableReady = true
+                    statusHandler.post {
+                        if (!hybridNtkBrowserActive || destroyed || isFinishing) return@post
+                        if (!isCurrentHybridNtkPath(path)) return@post
+                        hybridNtkViewportReady = true
+                        hybridNtkFirstDrawableReady = true
+                        if (!firstDrawableMetricLogged) logFirstDrawableMetric(0, "hybrid-webview-viewport")
+                        postDrawableReadyDescription()
+                        status.visibility = TextView.GONE
+                    }
+                }
+
+                override fun onImages(snapshot: NtkBrowserSessionBroker.ImageSnapshot) {
+                    if (!isCurrentHybridNtkPath(snapshot.path)) return
+                    statusHandler.post {
+                        if (!hybridNtkBrowserActive || destroyed || isFinishing) return@post
+                        if (!isCurrentHybridNtkPath(snapshot.path)) return@post
+                        if (maybeSwitchHybridToNativeReader(snapshot)) return@post
+                        if (snapshot.images.isNotEmpty()) {
+                            val expected = currentManga?.ntkImageCount?.coerceAtLeast(0) ?: 0
+                            val manifestCount = if (expected > 0) {
+                                minOf(snapshot.images.size, expected)
+                            } else {
+                                snapshot.images.size
+                            }
+                            pageCount = maxOf(pageCount, manifestCount)
+                            if (::pageView.isInitialized) pageView.text = "${currentPage + 1} / $pageCount"
+                        }
+                    }
+                }
+
+                override fun onScroll(snapshot: NtkBrowserSessionBroker.ScrollSnapshot) {
+                    if (!isCurrentHybridNtkPath(snapshot.path)) return
+                    statusHandler.post {
+                        if (!hybridNtkBrowserActive || destroyed || isFinishing) return@post
+                        if (!isCurrentHybridNtkPath(snapshot.path)) return@post
+                        updateHybridNtkScrollState(snapshot)
+                    }
+                }
+
+                override fun onCoverage(snapshot: NtkBrowserSessionBroker.VisibleCoverageSnapshot) {
+                    if (!isCurrentHybridNtkPath(snapshot.path)) return
+                    statusHandler.post {
+                        if (!hybridNtkBrowserActive || destroyed || isFinishing) return@post
+                        if (!isCurrentHybridNtkPath(snapshot.path)) return@post
+                        hybridNtkCoverageSnapshot = snapshot
+                        val viewportReady = snapshot.viewportPx > 0 &&
+                            snapshot.drawablePx >= (snapshot.viewportPx - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX).coerceAtLeast(1) &&
+                            snapshot.missingPx == 0 &&
+                            snapshot.visibleLoading == 0 &&
+                            snapshot.visibleErrors == 0
+                        if (viewportReady) {
+                            hybridNtkViewportReady = true
+                            hybridNtkFirstDrawableReady = true
+                            if (!firstDrawableMetricLogged) logFirstDrawableMetric(0, "hybrid-webview-coverage")
+                            postDrawableReadyDescription()
+                            status.visibility = TextView.GONE
+                        }
+                    }
+                }
+
+                override fun onError(path: String, message: String) {
+                    Log.d(TAG, "reader_ntk_hybrid_error path=$path,$message")
+                }
+            },
+            expectedImageCount = manga.ntkImageCount
+        )
+        ensureToolbarCreated(manga, title)
+        attachToolbarIfNeeded()
+        updateAdjacentButtons()
+    }
+
+    private fun isCurrentHybridNtkPath(path: String?): Boolean {
+        val currentPath = currentManga?.ntkEpisodePath?.trim().orEmpty()
+        val candidate = path?.trim().orEmpty()
+        return hybridNtkBrowserActive && currentPath.isNotEmpty() && candidate == currentPath
+    }
+
+    private fun maybeSwitchHybridToNativeReader(snapshot: NtkBrowserSessionBroker.ImageSnapshot): Boolean {
+        // Modern NTK /api/m/i image bytes are browser-context bound. Native OkHttp can
+        // discover the manifest, but it does not reliably receive image bytes, so the
+        // WebView remains the display owner until a byte bridge exists.
+        if (snapshot.images.any { it.contains("/api/m/i?", ignoreCase = true) }) return false
+        if (!hybridNtkBrowserActive || hybridNtkNativeHandoffStarted || destroyed || isFinishing) return false
+        val manga = currentManga ?: return false
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (path.isBlank() || snapshot.path != path || snapshot.images.isEmpty()) return false
+        val expected = manga.ntkImageCount.coerceAtLeast(0)
+        if (expected <= 0) return false
+        val enoughImages = if (expected > 0) {
+            snapshot.images.size >= expected
+        } else {
+            snapshot.images.size >= 4
+        }
+        if (!enoughImages) return false
+        hybridNtkNativeHandoffStarted = true
+        ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+            path,
+            snapshot.images,
+            "native-handoff-${snapshot.source}"
+        )
+        Log.d(
+            "ViewerPerf",
+            "reader_ntk_hybrid_native_handoff path=$path,count=${snapshot.images.size}," +
+                "expected=$expected,source=${snapshot.source}"
+        )
+        hybridNtkWebView?.visibility = View.GONE
+        startReaderSession(
+            manga,
+            currentTitle ?: manga.title,
+            null,
+            startAtFirstPage = true,
+            clearViewImmediately = true
+        )
+        session?.installBrowserManifestAndRequestAll(snapshot.images)
+        return true
+    }
+
+    private fun isHybridNtkViewerApiBlocked(bodySample: String): Boolean {
+        val body = bodySample.lowercase(Locale.ROOT)
+        if (!body.contains("viewer-api")) return false
+        return body.contains(" 403") ||
+            body.contains(" 428") ||
+            body.contains("browser_key_required") ||
+            body.contains("access denied") ||
+            body.contains("cloudflare")
+    }
+
+    private fun startHybridNtkEarlyImageUrlBridge(manga: Manga, path: String) {
+        hybridNtkEarlyUrlPollPath = path
+        hybridNtkEarlyUrlPollAttempts = 0
+        statusHandler.removeCallbacks(hybridNtkEarlyUrlPollRunnable)
+        if (path.startsWith("/manhwa/") || path.startsWith("/webtoon/")) {
+            Log.d(
+                TAG,
+                "reader_ntk_hybrid_early_url_bridge_foreground_only path=$path,count=${manga.ntkImageCount}"
+            )
+        } else {
+            try {
+                manga.startNtkVerifiedInitialImageProbe(getHttpClient())
+                manga.startNtkEarlyViewerApiPrefetch(getHttpClient())
+                Log.d(TAG, "reader_ntk_hybrid_early_url_bridge_start path=$path,count=${manga.ntkImageCount}")
+            } catch (e: Exception) {
+                Log.d(TAG, "reader_ntk_hybrid_early_url_bridge_error path=$path,$e")
+            }
+        }
+        pollHybridNtkEarlyImageUrls()
+    }
+
+    private fun pollHybridNtkEarlyImageUrls() {
+        val manga = currentManga ?: return
+        val path = hybridNtkEarlyUrlPollPath.ifBlank { manga.ntkEpisodePath?.trim().orEmpty() }
+        if (!hybridNtkBrowserActive || destroyed || isFinishing || path.isBlank()) return
+        val expected = manga.ntkImageCount.coerceAtLeast(0)
+        val minCreatedAt = SystemClock.elapsedRealtime() - 30_000L
+        val verifiedGeneratedUrls = ReaderImageCache.earlyNtkGeneratedSuccessImageUrls(path, minCreatedAt)
+            .filterNot { isConstructedNtkViewerCdnUrl(it) }
+        if (verifiedGeneratedUrls.isNotEmpty() && (expected <= 0 || verifiedGeneratedUrls.size >= expected)) {
+            Log.d(
+                TAG,
+                "reader_ntk_hybrid_early_url_bridge_publish_verified path=$path," +
+                    "count=${verifiedGeneratedUrls.size},expected=$expected"
+            )
+            NtkBrowserSessionBroker.publishAuthoritativeImageUrls(path, verifiedGeneratedUrls, "verified-generated")
+            return
+        }
+        val urls = ReaderImageCache.earlyNtkImageUrls(path, minCreatedAt)
+        val authoritativeUrls = urls.filterNot { isConstructedNtkViewerCdnUrl(it) }
+        if (authoritativeUrls.isNotEmpty() && (expected <= 0 || authoritativeUrls.size >= expected)) {
+            Log.d(TAG, "reader_ntk_hybrid_early_url_bridge_publish path=$path,count=${authoritativeUrls.size},expected=$expected")
+            NtkBrowserSessionBroker.publishAuthoritativeImageUrls(path, authoritativeUrls, "early-cache")
+            return
+        }
+        hybridNtkEarlyUrlPollAttempts += 1
+        if (hybridNtkEarlyUrlPollAttempts <= 40) {
+            val delay = if (hybridNtkEarlyUrlPollAttempts <= 12) 80L else 180L
+            statusHandler.postDelayed(hybridNtkEarlyUrlPollRunnable, delay)
+        } else {
+            Log.d(
+                TAG,
+                "reader_ntk_hybrid_early_url_bridge_miss path=$path,count=${authoritativeUrls.size}," +
+                    "verified=${verifiedGeneratedUrls.size},expected=$expected"
+            )
+        }
+    }
+
+    private fun isConstructedNtkViewerCdnUrl(url: String?): Boolean {
+        val lower = url?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return Regex("^https?://apihost\\d*\\.com/manhwa/\\d+/\\d+/p\\d{3}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$").matches(lower) ||
+            Regex("^https?://[a-z0-9-]+\\.worldcup\\d+\\.xyz/(?:black|blacktoon)/episodes/\\d+/\\d+/p\\d{3}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$").matches(lower)
+    }
+
+    private fun startHybridNtkAckRecovery(path: String, reason: String) {
+        if (!hybridNtkBrowserActive || destroyed || isFinishing || path.isBlank()) return
+        Log.d(TAG, "reader_ntk_hybrid_ack_recovery_skip_foreground_owner reason=$reason,path=$path")
+    }
+
+    private fun primeHybridNtkImageCandidates(manga: Manga, path: String) {
+        val payloadUrls = ntkCachedViewerPayloadImageUrls(manga, path)
+        val generatedCandidates = if (payloadUrls.isEmpty()) hybridNtkImageCandidates(manga, path) else emptyList()
+        val candidates = payloadUrls
+        if (candidates.isEmpty()) {
+            if (generatedCandidates.isNotEmpty()) {
+                Log.d(
+                    "ViewerPerf",
+                    "reader_ntk_hybrid_generated_candidates_ignored path=$path,count=${generatedCandidates.size}," +
+                        "first=${generatedCandidates.firstOrNull().orEmpty().take(96)}"
+                )
+            }
+            return
+        }
+        Log.d(
+            "ViewerPerf",
+                "reader_ntk_hybrid_candidate_prime path=$path,count=${candidates.size}," +
+                "known=${manga.ntkImageCount},imageWork=${manga.ntkImageWorkId}," +
+                "imageEpisode=${manga.ntkImageEpisodeId},source=" +
+                if (payloadUrls.isNotEmpty()) "payload-src" else "generated-pattern-skip"
+        )
+        ReaderImageCache.rememberEarlyNtkImageUrls(path, candidates)
+        NtkBrowserSessionBroker.primeImageUrls(
+            path,
+            candidates,
+            if (payloadUrls.isNotEmpty()) "payload-src" else "candidate"
+        )
+    }
+
+    private fun ntkCachedViewerPayloadImageUrls(manga: Manga, path: String): List<String> {
+        val payload = ntkCachedViewerPayload(path)
+        if (payload.isBlank()) return emptyList()
+        val parts = path.trim('/').split('/').filter { it.isNotBlank() }
+        if (parts.size < 3) return emptyList()
+        val kind = parts[0]
+        val workId = manga.ntkImageWorkId?.trim().orEmpty().ifBlank { parts[1] }
+        val episodeId = manga.ntkImageEpisodeId?.trim().orEmpty().ifBlank { parts[2] }
+        return try {
+            CustomHttpClient.extractNtkViewerImageUrlsFromApiBody(
+                payload,
+                kind,
+                workId,
+                episodeId
+            ).orEmpty()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    private fun hybridNtkImageCandidates(manga: Manga, path: String): List<String> {
+        val parts = path.trim('/').split('/').filter { it.isNotBlank() }
+        if (parts.size < 3) return emptyList()
+        val segment = parts[0]
+        if (segment != "webtoon" && segment != "manhwa") return emptyList()
+        val pathWorkId = parts[1]
+        val pathEpisodeId = parts[2]
+        val numeric = Regex("\\d{1,12}")
+        val recordedWorkId = manga.ntkImageWorkId?.trim().orEmpty()
+        val imageWorkId = recordedWorkId.ifBlank {
+            pathWorkId
+        }
+        val recordedEpisodeId = manga.ntkImageEpisodeId?.trim().orEmpty()
+        val imageEpisodeId = when {
+            recordedEpisodeId.matches(numeric) -> recordedEpisodeId
+            pathEpisodeId.matches(numeric) -> pathEpisodeId
+            else -> ""
+        }
+        if (!imageWorkId.matches(numeric) || imageEpisodeId.isEmpty()) {
+            if (segment == "webtoon" && pathEpisodeId.matches(numeric)) {
+                val count = hybridNtkCandidatePageCount(manga)
+                return (1..count).map { page ->
+                    "https://fifa.worldcup73.xyz/wt/episodes/$pathWorkId/$pathEpisodeId/" +
+                        "p%03d.jpg".format(Locale.ROOT, page)
+                }
+            }
+            return emptyList()
+        }
+        val count = hybridNtkCandidatePageCount(manga)
+        val urls = ArrayList<String>(count)
+        for (page in 1..count) {
+            val pageName = "p%03d.jpg".format(Locale.ROOT, page)
+            if (segment == "manhwa") {
+                urls.add("https://apihost93.com/manhwa/$imageWorkId/$imageEpisodeId/$pageName")
+            } else if (!pathWorkId.matches(numeric)) {
+                urls.add("https://fifa.worldcup73.xyz/wt/episodes/$pathWorkId/$pathEpisodeId/$pageName")
+            } else {
+                urls.add("https://fifa.worldcup73.xyz/black/episodes/$imageWorkId/$imageEpisodeId/$pageName")
+            }
+        }
+        return urls
+    }
+
+    private fun hybridNtkCandidatePageCount(manga: Manga): Int {
+        val known = manga.ntkImageCount
+        return when {
+            known > 0 -> known.coerceIn(1, 128)
+            else -> 64
+        }
+    }
+
+    private fun ntkViewerPayloadImageCount(payload: String?): Int {
+        val text = payload?.takeIf { it.isNotBlank() } ?: return 0
+        return Regex("\"page\"\\s*:").findAll(text).count().coerceIn(0, 128)
+    }
+
+    private fun ntkCachedViewerPayload(path: String): String {
+        return try {
+            getHttpClient().cachedNtkViewerPayloadBody(path, 60_000L).orEmpty()
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    private fun ntkCachedViewerPayloadImageCount(path: String): Int {
+        return ntkViewerPayloadImageCount(ntkCachedViewerPayload(path))
+    }
+
+    private fun updateHybridNtkScrollState(snapshot: NtkBrowserSessionBroker.ScrollSnapshot) {
+        val previous = hybridNtkScrollSnapshot
+        val viewport = snapshot.viewportHeight.coerceAtLeast(1)
+        val content = maxOf(snapshot.contentHeight, previous?.contentHeight ?: 0, viewport)
+        val maxScroll = (content - viewport).coerceAtLeast(0)
+        val scrollY = if (
+            previous != null &&
+            snapshot.contentHeight < previous.contentHeight &&
+            snapshot.scrollY < previous.scrollY
+        ) {
+            previous.scrollY.coerceAtMost(maxScroll)
+        } else {
+            snapshot.scrollY.coerceIn(0, maxScroll)
+        }
+        val stableSnapshot = snapshot.copy(
+            scrollY = scrollY,
+            contentHeight = content,
+            maxScroll = maxScroll,
+            nearEnd = maxScroll > 0 && scrollY >= maxScroll - 96
+        )
+        if (scrollY != snapshot.scrollY) {
+            hybridNtkWebView?.scrollTo(0, scrollY)
+            NtkBrowserSessionBroker.freezeCurrentScroll(
+                currentManga?.ntkEpisodePath,
+                scrollY,
+                content,
+                1_200L
+            )
+        }
+        hybridNtkScrollSnapshot = stableSnapshot
+        val expectedPages = currentManga?.ntkImageCount?.coerceAtLeast(0) ?: 0
+        val estimatedPages = if (expectedPages > 0) {
+            expectedPages
+        } else {
+            maxOf(pageCount, ((content + viewport - 1) / viewport).coerceAtLeast(1))
+        }
+        pageCount = estimatedPages
+        val page = if (maxScroll <= 0) {
+            0
+        } else {
+            ((scrollY.toLong() * (estimatedPages - 1)) / maxScroll.coerceAtLeast(1)).toInt()
+        }.coerceIn(0, (estimatedPages - 1).coerceAtLeast(0))
+        currentPage = page
+        if (::pageView.isInitialized) pageView.text = "${currentPage + 1} / $pageCount"
+        updateCurrentEpisode(currentPage, scrollY, saveProgress = true)
+    }
+
+    private fun maybeStartHybridNtkNextEpisode(reason: String): Boolean {
+        if (!hybridNtkBrowserActive || adjacentNavigationInFlight || destroyed || isFinishing) return false
+        if (!hybridNtkViewportReady || !firstDrawableMetricLogged) return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - hybridNtkAutoNextStartedAtMs < 2_500L) return false
+        val manga = currentManga ?: return false
+        val title = currentTitle ?: manga.title
+        val episodes = ViewerEpisodeResolver.episodeListFor(manga, null, title)
+        if (manga != null) attachEpisodeList(title, manga, episodes)
+        val next = cachedNextEpisode ?: adjacentEpisodeFastPrepared(manga, title, episodes, true) ?: return false
+        hybridNtkAutoNextStartedAtMs = now
+        Log.d(TAG, "reader_ntk_hybrid_next_start reason=$reason current=${manga.ntkEpisodePath} next=${next.ntkEpisodePath}")
+        launchAdjacent(manga, next, title)
+        return true
+    }
+
+    private fun currentHybridNtkScrollSnapshot(): NtkBrowserSessionBroker.ScrollSnapshot? {
+        return refreshHybridNtkScrollFromView()
+    }
+
+    private fun refreshHybridNtkScrollFromView(): NtkBrowserSessionBroker.ScrollSnapshot? {
+        val view = hybridNtkWebView ?: return hybridNtkScrollSnapshot
+        val path = currentManga?.ntkEpisodePath?.trim().orEmpty()
+        if (path.isBlank()) return hybridNtkScrollSnapshot
+        val viewport = maxOf(1, view.height)
+        val expectedPages = currentManga?.ntkImageCount?.coerceAtLeast(0) ?: 0
+        val estimatedContent = if (expectedPages > 0) {
+            viewport * expectedPages
+        } else {
+            viewport
+        }
+        val previousContent = hybridNtkScrollSnapshot?.contentHeight ?: 0
+        val content = maxOf(viewport, estimatedContent, previousContent, (view.contentHeight * view.scale).toInt())
+        val maxScroll = (content - viewport).coerceAtLeast(0)
+        val rawScrollY = view.scrollY.coerceIn(0, maxScroll)
+        val previousScrollY = hybridNtkScrollSnapshot?.scrollY ?: 0
+        val scrollY = if (previousScrollY > rawScrollY && previousContent > 0) {
+            previousScrollY.coerceAtMost(maxScroll)
+        } else {
+            rawScrollY
+        }
+        if (scrollY != rawScrollY) {
+            view.scrollTo(0, scrollY)
+            NtkBrowserSessionBroker.freezeCurrentScroll(path, scrollY, content, 1_200L)
+        }
+        val snapshot = NtkBrowserSessionBroker.ScrollSnapshot(
+            path,
+            scrollY,
+            viewport,
+            content,
+            maxScroll,
+            maxScroll > 0 && scrollY >= maxScroll - 96,
+            SystemClock.elapsedRealtime()
+        )
+        updateHybridNtkScrollState(snapshot)
+        return snapshot
     }
 
     private fun updateAdjacentButtons() {
@@ -3851,8 +4553,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     fun testStartBoundaryAppend(direction: Int, anchorPage: Int): ReaderSession.AppendStartResult? {
+        if (hybridNtkBrowserActive) {
+            if (direction != ReaderSurfaceView.DIRECTION_NEXT) return ReaderSession.AppendStartResult.CANCELLED
+            return if (maybeStartHybridNtkNextEpisode("test-boundary-append")) {
+                ReaderSession.AppendStartResult.STARTED
+            } else {
+                ReaderSession.AppendStartResult.CANCELLED
+            }
+        }
         val anchor = if (direction == ReaderSurfaceView.DIRECTION_NEXT) {
-            anchorPage.coerceAtLeast(0)
+            (pageCount - 1).coerceAtLeast(anchorPage.coerceAtLeast(0))
         } else {
             anchorPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
         }
@@ -3895,14 +4605,39 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     fun testCurrentProgressPosition(): ReaderSurfaceView.ProgressPosition? {
+        if (hybridNtkBrowserActive) {
+            val snapshot = currentHybridNtkScrollSnapshot()
+            return ReaderSurfaceView.ProgressPosition(currentPage, snapshot?.scrollY ?: 0)
+        }
         return renderView.currentProgressPosition()
     }
 
     fun testCurrentScrollPositionSnapshot(): ReaderSurfaceView.ScrollPositionSnapshot? {
+        if (hybridNtkBrowserActive) {
+            val snapshot = currentHybridNtkScrollSnapshot()
+            val viewport = maxOf(1, hybridNtkWebView?.height ?: resources.displayMetrics.heightPixels)
+            val content = snapshot?.contentHeight ?: maxOf(viewport, ((hybridNtkWebView?.contentHeight ?: 0) * (hybridNtkWebView?.scale ?: 1f)).toInt())
+            val maxScroll = snapshot?.maxScroll ?: (content - viewport).coerceAtLeast(0)
+            val scrollY = snapshot?.scrollY ?: (hybridNtkWebView?.scrollY ?: 0).coerceIn(0, maxScroll)
+            return ReaderSurfaceView.ScrollPositionSnapshot(
+                currentPage,
+                scrollY,
+                scrollY,
+                content,
+                maxScroll,
+                false
+            )
+        }
         return renderView.currentScrollPositionSnapshot()
     }
 
     fun testScrollByPixels(deltaPx: Float) {
+        if (hybridNtkBrowserActive) {
+            val view = hybridNtkWebView ?: return
+            view.scrollBy(0, deltaPx.toInt())
+            refreshHybridNtkScrollFromView()
+            return
+        }
         renderView.testScrollByPixels(deltaPx)
     }
 
@@ -3926,6 +4661,51 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     fun testVisibleCoverageSnapshot(): ReaderSurfaceView.VisibleCoverageSnapshot? {
+        if (hybridNtkBrowserActive) {
+            val viewport = maxOf(1, hybridNtkWebView?.height ?: resources.displayMetrics.heightPixels)
+            try {
+                hybridNtkWebView?.evaluateJavascript(
+                    "try{window.__mvNtkPostCoverage&&window.__mvNtkPostCoverage('test');}catch(e){}",
+                    null
+                )
+            } catch (_: Throwable) {
+            }
+            val coverage = hybridNtkCoverageSnapshot
+                ?: NtkBrowserSessionBroker.latestCoverageSnapshot(currentManga?.ntkEpisodePath)
+            if (coverage != null) {
+                val drawable = coverage.drawablePx.coerceIn(0, viewport)
+                val missing = maxOf(0, viewport - drawable, coverage.missingPx)
+                return ReaderSurfaceView.VisibleCoverageSnapshot(
+                    viewportPx = viewport,
+                    drawablePx = drawable,
+                    missingPx = missing,
+                    placeholderPx = missing,
+                    drawableItems = coverage.drawableItems,
+                    totalItems = maxOf(coverage.totalItems, coverage.pageCount),
+                    visibleLoading = coverage.visibleLoading + if (missing > 0 && coverage.visibleLoading == 0) 1 else 0,
+                    visibleErrors = coverage.visibleErrors,
+                    visibleCards = 0,
+                    busy = coverage.visibleLoading > 0,
+                    pageCount = pageCount,
+                    physicalViewportPx = viewport
+                )
+            }
+            val drawable = if (hybridNtkViewportReady) viewport else 0
+            return ReaderSurfaceView.VisibleCoverageSnapshot(
+                viewportPx = viewport,
+                drawablePx = drawable,
+                missingPx = if (hybridNtkViewportReady) 0 else viewport,
+                placeholderPx = if (hybridNtkViewportReady) 0 else viewport,
+                drawableItems = if (hybridNtkFirstDrawableReady) 1 else 0,
+                totalItems = 1,
+                visibleLoading = if (hybridNtkViewportReady) 0 else 1,
+                visibleErrors = 0,
+                visibleCards = 0,
+                busy = false,
+                pageCount = pageCount,
+                physicalViewportPx = viewport
+            )
+        }
         return renderView.visibleCoverageSnapshot()
     }
 
@@ -3950,10 +4730,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     fun testPageCount(): Int {
+        if (hybridNtkBrowserActive) refreshHybridNtkScrollFromView()
         return pageCount
     }
 
     fun testCurrentPage(): Int {
+        if (hybridNtkBrowserActive) refreshHybridNtkScrollFromView()
         return currentPage
     }
 
@@ -3966,6 +4748,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     fun testHasLoadedEpisode(episode: Manga?): Boolean {
+        if (hybridNtkBrowserActive) {
+            return episode != null &&
+                Manga.sameEpisodeIdentity(currentManga, episode) &&
+                hybridNtkViewportReady
+        }
         return episode != null && session?.containsEpisodeForTest(episode) == true
     }
 

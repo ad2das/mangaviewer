@@ -11,9 +11,9 @@ object ReaderPreparedStore {
     private const val MAX_ENTRIES = 24
     private const val DEFAULT_SOFT_BITMAP_BYTES = 16L * 1024L * 1024L
     private const val DEFAULT_HARD_BITMAP_BYTES = 24L * 1024L * 1024L
-    private const val NTK_SOFT_BITMAP_BYTES = DEFAULT_SOFT_BITMAP_BYTES
-    private const val NTK_HARD_BITMAP_BYTES = DEFAULT_HARD_BITMAP_BYTES
-    private const val MAX_PINNED_START_BITMAPS = 1
+    private const val NTK_SOFT_BITMAP_BYTES = 96L * 1024L * 1024L
+    private const val NTK_HARD_BITMAP_BYTES = 128L * 1024L * 1024L
+    private const val MAX_PINNED_START_BITMAPS = 3
 
     enum class Status {
         PENDING,

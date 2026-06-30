@@ -209,6 +209,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             }
             bindEmptyThumbnail(h.thumb, true);
             bindSelection(h, position);
+            if(mClickListener != null)
+                mClickListener.onItemVisible(Dposition, episode);
         }
     }
 
@@ -682,6 +684,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public interface ItemClickListener {
         void onItemClick(int position, Manga m);
         void onItemPress(int position, Manga m);
+        default void onItemVisible(int position, Manga m) {}
         void onStarClick();
         void onFirstClick();
         void onAuthorClick();

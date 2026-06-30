@@ -1,7 +1,7 @@
 param(
     [string]$DeviceSerial = "emulator-5556",
     [string]$OutDir = "build\ntk-vpn-acceptance",
-    [string]$SiteRoot = "https://sbxh9.com",
+    [string]$SiteRoot = "https://newtoki1.org",
     [string]$ComicPath = "/manhwa/36525/1807424",
     [string]$ComicEpisodeId = "1807424",
     [string]$ComicWorkId = "36525",

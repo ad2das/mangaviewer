@@ -20,6 +20,8 @@ import ml.melun.mangaview.runtime.BackgroundPrefetchBudget
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
@@ -55,6 +57,11 @@ object ReaderWarmupCoordinator {
         val launchBytePages: Int,
         val adjacentBytePages: Int,
         val launchDecodeScreenfuls: Float
+    )
+
+    private data class PreparedBitmap(
+        val index: Int,
+        val bitmap: Bitmap
     )
 
     @JvmStatic
@@ -103,6 +110,26 @@ object ReaderWarmupCoordinator {
         if (snapshot.status == ReaderPreparedStore.Status.FAILED) return null
         schedule(context.applicationContext, entry, exactEpisode, launchProfile(launchTitle))
         return key
+    }
+
+    @JvmStatic
+    fun strictWindowReadyKey(
+        context: Context?,
+        manga: Manga?,
+        title: Title?,
+        viewerWidth: Int,
+        exactEpisode: Boolean
+    ): String? {
+        if (context == null || manga == null) return null
+        val launchTitle = title ?: manga.title
+        attachTitle(manga, launchTitle)
+        val width = normalizeWidth(context, viewerWidth)
+        val startPage = requestedStartPage(manga, exactEpisode)
+        val key = stableKey(manga, launchTitle, startPage, width, exactEpisode)
+        val snapshot = ReaderPreparedStore.get(key)?.snapshot() ?: return null
+        val startBitmap = snapshot.bitmaps[snapshot.startPage]
+        val hasStartBitmap = startBitmap != null && !startBitmap.isRecycled
+        return if (hasStartBitmap && snapshot.status == ReaderPreparedStore.Status.WINDOW_READY) key else null
     }
 
     @JvmStatic
@@ -187,6 +214,117 @@ object ReaderWarmupCoordinator {
     }
 
     @JvmStatic
+    fun prepareKnownUrlsBlocking(
+        context: Context?,
+        manga: Manga?,
+        title: Title?,
+        viewerWidth: Int,
+        exactEpisode: Boolean,
+        images: List<String>?,
+        startPage: Int,
+        decodeLimit: Int,
+        fetchAllBytes: Boolean
+    ): String? {
+        if (context == null || manga == null || images.isNullOrEmpty()) return null
+        val appContext = context.applicationContext
+        val launchTitle = title ?: manga.title
+        attachTitle(manga, launchTitle)
+        val width = normalizeWidth(appContext, viewerWidth)
+        val resolvedStart = startPage.coerceIn(0, images.lastIndex)
+        val key = stableKey(manga, launchTitle, resolvedStart, width, exactEpisode)
+        val entry = ReaderPreparedStore.createOrGet(
+            key,
+            manga,
+            launchTitle,
+            resolvedStart,
+            width,
+            pinStartBitmap = true
+        )
+        val safeImages = ArrayList(images)
+        entry.setImages(safeImages, resolvedStart)
+        if (fetchAllBytes) {
+            fetchAllImageBytesBlocking(appContext, manga, safeImages)
+        }
+        val safeDecodeLimit = decodeLimit.coerceIn(1, safeImages.size)
+        val order = launchDecodeOrder(resolvedStart, safeImages.size, safeDecodeLimit)
+        for ((position, index) in order.withIndex()) {
+            val bitmap = decodePage(appContext, manga, index, safeImages[index], width)
+            entry.putBitmap(index, bitmap, index == resolvedStart, position == order.lastIndex)
+        }
+        return readyKey(appContext, manga, launchTitle, viewerWidth, exactEpisode) ?: key
+    }
+
+    @JvmStatic
+    fun prepareKnownUrlsViewportBlocking(
+        context: Context?,
+        manga: Manga?,
+        title: Title?,
+        viewerWidth: Int,
+        exactEpisode: Boolean,
+        images: List<String>?,
+        startPage: Int,
+        maxDecodePages: Int,
+        screenfuls: Float
+    ): String? {
+        if (context == null || manga == null || images.isNullOrEmpty()) return null
+        val appContext = context.applicationContext
+        val launchTitle = title ?: manga.title
+        attachTitle(manga, launchTitle)
+        val width = normalizeWidth(appContext, viewerWidth)
+        val resolvedStart = startPage.coerceIn(0, images.lastIndex)
+        val key = stableKey(manga, launchTitle, resolvedStart, width, exactEpisode)
+        val entry = ReaderPreparedStore.createOrGet(
+            key,
+            manga,
+            launchTitle,
+            resolvedStart,
+            width,
+            pinStartBitmap = true
+        )
+        val safeImages = ArrayList(images)
+        entry.setImages(safeImages, resolvedStart)
+        val limit = maxDecodePages.coerceIn(1, safeImages.size)
+        val order = launchDecodeOrder(resolvedStart, safeImages.size, limit)
+        val requiredHeight = (viewportHeightPx(appContext) * screenfuls.coerceAtLeast(1f)).toInt()
+        var coveredHeight = 0
+        var lastPosition = -1
+        val completion = AppDispatchers.ioCompletionService<PreparedBitmap>()
+        for (index in order) {
+            completion.submit(AppDispatchers.safeCallable {
+                PreparedBitmap(index, decodePage(appContext, manga, index, safeImages[index], width))
+            })
+        }
+        repeat(order.size) { received ->
+            val prepared = completion.take().get()
+            val index = prepared.index
+            val bitmap = prepared.bitmap
+            val position = order.indexOf(index)
+            coveredHeight += bitmap.height.coerceAtLeast(1)
+            lastPosition = max(lastPosition, position)
+            val windowComplete = coveredHeight >= requiredHeight || received == order.lastIndex
+            entry.putBitmap(index, bitmap, index == resolvedStart, windowComplete)
+            android.util.Log.d(
+                "ViewerPerf",
+                "reader_prepare_viewport_bitmap path=${manga.ntkEpisodePath}," +
+                    "index=$index,height=${bitmap.height},covered=$coveredHeight," +
+                    "required=$requiredHeight,complete=$windowComplete,parallel=true"
+            )
+        }
+        if (lastPosition >= 0) {
+            val nextStart = (lastPosition + 1).coerceAtMost(order.size)
+            val nextIndexes = order.drop(nextStart).take(2)
+            if (nextIndexes.isNotEmpty()) {
+                AppDispatchers.submitIo {
+                    for (index in nextIndexes) {
+                        fetchVisibleImageFile(appContext, manga, safeImages[index])
+                    }
+                }
+            }
+        }
+        return strictWindowReadyKey(appContext, manga, launchTitle, viewerWidth, exactEpisode)
+    }
+
+    @JvmStatic
     fun pendingKey(
         context: Context?,
         manga: Manga?,
@@ -203,6 +341,12 @@ object ReaderWarmupCoordinator {
         if (ReaderPreparedStore.get(key) != null) return key
         if (ReaderPreparedStore.findReadyCompatible(key) != null) return key
         return null
+    }
+
+    @JvmStatic
+    fun requestedLaunchStartPage(manga: Manga?, exactEpisode: Boolean): Int {
+        if (manga == null) return 0
+        return requestedStartPage(manga, exactEpisode)
     }
 
     @JvmStatic
@@ -652,13 +796,44 @@ object ReaderWarmupCoordinator {
         return if (manga.isOnline) ReaderImageCache.getOrFetchFile(context, manga, image) else null
     }
 
+    private fun fetchVisibleImageFile(context: Context, manga: Manga, image: String): File? {
+        return if (manga.isOnline) {
+            ReaderImageCache.getOrFetchFileForeground(context, manga, image, null, true)
+        } else {
+            null
+        }
+    }
+
+    private fun fetchAllImageBytesBlocking(context: Context, manga: Manga, images: List<String>) {
+        if (!manga.isOnline || images.isEmpty()) return
+        val pool = Executors.newFixedThreadPool(minOf(8, images.size)) { runnable ->
+            Thread(runnable, "ReaderPreparedFullBytes").apply {
+                isDaemon = true
+                priority = Thread.NORM_PRIORITY + 1
+            }
+        }
+        try {
+            val futures = images.map { image ->
+                pool.submit<File?> {
+                    ReaderImageCache.cachedFile(context, manga, image)
+                        ?: ReaderImageCache.getOrFetchFileForeground(context, manga, image, null, true)
+                }
+            }
+            for (future in futures) {
+                future.get(45, TimeUnit.SECONDS)
+            }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
     private fun decodePage(context: Context, manga: Manga, index: Int, image: String, width: Int): Bitmap {
         ViewerWarmupManager.getDecodedBitmap(PageItem(index, image, manga), false, p?.reverse ?: false, width)?.let {
             if (!it.isRecycled) return it
         }
         val startedAt = android.os.SystemClock.elapsedRealtime()
         val metric = index == 0 && manga.isOnline
-        val source = fetchImageFile(context, manga, image)
+        val source = fetchVisibleImageFile(context, manga, image)
         val fetchedAt = android.os.SystemClock.elapsedRealtime()
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (source != null) {

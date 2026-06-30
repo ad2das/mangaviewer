@@ -19,8 +19,8 @@ import okhttp3.Response;
 public class NtkDomainResolver {
     public static final String CHANNEL_URL = "https://t.me/s/newtoki_url";
     private static final String[] CHANNEL_URLS = new String[]{
-            "https://sbxh9.com",
             "https://newtoki1.org",
+            "https://sbxh9.com",
             "https://sbxh8.com",
             "https://sbxh7.com",
             CHANNEL_URL

@@ -784,6 +784,12 @@ if(-not $NoAckAssert) {
             if($line -match "ntk_ack_proof=.*`"scope`":`"$pathRe`"") {
                 $hasStrictProof = $true
             }
+            if($line -match "ntk_foreground_ack_strict_recorded path=$pathRe(\b|,|$)") {
+                $hasStrictProof = $true
+            }
+            if($line -match "ntk_foreground_ack_(state|proof) path=$pathRe,body=.*`"scope`":`"$pathRe`".*`"proof200`":true") {
+                $hasStrictProof = $true
+            }
             if($line -match "ntk_native_ack_bridge_submit code=200,path=$pathRe(\b|,|$)") {
                 $hasNativeBridgeAck200 = $true
                 $hasStrictProof = $true

@@ -19,6 +19,7 @@ import com.bumptech.glide.Glide
 import com.google.gson.Gson
 import ml.melun.mangaview.MainApplication
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.activity.ViewerEpisodeResolver
 import ml.melun.mangaview.glide.ViewerBitmapTrim
 import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.Decoder
@@ -375,7 +376,8 @@ class ReaderSession(
     private val controlLock = Object()
     private var pendingWindowCommand: WindowCommand? = null
     private var windowCommandPosted = false
-    private val preparedEntry = ReaderPreparedStore.findReadyCompatible(preparedKey) ?: ReaderPreparedStore.get(preparedKey)
+    private val launchPreparedKey = preparedKey
+    private val preparedEntry = preparedEntryForLaunch()
     private val preparedStoreKey = preparedEntry?.key ?: preparedKey
     private val clearPreparedBitmapsRunnable = Runnable {
         val key = preparedStoreKey ?: return@Runnable
@@ -387,6 +389,15 @@ class ReaderSession(
     private val pagesInstalled = AtomicBoolean(false)
     private val preparedListener = object : ReaderPreparedStore.Listener {
         override fun onUrlsReady(images: List<String>, startPage: Int) {
+            if (!preparedImagesMatchCurrentEpisode(images)) {
+                logNtkRepositoryStage(
+                    manga,
+                    "prepared_urls_rejected_episode_mismatch",
+                    "count=${images.size},first=${images.firstOrNull()?.takeLast(96).orEmpty()}"
+                )
+                if (!pagesInstalled.get()) loadFromRepository()
+                return
+            }
             val resolvedStartPage = resolvePreparedStartPage(startPage)
             installImages(images, resolvedStartPage, false)
             flushEarlyPreparedBitmaps()
@@ -400,6 +411,15 @@ class ReaderSession(
                 val snapshot = preparedEntry?.snapshot()
                 val urls = snapshot?.images
                 if (!urls.isNullOrEmpty()) {
+                    if (!preparedSnapshotMatchesCurrentEpisode(snapshot)) {
+                        logNtkRepositoryStage(
+                            manga,
+                            "prepared_bitmap_rejected_episode_mismatch",
+                            "count=${urls.size},first=${urls.firstOrNull()?.takeLast(96).orEmpty()}"
+                        )
+                        if (!pagesInstalled.get()) loadFromRepository()
+                        return
+                    }
                     val resolvedStartPage = resolvePreparedStartPage(snapshot.startPage)
                     installImages(urls, resolvedStartPage, false)
                     ViewerWarmupManager.logMetric("reader_prepared_bitmap_installed_pages", 1L)
@@ -656,6 +676,17 @@ class ReaderSession(
         }
         val recentGeneratedSuccess = ReaderImageCache
             .earlyNtkGeneratedSuccessImageUrls(path, SystemClock.elapsedRealtime() - 30000L)
+        if (segment == "manhwa" && recentGeneratedSuccess.isEmpty()) {
+            manga.startNtkVerifiedInitialImageProbe(MainApplication.getHttpClient())
+            manga.startNtkEarlyViewerApiPrefetch(MainApplication.getHttpClient())
+            Log.d(
+                TAG,
+                "ntk_immediate_generated_initial_defer_manhwa_browser_manifest path=$path " +
+                    "workId=$imageWorkId pathWorkId=$pathWorkId " +
+                    "pathEpisodeId=$pathEpisodeToken count=${manga.ntkImageCount}"
+            )
+            return true
+        }
         if (segment == "webtoon" &&
             pathWorkId.matches(Regex("\\d{1,12}")) &&
             pathEpisodeToken.matches(Regex("\\d{1,12}")) &&
@@ -4135,7 +4166,25 @@ class ReaderSession(
         Log.d(TAG, "reader_repository_stage stage=$stage,path=${target.ntkEpisodePath},$detail")
     }
 
+    private fun preparedEntryForLaunch(): ReaderPreparedStore.Entry? {
+        if (launchPreparedKey.isNullOrEmpty()) return null
+        val exact = ReaderPreparedStore.get(launchPreparedKey)
+        if (isNtkSource(manga, title) && isNtkManhwaOrWebtoonEpisodePath(manga.ntkEpisodePath)) {
+            return exact
+        }
+        return ReaderPreparedStore.findReadyCompatible(launchPreparedKey) ?: exact
+    }
+
     private fun installPreparedSnapshot(snapshot: ReaderPreparedStore.Snapshot): Boolean {
+        if (!preparedSnapshotMatchesCurrentEpisode(snapshot)) {
+            logNtkRepositoryStage(
+                manga,
+                "prepared_snapshot_rejected_episode_mismatch",
+                "status=${snapshot.status},count=${snapshot.images?.size ?: 0}," +
+                    "first=${snapshot.images?.firstOrNull()?.takeLast(96).orEmpty()}"
+            )
+            return false
+        }
         val urls = snapshot.images
         if (!urls.isNullOrEmpty()) {
             val resolvedStartPage = resolvePreparedStartPage(snapshot.startPage)
@@ -4155,6 +4204,28 @@ class ReaderSession(
         }
         return false
     }
+
+    private fun preparedSnapshotMatchesCurrentEpisode(snapshot: ReaderPreparedStore.Snapshot): Boolean {
+        if (!isNtkSource(manga, title) || !isNtkManhwaOrWebtoonEpisodePath(manga.ntkEpisodePath)) return true
+        if (!Manga.sameEpisodeIdentity(snapshot.manga, manga)) return false
+        return preparedImagesMatchCurrentEpisode(snapshot.images)
+    }
+
+    private fun preparedImagesMatchCurrentEpisode(images: List<String>?): Boolean {
+        if (!isNtkSource(manga, title) || !isNtkManhwaOrWebtoonEpisodePath(manga.ntkEpisodePath)) return true
+        if (images.isNullOrEmpty()) return true
+        return images.all { ntkDirectImageBelongsToCurrentEpisode(it) }
+    }
+
+    private fun ntkDirectImageBelongsToCurrentEpisode(image: String): Boolean {
+        val path = manga.ntkEpisodePath?.trim()?.trimStart('/')?.lowercase(java.util.Locale.ROOT)
+            ?: return false
+        if (path.isEmpty()) return false
+        val normalized = image.lowercase(java.util.Locale.ROOT)
+        if (normalized.contains("/api/m/i?")) return false
+        return normalized.contains("/$path/")
+    }
+
 
     private fun releasePreparedStoreBitmapsSoon() {
         if (preparedStoreKey == null) return
@@ -4394,6 +4465,26 @@ class ReaderSession(
 
     fun requestAllPagesForTest() {
         requestAllUndeliveredNtkPages("test")
+    }
+
+    fun requestAllPagesForBrowserManifest() {
+        requestAllUndeliveredNtkPages("browser_manifest_handoff")
+    }
+
+    fun installBrowserManifestAndRequestAll(urls: List<String>) {
+        if (!isNtkSource(manga, title) || cancelled.get() || urls.isEmpty()) return
+        val loadStartedAt = repositoryLoadStartedAtMs.get().takeIf { it > 0L } ?: SystemClock.elapsedRealtime()
+        val installed = if (!pagesInstalled.get() || synchronized(pagesLock) { pages.isEmpty() }) {
+            installEarlyNtkUrls(manga, urls, loadStartedAt)
+        } else {
+            false
+        }
+        if (!installed) {
+            handleEarlyNtkImageUrlsChanged(urls)
+        }
+        mainImmediate.postAtFrontOfQueue {
+            requestAllUndeliveredNtkPages("browser_manifest_handoff")
+        }
     }
 
     fun pageReadinessSnapshotForTest(): ReaderSurfaceView.PageReadinessSnapshot {
@@ -7983,6 +8074,9 @@ class ReaderSession(
 
     private fun adjacentEpisodeCandidates(source: Manga, episodes: List<Manga>, direction: Int): List<Manga> {
         val candidates = ArrayList<Manga>()
+        val matcher = ViewerEpisodeResolver.EpisodeMatcher { first, second ->
+            looseSameEpisodeForAppend(first, second)
+        }
         fun addCandidate(candidate: Manga?) {
             if (candidate == null) return
             if (!isValidAdjacentEpisodeCandidate(source, candidate)) return
@@ -7990,7 +8084,12 @@ class ReaderSession(
             if (candidates.any { looseSameEpisodeForAppend(it, candidate) }) return
             candidates.add(candidate)
         }
-        addCandidate(if (direction < 0) source.prevEp() else source.nextEp())
+        val resolved = if (direction < 0) {
+            ViewerEpisodeResolver.previousCandidateFromList(source, episodes, null, source.title ?: title, matcher)
+        } else {
+            ViewerEpisodeResolver.nextCandidateFromList(source, episodes, null, source.title ?: title, matcher)
+        }
+        addCandidate(resolved)
         val sourceIndex = looseEpisodeIndexForAppend(episodes, source)
         if (sourceIndex >= 0) {
             var index = if (direction < 0) sourceIndex + 1 else sourceIndex - 1
@@ -7999,6 +8098,7 @@ class ReaderSession(
                 index += if (direction < 0) 1 else -1
             }
         }
+        addCandidate(if (direction < 0) source.prevEp() else source.nextEp())
         return candidates
     }
 
@@ -10745,7 +10845,7 @@ class ReaderSession(
             val first = matchingIndexes.minOrNull() ?: return@synchronized false
             val last = matchingIndexes.maxOrNull() ?: return@synchronized false
             val knownCount = source.ntkImageCount
-            val trustedKnownCount = knownCount in 1..NTK_UNKNOWN_GENERATED_DISPLAY_THRESHOLD ||
+            val trustedKnownCount = knownCount > 0 &&
                 ReaderImageCache.trustedNtkImageApiCount(source.ntkEpisodePath, 0L) >= knownCount
             val count = matchingIndexes.size
             val hasInsertedNextEpisode = direction > 0 &&

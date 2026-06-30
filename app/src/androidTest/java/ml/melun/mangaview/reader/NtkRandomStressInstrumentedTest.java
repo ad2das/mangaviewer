@@ -50,6 +50,7 @@ import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.NtkDeviceIdentityManager;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.CaptchaActivity;
+import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.NtkQuicFetcher;
 import ml.melun.mangaview.activity.ReaderV2Activity;
 import ml.melun.mangaview.activity.ViewerIntentContract;
@@ -1866,11 +1867,13 @@ public class NtkRandomStressInstrumentedTest {
             episode.setMode(0);
             episode.setTitle(title);
             episode.setTitleId(title.getId());
+            episode.ensureNtkEpisodePathFromIdentity();
             nextEpisode = episode.nextEp();
             previousEpisode = episode.prevEp();
             Manga.setNtkViewerFetchModeOverrideForTest(mode);
             boolean launchPreflightStarted = launchPreflight &&
                     Utils.startNtkViewerLaunchPreflight(episode, title);
+            boolean episodeUxLaunch = shouldLaunchThroughEpisodeUx(title, episode, strictRealUx);
             Log.d(TAG, "ntk_true_random_case_start run=" + run
                     + ",mode=" + mode
                     + ",baseMode=" + title.getBaseMode()
@@ -1884,11 +1887,20 @@ public class NtkRandomStressInstrumentedTest {
                     + ",episode=" + episode.getName()
                     + ",scrollInputMode=" + scrollInputMode
                     + ",scrollPattern=" + scrollPattern
+                    + ",episodeUxLaunch=" + episodeUxLaunch
                     + ",launchPreflightStarted=" + launchPreflightStarted
                     + ",hasNext=" + (nextEpisode != null)
                     + ",hasPrevious=" + (previousEpisode != null));
-            activity = startReaderActivityWithoutIdle(context,
-                    viewerIntent(context, title, episode, launchPreflightStarted), 12_000L);
+            long[] launchStartedAtOut = new long[]{SystemClock.elapsedRealtime()};
+            if(episodeUxLaunch) {
+                activity = startReaderViaEpisodeUx(context, title, episode,
+                        launchStartedAtOut, 16_000L);
+            } else {
+                launchStartedAtOut[0] = SystemClock.elapsedRealtime();
+                activity = startReaderActivityWithoutIdle(context,
+                        viewerIntent(context, title, episode, launchPreflightStarted), 12_000L);
+            }
+            startedAt = launchStartedAtOut[0];
             ReaderV2Activity reader = activity instanceof ReaderV2Activity ? (ReaderV2Activity) activity : null;
             AtomicReference<Throwable> immediateScrollError = new AtomicReference<>();
             Thread immediateScrollThread = immediateScrollBeforeReady
@@ -2023,6 +2035,7 @@ public class NtkRandomStressInstrumentedTest {
         } finally {
             Manga.clearNtkViewerFetchModeOverrideForTest();
             finishActivityForNextLaunch(activity);
+            finishEpisodeActivitiesForNextLaunch();
             device.wait(Until.gone(By.desc("reader-drawable-ready")), 3000L);
             device.waitForIdle(1500L);
         }
@@ -2358,10 +2371,100 @@ public class NtkRandomStressInstrumentedTest {
                 + ",ms=" + (SystemClock.elapsedRealtime() - startedAt));
     }
 
-    private static Activity startReaderActivityWithoutIdle(Context context, Intent intent, long timeoutMs) {
-        AtomicReference<Activity> resumedReader = new AtomicReference<>();
+    private static void finishEpisodeActivitiesForNextLaunch() {
+        ArrayList<Activity> activities = new ArrayList<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            for(Stage stage : new Stage[]{Stage.RESUMED, Stage.PAUSED, Stage.STARTED}) {
+                Collection<Activity> candidates = ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(stage);
+                for(Activity candidate : candidates) {
+                    if(candidate instanceof EpisodeActivity
+                            && !candidate.isFinishing()
+                            && !candidate.isDestroyed()
+                            && !activities.contains(candidate)) {
+                        activities.add(candidate);
+                    }
+                }
+            }
+            for(Activity candidate : activities)
+                candidate.finish();
+        });
+        long deadline = SystemClock.elapsedRealtime() + 5000L;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            boolean allDestroyed = true;
+            for(Activity activity : activities) {
+                if(!activity.isDestroyed()) {
+                    allDestroyed = false;
+                    break;
+                }
+            }
+            if(allDestroyed)
+                break;
+            SystemClock.sleep(25L);
+        }
+    }
+
+    private static boolean shouldLaunchThroughEpisodeUx(Title title, Manga episode,
+                                                        boolean strictRealUx) {
+        if(!strictRealUx || title == null || episode == null)
+            return false;
+        String path = episode.getNtkEpisodePath();
+        if(path == null)
+            return false;
+        return path.startsWith("/manhwa/") || path.startsWith("/webtoon/");
+    }
+
+    private static Activity startReaderViaEpisodeUx(Context context, Title title, Manga episode,
+                                                    long[] launchStartedAtOut, long timeoutMs) {
+        AtomicReference<EpisodeActivity> episodeActivityRef = new AtomicReference<>();
         long startedAt = SystemClock.elapsedRealtime();
+        String path = episode.getNtkEpisodePath();
+        if(path != null && path.length() > 0)
+            title.setResumeNtkEpisodePath(path);
+        Intent intent = Utils.episodeIntent(context, title);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> context.startActivity(intent));
+        long deadline = SystemClock.elapsedRealtime() + Math.max(1L, timeoutMs);
+        while(SystemClock.elapsedRealtime() < deadline) {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                Collection<Activity> activities = ActivityLifecycleMonitorRegistry.getInstance()
+                        .getActivitiesInStage(Stage.RESUMED);
+                for(Activity candidate : activities) {
+                    if(candidate instanceof EpisodeActivity
+                            && !candidate.isFinishing()
+                            && !candidate.isDestroyed()) {
+                        episodeActivityRef.set((EpisodeActivity) candidate);
+                        break;
+                    }
+                }
+            });
+            EpisodeActivity episodeActivity = episodeActivityRef.get();
+            if(episodeActivity != null && episodeActivity.testHasLoadedEpisodes())
+                break;
+            SystemClock.sleep(50L);
+        }
+        EpisodeActivity episodeActivity = episodeActivityRef.get();
+        if(episodeActivity == null || !episodeActivity.testHasLoadedEpisodes())
+            throw new RuntimeException("EpisodeActivity did not load episodes within "
+                    + timeoutMs + "ms for " + path);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> episodeActivity.testScrollToEpisode(episode));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        long tapAt = SystemClock.elapsedRealtime();
+        launchStartedAtOut[0] = tapAt;
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> episodeActivity.testOpenViewerFromPress(episode));
+        Activity reader = waitForResumedReader(tapAt, timeoutMs);
+        Log.d(TAG, "ntk_true_random_episode_ux_reader_resumed setupMs="
+                + (tapAt - startedAt)
+                + ",readerMs=" + (SystemClock.elapsedRealtime() - tapAt)
+                + ",path=" + path);
+        return reader;
+    }
+
+    private static Activity waitForResumedReader(long startedAt, long timeoutMs) {
+        AtomicReference<Activity> resumedReader = new AtomicReference<>();
         long deadline = SystemClock.elapsedRealtime() + Math.max(1L, timeoutMs);
         while(SystemClock.elapsedRealtime() < deadline) {
             InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
@@ -2386,7 +2489,13 @@ public class NtkRandomStressInstrumentedTest {
             SystemClock.sleep(50L);
         }
         throw new RuntimeException("ReaderV2Activity did not reach RESUMED within "
-                + timeoutMs + "ms for " + intent);
+                + timeoutMs + "ms");
+    }
+
+    private static Activity startReaderActivityWithoutIdle(Context context, Intent intent, long timeoutMs) {
+        long startedAt = SystemClock.elapsedRealtime();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> context.startActivity(intent));
+        return waitForResumedReader(startedAt, timeoutMs);
     }
 
     private static Intent viewerIntent(Context context, Title title, Manga episode) {
@@ -2403,7 +2512,15 @@ public class NtkRandomStressInstrumentedTest {
         intent.putExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, true);
         if(launchPreflightStarted)
             intent.putExtra("viewerNtkAckPreflightStarted", true);
-        String preparedKey = Utils.startImmediateNtkGeneratedInitialPrimeForLaunch(context, episode);
+        String preparedKey = null;
+        String path = episode == null ? null : episode.getNtkEpisodePath();
+        boolean modernNtkExact = path != null && (path.startsWith("/manhwa/") || path.startsWith("/webtoon/"));
+        if(modernNtkExact) {
+            intent.putExtra("viewerNtkWebViewAuthoritative", true);
+            Log.d(TAG, "ntk_true_random_webview_authoritative_launch path=" + path);
+        } else {
+            preparedKey = Utils.prepareNtkEpisodeForReaderLaunch(context, episode, title);
+        }
         if(preparedKey != null && preparedKey.length() > 0)
             intent.putExtra(ReaderLaunchPreparer.EXTRA_PREPARED_KEY, preparedKey);
         intent.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
@@ -3578,19 +3695,20 @@ public class NtkRandomStressInstrumentedTest {
                 || coverage.getWidthFillFailures() != 0
                 || coverage.getLowResolutionItems() != 0)
             return false;
-        if(coverage.getMissingPx() <= 2
-                && coverage.getDrawablePx() >= Math.max(1, coverage.getViewportPx() - 2))
-            return true;
-        return coverage.getPageCount() <= 1
-                && coverage.getDrawableItems() > 0
-                && coverage.getDrawablePx() > 0
-                && coverage.getVisibleCards() == 0;
+        int physicalViewportPx = coverage.getPhysicalViewportPx() > 0
+                ? coverage.getPhysicalViewportPx()
+                : coverage.getViewportPx();
+        if(coverage.getViewportPx() < Math.max(1, physicalViewportPx - 2))
+            return false;
+        return coverage.getMissingPx() <= 2
+                && coverage.getDrawablePx() >= Math.max(1, physicalViewportPx - 2);
     }
 
     private static String formatCoverage(ReaderSurfaceView.VisibleCoverageSnapshot coverage) {
         if(coverage == null)
             return "null";
         return "viewportPx=" + coverage.getViewportPx()
+                + ";physicalViewportPx=" + coverage.getPhysicalViewportPx()
                 + ";drawablePx=" + coverage.getDrawablePx()
                 + ";missingPx=" + coverage.getMissingPx()
                 + ";placeholderPx=" + coverage.getPlaceholderPx()

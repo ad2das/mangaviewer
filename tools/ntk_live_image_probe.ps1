@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$EpisodeId,
     [string]$Kind = "webtoon",
-    [string]$Root = "https://sbxh9.com",
+    [string]$Root = "https://newtoki1.org",
     [string]$RefererPath,
     [string]$OutDir = "build\ntk-live-image-probe",
     [string[]]$Hosts = @(
