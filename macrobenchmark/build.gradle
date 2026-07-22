@@ -1,0 +1,41 @@
+apply plugin: 'com.android.test'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+android {
+    namespace 'ml.melun.mangaview.macrobenchmark'
+    compileSdkVersion 36
+
+    defaultConfig {
+        minSdkVersion 23
+        targetSdkVersion 36
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    buildTypes {
+        benchmark {
+            debuggable true
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['release']
+        }
+    }
+
+    targetProjectPath = ':app'
+    experimentalProperties['android.experimental.self-instrumenting'] = true
+}
+
+dependencies {
+    implementation 'androidx.benchmark:benchmark-macro-junit4:1.4.1'
+    implementation 'androidx.benchmark:benchmark-traceprocessor:1.4.1'
+    implementation 'androidx.test.ext:junit:1.2.1'
+    implementation 'androidx.test:runner:1.6.2'
+    implementation 'androidx.test.uiautomator:uiautomator:2.3.0'
+    implementation 'junit:junit:4.13.2'
+}

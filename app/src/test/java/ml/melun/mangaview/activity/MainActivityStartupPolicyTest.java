@@ -13,7 +13,7 @@ public class MainActivityStartupPolicyTest {
     public void startupBackgroundWorkRunsAfterInitialHomeWindow() {
         assertTrue(MainActivity.startupDeferredTasksDelayMsForTest() >= 2000L);
         assertTrue(MainActivity.startupUpdateCheckDelayMsForTest() >= 300000L);
-        assertEquals(0L, MainActivity.startupNtkCaptchaCheckDelayMsForTest());
+        assertEquals(3_000L, MainActivity.startupNtkCaptchaCheckDelayMsForTest());
         assertTrue(MainActivity.ntkCaptchaCheckMinIntervalMsForTest() >= 5000L);
         assertEquals(0L, MainActivity.startupContinueWarmupSuppressMsForTest());
     }

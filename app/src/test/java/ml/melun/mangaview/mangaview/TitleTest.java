@@ -144,6 +144,14 @@ public class TitleTest {
     }
 
     @Test
+    public void modernNumericManhwaUsesAuthoritativeTitleDocumentBeforeRemovedEpisodeApi() {
+        assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "33727", true));
+        assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("webtoon", "840894", false));
+        assertFalse(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "33727", false));
+        assertFalse(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "slug", true));
+    }
+
+    @Test
     public void ntkNumericTitlePathDoesNotForceSearchRefreshWithoutAccessProof() {
         assertFalse(Title.shouldRefreshNtkTitlePathForTest("/webtoon/840894"));
         assertFalse(Title.shouldRefreshNtkTitlePathAfterMissingForTest("/webtoon/840894"));
@@ -172,6 +180,32 @@ public class TitleTest {
 
         assertEquals("ntk", minimized.getSourceSite());
         assertEquals("ntk", restored.getSourceSite());
+    }
+
+    @Test
+    public void titleMinimizePreservesExactResumeImageIdentity() {
+        Title title = new Title("title", "", "", null, "", 25694, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+        title.setBookmark(1767091);
+        Manga episode = new Manga(1767091, "1화", "", MTitle.base_comic);
+        episode.setNtkEpisodePath("/manhwa/25694/1767091");
+        episode.setNtkImageWorkId("25694");
+        episode.setNtkImageEpisodeId("1767091");
+        episode.setNtkImageCount(4);
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(episode);
+        title.setEps(episodes);
+
+        MTitle minimized = title.minimize();
+        Title restored = new Title(minimized);
+
+        assertEquals("25694", minimized.getResumeNtkImageWorkId());
+        assertEquals("1767091", minimized.getResumeNtkImageEpisodeId());
+        assertEquals(4, minimized.getResumeNtkImageCount());
+        assertEquals("25694", restored.getResumeNtkImageWorkId());
+        assertEquals("1767091", restored.getResumeNtkImageEpisodeId());
+        assertEquals(4, restored.getResumeNtkImageCount());
     }
 
     @Test

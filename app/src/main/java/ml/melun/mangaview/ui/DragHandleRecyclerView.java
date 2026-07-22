@@ -3,9 +3,12 @@ package ml.melun.mangaview.ui;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewParent;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -17,17 +20,88 @@ public class DragHandleRecyclerView extends RecyclerView {
     private final RectF rect = new RectF();
     private boolean draggingScrollbar = false;
     private float dragThumbOffset = 0f;
+    private boolean readerFrameInvalidationsSuppressed = false;
 
     public DragHandleRecyclerView(@NonNull Context context) {
         super(context);
+        initializeCustomScrollbar();
     }
 
     public DragHandleRecyclerView(@NonNull Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
+        initializeCustomScrollbar();
     }
 
     public DragHandleRecyclerView(@NonNull Context context, @Nullable AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
+        initializeCustomScrollbar();
+    }
+
+    private void initializeCustomScrollbar() {
+        // This view draws and owns the persistent drag handle below. Leaving the platform
+        // scrollbar enabled starts its delayed 250 ms fade animation after a row press, which
+        // keeps the covered EpisodeActivity ViewRoot producing HWUI frames behind the native
+        // reader surface. The custom handle has no fade animator, so it is the sole owner.
+        setVerticalScrollBarEnabled(false);
+        setHorizontalScrollBarEnabled(false);
+    }
+
+    /**
+     * Freezes the already-recorded episode-list RenderNodes while the native reader owns the
+     * window. RecyclerView.suppressLayout() alone still lets row pressed-state, adapter, and
+     * drawable invalidations schedule covered HWUI frames that contend with the GLES surface.
+     */
+    public void setReaderFrameInvalidationsSuppressed(boolean suppressed) {
+        if(readerFrameInvalidationsSuppressed == suppressed)
+            return;
+        readerFrameInvalidationsSuppressed = suppressed;
+        if(!suppressed) {
+            // State changes were retained while frozen. Rebuild once only after the reader layer
+            // has been hidden and normal episode ownership is being restored.
+            super.requestLayout();
+            super.invalidate();
+        }
+    }
+
+    public boolean areReaderFrameInvalidationsSuppressed() {
+        return readerFrameInvalidationsSuppressed;
+    }
+
+    @Override
+    public void requestLayout() {
+        if(!readerFrameInvalidationsSuppressed)
+            super.requestLayout();
+    }
+
+    @Override
+    public void invalidate() {
+        if(!readerFrameInvalidationsSuppressed)
+            super.invalidate();
+    }
+
+    @Override
+    public void invalidate(Rect dirty) {
+        if(!readerFrameInvalidationsSuppressed)
+            super.invalidate(dirty);
+    }
+
+    @Override
+    public void invalidate(int left, int top, int right, int bottom) {
+        if(!readerFrameInvalidationsSuppressed)
+            super.invalidate(left, top, right, bottom);
+    }
+
+    @Override
+    public ViewParent invalidateChildInParent(int[] location, Rect dirty) {
+        if(readerFrameInvalidationsSuppressed)
+            return null;
+        return super.invalidateChildInParent(location, dirty);
+    }
+
+    @Override
+    public void onDescendantInvalidated(View child, View target) {
+        if(!readerFrameInvalidationsSuppressed)
+            super.onDescendantInvalidated(child, target);
     }
 
     @Override

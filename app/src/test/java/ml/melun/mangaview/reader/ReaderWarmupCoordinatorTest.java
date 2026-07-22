@@ -44,16 +44,69 @@ public class ReaderWarmupCoordinatorTest {
 
     @Test
     public void preparedStoreCapsPinnedStartBitmaps() {
-        assertEquals(1, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
+        assertEquals(3, ReaderPreparedStore.maxPinnedStartBitmapsForTest());
         assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest(""));
         assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest(""));
-        assertEquals(16L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
-        assertEquals(24L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
+        assertEquals(96L * 1024L * 1024L, ReaderPreparedStore.softBitmapBytesForTest("ntk"));
+        assertEquals(128L * 1024L * 1024L, ReaderPreparedStore.hardBitmapBytesForTest("ntk"));
     }
 
     @Test
     public void preparedStoreReplacesFailedEntriesOnly() {
         assertTrue(ReaderPreparedStore.shouldReplaceExistingEntryForTest(true));
         assertFalse(ReaderPreparedStore.shouldReplaceExistingEntryForTest(false));
+    }
+
+    @Test
+    public void concreteNtkPathDedupesTemporaryMangaIds() {
+        assertEquals(
+                ReaderWarmupCoordinator.stableEpisodeComponentForTest("/manhwa/20877/169511", 1),
+                ReaderWarmupCoordinator.stableEpisodeComponentForTest(
+                        "/manhwa/20877/169511?resume=1", 169511));
+        assertFalse(ReaderWarmupCoordinator.stableEpisodeComponentForTest(
+                        "/manhwa/20877/169511", 1)
+                .equals(ReaderWarmupCoordinator.stableEpisodeComponentForTest(
+                        "/manhwa/20877/169512", 1)));
+        assertFalse(ReaderWarmupCoordinator.stableEpisodeComponentForTest("", 1)
+                .equals(ReaderWarmupCoordinator.stableEpisodeComponentForTest("", 2)));
+    }
+
+    @Test
+    public void authoritativeNtkPartialLaunchUsesEightPageTileRunwayBudget() {
+        assertEquals(8, ReaderWarmupCoordinator.authoritativeNtkRunwayDecodePages());
+        assertEquals(8, ReaderWarmupCoordinator.authoritativeNtkRunwaySoftwarePageLimitForTest());
+        assertEquals(128L * 1024L * 1024L,
+                ReaderWarmupCoordinator.authoritativeNtkRunwaySoftwareByteLimitForTest());
+        assertTrue(ReaderWarmupCoordinator.isNtkLaunchRunwayOnlyForTest(8, 31));
+        assertFalse(ReaderWarmupCoordinator.isNtkLaunchRunwayOnlyForTest(31, 31));
+        assertFalse(ReaderWarmupCoordinator.isNtkLaunchRunwayOnlyForTest(0, 31));
+        assertEquals(1, ReaderWarmupCoordinator.authoritativeNtkRunwaySampleSizeForTest(764, 1080));
+        assertEquals(1, ReaderWarmupCoordinator.authoritativeNtkRunwaySampleSizeForTest(2160, 1080));
+        assertFalse(ReaderWarmupCoordinator.claimMarksForegroundDuringStagingForTest());
+    }
+
+    @Test
+    public void authoritativeNtkRunwayRequiresContiguousSafeTextureSpanTiles() {
+        assertEquals(2048, ReaderWarmupCoordinator.authoritativeNtkRunwayTileSourceHeightForTest());
+        assertTrue(ReaderWarmupCoordinator.hasAuthoritativeNtkRunwayTileSourceLayoutForTest(
+                1200,
+                new int[] {0},
+                new int[] {1200}));
+        assertTrue(ReaderWarmupCoordinator.hasAuthoritativeNtkRunwayTileSourceLayoutForTest(
+                512,
+                new int[] {0},
+                new int[] {512}));
+        assertFalse(ReaderWarmupCoordinator.hasAuthoritativeNtkRunwayTileSourceLayoutForTest(
+                1200,
+                new int[] {0, 1199},
+                new int[] {1199, 1200}));
+        assertFalse(ReaderWarmupCoordinator.hasAuthoritativeNtkRunwayTileSourceLayoutForTest(
+                1200,
+                new int[] {0, 1000},
+                new int[] {1000, 1200}));
+        assertFalse(ReaderWarmupCoordinator.hasAuthoritativeNtkRunwayTileSourceLayoutForTest(
+                1200,
+                new int[] {0, 600},
+                new int[] {600, 1200}));
     }
 }

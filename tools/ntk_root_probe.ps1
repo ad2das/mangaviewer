@@ -1,7 +1,7 @@
 param(
     [string]$DeviceSerial = "emulator-5556",
     [string]$OutDir = "build\ntk-root-probe",
-    [string]$Roots = "https://sbxh6.com,https://toonflix.app,https://sbxh4.com",
+    [string]$Roots = "https://toki30.com,https://sbxh9.com,https://newtoki1.org",
     [int]$TimeoutMs = 3500,
     [int]$MaxRoots = 16,
     [string]$UserAgent = "",
@@ -295,7 +295,7 @@ $ackBlockedReason = if($apiJsonRoots.Count -gt 0) {
 $nextLiveRandomCommand = ""
 if($apiJsonRoots.Count -gt 0) {
     $liveRoot = $apiJsonRoots[0]
-    $nextLiveRandomCommand = ".\tools\ntk_random_perf.ps1 -DeviceSerial $DeviceSerial -Runs 6 -ScrollSteps 10 -AppendSteps 0 -ScreenshotEvery 0 -Mode native-ack -ScrollInputMode programmatic -ScrollPattern mixed -StrictFresh -NoAppendProbe -RequireLiveRandom -NtkSiteRoot `"$liveRoot`" -NtkLockSiteRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"
+    $nextLiveRandomCommand = ".\tools\ntk_physical_qualification.ps1 -AppApkPath <benchmark.apk> -TestApkPath <benchmark-androidTest.apk> -Scope all -DeviceSerial $DeviceSerial -NtkSiteRoot `"$liveRoot`""
 }
 $userAgentArg = if([string]::IsNullOrWhiteSpace($UserAgent)) { "" } else { " -UserAgent `"$($UserAgent.Trim())`"" }
 $nextRootProbeCommand = ".\tools\ntk_root_probe.ps1 -DeviceSerial $DeviceSerial -Roots `"$Roots`" -TimeoutMs $TimeoutMs -MaxRoots $MaxRoots$userAgentArg -IncludeResolvedRoots -RequireApiJsonRoot -ForceStopBeforeRun -SkipBuild -SkipInstall"

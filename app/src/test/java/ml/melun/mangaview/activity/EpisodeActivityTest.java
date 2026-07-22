@@ -34,6 +34,24 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void protectedNumericNtkEpisodesUseApiManifestInsteadOfInventedCdnPages() {
+        assertFalse(EpisodeActivity.shouldBuildNtkSyntheticDirectManifestForTest(
+                "/webtoon/18190/1518441", true));
+        assertFalse(EpisodeActivity.shouldBuildNtkSyntheticDirectManifestForTest(
+                "/webtoon/18190/1518441?foo=bar", true));
+        assertFalse(EpisodeActivity.shouldBuildNtkSyntheticDirectManifestForTest(
+                "/manhwa/25694/1767091", true));
+        assertTrue(EpisodeActivity.shouldBuildNtkSyntheticDirectManifestForTest(
+                "/webtoon/18190/1518441", false));
+        assertTrue(EpisodeActivity.shouldBuildNtkSyntheticDirectManifestForTest(
+                "/manhwa/25694/1767091", false));
+        assertTrue(EpisodeActivity.shouldBuildNtkSyntheticDirectManifestForTest(
+                "/webtoon/18190/kp-18190-1518441", true));
+        assertTrue(EpisodeActivity.shouldBuildNtkSyntheticDirectManifestForTest(
+                "/manhwa/one-piece/1767091", true));
+    }
+
+    @Test
     public void quickReadWithoutBookmarkStartsFromFirstEpisode() {
         List<Manga> episodes = new ArrayList<>();
         episodes.add(new Manga(122, "122", "", base_webtoon));
@@ -44,6 +62,14 @@ public class EpisodeActivityTest {
     }
 
     @Test
+    public void eagerReaderTargetsTheInitiallyVisibleRowWithoutChangingQuickReadOrder() {
+        assertEquals(0, EpisodeActivity.initialVisibleEagerEpisodeIndexForTest(11, -1));
+        assertEquals(0, EpisodeActivity.initialVisibleEagerEpisodeIndexForTest(11, 0));
+        assertEquals(6, EpisodeActivity.initialVisibleEagerEpisodeIndexForTest(11, 7));
+        assertEquals(-1, EpisodeActivity.initialVisibleEagerEpisodeIndexForTest(0, 0));
+    }
+
+    @Test
     public void selectedEpisodeProgressUsesAdapterPositionBeforeViewerLaunch() {
         List<Manga> episodes = new ArrayList<>();
         episodes.add(new Manga(101, "Episode 10", "", base_webtoon));
@@ -51,7 +77,7 @@ public class EpisodeActivityTest {
 
         Manga selected = new Manga(999, "Different id", "", base_webtoon);
 
-        assertEquals(2, EpisodeActivity.selectedEpisodeIndexForProgressForTest(2, selected, episodes));
+        assertEquals(2, EpisodeActivity.selectedEpisodeIndexForProgressForTest(1, selected, episodes));
     }
 
     @Test
@@ -186,5 +212,30 @@ public class EpisodeActivityTest {
         assertTrue(EpisodeActivity.isCompatibleCacheSourceForTest("ntk", "ntk"));
         assertFalse(EpisodeActivity.isCompatibleCacheSourceForTest("ntk", "wfwf"));
         assertTrue(EpisodeActivity.isCompatibleCacheSourceForTest("", "ntk"));
+    }
+
+    @Test
+    public void inlinePayloadRequiresExactEpisodeIdentityAndPreparedKey() {
+        Title ntkTitle = new Title("Atomic", "", "", null, "", 44, base_webtoon);
+        ntkTitle.setSourceSite("ntk");
+        Manga launched = new Manga(701, "12화", "", base_webtoon);
+        launched.setTitle(ntkTitle);
+        launched.setTitleId(44);
+        launched.setNtkEpisodePath("/webtoon/44/701");
+        Manga selected = new Manga(701, "12화", "", base_webtoon);
+        selected.setTitle(ntkTitle);
+        selected.setTitleId(44);
+        selected.setNtkEpisodePath("/webtoon/44/701");
+
+        assertTrue(EpisodeActivity.exactInlineLaunchMatchesForTest(
+                launched, selected, "prepared-exact", "prepared-exact"));
+        assertFalse(EpisodeActivity.exactInlineLaunchMatchesForTest(
+                launched, selected, "prepared-old", "prepared-exact"));
+        assertFalse(EpisodeActivity.exactInlineLaunchMatchesForTest(
+                launched, selected, "prepared-exact", ""));
+
+        selected.setNtkEpisodePath("/webtoon/44/702");
+        assertFalse(EpisodeActivity.exactInlineLaunchMatchesForTest(
+                launched, selected, "prepared-exact", "prepared-exact"));
     }
 }

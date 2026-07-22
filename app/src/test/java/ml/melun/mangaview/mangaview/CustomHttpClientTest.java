@@ -28,13 +28,6 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkAckDoesNotStartProactiveCanaryBeforeAckFailure() {
-        assertFalse(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(0));
-        assertFalse(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(1));
-        assertFalse(CustomHttpClient.shouldStartProactiveNtkAckCanaryForTest(4));
-    }
-
-    @Test
     public void activePageLoadWaitsOnlyWithoutStaleCache() {
         assertTrue(CustomHttpClient.shouldWaitForActivePageLoadForTest(false));
         assertFalse(CustomHttpClient.shouldWaitForActivePageLoadForTest(true));
@@ -59,6 +52,27 @@ public class CustomHttpClientTest {
     @Test
     public void imageClientUsesWiderDispatcherThanPageClient() {
         assertTrue(CustomHttpClient.imageDispatcherIsWiderForTest());
+        assertEquals(16, CustomHttpClient.imageDispatcherMaxRequestsForTest());
+        assertEquals(8, CustomHttpClient.imageDispatcherMaxRequestsPerHostForTest());
+        assertTrue(CustomHttpClient.imageClientsShareDispatcherForTest());
+    }
+
+    @Test
+    public void imageSingleFlightKeyIsStableWithoutRetainingCookieOrder() {
+        String url = "https://cdn.example.test/webtoon/1/2/p001.webp";
+        String first = CustomHttpClient.ntkImageFlightKeyForTest(url, "b=2; a=1");
+        String reordered = CustomHttpClient.ntkImageFlightKeyForTest(url, "a=1;b=2");
+
+        assertEquals(first, reordered);
+        assertEquals(64, first.length());
+        assertFalse(first.contains(url));
+    }
+
+    @Test
+    public void strictDocumentKeepsFastInactivityBoundsWithoutAProgressKillingCallDeadline() {
+        assertEquals(3_500, CustomHttpClient.strictNtkDocumentConnectTimeoutMsForTest());
+        assertEquals(3_500, CustomHttpClient.strictNtkDocumentReadTimeoutMsForTest());
+        assertEquals(0, CustomHttpClient.strictNtkDocumentCallTimeoutMsForTest());
     }
 
     @Test
@@ -79,12 +93,25 @@ public class CustomHttpClientTest {
         assertFalse(CustomHttpClient.isDesktopUserAgent(mobile));
         assertEquals("?1", CustomHttpClient.clientHintMobile(mobile));
         assertEquals("\"Android\"", CustomHttpClient.clientHintPlatform(mobile));
-        assertTrue(CustomHttpClient.clientHintUa(mobile).contains("Android WebView"));
+        assertTrue(CustomHttpClient.clientHintUa(mobile).contains("Google Chrome"));
+        assertFalse(CustomHttpClient.clientHintUa(mobile).contains("Android WebView"));
     }
 
     @Test
     public void pageAndImageClientsShareConnectionPool() {
         assertTrue(CustomHttpClient.clientsShareConnectionPoolForTest());
+    }
+
+    @Test
+    public void strictControlPlaneReusesExistingSameOriginHttpEngineSession() {
+        assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
+                "signed_image_api"));
+        assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
+                "document"));
+        assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
+                "unsigned_webtoon_image_api"));
+        assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
+                "trusted_challenge"));
     }
 
     @Test
@@ -245,11 +272,23 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkWebViewFallbackCoversPageApiAndSearchMisses() {
+    public void ntkSharedWebViewFallbackStaysOnNonEpisodeDocuments() {
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/api/manhwa-list"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/search?q=onepiece"));
         assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1"));
-        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2"));
+        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa?page=2"));
+        String[] strictEpisodePaths = {
+                "/manhwa/33727/1692251",
+                "/webtoon/850236/nv-850236-11",
+                "/webtoon/68630031/kp-68630031-69262979",
+                "/webtoon/work/episode?from=reader#top"
+        };
+        for(String path : strictEpisodePaths) {
+            assertFalse(path, CustomHttpClient.shouldUseNtkWebViewFallbackForTest(
+                    true, true, path, CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+            assertFalse(path, CustomHttpClient.shouldUseSharedWebViewFallbackForTest(
+                    true, true, path, CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
+        }
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(false, true, "/api/manhwa-list"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, false, "/api/manhwa-list"));
         assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/_next/static/app.js"));
@@ -292,27 +331,6 @@ public class CustomHttpClientTest {
 
         assertFalse(CustomHttpClient.looksLikeUnrenderedNtkDocumentForTest("/webtoon/68630031/kp-68630031-69262979", 200, body));
         assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest("/webtoon/68630031/kp-68630031-69262979", 200, body));
-    }
-
-    @Test
-    public void ntkNextErrorFallbackCanUseWebViewForEpisode() {
-        String body = "<html><body><div id=\"__next\"></div>"
-                + "<script src=\"/_next/static/chunks/app/manhwa/%5BsourceWorkId%5D/%5BviewId%5D/page-abcd.js\"></script>"
-                + "<script>self.__next_f.push([\"NEXT_HTTP_ERROR_FALLBACK\",404])</script></body></html>";
-
-        assertTrue(CustomHttpClient.looksLikeNtkRecoverableErrorFallbackDocumentForTest("/manhwa/8252/64225", 200, body));
-        assertFalse(CustomHttpClient.looksLikeNtkRecoverableErrorFallbackDocumentForTest("/api/manhwa-list", 200, body));
-        assertFalse(CustomHttpClient.looksLikeNtkRecoverableErrorFallbackDocumentForTest("/manhwa/8252/64225", 404, body));
-    }
-
-    @Test
-    public void ntkWebViewFallbackRequiresSharedWebViewMode() {
-        assertTrue(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
-                CustomHttpClient.FetchMode.DIRECT_ONLY));
-        assertFalse(CustomHttpClient.shouldUseNtkWebViewFallbackForTest(true, true, "/manhwa/1/2",
-                CustomHttpClient.FetchMode.CACHE_ONLY));
     }
 
     @Test
@@ -366,124 +384,6 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkNativeAckPageRecoveryOnlyCoversRecoverableMisses() {
-        assertTrue(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, true, 0, "/webtoon/18768/1586501", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertTrue(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, false, 403, "/manhwa/4127/251114", CustomHttpClient.FetchMode.DIRECT_ONLY));
-        assertTrue(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, false, 503, "/manhwa/8044/u-mp9phqym-9fo4", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-
-        assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, false, 404, "/api/manhwa-list?page=1", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, false, 403, "/manhwa?g=%EC%95%A1%EC%85%98", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, false, 503, "/search?q=hero", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, true, 0, "/api/ad/ack", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                true, true, 0, "/webtoon/18768/1586501", CustomHttpClient.FetchMode.CACHE_ONLY));
-        assertFalse(CustomHttpClient.shouldAttemptNtkNativeAckPageRecoveryForTest(
-                false, true, 0, "/webtoon/18768/1586501", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-    }
-
-    @Test
-    public void ntkRscNativeAckRecoveryCoversNavigableRscChallenges() {
-        assertTrue(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                true, true, "/manhwa/21701", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertTrue(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                true, true, "/manhwa?g=%EC%86%8C%EB%85%84&page=6",
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertTrue(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                true, true, "/webtoon/18768/1586501", CustomHttpClient.FetchMode.DIRECT_ONLY));
-
-        assertFalse(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                true, false, "/manhwa/21701", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                true, true, "/api/manhwa-list?page=1", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                true, true, "/api/ad/ack", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertFalse(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                true, true, "/manhwa/21701", CustomHttpClient.FetchMode.CACHE_ONLY));
-        assertFalse(CustomHttpClient.shouldAttemptNtkRscNativeAckRecoveryForTest(
-                false, true, "/manhwa/21701", CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-    }
-
-    @Test
-    public void ntkEpisodePriorityStartsWebViewFallbackInSharedMode() {
-        CustomHttpClient.RequestGroup priority = new CustomHttpClient.RequestGroup().prioritizeWebViewFallback();
-        CustomHttpClient.RequestGroup regular = new CustomHttpClient.RequestGroup();
-
-        assertTrue(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work/episode",
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, priority));
-        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work",
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, priority));
-        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work/episode",
-                CustomHttpClient.FetchMode.DIRECT_ONLY, priority));
-        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(true, "/webtoon/work/episode",
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, regular));
-        assertFalse(CustomHttpClient.shouldPrioritizeNtkEpisodeWebViewForTest(false, "/webtoon/work/episode",
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW, priority));
-    }
-
-    @Test
-    public void ntkViewerImageForbiddenRefreshesAckBeforeWebViewFallback() {
-        assertFalse(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(403, "{\"ok\":false}"));
-        assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"ad_ack_required\":true}"));
-        assertTrue(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"error\":\"ad_ack_required\"}"));
-        assertFalse(CustomHttpClient.ntkViewerImagesNeedsAckRefreshForTest(200, "{\"ok\":false}"));
-    }
-
-    @Test
-    public void ntkViewerImagesWaitForAckBeforeNumericWebtoonApi() {
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "/webtoon/840894/1073395", false, false));
-
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "/webtoon/840894/1073395", true, false));
-        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "/webtoon/840894/1073395", false, true));
-        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "/webtoon/840894/nv-840894-7", false, true));
-        assertTrue(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "/webtoon/840894/u-slug-1073395", false, false));
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "manhwa", "/manhwa/840894/1073395", false, false));
-    }
-
-    @Test
-    public void ntkModernGuardWaitsForAckBeforeViewerImageApi() {
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "https://sbxh6.example", "/webtoon/840894/1073395", false, true));
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "https://sbxh6.example", "/webtoon/840894/nv-840894-7", false, true));
-        assertFalse(CustomHttpClient.shouldTryNtkViewerImagesBeforeAckForTest(
-                "webtoon", "https://toonflix.example", "/webtoon/840894/u-slug-1073395", false, false));
-    }
-
-    @Test
-    public void ntkViewerImageApiValidatesFirstVisiblePages() {
-        assertEquals(1, CustomHttpClient.ntkViewerImageInitialValidationCountForTest(1));
-        assertEquals(2, CustomHttpClient.ntkViewerImageInitialValidationCountForTest(2));
-        assertEquals(2, CustomHttpClient.ntkViewerImageInitialValidationCountForTest(64));
-    }
-
-    @Test
-    public void ntkHeaderBuildSyncsWebViewCookiesWhenClearanceIsMissing() {
-        assertFalse(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, true, false, true,
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, true, false,
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertTrue(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(true, false, false, false,
-                CustomHttpClient.FetchMode.DIRECT_ONLY));
-        assertFalse(CustomHttpClient.shouldSkipWebViewCookieSyncForTest(false, false, false, false,
-                CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-    }
-
-    @Test
     public void sharedWebViewFallbackCoversForegroundWolfEpisodePagesOnly() {
         assertTrue(CustomHttpClient.shouldUseSharedWebViewFallbackForTest(false, true, "/cl?toon=10007",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
@@ -523,10 +423,10 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkPageDirectUsesFastTimeoutForEpisodePagesAndApi() {
-        assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
+    public void ntkFastPageDirectExcludesStrictEpisodesButCoversDiscoveryPaths() {
+        assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/manhwa/1/1",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
-        assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/webtoon/1/1",
+        assertFalse(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/webtoon/1/1",
                 CustomHttpClient.FetchMode.DIRECT_ONLY));
         assertTrue(CustomHttpClient.shouldUseFastNtkPageDirectForTest(true, "/api/manhwa-list",
                 CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW));
@@ -771,32 +671,89 @@ public class CustomHttpClientTest {
     }
 
     @Test
-    public void ntkPageResponseRejectsBlockedOkDocuments() {
+    public void ntkLegacyPageResponseGuardExcludesStrictEpisodesButCoversDiscoveryDocuments() {
         String challengePage = "<html lang=\"en-US\" dir=\"ltr\"><head></head>"
                 + "<body>Verifying you are human. Cloudflare security service.</body></html>";
         String devtoolsBlocked = "<html><head><title>개발자 도구 차단</title></head>"
                 + "<body>developer tools blocked</body></html>";
 
-        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+        assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest(
                 "/webtoon/18768/1586501", 200, challengePage));
-        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+        assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest(
                 "/manhwa/8044/u-mp9phqym-9fo4", 200, devtoolsBlocked));
+        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+                "/api/manhwa-list?page=1", 200, challengePage));
+        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+                "/search?q=hero", 200, devtoolsBlocked));
         assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest(
                 "/init/theme.js", 200, challengePage));
     }
 
     @Test
-    public void ntkNginxForbiddenIsHardBlockedForProtectedPaths() {
+    public void ntkRenderedTitleDocumentIgnoresDormantDevtoolsBlockSource() {
+        String renderedTitle = "<html><head><title>Live title | 뉴토끼</title></head><body>"
+                + "<section class=\"ep-list\"><a class=\"ep-row-v2-link\" "
+                + "href=\"/webtoon/850236/nv-850236-11\"><strong>11화</strong></a></section>"
+                + "<script>const dormant = '<h1>개발자 도구 차단</h1>';</script>"
+                + "</body></html>";
+        String blockedOnly = "<html><head><title>개발자 도구 차단</title></head>"
+                + "<body><h1>개발자 도구 차단</h1></body></html>";
+
+        assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+                "/webtoon/850236", 200, renderedTitle));
+        assertTrue(CustomHttpClient.isCacheablePageBodyForTest(renderedTitle));
+        assertTrue(CustomHttpClient.looksCacheableForTest(renderedTitle));
+        assertTrue(CustomHttpClient.shouldStoreNetworkPageBodyForTest(
+                "/webtoon/850236", renderedTitle));
+        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+                "/webtoon/850236", 200, blockedOnly));
+        assertFalse(CustomHttpClient.isCacheablePageBodyForTest(blockedOnly));
+    }
+
+    @Test
+    public void ntkRenderedFlightSearchCardIgnoresDormantDevtoolsBlockSource() {
+        String renderedSearch = "<html><body><div id=\"__next\"></div>"
+                + "<script>self.__next_f.push([1,\"4e:[\\\"$\\\",\\\"div\\\",null,{"
+                + "\\\"children\\\":[[\\\"$\\\",\\\"a\\\",\\\"w-4492\\\",{"
+                + "\\\"children\\\":[[\\\"$\\\",\\\"p\\\",null,{"
+                + "\\\"className\\\":\\\"subject\\\",\\\"children\\\":\\\"사우러스\\\"}]],"
+                + "\\\"href\\\":\\\"/webtoon/726211\\\","
+                + "\\\"data-ntk-soft-link\\\":\\\"\\\"}]]}]\\n\"])</script>"
+                + "<script>const dormant = '<h1>개발자 도구 차단</h1>';</script>"
+                + "</body></html>";
+        String blockedTemplateOnly = "<html><body><div id=\"__next\"></div>"
+                + "<script>const route = '/webtoon/' + sourceWorkId;"
+                + "const className = 'subject'; const dormant = '개발자 도구 차단';</script>"
+                + "<next-route-announcer></next-route-announcer></body></html>";
+
+        assertTrue(CustomHttpClient.hasRenderedNtkDocumentContent(
+                renderedSearch.toLowerCase(java.util.Locale.ROOT)));
+        assertFalse(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+                "/search?q=사우러스&field=title&match=contains&kind=webtoon", 200, renderedSearch));
+        assertTrue(CustomHttpClient.isCacheablePageBodyForTest(renderedSearch));
+        assertTrue(CustomHttpClient.looksCacheableForTest(renderedSearch));
+        assertTrue(CustomHttpClient.shouldStoreNetworkPageBodyForTest(
+                "/search?q=사우러스&field=title&match=contains&kind=webtoon", renderedSearch));
+
+        assertFalse(CustomHttpClient.hasRenderedNtkDocumentContent(
+                blockedTemplateOnly.toLowerCase(java.util.Locale.ROOT)));
+        assertTrue(CustomHttpClient.shouldRejectNtkPageResponseForTest(
+                "/search?q=hero", 200, blockedTemplateOnly));
+        assertFalse(CustomHttpClient.isCacheablePageBodyForTest(blockedTemplateOnly));
+    }
+
+    @Test
+    public void ntkHardBlockGuardExcludesStrictEpisodesButCoversDiscoveryPaths() {
         String nginx403 = "<html><head><title>403 Forbidden</title></head>"
                 + "<body><center><h1>403 Forbidden</h1></center>"
                 + "<hr><center>nginx/1.24.0 (Ubuntu)</center></body></html>";
 
-        assertTrue(CustomHttpClient.isNtkHardBlockedResponseForTest(
+        assertFalse(CustomHttpClient.isNtkHardBlockedResponseForTest(
                 "/manhwa/37043/1816201", 403, nginx403));
         assertTrue(CustomHttpClient.isNtkHardBlockedResponseForTest(
                 "/api/manhwa-list?page=1", 403, nginx403));
         assertTrue(CustomHttpClient.isNtkHardBlockedResponseForTest(
-                "/webtoon/840540/1546170", 403, "<html><body>trash0607</body></html>"));
+                "/search?q=hero", 403, "<html><body>trash0607</body></html>"));
         assertFalse(CustomHttpClient.isNtkHardBlockedResponseForTest(
                 "/manhwa", 403, nginx403));
         assertFalse(CustomHttpClient.isNtkHardBlockedResponseForTest(
@@ -854,9 +811,20 @@ public class CustomHttpClientTest {
     public void ntkUrlDetectionHandlesResolvedHosts() {
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://sbxh1.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://img.sbxh1.com/manhwa/1"));
+        assertTrue(CustomHttpClient.isNtkUrlForTest("https://toki30.com/webtoon"));
+        assertTrue(CustomHttpClient.isNtkUrlForTest("https://img.toki30.com/manhwa/1"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://newto03.com/manhwa"));
         assertTrue(CustomHttpClient.isNtkUrlForTest("https://toonflix.app/manhwa"));
+        assertFalse(CustomHttpClient.isNtkUrlForTest("https://toki30.com.evil.example/manhwa"));
+        assertFalse(CustomHttpClient.isNtkUrlForTest("https://toki.example/manhwa"));
         assertFalse(CustomHttpClient.isNtkUrlForTest("https://example.com/manhwa"));
+    }
+
+    @Test
+    public void numberedTokiRootUsesCurrentGuardAndMobileIdentityPolicy() {
+        assertTrue(CustomHttpClient.isModernNtkGuardRootForTest("https://toki30.com"));
+        assertTrue(CustomHttpClient.isModernNtkGuardRootForTest("https://www.toki30.com/manhwa/33727"));
+        assertFalse(CustomHttpClient.isModernNtkGuardRootForTest("https://toki.example"));
     }
 
     @Test
@@ -930,7 +898,7 @@ public class CustomHttpClientTest {
 
     @Test
     public void ntkApiFastClientKeepsBlockedSearchFailureShort() {
-        assertTrue(CustomHttpClient.fastNtkApiDirectTimeoutMsForTest() <= 1200L);
+        assertTrue(CustomHttpClient.fastNtkApiDirectTimeoutMsForTest() <= 2500L);
     }
 
     @Test
@@ -1021,8 +989,18 @@ public class CustomHttpClientTest {
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("sbxh1.com"));
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("www.sbxh1.com"));
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("img.sbxh1.com"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("toki30.com"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("www.toki30.com"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("img.toki30.com"));
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("toonflix.app"));
         assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("img.toonflix.app"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("booktoki8.org"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("mana.apihost93.com"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("aws-cdn1.site"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("f1spard.site"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("shaomoi.org"));
+        assertTrue(CustomHttpClient.isNtkDnsProtectedHostForTest("xiaomichina.com"));
+        assertFalse(CustomHttpClient.isNtkDnsProtectedHostForTest("toki30.com.evil.example"));
         assertFalse(CustomHttpClient.isNtkDnsProtectedHostForTest("example.com"));
     }
 

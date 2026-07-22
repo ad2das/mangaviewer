@@ -12,14 +12,29 @@ import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public final class CacheFileStore {
     private static final String DIR_NAME = "structured_cache";
     private static final char[] HEX = "0123456789abcdef".toCharArray();
     private static final int MEMORY_CACHE_MAX_ENTRIES = 64;
-    private static final int KEY_LOCKS_MAX_ENTRIES = 256;
+    private static final int KEY_LOCKS_MAX_ENTRIES = 65536;
     private static final long MAX_READ_BYTES = 4L * 1024L * 1024L;
     private static final Object[] KEY_LOCKS = createKeyLocks();
+    private static final ConcurrentHashMap<String, PendingWrite> PENDING_WRITES = new ConcurrentHashMap<>();
+    private static final ReentrantReadWriteLock ADMISSION_LOCK = new ReentrantReadWriteLock(true);
+    private static final AtomicLong STORE_GENERATION = new AtomicLong(0L);
+    private static final ExecutorService DISK_WRITE_EXECUTOR =
+            Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "structured-cache-writer");
+                thread.setDaemon(true);
+                return thread;
+            });
     private static final Map<String, String> MEMORY_CACHE = new LinkedHashMap<String, String>(MEMORY_CACHE_MAX_ENTRIES, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
@@ -39,27 +54,30 @@ public final class CacheFileStore {
     public static String read(File rootDir, String key) {
         if(rootDir == null || key == null)
             return "";
-        String cached = readMemoryInternal(key);
-        if(cached != null)
-            return cached;
-        synchronized (lockForKey(key)) {
-            cached = readMemoryInternal(key);
+        ADMISSION_LOCK.readLock().lock();
+        try {
+            String cached = readMemoryInternal(key);
             if(cached != null)
                 return cached;
-            logMainThreadAccess("cache_read_main_thread");
-            File file = file(rootDir, key);
-            if(!file.exists())
-                return "";
-            if(file.length() > MAX_READ_BYTES)
-                return "";
-            try (FileInputStream stream = new FileInputStream(file)) {
-                String value = readUtf8Text(stream);
-                rememberMemory(key, value);
-                return value;
-            } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
-                return "";
+            synchronized (lockForKey(key)) {
+                cached = readMemoryInternal(key);
+                if(cached != null)
+                    return cached;
+                logMainThreadAccess("cache_read_main_thread");
+                File file = file(rootDir, key);
+                if(!file.exists() || file.length() > MAX_READ_BYTES)
+                    return "";
+                try (FileInputStream stream = new FileInputStream(file)) {
+                    String value = readUtf8Text(stream);
+                    rememberMemory(key, value);
+                    return value;
+                } catch (Exception e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                    return "";
+                }
             }
+        } finally {
+            ADMISSION_LOCK.readLock().unlock();
         }
     }
 
@@ -69,21 +87,74 @@ public final class CacheFileStore {
         write(fileRoot(context), key, value);
     }
 
+    public static void writeAsync(Context context, String key, String value) {
+        if(context == null || key == null || value == null)
+            return;
+        enqueueWrite(fileRoot(context), key, value);
+    }
+
     public static void write(File rootDir, String key, String value) {
         if(rootDir == null || key == null || value == null)
             return;
-        logMainThreadAccess("cache_write_main_thread");
-        synchronized (lockForKey(key)) {
-            File file = file(rootDir, key);
-            File dir = file.getParentFile();
-            if(dir != null && !dir.exists() && !dir.mkdirs())
+        enqueueWrite(rootDir, key, value);
+    }
+
+    private static void enqueueWrite(File rootDir, String key, String value) {
+        if(rootDir == null || key == null || value == null)
+            return;
+        ADMISSION_LOCK.readLock().lock();
+        try {
+            logMainThreadAccess("cache_write_main_thread");
+            rememberMemory(key, value);
+            long generation = STORE_GENERATION.get();
+            PendingWrite pending = new PendingWrite(rootDir, value, generation);
+            PendingWrite existing = PENDING_WRITES.putIfAbsent(key, pending);
+            if(existing != null) {
+                existing.state = new PendingWriteState(rootDir, value, generation);
+                existing.dirty.set(true);
                 return;
-            try {
-                writeUtf8Text(file, value);
-                rememberMemory(key, value);
-            } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
             }
+            DISK_WRITE_EXECUTOR.execute(() -> drainPendingWrite(key, pending));
+        } finally {
+            ADMISSION_LOCK.readLock().unlock();
+        }
+    }
+
+    private static void drainPendingWrite(String key, PendingWrite pending) {
+        PendingWrite active = pending;
+        while(active != null) {
+            active.dirty.set(false);
+            PendingWriteState state = active.state;
+            writeDiskNow(state.rootDir, key, state.value, state.generation);
+            if(!active.dirty.get() && PENDING_WRITES.remove(key, active))
+                return;
+            PendingWrite latest = PENDING_WRITES.get(key);
+            active = latest == null ? null : latest;
+        }
+    }
+
+    private static void writeDiskNow(File rootDir, String key, String value, long generation) {
+        if(rootDir == null || key == null || value == null)
+            return;
+        ADMISSION_LOCK.readLock().lock();
+        try {
+            if(generation != STORE_GENERATION.get())
+                return;
+            synchronized (lockForKey(key)) {
+                if(generation != STORE_GENERATION.get())
+                    return;
+                File file = file(rootDir, key);
+                File dir = file.getParentFile();
+                if(dir != null && !dir.exists() && !dir.mkdirs())
+                    return;
+                try {
+                    writeUtf8Text(file, value);
+                } catch (Exception e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                }
+            }
+        } finally {
+            ADMISSION_LOCK.readLock().unlock();
         }
     }
 
@@ -96,22 +167,37 @@ public final class CacheFileStore {
     public static void delete(File rootDir, String key) {
         if(rootDir == null || key == null)
             return;
-        logMainThreadAccess("cache_delete_main_thread");
-        synchronized (lockForKey(key)) {
-            try {
-                File file = file(rootDir, key);
-                if(file.exists())
-                    file.delete();
-                forgetMemory(key);
-            } catch (Exception e) {
-                ml.melun.mangaview.report.CrashReporter.record(e);
+        ADMISSION_LOCK.readLock().lock();
+        try {
+            logMainThreadAccess("cache_delete_main_thread");
+            synchronized (lockForKey(key)) {
+                try {
+                    File file = file(rootDir, key);
+                    if(file.exists())
+                        file.delete();
+                    forgetMemory(key);
+                } catch (Exception e) {
+                    ml.melun.mangaview.report.CrashReporter.record(e);
+                }
             }
+        } finally {
+            ADMISSION_LOCK.readLock().unlock();
         }
     }
 
     public static String readMemory(String key) {
         String cached = readMemoryInternal(key);
         return cached == null ? "" : cached;
+    }
+
+    public static int memoryEntryCount() {
+        synchronized (MEMORY_CACHE) {
+            return MEMORY_CACHE.size();
+        }
+    }
+
+    public static int pendingWriteCount() {
+        return PENDING_WRITES.size();
     }
 
     public static File fileRoot(Context context) {
@@ -140,6 +226,76 @@ public final class CacheFileStore {
         synchronized (MEMORY_CACHE) {
             MEMORY_CACHE.clear();
         }
+    }
+
+    /**
+     * Process-local StrictFresh barrier used only by instrumentation. Waiting on the single
+     * writer first prevents an older async write from recreating a deleted entry afterward.
+     */
+    public static int clearAllForTest(Context context) {
+        if(context == null)
+            return 0;
+        File root = fileRoot(context);
+        ADMISSION_LOCK.writeLock().lock();
+        try {
+            STORE_GENERATION.incrementAndGet();
+            synchronized (MEMORY_CACHE) {
+                MEMORY_CACHE.clear();
+            }
+            int deleted = deleteRecursivelyForTest(root);
+            if(countFilesForTest(root) != 0)
+                throw new IllegalStateException("Structured cache remained after StrictFresh clear: "
+                        + root.getAbsolutePath());
+            return deleted;
+        } finally {
+            ADMISSION_LOCK.writeLock().unlock();
+        }
+    }
+
+    public static void clearKeyForTest(Context context, String key) {
+        if(context == null || key == null)
+            return;
+        ADMISSION_LOCK.writeLock().lock();
+        try {
+            STORE_GENERATION.incrementAndGet();
+            synchronized (lockForKey(key)) {
+                File file = file(fileRoot(context), key);
+                if(file.exists() && !file.delete())
+                    throw new IllegalStateException("Structured cache key remained after StrictFresh clear: "
+                            + key);
+                forgetMemory(key);
+            }
+        } finally {
+            ADMISSION_LOCK.writeLock().unlock();
+        }
+    }
+
+    private static int deleteRecursivelyForTest(File file) {
+        if(file == null || !file.exists())
+            return 0;
+        int deleted = 0;
+        if(file.isDirectory()) {
+            File[] children = file.listFiles();
+            if(children != null) {
+                for(File child : children)
+                    deleted += deleteRecursivelyForTest(child);
+            }
+        }
+        return file.delete() ? deleted + 1 : deleted;
+    }
+
+    private static int countFilesForTest(File file) {
+        if(file == null || !file.exists())
+            return 0;
+        if(file.isFile())
+            return 1;
+        int count = 0;
+        File[] children = file.listFiles();
+        if(children != null) {
+            for(File child : children)
+                count += countFilesForTest(child);
+        }
+        return count;
     }
 
     static void rememberMemoryForTest(String key, String value) {
@@ -189,6 +345,27 @@ public final class CacheFileStore {
         for(int i = 0; i < locks.length; i++)
             locks[i] = new Object();
         return locks;
+    }
+
+    private static final class PendingWrite {
+        volatile PendingWriteState state;
+        final AtomicBoolean dirty = new AtomicBoolean(false);
+
+        PendingWrite(File rootDir, String value, long generation) {
+            state = new PendingWriteState(rootDir, value, generation);
+        }
+    }
+
+    private static final class PendingWriteState {
+        final File rootDir;
+        final String value;
+        final long generation;
+
+        PendingWriteState(File rootDir, String value, long generation) {
+            this.rootDir = rootDir;
+            this.value = value;
+            this.generation = generation;
+        }
     }
 
     private static void forgetMemory(String key) {

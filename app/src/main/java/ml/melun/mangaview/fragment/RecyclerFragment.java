@@ -17,6 +17,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -78,6 +79,14 @@ public class RecyclerFragment extends Fragment {
     View touchChild;
     View touchAnchor;
     Runnable touchLongPressRunnable;
+    final Runnable visibleResumeWarmupRunnable = this::warmupVisibleResumeItems;
+    final ViewTreeObserver.OnWindowFocusChangeListener visibleResumeWindowFocusListener =
+            hasFocus -> {
+                if(hasFocus)
+                    scheduleVisibleResumeWarmup();
+                else
+                    cancelVisibleResumeWarmup();
+            };
 
 
     @Override
@@ -107,6 +116,8 @@ public class RecyclerFragment extends Fragment {
         recyclerView.setItemAnimator(null);
         recyclerView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         recyclerView.setAdapter(titleAdapter);
+        recyclerView.getViewTreeObserver().addOnWindowFocusChangeListener(
+                visibleResumeWindowFocusListener);
         touchSlop = ViewConfiguration.get(rootView.getContext()).getScaledTouchSlop();
         recyclerView.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
             @Override
@@ -265,6 +276,10 @@ public class RecyclerFragment extends Fragment {
         View resume = resumeButtonFor(touchChild);
         touchOnResume = isTouchInsideDescendant(touchChild, resume, touchDownX, touchDownY);
         touchAnchor = touchOnResume && resume != null ? resume : touchChild;
+        // ACTION_DOWN records identity only. Content ownership starts after the committed click
+        // reaches EpisodeActivity's exact episode handler.
+        if(mode == R.id.nav_recent)
+            titleAdapter.noteNtkResumePressMetadata(touchPosition);
         scheduleLibraryLongPress(touchPosition, touchAnchor);
     }
 
@@ -283,8 +298,10 @@ public class RecyclerFragment extends Fragment {
                 && !longPressWindow
                 && listScrollState == RecyclerView.SCROLL_STATE_IDLE;
         resetLibraryTouchStateOnly();
-        if(!canClick)
+        if(!canClick) {
+            titleAdapter.releaseNtkResumePressClaim();
             return;
+        }
         if(resumeTap)
             titleAdapter.performResumeClick(position);
         else
@@ -307,10 +324,14 @@ public class RecyclerFragment extends Fragment {
     private void cancelLibraryTouchClick() {
         touchMoved = true;
         touchHandler.removeCallbacksAndMessages(null);
+        if(titleAdapter != null)
+            titleAdapter.releaseNtkResumePressClaim();
     }
 
     private void resetLibraryTouch() {
         touchHandler.removeCallbacksAndMessages(null);
+        if(titleAdapter != null)
+            titleAdapter.releaseNtkResumePressClaim();
         resetLibraryTouchStateOnly();
     }
 
@@ -373,13 +394,38 @@ public class RecyclerFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
+        if(titleAdapter != null)
+            titleAdapter.releaseNtkResumePressClaim();
         if(loaded && mode > -1)
             changeMode(mode);
     }
 
     @Override
+    public void onPause() {
+        cancelVisibleResumeWarmup();
+        super.onPause();
+    }
+
+    @Override
+    public void onHiddenChanged(boolean hidden) {
+        super.onHiddenChanged(hidden);
+        if(hidden) {
+            cancelVisibleResumeWarmup();
+        } else if(recyclerView != null) {
+            recyclerView.removeCallbacks(visibleResumeWarmupRunnable);
+            recyclerView.post(visibleResumeWarmupRunnable);
+        }
+    }
+
+    @Override
     public void onDestroyView() {
         resetLibraryTouch();
+        cancelVisibleResumeWarmup();
+        if(recyclerView != null) {
+            ViewTreeObserver observer = recyclerView.getViewTreeObserver();
+            if(observer.isAlive())
+                observer.removeOnWindowFocusChangeListener(visibleResumeWindowFocusListener);
+        }
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);
             localChangeListener = null;
@@ -430,6 +476,8 @@ public class RecyclerFragment extends Fragment {
     }
 
     public void changeMode(int id){
+        if(mode != id && titleAdapter != null)
+            titleAdapter.cancelVisibleNtkResumeWarmup();
         mode = id;
         if(!loaded)
             return;
@@ -460,17 +508,40 @@ public class RecyclerFragment extends Fragment {
     }
 
     private void scheduleVisibleResumeWarmup() {
-        if(recyclerView == null)
+        if(!canWarmupVisibleResumeItems()) {
+            cancelVisibleResumeWarmup();
             return;
-        recyclerView.post(this::warmupVisibleResumeItems);
+        }
+        recyclerView.removeCallbacks(visibleResumeWarmupRunnable);
+        recyclerView.post(visibleResumeWarmupRunnable);
     }
 
     private void warmupVisibleResumeItems() {
-        if(recyclerView == null || titleAdapter == null || mode == R.id.nav_download)
+        if(!canWarmupVisibleResumeItems()) {
+            cancelVisibleResumeWarmup();
             return;
+        }
         if(recyclerView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
             return;
         titleAdapter.warmupVisibleResumeItems(recyclerView);
+    }
+
+    private boolean canWarmupVisibleResumeItems() {
+        View fragmentView = getView();
+        return recyclerView != null && titleAdapter != null && mode == R.id.nav_recent
+                && loaded && isAdded() && isResumed() && isVisible() && fragmentView != null
+                && fragmentView.isShown() && recyclerView.isShown()
+                && recyclerView.isAttachedToWindow()
+                && recyclerView.getWindowVisibility() == View.VISIBLE
+                && recyclerView.hasWindowFocus() && getActivity() != null
+                && getActivity().hasWindowFocus();
+    }
+
+    private void cancelVisibleResumeWarmup() {
+        if(recyclerView != null)
+            recyclerView.removeCallbacks(visibleResumeWarmupRunnable);
+        if(titleAdapter != null)
+            titleAdapter.cancelVisibleNtkResumeWarmup();
     }
 
     private void updateEmptyState() {

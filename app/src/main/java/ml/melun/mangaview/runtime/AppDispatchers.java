@@ -22,6 +22,22 @@ import ml.melun.mangaview.report.CrashReporter;
 public final class AppDispatchers {
     private static final ThreadPoolExecutor IO = boundedPool("manga-io", 2, 10, 256);
     private static final ThreadPoolExecutor NETWORK_FANOUT = boundedPool("manga-net", 4, 12, 512);
+    private static final ThreadPoolExecutor NTK_VIEWER_CRITICAL = boundedPool("manga-ntk-viewer", 3, 6, 64);
+    private static final ThreadPoolExecutor NTK_FOREGROUND_IMAGE = boundedPool("manga-ntk-fg", 1, 3, 32);
+    // Blocking CDN bodies must never occupy the four immutable-tile decode workers. Six source
+    // lanes match the reader's network admission contract; completed files are handed to the
+    // surface pool through callbacks instead of workers waiting on one another.
+    private static final ThreadPoolExecutor NTK_SOURCE_IMAGE = boundedPool("manga-ntk-source", 6, 6, 64);
+    // The immutable launch contract needs four canonical pages. With only three core workers the
+    // fourth page always waited for a second decode wave and could miss a fast physical tap by
+    // ~60-100 ms. Four background-priority workers decode that exact critical set together while
+    // the main/input thread still wins CPU scheduling.
+    private static final ThreadPoolExecutor NTK_SURFACE_IMAGE = boundedPool("manga-ntk-surface", 4, 4, 64);
+    // Exact Surface lifecycle work may block on render-thread generation completion, but must
+    // never block Android main or compete with source/decode lanes. Rejection is intentionally
+    // visible to the renderer so it can terminalize the exact attach generation fail-closed.
+    private static final ThreadPoolExecutor NTK_SURFACE_LIFECYCLE =
+            strictSinglePool("manga-ntk-lifecycle", 8);
     private static final ThreadPoolExecutor USER_ACTION = boundedPool("manga-action", 1, 4, 128);
     private static final ThreadPoolExecutor SEARCH = boundedPool("manga-search", 2, 6, 96);
     private static final ThreadPoolExecutor NAVIGATION = boundedPool("manga-nav", 1, 2, 32);
@@ -77,6 +93,28 @@ public final class AppDispatchers {
         return new TaskHandle(IO.submit(safe(runnable)));
     }
 
+    public static TaskHandle submitNtkForegroundImage(Runnable runnable) {
+        return new TaskHandle(NTK_FOREGROUND_IMAGE.submit(safe(runnable)));
+    }
+
+    public static TaskHandle submitNtkViewerCritical(Runnable runnable) {
+        return new TaskHandle(NTK_VIEWER_CRITICAL.submit(safe(runnable)));
+    }
+
+    public static TaskHandle submitNtkSourceImage(Runnable runnable) {
+        return new TaskHandle(NTK_SOURCE_IMAGE.submit(safe(runnable)));
+    }
+
+    public static TaskHandle submitNtkSurfaceImage(Runnable runnable) {
+        return new TaskHandle(NTK_SURFACE_IMAGE.submit(safe(runnable)));
+    }
+
+    public static TaskHandle submitNtkSurfaceLifecycleStrict(Runnable runnable) {
+        if(runnable == null)
+            throw new NullPointerException("runnable");
+        return new TaskHandle(NTK_SURFACE_LIFECYCLE.submit(runnable));
+    }
+
     public static TaskHandle submitUserAction(Runnable runnable) {
         return new TaskHandle(USER_ACTION.submit(safe(runnable)));
     }
@@ -107,6 +145,11 @@ public final class AppDispatchers {
 
     public static <T> CompletionService<T> ioCompletionService() {
         return new ExecutorCompletionService<>(NETWORK_FANOUT);
+    }
+
+    /** CPU/decode fan-out reserved for bitmaps about to enter the attached NTK surface. */
+    public static <T> CompletionService<T> ntkSurfaceImageCompletionService() {
+        return new ExecutorCompletionService<>(NTK_SURFACE_IMAGE);
     }
 
     public static void runOnMain(Runnable runnable) {
@@ -172,7 +215,9 @@ public final class AppDispatchers {
                         cancelRejected(runnable);
                         return;
                     }
-                    if(name.startsWith("manga-image")) {
+                    if(name.startsWith("manga-image")
+                            || name.startsWith("manga-ntk-surface")
+                            || name.startsWith("manga-ntk-source")) {
                         CrashReporter.record(new RejectedExecutionException(name + " queue full"));
                         cancelRejected(runnable);
                         return;
@@ -190,6 +235,19 @@ public final class AppDispatchers {
                     });
                     overflow.start();
                 });
+        executor.allowCoreThreadTimeOut(true);
+        return executor;
+    }
+
+    private static ThreadPoolExecutor strictSinglePool(String name, int queueSize) {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                1,
+                1,
+                30L,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(queueSize),
+                namedThreadFactory(name),
+                new ThreadPoolExecutor.AbortPolicy());
         executor.allowCoreThreadTimeOut(true);
         return executor;
     }
@@ -214,7 +272,17 @@ public final class AppDispatchers {
     private static ThreadFactory namedThreadFactory(String name) {
         final int[] count = {0};
         return runnable -> {
-            Thread thread = new java.lang.Thread(runnable, name + '-' + (++count[0]));
+            Runnable prioritized = name.startsWith("manga-ntk-surface")
+                    ? () -> {
+                        try {
+                            android.os.Process.setThreadPriority(
+                                    android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                        } catch(Throwable ignored) {
+                        }
+                        runnable.run();
+                    }
+                    : runnable;
+            Thread thread = new java.lang.Thread(prioritized, name + '-' + (++count[0]));
             thread.setDaemon(true);
             return thread;
         };

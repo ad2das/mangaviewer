@@ -143,7 +143,7 @@ internal class NtkEpisodeCoordinator(
     }
 
     private fun isInitialNearPage(pageIndex: Int, image: String?): Boolean {
-        val nearImage = image?.contains("/p00") == true ||
+        val nearImage = isNtkGeneratedPageImage(image) ||
             image?.contains("://image-comic.pstatic.net/webtoon/", ignoreCase = true) == true
         if (!nearImage) return false
         if (pageIndex == anchorPageIndex - 1) return true
@@ -155,12 +155,18 @@ internal class NtkEpisodeCoordinator(
         return pageIndex in (anchorPageIndex + 1)..(anchorPageIndex + maxAhead)
     }
 
+    private fun isNtkGeneratedPageImage(image: String?): Boolean {
+        if (image.isNullOrBlank()) return false
+        return NTK_GENERATED_PAGE_IMAGE.containsMatchIn(image)
+    }
+
     companion object {
         private const val TAG = "ViewerPerf"
-        private const val MANHWA_ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
-        private const val WEBTOON_ANCHOR_EXCLUSIVE_FALLBACK_MS = 0L
+        private const val MANHWA_ANCHOR_EXCLUSIVE_FALLBACK_MS = 4_000L
+        private const val WEBTOON_ANCHOR_EXCLUSIVE_FALLBACK_MS = 4_000L
         private const val WEBTOON_INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 4
         private const val INITIAL_NEAR_PAGE_FALLBACK_AHEAD = 18
+        private val NTK_GENERATED_PAGE_IMAGE = Regex("/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
         private val NEXT_EPOCH = AtomicLong()
     }
 }

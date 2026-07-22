@@ -17,6 +17,9 @@ public class MTitle{
     String sourceSite;
     String ntkStatusLabel;
     String resumeNtkEpisodePath;
+    String resumeNtkImageEpisodeId;
+    String resumeNtkImageWorkId;
+    int resumeNtkImageCount;
     int bookmarkEpisodeId = -1;
     int bookmarkEpisodeIndex = -1;
     int episodeCount = 0;
@@ -78,7 +81,43 @@ public class MTitle{
     }
 
     public void setResumeNtkEpisodePath(String resumeNtkEpisodePath) {
-        this.resumeNtkEpisodePath = resumeNtkEpisodePath == null ? "" : resumeNtkEpisodePath.trim();
+        String normalized = resumeNtkEpisodePath == null ? "" : resumeNtkEpisodePath.trim();
+        if(!normalized.equals(getResumeNtkEpisodePath()))
+            setResumeNtkImageIdentity("", "", 0);
+        this.resumeNtkEpisodePath = normalized;
+    }
+
+    public String getResumeNtkImageEpisodeId() {
+        return resumeNtkImageEpisodeId == null ? "" : resumeNtkImageEpisodeId.trim();
+    }
+
+    public String getResumeNtkImageWorkId() {
+        return resumeNtkImageWorkId == null ? "" : resumeNtkImageWorkId.trim();
+    }
+
+    public int getResumeNtkImageCount() {
+        return Math.max(0, resumeNtkImageCount);
+    }
+
+    public void setResumeNtkImageIdentity(String workId, String episodeId, int imageCount) {
+        resumeNtkImageWorkId = workId == null ? "" : workId.trim();
+        resumeNtkImageEpisodeId = episodeId == null ? "" : episodeId.trim();
+        resumeNtkImageCount = Math.max(0, imageCount);
+    }
+
+    public void inheritMissingResumeNtkImageIdentity(MTitle source) {
+        if(source == null || !getResumeNtkEpisodePath().equals(source.getResumeNtkEpisodePath()))
+            return;
+        String workId = getResumeNtkImageWorkId();
+        String episodeId = getResumeNtkImageEpisodeId();
+        int imageCount = getResumeNtkImageCount();
+        if(workId.length() == 0)
+            workId = source.getResumeNtkImageWorkId();
+        if(episodeId.length() == 0)
+            episodeId = source.getResumeNtkImageEpisodeId();
+        if(imageCount <= 0)
+            imageCount = source.getResumeNtkImageCount();
+        setResumeNtkImageIdentity(workId, episodeId, imageCount);
     }
 
     public int getBaseMode() {
@@ -194,6 +233,10 @@ public class MTitle{
         clone.setSourceSite(sourceSite);
         clone.setNtkStatusLabel(ntkStatusLabel);
         clone.setResumeNtkEpisodePath(resumeNtkEpisodePath);
+        clone.setResumeNtkImageIdentity(
+                getResumeNtkImageWorkId(),
+                getResumeNtkImageEpisodeId(),
+                getResumeNtkImageCount());
         return clone;
     }
 

@@ -606,6 +606,7 @@ public class Preference {
             if(host.startsWith("ntk")
                     || host.startsWith("newto")
                     || host.startsWith("sbxh")
+                    || host.matches("(?:[a-z0-9-]+\\.)?toki\\d+\\.com")
                     || host.contains("newtoki")
                     || host.startsWith("toonflix")
                     || host.endsWith(".toonflix.app")
@@ -1037,6 +1038,7 @@ public class Preference {
     private static void preserveMoreCompleteProgress(MTitle target, MTitle existing) {
         if(target == null || existing == null)
             return;
+        target.inheritMissingResumeNtkImageIdentity(existing);
         int existingCount = existing.getEpisodeCount();
         int targetCount = target.getEpisodeCount();
         boolean targetHasCompleteProgress = target.getBookmarkEpisodeIndex() > 0

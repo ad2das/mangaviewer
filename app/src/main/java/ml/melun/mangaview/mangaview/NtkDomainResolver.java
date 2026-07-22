@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
@@ -17,17 +19,24 @@ import okhttp3.Request;
 import okhttp3.Response;
 
 public class NtkDomainResolver {
-    public static final String CHANNEL_URL = "https://t.me/s/newtoki_url";
+    public static final String ADDRESS_GUIDE_URL = "https://sites.google.com/view/newtoki33/";
+    public static final String CHANNEL_URL = "https://t.me/s/newtoki_juso";
     private static final String[] CHANNEL_URLS = new String[]{
+            ADDRESS_GUIDE_URL,
+            CHANNEL_URL,
             "https://newtoki1.org",
             "https://sbxh9.com",
             "https://sbxh8.com",
-            "https://sbxh7.com",
-            CHANNEL_URL
+            "https://sbxh7.com"
     };
+    private static final Pattern OFFICIAL_GUIDE_ROOT_PATTERN = Pattern.compile(
+            "https?://(?:www\\.)?(?:toki\\d+\\.com|sbxh\\d+\\.com|newtoki\\d+\\.org)(?=[^a-z0-9.-]|$)",
+            Pattern.CASE_INSENSITIVE);
     private static final long RESOLVE_TIMEOUT_MS = 8_000L;
     private static final int SBXH_FUTURE_PROBE_WINDOW = 3;
     private static final int SBXH_PAST_PROBE_WINDOW = 8;
+    private static final String PRIMARY_DOCUMENT_PROBE_PATH = "/webtoon";
+    private static final String MANHWA_DOCUMENT_PROBE_PATH = "/manhwa";
 
     public static String resolve(OkHttpClient client, Map<String, String> headers) {
         return resolve(client, headers, null);
@@ -41,8 +50,6 @@ public class NtkDomainResolver {
     public static List<String> resolveCandidates(OkHttpClient client, Map<String, String> headers, CustomHttpClient.RequestGroup requestGroup) {
         ArrayList<String> roots = new ArrayList<>();
         ArrayList<String> guideUrls = new ArrayList<>();
-        Response response = null;
-        Call call = null;
         try {
             OkHttpClient resolveClient = client.newBuilder()
                     .connectTimeout(3, TimeUnit.SECONDS)
@@ -52,61 +59,72 @@ public class NtkDomainResolver {
                     .followSslRedirects(true)
                     .build();
             for(String channelUrl : CHANNEL_URLS) {
-                Request.Builder builder = new Request.Builder().url(channelUrl).get();
-                if(headers != null)
-                    for(String key : headers.keySet())
-                        builder.addHeader(key, headers.get(key));
-                call = resolveClient.newCall(builder.build());
-                if(requestGroup != null)
-                    requestGroup.add(call);
-                response = call.execute();
-                if(response.code() >= 200 && response.code() < 400 && response.body() != null) {
-                    String html = response.body().string();
+                try {
+                    String html = fetchHtml(resolveClient, channelUrl, headers, requestGroup);
+                    if(html == null)
+                        continue;
+                    if(ADDRESS_GUIDE_URL.equals(channelUrl)) {
+                        for(String root : parseOfficialAddressGuideRoots(html))
+                            addRootCandidate(roots, root);
+                        if(!roots.isEmpty())
+                            return roots;
+                        continue;
+                    }
                     for(String root : parseLatestRoots(html))
                         addRootCandidate(roots, root);
                     for(String guideUrl : parseAddressGuideUrls(html))
                         if(!guideUrls.contains(guideUrl))
                             guideUrls.add(guideUrl);
-                }
-                if(response != null) {
-                    response.close();
-                    response = null;
-                }
-                if(requestGroup != null && call != null) {
-                    requestGroup.remove(call);
-                    call = null;
+                } catch(Exception ignored) {
                 }
             }
             for(String guideUrl : guideUrls) {
-                Request.Builder builder = new Request.Builder().url(guideUrl).get();
-                if(headers != null)
-                    for(String key : headers.keySet())
-                        builder.addHeader(key, headers.get(key));
-                call = resolveClient.newCall(builder.build());
-                if(requestGroup != null)
-                    requestGroup.add(call);
-                response = call.execute();
-                if(response.code() >= 200 && response.code() < 400 && response.body() != null)
-                    for(String root : parseAddressGuideRoots(response.body().string()))
+                try {
+                    String html = fetchHtml(resolveClient, guideUrl, headers, requestGroup);
+                    if(html == null)
+                        continue;
+                    for(String root : parseAddressGuideRoots(html))
                         addRootCandidate(roots, root);
-                if(response != null) {
-                    response.close();
-                    response = null;
-                }
-                if(requestGroup != null && call != null) {
-                    requestGroup.remove(call);
-                    call = null;
+                } catch(Exception ignored) {
                 }
             }
             return roots;
         } catch (Exception e) {
             return roots;
-        } finally {
-            if(requestGroup != null && call != null)
-                requestGroup.remove(call);
-            if(response != null)
-                response.close();
         }
+    }
+
+    private static String fetchHtml(OkHttpClient client, String url, Map<String, String> headers,
+                                    CustomHttpClient.RequestGroup requestGroup) throws Exception {
+        Request.Builder builder = new Request.Builder().url(url).get();
+        if(headers != null)
+            for(String key : headers.keySet())
+                builder.addHeader(key, headers.get(key));
+        Call call = client.newCall(builder.build());
+        if(requestGroup != null)
+            requestGroup.add(call);
+        try(Response response = call.execute()) {
+            if(response.code() < 200 || response.code() >= 400 || response.body() == null)
+                return null;
+            return response.body().string();
+        } finally {
+            if(requestGroup != null)
+                requestGroup.remove(call);
+        }
+    }
+
+    static String firstResolverSourceForTest() {
+        return CHANNEL_URLS[0];
+    }
+
+    static String firstDocumentProbePath() {
+        return PRIMARY_DOCUMENT_PROBE_PATH;
+    }
+
+    static String nextDocumentProbePath(String completedPath, int responseCode) {
+        if(PRIMARY_DOCUMENT_PROBE_PATH.equals(completedPath) && responseCode == 404)
+            return MANHWA_DOCUMENT_PROBE_PATH;
+        return null;
     }
 
     static String parseLatestRoot(String html) {
@@ -188,6 +206,16 @@ public class NtkDomainResolver {
             if(isCandidate(root, token))
                 addRootCandidate(roots, root);
         }
+        return roots;
+    }
+
+    static List<String> parseOfficialAddressGuideRoots(String html) {
+        ArrayList<String> roots = new ArrayList<>();
+        if(html == null || html.length() == 0)
+            return roots;
+        Matcher matcher = OFFICIAL_GUIDE_ROOT_PATTERN.matcher(html.replace("\\/", "/"));
+        while(matcher.find())
+            addRootCandidate(roots, matcher.group());
         return roots;
     }
 

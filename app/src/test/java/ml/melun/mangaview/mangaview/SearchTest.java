@@ -15,6 +15,27 @@ import static org.junit.Assert.assertTrue;
 
 public class SearchTest {
     @Test
+    public void ntkExactIdSearchRecognizesExplicitProductionSyntaxOnly() {
+        assertEquals("8139", Search.ntkExactWorkIdQueryForTest("#8139"));
+        assertEquals("8139", Search.ntkExactWorkIdQueryForTest("  #8139  "));
+        assertEquals("", Search.ntkExactWorkIdQueryForTest("8139"));
+        assertEquals("", Search.ntkExactWorkIdQueryForTest("#0"));
+        assertEquals("8139x", Search.ntkExactWorkIdQueryForTest("#8139x"));
+        assertEquals("책벌레의-하극상-제4부",
+                Search.ntkExactWorkIdQueryForTest("#책벌레의-하극상-제4부"));
+        assertEquals("", Search.ntkExactWorkIdQueryForTest("#../../manhwa/1"));
+        assertEquals("", Search.ntkExactWorkIdQueryForTest("#bad?query"));
+    }
+
+    @Test
+    public void ntkExactIdSearchStripsOnlyDocumentAuthorAndSiteSuffix() {
+        assertEquals(
+                "살아남아라  사축쨩 -후배 짱의 오덕활동기-",
+                Search.ntkExactDocumentTitleForTest(
+                        "살아남아라  사축쨩 -후배 짱의 오덕활동기- - 비타원 | 뉴토끼"));
+    }
+
+    @Test
     public void expectedSearchNetworkFailuresDoNotReportAsCrashes() {
         assertFalse(Search.shouldReportSearchFailureForTest(
                 new Exception("Request failed: /api/manhwa-list?status=completed")));

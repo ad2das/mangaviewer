@@ -63,7 +63,11 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.NtkDeviceIdentityManager;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
+import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Search;
+import ml.melun.mangaview.reader.NtkSourceSpoolRegistry;
+import ml.melun.mangaview.reader.ReaderImageCache;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -86,6 +90,8 @@ public class CaptchaActivity extends AppCompatActivity {
     public static final int REQUEST_CAPTCHA = 32;
     String domain;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Set<String> authenticatedStripApiFlights =
+            Collections.synchronizedSet(new HashSet<>());
     private static final long TURNSTILE_CHECK_DELAY_MS = 0;
     private static final long TURNSTILE_CHECK_INTERVAL_MS = 500;
     private static final long TURNSTILE_MAX_WAIT_MS = 120000;
@@ -296,7 +302,6 @@ public class CaptchaActivity extends AppCompatActivity {
     private boolean turnstileAutoClickStarted = false;
     private boolean accessVerificationInFlight = false;
     private boolean waitingForNtkAdAckBeforeFinish = false;
-    private boolean ntkWebViewAdAckProofInFlight = false;
     private boolean turnstileEvaluationInFlight = false;
     private boolean disableTurnstileAutomationForDiagnostics = false;
     private boolean disableNtkRootBootstrapForDiagnostics = false;
@@ -304,7 +309,6 @@ public class CaptchaActivity extends AppCompatActivity {
     private long lastNtkNormalProbeAt = 0;
     private long lastTurnstileTouchAt = 0;
     private long lastNtkCaptchaEnvironmentLogAt = 0;
-    private long lastNtkWebViewAdAckProofStartedAt = 0;
     private String lastTurnstileClickSignature = "";
     private long lastTurnstileRepeatTouchAt = 0;
     private int turnstileRepeatTouchCount = 0;
@@ -2991,45 +2995,6 @@ public class CaptchaActivity extends AppCompatActivity {
         return path.length() > 0 && getHttpClient().hasRecentStrictNtkAdAckProof(path);
     }
 
-    private void startNtkWebViewAdAckProofBeforeFinish(String targetUrl, int attempt) {
-        if(targetUrl == null || targetUrl.length() == 0 || !isNtkEpisodeUrl(targetUrl))
-            return;
-        final String path = ntkVerificationUrl(targetUrl, targetUrl);
-        if(path == null || path.length() == 0 || hasStrictNtkAdAckProof(targetUrl)
-                || getHttpClient().hasUsableNtkAdAckCookieForPath(path))
-            return;
-        long now = System.currentTimeMillis();
-        if(ntkWebViewAdAckProofInFlight || now - lastNtkWebViewAdAckProofStartedAt < 2500L)
-            return;
-        ntkWebViewAdAckProofInFlight = true;
-        lastNtkWebViewAdAckProofStartedAt = now;
-        android.util.Log.d("CaptchaActivity", "NTK WebView ad ack proof before finish start path="
-                + path + ",attempt=" + attempt);
-        AppDispatchers.runIo(() -> {
-            boolean ok = false;
-            try {
-                ok = getHttpClient().performNtkWebViewAckPreflight(path);
-            } catch (Exception e) {
-                android.util.Log.d("CaptchaActivity",
-                        "NTK WebView ad ack proof before finish failed path=" + path, e);
-            }
-            boolean success = ok;
-            AppDispatchers.runOnMain(() -> {
-                ntkWebViewAdAckProofInFlight = false;
-                if(isFinishing)
-                    return;
-                android.util.Log.d("CaptchaActivity",
-                        "NTK WebView ad ack proof before finish done path=" + path
-                                + ",success=" + success
-                                + ",strict=" + hasStrictNtkAdAckProof(targetUrl));
-                if(success || hasStrictNtkAdAckProof(targetUrl)) {
-                    waitingForNtkAdAckBeforeFinish = false;
-                    finishWithVerifiedClearance();
-                }
-            });
-        });
-    }
-
     private void waitForNtkAdAckAndFinish(String purl, String currentUrl, int attempt) {
         if(isFinishing)
             return;
@@ -3050,8 +3015,6 @@ public class CaptchaActivity extends AppCompatActivity {
             finishWithVerifiedClearance();
             return;
         }
-        if(attempt <= 1 || attempt % 8 == 0)
-            startNtkWebViewAdAckProofBeforeFinish(targetUrl, attempt);
         if(attempt == 0 && shouldLoadNtkAckTargetBeforeFinish(targetUrl)) {
             android.util.Log.d("CaptchaActivity", "NTK ad guard ack loading target before finish: " + targetUrl);
             ntkRootBootstrapReturnUrl = null;
@@ -3073,8 +3036,7 @@ public class CaptchaActivity extends AppCompatActivity {
         if(attempt >= 14) {
             android.util.Log.d("CaptchaActivity",
                     "NTK strict ad ack not observed before finish; keeping captcha open attempt="
-                            + attempt + ",cookie=" + hasNtkAdAckCookie(purl, currentUrl)
-                            + ",proofInFlight=" + ntkWebViewAdAckProofInFlight);
+                            + attempt + ",cookie=" + hasNtkAdAckCookie(purl, currentUrl));
             handler.postDelayed(() -> waitForNtkAdAckAndFinish(
                     purl, webView == null ? currentUrl : webView.getUrl(), attempt + 1), 500L);
             return;
@@ -3334,6 +3296,7 @@ public class CaptchaActivity extends AppCompatActivity {
             if(result != null) {
                 try {
                     getHttpClient().rememberNtkViewerPageFromWebView(targetUrl, result.code, body);
+                    primeNtkStripFromVerifiedDocument(path, result.code, body);
                 } catch (Exception e) {
                     android.util.Log.d("CaptchaActivity", "Failed to hand off NTK verification body: "
                             + targetUrl + "," + e);
@@ -3355,6 +3318,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(retry != null) {
                     try {
                         getHttpClient().rememberNtkViewerPageFromWebView(targetUrl, retry.code, retryBody);
+                        primeNtkStripFromVerifiedDocument(path, retry.code, retryBody);
                     } catch (Exception e) {
                         android.util.Log.d("CaptchaActivity", "Failed to hand off NTK local proxy verification body: "
                                 + targetUrl + "," + e);
@@ -3373,6 +3337,93 @@ public class CaptchaActivity extends AppCompatActivity {
                     + path + "," + e);
             return null;
         }
+    }
+
+    /**
+     * Continues the authenticated browser transaction into the native strip pipeline. The live
+     * viewer document already contains the immutable imageMetas array, so discarding it here and
+     * resolving the same manifest after EpisodeActivity opens needlessly puts network on the
+     * activation path.
+     */
+    private void primeNtkStripFromVerifiedDocument(String path, int code, String body) {
+        if(code < 200 || code >= 300 || path == null || body == null || body.length() < 64)
+            return;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "(?i)^/(manhwa|webtoon)/(\\d{1,12})/(?:kp-\\d{1,12}-)?(\\d{1,12})(?:[/?#].*)?$")
+                .matcher(path);
+        if(!matcher.find())
+            return;
+        List<String> urls = Manga.ntkViewerPayloadImageUrls(body, path);
+        int declaredCount = Manga.ntkViewerPayloadPageCount(body);
+        if(urls == null || urls.size() <= 1 || (declaredCount > 0 && urls.size() < declaredCount)) {
+            if(declaredCount > 0 && authenticatedStripApiFlights.add(path)) {
+                Manga warmManga = createAuthenticatedStripManga(
+                        path, matcher.group(1), matcher.group(2), matcher.group(3), declaredCount);
+                if(warmManga != null) {
+                    warmManga.startNtkAuthenticatedGeneratedManifestProbe(getHttpClient());
+                    android.util.Log.d("CaptchaActivity",
+                            "NTK authenticated generated manifest probe path=" + path
+                                    + ",count=" + declaredCount);
+                }
+            }
+            return;
+        }
+        primeNtkStripFromResolvedUrls(path, matcher.group(1), matcher.group(2), matcher.group(3),
+                declaredCount, urls);
+    }
+
+    private void primeNtkStripFromResolvedUrls(String path, String segment,
+                                                String work, String episode,
+                                                int declaredCount, List<String> urls) {
+        if(urls == null || urls.size() <= 1
+                || (declaredCount > 0 && urls.size() < declaredCount))
+            return;
+        int count = declaredCount > 0 ? declaredCount : urls.size();
+        List<String> authoritativeUrls = urls.size() == count
+                ? urls : new java.util.ArrayList<>(urls.subList(0, count));
+        int baseMode = "webtoon".equalsIgnoreCase(segment)
+                ? MTitle.base_webtoon : MTitle.base_comic;
+        int episodeId;
+        int workId;
+        try {
+            episodeId = Integer.parseInt(episode);
+            workId = Integer.parseInt(work);
+        } catch(NumberFormatException ignored) {
+            return;
+        }
+        Manga warmManga = new Manga(episodeId, "ntk-authenticated-strip", "", baseMode);
+        warmManga.setNtkEpisodePath(path);
+        warmManga.setNtkImageWorkId(Integer.toString(workId));
+        warmManga.setNtkImageEpisodeId(Integer.toString(episodeId));
+        warmManga.setNtkImageCount(count);
+        ReaderImageCache.rememberTrustedNtkImageApiCount(path, count);
+        ReaderImageCache.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                path, authoritativeUrls, "captcha-verified-document");
+        NtkBrowserSessionBroker.INSTANCE.publishAuthoritativeImageUrls(
+                path, authoritativeUrls, "captcha-verified-document");
+        boolean started = false;
+        android.util.Log.d("CaptchaActivity", "NTK authenticated strip handoff path=" + path
+                + ",count=" + count + ",started=" + started);
+    }
+
+    private Manga createAuthenticatedStripManga(String path, String segment,
+                                                 String work, String episode, int count) {
+        int episodeId;
+        int workId;
+        try {
+            episodeId = Integer.parseInt(episode);
+            workId = Integer.parseInt(work);
+        } catch(NumberFormatException ignored) {
+            return null;
+        }
+        int baseMode = "webtoon".equalsIgnoreCase(segment)
+                ? MTitle.base_webtoon : MTitle.base_comic;
+        Manga manga = new Manga(episodeId, "ntk-authenticated-strip", "", baseMode);
+        manga.setNtkEpisodePath(path);
+        manga.setNtkImageWorkId(Integer.toString(workId));
+        manga.setNtkImageEpisodeId(Integer.toString(episodeId));
+        manga.setNtkImageCount(count);
+        return manga;
     }
 
     private boolean verifyNtkRscPath(String path) {

@@ -52,6 +52,8 @@ public class Search {
     private static final int NTK_RESULT_CACHE_MAX_ENTRIES = 80;
     private static final int NTK_KEYWORD_API_CACHE_MAX_ENTRIES = 80;
     private static final int NTK_KEYWORD_SCAN_PARALLELISM = 8;
+    private static final Pattern NTK_EXACT_WORK_ID_QUERY = Pattern.compile(
+            "^\\s*#([\\p{L}\\p{N}][\\p{L}\\p{N}_-]{0,127})\\s*$");
     private static final String NTK_ALIAS_WEBTOON_URL = "https://newtoki1.org";
     private static final String NTK_ALIAS_COMIC_URL = NTK_ALIAS_WEBTOON_URL + "/manhwa";
     private static final Pattern WFWF_FAST_LINK_PATTERN = Pattern.compile("(?is)<a\\b[^>]*href\\s*=\\s*(['\"])(.*?)\\1[^>]*>(.*?)</a>");
@@ -1665,6 +1667,10 @@ public class Search {
     private boolean appendSearchResults(CustomHttpClient client, ArrayList<Title> target, int targetBaseMode, int limit) throws Exception {
         if(client != null && client.isNtk()) {
             int before = target.size();
+            if(page <= 1 && appendExactNtkWorkIdResult(client, target, targetBaseMode)) {
+                page++;
+                return true;
+            }
             int beforePage = page;
             Exception captchaError = null;
             try {
@@ -1708,6 +1714,77 @@ public class Search {
         }
         appendWebtoonResults(client, target, wfwfKeywordSearchPath(query), limit);
         return true;
+    }
+
+    /**
+     * Production exact-ID search. This is useful for old works whose catalog keyword endpoint
+     * does not implement filtering reliably, while still using the ordinary visible search UI
+     * and the ordinary title/detail navigation path. It fetches title metadata only; viewer
+     * image discovery remains owned by the later physical episode click.
+     */
+    private boolean appendExactNtkWorkIdResult(CustomHttpClient client, ArrayList<Title> target,
+                                               int targetBaseMode) throws Exception {
+        String workId = ntkExactWorkIdQuery(query);
+        if(workId.length() == 0 || targetBaseMode != base_webtoon && targetBaseMode != base_comic)
+            return false;
+        String segment = targetBaseMode == base_comic ? "manhwa" : "webtoon";
+        String path = "/" + segment + "/" + workId;
+        CustomHttpClient.PageResponse pageResponse = client.mgetCachedPage(path, PAGE_CACHE_TTL_MS);
+        throwIfCloudflareChallenge(client, pageResponse.code, pageResponse.body, path);
+        throwIfNtkRequestUnavailable(client, pageResponse.code, path);
+        if(pageResponse.code < 200 || pageResponse.code >= 400)
+            return false;
+
+        Document document = Jsoup.parse(pageResponse.body == null ? "" : pageResponse.body);
+        Element titleMeta = document.selectFirst("meta[property=og:title], meta[name=twitter:title]");
+        String name = ntkExactDocumentTitle(titleMeta == null ? "" : titleMeta.attr("content"));
+        if(name.length() == 0)
+            return false;
+        Element imageMeta = document.selectFirst("meta[property=og:image], meta[name=twitter:image]");
+        String thumb = imageMeta == null ? "" : imageMeta.attr("content").trim();
+        int numericId;
+        try {
+            numericId = Integer.parseInt(workId);
+        } catch (NumberFormatException ignored) {
+            numericId = stableNtkSourceId(workId);
+        }
+        if(numericId <= 0)
+            return false;
+        Title exact = new Title(name, thumb, "", new ArrayList<>(), "", numericId, targetBaseMode);
+        exact.setPath(path);
+        exact.setSourceSite("ntk");
+        target.add(exact);
+        Log.d(TAG, "ntk_exact_work_id_search path=" + path + ",name=" + name);
+        return true;
+    }
+
+    private static String ntkExactWorkIdQuery(String value) {
+        Matcher matcher = NTK_EXACT_WORK_ID_QUERY.matcher(value == null ? "" : value);
+        if(!matcher.matches())
+            return "";
+        String workId = matcher.group(1);
+        if(workId.matches("[0-9]+") && parsePositiveInt(workId) <= 0)
+            return "";
+        return workId;
+    }
+
+    private static String ntkExactDocumentTitle(String value) {
+        String title = value == null ? "" : value.trim();
+        int siteSeparator = title.lastIndexOf('|');
+        if(siteSeparator > 0)
+            title = title.substring(0, siteSeparator).trim();
+        int authorSeparator = title.lastIndexOf(" - ");
+        if(authorSeparator > 0)
+            title = title.substring(0, authorSeparator).trim();
+        return title;
+    }
+
+    static String ntkExactWorkIdQueryForTest(String value) {
+        return ntkExactWorkIdQuery(value);
+    }
+
+    static String ntkExactDocumentTitleForTest(String value) {
+        return ntkExactDocumentTitle(value);
     }
 
     private int appendNtkClassificationKeywordResults(ArrayList<Title> target, int targetBaseMode, int limit) {

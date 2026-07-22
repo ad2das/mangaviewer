@@ -13,6 +13,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewConfiguration;
+import android.view.ViewTreeObserver;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
@@ -112,6 +113,14 @@ public class MainSearch extends Fragment {
     int libraryFilterGeneration = 0;
     long librarySnapshotVersion = -1L;
     final ArrayList<Title>[] librarySnapshots = new ArrayList[4];
+    final Runnable visibleResumeWarmupRunnable = this::warmupVisibleResumeItems;
+    final ViewTreeObserver.OnWindowFocusChangeListener visibleResumeWindowFocusListener =
+            hasFocus -> {
+                if(hasFocus)
+                    scheduleVisibleResumeWarmup();
+                else
+                    cancelVisibleResumeWarmup();
+            };
     int keyboardShowGeneration = 0;
     boolean suppressNextAutoCaptchaOpen = false;
 
@@ -155,6 +164,8 @@ public class MainSearch extends Fragment {
         searchResult.setItemViewCacheSize(12);
         searchResult.setItemAnimator(null);
         searchResult.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        searchResult.getViewTreeObserver().addOnWindowFocusChangeListener(
+                visibleResumeWindowFocusListener);
         searchResult.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrollStateChanged(@NonNull RecyclerView recyclerView, int newState) {
@@ -188,6 +199,8 @@ public class MainSearch extends Fragment {
                     listDownOnResume = isTouchOnResumeButton(event.getX(), event.getY());
                     if(listDownOnResume)
                         warmupResumeAtTouch(event.getX(), event.getY());
+                    else if(isRecentLibraryTab())
+                        noteNtkResumeMetadataAtTouch(event.getX(), event.getY());
                     scheduleTitleListLongPress();
                     return false;
                 }
@@ -415,6 +428,37 @@ public class MainSearch extends Fragment {
         }
     }
 
+    @Override
+    public void onPause() {
+        cancelVisibleResumeWarmup();
+        // A keyword fallback can scan many catalogue pages after it has already published the
+        // title the user selected.  Once another Activity covers this Fragment those requests no
+        // longer serve visible UI.  Letting them continue used the same network/CPU/GC budget as
+        // the freshly opened reader and, on a cold long webtoon, delayed canonical image bodies
+        // by seconds.  Cancellation is lifecycle based and applies to every production launch;
+        // no work, account or benchmark identity is involved.
+        cancelActiveOnlineSearch();
+        super.onPause();
+    }
+
+    @Override
+    public void onHiddenChanged(boolean hidden) {
+        super.onHiddenChanged(hidden);
+        if(hidden) {
+            cancelVisibleResumeWarmup();
+            cancelActiveOnlineSearch();
+        } else if(searchResult != null) {
+            searchResult.removeCallbacks(visibleResumeWarmupRunnable);
+            searchResult.post(visibleResumeWarmupRunnable);
+        }
+    }
+
+    private void cancelActiveOnlineSearch() {
+        SearchManga task = searchTask;
+        if(task != null)
+            task.cancel(true);
+    }
+
     void optionUpdate(){
         //shows or hides options
         //p.setBaseMode(baseMode.getSelectedItemPosition()+1);
@@ -595,6 +639,10 @@ public class MainSearch extends Fragment {
 
     private int getLibraryTabPosition() {
         return libraryTab == null ? 0 : libraryTab.getSelectedTabPosition();
+    }
+
+    private boolean isRecentLibraryTab() {
+        return libraryMode && !onlineSearchMode && getLibraryTabPosition() == 1;
     }
 
     private ArrayList<Title> getLibraryTitles(int tab) {
@@ -809,17 +857,40 @@ public class MainSearch extends Fragment {
     }
 
     private void scheduleVisibleResumeWarmup() {
-        if(searchResult == null)
+        if(!canWarmupVisibleResumeItems()) {
+            cancelVisibleResumeWarmup();
             return;
-        searchResult.post(this::warmupVisibleResumeItems);
+        }
+        searchResult.removeCallbacks(visibleResumeWarmupRunnable);
+        searchResult.post(visibleResumeWarmupRunnable);
     }
 
     private void warmupVisibleResumeItems() {
-        if(searchResult == null || searchAdapter == null)
+        if(!canWarmupVisibleResumeItems()) {
+            cancelVisibleResumeWarmup();
             return;
+        }
         if(searchResult.getScrollState() != RecyclerView.SCROLL_STATE_IDLE)
             return;
         searchAdapter.warmupVisibleResumeItems(searchResult);
+    }
+
+    private boolean canWarmupVisibleResumeItems() {
+        View fragmentView = getView();
+        return searchResult != null && searchAdapter != null && isRecentLibraryTab()
+                && isAdded() && isResumed() && isVisible() && fragmentView != null
+                && fragmentView.isShown() && searchResult.isShown()
+                && searchResult.isAttachedToWindow()
+                && searchResult.getWindowVisibility() == View.VISIBLE
+                && searchResult.hasWindowFocus() && getActivity() != null
+                && getActivity().hasWindowFocus();
+    }
+
+    private void cancelVisibleResumeWarmup() {
+        if(searchResult != null)
+            searchResult.removeCallbacks(visibleResumeWarmupRunnable);
+        if(searchAdapter != null)
+            searchAdapter.cancelVisibleNtkResumeWarmup();
     }
 
     private void updateSwipeEnabled() {
@@ -1150,6 +1221,17 @@ public class MainSearch extends Fragment {
         int position = positionForTitleListItem(item);
         if(position != RecyclerView.NO_POSITION)
             searchAdapter.warmupResumeClick(position);
+    }
+
+    private void noteNtkResumeMetadataAtTouch(float x, float y) {
+        if(searchResult == null || searchAdapter == null)
+            return;
+        View item = findTitleListItemAt(x, y);
+        if(item == null)
+            return;
+        int position = positionForTitleListItem(item);
+        if(position != RecyclerView.NO_POSITION)
+            searchAdapter.noteNtkResumePressMetadata(position);
     }
 
     private boolean handleTitleListLongPress(float x, float y) {
@@ -1508,6 +1590,12 @@ public class MainSearch extends Fragment {
     public void onDestroyView() {
         keyboardShowGeneration++;
         cancelTitleListLongPress();
+        cancelVisibleResumeWarmup();
+        if(searchResult != null) {
+            ViewTreeObserver observer = searchResult.getViewTreeObserver();
+            if(observer.isAlive())
+                observer.removeOnWindowFocusChangeListener(visibleResumeWindowFocusListener);
+        }
         if(localChangeListener != null) {
             p.removeLocalChangeListener(localChangeListener);
             localChangeListener = null;

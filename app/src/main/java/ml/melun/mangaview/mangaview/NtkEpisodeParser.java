@@ -23,6 +23,8 @@ final class NtkEpisodeParser {
             return result;
         int titleId = title == null ? parsePositiveInt(titleKey) : title.getId();
         String imageCountMetadata = normalizeEmbeddedText(document.html());
+        String titleImageWorkId = preferredTitleImageWorkId(
+                extractTitleImageWorkId(imageCountMetadata, titleKey), titleKey, titleId);
         result.definitiveEmptyEpisodeList = looksLikeDefinitiveEmptyEpisodeList(imageCountMetadata);
         boolean preserveViewerPayloadHint = shouldPreserveViewerPayloadHint(imageCountMetadata);
         Set<String> seenEpisodePaths = new HashSet<>();
@@ -50,10 +52,15 @@ final class NtkEpisodeParser {
             String imageEpisodeId = extractImageEpisodeId(imageCountMetadata, epPath);
             int imageCount = extractImageCount(imageCountMetadata, epPath);
             manga.setNtkImageEpisodeId(imageEpisodeId);
+            if(titleImageWorkId.length() > 0)
+                manga.setNtkImageWorkId(titleImageWorkId);
             manga.setNtkImageCount(imageCount);
             if(preserveViewerPayloadHint)
                 manga.setNtkViewerPayloadHint(compactViewerPayloadHint(
                         imageCountMetadata, epPath, titleId, imageEpisodeId, imageCount));
+            else if(imageCount > 0)
+                manga.setNtkViewerPayloadHint(compactEpisodeCountHint(
+                        epPath, titleId, imageEpisodeId, imageCount));
             result.episodes.add(manga);
         }
         appendEmbeddedEpisodes(result, imageCountMetadata, seenEpisodePaths, segment, titleKey, baseMode, title, titleId);
@@ -289,6 +296,10 @@ final class NtkEpisodeParser {
         manga.setTitle(title);
         manga.setTitleId(titleId);
         manga.setNtkEpisodePath(epPath);
+        String titleImageWorkId = preferredTitleImageWorkId(
+                extractTitleImageWorkId(imageCountMetadata, titleKey), titleKey, titleId);
+        if(titleImageWorkId.length() > 0)
+            manga.setNtkImageWorkId(titleImageWorkId);
         String imageEpisodeId = "";
         String embeddedId = embeddedStringField(objectJson, "id");
         if(!sourceEpisodeId.matches("\\d+") && embeddedId.matches("\\d{1,12}"))
@@ -302,7 +313,76 @@ final class NtkEpisodeParser {
         if(shouldPreserveViewerPayloadHint(imageCountMetadata))
             manga.setNtkViewerPayloadHint(compactViewerPayloadHint(
                     imageCountMetadata, epPath, titleId, manga.getNtkImageEpisodeId(), imageCount));
+        else if(imageCount > 0)
+            manga.setNtkViewerPayloadHint(compactEpisodeCountHint(
+                    epPath, titleId, manga.getNtkImageEpisodeId(), imageCount));
         result.episodes.add(manga);
+    }
+
+    private static String compactEpisodeCountHint(String epPath, int titleId,
+                                                  String imageEpisodeId, int imageCount) {
+        if(epPath == null || epPath.length() == 0 || imageCount <= 0)
+            return "";
+        String episodeId = epPath.substring(epPath.lastIndexOf('/') + 1);
+        StringBuilder builder = new StringBuilder(192);
+        builder.append("{\"sourceWorkId\":\"").append(titleId).append("\"");
+        if(episodeId.length() > 0)
+            builder.append(",\"episodeId\":\"").append(jsonEscape(episodeId)).append("\"");
+        if(imageEpisodeId != null && imageEpisodeId.length() > 0)
+            builder.append(",\"sourceEpisodeId\":\"")
+                    .append(jsonEscape(imageEpisodeId)).append("\"");
+        builder.append(",\"episodePath\":\"").append(jsonEscape(epPath)).append("\"");
+        builder.append(",\"imageCount\":").append(imageCount);
+        builder.append(",\"episodeCountAuthority\":\"title-document-v1\"}");
+        return builder.toString();
+    }
+
+    private static String extractTitleImageWorkId(String html, String titleKey) {
+        if(html == null || html.length() == 0)
+            return "";
+        String normalized = html.replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/");
+        String pathWorkId = titleKey == null ? "" : titleKey.trim();
+        String[] patterns = new String[]{
+                "(?i)/(?:blacktoon/)?thumbs/(\\d{1,12})\\.(?:png|jpg|jpeg|webp)",
+                "(?i)https?://[^\"'<>\\s]+/(\\d{1,12})/[^\"'<>\\s]+\\.(?:png|jpg|jpeg|webp)"
+        };
+        for(String pattern : patterns) {
+            Matcher matcher = Pattern.compile(pattern).matcher(normalized);
+            while(matcher.find()) {
+                String candidate = matcher.group(1);
+                if(candidate != null && candidate.matches("\\d{1,12}")
+                        && !candidate.equals(pathWorkId))
+                    return candidate;
+            }
+        }
+        return "";
+    }
+
+    private static String preferredTitleImageWorkId(String extractedWorkId, String titleKey, int titleId) {
+        String extracted = extractedWorkId == null ? "" : extractedWorkId.trim();
+        if(extracted.matches("\\d{1,12}"))
+            return extracted;
+        String key = titleKey == null ? "" : titleKey.trim();
+        if(key.matches("\\d{1,12}"))
+            return key;
+        if(titleId > 0 && stableNtkSourceId(key) != titleId)
+            return String.valueOf(titleId);
+        return "";
+    }
+
+    private static int stableNtkSourceId(String value) {
+        if(value == null)
+            return 0;
+        String trimmed = value.trim();
+        if(trimmed.length() == 0)
+            return 0;
+        int hash = 0x811c9dc5;
+        for(int i = 0; i < trimmed.length(); i++)
+            hash = (hash ^ trimmed.charAt(i)) * 0x01000193;
+        hash &= 0x7fffffff;
+        return hash == 0 ? 1 : hash;
     }
 
     private static String compactViewerPayloadHint(String html, String epPath, int titleId,
@@ -338,9 +418,15 @@ final class NtkEpisodeParser {
         if(html == null || html.length() == 0)
             return "";
         String lower = html.toLowerCase(java.util.Locale.ROOT);
-        if(!lower.contains("imageapipath")
-                || (!lower.contains("/api/webtoon-images") && !lower.contains("/api/manhwa-images")))
-            return "";
+        boolean hasProtectedImageApi = lower.contains("imageapipath")
+                && (lower.contains("/api/webtoon-images") || lower.contains("/api/manhwa-images"));
+        List<String> directImages = new ArrayList<>(directViewerPayloadImages(html));
+        if(hasProtectedImageApi)
+            directImages.removeIf(url -> url != null
+                    && url.toLowerCase(java.util.Locale.ROOT).contains("/board_uploads/"));
+        if(!hasProtectedImageApi)
+            return directImages.isEmpty() ? "" : compactDirectViewerPayloadHint(
+                    html, epPath, imageCount, directImages);
         String sourceWorkId = firstJsonStringField(html, "sourceWorkId");
         String episodeId = firstJsonStringField(html, "episodeId");
         String token = firstJsonStringField(html, "token");
@@ -349,12 +435,13 @@ final class NtkEpisodeParser {
         String imageApiPath = firstJsonStringField(html, "imageApiPath");
         if(sourceWorkId.length() == 0 || episodeId.length() == 0
                 || token.length() == 0 || imageApiPath.length() == 0)
-            return "";
+            return directImages.isEmpty() ? "" : compactDirectViewerPayloadHint(
+                    html, epPath, imageCount, directImages);
         String scopePath = firstJsonStringField(html, "scopePath");
         if(scopePath.length() == 0 && epPath != null)
             scopePath = epPath;
-        int pageCount = imageCount > 0 ? imageCount : countViewerImagePages(html);
-        StringBuilder builder = new StringBuilder(Math.max(256, pageCount * 32));
+        int pageCount = imageCount > 0 ? imageCount : Math.max(countViewerImagePages(html), directImages.size());
+        StringBuilder builder = new StringBuilder(Math.max(256, pageCount * 96));
         builder.append("{\"sourceWorkId\":\"").append(jsonEscape(sourceWorkId)).append("\"");
         builder.append(",\"episodeId\":\"").append(jsonEscape(episodeId)).append("\"");
         builder.append(",\"token\":\"").append(jsonEscape(token)).append("\"");
@@ -367,9 +454,72 @@ final class NtkEpisodeParser {
             if(page > 1)
                 builder.append(',');
             builder.append("{\"page\":").append(page).append('}');
+            if(page <= directImages.size())
+                builder.insert(builder.length() - 1,
+                        ",\"src\":\"" + jsonEscape(directImages.get(page - 1)) + "\"");
         }
         builder.append("]}");
         return builder.toString();
+    }
+
+    private static String compactDirectViewerPayloadHint(String html, String epPath, int imageCount,
+                                                         List<String> directImages) {
+        if(directImages == null || directImages.isEmpty())
+            return "";
+        int count = imageCount > 0 ? Math.min(imageCount, directImages.size()) : directImages.size();
+        StringBuilder builder = new StringBuilder(Math.max(256, count * 96));
+        builder.append("{");
+        if(epPath != null && epPath.length() > 0)
+            builder.append("\"scopePath\":\"").append(jsonEscape(epPath)).append("\",");
+        String imagesToken = firstJsonStringField(html, "imagesToken");
+        if(imagesToken.length() == 0)
+            imagesToken = firstJsonStringField(html, "token");
+        if(imagesToken.length() > 0)
+            builder.append("\"imagesToken\":\"").append(jsonEscape(imagesToken)).append("\",");
+        builder.append("\"images\":[");
+        for(int index = 0; index < count; index++) {
+            if(index > 0)
+                builder.append(',');
+            builder.append("{\"page\":").append(index + 1)
+                    .append(",\"src\":\"").append(jsonEscape(directImages.get(index))).append("\"}");
+        }
+        builder.append("]}");
+        return builder.toString();
+    }
+
+    private static List<String> directViewerPayloadImages(String html) {
+        if(html == null || html.length() == 0)
+            return Collections.emptyList();
+        String normalized = html.replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/");
+        java.util.LinkedHashSet<String> urls = new java.util.LinkedHashSet<>();
+        Matcher matcher = Pattern.compile(
+                "(?i)https?://[^\"'<>\\\\\\s]+/(?:webtoon_uploads|manhwa_uploads|comic_uploads|board_uploads)/[^\"'<>\\\\\\s]+\\.(?:jpg|jpeg|png|webp|gif)(?:[?#][^\"'<>\\\\\\s]*)?")
+                .matcher(normalized);
+        while(matcher.find() && urls.size() < 512) {
+            String url = matcher.group();
+            String lower = url.toLowerCase(java.util.Locale.ROOT);
+            if(lower.contains("banner") || lower.contains("advert")
+                    || lower.contains("sponsor") || lower.contains("popup"))
+                continue;
+            if(lower.contains("/board_uploads/")
+                    && isPageChromeBannerContext(normalized, matcher.start(), matcher.end()))
+                continue;
+            urls.add(url);
+        }
+        return urls.isEmpty() ? Collections.emptyList() : new ArrayList<>(urls);
+    }
+
+    private static boolean isPageChromeBannerContext(String html, int matchStart, int matchEnd) {
+        if(html == null || html.length() == 0)
+            return false;
+        int start = Math.max(0, matchStart - 420);
+        int end = Math.min(html.length(), matchEnd + 220);
+        String context = html.substring(start, end).toLowerCase(java.util.Locale.ROOT);
+        return context.contains("data-banner-id")
+                || context.contains("data-banner-href")
+                || context.contains("thema-home-banner-button");
     }
 
     private static String firstJsonStringField(String html, String field) {
@@ -441,7 +591,8 @@ final class NtkEpisodeParser {
             return true;
         if(lower.contains("/webtoon_uploads/")
                 || lower.contains("/manhwa_uploads/")
-                || lower.contains("/comic_uploads/"))
+                || lower.contains("/comic_uploads/")
+                || lower.contains("/board_uploads/"))
             return true;
         return Pattern.compile("(?i)https?://(?:flysky\\d*m\\.com|fvcdn\\d*\\.com|aws-cdn\\d*\\.site)/[a-z0-9_-]{16,}\\.(?:jpg|jpeg|png|webp)(?:[?#][^\"'<>\\\\\\s]*)?")
                 .matcher(html)

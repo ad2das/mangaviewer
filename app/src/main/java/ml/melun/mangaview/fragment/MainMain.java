@@ -7,6 +7,7 @@ import android.content.res.ColorStateList;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -474,6 +475,10 @@ public class MainMain extends Fragment{
     private void switchBaseMode(int baseMode) {
         if(!canUseHomeUi())
             return;
+        Log.d("ViewerPerf", "ntk_home_mode_switch_request from=" + selectedBaseMode
+                + ",to=" + baseMode
+                + ",resumed=" + isResumed()
+                + ",wait=" + wait);
         hideHomeLoadStatus();
         RecyclerView previousRecycler = mainRecycler;
         RecyclerView targetRecycler = baseMode == base_comic ? comicRecycler : webtoonRecycler;
@@ -498,6 +503,10 @@ public class MainMain extends Fragment{
             showSelectedRecycler(previousRecycler, mainRecycler);
             prepareSelectedHomeAfterSwitch(baseMode, initialAttach && alreadyHasRows);
         }
+        Log.d("ViewerPerf", "ntk_home_mode_switch_rendered selected=" + selectedBaseMode
+                + ",hasRows=" + alreadyHasRows
+                + ",webtoonVisible=" + (webtoonRecycler != null && webtoonRecycler.isShown())
+                + ",comicVisible=" + (comicRecycler != null && comicRecycler.isShown()));
     }
 
     private void prepareSelectedHomeAfterSwitch(int baseMode, boolean initialRowsAlreadyShown) {
@@ -695,7 +704,12 @@ public class MainMain extends Fragment{
     }
 
     private void fetchSelected() {
-        if(maybeOpenNtkCaptcha())
+        boolean captchaStarted = maybeOpenNtkCaptcha();
+        Log.d("ViewerPerf", "ntk_home_fetch_selected mode=" + selectedBaseMode
+                + ",captchaStarted=" + captchaStarted
+                + ",wait=" + wait
+                + ",tab=" + getSelectedTabPosition());
+        if(captchaStarted)
             return;
         if(selectedBaseMode == base_comic)
             fetchComic();
@@ -803,6 +817,12 @@ public class MainMain extends Fragment{
             updateHomeLoadStatus(adapter, state);
             scheduleInactivePrefetchIfReady();
         }
+        Log.d("ViewerPerf", "ntk_home_fetch_finished mode=" + baseMode
+                + ",selected=" + selectedBaseMode
+                + ",success=" + success
+                + ",state=" + state
+                + ",hasDisplay=" + (adapter != null && adapter.hasDisplayContent())
+                + ",complete=" + (adapter != null && adapter.hasCompleteHomeSections()));
         if(success && state != HOME_FETCH_COMPLETE)
             scheduleIncompleteHomeRetry(baseMode);
     }

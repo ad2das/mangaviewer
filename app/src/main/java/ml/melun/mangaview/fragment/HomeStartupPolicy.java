@@ -13,7 +13,9 @@ final class HomeStartupPolicy {
     }
 
     static long autoCaptchaDelayMs(boolean ntk) {
-        return 0L;
+        // Keep startup navigation usable before an optional full-screen network
+        // challenge. The Home fetch can continue; Library/Recent never requires it.
+        return ntk ? 5_000L : 0L;
     }
 
     static long inactiveInitialRowsDelayMsForTest(boolean ntk) {

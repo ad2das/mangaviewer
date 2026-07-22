@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="strip" type="id" />
+    <item name="ntk_strip_surface" type="id" />
     <item name="viewerToolbar" type="id" />
 </resources>

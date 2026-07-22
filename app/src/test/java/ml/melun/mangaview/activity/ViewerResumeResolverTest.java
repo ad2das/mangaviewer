@@ -147,6 +147,23 @@ public class ViewerResumeResolverTest {
     }
 
     @Test
+    public void ntkResumeMangaRestoresPersistedImageIdentityBeforeEpisodeLoad() {
+        Title title = new Title("target", "", "", null, "", 25694, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setBookmark(1767091);
+        title.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+        title.setResumeNtkImageIdentity("25694", "1767091", 4);
+
+        Manga resume = ViewerResumeResolver.resumeManga(title);
+
+        assertTrue(resume != null);
+        assertEquals("/manhwa/25694/1767091", resume.getNtkEpisodePath());
+        assertEquals("25694", resume.getNtkImageWorkId());
+        assertEquals("1767091", resume.getNtkImageEpisodeId());
+        assertEquals(4, resume.getNtkImageCount());
+    }
+
+    @Test
     public void resumeMangaPrefersSavedEpisodeIdOverStaleProgressIndex() {
         Title title = new Title("마왕의 딸은 너무 착해!!", "", "", null, "", 1001, MTitle.base_webtoon);
         title.setSourceSite("wfwf");

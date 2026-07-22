@@ -19,6 +19,104 @@ import static org.junit.Assert.assertNull;
 
 public class MangaTest {
     @Test
+    public void clickPayloadCountRequiresExactPathAndMatchingModelCount() {
+        Manga episode = new Manga(5667, "13권", "", MTitle.base_comic);
+        episode.setNtkEpisodePath("/manhwa/2640/5667");
+        episode.setNtkImageCount(88);
+        episode.setNtkViewerPayloadHint(
+                "{\"sourceWorkId\":\"2640\",\"episodeId\":\"5667\","
+                        + "\"episodePath\":\"/manhwa/2640/5667\",\"imageCount\":88,\"episodes\":true}");
+
+        assertEquals(88, episode.getExactNtkClickPayloadImageCount("/manhwa/2640/5667"));
+        assertEquals(0, episode.getExactNtkClickPayloadImageCount("/manhwa/2640/5668"));
+        episode.setNtkImageCount(87);
+        assertEquals(88, episode.getExactNtkClickPayloadImageCount("/manhwa/2640/5667"));
+    }
+
+    @Test
+    public void clickPayloadCountRejectsConflictingCountFields() {
+        Manga episode = new Manga(5667, "13권", "", MTitle.base_comic);
+        episode.setNtkEpisodePath("/manhwa/2640/5667");
+        episode.setNtkImageCount(88);
+        episode.setNtkViewerPayloadHint(
+                "{\"episodePath\":\"/manhwa/2640/5667\",\"imageCount\":88,\"totalPages\":87}");
+
+        assertEquals(0, episode.getExactNtkClickPayloadImageCount("/manhwa/2640/5667"));
+    }
+
+    @Test
+    public void episodeParserPreservesPathBoundCountWithoutApiTokenPayload() {
+        String html = "<a href='/manhwa/2640/5667'><span class='subject'>13권</span></a>"
+                + "<script>{\"id\":\"5667\",\"imageCount\":88}</script>";
+        List<Manga> episodes = NtkEpisodeParser.parseForTest(
+                html, "manhwa", "2640", MTitle.base_comic);
+
+        assertEquals(1, episodes.size());
+        assertEquals(88, episodes.get(0).getExactNtkClickPayloadImageCount(
+                "/manhwa/2640/5667"));
+    }
+
+    @Test
+    public void generatedNativeApiManifestRequiresMatchingTrustedCount() {
+        List<String> generated = Arrays.asList(
+                "https://booktoki9.org/manhwa/10003/96426/p001.jpg",
+                "https://booktoki9.org/manhwa/10003/96426/p002.jpg",
+                "https://booktoki9.org/manhwa/10003/96426/p003.jpg");
+
+        assertTrue(CustomHttpClient.shouldHoldGeneratedNtkApiManifestUntilKnownCountForTest(
+                "/manhwa/10003/96426", generated, 0));
+        assertTrue(CustomHttpClient.shouldHoldGeneratedNtkApiManifestUntilKnownCountForTest(
+                "/manhwa/10003/96426", generated, 31));
+        assertFalse(CustomHttpClient.shouldHoldGeneratedNtkApiManifestUntilKnownCountForTest(
+                "/manhwa/10003/96426", generated, 3));
+
+        List<String> browserActual = Arrays.asList(
+                "https://i.toonflix.app/manhwa_uploads/010139_deadbeef.png",
+                "https://i.toonflix.app/manhwa_uploads/010140_cafebabe.png");
+        assertFalse(CustomHttpClient.shouldHoldGeneratedNtkApiManifestUntilKnownCountForTest(
+                "/manhwa/10003/96426", browserActual, 0));
+    }
+
+    @Test
+    public void completeResponseBoundGeneratedManifestUsesItsExactResponseCount() {
+        String complete = "{\"ok\":true,\"count\":3,\"images\":["
+                + "{\"page\":1,\"src\":\"https://booktoki9.org/manhwa/10003/96426/p001.jpg\"},"
+                + "{\"page\":2,\"src\":\"https://booktoki9.org/manhwa/10003/96426/p002.jpg\"},"
+                + "{\"page\":3,\"src\":\"https://booktoki9.org/manhwa/10003/96426/p003.jpg\"}]}";
+        String missingPage = "{\"ok\":true,\"count\":3,\"images\":["
+                + "{\"page\":1,\"src\":\"https://booktoki9.org/manhwa/10003/96426/p001.jpg\"},"
+                + "{\"page\":3,\"src\":\"https://booktoki9.org/manhwa/10003/96426/p003.jpg\"}]}";
+
+        assertFalse(CustomHttpClient.shouldHoldResponseBoundGeneratedNtkApiManifestForTest(
+                "/manhwa/10003/96426", complete, 3));
+        assertTrue(CustomHttpClient.shouldHoldResponseBoundGeneratedNtkApiManifestForTest(
+                "/manhwa/10003/96426", missingPage, 3));
+    }
+
+    @Test
+    public void numericManhwaUsesCountOnlyStripAuthorityOnlyWithFiniteImageCount() {
+        assertTrue(Manga.hasFiniteNumericManhwaStripAuthorityForTest(
+                "/manhwa/10003/96426", 31));
+        assertFalse(Manga.hasFiniteNumericManhwaStripAuthorityForTest(
+                "/manhwa/10003/96426", 0));
+        assertFalse(Manga.hasFiniteNumericManhwaStripAuthorityForTest(
+                "/webtoon/10003/96426", 31));
+    }
+
+    @Test
+    public void exactNumericManhwaStartsFullJpgBeforeImageCountMetadataArrives() {
+        Manga episode = new Manga(1767091, "1화", "", MTitle.base_comic);
+        episode.setNtkEpisodePath("/manhwa/25694/1767091");
+
+        assertTrue(episode.shouldStartUnverifiedInitialGeneratedJpgStreamForTest(
+                "manhwa", "25694", "1767091", 1));
+        assertFalse(episode.shouldStartUnverifiedInitialGeneratedJpgStreamForTest(
+                "manhwa", "99999", "1767091", 1));
+        assertFalse(episode.shouldStartUnverifiedInitialGeneratedJpgStreamForTest(
+                "manhwa", "25694", "1767091", 2));
+    }
+
+    @Test
     public void safeUrlReturnsNullForMissingManga() {
         assertNull(Manga.safeUrl(null));
     }
@@ -351,6 +449,146 @@ public class MangaTest {
 
         assertEquals(1, boardEpisodes.size());
         assertEquals("", boardEpisodes.get(0).getNtkViewerPayloadHint());
+    }
+
+    @Test
+    public void ntkProtectedViewerPayloadDoesNotPromotePageChromeBanners() {
+        String html = "<a href=\"/webtoon/18190/1518441\">4화</a>"
+                + "<script type=\"application/json\" id=\"theme-viewer-data\">{"
+                + "\"sourceWorkId\":\"18190\",\"episodeId\":\"1518441\","
+                + "\"token\":\"token-value\",\"scopePath\":\"/webtoon/18190/1518441\","
+                + "\"imageApiPath\":\"/api/webtoon-images\","
+                + "\"images\":[{\"page\":1},{\"page\":2},{\"page\":3}]}"
+                + "</script>"
+                + "<img width=\"380\" height=\"100\" src=\"https://aws-cdn1.site/board_uploads/2026/05/21/banner.png\">";
+
+        List<Manga> episodes = NtkEpisodeParser.parseForTest(
+                html, "webtoon", "18190", MTitle.base_webtoon);
+
+        assertEquals(1, episodes.size());
+        String hint = episodes.get(0).getNtkViewerPayloadHint();
+        assertTrue(hint.contains("/api/webtoon-images"));
+        assertTrue(hint.contains("\"page\":3"));
+        assertEquals(0, Manga.ntkViewerPayloadImageUrls(
+                hint, "/webtoon/18190/1518441").size());
+    }
+
+    @Test
+    public void ntkEpisodeListChromeBannersAreNotSavedAsEpisodeImages() {
+        String html = "<a href=\"/webtoon/18190/1518441\">4화</a>"
+                + "<script>{\"episodes\":[{\"id\":\"1518441\",\"sourceEpisodeId\":\"1518441\","
+                + "\"epNo\":4}]}</script>"
+                + "<button class=\"thema-home-banner-button\" data-banner-id=\"7\" "
+                + "data-banner-href=\"https://ad.example\"><img width=\"380\" height=\"100\" "
+                + "src=\"https://aws-cdn1.site/board_uploads/2026/05/21/banner-a.png\"></button>"
+                + "<button class=\"thema-home-banner-button\" data-banner-id=\"8\" "
+                + "data-banner-href=\"https://ad2.example\"><img width=\"380\" height=\"100\" "
+                + "src=\"https://aws-cdn1.site/board_uploads/2026/05/21/banner-b.png\"></button>";
+
+        List<Manga> episodes = NtkEpisodeParser.parseForTest(
+                html, "webtoon", "18190", MTitle.base_webtoon);
+
+        assertEquals(1, episodes.size());
+        assertEquals(0, Manga.ntkViewerPayloadImageUrls(
+                episodes.get(0).getNtkViewerPayloadHint(),
+                "/webtoon/18190/1518441").size());
+    }
+
+    @Test
+    public void ntkNumericViewerPathWorkIdBeatsUnrelatedTitleThumbId() {
+        Manga episode = new Manga(4, "4화", "", MTitle.base_webtoon);
+        episode.setNtkEpisodePath("/webtoon/18190/1518441");
+        episode.setNtkImageWorkId("2009");
+
+        assertEquals("18190", episode.getNtkImageWorkId());
+    }
+
+    @Test
+    public void ntkThemeViewerPayloadExposesAuthoritativePageCount() {
+        String payload = "{\"imageApiPath\":\"/api/webtoon-images\",\"images\":["
+                + "{\"page\":1},{\"page\":2},{\"page\":190}]}";
+
+        assertEquals(190, Manga.ntkViewerPayloadPageCount(payload));
+    }
+
+    @Test
+    public void ntkViewerApiDescriptorManifestKeepsEveryPageSlotUnique() {
+        String cvDescriptor = "https://xiaomichina.com/token/cv/Y2YxOWU5LXY1MjA3.txt";
+        String qcDescriptor = "https://xiaomichina.com/token/qc/Y2YwYWNlLXY4NjA4.json";
+        String rsDescriptor = "https://shaomoi.org/token/rs/Y2YwYWNlLXY4NjA5.js";
+        String woffDescriptor = "https://f1spard.site/token/qc/Y2Y0ZjIwLXYyNzc2.woff";
+        String woff2Descriptor = "https://f1spard.site/token/cv/Y2Y3Zjc1LXY3NzUx.woff2";
+        String body = "{\"ok\":true,\"count\":5,\"images\":["
+                + "{\"page\":1,\"src\":\"" + cvDescriptor + "\"},"
+                + "{\"page\":2,\"src\":\"" + qcDescriptor + "\"},"
+                + "{\"page\":3,\"src\":\"" + rsDescriptor + "\"},"
+                + "{\"page\":4,\"src\":\"" + woffDescriptor + "\"},"
+                + "{\"page\":5,\"src\":\"" + woff2Descriptor + "\"}]}";
+
+        List<String> urls = CustomHttpClient.extractNtkViewerImageUrlsFromApiBody(
+                body, "webtoon", "18190", "1518441");
+
+        assertEquals(5, urls.size());
+        assertTrue(urls.get(0).endsWith("#mvpage=1"));
+        assertTrue(urls.get(1).endsWith("#mvpage=2"));
+        assertTrue(urls.get(2).endsWith("#mvpage=3"));
+        assertTrue(urls.get(3).endsWith(".woff#mvpage=4"));
+        assertTrue(urls.get(4).endsWith(".woff2#mvpage=5"));
+    }
+
+    @Test
+    public void ntkViewerApiFastManifestAtomicallyPublishesAllSignedDescriptorSlots() {
+        List<String> extensions = new ArrayList<>();
+        extensions.addAll(Collections.nCopies(40, "txt"));
+        extensions.addAll(Collections.nCopies(38, "json"));
+        extensions.addAll(Collections.nCopies(30, "css"));
+        extensions.addAll(Collections.nCopies(36, "js"));
+        extensions.addAll(Collections.nCopies(27, "woff"));
+        extensions.addAll(Collections.nCopies(19, "woff2"));
+        assertEquals(190, extensions.size());
+        StringBuilder body = new StringBuilder("{\"ok\":true,\"count\":190,\"images\":[");
+        for(int page = 1; page <= 190; page++) {
+            if(page > 1)
+                body.append(',');
+            String segment = new String[]{"cv", "mx", "qc", "rs"}[(page - 1) % 4];
+            String extension = extensions.get(page - 1);
+            body.append("{\"page\":").append(page)
+                    .append(",\"src\":\"https://f1spard.site/token/")
+                    .append(segment).append("/page-").append(page).append('.')
+                    .append(extension).append("\",\"srcCandidates\":[")
+                    .append("\"https://shaomoi.org/token/").append(segment)
+                    .append("/page-").append(page).append('.').append(extension).append("\"]}");
+        }
+        body.append("]}");
+
+        List<String> urls = CustomHttpClient.completeNtkViewerImagePageSlotsFromApiBodyForTest(
+                body.toString(), 190, "manhwa", "25694", "1767091");
+
+        assertEquals(190, CustomHttpClient.ntkViewerImagesCountFromBodyForTest(body.toString()));
+        assertEquals(190, urls.size());
+        for(int page = 1; page <= 190; page++) {
+            assertTrue(urls.get(page - 1).endsWith("#mvpage=" + page));
+        }
+        assertTrue(urls.get(144).contains(".woff#mvpage=145"));
+        assertTrue(urls.get(171).contains(".woff2#mvpage=172"));
+    }
+
+    @Test
+    public void ntkViewerApiIncompleteOrUnslottedManifestIsNotComplete() {
+        String missingPage = "{\"ok\":true,\"images\":["
+                + "{\"page\":1,\"src\":\"https://f1spard.site/token/cv/one.woff\"},"
+                + "{\"page\":3,\"src\":\"https://f1spard.site/token/rs/three.woff2\"}]}";
+
+        List<String> urls = CustomHttpClient.completeNtkViewerImagePageSlotsFromApiBodyForTest(
+                missingPage, 3, "webtoon", "18190", "1518441");
+        String rejected = "{\"ok\":false,\"ad_ack_required\":true,\"images\":["
+                + "{\"page\":1,\"src\":\"https://f1spard.site/token/cv/one.woff\"}]}";
+
+        assertTrue(urls.isEmpty());
+        assertTrue(CustomHttpClient.completeNtkViewerImagePageSlotsFromApiBodyForTest(
+                rejected, 1, "webtoon", "18190", "1518441").isEmpty());
+        assertFalse(CustomHttpClient.isTrustedNtkPrimaryImageUrlForTest(
+                "https://f1spard.site/assets/not-signed-font.woff2"));
     }
 
     @Test
@@ -741,6 +979,29 @@ public class MangaTest {
         assertEquals(1, episodes.size());
         assertEquals("1377023", episodes.get(0).getNtkImageEpisodeId());
         assertEquals(67, episodes.get(0).getNtkImageCount());
+    }
+
+    @Test
+    public void ntkEpisodeParserUsesNumericTitleIdForRefreshedSlugImageWorkId() throws Exception {
+        Title numericApiTitle = new Title("slug title", "", "", null, "", 1930242432, MTitle.base_webtoon);
+        numericApiTitle.setSourceSite("ntk");
+        numericApiTitle.setPath("/webtoon/refreshed-slug");
+        NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(
+                org.jsoup.Jsoup.parse("<a href=\"/webtoon/refreshed-slug/1039569\">1화</a>"),
+                "webtoon", "refreshed-slug", MTitle.base_webtoon, numericApiTitle);
+
+        assertEquals(1, parsed.episodes.size());
+        assertEquals("1930242432", parsed.episodes.get(0).getNtkImageWorkId());
+
+        Title slugOnlyTitle = Search.parseNtkApiTitlesForTest(
+                "{\"works\":[{\"sourceWorkId\":\"u-moo205z1-yvf4\",\"title\":\"Slug Title\"}]}",
+                MTitle.base_webtoon).get(0);
+        NtkEpisodeParser.ParseResult slugOnlyParsed = NtkEpisodeParser.parse(
+                org.jsoup.Jsoup.parse("<a href=\"/webtoon/u-moo205z1-yvf4/u-episode\">1화</a>"),
+                "webtoon", "u-moo205z1-yvf4", MTitle.base_webtoon, slugOnlyTitle);
+
+        assertEquals(1, slugOnlyParsed.episodes.size());
+        assertEquals("", slugOnlyParsed.episodes.get(0).getNtkImageWorkId());
     }
 
     @Test

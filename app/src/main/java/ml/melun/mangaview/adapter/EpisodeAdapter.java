@@ -1,7 +1,7 @@
 package ml.melun.mangaview.adapter;
 import android.content.Context;
+import android.content.res.ColorStateList;
 
-import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -9,6 +9,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -27,8 +28,10 @@ import com.bumptech.glide.request.RequestOptions;
 
 
 import java.util.List;
+import java.util.regex.Pattern;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.ui.EpisodeRowView;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
@@ -40,16 +43,21 @@ import static ml.melun.mangaview.Utils.safeGlideClear;
 
 
 public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+    private String ntkPressEligiblePath = "";
 
     private final List<Manga> mData;
     private final LayoutInflater mInflater;
     private ItemClickListener mClickListener;
+    private RecyclerView attachedRecyclerView;
     private final Context mainContext;
     boolean favorite = false;
     boolean bookmarked = false;
     TypedValue outValue;
     private int bookmark = -1;
     private static final Object PAYLOAD_SELECTION = "selection";
+    private static final Object PAYLOAD_PRESS_ELIGIBILITY = "press-eligibility";
+    private static final Pattern NTK_EXACT_EPISODE_PATH = Pattern.compile(
+            "^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$", Pattern.CASE_INSENSITIVE);
     private static final long HEADER_THUMBNAIL_DELAY_MS = 0L;
     private static final long TAG_BIND_DELAY_MS = 220L;
     private static final String CONFIRMED_EMPTY_EPISODE_TITLE = "\uD68C\uCC28\uAC00 \uC544\uC9C1 \uC5C6\uC2B5\uB2C8\uB2E4";
@@ -122,7 +130,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             view = mInflater.inflate(R.layout.item_header, parent, false);
             return new HeaderHolder(view);
         }else {
-            view = mInflater.inflate(R.layout.item_episode, parent, false);
+            view = new EpisodeRowView(parent.getContext());
+            view.setId(R.id.episode);
+            view.setLayoutParams(new RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(108)));
             return new ViewHolder(view);
         }
     }
@@ -137,6 +148,12 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public void onBindViewHolder(RecyclerView.ViewHolder holder, int position, List<Object> payloads) {
         if(payloads != null && payloads.contains(PAYLOAD_SELECTION) && holder instanceof ViewHolder) {
             bindSelection((ViewHolder) holder, position);
+            return;
+        }
+        if(payloads != null && payloads.contains(PAYLOAD_PRESS_ELIGIBILITY)
+                && holder instanceof ViewHolder && isValidEpisodePosition(mData, position)) {
+            Manga episode = mData.get(position - 1);
+            ((ViewHolder) holder).row.setEnabled(isPressEligible(episode));
             return;
         }
         if(position==0){
@@ -195,23 +212,97 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 clearEpisodeRow(h, position);
                 return;
             }
-            String rowKey = episode.getId() + ":" + episode.getName() + ":" + episode.getDate() + ":" + mode + ":" + Dposition;
-            if(!rowKey.equals(h.boundKey)) {
-                setTextIfChanged(h.episode, episode.getName());
-                setTextIfChanged(h.date, episode.getDate());
-                setTextIfChanged(h.newBadge, mainContext.getString(R.string.new_badge));
-                setVisibilityIfChanged(h.newBadge, Dposition == 0 ? View.VISIBLE : View.GONE);
-                setVisibilityIfChanged(h.action, mode == 0 || mode == 1 || mode == 3 || mode == 4 ? View.VISIBLE : View.GONE);
-                h.action.setImageResource(mode == 0 ? R.drawable.download : R.drawable.ic_baseline_close_24);
-                h.action.setColorFilter(ContextCompat.getColor(mainContext,
-                        mode == 0 ? R.color.appAccent : (dark ? R.color.colorDarkTextSecondary : R.color.appTextSecondary)));
-                h.boundKey = rowKey;
-            }
-            bindEmptyThumbnail(h.thumb, true);
-            bindSelection(h, position);
-            if(mClickListener != null)
-                mClickListener.onItemVisible(Dposition, episode);
+            boolean selected = position == bookmark;
+            boolean pressEligible = isPressEligible(episode);
+            configureEpisodeRow(h.row, selected,
+                    dark ? R.color.colorDarkSurface : R.color.appCard);
+            h.row.setEpisodeIdentity("");
+            h.row.bind(episode.getName(), episode.getDate(), Dposition == 0,
+                    mode == 0 || mode == 1 || mode == 3 || mode == 4,
+                    mode == 0, selected, pressEligible, true);
+            h.row.setEpisodeIdentity(episode.getNtkEpisodePath());
         }
+    }
+
+    @Override
+    public void onAttachedToRecyclerView(RecyclerView recyclerView) {
+        super.onAttachedToRecyclerView(recyclerView);
+        attachedRecyclerView = recyclerView;
+    }
+
+    @Override
+    public void onDetachedFromRecyclerView(RecyclerView recyclerView) {
+        if(attachedRecyclerView == recyclerView)
+            attachedRecyclerView = null;
+        super.onDetachedFromRecyclerView(recyclerView);
+    }
+
+    /** Compatibility observation only; strict cold rows never wait for a staged ticket. */
+    public void setNtkPressEligiblePath(String path) {
+        String next = path == null ? "" : path.trim();
+        if(ntkPressEligiblePath.equals(next))
+            return;
+        String previous = ntkPressEligiblePath;
+        ntkPressEligiblePath = next;
+        Log.d("ViewerPerf", "ntk_episode_press_eligibility path=" + next
+                + ",rows=" + Math.max(0, getItemCount() - 1));
+        for(int index = 0; index < mData.size(); index++) {
+            Manga episode = mData.get(index);
+            if(episode == null)
+                continue;
+            episode.ensureNtkEpisodePathFromIdentity();
+            String episodePath = episode.getNtkEpisodePath() == null
+                    ? "" : episode.getNtkEpisodePath().trim();
+            if(episodePath.equalsIgnoreCase(previous) || episodePath.equalsIgnoreCase(next)) {
+                int adapterPosition = index + 1;
+                RecyclerView.ViewHolder visible = attachedRecyclerView == null ? null
+                        : attachedRecyclerView.findViewHolderForAdapterPosition(adapterPosition);
+                if(visible instanceof ViewHolder)
+                    ((ViewHolder) visible).row.setEnabled(isPressEligible(episode));
+                else
+                    notifyItemChanged(adapterPosition, PAYLOAD_PRESS_ELIGIBILITY);
+            }
+        }
+        RecyclerView recycler = attachedRecyclerView;
+        if(recycler != null) {
+            recycler.post(() -> {
+                if(attachedRecyclerView != recycler)
+                    return;
+                for(int childIndex = 0; childIndex < recycler.getChildCount(); childIndex++) {
+                    View child = recycler.getChildAt(childIndex);
+                    int adapterPosition = recycler.getChildAdapterPosition(child);
+                    if(adapterPosition <= 0 || adapterPosition > mData.size())
+                        continue;
+                    Manga episode = mData.get(adapterPosition - 1);
+                    episode.ensureNtkEpisodePathFromIdentity();
+                    String episodePath = episode.getNtkEpisodePath() == null
+                            ? "" : episode.getNtkEpisodePath().trim();
+                    if(episodePath.equalsIgnoreCase(ntkPressEligiblePath))
+                        child.setEnabled(true);
+                }
+            });
+        }
+    }
+
+    private boolean isPressEligible(Manga episode) {
+        if(title == null || !"ntk".equals(title.getSourceSite()))
+            return true;
+        if(episode == null)
+            return false;
+        episode.ensureNtkEpisodePathFromIdentity();
+        String episodePath = episode.getNtkEpisodePath() == null
+                ? "" : episode.getNtkEpisodePath().trim();
+        // Availability is metadata validity, never reader readiness. The committed click is the
+        // first boundary allowed to start ACK/document/image work.
+        return isValidNtkExactEpisodePath(episodePath);
+    }
+
+    private static boolean isValidNtkExactEpisodePath(String path) {
+        return path != null && NTK_EXACT_EPISODE_PATH.matcher(path.trim()).matches();
+    }
+
+    static boolean isValidNtkExactEpisodePathForTest(String path) {
+        return isValidNtkExactEpisodePath(path);
     }
 
     private void bindThumbnailDeferred(ImageView view, Object source, int width, int height, boolean placeholderWhenEmpty, long delayMs) {
@@ -263,7 +354,11 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         String key = placeholder ? ThumbnailBindPolicy.TAG_PLACEHOLDER : ThumbnailBindPolicy.TAG_EMPTY;
         if(key.equals(view.getTag()))
             return;
-        safeGlideClear(view);
+        Object previous = view.getTag();
+        if(previous != null
+                && !ThumbnailBindPolicy.TAG_PLACEHOLDER.equals(previous)
+                && !ThumbnailBindPolicy.TAG_EMPTY.equals(previous))
+            safeGlideClear(view);
         view.setTag(key);
         if(placeholder)
             view.setImageResource(R.drawable.app_cover_placeholder);
@@ -280,58 +375,40 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
         int color = selected
                 ? ContextCompat.getColor(mainContext, dark ? R.color.selectedDark : R.color.appAccentLight)
                 : ContextCompat.getColor(mainContext, dark ? R.color.colorDarkSurface : R.color.appCard);
-        Object tag = holder.itemView.getTag(R.id.episode);
-        if(!(tag instanceof Integer) || ((Integer) tag) != color) {
-            if(holder.card != null)
-                holder.card.setCardBackgroundColor(color);
-            else
-                holder.itemView.setBackgroundColor(color);
-            if(holder.cardContent != null)
-                holder.cardContent.setBackgroundColor(color);
-            holder.itemView.setTag(R.id.episode, color);
-        }
-        holder.episode.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
-        holder.episode.setTextColor(ContextCompat.getColor(mainContext,
+        holder.row.setSelectedState(selected, color, ContextCompat.getColor(mainContext,
                 selected ? R.color.appAccent : (dark ? R.color.colorDarkText : R.color.appText)));
-        setTextIfChanged(holder.newBadge, mainContext.getString(R.string.new_badge));
-        setVisibilityIfChanged(holder.newBadge, position == 1 ? View.VISIBLE : View.GONE);
+        holder.row.setShowNew(position == 1);
     }
 
     private void clearEpisodeRow(ViewHolder holder, int position) {
-        setTextIfChanged(holder.episode, "");
-        setTextIfChanged(holder.date, "");
-        holder.date.setMaxLines(1);
-        setVisibilityIfChanged(holder.newBadge, View.GONE);
-        setVisibilityIfChanged(holder.action, View.GONE);
-        holder.boundKey = "null:" + position;
-        bindEmptyThumbnail(holder.thumb, true);
-        holder.itemView.setEnabled(false);
-        bindSelection(holder, position);
+        configureEpisodeRow(holder.row, false, dark ? R.color.colorDarkSurface : R.color.appCard);
+        holder.row.setEpisodeIdentity("");
+        holder.row.bind("", "", false, false, false, false, false, true);
     }
 
     private void bindNormalEpisodeRowStyle(ViewHolder holder) {
         holder.itemView.setEnabled(true);
-        holder.date.setMaxLines(1);
-        if(holder.cardContent != null)
-            holder.cardContent.setBackgroundColor(ContextCompat.getColor(mainContext,
-                    dark ? R.color.colorDarkSurface : R.color.appCard));
     }
 
     private void bindConfirmedEmptyEpisodeRow(ViewHolder holder, int position) {
-        setTextIfChanged(holder.episode, CONFIRMED_EMPTY_EPISODE_TITLE);
-        setTextIfChanged(holder.date, CONFIRMED_EMPTY_EPISODE_MESSAGE);
-        holder.date.setMaxLines(3);
-        setVisibilityIfChanged(holder.newBadge, View.GONE);
-        setVisibilityIfChanged(holder.action, View.GONE);
-        holder.boundKey = "ntk-empty:" + position;
-        bindEmptyThumbnail(holder.thumb, true);
-        if(holder.card != null)
-            holder.card.setCardBackgroundColor(ContextCompat.getColor(mainContext,
-                    dark ? R.color.colorDarkSurfaceElevated : R.color.appMutedSurface));
-        if(holder.cardContent != null)
-            holder.cardContent.setBackgroundColor(ContextCompat.getColor(mainContext,
-                    dark ? R.color.colorDarkSurfaceElevated : R.color.appMutedSurface));
-        holder.itemView.setEnabled(false);
+        configureEpisodeRow(holder.row, false,
+                dark ? R.color.colorDarkSurfaceElevated : R.color.appMutedSurface);
+        holder.row.setEpisodeIdentity("");
+        holder.row.bind(CONFIRMED_EMPTY_EPISODE_TITLE, CONFIRMED_EMPTY_EPISODE_MESSAGE,
+                false, false, false, false, false, true);
+    }
+
+    private void configureEpisodeRow(EpisodeRowView row, boolean selected, int normalBackgroundRes) {
+        int background = ContextCompat.getColor(mainContext, selected
+                ? (dark ? R.color.selectedDark : R.color.appAccentLight)
+                : normalBackgroundRes);
+        int titleColor = ContextCompat.getColor(mainContext, selected
+                ? R.color.appAccent : (dark ? R.color.colorDarkText : R.color.appText));
+        row.setPalette(background, titleColor,
+                ContextCompat.getColor(mainContext, dark ? R.color.colorDarkTextSecondary : R.color.appTextSecondary),
+                ContextCompat.getColor(mainContext, R.color.appAccent),
+                ContextCompat.getColor(mainContext, dark ? R.color.colorDarkSurfaceElevated : R.color.appMutedSurface),
+                ContextCompat.getColor(mainContext, dark ? R.color.colorDarkSurfaceElevated : R.color.appMutedSurface));
     }
 
     private void bindHeaderPrimaryAction(HeaderHolder holder) {
@@ -377,30 +454,10 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     }
 
     public class ViewHolder extends RecyclerView.ViewHolder{
-        TextView episode,date;
-        TextView newBadge;
-        ImageView thumb;
-        ImageView action;
-        CardView card;
-        View cardContent;
-        String boundKey;
+        final EpisodeRowView row;
         ViewHolder(View itemView) {
             super(itemView);
-            card = itemView.findViewById(R.id.episodeCard);
-            cardContent = itemView.findViewById(R.id.episodeCardContent);
-            episode = itemView.findViewById(R.id.episode);
-            date = itemView.findViewById(R.id.date);
-            newBadge = itemView.findViewById(R.id.episodeNew);
-            thumb = itemView.findViewById(R.id.episodeThumb);
-            action = itemView.findViewById(R.id.episodeAction);
-            if(dark) {
-                itemView.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkWindowBackground));
-                if(cardContent != null)
-                    cardContent.setBackgroundColor(ContextCompat.getColor(mainContext, R.color.colorDarkSurface));
-                episode.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkText));
-                date.setTextColor(ContextCompat.getColor(mainContext, R.color.colorDarkTextSecondary));
-                action.setBackground(roundedBackground(R.color.colorDarkSurfaceElevated, R.color.colorDarkDivider, 12));
-            }
+            row = (EpisodeRowView) itemView;
             itemView.setOnClickListener(v -> {
                 int position = getAdapterPosition();
                 if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidEpisodePosition(mData, position))
@@ -418,9 +475,8 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 }
                 mClickListener.onItemClick(position - 1, m);
             });
-            itemView.setOnTouchListener((v, event) -> {
-                if(event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN
-                        && mClickListener != null) {
+            row.setOnPressListener(() -> {
+                if(mClickListener != null) {
                     int position = getAdapterPosition();
                     if(position != RecyclerView.NO_POSITION && isValidEpisodePosition(mData, position)) {
                         Manga m = mData.get(position - 1);
@@ -428,9 +484,21 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                             mClickListener.onItemPress(position - 1, m);
                     }
                 }
-                return false;
             });
-            action.setOnClickListener(v -> {
+            row.setOnPressCancelListener(() -> {
+                if(mClickListener == null)
+                    return;
+                int position = getAdapterPosition();
+                Manga manga = isValidEpisodePosition(mData, position)
+                        ? mData.get(position - 1)
+                        : null;
+                // Cancellation is global to the one pending physical press. It
+                // must still be delivered if RecyclerView invalidated this holder.
+                mClickListener.onItemPressCancelled(
+                        position == RecyclerView.NO_POSITION ? -1 : position - 1,
+                        manga);
+            });
+            row.setOnActionClickListener(() -> {
                 int position = getAdapterPosition();
                 if(position == RecyclerView.NO_POSITION || mClickListener == null || !isValidEpisodePosition(mData, position))
                     return;
@@ -502,10 +570,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                 h_tags.setLayoutManager(lm);
                 h_tags.setItemAnimator(null);
                 h_tags.setNestedScrollingEnabled(false);
-                h_tags.postDelayed(() -> {
-                    if(getAdapterPosition() == 0 && h_tags.getAdapter() == null)
-                        h_tags.setAdapter(ta);
-                }, TAG_BIND_DELAY_MS);
+                h_tags.setAdapter(ta);
             }
         }
 
@@ -519,13 +584,13 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             styleTab(h_info_tab, selected == TAB_INFO);
             h_overview.setVisibility(selected == TAB_INTRO ? View.VISIBLE : View.GONE);
             h_info.setVisibility(selected == TAB_INFO ? View.VISIBLE : View.GONE);
-            h_tabs.post(() -> {
-                int tabWidth = h_tabs.getWidth() / 3;
-                ViewGroup.LayoutParams params = h_indicator.getLayoutParams();
-                params.width = tabWidth;
-                h_indicator.setLayoutParams(params);
-                h_indicator.setTranslationX(tabWidth * selected);
-            });
+            if(selected == TAB_INTRO) {
+                h_indicator.setTranslationX(0f);
+            } else if(h_tabs.getWidth() > 0) {
+                h_indicator.setTranslationX((h_tabs.getWidth() / 3f) * selected);
+            } else {
+                h_tabs.post(() -> h_indicator.setTranslationX((h_tabs.getWidth() / 3f) * selected));
+            }
         }
 
         void styleTab(TextView tab, boolean selected) {
@@ -684,6 +749,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public interface ItemClickListener {
         void onItemClick(int position, Manga m);
         void onItemPress(int position, Manga m);
+        default void onItemPressCancelled(int position, Manga m) {}
         default void onItemVisible(int position, Manga m) {}
         void onStarClick();
         void onFirstClick();

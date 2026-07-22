@@ -36,7 +36,7 @@
         android:paddingBottom="14dp"
         android:layout_height="0dp"
         android:layout_width="match_parent"
-        android:scrollbars="vertical"
+        android:scrollbars="none"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -81,49 +81,14 @@
 
     </androidx.appcompat.widget.LinearLayoutCompat>
 
-    <androidx.appcompat.widget.LinearLayoutCompat
-        android:id="@+id/fab_container"
+    <ViewStub
+        android:id="@+id/episode_fab_stub"
+        android:inflatedId="@+id/fab_container"
+        android:layout="@layout/episode_fab_controls"
         android:layout_width="wrap_content"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:orientation="vertical"
+        android:layout_height="wrap_content"
         android:layout_margin="10dp"
-        android:layout_height="wrap_content">
-
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:layout_marginBottom="4dp"
-            android:clickable="true"
-            android:id="@+id/upfab"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:contentDescription="@string/scroll_to_top"
-            app:backgroundTint="@color/appAccent"
-            app:tint="@android:color/white"
-            app:fabSize="mini"
-            app:srcCompat="@drawable/up_arrow" />
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:layout_marginBottom="4dp"
-            android:clickable="true"
-            android:id="@+id/resumefab"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:contentDescription="@string/resume"
-            app:backgroundTint="@color/appAccent"
-            app:tint="@android:color/white"
-            app:fabSize="mini"
-            app:srcCompat="@drawable/play" />
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:layout_marginBottom="4dp"
-            android:id="@+id/downfab"
-            android:clickable="true"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:contentDescription="@string/scroll_to_bottom"
-            app:backgroundTint="@color/appAccent"
-            app:tint="@android:color/white"
-            app:fabSize="mini"
-            app:srcCompat="@drawable/down_arrow" />
-
-    </androidx.appcompat.widget.LinearLayoutCompat>
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.concurrent.Executor;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.activity.ViewerResumeResolver;
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.MainPageWebtoon;
@@ -206,11 +207,17 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
     }
 
     public void warmupVisibleResumeItems(RecyclerView recyclerView) {
-        if(recyclerView == null || mDataFiltered == null || !resume || forceThumbnail)
+        if(recyclerView == null || mDataFiltered == null)
             return;
+        if(!resume || forceThumbnail) {
+            cancelVisibleNtkResumeWarmup();
+            return;
+        }
         int childCount = recyclerView.getChildCount();
-        if(childCount <= 0)
+        if(childCount <= 0) {
+            cancelVisibleNtkResumeWarmup();
             return;
+        }
         int first = Integer.MAX_VALUE;
         int last = RecyclerView.NO_POSITION;
         for(int i = 0; i < childCount; i++) {
@@ -222,11 +229,46 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         }
         if(first == Integer.MAX_VALUE || last == RecyclerView.NO_POSITION)
             return;
+        // NTK rows publish resume metadata only. No page, image, ACK, decode, or GPU work may
+        // begin merely because a recent-title row became visible.
+        boolean hasVisibleNtk = false;
+        for(int position = first; position <= last; position++) {
+            if(!isValidPosition(position))
+                continue;
+            Title title = mDataFiltered.get(position);
+            if(title != null && "ntk".equals(sourceSiteForTitle(title))) {
+                hasVisibleNtk = true;
+                if(warmupResumeAt(position, true))
+                    return;
+            }
+        }
+        if(hasVisibleNtk) {
+            cancelVisibleNtkResumeWarmup();
+            return;
+        }
+        cancelVisibleNtkResumeWarmup();
         warmupResumeRange(first, last, save ? 2 : 4);
     }
 
     public void warmupResumeClick(int position) {
         warmupResumeAt(position, false);
+    }
+
+    /** Records only resume metadata on press; NTK content starts after the committed viewer click. */
+    public void noteNtkResumePressMetadata(int position) {
+        if(!isValidPosition(position))
+            return;
+        Title title = mDataFiltered.get(position);
+        if(title != null && "ntk".equals(sourceSiteForTitle(title)))
+            warmupResumeAt(position, false);
+    }
+
+    /** Compatibility no-op: NTK resume rows no longer own prepared content. */
+    public void releaseNtkResumePressClaim() {
+    }
+
+    /** Compatibility no-op: visible NTK rows never start image or page preparation. */
+    public void cancelVisibleNtkResumeWarmup() {
     }
 
     private void warmupResumeRange(int first, int last, int limit) {
@@ -246,16 +288,32 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
         if(!isValidPosition(position) || mainContext == null)
             return false;
         Title title = mDataFiltered.get(position);
-        if(title == null || title.getPath() != null && title.getPath().length() > 0)
+        if(title == null)
             return false;
-        if("ntk".equals(sourceSiteForTitle(title)))
+        boolean ntk = "ntk".equals(sourceSiteForTitle(title));
+        // Online NTK recent titles normally retain their real /webtoon or /manhwa title path.
+        // Resolving that identity is metadata-only; content demand stays at the committed
+        // EpisodeActivity viewer click. The non-NTK continuation path keeps its old policy.
+        if(!ntk && title.getPath() != null && title.getPath().length() > 0)
             return false;
         int bookmark = resolveResumeBookmark(title);
         if(bookmark <= 0 || title.getId() <= 0)
             return false;
-        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
+        Manga manga = ntk ? ViewerResumeResolver.resumeManga(title)
+                : new Manga(bookmark, "", "", title.getBaseMode());
+        if(manga == null)
+            return false;
         manga.setTitle(title);
         manga.setTitleId(title.getId());
+        if(ntk) {
+            manga.ensureNtkEpisodePathFromIdentity();
+            String path = manga.getNtkEpisodePath();
+            if(path == null || !(path.startsWith("/manhwa/") || path.startsWith("/webtoon/")))
+                return false;
+            android.util.Log.d("ViewerPerf", "main_ntk_recent_metadata_only path=" + path
+                    + ",trigger=" + (visibleResume ? "visible" : "press"));
+            return true;
+        }
         int page = p.getViewerBookmark(manga);
         if(page < 0)
             page = 0;

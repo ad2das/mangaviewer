@@ -119,7 +119,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private static final int PRELOAD_THUMB_MAX_PER_FETCH = 24;
     private static final int SECTION_BATCH_SIZE = 4;
     private static final int FIRST_SCREEN_BATCH_SIZE = 1;
-    private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV3_";
+    private static final String HOME_CACHE_KEY_PREFIX = "homeSnapshotV4_";
     private static final int HOME_CACHE_MAX_SECTIONS = 6;
     private static final int HOME_CACHE_MAX_TITLES_PER_SECTION = 10;
     private static final long CONTINUE_OPEN_DEDUPE_MS = 3200L;
@@ -1770,7 +1770,8 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void warmupVisibleContinueItems(List<Title> titles) {
         if(titles == null || titles.size() == 0 || context == null)
             return;
-        int limit = HomeContinueWarmupPolicy.visibleContinueWarmupLimit(save);
+        int limit = HomeContinueWarmupPolicy.visibleContinueWarmupLimit(
+                save, p != null && p.isNtkSite());
         if(limit <= 0)
             return;
         int warmed = 0;

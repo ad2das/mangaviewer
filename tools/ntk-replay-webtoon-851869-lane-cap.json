@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-07-21T18:13:18.1703159+09:00",
+  "seed": 4377574499169652318,
+  "seedSelectionMode": "FRESH_RANDOM",
+  "algorithm": "sha256(seed|type|id) lexical rank",
+  "siteRoot": "https://sbxh9.com",
+  "completeCatalogCounts": {
+    "webtoon": 7622,
+    "manhwa": 8973
+  },
+  "targets": [
+    {
+      "workType": "webtoon",
+      "workId": "851869",
+      "title": "반도대탈출",
+      "latestEpisodeNumber": 7,
+      "catalogPage": 2,
+      "episodeId": "nv-851869-7",
+      "episodeTitle": "7화",
+      "episodePath": "/webtoon/851869/nv-851869-7",
+      "metadataSource": "episode-api",
+      "metadataError": null,
+      "originallySelectedEpisodePath": "/webtoon/851869/nv-851869-7",
+      "originallySelectedEpisodeId": "nv-851869-7",
+      "originallySelectedEpisodeTitle": "7화",
+      "accessReplacementReason": null
+    },
+    {
+      "workType": "manhwa",
+      "workId": "9298",
+      "title": "페리도트(PERIDOT)",
+      "latestEpisodeNumber": 6,
+      "catalogPage": 13,
+      "episodeId": "84734",
+      "episodeTitle": "06권",
+      "episodePath": "/manhwa/9298/84734",
+      "metadataSource": "title-document",
+      "metadataError": "Response status code does not indicate success: 404 (Not Found).",
+      "originallySelectedEpisodePath": "/manhwa/9298/84734",
+      "originallySelectedEpisodeId": "84734",
+      "originallySelectedEpisodeTitle": "06권",
+      "accessReplacementReason": null
+    }
+  ]
+}

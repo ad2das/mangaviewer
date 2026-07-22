@@ -3,36 +3,67 @@ package ml.melun.mangaview.reader
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ColorSpace
 import android.net.Uri
+import android.os.Build
 import android.os.SystemClock
+import android.os.Process
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
+import ml.melun.mangaview.MainApplication
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
 import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.CustomHttpClient
 import ml.melun.mangaview.mangaview.Manga
+import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Title
+import ml.melun.mangaview.repository.CacheFileStore
+import ml.melun.mangaview.runtime.AppDispatchers
+import ml.melun.mangaview.runtime.ViewerTelemetry
 import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Connection
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
+import okhttp3.Dns
+import okhttp3.EventListener
 import okhttp3.Headers
 import okhttp3.MediaType
+import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
+import okio.buffer
 import org.jsoup.Jsoup
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
+import java.io.EOFException
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.URI
 import java.security.MessageDigest
+import java.util.ArrayDeque
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.Callable
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
@@ -46,43 +77,429 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
+import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.math.max
+
+/**
+ * Owns the lifecycle of verified tail batches independently for each episode. A worker lease
+ * captures the episode epoch, so work that was queued before cancellation cannot resume later.
+ * The scheduling sentinel keeps the batch deduplicated until all submissions are accounted for;
+ * the last lease retires it, allowing a later invocation to restart the same tail.
+ */
+internal class VerifiedTailBatchRegistry {
+    private val lock = Any()
+    private val episodeEpochs = HashMap<String, Long>()
+    private val active = HashMap<String, Batch>()
+
+    internal inner class Batch(
+        val dedupeKey: String,
+        val episodeKey: String,
+        val epoch: Long
+    ) {
+        private val pending = AtomicInteger(1)
+        private val schedulingFinished = AtomicBoolean(false)
+        internal val cancelled = AtomicBoolean(false)
+
+        fun reserve(): Work? {
+            if (!isCurrent()) return null
+            pending.incrementAndGet()
+            if (!isCurrent()) {
+                release()
+                return null
+            }
+            return Work(this)
+        }
+
+        fun finishScheduling() {
+            if (schedulingFinished.compareAndSet(false, true)) release()
+        }
+
+        fun isCurrent(): Boolean = !cancelled.get() && synchronized(lock) {
+            episodeEpochs[episodeKey].orZero() == epoch && active[dedupeKey] === this
+        }
+
+        private fun release() {
+            if (pending.decrementAndGet() != 0) return
+            synchronized(lock) {
+                active.remove(dedupeKey, this)
+            }
+        }
+
+        internal fun completeWork() = release()
+    }
+
+    internal class Work internal constructor(private val batch: VerifiedTailBatchRegistry.Batch) : AutoCloseable {
+        private val closed = AtomicBoolean(false)
+        fun isCurrent(): Boolean = !closed.get() && batch.isCurrent()
+        override fun close() {
+            if (closed.compareAndSet(false, true)) batch.completeWork()
+        }
+    }
+
+    fun acquire(dedupeKey: String, episodeKey: String): Batch? = synchronized(lock) {
+        if (active.containsKey(dedupeKey)) return@synchronized null
+        val batch = Batch(dedupeKey, episodeKey, episodeEpochs[episodeKey].orZero())
+        active[dedupeKey] = batch
+        batch
+    }
+
+    fun cancelEpisode(episodeKey: String): Int = cancelEpisodes { it == episodeKey }
+
+    fun cancelEpisodes(predicate: (String) -> Boolean): Int = synchronized(lock) {
+        val episodeKeys = active.values.asSequence()
+            .map { it.episodeKey }
+            .filter(predicate)
+            .toSet()
+        episodeKeys.forEach { episodeKey ->
+            episodeEpochs[episodeKey] = episodeEpochs[episodeKey].orZero() + 1L
+        }
+        var cancelled = 0
+        val iterator = active.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (!predicate(entry.value.episodeKey)) continue
+            entry.value.cancelled.set(true)
+            iterator.remove()
+            cancelled++
+        }
+        cancelled
+    }
+
+    fun clear() = synchronized(lock) {
+        active.values.forEach { it.cancelled.set(true) }
+        active.clear()
+        episodeEpochs.clear()
+    }
+
+    fun activeBatchCount(): Int = synchronized(lock) { active.size }
+
+    private fun Long?.orZero(): Long = this ?: 0L
+}
+
+/** Pure deletion admission shared by production trimming and deterministic host tests. */
+internal object ReaderImageCacheTrimAdmissionPolicy {
+    fun canDelete(
+        fileExists: Boolean,
+        lastAccessModifiedMs: Long,
+        protectedAfterMs: Long,
+        activeReadCount: Int
+    ): Boolean {
+        require(activeReadCount >= 0)
+        return fileExists && lastAccessModifiedMs < protectedAfterMs && activeReadCount == 0
+    }
+}
+
+/** Pure admission rule for a disjoint manhwa suffix continuation. */
+internal object NtkManhwaProjectedBodyHedgePolicy {
+    // Source completion must leave bounded decode/handoff time inside the 4 s viewer contract.
+    // Unlike the old body-only 4.5 s threshold, this projection includes rolling admission and
+    // response-header time measured from the first real image Call in this click-owned session.
+    const val PROJECTED_SESSION_HEDGE_MS = 3_400L
+    private const val TAIL_HEAD_START_MS = 300L
+    private const val MIN_TAIL_LEAD_BYTES = 24L * 1024L
+    // The best hard-112 cold run (r75) used one 24 KiB disjoint lead. Increasing this to 64 KiB
+    // left more work on the already-slow original and regressed repeated cold runs, so preserve
+    // the measured winning split exactly while retaining the no-overlap invariant.
+    private const val MAX_TAIL_LEAD_BYTES = 24L * 1024L
+    private const val MIN_TAIL_BYTES = 32L * 1024L
+    private const val LATE_ADMISSION_BEFORE_BODY_MS = 1_800L
+    private const val MAX_PROJECTED_STARTS_PER_SESSION = 6
+    private const val MAX_LATE_RESERVED_STARTS_PER_SESSION = 0
+    private const val CRITICAL_SERIAL_COMPLETION_MS = 5_000L
+
+    class SessionStarts {
+        internal val ordinary = AtomicInteger(0)
+        internal val lateReserved = AtomicInteger(0)
+    }
+
+    fun tryAcquireSessionStart(
+        starts: SessionStarts,
+        expectedLength: Long,
+        lateAdmission: Boolean,
+    ): Boolean {
+        require(expectedLength > 0L)
+        val counter = starts.ordinary
+        while (true) {
+            val current = counter.get()
+            if (current >= MAX_PROJECTED_STARTS_PER_SESSION) break
+            if (counter.compareAndSet(current, current + 1)) return true
+        }
+        if (!lateAdmission) return false
+        val reserved = starts.lateReserved
+        while (true) {
+            val current = reserved.get()
+            if (current >= MAX_LATE_RESERVED_STARTS_PER_SESSION) return false
+            if (reserved.compareAndSet(current, current + 1)) return true
+        }
+    }
+    fun isLateAdmission(sessionElapsedMs: Long, bodyElapsedMs: Long): Boolean =
+        sessionElapsedMs >= bodyElapsedMs &&
+            sessionElapsedMs - bodyElapsedMs >= LATE_ADMISSION_BEFORE_BODY_MS
+
+    fun projectedSessionCompletionMs(
+        sessionElapsedMs: Long,
+        bodyElapsedMs: Long,
+        deliveredBytes: Long,
+        expectedLength: Long,
+    ): Double? {
+        if (sessionElapsedMs <= 0L || bodyElapsedMs <= 0L ||
+            sessionElapsedMs < bodyElapsedMs || deliveredBytes <= 0L ||
+            expectedLength <= deliveredBytes
+        ) {
+            return null
+        }
+        val beforeBodyMs = sessionElapsedMs - bodyElapsedMs
+        val projectedBodyMs = bodyElapsedMs.toDouble() * expectedLength.toDouble() /
+            deliveredBytes.toDouble()
+        return beforeBodyMs.toDouble() + projectedBodyMs
+    }
+
+    fun shouldResume(
+        sessionElapsedMs: Long,
+        bodyElapsedMs: Long,
+        deliveredBytes: Long,
+        expectedLength: Long,
+    ): Boolean {
+        val projection = projectedSessionCompletionMs(
+            sessionElapsedMs,
+            bodyElapsedMs,
+            deliveredBytes,
+            expectedLength,
+        ) ?: return false
+        return projection > PROJECTED_SESSION_HEDGE_MS.toDouble()
+    }
+
+    fun shouldForceCriticalSerialResume(projectedSessionCompletionMs: Double?): Boolean =
+        projectedSessionCompletionMs != null &&
+            projectedSessionCompletionMs > CRITICAL_SERIAL_COMPLETION_MS.toDouble()
+
+    fun disjointTailStart(
+        bodyElapsedMs: Long,
+        deliveredBytes: Long,
+        expectedLength: Long,
+    ): Long? {
+        if (bodyElapsedMs <= 0L || deliveredBytes <= 0L ||
+            expectedLength <= deliveredBytes
+        ) {
+            return null
+        }
+        val rateMatchedLead = deliveredBytes * TAIL_HEAD_START_MS /
+            bodyElapsedMs.coerceAtLeast(1L)
+        val leadBytes = rateMatchedLead.coerceIn(MIN_TAIL_LEAD_BYTES, MAX_TAIL_LEAD_BYTES)
+        val split = (deliveredBytes + leadBytes).coerceAtMost(expectedLength - 1L)
+        return split.takeIf { expectedLength - it >= MIN_TAIL_BYTES }
+    }
+
+    /** One r75-style physical range owns the entire untouched suffix. */
+    fun disjointTailSegments(start: Long, expectedLength: Long): List<LongRange> {
+        if (start < 0L || expectedLength <= start) return emptyList()
+        return listOf(start until expectedLength)
+    }
+}
+
+/** Exact byte ownership for a projected 206 suffix that loses forward progress. */
+internal object NtkManhwaRangeResumePolicy {
+    const val BODY_IDLE_MS = 1_000L
+
+    fun nextStart(segmentStart: Long, receivedBytes: Long, segmentEnd: Long): Long? {
+        require(segmentStart >= 0L)
+        require(receivedBytes >= 0L)
+        require(segmentEnd >= segmentStart)
+        val next = segmentStart + receivedBytes
+        return next.takeIf { it <= segmentEnd }
+    }
+
+    fun remainingLength(nextStart: Long, segmentEnd: Long): Long {
+        require(nextStart in 0L..segmentEnd)
+        return segmentEnd - nextStart + 1L
+    }
+}
 
 object ReaderImageCache {
     private const val TAG = "ViewerPerf"
     private const val DIR_NAME = "reader_image_cache_v1"
+    private const val STRICT_SPOOL_DIR_NAME = "reader_strict_spool_v1"
+    private const val STRICT_SPOOL_STALE_AGE_MS = 6L * 60L * 60L * 1000L
+    private const val STRICT_SPOOL_CLEANUP_DEBOUNCE_MS = 30L * 60L * 1000L
+    private const val STRICT_SPOOL_CLEANUP_MAX_SCANNED = 128
+    private const val STRICT_SPOOL_CLEANUP_MAX_DELETES = 32
+    private const val STRICT_PUBLISH_TEMP_MARKER = ".strict.publish."
+    // Numeric manhwa replicas expose immutable page bodies behind one authority. Keeping each
+    // page on a stable shard lets its extension HEAD pay for the exact TCP/TLS/H2 connection that
+    // the subsequent GET reuses. A bounded twelve-pool ring multiplexes the finite body wave;
+    // creating a cold connection per page delayed both ACK and the anchor on large books.
+    /**
+     * The signed webtoon manifest emits these origins as interchangeable replicas. A replica can
+     * occasionally lag an otherwise valid immutable path (observed as a single-host 404 while the
+     * other two return byte-identical bodies), so a terminal miss must not tear down a 100-page
+     * cold session. The manifest URL remains the first request; alternates are attempted only
+     * after that physical request fails.
+     */
+    private val NTK_WEBTOON_IMAGE_REPLICA_HOSTS = listOf(
+        "f1spard.site",
+        "shaomoi.org",
+        "xiaomichina.com",
+    )
+    // A 900ms idle boundary resumed a proved 131072/159881-byte stall correctly, but the final
+    // HWUI commit landed 28ms outside the four-second episode SLA. Starting the same exact-range
+    // handoff at 600ms preserves roughly 300ms for the alternate headers, final decode and commit.
+    private const val NTK_WEBTOON_BODY_IDLE_RESUME_MS = 600L
+    private const val NTK_WEBTOON_HEADER_FAILOVER_MS = 1_000L
+    // Numeric manhwa pages are immutable across the replica ring. A headerless stream owns no
+    // useful bytes, so cancel it and advance the same logical Call instead of launching a
+    // concurrent duplicate body wave from the viewer coordinator.
+    // A headerless attempt owns no image bytes. r63 ended at click +4.662 s because one page spent
+    // 2.288 s waiting for headers before a healthy 1.814 s body; r65 repeated 2.791 s header tails.
+    // A header owns no image byte, so advancing it is cheaper and safer than trying to repair a
+    // late body. r72 left seven pages at 1.63-2.69 s of headers; the final page then needed another
+    // 1.96 s of body work. Give every admitted cold page at least ~2.5 s for its body/decode by
+    // advancing an empty attempt at 1.1 s.
+    private const val NTK_MANHWA_HEADER_FAILOVER_MS = 800L
+    private const val NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS = 4
+    private val ntkManhwaHeaderFailoverPermits = Semaphore(
+        NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS,
+        true,
+    )
+    // An origin can evade the idle limit by dripping small chunks while still taking >3s for one
+    // 200 KiB body. Bound each replica segment's wall time as well; continuation begins at the
+    // exact delivered offset, so responsive bytes are retained rather than downloaded twice.
+    private const val NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS = 750L
+    private const val NTK_WEBTOON_BODY_PROGRESS_DEADLINE_MS = 1_000L
+    private const val NTK_WEBTOON_BODY_TAIL_GRACE_BYTES = 64L * 1024L
+    private const val NTK_WEBTOON_MAX_RANGE_CONTINUATIONS = 3
+    // Numeric manhwa uses the same immutable, validator-stable bytes on the three
+    // Cloudflare mirrors.  In a 112-page/30 MiB cold wave the ordinary streams normally
+    // completed together, but one or two otherwise-valid HTTP/2 bodies occasionally stopped
+    // making progress for 1.0-1.6 seconds and held the entire episode open for 8+ seconds.
+    // Arm a slightly less aggressive guard than webtoon and move only the untouched suffix to
+    // another mirror.  This is not a duplicate image request: the accepted 206 must begin at the
+    // exact first byte not yet exposed to the spool and must carry the same strong validator.
+    // Keep the socket's first-byte idle allowance conservative: a shorter value restarted valid
+    // cold responses at offset zero and created a request herd. Once bytes have arrived, the
+    // separate progress deadline below can safely identify a genuinely stalled body.
+    private const val NTK_MANHWA_BODY_IDLE_RESUME_MS = 1_400L
+    private const val NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS = 1_200L
+    private const val NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS = 1_400L
+    // Bunny's AWS mirror occasionally drips one otherwise valid 200 body for 3.8-4.5 seconds.
+    // After this much active body time, preserve every delivered byte and continue only the
+    // untouched suffix from a Range-capable Cloudflare mirror.
+    // r20 used no rate-predicted suffix. Only a real first-byte/progress timeout may preserve the
+    // delivered prefix and resume its untouched suffix from a Range-capable mirror.
+    private const val NTK_MANHWA_BODY_WALL_MS = 1_000L
+    // A per-stream wall timer previously moved nearly every AWS body to the same three
+    // Cloudflare replicas at once. NtkManhwaProjectedBodyHedgePolicy admits only a measured slow
+    // drip; the independent idle deadlines continue to recover a genuinely stopped source.
+    // A 112-page wave produced twenty genuine suffix recoveries. A bounded budget prevents
+    // those disjoint ranges and left the last page waiting until 5.03 s. Twelve avoids that queue
+    // without the continuation storm observed at higher limits; host-scoped primary pools below
+    // remove the shared-H2 cause instead of compensating with more rescue traffic.
+    private const val NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS = 12
+    // Keep r73/r114b's physical concurrency of four and six-start episode cap. All four slots
+    // are available to the initial measured-slow cohort.
+    private const val NTK_MANHWA_MAX_CONCURRENT_PROJECTED_CONTINUATIONS = 4
+    private const val NTK_MANHWA_MAX_CONCURRENT_EARLY_PROJECTED_CONTINUATIONS = 4
+    private const val NTK_MANHWA_PROJECTED_BODY_RECHECK_MS = 400L
+    private val ntkManhwaRangeContinuationPermits = Semaphore(
+        NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS,
+        true,
+    )
+    private val ntkManhwaProjectedContinuationPermits = Semaphore(
+        NTK_MANHWA_MAX_CONCURRENT_PROJECTED_CONTINUATIONS,
+        true,
+    )
+    private val ntkManhwaEarlyProjectedContinuationPermits = Semaphore(
+        NTK_MANHWA_MAX_CONCURRENT_EARLY_PROJECTED_CONTINUATIONS,
+        true,
+    )
+    private val ntkManhwaSessionFirstCallAtNanos = ConcurrentHashMap<String, AtomicLong>()
+    private val ntkManhwaSessionProjectedStarts =
+        ConcurrentHashMap<String, NtkManhwaProjectedBodyHedgePolicy.SessionStarts>()
+    private val NTK_MANHWA_IMAGE_REPLICA_HOSTS = listOf(
+        "booktoki9.org",
+        "booktoki8.org",
+        "mana.apihost93.com",
+        "aws-cdn1.site",
+    )
+    // These three Cloudflare-backed immutable mirrors return byte-identical 206 responses with
+    // the same ETag/Last-Modified lineage. aws-cdn1.site deliberately stays out: it answers a
+    // Range request with a full 200 body, which cannot participate without duplicating bytes.
+    private val NTK_MANHWA_RANGE_REPLICA_HOSTS = listOf(
+        "booktoki9.org",
+        "booktoki8.org",
+        "mana.apihost93.com",
+    )
+    // A 160 KiB prefix plus one concurrent suffix covers the common 220-320 KiB page with two
+    // disjoint requests on different mirrors. 128 KiB produced a queued third segment for most
+    // pages and lost the gain to another header turn; 160 KiB keeps the first tail wave finite.
+    private const val NTK_MANHWA_RANGE_SEGMENT_BYTES = 128L * 1024L
+    private const val NTK_MANHWA_RANGE_HEADER_DEADLINE_MS = 1_000L
+    // The all-page segmented experiments were slower in both H2 (r60: 5.179 s) and independent
+    // H1 (r61: 15.667 s). Keep the validator-safe implementation only for diagnostics; the normal
+    // path returns to one physical body per logical image.
+    private const val NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED = false
+    private const val NTK_AUTHORITATIVE_MANIFEST_CACHE_PREFIX = "ntk_authoritative_manifest_v1:"
+    private const val NTK_AUTHORITATIVE_MANIFEST_SCHEMA_VERSION = 3
+    // v1 could store a resolved `.jpeg` body under the guessed `.jpg` exact key. Keep those
+    // already-deployed aliases unreachable after upgrading; new writes are suffix-safe below.
+    private const val NTK_GENERATED_CACHE_KEY_SCHEMA_VERSION = 2
+    private const val NTK_AUTHORITATIVE_MANIFEST_CACHE_TTL_MS = 24L * 60L * 60L * 1000L
+    private val NTK_SIGNED_DESCRIPTOR_FILE_PATTERN = Regex(
+        ".*\\.(?:txt|xml|json|css|js|woff|woff2)(?:[?#].*)?$",
+        RegexOption.IGNORE_CASE
+    )
+    private val NTK_SIGNED_DESCRIPTOR_URL_PATTERN = Regex(
+        "^https?://[^/?#]+/.*/(?:cv|mx|qc|rs)/[^/?#]+\\.(?:txt|xml|json|css|js|woff|woff2)(?:[?#].*)?$",
+        RegexOption.IGNORE_CASE
+    )
+    private val NTK_SIGNED_DESCRIPTOR_PATH_PATTERN = Regex(
+        ".*/(?:cv|mx|qc|rs)/.*",
+        RegexOption.IGNORE_CASE
+    )
     private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
     private const val TARGET_CACHE_BYTES = 384L * 1024L * 1024L
     private const val TRIM_DEBOUNCE_MS = 30_000L
+    // Restart-safe proof persistence is deliberately outside the cold render deadline. The body
+    // has already been fully length/SHA/header/manifest verified before it reaches adoption, so
+    // the current process can decode it from the resident authority record immediately. If the
+    // process dies before this delay expires, no sidecar exists and the orphan body fails closed
+    // on the next process instead of becoming an unproved cache hit.
+    private const val STRICT_PROOF_PERSIST_DELAY_MS = 15_000L
     private const val FOREGROUND_RACE_DELAY_MS = 120L
     private const val FOREGROUND_RACE_ATTEMPTS = 2
     private const val NTK_GENERATED_ANCHOR_RACE_FAST_FAIL_MS = 900L
     private const val NTK_VERIFIED_ANCHOR_HANDOFF_DELAY_MS = 0L
-    private const val FOREGROUND_STREAM_RACE_ATTEMPTS = 1
+    private const val FOREGROUND_STREAM_RACE_ATTEMPTS = 2
     private const val FOREGROUND_STREAM_JOIN_TIMEOUT_MS = 900L
-    private const val FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS = 180L
-    private const val FOREGROUND_INITIAL_ANCHOR_STREAM_JOIN_TIMEOUT_MS = 180L
+    private const val FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS = 900L
+    private const val FOREGROUND_INITIAL_ANCHOR_STREAM_JOIN_TIMEOUT_MS = 2800L
+    private const val FOREGROUND_INITIAL_SURFACE_STREAM_JOIN_TIMEOUT_MS = 2800L
     private const val NTK_GENERATED_INITIAL_ANCHOR_RECOVERY_HEDGE_MS = 120L
     private const val NTK_GENERATED_INITIAL_RECOVERY_HEDGE_MS = 300L
     private const val NTK_GENERATED_INITIAL_RECOVERY_SAME_URL_HEDGE_MS = 350L
     private const val NTK_GENERATED_INITIAL_RECOVERY_PAGES = 18
+    private const val NTK_VERIFIED_GENERATED_ASSET_PAGES = 128
     private const val NTK_GENERATED_PREVIEW_RANGE_CANDIDATES = 3
-    private const val NTK_GENERATED_INITIAL_COMPLETE_RACE_ANCHOR_CANDIDATES = 1
+    private const val NTK_GENERATED_INITIAL_COMPLETE_RACE_ANCHOR_CANDIDATES = 4
     private const val NTK_GENERATED_INITIAL_COMPLETE_RACE_NEAR_CANDIDATES = 3
-    private const val NTK_GENERATED_VISIBLE_RANGE_PREVIEW_DEADLINE_MS = 1800L
+    private const val NTK_GENERATED_VISIBLE_RANGE_PREVIEW_DEADLINE_MS = 520L
+    private const val NTK_GENERATED_INITIAL_DIRECT_RACE_DEADLINE_MS = 2600L
+    private const val NTK_GENERATED_INITIAL_API_RACE_BEFORE_DIRECT_MS = 0L
     private const val NTK_GENERATED_INITIAL_FOREGROUND_RACE_CANDIDATES = 4
     private const val FOREGROUND_STREAM_HANDOFF_TTL_MS = 2500L
-    private const val FOREGROUND_STREAM_STALE_MS = 9000L
+    private const val FOREGROUND_STREAM_STALE_MS = 2400L
+    private const val FOREGROUND_INITIAL_VISIBLE_STREAM_STALE_MS = 1800L
     private const val NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES = 18
+    private const val NTK_PERMITLESS_INITIAL_VISIBLE_MAX_PAGE = 4
     private const val NTK_GENERATED_INITIAL_TRANSIENT_RETRY_DELAY_MS = 180L
-    private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_WEBTOON_DELAY_MS = 140L
-    private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS = 120L
+    private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_WEBTOON_DELAY_MS = 0L
+    private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS = 0L
     private const val EARLY_NTK_IMAGE_URL_TTL_MS = 120000L
     private const val EARLY_NTK_APPEND_IMAGE_URL_TTL_MS = 30000L
+    private const val NTK_TRUSTED_GENERATED_COUNT_EXPANSION_MAX = 512
     private const val EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS = 1200L
-    private const val EARLY_NTK_IMAGE_TRANSPORT_SYNC_LIMIT = 12
-    private const val NTK_ACK_RECOVERY_LAUNCH_HOLD_MS = 0L
-    private const val NTK_ACK_RECOVERY_AFTER_FIRST_DRAWABLE_QUIET_MS = 0L
+    private const val EARLY_NTK_IMAGE_TRANSPORT_SYNC_LIMIT = 4
+    private const val NTK_ACK_RECOVERY_LAUNCH_HOLD_MS = 6_000L
+    private const val NTK_ACK_RECOVERY_AFTER_FIRST_DRAWABLE_QUIET_MS = 4_500L
     private const val NTK_GENERATED_ACK_GATE_VISIBLE_WAIT_MS = 900L
     private const val NTK_GENERATED_ACK_GATE_FOREGROUND_WAIT_MS = 700L
     private const val NTK_GENERATED_ACK_GATE_BACKGROUND_WAIT_MS = 3600L
@@ -91,6 +508,13 @@ object ReaderImageCache {
     private const val DIRECT_STREAM_TILE_ASPECT_RATIO = 3.0f
     private const val DIRECT_STREAM_TILE_MIN_ESTIMATED_BYTES = 12L * 1024L * 1024L
     private const val FULL_DECODE_VALIDATION_MAX_BYTES = 256L * 1024L
+    private const val NTK_SOURCE_METADATA_INITIAL_PROBE_BYTES = 8 * 1024
+    private const val NTK_SOURCE_METADATA_MAX_PROBE_BYTES = 512 * 1024
+    // Exact cold bodies are written on independent network lanes. Buffering each lane avoids
+    // turning OkHttp's small source chunks into one filesystem syscall apiece on emulator-hosted
+    // storage while preserving the same byte-for-byte digest and atomic publication contract.
+    private const val NTK_EXACT_BODY_READ_BUFFER_BYTES = 64 * 1024
+    private const val NTK_EXACT_BODY_WRITE_BUFFER_BYTES = 256 * 1024
     private const val NTK_GENERATED_RANGE_CHUNK_BYTES = 64 * 1024
     private const val NTK_GENERATED_RANGE_INITIAL_FIRST_CHUNK_BYTES = 512 * 1024
     private const val NTK_GENERATED_RANGE_ADJACENT_FIRST_CHUNK_BYTES = 512 * 1024
@@ -98,27 +522,140 @@ object ReaderImageCache {
     private const val NTK_GENERATED_RANGE_ADJACENT_CHUNK_BYTES = 256 * 1024
     private const val NTK_GENERATED_RANGE_MAX_BYTES = 24L * 1024L * 1024L
     private const val NTK_GENERATED_BACKGROUND_FETCH_PARALLELISM = 2
-    private const val NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM = 8
+    private const val NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM = 4
+    private const val NTK_EPISODE_WORK_CANCELLATION_MARK_TTL_MS = 30_000L
     private val flights = ConcurrentHashMap<String, FutureTask<File>>()
+    private val cacheFlightAdmissionLock = Any()
+    private data class ProgressiveTailFlightState(
+        val cacheKey: String,
+        val episodePath: String,
+        val episodeKey: String,
+        val generation: Long,
+        val batchWork: VerifiedTailBatchRegistry.Work?,
+        val bodyBytes: AtomicLong = AtomicLong(0L),
+        val cancelled: AtomicBoolean = AtomicBoolean(false)
+    )
+    // State is keyed by the FutureTask itself and is published while holding the same lock as
+    // flights.putIfAbsent. A losing producer can therefore never overwrite or remove the winning
+    // producer's tail classification.
+    private val progressiveTailFlightStates = ConcurrentHashMap<FutureTask<File>, ProgressiveTailFlightState>()
+    private val visibleGeneratedFlightAdmissions = AtomicInteger(0)
     private val foregroundStreams = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
+    /** Publication is part of the strict stream flight; EOF alone is never terminal. */
+    private val foregroundStreamPublications = ConcurrentHashMap.newKeySet<String>()
+    private val foregroundStreamImages = ConcurrentHashMap<String, String>()
+    private val logicalForegroundByteFlights = ConcurrentHashMap<String, ForegroundByteFlight>()
+    private val logicalForegroundByteFlightsByStream =
+        ConcurrentHashMap<String, CopyOnWriteArrayList<ForegroundByteFlight>>()
+    private val strictForegroundByteFlights = ConcurrentHashMap<String, ForegroundByteFlight>()
+    private val strictForegroundByteFlightsByStream =
+        ConcurrentHashMap<String, CopyOnWriteArrayList<ForegroundByteFlight>>()
+    data class EncodedOriginalByteProof(
+        val encodedSha256: String,
+        val encodedLength: Long
+    ) {
+        init {
+            require(NtkStripDigests.isSha256(encodedSha256))
+            require(encodedLength > 0L)
+        }
+    }
+    private data class StoredEncodedOriginalByteProof(
+        val assetIdentityDigest: String,
+        val fileLength: Long,
+        val fileLastModified: Long,
+        val proof: EncodedOriginalByteProof,
+        val sidecarVersion: Int = 1
+    )
+    private data class ResidentStrictPublishedBody(
+        val generation: Long,
+        val baseMode: Int,
+        val cacheKey: String,
+        val canonicalAsset: String,
+        val assetIdentityDigest: String,
+        val file: File,
+        val fileLength: Long,
+        val fileLastModified: Long,
+        val metadata: NtkSourceMetadata,
+        val proof: NtkEncodedOriginalProof
+    )
+    private val encodedOriginalByteProofs =
+        ConcurrentHashMap<String, StoredEncodedOriginalByteProof>()
+    private val residentStrictPublishedBodies =
+        ConcurrentHashMap<String, ResidentStrictPublishedBody>()
+    private val pendingStrictProofPublications =
+        ConcurrentHashMap<String, ResidentStrictPublishedBody>()
+    private val strictProofPersistenceScheduled = AtomicBoolean(false)
+    private val metadataTelemetryPublished = ConcurrentHashMap.newKeySet<String>()
+    private val unpublishedInitialGeneratedRunwayStreams =
+        ConcurrentHashMap<String, FutureTask<ByteArray?>>()
+    private val verifiedTailBatches = VerifiedTailBatchRegistry()
+    private val protectedNativeStrictRestartAt = ConcurrentHashMap<String, Long>()
     private val initialVisibleGeneratedPreviewFlights = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
     private val initialGeneratedCompleteBytesFlights = ConcurrentHashMap<String, FutureTask<ByteArray?>>()
     private val initialGeneratedRangeFlights = ConcurrentHashMap<String, FutureTask<GeneratedRangeSnapshot?>>()
+    private val initialGeneratedDirectRaceFlights = ConcurrentHashMap<String, FutureTask<GeneratedRangeSnapshot?>>()
     private val initialGeneratedPrefixFlights = ConcurrentHashMap<String, FutureTask<GeneratedRangeSnapshot?>>()
     private val ntkAnchorAssetListeners = ConcurrentHashMap<String, CopyOnWriteArrayList<Runnable>>()
     private val ntkInitialGeneratedAssetListeners = ConcurrentHashMap<String, CopyOnWriteArrayList<Runnable>>()
+    private val ntkAnchorAssetBytes = ConcurrentHashMap<String, AnchorAssetBytes>()
     private val foregroundStreamStartedAt = ConcurrentHashMap<String, Long>()
+    private val earlyTransportPreparePhysicalCalls = AtomicLong(0L)
+    private val adjacentForegroundViewerPaths = ConcurrentHashMap<String, Long>()
+    private val ntkEpisodeWorkCancelledAt = ConcurrentHashMap<String, Long>()
     private val activeNtkEpisodeCalls = ConcurrentHashMap<String, Call>()
     private val activeNtkEpisodeCallIds = AtomicLong(0L)
+    private data class StrictConnectionObservation(val connectionId: String, val reused: Boolean)
+    private val strictInstrumentedClients = ConcurrentHashMap<Int, OkHttpClient>()
+    private val clickOwnedAnchorClients = ConcurrentHashMap<Long, OkHttpClient>()
+    private val clickOwnedDnsBySharedClient = ConcurrentHashMap<Int, Dns>()
+    private val clickOwnedProbeDispatcher = Dispatcher().apply {
+        maxRequests = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
+        maxRequestsPerHost = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
+    }
+    private const val CLICK_OWNED_EXTENSION_HEDGE_MS = 650L
+    private val clickOwnedExtensionScheduler = Executors.newScheduledThreadPool(8) { runnable ->
+        Thread(runnable, "ntk-click-extension-hedge").apply {
+            isDaemon = true
+            priority = Thread.NORM_PRIORITY + 1
+        }
+    }
+    // Call.cancel() may have to tear down a blocked HTTP/2 exchange. Keeping all header deadlines
+    // on one scheduler made a slow socket cancellation delay unrelated page deadlines. There is
+    // one timer worker per bounded recovery permit; idle workers sleep and no image body work runs
+    // here.
+    private val strictReplicaHeaderDeadlineScheduler =
+        Executors.newScheduledThreadPool(NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS) { runnable ->
+            Thread(runnable, "ntk-replica-header-deadline").apply {
+                isDaemon = true
+                priority = Thread.NORM_PRIORITY
+            }
+        }
+    // A tail task owns at most one disjoint 128 KiB segment. The executor remains bounded even
+    // though the normal production route above does not use segmented transport.
+    private val strictManhwaRangeExecutor = Executors.newFixedThreadPool(
+        NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS,
+    ) { runnable ->
+        Thread(runnable, "ntk-manhwa-range-segment").apply {
+            isDaemon = true
+            priority = Thread.NORM_PRIORITY + 1
+        }
+    }
+    private val strictConnectionUses = ConcurrentHashMap<Int, AtomicInteger>()
+    private val strictConnectionByOperation = ConcurrentHashMap<Long, StrictConnectionObservation>()
+    private val suppressedPermitlessInitialGeneratedUntil = ConcurrentHashMap<String, Long>()
     private val earlyNtkImageUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
+    private val ntkApiPageSlotCandidates = ConcurrentHashMap<String, NtkApiPageSlotCandidates>()
     private val speculativeNtkGeneratedUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
-    private val earlyNtkImageUrlListeners = CopyOnWriteArrayList<(String, List<String>) -> Unit>()
+    private val earlyNtkImageUrlListeners = CopyOnWriteArrayList<(String, List<String>, String) -> Unit>()
     private val trustedNtkImageApiCounts = ConcurrentHashMap<String, TrustedNtkImageApiCount>()
+    private val exactNtkImageApiCountProofs = ConcurrentHashMap<String, NtkImageApiCountProof>()
     private val earlyNtkGeneratedSuccessUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
     private val ntkApiFallbackFlights = ConcurrentHashMap<String, FutureTask<List<String>?>>()
     private val ntkApiFallbackImages = ConcurrentHashMap<String, List<String>>()
     private val ntkGeneratedAckRecoveryFlights = ConcurrentHashMap<String, FutureTask<Boolean>>()
+    private val earlyNtkGeneratedAnchorBodyFetches = ConcurrentHashMap<String, FutureTask<Unit>>()
     private val ntkAckRecoveryLaunchHolds = ConcurrentHashMap<String, Long>()
+    private val ntkAckRecoveryLaunchHoldLogAt = ConcurrentHashMap<String, Long>()
     private val ntkAckRecoveryPriorityPath = AtomicReference("")
     private val ntkGeneratedEpisodeExtensions = ConcurrentHashMap<String, String>()
     private val ntkGeneratedPageExtensions = ConcurrentHashMap<String, String>()
@@ -129,7 +666,13 @@ object ReaderImageCache {
     private val ntkAnchorAssetFiles = ConcurrentHashMap<String, File>()
     private val ntkInitialGeneratedAssetFiles = ConcurrentHashMap<String, File>()
     private val activeReads = ConcurrentHashMap<String, AtomicInteger>()
+    private val cacheWriteLocks = ConcurrentHashMap<String, ReentrantLock>()
     private val cacheGeneration = AtomicLong(0L)
+    private val cachePublicationLock = ReentrantReadWriteLock(true)
+    private val cacheFlightStarts = AtomicLong(0L)
+    private val cacheFlightJoins = AtomicLong(0L)
+    private val cacheFlightSupersedes = AtomicLong(0L)
+    private val volatileTrimCount = AtomicLong(0L)
     private val ntkGeneratedBackgroundFetchGate = Semaphore(NTK_GENERATED_BACKGROUND_FETCH_PARALLELISM)
     private val ntkGeneratedForegroundFetchGate = PriorityFetchGate(NTK_GENERATED_FOREGROUND_FETCH_PARALLELISM)
     private val ntkGeneratedInitialVisibleSerialGate = Semaphore(1)
@@ -138,39 +681,97 @@ object ReaderImageCache {
     private val trimScheduled = AtomicBoolean(false)
     private val trimDirty = AtomicBoolean(false)
     private val lastTrimStartedAt = AtomicLong(0L)
+    private val resolvedCacheDir = AtomicReference<File?>()
+    private val activeStrictSpoolFiles = ConcurrentHashMap.newKeySet<String>()
+    private val strictSpoolLifecycleLock = Any()
+    private val lastStrictSpoolCleanupAt = AtomicLong(0L)
+    private val activeStrictPublishTempFiles = ConcurrentHashMap.newKeySet<String>()
+    private val lastStrictPublishTempCleanupAt = AtomicLong(0L)
     private val trimExecutor = Executors.newSingleThreadScheduledExecutor(ThreadFactory { runnable ->
         Thread(runnable, "ReaderImageCacheTrim").apply {
             isDaemon = true
             priority = Thread.MIN_PRIORITY
         }
     })
-    private val foregroundRaceExecutor = Executors.newCachedThreadPool(ThreadFactory { runnable ->
-        Thread(runnable, "ReaderImageForegroundRace").apply {
-            isDaemon = true
-            priority = Thread.NORM_PRIORITY + 1
-        }
-    })
-    private val initialVisibleForegroundExecutor = Executors.newFixedThreadPool(4, ThreadFactory { runnable ->
-        Thread(runnable, "ReaderInitialVisibleForeground").apply {
-            isDaemon = true
-            priority = Thread.NORM_PRIORITY + 1
-        }
-    })
-    private val foregroundCachePublishExecutor = Executors.newFixedThreadPool(4, ThreadFactory { runnable ->
+    // A cold generated runway starts four independent page races.  Each race may need the
+    // canonical suffix plus three real extension candidates, so an eight-worker pool queued the
+    // page-1 anchor behind pages 2..4.  That made the correct request begin only after the episode
+    // row had already been pressed.  These workers are bounded network waiters (not decode/CPU
+    // workers); keep one slot for every launch candidate so the four real source bodies race at
+    // the network rather than in our executor queue.
+    // These pools are network waiters and byte validators. Keeping their Java thread priority
+    // near the UI thread lets a cold launch create dozens of runnable peers on a four-core device,
+    // starving the real DOWN/UP dispatch even though no individual main-thread task is slow.
+    // Android background priority preserves the same network concurrency and admission order while
+    // ensuring input/render work always wins CPU scheduling.
+    private val foregroundRaceExecutor = Executors.newFixedThreadPool(
+        16,
+        backgroundThreadFactory("ReaderImageForegroundRace")
+    )
+    private val generatedPreviewRaceExecutor = Executors.newFixedThreadPool(
+        8,
+        backgroundThreadFactory("ReaderGeneratedPreviewRace")
+    )
+    private val generatedPreviewExecutor = Executors.newFixedThreadPool(
+        6,
+        backgroundThreadFactory("ReaderGeneratedPreview")
+    )
+    private val initialVisibleForegroundExecutor = Executors.newFixedThreadPool(
+        8,
+        backgroundThreadFactory("ReaderInitialVisibleForeground")
+    )
+    private val verifiedGeneratedFanoutFetchExecutor = Executors.newFixedThreadPool(
+        ReaderPipelinePolicy.NTK_VERIFIED_SOURCE_FANOUT_PARALLELISM,
+        backgroundThreadFactory("ReaderVerifiedGeneratedFetch")
+    )
+    private val verifiedGeneratedTailFetchExecutor = Executors.newFixedThreadPool(
+        ReaderPipelinePolicy.NTK_PROGRESSIVE_FAR_TAIL_PARALLELISM,
+        backgroundThreadFactory("ReaderVerifiedGeneratedTail")
+    )
+    private val foregroundCachePublishExecutor = Executors.newFixedThreadPool(1, ThreadFactory { runnable ->
         Thread(runnable, "ReaderForegroundCachePublish").apply {
             isDaemon = true
-            priority = Thread.NORM_PRIORITY
+            priority = Thread.MIN_PRIORITY
         }
     })
-    private val ntkApiFallbackExecutor = Executors.newFixedThreadPool(2, ThreadFactory { runnable ->
-        Thread(runnable, "ReaderNtkApiFallback").apply {
+    private val initialAssetListenerExecutor = Executors.newFixedThreadPool(1, ThreadFactory { runnable ->
+        Thread(runnable, "ReaderInitialAssetListener").apply {
             isDaemon = true
-            priority = Thread.NORM_PRIORITY
+            priority = Thread.NORM_PRIORITY - 1
         }
     })
+    private val ntkApiFallbackExecutor = Executors.newFixedThreadPool(
+        2,
+        backgroundThreadFactory("ReaderNtkApiFallback")
+    )
+
+    private fun backgroundThreadFactory(name: String): ThreadFactory = ThreadFactory { runnable ->
+        Thread({
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+            } catch (_: Throwable) {
+            }
+            runnable.run()
+        }, name).apply {
+            isDaemon = true
+            priority = Thread.NORM_PRIORITY - 1
+        }
+    }
 
     private data class EarlyNtkImageUrls(
         val urls: List<String>,
+        val createdAtMs: Long,
+        val source: String = ""
+    )
+
+    private data class NtkApiPageSlotCandidates(
+        val path: String,
+        val urls: List<String>,
+        val createdAtMs: Long
+    )
+
+    private data class AnchorAssetBytes(
+        val bytes: ByteArray,
         val createdAtMs: Long
     )
 
@@ -178,6 +779,1644 @@ object ReaderImageCache {
         val count: Int,
         val createdAtMs: Long
     )
+
+    data class NtkImageApiCountProof(
+        val count: Int,
+        val source: String,
+        val orderedAssetsDigestSha256: String,
+        val createdAtMs: Long
+    ) {
+        init {
+            require(count > 0)
+            require(source.startsWith("api-response:"))
+            require(NtkStripDigests.isSha256(orderedAssetsDigestSha256))
+        }
+    }
+
+    /** Bounds-only source result. A metadata probe never owns decoded pixels. */
+    data class NtkSourceMetadataProbe(
+        val sourceWidth: Int,
+        val sourceHeight: Int,
+        val responseIdentity: String,
+        val cachedFile: Boolean,
+        val fullBodyFallback: Boolean,
+        val promotedBodyFile: File? = null,
+        val acquisition: NtkMetadataAcquisition = if (cachedFile) {
+            NtkMetadataAcquisition.VERIFIED_CACHE_BODY
+        } else if (fullBodyFallback) {
+            NtkMetadataAcquisition.PRIMARY_BODY_TEE
+        } else {
+            NtkMetadataAcquisition.PRIMARY_BODY_TEE
+        },
+        val responseIdentityDigest: String = "",
+        val byteWitnessSha256: String = "",
+        val byteWitnessLength: Long = 0L,
+        val encodedLength: Long = 0L,
+        val strongValidatorDigest: String = "",
+        val imageFormat: String = "",
+        val witnessPrefix: ByteArray = ByteArray(0),
+        val strongValidator: String = ""
+    ) {
+        init {
+            require(sourceWidth > 0 && sourceHeight > 0)
+            require(responseIdentity.isNotBlank())
+            require(!(cachedFile && fullBodyFallback))
+            require(!fullBodyFallback || promotedBodyFile?.isFile == true)
+        }
+    }
+
+    enum class NtkResponseIdentityPolicy {
+        EXACT_VALIDATED
+    }
+
+    /** One stable body route shared by metadata and body workers for the whole session. */
+    data class NtkResolvedSourceRoute(
+        val routeKey: String,
+        val requestTemplate: Request,
+        val callFactory: Call.Factory,
+        val responseIdentityPolicy: NtkResponseIdentityPolicy,
+        val callFactoryId: String
+    ) {
+        init {
+            require(routeKey.isNotBlank())
+            require(callFactoryId.isNotBlank())
+        }
+
+        val routeKeyHash: String
+            get() = NtkStripDigests.sha256Tokens("ntk-strict-source-route-v1", routeKey)
+    }
+
+    internal fun strictReplicaUrlsForTest(url: String, pageIndex: Int? = null): List<String> {
+        val request = runCatching { Request.Builder().url(url).build() }.getOrNull()
+            ?: return listOf(url)
+        return strictReplicaRequests(request, pageIndex).map { it.url.toString() }
+    }
+
+    internal fun strictWebtoonReplicaUrlsForTest(url: String): List<String> =
+        strictReplicaUrlsForTest(url)
+
+    private fun strictReplicaRequests(
+        request: Request,
+        pageIndexOverride: Int? = null,
+    ): List<Request> {
+        val url = request.url
+        val originalHost = url.host.lowercase(Locale.ROOT)
+        val replicaHosts = when (originalHost) {
+            in NTK_WEBTOON_IMAGE_REPLICA_HOSTS -> NTK_WEBTOON_IMAGE_REPLICA_HOSTS
+            in NTK_MANHWA_IMAGE_REPLICA_HOSTS -> NTK_MANHWA_IMAGE_REPLICA_HOSTS
+            else -> return listOf(request)
+        }
+        val immutablePath = originalHost !in NTK_MANHWA_IMAGE_REPLICA_HOSTS || Regex(
+            "^/manhwa/\\d{1,12}/\\d{1,12}/p\\d{3}\\.(?:jpg|jpeg|png|webp|gif)$",
+            RegexOption.IGNORE_CASE,
+        ).matches(url.encodedPath)
+        val eligible = url.scheme.equals("https", ignoreCase = true) &&
+            url.port == 443 &&
+            url.username.isEmpty() && url.password.isEmpty() &&
+            url.encodedPath.isNotEmpty() && url.encodedPath != "/" &&
+            url.query == null && url.fragment == null &&
+            immutablePath
+        if (!eligible) return listOf(request)
+        val orderedReplicaHosts = if (originalHost in NTK_MANHWA_IMAGE_REPLICA_HOSTS) {
+            val pageIndex = pageIndexOverride
+                ?: request.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
+                ?: request.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
+                ?: 0
+            val alternatives = replicaHosts.filterNot { it == originalHost }
+            // The three Cloudflare mirrors share exact Range validators; AWS does not. A rotated
+            // list previously put AWS immediately after the canonical host for one third of pages,
+            // wasting a complete header deadline before reaching a resumable mirror. Rotate only
+            // within the validator-stable set and keep non-range replicas as terminal fallbacks.
+            val rangeAlternatives = alternatives.filter {
+                it in NTK_MANHWA_RANGE_REPLICA_HOSTS
+            }
+            val terminalAlternatives = alternatives.filterNot {
+                it in NTK_MANHWA_RANGE_REPLICA_HOSTS
+            }
+            val start = if (rangeAlternatives.isEmpty()) 0 else {
+                Math.floorMod(pageIndex, rangeAlternatives.size)
+            }
+            rangeAlternatives.drop(start) + rangeAlternatives.take(start) + terminalAlternatives
+        } else {
+            replicaHosts.filterNot { it == originalHost }
+        }
+        return buildList(replicaHosts.size) {
+            add(request)
+            orderedReplicaHosts.forEach { replicaHost ->
+                add(
+                    request.newBuilder()
+                        .url(url.newBuilder().host(replicaHost).build())
+                        .build()
+                )
+            }
+        }
+    }
+
+    /** One logical strict image Call with bounded, failure-only physical replica failover. */
+    private class NtkReplicaFailoverCall(
+        private val delegateFactory: Call.Factory,
+        private val originalRequest: Request,
+    ) : Call {
+        private val executed = AtomicBoolean(false)
+        private val cancelled = AtomicBoolean(false)
+        private val active = AtomicReference<Call?>(null)
+        private val segmentedPhysicalCalls = ConcurrentHashMap.newKeySet<Call>()
+        private val firstCall = delegateFactory.newCall(originalRequest)
+
+        override fun request(): Request = originalRequest
+
+        override fun execute(): Response {
+            check(executed.compareAndSet(false, true)) { "Already Executed" }
+            val logicalCallStartedAtNanos = SystemClock.elapsedRealtimeNanos()
+            val candidates = strictReplicaRequests(originalRequest)
+            val manhwaReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
+                NTK_MANHWA_IMAGE_REPLICA_HOSTS
+            val manhwaRangeReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
+                NTK_MANHWA_RANGE_REPLICA_HOSTS
+            // Quarantine discovery and the adopted strict source intentionally use different
+            // internal session ids. The immutable episode directory is common to both phases and
+            // every canonical pNNN asset, so it is the correct finite-wave resource key.
+            val manhwaWaveKey = if (manhwaReplica) {
+                originalRequest.url.encodedPath.substringBeforeLast('/', "")
+                    .takeIf { it.startsWith("/manhwa/") }
+            } else {
+                null
+            }
+            val manhwaSessionStartedAtNanos = manhwaWaveKey?.let { waveKey ->
+                    ntkManhwaSessionFirstCallAtNanos
+                        .computeIfAbsent(waveKey) { AtomicLong(logicalCallStartedAtNanos) }
+                        .also { first ->
+                            first.getAndUpdate { previous ->
+                                minOf(previous, logicalCallStartedAtNanos)
+                            }
+                        }
+            }
+            val manhwaSessionProjectedStartCount = manhwaWaveKey?.let { waveKey ->
+                ntkManhwaSessionProjectedStarts.computeIfAbsent(waveKey) {
+                    NtkManhwaProjectedBodyHedgePolicy.SessionStarts()
+                }
+            }
+            if (NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED && manhwaRangeReplica) {
+                return executeSegmentedManhwa(candidates)
+            }
+            // Three bounded physical cycles stay inside one logical source operation. The measured
+            // page-101 failure mode is: the first two origins reset, the third returns an empty
+            // 200 twice, then the next normal origin cycle succeeds. Letting that final recovery
+            // escape to the source-session layer records a cancellation and a duplicate logical
+            // request; keeping it here repeats no successful body and preserves exact ownership.
+            val attemptCandidates = (candidates + candidates + candidates).toMutableList()
+            val webtoonReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
+                NTK_WEBTOON_IMAGE_REPLICA_HOSTS
+            var lastFailure: IOException? = null
+            var index = 0
+            val manhwaHeaderRecoveryPermitHeld = AtomicBoolean(false)
+            try {
+                while (index < attemptCandidates.size) {
+                if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+                val candidate = attemptCandidates[index]
+                val physicalCandidate = if (webtoonReplica && index > 0) {
+                    candidate.newBuilder()
+                        .tag(
+                            CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                            CustomHttpClient.NtkExactImagePhysicalAttempt(index),
+                        )
+                        .build()
+                } else {
+                    candidate
+                }
+                // The first attempt retains the eagerly-created canonical Call. Later physical
+                // attempts carry a wire-only pool rotation tag and must therefore be constructed
+                // from the same bounded factory with that tagged request.
+                val call = if (index == 0 && candidate.url == originalRequest.url) {
+                    firstCall
+                } else {
+                    delegateFactory.newCall(physicalCandidate)
+                }
+                active.set(call)
+                val headerResolved = AtomicBoolean(false)
+                val headerDeadlineMs = when {
+                    webtoonReplica -> NTK_WEBTOON_HEADER_FAILOVER_MS
+                    // r109 proved that even a four-call permit can cycle those logical calls over
+                    // multiple cold origins and create fifteen cancellations. Keep r75's one
+                    // selected origin until headers or a real transport failure.
+                    manhwaReplica -> 0L
+                    else -> 0L
+                }
+                val headerDeadline = if (headerDeadlineMs > 0L) {
+                    strictReplicaHeaderDeadlineScheduler.schedule({
+                        val permitAcquired = manhwaReplica &&
+                            !manhwaHeaderRecoveryPermitHeld.get() &&
+                            ntkManhwaHeaderFailoverPermits.tryAcquire()
+                        val admitted = !manhwaReplica ||
+                            manhwaHeaderRecoveryPermitHeld.get() || permitAcquired
+                        if (admitted) {
+                            if (headerResolved.compareAndSet(false, true)) {
+                                if (permitAcquired) manhwaHeaderRecoveryPermitHeld.set(true)
+                                val identity = originalRequest.tag(
+                                    NtkQuarantineSourceCallIdentity::class.java,
+                                )
+                                val strictTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
+                                Log.w(
+                                    TAG,
+                                    "reader_strict_replica_header_deadline " +
+                                        "page=${identity?.pageIndex ?: strictTag?.pageIndex ?: -1}," +
+                                        "host=${candidate.url.host},attempt=$index," +
+                                        "deadlineMs=$headerDeadlineMs," +
+                                        "permitAcquired=$permitAcquired," +
+                                        "permitHeld=${manhwaHeaderRecoveryPermitHeld.get()}",
+                                )
+                                call.cancel()
+                            } else if (permitAcquired) {
+                                ntkManhwaHeaderFailoverPermits.release()
+                            }
+                        }
+                    }, headerDeadlineMs, TimeUnit.MILLISECONDS)
+                } else {
+                    null
+                }
+                try {
+                    val response = call.execute()
+                    if (!headerResolved.compareAndSet(false, true)) {
+                        response.close()
+                        throw java.net.SocketTimeoutException(
+                            "Replica response headers exceeded ${headerDeadlineMs}ms"
+                        )
+                    }
+                    if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
+                        ntkManhwaHeaderFailoverPermits.release()
+                    }
+                    // Some interchangeable webtoon origins answer an otherwise valid immutable
+                    // path with HTTP 200 and Content-Length: 0. No body byte exists to preserve,
+                    // so treat that header-level empty success like a replica miss before the
+                    // response reaches the strict spool. This avoids three logical whole-page
+                    // retries and the resulting cancellation of unrelated in-flight pages.
+                    val emptySuccessfulBody = response.code in 200..299 &&
+                        response.body?.contentLength() == 0L
+                    val retryableMiss = response.code == 404 || response.code == 410 ||
+                        emptySuccessfulBody
+                    if (!retryableMiss || index == attemptCandidates.lastIndex) {
+                        val canonicalIndex = candidates.indexOfFirst {
+                            it.url == candidate.url
+                        }.coerceAtLeast(0)
+                        return maybeWrapStalledReplicaBody(
+                            response,
+                            candidates,
+                            canonicalIndex,
+                            manhwaSessionStartedAtNanos,
+                            manhwaSessionProjectedStartCount,
+                        )
+                    }
+                    response.close()
+                    Log.w(
+                        TAG,
+                        "reader_strict_webtoon_replica_failover code=${response.code}," +
+                            "empty=$emptySuccessfulBody," +
+                            "from=${candidate.url.host}," +
+                            "to=${attemptCandidates[index + 1].url.host}"
+                    )
+                } catch (failure: IOException) {
+                    if (cancelled.get() || index == attemptCandidates.lastIndex) throw failure
+                    lastFailure = failure
+                    Log.w(
+                        TAG,
+                        "reader_strict_webtoon_replica_failover error=${failure.javaClass.simpleName}," +
+                            "from=${candidate.url.host}," +
+                            "to=${attemptCandidates[index + 1].url.host}"
+                    )
+                } finally {
+                    headerResolved.set(true)
+                    headerDeadline?.cancel(false)
+                }
+                index++
+            }
+                throw lastFailure ?: IOException("Webtoon replica image Call exhausted")
+            } finally {
+                if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
+                    ntkManhwaHeaderFailoverPermits.release()
+                }
+            }
+        }
+
+        /**
+         * Downloads one immutable manhwa image as disjoint 128 KiB ranges. The prefix response
+         * establishes the exact total and strong validator before any tail is admitted. Every tail
+         * is then fetched from a different range-capable replica where possible, fully checked, and
+         * exposed to the strict spool as one synthetic 200 response. No two successful requests
+         * cover the same byte and the ordinary outer operation still observes exactly one image.
+         */
+        private fun executeSegmentedManhwa(candidates: List<Request>): Response {
+            val rangeCandidates = candidates.filter {
+                it.url.host.lowercase(Locale.ROOT) in NTK_MANHWA_RANGE_REPLICA_HOSTS
+            }
+            var lastFailure: IOException? = null
+            rangeCandidates.forEachIndexed { candidateIndex, candidate ->
+                if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+                val prefixRequest = candidate.newBuilder()
+                    .header("Accept-Encoding", "identity")
+                    .header("Range", "bytes=0-${NTK_MANHWA_RANGE_SEGMENT_BYTES - 1L}")
+                    .tag(
+                        CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                        CustomHttpClient.NtkExactImagePhysicalAttempt(candidateIndex),
+                    )
+                    .build()
+                val prefixCall = delegateFactory.newCall(prefixRequest)
+                segmentedPhysicalCalls.add(prefixCall)
+                active.set(prefixCall)
+                val headerResolved = AtomicBoolean(false)
+                val headerDeadline = strictReplicaHeaderDeadlineScheduler.schedule({
+                    if (headerResolved.compareAndSet(false, true)) prefixCall.cancel()
+                }, NTK_MANHWA_RANGE_HEADER_DEADLINE_MS, TimeUnit.MILLISECONDS)
+                try {
+                    val response = prefixCall.execute()
+                    if (!headerResolved.compareAndSet(false, true)) {
+                        response.close()
+                        throw java.net.SocketTimeoutException(
+                            "Manhwa prefix headers exceeded ${NTK_MANHWA_RANGE_HEADER_DEADLINE_MS}ms"
+                        )
+                    }
+                    val body = response.body
+                    // A mirror that ignores Range has returned the complete image. Preserve that
+                    // one transfer and normalize only the logical request identity; never start a
+                    // second request for bytes already in flight.
+                    if (response.code == 200 && body != null && body.contentLength() > 0L) {
+                        Log.d(
+                            TAG,
+                            "reader_strict_manhwa_segment_range_ignored " +
+                                "host=${candidate.url.host},bytes=${body.contentLength()}"
+                        )
+                        return response.newBuilder().request(originalRequest).build()
+                    }
+                    val range = parseStrictContentRange(response.header("Content-Range"))
+                    val validator = strictStrongValidator(response)
+                    val identityEncoding = response.header("Content-Encoding")
+                        ?.trim()
+                        ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
+                    val expectedPrefixEnd = range?.third?.let {
+                        minOf(NTK_MANHWA_RANGE_SEGMENT_BYTES - 1L, it - 1L)
+                    } ?: -1L
+                    val accepted = response.code == 206 && body != null && range != null &&
+                        range.first == 0L && range.second == expectedPrefixEnd &&
+                        range.third > 0L && body.contentLength() == range.second + 1L &&
+                        validator.isNotBlank() && identityEncoding &&
+                        body.contentType()?.type.equals("image", ignoreCase = true)
+                    if (!accepted) {
+                        val code = response.code
+                        response.close()
+                        segmentedPhysicalCalls.remove(prefixCall)
+                        lastFailure = IOException(
+                            "Rejected manhwa prefix identity code=$code host=${candidate.url.host}"
+                        )
+                        return@forEachIndexed
+                    }
+
+                    val expectedLength = range.third
+                    val prefixLength = range.second + 1L
+                    if (prefixLength == expectedLength) {
+                        return response.newBuilder()
+                            .request(originalRequest)
+                            .code(200)
+                            .message("OK")
+                            .removeHeader("Content-Range")
+                            .removeHeader("Content-Length")
+                            .header("Content-Length", expectedLength.toString())
+                            .build()
+                    }
+
+                    val segments = ArrayList<NtkManhwaRangeSegment>()
+                    var segmentStart = prefixLength
+                    var segmentOrdinal = 1
+                    while (segmentStart < expectedLength) {
+                        val segmentEnd = minOf(
+                            expectedLength - 1L,
+                            segmentStart + NTK_MANHWA_RANGE_SEGMENT_BYTES - 1L,
+                        )
+                        val start = segmentStart
+                        val end = segmentEnd
+                        val ordinal = segmentOrdinal
+                        val task = FutureTask {
+                            executeManhwaRangeSegment(
+                                candidates = rangeCandidates,
+                                firstCandidateIndex = (candidateIndex + ordinal) %
+                                    rangeCandidates.size,
+                                start = start,
+                                end = end,
+                                total = expectedLength,
+                                validator = validator,
+                                contentType = body.contentType(),
+                                physicalAttempt = ordinal,
+                            )
+                        }
+                        segments += NtkManhwaRangeSegment(start, end, task)
+                        strictManhwaRangeExecutor.execute(task)
+                        segmentStart = segmentEnd + 1L
+                        segmentOrdinal++
+                    }
+                    val joinedBody = NtkSegmentedManhwaResponseBody(
+                        initialResponse = response,
+                        expectedLength = expectedLength,
+                        prefixLength = prefixLength,
+                        segments = segments,
+                        cancelled = cancelled,
+                        physicalCalls = segmentedPhysicalCalls,
+                    )
+                    Log.d(
+                        TAG,
+                        "reader_strict_manhwa_segment_wave_start " +
+                            "bytes=$expectedLength,segments=${segments.size + 1}," +
+                            "host=${candidate.url.host}"
+                    )
+                    return response.newBuilder()
+                        .request(originalRequest)
+                        .code(200)
+                        .message("OK")
+                        .removeHeader("Content-Range")
+                        .removeHeader("Content-Length")
+                        .header("Content-Length", expectedLength.toString())
+                        .body(joinedBody)
+                        .build()
+                } catch (failure: IOException) {
+                    segmentedPhysicalCalls.remove(prefixCall)
+                    if (cancelled.get()) throw failure
+                    lastFailure = failure
+                } finally {
+                    headerResolved.set(true)
+                    headerDeadline.cancel(false)
+                }
+            }
+
+            // The range-capable authority was unavailable before any accepted body byte. Keep the
+            // non-range AWS mirror as a last-resort production path, never as normal wave traffic.
+            val fallback = candidates.firstOrNull {
+                it.url.host.equals("aws-cdn1.site", ignoreCase = true)
+            } ?: throw lastFailure ?: IOException("Manhwa range replicas exhausted")
+            val fallbackCall = delegateFactory.newCall(fallback)
+            active.set(fallbackCall)
+            return try {
+                fallbackCall.execute()
+            } catch (failure: IOException) {
+                throw lastFailure ?: failure
+            }
+        }
+
+        private fun executeManhwaRangeSegment(
+            candidates: List<Request>,
+            firstCandidateIndex: Int,
+            start: Long,
+            end: Long,
+            total: Long,
+            validator: String,
+            validatorHeaderName: String = "",
+            contentType: MediaType?,
+            physicalAttempt: Int,
+            segmentActive: AtomicReference<Call?>? = null,
+        ): ByteArray {
+            if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+            var lastFailure: IOException? = null
+            val expectedSegmentLength = end - start + 1L
+            if (expectedSegmentLength <= 0L || expectedSegmentLength > Int.MAX_VALUE) {
+                throw IOException("Invalid manhwa range segment $start-$end")
+            }
+            val output = ByteArrayOutputStream(expectedSegmentLength.toInt())
+            for (offset in candidates.indices) {
+                if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+                val requestStart = NtkManhwaRangeResumePolicy.nextStart(
+                    start,
+                    output.size().toLong(),
+                    end,
+                ) ?: return output.toByteArray()
+                val candidate = candidates[(firstCandidateIndex + offset) % candidates.size]
+                val request = candidate.newBuilder()
+                    .header("Accept-Encoding", "identity")
+                    .header("Range", "bytes=$requestStart-$end")
+                    .header("If-Range", validator)
+                    .tag(
+                        CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                        CustomHttpClient.NtkExactImagePhysicalAttempt(physicalAttempt + offset),
+                    )
+                    .build()
+                val call = delegateFactory.newCall(request)
+                segmentedPhysicalCalls.add(call)
+                active.set(call)
+                segmentActive?.set(call)
+                val headerResolved = AtomicBoolean(false)
+                val headerDeadline = strictReplicaHeaderDeadlineScheduler.schedule({
+                    if (headerResolved.compareAndSet(false, true)) call.cancel()
+                }, NTK_MANHWA_RANGE_HEADER_DEADLINE_MS, TimeUnit.MILLISECONDS)
+                try {
+                    val response = call.execute()
+                    if (!headerResolved.compareAndSet(false, true)) {
+                        response.close()
+                        throw java.net.SocketTimeoutException(
+                            "Manhwa segment headers exceeded ${NTK_MANHWA_RANGE_HEADER_DEADLINE_MS}ms"
+                        )
+                    }
+                    response.use {
+                        val body = response.body
+                        val range = parseStrictContentRange(response.header("Content-Range"))
+                        val identityEncoding = response.header("Content-Encoding")
+                            ?.trim()
+                            ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
+                        val remainingLength = NtkManhwaRangeResumePolicy.remainingLength(
+                            requestStart,
+                            end,
+                        )
+                        val accepted = response.code == 206 && body != null && range != null &&
+                            range.first == requestStart && range.second == end &&
+                            range.third == total && body.contentLength() == remainingLength &&
+                            (if (validatorHeaderName.isBlank()) {
+                                strictStrongValidator(response) == validator
+                            } else {
+                                response.header(validatorHeaderName)?.trim() == validator
+                            }) && identityEncoding &&
+                            body.contentType()?.toString() == contentType?.toString()
+                        if (!accepted) {
+                            lastFailure = IOException(
+                                "Rejected manhwa segment identity code=${response.code}," +
+                                    "host=${candidate.url.host},range=$requestStart-$end/$total"
+                            )
+                            return@use
+                        }
+                        val source = body.source().also { rangeSource ->
+                            rangeSource.timeout().timeout(
+                                NtkManhwaRangeResumePolicy.BODY_IDLE_MS,
+                                TimeUnit.MILLISECONDS,
+                            )
+                        }
+                        val chunk = ByteArray(16 * 1024)
+                        val beforeAttempt = output.size()
+                        try {
+                            while (output.size().toLong() < expectedSegmentLength) {
+                                if (cancelled.get()) {
+                                    throw InterruptedIOException("Replica image Call cancelled")
+                                }
+                                val wanted = minOf(
+                                    chunk.size.toLong(),
+                                    expectedSegmentLength - output.size().toLong(),
+                                ).toInt()
+                                val count = source.read(chunk, 0, wanted)
+                                if (count < 0) {
+                                    throw EOFException(
+                                        "Manhwa segment ended at ${output.size()}/$expectedSegmentLength"
+                                    )
+                                }
+                                if (count == 0) continue
+                                output.write(chunk, 0, count)
+                            }
+                        } catch (failure: IOException) {
+                            if (cancelled.get()) throw failure
+                            lastFailure = failure
+                            val next = start + output.size().toLong()
+                            Log.w(
+                                TAG,
+                                "reader_strict_manhwa_segment_body_resume " +
+                                    "host=${candidate.url.host}," +
+                                    "attemptBytes=${output.size() - beforeAttempt}," +
+                                    "received=${output.size()},next=$next,end=$end," +
+                                    "idleMs=${NtkManhwaRangeResumePolicy.BODY_IDLE_MS}," +
+                                    "reason=${failure.javaClass.simpleName}",
+                            )
+                            return@use
+                        }
+                        return output.toByteArray()
+                    }
+                } catch (failure: IOException) {
+                    if (cancelled.get()) throw failure
+                    lastFailure = failure
+                } finally {
+                    headerResolved.set(true)
+                    headerDeadline.cancel(false)
+                    segmentActive?.compareAndSet(call, null)
+                    segmentedPhysicalCalls.remove(call)
+                }
+            }
+            throw lastFailure ?: IOException("Manhwa range segment exhausted")
+        }
+
+        /**
+         * A rare CDN stream can deliver valid 200 headers and then own the whole-episode tail.
+         * Webtoon and numeric-manhwa replicas expose immutable byte-range bodies, so a stalled source can continue
+         * from the first byte that was not handed to the consumer.  This is deliberately fail
+         * closed: an explicit byte-range capability, an If-Range validator, exact 206 range
+         * identity and the original total length are all mandatory.  No already-consumed byte is
+         * requested again and ordinary responsive bodies still use exactly one physical GET.
+         */
+        private fun maybeWrapStalledReplicaBody(
+            response: Response,
+            candidates: List<Request>,
+            candidateIndex: Int,
+            manhwaSessionStartedAtNanos: AtomicLong?,
+            manhwaSessionProjectedStartCount:
+                NtkManhwaProjectedBodyHedgePolicy.SessionStarts?,
+        ): Response {
+            val body = response.body ?: return response
+            val contentLength = body.contentLength()
+            val manhwaBody = originalRequest.url.host.lowercase(Locale.ROOT) in
+                NTK_MANHWA_IMAGE_REPLICA_HOSTS
+            val manhwaAwsBody = manhwaBody &&
+                response.request.url.host.equals("aws-cdn1.site", ignoreCase = true)
+            // AWS does not share a byte-join validator with the three range-capable mirrors. r70
+            // rejected a syntactically valid 206 suffix for that exact reason. Preserve its one
+            // accepted body as-is; never discard a received prefix or fabricate cross-origin
+            // identity merely to recover performance.
+            if (manhwaAwsBody) return response
+            val validatorHeaderName = ""
+            val validator = strictStrongValidator(response)
+            val rangeCapable = response.header("Accept-Ranges")
+                ?.split(',')
+                ?.any { it.trim().equals("bytes", ignoreCase = true) } == true
+            val identityEncoding = response.header("Content-Encoding")
+                ?.trim()
+                ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
+            val webtoonReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
+                NTK_WEBTOON_IMAGE_REPLICA_HOSTS
+            if ((!webtoonReplica && !manhwaBody) || response.code != 200 ||
+                !rangeCapable ||
+                !identityEncoding || validator.isBlank() || contentLength <= 0L
+            ) return response
+
+            // A stalled physical stream does not imply that a fresh HTTP/2 stream on the same
+            // immutable origin is unhealthy. Retry that already-authoritative origin first, then
+            // walk the alternates. This matters when the two secondary origins are rejecting new
+            // streams: trying both before returning to the healthy origin added roughly 300 ms to
+            // every zero-byte continuation. Range always begins at the first byte not handed to
+            // the consumer, so this changes only route order and never repeats consumed bytes.
+            val pageIndex = originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
+                ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
+                ?: -1
+            val resumableCandidates = if (manhwaBody) {
+                val rangeCandidates = candidates.filter {
+                    it.url.host.lowercase(Locale.ROOT) in NTK_MANHWA_RANGE_REPLICA_HOSTS
+                }
+                val responseHost = response.request.url.host.lowercase(Locale.ROOT)
+                // A fresh stream on the same congested HTTP/2 connection is a poor rescue path.
+                // Walk different immutable mirrors first and keep the original mirror only as
+                // the final fallback.  AWS is excluded because it ignores byte ranges.
+                val alternatives = rangeCandidates.filterNot {
+                    it.url.host.equals(responseHost, ignoreCase = true)
+                }
+                // Fixed construction sent two thirds of continuations to booktoki9. Rotate the
+                // two immutable alternate mirrors by page so rescue traffic remains balanced.
+                val alternateStart = if (alternatives.isEmpty()) 0 else {
+                    Math.floorMod(pageIndex, alternatives.size)
+                }
+                alternatives.drop(alternateStart) + alternatives.take(alternateStart) +
+                    rangeCandidates.filter {
+                    it.url.host.equals(responseHost, ignoreCase = true)
+                }
+            } else {
+                buildList(candidates.size) {
+                    add(candidates[candidateIndex])
+                    addAll(candidates.drop(candidateIndex + 1))
+                    addAll(candidates.take(candidateIndex))
+                }
+            }
+
+            val resumable = NtkStalledReplicaResponseBody(
+                delegateFactory = delegateFactory,
+                candidates = resumableCandidates,
+                initialCandidateIndex = -1,
+                initialResponse = response,
+                expectedLength = contentLength,
+                validator = validator,
+                validatorHeaderName = validatorHeaderName,
+                absoluteInitialSegmentWallMs = if (manhwaBody) {
+                    NTK_MANHWA_BODY_WALL_MS
+                } else {
+                    0L
+                },
+                bodyIdleResumeMs = if (manhwaBody) {
+                    NTK_MANHWA_BODY_IDLE_RESUME_MS
+                } else {
+                    NTK_WEBTOON_BODY_IDLE_RESUME_MS
+                },
+                bodyFirstByteDeadlineMs = if (manhwaBody) {
+                    NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS
+                } else {
+                    NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS
+                },
+                bodyProgressDeadlineMs = if (manhwaBody) {
+                    NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS
+                } else {
+                    NTK_WEBTOON_BODY_PROGRESS_DEADLINE_MS
+                },
+                grantTailDeadlineGrace = !manhwaBody,
+                pageIndex = pageIndex,
+                cancelled = cancelled,
+                active = active,
+                sessionStartedAtNanos = manhwaSessionStartedAtNanos,
+                sessionProjectedStartCount = manhwaSessionProjectedStartCount,
+                projectedTailFetcher = if (manhwaBody && resumableCandidates.isNotEmpty()) {
+                    { start, end, physicalAttempt, segmentActive ->
+                        executeManhwaRangeSegment(
+                            candidates = resumableCandidates,
+                            firstCandidateIndex = Math.floorMod(
+                                pageIndex + physicalAttempt,
+                                resumableCandidates.size,
+                            ),
+                            start = start,
+                            end = end,
+                            total = contentLength,
+                            validator = validator,
+                            validatorHeaderName = validatorHeaderName,
+                            contentType = body.contentType(),
+                            physicalAttempt = physicalAttempt,
+                            segmentActive = segmentActive,
+                        )
+                    }
+                } else {
+                    null
+                },
+            )
+            return response.newBuilder().body(resumable).build()
+        }
+
+        override fun enqueue(responseCallback: okhttp3.Callback) {
+            throw UnsupportedOperationException("Strict replica image Calls are synchronous")
+        }
+
+        override fun cancel() {
+            cancelled.set(true)
+            segmentedPhysicalCalls.forEach(Call::cancel)
+            active.get()?.cancel() ?: firstCall.cancel()
+        }
+
+        override fun isExecuted(): Boolean = executed.get()
+
+        override fun isCanceled(): Boolean = cancelled.get() || active.get()?.isCanceled() == true
+
+        override fun timeout(): okio.Timeout = firstCall.timeout()
+
+        override fun clone(): Call = NtkReplicaFailoverCall(delegateFactory, originalRequest)
+    }
+
+    private data class NtkManhwaRangeSegment(
+        val start: Long,
+        val end: Long,
+        val task: FutureTask<ByteArray>,
+    )
+
+    private data class NtkProjectedManhwaTailSegment(
+        val range: LongRange,
+        val active: AtomicReference<Call?>,
+        val task: FutureTask<ByteArray>,
+    )
+
+    private data class NtkProjectedManhwaTail(
+        val start: Long,
+        val segments: List<NtkProjectedManhwaTailSegment>,
+    )
+
+    /** Ordered view over concurrently fetched, non-overlapping immutable image segments. */
+    private class NtkSegmentedManhwaResponseBody(
+        private val initialResponse: Response,
+        private val expectedLength: Long,
+        private val prefixLength: Long,
+        segments: List<NtkManhwaRangeSegment>,
+        private val cancelled: AtomicBoolean,
+        private val physicalCalls: MutableSet<Call>,
+    ) : ResponseBody() {
+        private val mediaType = initialResponse.body?.contentType()
+        private val prefixSource = initialResponse.body?.source()
+            ?: throw IOException("Empty manhwa prefix body")
+        private val pendingSegments = segments.toMutableList()
+        private var delivered = 0L
+        private var segmentIndex = 0
+        private var tailBuffer: Buffer? = null
+        private var closed = false
+
+        private val joinedSource = object : okio.Source {
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                check(!closed) { "closed" }
+                require(byteCount >= 0L)
+                if (byteCount == 0L) return 0L
+                if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+                if (delivered == expectedLength) return -1L
+
+                if (delivered < prefixLength) {
+                    val count = prefixSource.read(
+                        sink,
+                        minOf(byteCount, prefixLength - delivered),
+                    )
+                    if (count < 0L) {
+                        throw EOFException("Manhwa prefix ended at $delivered/$prefixLength")
+                    }
+                    delivered += count
+                    if (delivered == prefixLength) runCatching { prefixSource.close() }
+                    return count
+                }
+
+                var buffer = tailBuffer
+                if (buffer == null || buffer.exhausted()) {
+                    if (segmentIndex >= pendingSegments.size) {
+                        if (delivered != expectedLength) {
+                            throw EOFException("Manhwa segments ended at $delivered/$expectedLength")
+                        }
+                        return -1L
+                    }
+                    val segment = pendingSegments[segmentIndex]
+                    val bytes = try {
+                        segment.task.get()
+                    } catch (failure: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw InterruptedIOException("Interrupted waiting for manhwa segment").also {
+                            it.initCause(failure)
+                        }
+                    } catch (failure: ExecutionException) {
+                        val cause = failure.cause
+                        throw when (cause) {
+                            is IOException -> cause
+                            else -> IOException("Manhwa segment failed", cause)
+                        }
+                    }
+                    pendingSegments[segmentIndex] = segment.copy(
+                        task = FutureTask<ByteArray> { ByteArray(0) },
+                    )
+                    segmentIndex++
+                    val expectedSegmentLength = segment.end - segment.start + 1L
+                    if (bytes.size.toLong() != expectedSegmentLength) {
+                        throw EOFException(
+                            "Manhwa segment ${segment.start}-${segment.end} had ${bytes.size} bytes"
+                        )
+                    }
+                    buffer = Buffer().write(bytes)
+                    tailBuffer = buffer
+                }
+                val count = buffer.read(sink, minOf(byteCount, expectedLength - delivered))
+                if (count <= 0L) throw EOFException("Empty manhwa segment at $delivered")
+                delivered += count
+                return count
+            }
+
+            override fun timeout(): okio.Timeout = okio.Timeout.NONE
+
+            override fun close() = closeBody()
+        }.buffer()
+
+        override fun contentType(): MediaType? = mediaType
+
+        override fun contentLength(): Long = expectedLength
+
+        override fun source(): BufferedSource = joinedSource
+
+        override fun close() = joinedSource.close()
+
+        private fun closeBody() {
+            if (closed) return
+            closed = true
+            pendingSegments.drop(segmentIndex).forEach { it.task.cancel(true) }
+            physicalCalls.forEach(Call::cancel)
+            runCatching { initialResponse.close() }
+            tailBuffer?.clear()
+            pendingSegments.clear()
+        }
+    }
+
+    private class NtkStalledReplicaResponseBody(
+        private val delegateFactory: Call.Factory,
+        private val candidates: List<Request>,
+        initialCandidateIndex: Int,
+        private val initialResponse: Response,
+        private val expectedLength: Long,
+        private val validator: String,
+        private val validatorHeaderName: String,
+        private val absoluteInitialSegmentWallMs: Long,
+        private val bodyIdleResumeMs: Long,
+        private val bodyFirstByteDeadlineMs: Long,
+        private val bodyProgressDeadlineMs: Long,
+        private val grantTailDeadlineGrace: Boolean,
+        private val pageIndex: Int,
+        private val cancelled: AtomicBoolean,
+        private val active: AtomicReference<Call?>,
+        private val sessionStartedAtNanos: AtomicLong?,
+        private val sessionProjectedStartCount: NtkManhwaProjectedBodyHedgePolicy.SessionStarts?,
+        private val projectedTailFetcher: ((Long, Long, Int, AtomicReference<Call?>) -> ByteArray)?,
+    ) : ResponseBody() {
+        private val contentType = initialResponse.body?.contentType()
+        private var currentResponse: Response = initialResponse
+        private var currentSource: BufferedSource = checkedSource(initialResponse)
+        private var nextCandidateIndex = initialCandidateIndex + 1
+        private var deliveredBytes = 0L
+        private var continuationCount = 0
+        private var segmentDeadlineArmed = false
+        private var segmentStartedAtNanos = 0L
+        private var nextProjectedBodyCheckAtNanos = 0L
+        private var absoluteInitialDeadlineConsumed = absoluteInitialSegmentWallMs <= 0L
+        private var manhwaRangeContinuationPermitsHeld = 0
+        private var manhwaProjectedContinuationPermitHeld = false
+        private var manhwaEarlyProjectedContinuationPermitHeld = false
+        private var projectedContinuationDeferredLogged = false
+        private var projectedTail: NtkProjectedManhwaTail? = null
+        private var projectedTailBuffer: Buffer? = null
+        private var projectedGapBuffer: Buffer? = null
+        private var tailDeadlineGraceUsed = false
+        private var closed = false
+
+        private val joinedSource = object : okio.Source {
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                check(!closed) { "closed" }
+                if (byteCount == 0L) return 0L
+                if (deliveredBytes == expectedLength) {
+                    releaseManhwaRangeContinuationPermit()
+                    return -1L
+                }
+                while (true) {
+                    if (cancelled.get()) throw InterruptedIOException(
+                        "Replica image Call cancelled"
+                    )
+                    readProjectedBytesIfAvailable(sink, byteCount)?.let { return it }
+                    try {
+                        if (!segmentDeadlineArmed) {
+                            // A response body can sit behind another decode/spool task after its
+                            // headers arrive. Start the wall clock only when this segment is
+                            // actually consumed; arming it in checkedSource() falsely expired
+                            // perfectly healthy queued bodies and created a range-request herd.
+                            currentSource.timeout().deadline(
+                                bodyFirstByteDeadlineMs,
+                                TimeUnit.MILLISECONDS,
+                            )
+                            segmentDeadlineArmed = true
+                            segmentStartedAtNanos = SystemClock.elapsedRealtimeNanos()
+                            nextProjectedBodyCheckAtNanos = segmentStartedAtNanos +
+                                TimeUnit.MILLISECONDS.toNanos(absoluteInitialSegmentWallMs)
+                        } else if (!absoluteInitialDeadlineConsumed && deliveredBytes > 0L &&
+                            SystemClock.elapsedRealtimeNanos() >= nextProjectedBodyCheckAtNanos
+                        ) {
+                            val projectedCheckAtNanos = SystemClock.elapsedRealtimeNanos()
+                            nextProjectedBodyCheckAtNanos = projectedCheckAtNanos +
+                                TimeUnit.MILLISECONDS.toNanos(
+                                    NTK_MANHWA_PROJECTED_BODY_RECHECK_MS,
+                                )
+                            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(
+                                projectedCheckAtNanos - segmentStartedAtNanos,
+                            ).coerceAtLeast(1L)
+                            val sessionElapsedMs = sessionStartedAtNanos?.get()?.let { started ->
+                                TimeUnit.NANOSECONDS.toMillis(projectedCheckAtNanos - started)
+                            }?.coerceAtLeast(elapsedMs) ?: elapsedMs
+                            if (NtkManhwaProjectedBodyHedgePolicy.shouldResume(
+                                    sessionElapsedMs = sessionElapsedMs,
+                                    bodyElapsedMs = elapsedMs,
+                                    deliveredBytes = deliveredBytes,
+                                    expectedLength = expectedLength,
+                                )
+                            ) {
+                                val projectedSessionCompletionMs =
+                                    NtkManhwaProjectedBodyHedgePolicy.projectedSessionCompletionMs(
+                                        sessionElapsedMs,
+                                        elapsedMs,
+                                        deliveredBytes,
+                                        expectedLength,
+                                    )
+                                val projectedSessionMs =
+                                    projectedSessionCompletionMs?.toLong() ?: Long.MAX_VALUE
+                                // This is a soft rate hedge, not a terminal read failure. Reserve
+                                // its suffix lane before abandoning the still-readable original;
+                                // the previous code threw first and then parked on the semaphore,
+                                // allowing soft hedges to occupy workers while the one genuinely
+                                // idle source waited behind them. A real Okio timeout below still
+                                // waits for a bounded lane because that source is already terminal.
+                                if (launchProjectedTail(
+                                        sessionElapsedMs,
+                                        elapsedMs,
+                                        deliveredBytes,
+                                    )
+                                ) {
+                                    absoluteInitialDeadlineConsumed = true
+                                } else if (
+                                    NtkManhwaProjectedBodyHedgePolicy
+                                        .shouldForceCriticalSerialResume(
+                                            projectedSessionCompletionMs,
+                                        ) &&
+                                    ntkManhwaRangeContinuationPermits.tryAcquire()
+                                ) {
+                                    // Preserve the measured r129/r130 admission invariant: only
+                                    // abandon a responsive prefix after owning an immediately
+                                    // available exact-Range lane. Blocking after abandonment
+                                    // creates a herd of parked source workers and was 2.4 s slower.
+                                    manhwaRangeContinuationPermitsHeld = 1
+                                    absoluteInitialDeadlineConsumed = true
+                                    Log.w(
+                                        TAG,
+                                        "reader_strict_source_critical_serial_resume " +
+                                            "page=$pageIndex," +
+                                            "projectedSessionMs=$projectedSessionMs," +
+                                            "sessionElapsedMs=$sessionElapsedMs," +
+                                            "offset=$deliveredBytes,total=$expectedLength",
+                                    )
+                                    throw java.net.SocketTimeoutException(
+                                        "Critical projected manhwa tail"
+                                    )
+                                } else if (!projectedContinuationDeferredLogged) {
+                                    projectedContinuationDeferredLogged = true
+                                    Log.d(
+                                        TAG,
+                                            "reader_strict_source_projected_resume_deferred " +
+                                            "page=$pageIndex,projectedSessionMs=$projectedSessionMs," +
+                                            "sessionElapsedMs=$sessionElapsedMs," +
+                                            "offset=$deliveredBytes,total=$expectedLength",
+                                    )
+                                }
+                            }
+                        }
+                        val remaining = projectedTail
+                            ?.let { tail -> minOf(expectedLength, tail.start) - deliveredBytes }
+                            ?: (expectedLength - deliveredBytes)
+                        if (remaining == 0L) continue
+                        val count = currentSource.read(sink, minOf(byteCount, remaining))
+                        if (count < 0L) {
+                            throw EOFException(
+                                "Strict webtoon replica ended at $deliveredBytes/$expectedLength"
+                            )
+                        }
+                        deliveredBytes += count
+                        // The former one-second absolute segment deadline expired even while a
+                        // healthy 100+ image HTTP/2 cohort was continuously making progress. That
+                        // synchronized dozens of unnecessary Range continuations and delayed the
+                        // final page. Once a byte arrives, move the guard forward on every read;
+                        // it remains a real no-progress deadline rather than a total-body timer.
+                        currentSource.timeout().deadline(
+                            bodyProgressDeadlineMs,
+                            TimeUnit.MILLISECONDS,
+                        )
+                        return count
+                    } catch (failure: IOException) {
+                        if (grantSmallTailDeadlineGrace(failure)) continue
+                        if (fetchProjectedGapAfterPrefixFailure(failure)) continue
+                        abandonProjectedTailForSerialFallback(failure)
+                        if (!continueFromNextByte(failure)) throw failure
+                    }
+                }
+            }
+
+            override fun timeout(): okio.Timeout = okio.Timeout.NONE
+
+            override fun close() = closeBody()
+        }.buffer()
+
+        override fun contentType(): MediaType? = contentType
+
+        override fun contentLength(): Long = expectedLength
+
+        override fun source(): BufferedSource = joinedSource
+
+        override fun close() = joinedSource.close()
+
+        private fun checkedSource(response: Response): BufferedSource {
+            val body = response.body ?: throw IOException("Empty strict replica body")
+            return body.source().also {
+                // This is an idle read limit, not an all-body deadline. Every successful chunk
+                // refreshes it inside Okio. The separate absolute deadline is armed by the first
+                // actual read so executor queue time is not mistaken for a slow CDN segment.
+                it.timeout().timeout(bodyIdleResumeMs, TimeUnit.MILLISECONDS)
+            }
+        }
+
+        /**
+         * Launches one future, disjoint suffix while the original stream finishes only the small
+         * gap before it. Unlike the old projected continuation, this does not close a responsive
+         * prefix and wait serially for alternate headers. At most four session-global tails exist,
+         * and the original read is capped at [NtkProjectedManhwaTail.start], so successful image
+         * bytes can never overlap.
+         */
+        private fun launchProjectedTail(
+            sessionElapsedMs: Long,
+            elapsedMs: Long,
+            observedBytes: Long,
+        ): Boolean {
+            val fetcher = projectedTailFetcher ?: return false
+            if (projectedTail != null || observedBytes <= 0L || observedBytes >= expectedLength) {
+                return false
+            }
+            val split = NtkManhwaProjectedBodyHedgePolicy.disjointTailStart(
+                elapsedMs,
+                observedBytes,
+                expectedLength,
+            ) ?: return false
+            val ranges = NtkManhwaProjectedBodyHedgePolicy.disjointTailSegments(
+                split,
+                expectedLength,
+            )
+            if (ranges.isEmpty() || continuationCount + ranges.size >
+                NTK_WEBTOON_MAX_RANGE_CONTINUATIONS
+            ) return false
+            val lateAdmission = NtkManhwaProjectedBodyHedgePolicy.isLateAdmission(
+                sessionElapsedMs,
+                elapsedMs,
+            )
+            if (!lateAdmission) {
+                if (!ntkManhwaEarlyProjectedContinuationPermits.tryAcquire()) return false
+                manhwaEarlyProjectedContinuationPermitHeld = true
+            }
+            val projectedPermitAcquired =
+                ntkManhwaProjectedContinuationPermits.tryAcquire().also { acquired ->
+                    manhwaProjectedContinuationPermitHeld = acquired
+                }
+            if (!projectedPermitAcquired) {
+                releaseManhwaEarlyProjectedContinuationPermit()
+                return false
+            }
+            if (!ntkManhwaRangeContinuationPermits.tryAcquire(ranges.size)) {
+                releaseManhwaProjectedContinuationPermit()
+                releaseManhwaEarlyProjectedContinuationPermit()
+                return false
+            }
+            manhwaRangeContinuationPermitsHeld = ranges.size
+            val projectedStarts = sessionProjectedStartCount
+            if (projectedStarts == null ||
+                !NtkManhwaProjectedBodyHedgePolicy.tryAcquireSessionStart(
+                    projectedStarts,
+                    expectedLength,
+                    lateAdmission,
+                )
+            ) {
+                releaseManhwaRangeContinuationPermit()
+                return false
+            }
+            val firstPhysicalAttempt = continuationCount + 1
+            val segments = ranges.mapIndexed { ordinal, range ->
+                val physicalAttempt = firstPhysicalAttempt + ordinal
+                val tailActive = AtomicReference<Call?>(null)
+                NtkProjectedManhwaTailSegment(
+                    range = range,
+                    active = tailActive,
+                    task = FutureTask {
+                        fetcher(
+                            range.first,
+                            range.last,
+                            physicalAttempt,
+                            tailActive,
+                        )
+                    },
+                )
+            }
+            continuationCount += segments.size
+            projectedTail = NtkProjectedManhwaTail(split, segments)
+            return try {
+                segments.forEach { strictManhwaRangeExecutor.execute(it.task) }
+                Log.w(
+                    TAG,
+                    "reader_strict_source_projected_tail_start page=$pageIndex," +
+                        "offset=$observedBytes,split=$split,total=$expectedLength," +
+                        "segments=${segments.size},attempt=$firstPhysicalAttempt",
+                )
+                true
+            } catch (failure: RejectedExecutionException) {
+                projectedTail = null
+                segments.forEach { segment ->
+                    segment.active.getAndSet(null)?.cancel()
+                    segment.task.cancel(true)
+                }
+                releaseManhwaRangeContinuationPermit()
+                false
+            }
+        }
+
+        private fun readProjectedBytesIfAvailable(sink: Buffer, byteCount: Long): Long? {
+            projectedGapBuffer?.let { gap ->
+                if (!gap.exhausted()) {
+                    val count = gap.read(sink, minOf(byteCount, expectedLength - deliveredBytes))
+                    if (count > 0L) {
+                        deliveredBytes += count
+                        return count
+                    }
+                }
+                gap.clear()
+                projectedGapBuffer = null
+            }
+            val tail = projectedTail ?: return null
+            if (deliveredBytes < tail.start) return null
+            var buffer = projectedTailBuffer
+            if (buffer == null) {
+                val joined = Buffer()
+                try {
+                    tail.segments.forEach { segment ->
+                        val bytes = segment.task.get()
+                        val expectedSegmentLength = segment.range.last - segment.range.first + 1L
+                        if (bytes.size.toLong() != expectedSegmentLength) {
+                            throw EOFException(
+                                "Projected manhwa segment ${segment.range} had " +
+                                    "${bytes.size}/$expectedSegmentLength bytes"
+                            )
+                        }
+                        joined.write(bytes)
+                    }
+                } catch (failure: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    throw InterruptedIOException("Interrupted waiting for projected manhwa tail").also {
+                        it.initCause(failure)
+                    }
+                } catch (failure: ExecutionException) {
+                    val cause = failure.cause
+                    throw when (cause) {
+                        is IOException -> cause
+                        else -> IOException("Projected manhwa tail failed", cause)
+                    }
+                }
+                val expectedTailLength = expectedLength - tail.start
+                if (joined.size != expectedTailLength) {
+                    throw EOFException(
+                        "Projected manhwa tail had ${joined.size}/$expectedTailLength bytes"
+                    )
+                }
+                runCatching { currentResponse.close() }
+                buffer = joined
+                projectedTailBuffer = buffer
+                Log.d(
+                    TAG,
+                    "reader_strict_source_projected_tail_join page=$pageIndex," +
+                        "split=${tail.start},segments=${tail.segments.size}," +
+                        "bytes=$expectedTailLength",
+                )
+            }
+            val count = buffer.read(sink, minOf(byteCount, expectedLength - deliveredBytes))
+            if (count <= 0L) throw EOFException("Empty projected manhwa tail at $deliveredBytes")
+            deliveredBytes += count
+            if (deliveredBytes == expectedLength) releaseManhwaRangeContinuationPermit()
+            return count
+        }
+
+        /** Fetches only the unconsumed gap before an already-running disjoint suffix. */
+        private fun fetchProjectedGapAfterPrefixFailure(originalFailure: IOException): Boolean {
+            val tail = projectedTail ?: return false
+            val fetcher = projectedTailFetcher ?: return false
+            if (deliveredBytes >= tail.start || cancelled.get()) return false
+            val gapStart = deliveredBytes
+            val gapEnd = tail.start - 1L
+            runCatching { currentResponse.close() }
+            if (!ntkManhwaRangeContinuationPermits.tryAcquire()) return false
+            continuationCount++
+            val gapActive = AtomicReference<Call?>(null)
+            val bytes = try {
+                fetcher(gapStart, gapEnd, continuationCount, gapActive)
+            } catch (failure: IOException) {
+                Log.w(
+                    TAG,
+                    "reader_strict_source_projected_gap_failed page=$pageIndex," +
+                        "start=$gapStart,end=$gapEnd," +
+                        "prefixFailure=${originalFailure.javaClass.simpleName}," +
+                        "reason=${failure.javaClass.simpleName}",
+                )
+                return false
+            } finally {
+                gapActive.getAndSet(null)?.cancel()
+                ntkManhwaRangeContinuationPermits.release()
+            }
+            val expectedGapLength = gapEnd - gapStart + 1L
+            if (bytes.size.toLong() != expectedGapLength) return false
+            projectedGapBuffer = Buffer().write(bytes)
+            Log.d(
+                TAG,
+                "reader_strict_source_projected_gap_join page=$pageIndex," +
+                    "start=$gapStart,end=$gapEnd,bytes=${bytes.size}",
+            )
+            return true
+        }
+
+        /**
+         * A failed speculative suffix must not stay visible to the read loop. Cancel its exact
+         * physical call before the ordinary continuation starts, otherwise the serial recovery
+         * can overlap a detached tail and the same failed Future is observed on every iteration.
+         */
+        private fun abandonProjectedTailForSerialFallback(reason: IOException) {
+            val tail = projectedTail ?: return
+            tail.segments.forEach { segment ->
+                segment.active.getAndSet(null)?.cancel()
+                segment.task.cancel(true)
+            }
+            projectedTail = null
+            projectedTailBuffer?.clear()
+            projectedTailBuffer = null
+            projectedGapBuffer?.clear()
+            projectedGapBuffer = null
+            releaseManhwaRangeContinuationPermit()
+            Log.w(
+                TAG,
+                "reader_strict_source_projected_tail_abandoned page=$pageIndex," +
+                    "offset=$deliveredBytes,split=${tail.start}," +
+                    "reason=${reason.javaClass.simpleName}",
+            )
+        }
+
+        private fun continueFromNextByte(originalFailure: IOException): Boolean {
+            if (cancelled.get() || continuationCount >= NTK_WEBTOON_MAX_RANGE_CONTINUATIONS ||
+                deliveredBytes >= expectedLength
+            ) {
+                releaseManhwaRangeContinuationPermit()
+                return false
+            }
+            if (absoluteInitialSegmentWallMs > 0L &&
+                manhwaRangeContinuationPermitsHeld == 0
+            ) {
+                // The timed-out Okio stream cannot safely be polled again: doing so returns the
+                // same terminal timeout immediately and previously produced a 410-iteration busy
+                // loop. Park only this source worker until a bounded suffix lane becomes free.
+                // Cancellation is checked every 100 ms, so screen exit still retires promptly.
+                var acquired = false
+                while (!acquired && !cancelled.get()) {
+                    try {
+                        acquired = ntkManhwaRangeContinuationPermits.tryAcquire(
+                            100L,
+                            TimeUnit.MILLISECONDS,
+                        )
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return false
+                    }
+                }
+                if (!acquired) return false
+                manhwaRangeContinuationPermitsHeld = 1
+            }
+            runCatching { currentResponse.close() }
+            while (nextCandidateIndex < candidates.size &&
+                continuationCount < NTK_WEBTOON_MAX_RANGE_CONTINUATIONS
+            ) {
+                val candidateIndex = nextCandidateIndex++
+                continuationCount++
+                if (cancelled.get()) return false
+                val resumeRequest = candidates[candidateIndex].newBuilder()
+                    .header("Accept-Encoding", "identity")
+                    .header("Range", "bytes=$deliveredBytes-")
+                    .header("If-Range", validator)
+                    .tag(
+                        CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                        CustomHttpClient.NtkExactImagePhysicalAttempt(continuationCount),
+                    )
+                    .build()
+                val resumeCall = delegateFactory.newCall(resumeRequest)
+                active.set(resumeCall)
+                val startedAtNs = SystemClock.elapsedRealtimeNanos()
+                val headerResolved = AtomicBoolean(false)
+                val headerDeadline = if (absoluteInitialSegmentWallMs > 0L) {
+                    strictReplicaHeaderDeadlineScheduler.schedule({
+                        if (headerResolved.compareAndSet(false, true)) resumeCall.cancel()
+                    }, NTK_MANHWA_RANGE_HEADER_DEADLINE_MS, TimeUnit.MILLISECONDS)
+                } else {
+                    null
+                }
+                Log.w(
+                    TAG,
+                    "reader_strict_source_range_resume_start page=$pageIndex," +
+                        "offset=$deliveredBytes," +
+                        "total=$expectedLength,segment=$continuationCount," +
+                        "reason=${originalFailure.javaClass.simpleName}," +
+                        "detail=${originalFailure.message.orEmpty().replace(',', ';').take(120)}"
+                )
+                val response = try {
+                    resumeCall.execute()
+                } catch (failure: IOException) {
+                    headerResolved.set(true)
+                    headerDeadline?.cancel(false)
+                    Log.w(
+                        TAG,
+                        "reader_strict_source_range_resume_rejected page=$pageIndex," +
+                            "segment=$continuationCount," +
+                            "reason=${failure.javaClass.simpleName}"
+                    )
+                    continue
+                }
+                headerDeadline?.cancel(false)
+                if (!headerResolved.compareAndSet(false, true)) {
+                    response.close()
+                    Log.w(
+                        TAG,
+                        "reader_strict_source_range_resume_rejected page=$pageIndex," +
+                            "segment=$continuationCount,reason=header_deadline"
+                    )
+                    continue
+                }
+                val range = parseStrictContentRange(response.header("Content-Range"))
+                val responseLength = response.body?.contentLength() ?: -1L
+                val accepted = response.code == 206 &&
+                    range != null &&
+                    range.first == deliveredBytes &&
+                    range.second == expectedLength - 1L &&
+                    range.third == expectedLength &&
+                    responseLength == expectedLength - deliveredBytes &&
+                    (if (validatorHeaderName.isBlank()) {
+                        strictStrongValidator(response) == validator
+                    } else {
+                        response.header(validatorHeaderName)?.trim() == validator
+                    }) &&
+                    response.header("Content-Encoding")
+                        ?.trim()
+                        ?.let { it.isEmpty() || it.equals("identity", ignoreCase = true) } != false
+                if (!accepted) {
+                    val code = response.code
+                    response.close()
+                    Log.w(
+                        TAG,
+                        "reader_strict_source_range_resume_rejected page=$pageIndex," +
+                            "segment=$continuationCount," +
+                            "reason=identity,code=$code"
+                    )
+                    continue
+                }
+                currentResponse = response
+                currentSource = checkedSource(response)
+                segmentDeadlineArmed = false
+                absoluteInitialDeadlineConsumed = true
+                tailDeadlineGraceUsed = false
+                Log.d(
+                    TAG,
+                    "reader_strict_source_range_resume_accepted page=$pageIndex," +
+                        "offset=$deliveredBytes," +
+                        "remaining=${expectedLength - deliveredBytes},segment=$continuationCount," +
+                        "headersMs=${String.format(Locale.ROOT, "%.3f", (SystemClock.elapsedRealtimeNanos() - startedAtNs) / 1_000_000.0)}"
+                )
+                return true
+            }
+            releaseManhwaRangeContinuationPermit()
+            return false
+        }
+
+        private fun releaseManhwaRangeContinuationPermit() {
+            if (manhwaRangeContinuationPermitsHeld > 0) {
+                val held = manhwaRangeContinuationPermitsHeld
+                manhwaRangeContinuationPermitsHeld = 0
+                ntkManhwaRangeContinuationPermits.release(held)
+            }
+            if (manhwaProjectedContinuationPermitHeld) {
+                manhwaProjectedContinuationPermitHeld = false
+                ntkManhwaProjectedContinuationPermits.release()
+            }
+            releaseManhwaEarlyProjectedContinuationPermit()
+        }
+
+        private fun releaseManhwaProjectedContinuationPermit() {
+            if (manhwaProjectedContinuationPermitHeld) {
+                manhwaProjectedContinuationPermitHeld = false
+                ntkManhwaProjectedContinuationPermits.release()
+            }
+        }
+
+        private fun releaseManhwaEarlyProjectedContinuationPermit() {
+            if (manhwaEarlyProjectedContinuationPermitHeld) {
+                manhwaEarlyProjectedContinuationPermitHeld = false
+                ntkManhwaEarlyProjectedContinuationPermits.release()
+            }
+        }
+
+        private fun grantSmallTailDeadlineGrace(failure: IOException): Boolean {
+            if (!grantTailDeadlineGrace || tailDeadlineGraceUsed ||
+                failure !is java.net.SocketTimeoutException
+            ) return false
+            val remaining = expectedLength - deliveredBytes
+            if (deliveredBytes <= 0L || remaining <= 0L ||
+                remaining > NTK_WEBTOON_BODY_TAIL_GRACE_BYTES
+            ) return false
+            val timeout = currentSource.timeout()
+            if (!timeout.hasDeadline() || System.nanoTime() < timeout.deadlineNanoTime()) {
+                // The 600ms idle timeout fired before the segment wall deadline. That is a real
+                // no-progress stall and should move to an exact alternate Range immediately.
+                return false
+            }
+            timeout.clearDeadline()
+            tailDeadlineGraceUsed = true
+            Log.d(
+                TAG,
+                "reader_strict_source_tail_deadline_grace page=$pageIndex," +
+                    "offset=$deliveredBytes,remaining=$remaining,total=$expectedLength"
+            )
+            return true
+        }
+
+        private fun closeBody() {
+            if (closed) return
+            closed = true
+            projectedTail?.segments?.forEach { segment ->
+                segment.active.getAndSet(null)?.cancel()
+                segment.task.cancel(true)
+            }
+            runCatching { currentResponse.close() }
+            projectedGapBuffer?.clear()
+            projectedTailBuffer?.clear()
+            releaseManhwaRangeContinuationPermit()
+        }
+    }
+
+    private class NtkReplicaFailoverCallFactory(
+        private val delegate: Call.Factory,
+    ) : Call.Factory {
+        override fun newCall(request: Request): Call =
+            if (strictReplicaRequests(request).size > 1) {
+                NtkReplicaFailoverCall(delegate, request)
+            } else {
+                delegate.newCall(request)
+            }
+    }
+
+    data class NtkStrictPublishedBody(
+        val file: File,
+        val metadata: NtkSourceMetadata,
+        val proof: NtkEncodedOriginalProof,
+        /** Exact response bytes retained only for the owning viewer session. */
+        val encodedBytes: ByteArray? = null,
+        /** Full-quality pixels privately decoded after click and still gated by exact authority. */
+        val predecodedOriginal: NtkStrictPredecodedOriginal? = null,
+    ) {
+        init {
+            require(
+                (encodedBytes != null && encodedBytes.size.toLong() == proof.encodedLength) ||
+                    (encodedBytes == null && file.isFile)
+            )
+            metadata.requireProductionAuthority()
+            proof.requireProductionAuthority(metadata)
+        }
+    }
+
+    private fun strictPublishedBody(
+        file: File,
+        metadata: NtkSourceMetadata,
+        proof: NtkEncodedOriginalProof,
+        encodedBytes: ByteArray? = null,
+        predecodedOriginal: NtkStrictPredecodedOriginal? = null,
+    ): NtkStrictPublishedBody {
+        val body = NtkStrictPublishedBody(
+            file,
+            metadata,
+            proof,
+            encodedBytes,
+            predecodedOriginal,
+        )
+        val generation = ViewerTelemetry.activeGeneration()
+        val telemetryKey = "$generation|${metadata.metadataBindingDigest}"
+        if (ViewerTelemetry.hasActiveSession() && metadataTelemetryPublished.add(telemetryKey)) {
+            val strictKey = metadata.strictSourceKey
+            val sourceKeyHash = NtkStripDigests.sha256Tokens(
+                "viewer-strict-source-v1",
+                strictKey.manifestDigest,
+                strictKey.pageIndex.toString(),
+                strictKey.canonicalAssetDigest
+            )
+            val urlHost = try {
+                Uri.parse(metadata.canonicalAsset).host.orEmpty()
+            } catch (_: Throwable) {
+                ""
+            }
+            ViewerTelemetry.imageMetadata(
+                sourceKeyHash,
+                urlHost.ifBlank { "unknown" },
+                metadata.pageIndex,
+                metadata.sourceWidth,
+                metadata.sourceHeight,
+                metadata.authority.imageFormat,
+                metadata.authority.encodedLength
+            )
+        }
+        return body
+    }
+
+    data class NtkStrictCallContext(
+        val tag: NtkStrictSourceCallTag,
+        val operationLease: NtkStrictSourceOwnershipRegistry.OperationLease
+    ) {
+        init {
+            require(tag.isProductionStrict)
+        }
+    }
+
+    data class NtkQuarantineCallContext(
+        val identity: NtkQuarantineSourceCallIdentity,
+        val operationLease: NtkQuarantineSourceOwnershipRegistry.OperationLease
+    ) {
+        init {
+            require(identity.isValid)
+        }
+    }
+
+    class NtkQuarantineFileLease internal constructor(
+        val partFile: File,
+        val sealedFile: File,
+        private val onReleased: () -> Unit
+    ) : Closeable {
+        private val released = AtomicBoolean(false)
+        private val consumed = AtomicBoolean(false)
+        private val counterReleased = AtomicBoolean(false)
+
+        fun seal(encodedLength: Long): File {
+            check(!released.get() && !consumed.get())
+            check(partFile.isFile && partFile.length() == encodedLength)
+            replaceFileAtomically(partFile, sealedFile, "quarantine sealed body")
+            return sealedFile
+        }
+
+        fun consume() {
+            if (consumed.compareAndSet(false, true)) releaseCounter()
+        }
+
+        override fun close() {
+            if (!released.compareAndSet(false, true)) return
+            if (!consumed.get()) {
+                partFile.delete()
+                sealedFile.delete()
+            }
+            releaseCounter()
+        }
+
+        private fun releaseCounter() {
+            released.set(true)
+            if (counterReleased.compareAndSet(false, true)) onReleased()
+        }
+    }
 
     private class PriorityFetchGate(private val maxPermits: Int) {
         private val lock = ReentrantLock()
@@ -232,6 +2471,8 @@ object ReaderImageCache {
                 lock.unlock()
             }
         }
+
+        fun inUseCount(): Int = maxPermits - availablePermits()
     }
 
     private data class InitialRecoveryResult(
@@ -249,55 +2490,243 @@ object ReaderImageCache {
         val bytes: ByteArray
     )
 
+    /** A URL-free snapshot used by lifecycle handling and cold-run assertions. */
+    data class CacheStateSnapshot(
+        val generation: Long,
+        val fileFlights: Int,
+        val progressiveTailFlights: Int,
+        val foregroundStreamFlights: Int,
+        val foregroundStreamPublications: Int,
+        val logicalByteFlights: Int,
+        val strictByteFlights: Int,
+        val initialPreviewFlights: Int,
+        val initialRangeFlights: Int,
+        val activeEpisodeCalls: Int,
+        val activeReads: Int,
+        val foregroundPermitsInUse: Int,
+        val backgroundPermitsInUse: Int,
+        val visibleWaiters: Int,
+        val activeVisibleFetches: Int,
+        val retainedAnchorByteEntries: Int,
+        val retainedAnchorBytes: Long,
+        val diskCacheFiles: Int,
+        val diskCacheBytes: Long,
+        val contentCacheEntries: Int,
+        val flightStarts: Long,
+        val flightJoins: Long,
+        val flightSupersedes: Long,
+        val trimCount: Long
+    )
+
     @JvmStatic
-    fun clearVolatileStateForTest() {
-        val generation = cacheGeneration.incrementAndGet()
-        flights.values.forEach { it.cancel(true) }
-        flights.clear()
-        foregroundStreams.values.forEach { it.cancel(true) }
-        foregroundStreams.clear()
-        initialVisibleGeneratedPreviewFlights.values.forEach { it.cancel(true) }
-        initialVisibleGeneratedPreviewFlights.clear()
-        initialGeneratedCompleteBytesFlights.values.forEach { it.cancel(true) }
-        initialGeneratedCompleteBytesFlights.clear()
-        activeNtkEpisodeCalls.values.forEach { it.cancel() }
-        activeNtkEpisodeCalls.clear()
-        initialGeneratedRangeFlights.values.forEach { it.cancel(true) }
-        initialGeneratedRangeFlights.clear()
-        initialGeneratedPrefixFlights.values.forEach { it.cancel(true) }
-        initialGeneratedPrefixFlights.clear()
-        ntkAnchorAssetListeners.clear()
-        ntkInitialGeneratedAssetListeners.clear()
-        foregroundStreamStartedAt.clear()
-        earlyNtkImageUrls.clear()
-        speculativeNtkGeneratedUrls.clear()
-        trustedNtkImageApiCounts.clear()
-        earlyNtkGeneratedSuccessUrls.clear()
-        ntkApiFallbackFlights.values.forEach { it.cancel(true) }
-        ntkApiFallbackFlights.clear()
-        ntkApiFallbackImages.clear()
-        ntkGeneratedAckRecoveryFlights.values.forEach { it.cancel(true) }
-        ntkGeneratedAckRecoveryFlights.clear()
-        ntkAckRecoveryLaunchHolds.clear()
-        ntkAckRecoveryPriorityPath.set("")
-        ntkGeneratedEpisodeExtensions.clear()
-        ntkGeneratedPageExtensions.clear()
-        ntkGeneratedNotFoundPages.clear()
-        ntkGeneratedResolvedPages.clear()
-        ntkGeneratedHardBlockedPages.clear()
-        ntkGeneratedReplacementClaims.clear()
-        ntkAnchorAssetFiles.clear()
-        ntkInitialGeneratedAssetFiles.clear()
-        activeReads.clear()
-        Log.d(TAG, "reader_image_cache_volatile_clear_for_test generation=$generation")
+    @JvmOverloads
+    fun snapshotState(context: Context? = null): CacheStateSnapshot {
+        val appContext = context?.applicationContext
+        val cacheDisk = appContext?.let { diskCacheStats(File(it.cacheDir, DIR_NAME)) }
+            ?: (0 to 0L)
+        val spoolDisk = appContext?.let {
+            diskCacheStats(File(it.noBackupFilesDir, STRICT_SPOOL_DIR_NAME))
+        } ?: (0 to 0L)
+        val disk = (cacheDisk.first + spoolDisk.first) to
+            (cacheDisk.second + spoolDisk.second)
+        return CacheStateSnapshot(
+            generation = cacheGeneration.get(),
+            fileFlights = flights.size,
+            progressiveTailFlights = progressiveTailFlightStates.size,
+            foregroundStreamFlights = foregroundStreams.size,
+            foregroundStreamPublications = foregroundStreamPublications.size,
+            logicalByteFlights = logicalForegroundByteFlights.size,
+            strictByteFlights = strictForegroundByteFlights.size,
+            initialPreviewFlights = initialVisibleGeneratedPreviewFlights.size,
+            initialRangeFlights = initialGeneratedRangeFlights.size +
+                initialGeneratedDirectRaceFlights.size + initialGeneratedPrefixFlights.size,
+            activeEpisodeCalls = activeNtkEpisodeCalls.size,
+            activeReads = activeReads.values.sumOf { it.get().coerceAtLeast(0) },
+            foregroundPermitsInUse = ntkGeneratedForegroundFetchGate.inUseCount(),
+            backgroundPermitsInUse = NTK_GENERATED_BACKGROUND_FETCH_PARALLELISM -
+                ntkGeneratedBackgroundFetchGate.availablePermits(),
+            visibleWaiters = ntkGeneratedForegroundFetchGate.visibleWaiterCount(),
+            activeVisibleFetches = activeVisibleInitialGeneratedFetches.get(),
+            retainedAnchorByteEntries = ntkAnchorAssetBytes.size,
+            retainedAnchorBytes = ntkAnchorAssetBytes.values.sumOf { it.bytes.size.toLong() },
+            diskCacheFiles = disk.first,
+            diskCacheBytes = disk.second,
+            contentCacheEntries = earlyNtkImageUrls.size + ntkApiPageSlotCandidates.size +
+                ntkApiFallbackImages.size + earlyNtkGeneratedSuccessUrls.size,
+            flightStarts = cacheFlightStarts.get(),
+            flightJoins = cacheFlightJoins.get(),
+            flightSupersedes = cacheFlightSupersedes.get(),
+            trimCount = volatileTrimCount.get()
+        )
+    }
+
+    /**
+     * Drops completed/speculative state without touching visible or strict source owners. Under
+     * pressure only far-tail work is cancelled; the viewport body remains authoritative.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun trimVolatileMemory(context: Context? = null, aggressive: Boolean = false): CacheStateSnapshot {
+        val now = SystemClock.elapsedRealtime()
+        ntkAnchorAssetBytes.entries.removeAll {
+            now - it.value.createdAtMs > FOREGROUND_STREAM_HANDOFF_TTL_MS
+        }
+        ntkAnchorAssetFiles.entries.removeAll { !it.value.isFile }
+        ntkInitialGeneratedAssetFiles.entries.removeAll { !it.value.isFile }
+        encodedOriginalByteProofs.entries.removeAll { (_, proof) ->
+            proof.fileLength <= 0L
+        }
+        pruneCompletedFutureTasks(initialVisibleGeneratedPreviewFlights)
+        pruneCompletedFutureTasks(initialGeneratedCompleteBytesFlights)
+        pruneCompletedFutureTasks(initialGeneratedRangeFlights)
+        pruneCompletedFutureTasks(initialGeneratedDirectRaceFlights)
+        pruneCompletedFutureTasks(initialGeneratedPrefixFlights)
+        pruneCompletedFutureTasks(ntkApiFallbackFlights)
+        pruneCompletedFutureTasks(ntkGeneratedAckRecoveryFlights)
+        if (aggressive) {
+            synchronized(cacheFlightAdmissionLock) {
+                progressiveTailFlightStates.forEach { (future, state) ->
+                    state.cancelled.set(true)
+                    future.cancel(true)
+                    flights.remove(state.cacheKey, future)
+                }
+                progressiveTailFlightStates.clear()
+            }
+            verifiedTailBatches.clear()
+            cancelAndClearFutureTasks(unpublishedInitialGeneratedRunwayStreams)
+            cancelAndClearFutureTasks(earlyNtkGeneratedAnchorBodyFetches)
+        }
+        volatileTrimCount.incrementAndGet()
+        context?.applicationContext?.let(::scheduleTrim)
+        return snapshotState(context)
+    }
+
+    private fun diskCacheStats(root: File): Pair<Int, Long> {
+        if (!root.exists()) return 0 to 0L
+        var count = 0
+        var bytes = 0L
+        val pending = ArrayDeque<File>()
+        pending.add(root)
+        while (pending.isNotEmpty()) {
+            val current = pending.removeFirst()
+            current.listFiles()?.forEach { child ->
+                if (child.isDirectory) pending.add(child) else if (child.isFile) {
+                    count++
+                    bytes += child.length().coerceAtLeast(0L)
+                }
+            }
+        }
+        return count to bytes
+    }
+
+    private fun <T> pruneCompletedFutureTasks(map: ConcurrentHashMap<String, FutureTask<T>>) {
+        map.entries.removeAll { (_, task) -> task.isDone || task.isCancelled }
+    }
+
+    private fun <T> cancelAndClearFutureTasks(map: ConcurrentHashMap<String, FutureTask<T>>) {
+        map.values.forEach { it.cancel(true) }
+        map.clear()
+    }
+
+    @JvmStatic
+    fun clearVolatileStateForTest() = clearVolatileStateInternal("test")
+
+    @JvmStatic
+    fun clearVolatileState(reason: String) = clearVolatileStateInternal(reason.ifBlank { "unspecified" })
+
+    private fun clearVolatileStateInternal(reason: String) {
+        cachePublicationLock.writeLock().lock()
+        try {
+            val generation = cacheGeneration.incrementAndGet()
+            synchronized(cacheFlightAdmissionLock) {
+                flights.values.forEach { it.cancel(true) }
+                flights.clear()
+                progressiveTailFlightStates.values.forEach { it.cancelled.set(true) }
+                progressiveTailFlightStates.clear()
+            }
+            foregroundStreams.values.forEach { it.cancel(true) }
+            foregroundStreams.clear()
+            foregroundStreamPublications.clear()
+            foregroundStreamImages.clear()
+            logicalForegroundByteFlights.values.forEach { it.cancel() }
+            logicalForegroundByteFlights.clear()
+            logicalForegroundByteFlightsByStream.clear()
+            strictForegroundByteFlights.values.forEach { it.cancel() }
+            strictForegroundByteFlights.clear()
+            strictForegroundByteFlightsByStream.clear()
+            encodedOriginalByteProofs.clear()
+            residentStrictPublishedBodies.clear()
+            pendingStrictProofPublications.clear()
+            metadataTelemetryPublished.clear()
+            cancelAndClearFutureTasks(unpublishedInitialGeneratedRunwayStreams)
+            verifiedTailBatches.clear()
+            initialVisibleGeneratedPreviewFlights.values.forEach { it.cancel(true) }
+            initialVisibleGeneratedPreviewFlights.clear()
+            initialGeneratedCompleteBytesFlights.values.forEach { it.cancel(true) }
+            initialGeneratedCompleteBytesFlights.clear()
+            activeNtkEpisodeCalls.values.forEach { it.cancel() }
+            activeNtkEpisodeCalls.clear()
+            strictConnectionUses.clear()
+            strictConnectionByOperation.clear()
+            protectedNativeStrictRestartAt.clear()
+            suppressedPermitlessInitialGeneratedUntil.clear()
+            initialGeneratedRangeFlights.values.forEach { it.cancel(true) }
+            initialGeneratedRangeFlights.clear()
+            initialGeneratedDirectRaceFlights.values.forEach { it.cancel(true) }
+            initialGeneratedDirectRaceFlights.clear()
+            initialGeneratedPrefixFlights.values.forEach { it.cancel(true) }
+            initialGeneratedPrefixFlights.clear()
+            ntkAnchorAssetListeners.clear()
+            ntkInitialGeneratedAssetListeners.clear()
+            ntkAnchorAssetBytes.clear()
+            foregroundStreamStartedAt.clear()
+            earlyTransportPreparePhysicalCalls.set(0L)
+            adjacentForegroundViewerPaths.clear()
+            ntkEpisodeWorkCancelledAt.clear()
+            earlyNtkImageUrls.clear()
+            ntkApiPageSlotCandidates.clear()
+            speculativeNtkGeneratedUrls.clear()
+            trustedNtkImageApiCounts.clear()
+            exactNtkImageApiCountProofs.clear()
+            earlyNtkGeneratedSuccessUrls.clear()
+            ntkApiFallbackFlights.values.forEach { it.cancel(true) }
+            ntkApiFallbackFlights.clear()
+            ntkApiFallbackImages.clear()
+            ntkGeneratedAckRecoveryFlights.values.forEach { it.cancel(true) }
+            ntkGeneratedAckRecoveryFlights.clear()
+            cancelAndClearFutureTasks(earlyNtkGeneratedAnchorBodyFetches)
+            ntkAckRecoveryLaunchHolds.clear()
+            ntkAckRecoveryLaunchHoldLogAt.clear()
+            ntkAckRecoveryPriorityPath.set("")
+            ntkGeneratedEpisodeExtensions.clear()
+            ntkGeneratedPageExtensions.clear()
+            ntkGeneratedNotFoundPages.clear()
+            ntkGeneratedResolvedPages.clear()
+            ntkGeneratedHardBlockedPages.clear()
+            ntkGeneratedReplacementClaims.clear()
+            ntkAnchorAssetFiles.clear()
+            ntkInitialGeneratedAssetFiles.clear()
+            // Active file leases and per-key locks outlive volatile episode state. Clearing
+            // either map here can unpin live bodies or split one key across two write locks.
+            cacheFlightStarts.set(0L)
+            cacheFlightJoins.set(0L)
+            cacheFlightSupersedes.set(0L)
+            volatileTrimCount.set(0L)
+            Log.d(TAG, "reader_image_cache_volatile_clear reason=$reason,generation=$generation")
+        } finally {
+            cachePublicationLock.writeLock().unlock()
+        }
+
     }
 
     fun cancelNtkEpisodeVolatile(manga: Manga?) {
         val path = earlyNtkPathKey(manga?.ntkEpisodePath)
         if (manga == null || path.isEmpty()) return
+        adjacentForegroundViewerPaths.remove(path)
         val streamPrefix = "ntk-generated-stream|${manga.baseMode}|$path|"
         val previewPrefix = "ntk-visible-preview|$streamPrefix"
         val rangePrefix = "ntk-generated-range|${manga.baseMode}|$path|"
+        val directRacePrefix = "ntk-generated-direct-race|${manga.baseMode}|$path|"
         val fallbackSuffix = path
         val episodeKeys = ntkGeneratedEpisodeHintKeys(path)
         val cancelledStreams = cancelFutureTasks(foregroundStreams) { it.startsWith(streamPrefix) }
@@ -307,17 +2736,21 @@ object ReaderImageCache {
         val cancelledCalls = cancelActiveNtkEpisodeCalls { it == path }
         foregroundStreamStartedAt.keys.removeAll { it.startsWith(streamPrefix) }
         val cancelledRanges = cancelFutureTasks(initialGeneratedRangeFlights) { it.startsWith(rangePrefix) }
+        val cancelledDirectRaces = cancelFutureTasks(initialGeneratedDirectRaceFlights) { it.startsWith(directRacePrefix) }
         val cancelledPrefixes = cancelFutureTasks(initialGeneratedPrefixFlights) { it.startsWith(rangePrefix) }
         ntkAnchorAssetListeners.keys.removeAll { it.startsWith("${manga.baseMode}|$path|") }
         ntkInitialGeneratedAssetListeners.keys.removeAll { it.startsWith("${manga.baseMode}|$path|") }
         val cancelledApi = cancelFutureTasks(ntkApiFallbackFlights) { it.endsWith(fallbackSuffix) }
         val cancelledAck = cancelFutureTasks(ntkGeneratedAckRecoveryFlights) { it.endsWith(fallbackSuffix) }
         earlyNtkImageUrls.remove(path)
+        ntkApiPageSlotCandidates.entries.removeAll { it.value.path == path }
         speculativeNtkGeneratedUrls.remove(path)
         trustedNtkImageApiCounts.remove(path)
+        exactNtkImageApiCountProofs.remove(path)
         earlyNtkGeneratedSuccessUrls.remove(path)
         ntkApiFallbackImages.keys.removeAll { it.endsWith(fallbackSuffix) }
         ntkAckRecoveryLaunchHolds.remove(path)
+        ntkAckRecoveryLaunchHoldLogAt.keys.removeAll { it.startsWith("$path|") }
         ntkAckRecoveryPriorityPath.compareAndSet(path, "")
         episodeKeys.forEach { ntkGeneratedEpisodeExtensions.remove(it) }
         episodeKeys.forEach { key -> ntkGeneratedPageExtensions.keys.removeAll { it.startsWith("$key|") } }
@@ -332,15 +2765,17 @@ object ReaderImageCache {
             cancelledComplete > 0 ||
             cancelledCalls > 0 ||
             cancelledRanges > 0 ||
+            cancelledDirectRaces > 0 ||
             cancelledPrefixes > 0 ||
             cancelledApi > 0 ||
             cancelledAck > 0
         ) {
+            recordNtkEpisodeWorkCancellation(setOf(path), "episode_volatile_cancel")
             Log.d(
                 TAG,
                 "reader_image_cache_ntk_episode_volatile_cancel path=$path," +
                     "streams=$cancelledStreams,previews=$cancelledPreviews,complete=$cancelledComplete,calls=$cancelledCalls," +
-                    "ranges=$cancelledRanges,prefixes=$cancelledPrefixes,api=$cancelledApi,ack=$cancelledAck"
+                    "ranges=$cancelledRanges,directRaces=$cancelledDirectRaces,prefixes=$cancelledPrefixes,api=$cancelledApi,ack=$cancelledAck"
             )
         }
     }
@@ -349,97 +2784,121 @@ object ReaderImageCache {
     fun cancelOtherNtkEpisodeVolatile(currentPath: String?, reason: String) {
         val keepPath = earlyNtkPathKey(currentPath)
         if (keepPath.isEmpty()) return
-        val cancelledStreams = cancelFutureTasks(foregroundStreams) { key ->
+        val protectedPaths = protectedNtkEpisodePaths(keepPath)
+        val cancelledPaths = LinkedHashSet<String>()
+        fun belongsToUnprotectedEpisode(key: String): Boolean {
             val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
+            val cancel = path != null && path !in protectedPaths
+            if (cancel) cancelledPaths.add(path!!)
+            return cancel
         }
-        val cancelledPreviews = cancelFutureTasks(initialVisibleGeneratedPreviewFlights) { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
+        val cancelledStreams = cancelFutureTasks(foregroundStreams, ::belongsToUnprotectedEpisode)
+        val cancelledPreviews = cancelFutureTasks(initialVisibleGeneratedPreviewFlights, ::belongsToUnprotectedEpisode)
+        val cancelledComplete = cancelFutureTasks(initialGeneratedCompleteBytesFlights, ::belongsToUnprotectedEpisode)
+        val cancelledCalls = cancelActiveNtkEpisodeCalls { path ->
+            val cancel = path !in protectedPaths
+            if (cancel) cancelledPaths.add(path)
+            cancel
         }
-        val cancelledComplete = cancelFutureTasks(initialGeneratedCompleteBytesFlights) { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
+        foregroundStreamStartedAt.keys.removeAll(::belongsToUnprotectedEpisode)
+        foregroundStreamImages.keys.removeAll(::belongsToUnprotectedEpisode)
+        val cancelledRanges = cancelFutureTasks(initialGeneratedRangeFlights, ::belongsToUnprotectedEpisode)
+        val cancelledDirectRaces = cancelFutureTasks(initialGeneratedDirectRaceFlights, ::belongsToUnprotectedEpisode)
+        val cancelledPrefixes = cancelFutureTasks(initialGeneratedPrefixFlights, ::belongsToUnprotectedEpisode)
+        ntkAnchorAssetListeners.keys.removeAll(::belongsToUnprotectedEpisode)
+        ntkInitialGeneratedAssetListeners.keys.removeAll(::belongsToUnprotectedEpisode)
+        val cancelledApi = cancelFutureTasks(ntkApiFallbackFlights, ::belongsToUnprotectedEpisode)
+        val cancelledAck = cancelFutureTasks(ntkGeneratedAckRecoveryFlights, ::belongsToUnprotectedEpisode)
+        val removedEarly = earlyNtkImageUrls.keys.removeAll {
+            it !in protectedPaths && isNtkEpisodePathKey(it)
         }
-        val cancelledCalls = cancelActiveNtkEpisodeCalls { it != keepPath }
-        foregroundStreamStartedAt.keys.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
+        trustedNtkImageApiCounts.keys.removeAll { it !in protectedPaths && isNtkEpisodePathKey(it) }
+        exactNtkImageApiCountProofs.keys.removeAll {
+            it !in protectedPaths && isNtkEpisodePathKey(it)
         }
-        val cancelledRanges = cancelFutureTasks(initialGeneratedRangeFlights) { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
+        earlyNtkGeneratedSuccessUrls.keys.removeAll { it !in protectedPaths && isNtkEpisodePathKey(it) }
+        ntkApiFallbackImages.keys.removeAll(::belongsToUnprotectedEpisode)
+        ntkAckRecoveryLaunchHolds.keys.removeAll { it !in protectedPaths && isNtkEpisodePathKey(it) }
+        ntkAckRecoveryLaunchHoldLogAt.keys.removeAll { key ->
+            val path = key.substringBefore('|')
+            path !in protectedPaths && isNtkEpisodePathKey(path)
         }
-        val cancelledPrefixes = cancelFutureTasks(initialGeneratedPrefixFlights) { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        ntkAnchorAssetListeners.keys.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        ntkInitialGeneratedAssetListeners.keys.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        val cancelledApi = cancelFutureTasks(ntkApiFallbackFlights) { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        val cancelledAck = cancelFutureTasks(ntkGeneratedAckRecoveryFlights) { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        val removedEarly = earlyNtkImageUrls.keys.removeAll { it != keepPath && isNtkEpisodePathKey(it) }
-        trustedNtkImageApiCounts.keys.removeAll { it != keepPath && isNtkEpisodePathKey(it) }
-        earlyNtkGeneratedSuccessUrls.keys.removeAll { it != keepPath && isNtkEpisodePathKey(it) }
-        ntkApiFallbackImages.keys.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        ntkAckRecoveryLaunchHolds.keys.removeAll { it != keepPath && isNtkEpisodePathKey(it) }
         val priority = ntkAckRecoveryPriorityPath.get()
-        if (priority.isNotEmpty() && priority != keepPath) ntkAckRecoveryPriorityPath.compareAndSet(priority, "")
-        ntkGeneratedNotFoundPages.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
+        if (priority.isNotEmpty() && priority !in protectedPaths) {
+            ntkAckRecoveryPriorityPath.compareAndSet(priority, "")
         }
-        ntkGeneratedResolvedPages.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        ntkGeneratedHardBlockedPages.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        ntkGeneratedReplacementClaims.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        ntkAnchorAssetFiles.keys.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
-        ntkInitialGeneratedAssetFiles.keys.removeAll { key ->
-            val path = ntkEpisodePathFromVolatileKey(key)
-            path != null && path != keepPath
-        }
+        ntkGeneratedNotFoundPages.removeAll(::belongsToUnprotectedEpisode)
+        ntkGeneratedResolvedPages.removeAll(::belongsToUnprotectedEpisode)
+        ntkGeneratedHardBlockedPages.removeAll(::belongsToUnprotectedEpisode)
+        ntkGeneratedReplacementClaims.removeAll(::belongsToUnprotectedEpisode)
+        ntkAnchorAssetFiles.keys.removeAll(::belongsToUnprotectedEpisode)
+        ntkInitialGeneratedAssetFiles.keys.removeAll(::belongsToUnprotectedEpisode)
+        adjacentForegroundViewerPaths.keys.removeAll { it !in protectedPaths }
         if (cancelledStreams > 0 ||
             cancelledPreviews > 0 ||
             cancelledComplete > 0 ||
             cancelledCalls > 0 ||
             cancelledRanges > 0 ||
+            cancelledDirectRaces > 0 ||
             cancelledPrefixes > 0 ||
             cancelledApi > 0 ||
             cancelledAck > 0 ||
             removedEarly
         ) {
+            recordNtkEpisodeWorkCancellation(cancelledPaths, "other_episode_volatile_cancel:$reason")
             Log.d(
                 TAG,
                     "reader_image_cache_other_ntk_episode_volatile_cancel keep=$keepPath," +
-                    "reason=$reason,streams=$cancelledStreams,previews=$cancelledPreviews,complete=$cancelledComplete,calls=$cancelledCalls,ranges=$cancelledRanges," +
-                    "prefixes=$cancelledPrefixes," +
+                    "protected=${protectedPaths.size - 1},reason=$reason,streams=$cancelledStreams,previews=$cancelledPreviews,complete=$cancelledComplete,calls=$cancelledCalls,ranges=$cancelledRanges," +
+                    "directRaces=$cancelledDirectRaces,prefixes=$cancelledPrefixes," +
                     "api=$cancelledApi,ack=$cancelledAck,early=$removedEarly"
+            )
+        }
+    }
+
+    @JvmStatic
+    fun pauseOtherNtkEpisodeActiveWork(currentPath: String?, reason: String) {
+        val keepPath = earlyNtkPathKey(currentPath)
+        if (keepPath.isEmpty()) return
+        val protectedPaths = protectedNtkEpisodePaths(keepPath)
+        val cancelledPaths = LinkedHashSet<String>()
+        fun belongsToOtherEpisode(key: String): Boolean {
+            val path = ntkEpisodePathFromVolatileKey(key)
+            val cancel = path != null && path !in protectedPaths
+            if (cancel) cancelledPaths.add(path!!)
+            return cancel
+        }
+        val cancelledStreams = cancelFutureTasks(foregroundStreams, ::belongsToOtherEpisode)
+        val cancelledPreviews = cancelFutureTasks(initialVisibleGeneratedPreviewFlights, ::belongsToOtherEpisode)
+        val cancelledComplete = cancelFutureTasks(initialGeneratedCompleteBytesFlights, ::belongsToOtherEpisode)
+        val cancelledRanges = cancelFutureTasks(initialGeneratedRangeFlights, ::belongsToOtherEpisode)
+        val cancelledDirectRaces = cancelFutureTasks(initialGeneratedDirectRaceFlights, ::belongsToOtherEpisode)
+        val cancelledPrefixes = cancelFutureTasks(initialGeneratedPrefixFlights, ::belongsToOtherEpisode)
+        val cancelledApi = cancelFutureTasks(ntkApiFallbackFlights, ::belongsToOtherEpisode)
+        val cancelledCalls = cancelActiveNtkEpisodeCalls { path ->
+            val cancel = path !in protectedPaths
+            if (cancel) cancelledPaths.add(path)
+            cancel
+        }
+        foregroundStreamStartedAt.keys.removeAll(::belongsToOtherEpisode)
+        foregroundStreamImages.keys.removeAll(::belongsToOtherEpisode)
+        if (cancelledStreams > 0 ||
+            cancelledPreviews > 0 ||
+            cancelledComplete > 0 ||
+            cancelledRanges > 0 ||
+            cancelledDirectRaces > 0 ||
+            cancelledPrefixes > 0 ||
+            cancelledApi > 0 ||
+            cancelledCalls > 0
+        ) {
+            recordNtkEpisodeWorkCancellation(cancelledPaths, "other_episode_active_pause:$reason")
+            Log.d(
+                TAG,
+                "reader_image_cache_other_ntk_episode_active_pause keep=$keepPath," +
+                    "protected=${protectedPaths.size - 1},reason=$reason,streams=$cancelledStreams,previews=$cancelledPreviews," +
+                    "complete=$cancelledComplete,ranges=$cancelledRanges," +
+                    "directRaces=$cancelledDirectRaces,prefixes=$cancelledPrefixes," +
+                    "api=$cancelledApi,calls=$cancelledCalls"
             )
         }
     }
@@ -462,17 +2921,321 @@ object ReaderImageCache {
         return count
     }
 
-    private fun trackActiveNtkEpisodeCall(manga: Manga, image: String, call: Call): String? {
-        val path = manga.ntkEpisodePath?.trim()?.takeIf { isNtkEpisodePathKey(it) }
-            ?: ntkGeneratedTarget(image)?.path?.takeIf { isNtkEpisodePathKey(it) }
-            ?: return null
-        val callKey = "$path|img-${key(manga.baseMode, image)}|call-${activeNtkEpisodeCallIds.incrementAndGet()}"
-        activeNtkEpisodeCalls[callKey] = call
-        return callKey
+    private class LegacySourceCallSuppressedException(path: String) :
+        InterruptedIOException("Strict source ownership already reserved for $path")
+
+    private data class ImageCallTelemetry(
+        val sourceKeyHash: String,
+        val urlHost: String,
+        val pageIndex: Int,
+        val priority: Int
+    )
+
+    /**
+     * The ownership lease and cancellation entry describe the physical Call, so neither may be
+     * retired merely because execute() returned response headers. This wrapper releases them at
+     * the first real terminal boundary: body EOF/close/read failure or explicit Call cancellation.
+     */
+    private class TrackedNtkEpisodeCall(
+        private val delegate: Call,
+        private val activeCallKey: String?,
+        private val cancellation: Cancellation?,
+        private val telemetry: ImageCallTelemetry?,
+        private val telemetryAfterImageHeaders: Boolean = false,
+    ) : Call by delegate {
+        private val finished = AtomicBoolean(false)
+        private val cancelRequested = AtomicBoolean(false)
+        private val executeStarted = AtomicBoolean(false)
+        private val responseBody = AtomicReference<ResponseBody?>(null)
+        private val telemetryOperationId = AtomicLong(0L)
+        private val responseCode = AtomicInteger(0)
+
+        override fun execute(): Response {
+            executeStarted.set(true)
+            val physicalStartedAtNanos = SystemClock.elapsedRealtimeNanos()
+            if (!telemetryAfterImageHeaders) telemetry?.let { metadata ->
+                telemetryOperationId.compareAndSet(
+                    0L,
+                    ViewerTelemetry.imageRequestStarted(
+                        metadata.sourceKeyHash,
+                        metadata.urlHost,
+                        metadata.pageIndex,
+                        metadata.priority
+                    )
+                )
+            }
+            val response = try {
+                delegate.execute()
+            } catch (failure: Throwable) {
+                finish(failure = failure)
+                throw failure
+            }
+            responseCode.set(response.code)
+            if (telemetryAfterImageHeaders && response.code in 200..299 &&
+                response.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
+                    .startsWith("image/")
+            ) telemetry?.let { metadata ->
+                telemetryOperationId.compareAndSet(
+                    0L,
+                    ViewerTelemetry.imageRequestStartedAt(
+                        metadata.sourceKeyHash,
+                        metadata.urlHost,
+                        metadata.pageIndex,
+                        metadata.priority,
+                        physicalStartedAtNanos,
+                    ),
+                )
+            }
+            val body = response.body
+            if (body == null) {
+                finish(reachedEof = true)
+                return response
+            }
+            return try {
+                val trackedBody = CompletionResponseBody(body) { bytesRead, reachedEof, failure ->
+                    finish(bytesRead, reachedEof, failure)
+                }
+                val trackedResponse = response.newBuilder()
+                    .body(trackedBody)
+                    .build()
+                responseBody.set(trackedBody)
+                if (cancelRequested.get()) {
+                    trackedResponse.close()
+                    throw InterruptedIOException("Image Call cancelled before response handoff")
+                }
+                trackedResponse
+            } catch (failure: Throwable) {
+                try {
+                    response.close()
+                } finally {
+                    finish(failure = failure)
+                }
+                throw failure
+            }
+        }
+
+        override fun cancel() {
+            cancelRequested.set(true)
+            delegate.cancel()
+            val body = responseBody.get()
+            if (body != null) {
+                runCatching { body.close() }
+            } else if (!executeStarted.get()) {
+                finish(reachedEof = false)
+            }
+        }
+
+        override fun clone(): Call {
+            throw UnsupportedOperationException("Tracked image Calls cannot be cloned")
+        }
+
+        override fun enqueue(responseCallback: okhttp3.Callback) {
+            throw UnsupportedOperationException("Tracked image Calls are synchronous")
+        }
+
+        private fun finish(
+            responseBytes: Long = 0L,
+            reachedEof: Boolean = false,
+            failure: Throwable? = null
+        ) {
+            if (!finished.compareAndSet(false, true)) return
+            cancellation?.untrack(this)
+            if (activeCallKey != null) activeNtkEpisodeCalls.remove(activeCallKey, this)
+            val operationId = telemetryOperationId.getAndSet(0L)
+            if (operationId <= 0L) return
+            val cancelled = cancelRequested.get() || delegate.isCanceled() ||
+                failure is InterruptedException || failure is InterruptedIOException || !reachedEof
+            when {
+                cancelled -> ViewerTelemetry.imageRequestCancelled(
+                    operationId,
+                    failure?.javaClass?.simpleName ?: if (reachedEof) "cancelled" else "body_closed"
+                )
+                failure != null -> ViewerTelemetry.imageRequestFailed(
+                    operationId,
+                    failure.javaClass.simpleName
+                )
+                responseCode.get() !in 200..299 -> ViewerTelemetry.imageRequestFailed(
+                    operationId,
+                    "http_${responseCode.get()}"
+                )
+                else -> ViewerTelemetry.imageRequestFinished(operationId, responseBytes)
+            }
+        }
     }
 
-    private fun untrackActiveNtkEpisodeCall(key: String?) {
-        if (key != null) activeNtkEpisodeCalls.remove(key)
+    private class CompletionResponseBody(
+        private val delegate: ResponseBody,
+        private val onComplete: (Long, Boolean, Throwable?) -> Unit
+    ) : ResponseBody() {
+        private val completed = AtomicBoolean(false)
+        private val bytesRead = AtomicLong(0L)
+        private val reachedEof = AtomicBoolean(false)
+
+        private fun complete(failure: Throwable? = null) {
+            if (completed.compareAndSet(false, true)) {
+                onComplete(bytesRead.get(), reachedEof.get(), failure)
+            }
+        }
+
+        private val completionSource: BufferedSource =
+            object : ForwardingSource(delegate.source()) {
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    return try {
+                        super.read(sink, byteCount).also { read ->
+                            if (read > 0L) bytesRead.addAndGet(read)
+                            if (read == -1L) {
+                                reachedEof.set(true)
+                                complete()
+                            }
+                        }
+                    } catch (failure: Throwable) {
+                        try {
+                            super.close()
+                        } catch (closeFailure: Throwable) {
+                            failure.addSuppressed(closeFailure)
+                        }
+                        complete(failure)
+                        throw failure
+                    }
+                }
+
+                override fun close() {
+                    try {
+                        super.close()
+                    } finally {
+                        complete()
+                    }
+                }
+            }.buffer()
+
+        override fun contentType(): MediaType? = delegate.contentType()
+
+        override fun contentLength(): Long = delegate.contentLength()
+
+        override fun source(): BufferedSource = completionSource
+
+        override fun close() = completionSource.close()
+    }
+
+    private fun ntkEpisodeCallPath(manga: Manga, image: String): String? {
+        val path = manga.ntkEpisodePath?.trim()?.takeIf { isNtkEpisodePathKey(it) }
+            ?: ntkGeneratedTarget(image)?.path?.takeIf { isNtkEpisodePathKey(it) }
+        return path
+    }
+
+    private fun newTrackedNtkEpisodeCall(
+        manga: Manga,
+        image: String,
+        request: Request,
+        callFactory: Call.Factory,
+        cancellation: Cancellation? = null,
+        telemetryAfterImageHeaders: Boolean = false,
+    ): TrackedNtkEpisodeCall {
+        cancellation?.throwIfCancelled()
+        val path = ntkEpisodeCallPath(manga, image)
+        val requestedStrictTag = request.tag(NtkStrictSourceCallTag::class.java)
+            ?.takeIf { it.isProductionStrict }
+        val requestedQuarantineIdentity =
+            request.tag(NtkQuarantineSourceCallIdentity::class.java)
+                ?.takeIf { it.isValid }
+        if (path != null && requestedStrictTag == null && requestedQuarantineIdentity == null) {
+            throw LegacySourceCallSuppressedException(path)
+        }
+        val delegate = try {
+            callFactory.newCall(request)
+        } catch (failure: Throwable) {
+            throw failure
+        }
+        val actualStrictTag = delegate.request().tag(NtkStrictSourceCallTag::class.java)
+            ?.takeIf { it.isProductionStrict }
+        val actualQuarantineIdentity =
+            delegate.request().tag(NtkQuarantineSourceCallIdentity::class.java)
+                ?.takeIf { it.isValid }
+        val accepted = when {
+            actualStrictTag != null ->
+                NtkStrictSourceOwnershipRegistry.validateCall(path, actualStrictTag)
+            actualQuarantineIdentity != null ->
+                NtkQuarantineSourceOwnershipRegistry.validateCall(
+                    path,
+                    actualQuarantineIdentity
+                )
+            path == null -> true
+            else -> false
+        }
+        if (!accepted) {
+            delegate.cancel()
+            throw NtkSourceIdentityException("Rejected image Call ownership identity")
+        }
+        val callKey = path?.let {
+            "$it|img-${key(manga.baseMode, image)}|call-${activeNtkEpisodeCallIds.incrementAndGet()}"
+        }
+        val telemetry = when {
+            actualStrictTag != null -> ImageCallTelemetry(
+                sourceKeyHash = imageTelemetrySourceKey(manga.baseMode, image, delegate.request()),
+                urlHost = delegate.request().url.host,
+                pageIndex = actualStrictTag.pageIndex,
+                priority = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS - actualStrictTag.laneIndex
+            )
+            actualQuarantineIdentity != null -> ImageCallTelemetry(
+                sourceKeyHash = imageTelemetrySourceKey(manga.baseMode, image, delegate.request()),
+                urlHost = delegate.request().url.host,
+                pageIndex = actualQuarantineIdentity.pageIndex,
+                priority = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS - actualQuarantineIdentity.laneIndex
+            )
+            else -> null
+        }
+        val tracked = TrackedNtkEpisodeCall(
+            delegate,
+            callKey,
+            cancellation,
+            telemetry,
+            telemetryAfterImageHeaders,
+        )
+        if (callKey != null) activeNtkEpisodeCalls[callKey] = tracked
+        try {
+            cancellation?.track(tracked)
+        } catch (failure: Throwable) {
+            tracked.cancel()
+            throw failure
+        }
+        return tracked
+    }
+
+    private fun imageTelemetrySourceKey(baseMode: Int, image: String, request: Request): String {
+        val assetKey = key(baseMode, image)
+        val normalizedRange = request.header("Range")
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.replace(Regex("\\s+"), "")
+            .orEmpty()
+        return if (normalizedRange.isEmpty()) {
+            NtkStripDigests.sha256Tokens("viewer-asset-body-v1", assetKey)
+        } else {
+            NtkStripDigests.sha256Tokens("viewer-asset-range-v1", assetKey, normalizedRange)
+        }
+    }
+
+    @JvmStatic
+    fun imageTelemetrySourceKeyForTest(baseMode: Int, image: String, range: String?): String {
+        val request = Request.Builder()
+            .url("https://telemetry.invalid/image")
+            .apply { if (!range.isNullOrBlank()) header("Range", range) }
+            .build()
+        return imageTelemetrySourceKey(baseMode, image, request)
+    }
+
+    internal fun executeTrackedNtkCallForTest(
+        manga: Manga,
+        image: String,
+        request: Request,
+        callFactory: Call.Factory,
+        cancellation: Cancellation? = null
+    ): Response? {
+        return try {
+            newTrackedNtkEpisodeCall(manga, image, request, callFactory, cancellation).execute()
+        } catch (_: LegacySourceCallSuppressedException) {
+            null
+        }
     }
 
     fun cancelNtkGeneratedForegroundWorkForImages(
@@ -489,7 +3252,7 @@ object ReaderImageCache {
             streamKeys.add(foregroundStreamKey(manga, image))
             imageKeys.add(key(manga.baseMode, image))
             if (target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
-                completeKeys.add(initialGeneratedCompleteBytesFlightKey(manga, target, cacheGeneration.get()))
+                completeKeys.add(initialGeneratedCompleteBytesFlightKey(manga, image, target, cacheGeneration.get()))
             }
         }
         if (streamKeys.isEmpty() && imageKeys.isEmpty()) return 0
@@ -499,6 +3262,7 @@ object ReaderImageCache {
         }
         val cancelledComplete = cancelFutureTasks(initialGeneratedCompleteBytesFlights) { completeKeys.contains(it) }
         foregroundStreamStartedAt.keys.removeAll { streamKeys.contains(it) }
+        foregroundStreamImages.keys.removeAll { streamKeys.contains(it) }
         val cancelledCalls = cancelActiveNtkEpisodeCallsByKey { activeKey ->
             val activeImageKey = ntkImageKeyFromVolatileCallKey(activeKey)
                 ?: return@cancelActiveNtkEpisodeCallsByKey false
@@ -513,6 +3277,54 @@ object ReaderImageCache {
             )
         }
         return total
+    }
+
+    fun cancelNtkGeneratedForegroundWorkForEpisode(
+        path: String?,
+        baseMode: Int,
+        reason: String
+    ): Int {
+        val keepPath = earlyNtkPathKey(path)
+        if (keepPath.isBlank()) return 0
+        val prefix = "ntk-generated-stream|$baseMode|$keepPath|"
+        val cancelledStreams = cancelFutureTasks(foregroundStreams) { it.startsWith(prefix) }
+        foregroundStreamStartedAt.keys.removeAll { it.startsWith(prefix) }
+        foregroundStreamImages.keys.removeAll { it.startsWith(prefix) }
+        val cancelledCalls = 0
+        val total = cancelledStreams + cancelledCalls
+        if (total > 0) {
+            Log.d(
+                TAG,
+                "reader_image_cache_cancel_generated_episode_work reason=$reason,path=$keepPath," +
+                    "streams=$cancelledStreams,calls=$cancelledCalls"
+            )
+        }
+        return total
+    }
+
+    fun suppressPermitlessInitialGeneratedForeground(path: String?, reason: String, durationMs: Long = 12_000L) {
+        val keepPath = earlyNtkPathKey(path)
+        if (keepPath.isBlank()) return
+        val until = SystemClock.elapsedRealtime() + durationMs
+        suppressedPermitlessInitialGeneratedUntil[keepPath] = until
+        Log.d(
+            TAG,
+            "reader_image_cache_suppress_permitless_initial_generated reason=$reason,path=$keepPath,durationMs=$durationMs"
+        )
+    }
+
+    private fun isPermitlessInitialGeneratedForegroundSuppressed(target: NtkGeneratedTarget?): Boolean {
+        if (target == null) return false
+        if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        val key = earlyNtkPathKey(target.path)
+        if (key.isBlank()) return false
+        val until = suppressedPermitlessInitialGeneratedUntil[key] ?: return false
+        val now = SystemClock.elapsedRealtime()
+        if (until <= now) {
+            suppressedPermitlessInitialGeneratedUntil.remove(key, until)
+            return false
+        }
+        return true
     }
 
     private fun ntkImageKeyFromVolatileCallKey(key: String): String? {
@@ -567,8 +3379,10 @@ object ReaderImageCache {
         val file: File,
         private val key: String?
     ) : AutoCloseable {
+        private val closed = AtomicBoolean(false)
+
         override fun close() {
-            if (key != null) releaseActiveRead(key)
+            if (key != null && closed.compareAndSet(false, true)) releaseActiveRead(key)
         }
     }
 
@@ -599,6 +3413,359 @@ object ReaderImageCache {
         }
     }
 
+    fun interface ByteFlightSubscriber {
+        fun onResult(result: ByteFlightResult)
+    }
+
+    sealed class ByteFlightResult {
+        data class Ready(val file: File) : ByteFlightResult()
+        object RetryProducer : ByteFlightResult()
+        data class Failed(val error: Throwable) : ByteFlightResult()
+    }
+
+    sealed class ByteFlightSnapshot {
+        data class Ready(val file: File) : ByteFlightSnapshot()
+        data class Subscribed(val startProducer: Boolean) : ByteFlightSnapshot()
+        object Cancelled : ByteFlightSnapshot()
+    }
+
+    /** Atomic page-flight subscription; subscribers never wait on a Future or a worker. */
+    class ForegroundByteFlight internal constructor(
+        val pageKey: ReaderPagePipeline.PageKey,
+        initialDemand: ReaderPagePipeline.Demand,
+        private val readyFile: () -> File?,
+        private val acceptReadyFile: (File) -> Boolean,
+        private val externalStreamActive: () -> Boolean,
+        private val callbackExecutor: (Runnable) -> Unit,
+        private val onTerminal: (ForegroundByteFlight) -> Unit
+    ) {
+        private enum class State {
+            NEW,
+            EXTERNAL_STREAM,
+            PRODUCER,
+            PRODUCER_RUNNING,
+            COMPLETED,
+            CANCELLED
+        }
+
+        private val lock = Any()
+        private val subscribers = LinkedHashMap<Long, ByteFlightSubscriber>()
+        private var state = State.NEW
+        private var demand = initialDemand
+        private var result: ByteFlightResult? = null
+
+        fun subscribeOrSnapshot(
+            subscriberId: Long,
+            subscriber: ByteFlightSubscriber
+        ): ByteFlightSnapshot {
+            require(subscriberId > 0L) { "subscriberId must be positive" }
+            val callbackResult: ByteFlightResult?
+            val snapshot = synchronized(lock) {
+                when (state) {
+                    State.COMPLETED -> {
+                        val completed = result
+                        callbackResult = completed
+                        if (completed is ByteFlightResult.Ready) {
+                            ByteFlightSnapshot.Ready(completed.file)
+                        } else {
+                            ByteFlightSnapshot.Cancelled
+                        }
+                    }
+                    State.CANCELLED -> {
+                        callbackResult = null
+                        ByteFlightSnapshot.Cancelled
+                    }
+                    else -> {
+                        subscribers[subscriberId] = subscriber
+                        val cached = readyFile()
+                        if (cached != null) {
+                            state = State.COMPLETED
+                            result = ByteFlightResult.Ready(cached)
+                            callbackResult = result
+                            ByteFlightSnapshot.Ready(cached)
+                        } else if (state == State.NEW && externalStreamActive()) {
+                            state = State.EXTERNAL_STREAM
+                            callbackResult = null
+                            ByteFlightSnapshot.Subscribed(startProducer = false)
+                        } else if (state == State.NEW) {
+                            state = State.PRODUCER
+                            callbackResult = null
+                            ByteFlightSnapshot.Subscribed(startProducer = true)
+                        } else {
+                            callbackResult = null
+                            ByteFlightSnapshot.Subscribed(startProducer = false)
+                        }
+                    }
+                }
+            }
+            if (callbackResult is ByteFlightResult.Ready) completeReadySubscribers(callbackResult)
+            return snapshot
+        }
+
+        fun promote(next: ReaderPagePipeline.Demand) = synchronized(lock) {
+            if (next.priority > demand.priority) demand = next
+        }
+
+        fun removeSubscriber(subscriberId: Long): Boolean = synchronized(lock) {
+            subscribers.remove(subscriberId)
+            subscribers.isEmpty()
+        }
+
+        fun cancelSubscription(subscriberId: Long) {
+            removeSubscriber(subscriberId)
+        }
+
+        fun cancelProducerOnlyIfUnowned(): Boolean {
+            val shouldCancel = synchronized(lock) {
+                subscribers.isEmpty() && state != State.COMPLETED && state != State.CANCELLED
+            }
+            if (shouldCancel) cancel()
+            return shouldCancel
+        }
+
+        /**
+         * Publication-complete callback. Network EOF is intentionally not observable here; a
+         * producer retry is possible only after cache/proof publication has succeeded or failed.
+         */
+        internal fun externalStreamPublished(published: Result<File>) {
+            val callbacks: List<ByteFlightSubscriber>
+            val event: ByteFlightResult
+            synchronized(lock) {
+                if (state != State.EXTERNAL_STREAM) return
+                val accepted = published.getOrNull()?.takeIf(acceptReadyFile) ?: readyFile()
+                if (accepted != null) {
+                    state = State.COMPLETED
+                    event = ByteFlightResult.Ready(accepted)
+                    result = event
+                } else {
+                    state = State.NEW
+                    event = ByteFlightResult.RetryProducer
+                }
+                callbacks = subscribers.values.toList()
+                if (event is ByteFlightResult.Ready) subscribers.clear()
+            }
+            dispatch(callbacks, event)
+            if (event is ByteFlightResult.Ready) onTerminal(this)
+        }
+
+        @Deprecated("EOF is not a strict terminal; use publication-complete callback")
+        internal fun externalStreamFinished(file: File?) = externalStreamPublished(
+            file?.let { Result.success(it) }
+                ?: Result.failure(IOException("Foreground stream publication failed"))
+        )
+
+        /** Completes any live byte owner from a body atomically published by another lane. */
+        fun completeFromPublishedFile(file: File): Boolean {
+            require(file.isFile && file.length() > 0L)
+            if (!acceptReadyFile(file)) return false
+            val callbacks: List<ByteFlightSubscriber>
+            val event = ByteFlightResult.Ready(file)
+            synchronized(lock) {
+                if (state == State.COMPLETED || state == State.CANCELLED) return false
+                state = State.COMPLETED
+                result = event
+                callbacks = subscribers.values.toList()
+                subscribers.clear()
+            }
+            dispatch(callbacks, event)
+            onTerminal(this)
+            return true
+        }
+
+        /** Exactly one RetryProducer recipient can win this transition. */
+        fun claimProducer(): Boolean = synchronized(lock) {
+            if (state != State.NEW) return@synchronized false
+            state = State.PRODUCER
+            true
+        }
+
+        fun runProducer(producer: () -> File) {
+            // subscribeOrSnapshot elects the physical producer, but executor submission can be
+            // repeated by a callback race. Only one submitted Runnable may cross into I/O/cache
+            // publication for this flight.
+            val allowed = synchronized(lock) {
+                if (state != State.PRODUCER) {
+                    false
+                } else {
+                    state = State.PRODUCER_RUNNING
+                    true
+                }
+            }
+            if (!allowed) return
+            try {
+                val file = producer()
+                if (!acceptReadyFile(file)) {
+                    throw java.io.IOException("Byte-flight producer returned an unaccepted body")
+                }
+                complete(ByteFlightResult.Ready(file))
+            } catch (t: Throwable) {
+                complete(ByteFlightResult.Failed(t))
+            }
+        }
+
+        fun cancel() {
+            val callbacks: List<ByteFlightSubscriber>
+            synchronized(lock) {
+                if (state == State.COMPLETED || state == State.CANCELLED) return
+                state = State.CANCELLED
+                callbacks = subscribers.values.toList()
+                subscribers.clear()
+            }
+            dispatch(callbacks, ByteFlightResult.Failed(InterruptedIOException("Byte flight cancelled")))
+            onTerminal(this)
+        }
+
+        internal fun demandForTest(): ReaderPagePipeline.Demand = synchronized(lock) { demand }
+
+        private fun complete(event: ByteFlightResult) {
+            val callbacks: List<ByteFlightSubscriber>
+            synchronized(lock) {
+                if (state == State.COMPLETED || state == State.CANCELLED) return
+                state = State.COMPLETED
+                result = event
+                callbacks = subscribers.values.toList()
+                subscribers.clear()
+            }
+            dispatch(callbacks, event)
+            onTerminal(this)
+        }
+
+        private fun completeReadySubscribers(event: ByteFlightResult.Ready) {
+            val callbacks = synchronized(lock) {
+                if (state != State.COMPLETED || result !== event) return
+                subscribers.values.toList().also { subscribers.clear() }
+            }
+            dispatch(callbacks, event)
+            onTerminal(this)
+        }
+
+        private fun dispatch(callbacks: List<ByteFlightSubscriber>, event: ByteFlightResult) {
+            for (callback in callbacks) callbackExecutor(Runnable { callback.onResult(event) })
+        }
+    }
+
+    fun acquireForegroundByteFlight(
+        context: Context,
+        manga: Manga,
+        image: String,
+        pageKey: ReaderPagePipeline.PageKey,
+        demand: ReaderPagePipeline.Demand,
+        requireEncodedOriginalIdentity: Boolean = false,
+        strictSourceKey: NtkStrictSourceKey? = null
+    ): ForegroundByteFlight {
+        val appContext = context.applicationContext
+        val streamKey = foregroundStreamKey(manga, image)
+        val sourceKey = if (requireEncodedOriginalIdentity) {
+            requireNotNull(strictSourceKey) {
+                "Strict byte flight requires manifest/page/asset source authority"
+            }
+        } else null
+        val flightKey = if (requireEncodedOriginalIdentity) {
+            val strictKey = checkNotNull(sourceKey)
+            require(strictKey.pageIndex == pageKey.pageIndex)
+            require(
+                strictKey.canonicalAssetDigest ==
+                    NtkStripDigests.canonicalAssetDigestSha256(image)
+            ) { "Strict byte flight canonical asset mismatch" }
+            // The spool token and pipeline authority can have different runtime epochs. Strict
+            // physical ownership is keyed only by immutable manifest/page/asset authority.
+            "strict-v2|${strictKey.manifestDigest}|${strictKey.pageIndex}|" +
+                strictKey.canonicalAssetDigest
+        } else {
+            "logical-v1|${pageKey.episodeEpoch}|${pageKey.pageIndex}|${key(manga.baseMode, image)}"
+        }
+        val flights = if (requireEncodedOriginalIdentity) {
+            strictForegroundByteFlights
+        } else {
+            logicalForegroundByteFlights
+        }
+        val flightsByStream = if (requireEncodedOriginalIdentity) {
+            strictForegroundByteFlightsByStream
+        } else {
+            logicalForegroundByteFlightsByStream
+        }
+        flights[flightKey]?.let {
+            it.promote(demand)
+            return it
+        }
+        lateinit var created: ForegroundByteFlight
+        created = ForegroundByteFlight(
+            pageKey = pageKey,
+            initialDemand = demand,
+            readyFile = {
+                if (requireEncodedOriginalIdentity) {
+                    strictCachedExactFile(appContext, manga, image, sourceKey)
+                } else {
+                    cachedFile(appContext, manga, image)
+                }
+            },
+            acceptReadyFile = { file ->
+                if (requireEncodedOriginalIdentity) {
+                    strictEncodedOriginalCandidate(manga, image, file, sourceKey) != null
+                } else {
+                    isUsableImage(file)
+                }
+            },
+            externalStreamActive = { hasActiveForegroundStream(manga, image) },
+            callbackExecutor = ::executeNtkAssetReadyCallback,
+            onTerminal = { terminal ->
+                flights.remove(flightKey, terminal)
+                flightsByStream[streamKey]?.let { list ->
+                    list.remove(terminal)
+                    if (list.isEmpty()) flightsByStream.remove(streamKey, list)
+                }
+            }
+        )
+        val flight = flights.putIfAbsent(flightKey, created) ?: created.also {
+            flightsByStream.computeIfAbsent(streamKey) { CopyOnWriteArrayList() }.add(it)
+        }
+        flight.promote(demand)
+        return flight
+    }
+
+    private fun notifyForegroundByteFlights(
+        context: Context,
+        manga: Manga,
+        image: String
+    ) {
+        val streamKey = foregroundStreamKey(manga, image)
+        val file = cachedFile(context.applicationContext, manga, image)
+        val published = file?.let { Result.success(it) }
+            ?: Result.failure(IOException("Foreground stream publication failed"))
+        // Logical publication may safely wake a strict waiter only through its proof-validating
+        // acceptReadyFile predicate. Map ownership and terminal/cancel traversal remain separate.
+        logicalForegroundByteFlightsByStream[streamKey]?.forEach {
+            it.externalStreamPublished(published)
+        }
+        strictForegroundByteFlightsByStream[streamKey]?.forEach {
+            it.externalStreamPublished(published)
+        }
+    }
+
+    private fun executeForegroundStreamPublication(
+        context: Context,
+        manga: Manga,
+        image: String,
+        publication: Runnable
+    ) {
+        val streamKey = foregroundStreamKey(manga, image)
+        foregroundStreamPublications += streamKey
+        try {
+            foregroundCachePublishExecutor.execute {
+                try {
+                    publication.run()
+                } finally {
+                    foregroundStreamPublications.remove(streamKey)
+                    notifyForegroundByteFlights(context.applicationContext, manga, image)
+                }
+            }
+        } catch (failure: Throwable) {
+            foregroundStreamPublications.remove(streamKey)
+            notifyForegroundByteFlights(context.applicationContext, manga, image)
+            throw failure
+        }
+    }
+
     fun leaseFile(context: Context, manga: Manga, image: String, foreground: Boolean = true): FileLease {
         return leaseFile(context, manga, image, foreground, null, visiblePriority = foreground)
     }
@@ -610,6 +3777,167 @@ object ReaderImageCache {
         foreground: Boolean = true,
         cancellation: Cancellation?,
         visiblePriority: Boolean = foreground
+    ): FileLease = leaseFileInternal(
+        context,
+        manga,
+        image,
+        foreground,
+        cancellation,
+        visiblePriority,
+        requireEncodedOriginalIdentity = false
+    )
+
+    /**
+     * Acquires only a body whose same-byte-flight proof is bound to [image]. Logical page aliases
+     * are useful for speculative UX, but may never cross the strict manifest trust boundary.
+     */
+    fun leaseStrictEncodedOriginalFile(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean = true,
+        cancellation: Cancellation?,
+        visiblePriority: Boolean = foreground
+    ): FileLease = leaseFileInternal(
+        context,
+        manga,
+        image,
+        foreground,
+        cancellation,
+        visiblePriority,
+        requireEncodedOriginalIdentity = true
+    )
+
+    /** Cache-only strict lease. Missing bytes must be reacquired by NtkStrictSourceSession. */
+    fun leaseStrictCachedEncodedOriginalFile(
+        context: Context,
+        manga: Manga,
+        image: String
+    ): FileLease {
+        if (!manga.isOnline) return FileLease(File(image), null)
+        val cacheKey = key(manga.baseMode, image)
+        retainActiveRead(cacheKey)
+        return try {
+            val file = strictCachedExactFile(context.applicationContext, manga, image)
+                ?: throw java.io.FileNotFoundException("Strict encoded source is not published")
+            touchCacheHitForLru(file)
+            FileLease(file, cacheKey)
+        } catch (failure: Throwable) {
+            releaseActiveRead(cacheKey)
+            throw failure
+        }
+    }
+
+    /**
+     * Pins a body descriptor that this process has already published and authority-checked.
+     * Re-reading both proof sidecars and the JPEG header here duplicated publication work on the
+     * single source actor, serializing a complete cold episode before decode could start.
+     */
+    fun leaseAcceptedStrictPublishedBody(
+        manga: Manga,
+        image: String,
+        published: NtkStrictPublishedBody
+    ): FileLease {
+        val metadata = published.metadata
+        val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+        require(metadata.canonicalAsset == canonical)
+        val cacheKey = key(manga.baseMode, canonical)
+        require(published.file.name == "$cacheKey.img")
+        retainActiveRead(cacheKey)
+        return try {
+            published.encodedBytes?.let { bytes ->
+                if (bytes.size.toLong() != published.proof.encodedLength) {
+                    throw NtkEncodedShaMismatchException("Accepted resident source length changed")
+                }
+                return FileLease(published.file, cacheKey)
+            }
+            cachePublicationLock.readLock().lock()
+            try {
+                if (!published.file.isFile ||
+                    published.file.length() != published.proof.encodedLength
+                ) throw FileNotFoundException("Accepted strict source was retired before pin")
+                val resident = residentStrictPublishedBodies[published.file.absolutePath]
+                val residentMatches = resident != null &&
+                    residentStrictAuthorityMatches(
+                        resident,
+                        manga.baseMode,
+                        canonical,
+                        published.file,
+                        published.metadata,
+                        published.proof
+                    )
+                if (!residentMatches) {
+                    val byteProof = encodedOriginalByteProof(manga, canonical, published.file)
+                        ?: throw FileNotFoundException("Accepted strict source proof is absent")
+                    if (byteProof.encodedSha256 != published.proof.encodedSha256 ||
+                        byteProof.encodedLength != published.proof.encodedLength
+                    ) throw NtkEncodedShaMismatchException("Accepted strict source proof changed")
+                    touchCacheHitForLru(published.file)
+                }
+                FileLease(published.file, cacheKey)
+            } finally {
+                cachePublicationLock.readLock().unlock()
+            }
+        } catch (failure: Throwable) {
+            releaseActiveRead(cacheKey)
+            throw failure
+        }
+    }
+
+    /**
+     * Cache-only strict lease bound to the actor's already accepted metadata/body authority.
+     * Missing bytes are recoverable by the session; a different republished proof is mutation.
+     */
+    fun leaseStrictCachedEncodedOriginalFile(
+        context: Context,
+        manga: Manga,
+        image: String,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        expectedMetadata: NtkSourceMetadata,
+        expectedProof: NtkEncodedOriginalProof
+    ): FileLease {
+        require(manifestSeal.isStructurallyComplete)
+        require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
+        expectedMetadata.requireProductionAuthority()
+        expectedProof.requireProductionAuthority(expectedMetadata)
+        val cacheKey = key(manga.baseMode, image)
+        retainActiveRead(cacheKey)
+        return try {
+            withCacheWriteLock(cacheKey) {
+                val canonicalAsset = ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+                val cached = strictCachedPublishedBodyLocked(
+                    context.applicationContext,
+                    manga,
+                    image,
+                    manifestSeal,
+                    pageIndex,
+                    canonicalAsset,
+                    cacheKey
+                ) ?: throw java.io.FileNotFoundException("Strict encoded source is not published")
+                if (!cached.metadata.hasSameAuthority(expectedMetadata)) {
+                    throw NtkSourceIdentityException("Strict cached metadata authority changed")
+                }
+                if (cached.proof != expectedProof) {
+                    throw NtkEncodedShaMismatchException("Strict cached body proof changed")
+                }
+                touchCacheHitForLru(cached.file)
+                FileLease(cached.file, cacheKey)
+            }
+        } catch (failure: Throwable) {
+            releaseActiveRead(cacheKey)
+            throw failure
+        }
+    }
+
+    private fun leaseFileInternal(
+        context: Context,
+        manga: Manga,
+        image: String,
+        foreground: Boolean,
+        cancellation: Cancellation?,
+        visiblePriority: Boolean,
+        requireEncodedOriginalIdentity: Boolean
     ): FileLease {
         if (!manga.isOnline) return FileLease(File(image), null)
         cancellation?.throwIfCancelled()
@@ -622,9 +3950,15 @@ object ReaderImageCache {
                 image,
                 foreground = foreground,
                 cancellation = cancellation,
-                visiblePriority = visiblePriority
+                visiblePriority = visiblePriority,
+                requireEncodedOriginalIdentity = requireEncodedOriginalIdentity
             )
-            file.setLastModified(System.currentTimeMillis())
+            if (requireEncodedOriginalIdentity &&
+                encodedOriginalByteProof(manga, image, file) == null
+            ) {
+                throw java.io.IOException("Strict encoded-original identity proof missing")
+            }
+            touchCacheHitForLru(file)
             FileLease(file, key)
         } catch (t: Throwable) {
             releaseActiveRead(key)
@@ -651,6 +3985,7 @@ object ReaderImageCache {
     fun getOrFetchFile(context: Context, manga: Manga, image: String, cancellation: Cancellation?): File {
         if (!manga.isOnline) return File(image)
         cancellation?.throwIfCancelled()
+        throwIfKpNativeUnsafeUploadPayload(manga, image, "get_or_fetch")
         return getOrFetch(context, manga, image, cancellation = cancellation)
     }
 
@@ -667,6 +4002,7 @@ object ReaderImageCache {
     ): File {
         if (!manga.isOnline) return File(image)
         cancellation?.throwIfCancelled()
+        throwIfKpNativeUnsafeUploadPayload(manga, image, "get_or_fetch_foreground")
         return getOrFetch(
             context,
             manga,
@@ -677,12 +4013,2467 @@ object ReaderImageCache {
         )
     }
 
+    fun getOrFetchStrictEncodedOriginalFileForeground(
+        context: Context,
+        manga: Manga,
+        image: String,
+        cancellation: Cancellation?,
+        visiblePriority: Boolean = true
+    ): File {
+        if (!manga.isOnline) return File(image)
+        cancellation?.throwIfCancelled()
+        throwIfKpNativeUnsafeUploadPayload(manga, image, "get_or_fetch_strict_encoded_original")
+        return getOrFetch(
+            context,
+            manga,
+            image,
+            foreground = true,
+            cancellation = cancellation,
+            visiblePriority = visiblePriority,
+            requireEncodedOriginalIdentity = true
+        )
+    }
+
     fun cachedFile(context: Context, manga: Manga, image: String): File? {
         if (!manga.isOnline) return File(image)
+        if (isKpNativeUnsafeUploadPayload(manga, image)) return null
         val appContext = context.applicationContext
         cachedAnchorAssetFile(appContext, manga, image, foreground = true)?.let { return it }
         cachedImageFile(appContext, manga, image)?.let { return it }
         return cachedInitialGeneratedAssetFile(appContext, manga, image, foreground = true)
+    }
+
+    /**
+     * Resolves the same stable fast route used by strict original bodies.  Metadata workers retain
+     * this Call.Factory/connection pool instead of constructing a generic imageClient Call for
+     * every page.
+     */
+    fun resolveStrictSourceRoute(
+        manga: Manga,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        canonicalAsset: String
+    ): NtkResolvedSourceRoute {
+        val asset = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
+        require(asset.isNotEmpty())
+        require(manifestSeal.isStructurallyComplete)
+        require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
+        require(manifestSeal.normalizedCanonicalAssets[pageIndex] == asset)
+        val base = requestFor(manga, asset, foregroundPriority = true).newBuilder()
+            .removeHeader("X-MangaViewer-Foreground")
+            // The three current image origins negotiate H2 reliably. Cold H3 was measured to
+            // return replica 404s and a substantially longer terminal body tail, so the exact
+            // one-request-per-page path stays on its bounded, host-local H2 pools.
+            .header("X-MangaViewer-No-Quic", "1")
+            .build()
+        val httpClient = getHttpClient()
+        // The strict session is created only after a typed exact manifest has been atomically
+        // installed. Route authority therefore comes from that immutable seal, not from the
+        // asynchronous compatibility mirror in earlyNtkImageUrls. Consulting the mirror here made
+        // the first physical lane wave raced it and fell back to imageClient, while later pages used
+        // this same fast client for the same sealed assets.
+        // Source authority is already sealed when this route is resolved, but the factory remains
+        // inert until the strict/quarantine lane executes its physical Call. The demand-bound Call
+        // creates one cancellable HttpEngine request (or selects OkHttp before any UrlRequest
+        // exists) and never retries, redirects, or hedges that source body.
+        val baseFactory: Call.Factory = httpClient.ntkDemandBoundExactImageFactory()
+        val replicaAwareFactory: Call.Factory = NtkReplicaFailoverCallFactory(baseFactory)
+        val factoryId = "ntk-demand-bound-exact-image"
+        val host = base.url.host.lowercase(Locale.ROOT)
+        val port = base.url.port
+        val refererHost = base.header("Referer")?.let { referer ->
+            runCatching { Uri.parse(referer).host?.lowercase(Locale.ROOT).orEmpty() }.getOrDefault("")
+        }.orEmpty()
+        return NtkResolvedSourceRoute(
+            routeKey = "${base.url.scheme.lowercase(Locale.ROOT)}://$host:$port|$factoryId|$refererHost",
+            requestTemplate = base,
+            callFactory = replicaAwareFactory,
+            responseIdentityPolicy = NtkResponseIdentityPolicy.EXACT_VALIDATED,
+            callFactoryId = factoryId
+        )
+    }
+
+    fun resolveQuarantineSourceRoute(
+        manga: Manga,
+        binding: NtkQuarantinePlanBinding,
+        pageIndex: Int,
+        canonicalAsset: String
+    ): NtkResolvedSourceRoute {
+        val candidateSeal = NtkEpisodeManifestSeal.create(
+            binding.episodePath,
+            binding.discoveryGeneration,
+            binding.normalizedOrderedCanonicalAssets
+        )
+        check(candidateSeal.digestSha256 == binding.orderedAssetsDigest)
+        return resolveStrictSourceRoute(manga, candidateSeal, pageIndex, canonicalAsset)
+    }
+
+    /** A click-owned body reuses the exact TCP/H2 pool whose post-click HEAD proved its extension. */
+    fun resolveClickOwnedAnchorQuarantineRoute(
+        manga: Manga,
+        binding: NtkQuarantinePlanBinding,
+        pageIndex: Int,
+        canonicalAsset: String
+    ): NtkResolvedSourceRoute {
+        val asset = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
+        require(pageIndex in binding.normalizedOrderedCanonicalAssets.indices)
+        require(binding.normalizedOrderedCanonicalAssets[pageIndex] == asset)
+        val request = requestFor(manga, asset, foregroundPriority = true).newBuilder()
+            .removeHeader("X-MangaViewer-Foreground")
+            .header("X-MangaViewer-No-Quic", "1")
+            .build()
+        val shared = getHttpClient().client ?: getHttpClient().imageClient
+        val bounded = clickOwnedManhwaClient(shared, pageIndex)
+        val factory = NtkReplicaFailoverCallFactory(strictInstrumentedClient(bounded))
+        val factoryId = "ntk-click-anchor-okhttp"
+        val refererHost = request.header("Referer")?.let { referer ->
+            runCatching { Uri.parse(referer).host?.lowercase(Locale.ROOT).orEmpty() }
+                .getOrDefault("")
+        }.orEmpty()
+        return NtkResolvedSourceRoute(
+            routeKey = "${request.url.scheme.lowercase(Locale.ROOT)}://" +
+                "${request.url.host.lowercase(Locale.ROOT)}:${request.url.port}|" +
+                "$factoryId|$refererHost",
+            requestTemplate = request,
+            callFactory = factory,
+            responseIdentityPolicy = NtkResponseIdentityPolicy.EXACT_VALIDATED,
+            callFactoryId = factoryId,
+        )
+    }
+
+    /**
+     * Resolves only the filename extension of an immutable numeric manhwa replica after the
+     * viewer click. HEAD never consumes image bytes, and the returned candidate still has no
+     * display authority: a fresh signed manifest must validate it before quarantine adoption.
+     */
+    internal fun isUsableClickOwnedManhwaProbeResponse(
+        code: Int,
+        contentType: String,
+        advertisedContentLength: Long?,
+    ): Boolean = code == 200 &&
+        contentType.trim().lowercase(Locale.ROOT).startsWith("image/") &&
+        advertisedContentLength != 0L
+
+    fun probeClickOwnedManhwaReplicaAsset(
+        manga: Manga,
+        pageIndex: Int,
+        orderedCandidates: List<String>,
+        cancellation: Cancellation,
+    ): String? {
+        require(pageIndex >= 0)
+        require(orderedCandidates.isNotEmpty())
+        val shared = getHttpClient().client ?: getHttpClient().imageClient
+        for (candidate in orderedCandidates) {
+            cancellation.throwIfCancelled()
+            val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(candidate)
+            val request = requestFor(manga, canonical, foregroundPriority = true).newBuilder()
+                .removeHeader("X-MangaViewer-Foreground")
+                .header("X-MangaViewer-No-Quic", "1")
+                .header("Accept-Encoding", "identity")
+                .head()
+                .build()
+            val call = clickOwnedManhwaClient(shared, pageIndex).newCall(request)
+            cancellation.track(call)
+            try {
+                call.execute().use { response ->
+                    val contentType = response.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
+                    val advertisedContentLength = response.header("Content-Length")
+                        ?.trim()
+                        ?.toLongOrNull()
+                    if (isUsableClickOwnedManhwaProbeResponse(
+                            response.code,
+                            contentType,
+                            advertisedContentLength,
+                        )
+                    ) {
+                        Log.d(
+                            TAG,
+                            "click_replica_extension_hit page=${canonical.substringAfterLast('/')}" +
+                                ",type=${contentType.substringBefore(';')}",
+                        )
+                        return canonical
+                    }
+                }
+            } catch (failure: Throwable) {
+                cancellation.throwIfCancelled()
+                Log.d(
+                    TAG,
+                    "click_replica_extension_probe_miss page=${canonical.substringAfterLast('/')}" +
+                        ",error=${failure.javaClass.simpleName}",
+                )
+            } finally {
+                cancellation.untrack(call)
+            }
+        }
+        return null
+    }
+
+    /**
+     * Races the finite filename candidates with metadata-only HEAD calls. JPG starts immediately;
+     * the uncommon extensions hedge only if that result is still unresolved, so a uniform JPG
+     * volume does not emit hundreds of losing streams. A PNG/GIF/WebP volume still avoids serial
+     * multi-second 404 waits. The first valid response wins and all losing calls are cancelled;
+     * the URL remains authority-free until the fresh document and body response prove it.
+     */
+    fun probeClickOwnedManhwaReplicaAssetParallel(
+        manga: Manga,
+        pageIndex: Int,
+        orderedCandidates: List<String>,
+        cancellation: Cancellation,
+        extensionHedgeDelayMs: Long = CLICK_OWNED_EXTENSION_HEDGE_MS,
+    ): CompletableFuture<String?> {
+        require(pageIndex >= 0)
+        require(orderedCandidates.isNotEmpty())
+        require(extensionHedgeDelayMs >= 0L)
+        val result = CompletableFuture<String?>()
+        val remaining = AtomicInteger(orderedCandidates.size)
+        val calls = CopyOnWriteArrayList<Call>()
+        val shared = getHttpClient().client ?: getHttpClient().imageClient
+
+        fun finishMiss() {
+            if (remaining.decrementAndGet() == 0) result.complete(null)
+        }
+
+        fun launch(candidate: String) {
+            if (result.isDone) return
+            try {
+                cancellation.throwIfCancelled()
+                val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(candidate)
+                val request = requestFor(manga, canonical, foregroundPriority = true).newBuilder()
+                    .removeHeader("X-MangaViewer-Foreground")
+                    .header("X-MangaViewer-No-Quic", "1")
+                    .header("Accept-Encoding", "identity")
+                    .head()
+                    .build()
+                val call = clickOwnedManhwaClient(shared, pageIndex).newCall(request)
+                calls += call
+                cancellation.track(call)
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, failure: IOException) {
+                        cancellation.untrack(call)
+                        if (result.isDone) return
+                        Log.d(
+                            TAG,
+                            "click_replica_parallel_probe_miss " +
+                                "page=${canonical.substringAfterLast('/')}," +
+                                "error=${failure.javaClass.simpleName}",
+                        )
+                        finishMiss()
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        var valid = false
+                        var contentType = ""
+                        response.use {
+                            contentType = it.header("Content-Type").orEmpty()
+                                .lowercase(Locale.ROOT)
+                            val advertisedContentLength = it.header("Content-Length")
+                                ?.trim()
+                                ?.toLongOrNull()
+                            valid = isUsableClickOwnedManhwaProbeResponse(
+                                it.code,
+                                contentType,
+                                advertisedContentLength,
+                            )
+                        }
+                        cancellation.untrack(call)
+                        if (valid && result.complete(canonical)) {
+                            Log.d(
+                                TAG,
+                                "click_replica_extension_hit " +
+                                    "page=${canonical.substringAfterLast('/')}," +
+                                    "type=${contentType.substringBefore(';')},parallel=true",
+                            )
+                            calls.asSequence()
+                                .filter { it !== call }
+                                .forEach(Call::cancel)
+                        } else if (!result.isDone) {
+                            finishMiss()
+                        }
+                    }
+                })
+            } catch (failure: Throwable) {
+                result.completeExceptionally(failure)
+            }
+        }
+
+        launch(orderedCandidates.first())
+        if (orderedCandidates.size > 1) {
+            val launchAlternatives = Runnable {
+                if (!result.isDone) orderedCandidates.drop(1).forEach(::launch)
+            }
+            if (extensionHedgeDelayMs == 0L) launchAlternatives.run() else {
+                clickOwnedExtensionScheduler.schedule(
+                    launchAlternatives,
+                    extensionHedgeDelayMs,
+                    TimeUnit.MILLISECONDS,
+                )
+            }
+        }
+        result.whenComplete { _, _ ->
+            calls.forEach { call ->
+                cancellation.untrack(call)
+                if (!call.isCanceled()) call.cancel()
+            }
+        }
+        return result
+    }
+
+    private fun clickOwnedManhwaClient(shared: OkHttpClient, pageIndex: Int): OkHttpClient {
+        // Consecutive pages are already striped across replica hosts. Within each host, strict
+        // round-robin keeps an 88-page book at 3-4 bodies per pool. Re-hashing the 44 local page
+        // ordinals produced 1-6 bodies per pool and made the two six-body pools own every tail.
+        val shard = NtkClickOwnedManhwaWavePolicy.connectionShard(pageIndex)
+        val key = (System.identityHashCode(shared).toLong() shl 32) xor
+            (shard.toLong() and 0xffffffffL)
+        return clickOwnedAnchorClients.computeIfAbsent(key) {
+            val singleFlightDns = clickOwnedDnsBySharedClient.computeIfAbsent(
+                System.identityHashCode(shared),
+            ) { NtkSingleFlightDns(shared.dns) }
+            shared.newBuilder()
+                .dispatcher(clickOwnedProbeDispatcher)
+                .connectionPool(ConnectionPool())
+                .dns(singleFlightDns)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .build()
+        }
+    }
+
+    /**
+     * Materializes the finite, purely local client topology for a committed manhwa viewer click.
+     *
+     * No Call is created here and therefore this cannot resolve DNS, open a socket, or fetch an
+     * image. Without this step the exact document release makes body workers contend on
+     * ConcurrentHashMap client construction; measured post-release GET admission then spread over
+     * roughly 450 ms. Building the production shards while that document is already in flight
+     * removes that artificial tail without moving any image request before its existing gate.
+     */
+    fun prepareClickOwnedManhwaClientTopology() {
+        val shared = getHttpClient().client ?: getHttpClient().imageClient
+        repeat(NtkClickOwnedManhwaWavePolicy.CONNECTION_SHARDS) { shard ->
+            strictInstrumentedClient(
+                clickOwnedManhwaClient(
+                    shared,
+                    NtkClickOwnedManhwaWavePolicy.representativePageIndexForConnectionShard(shard),
+                )
+            )
+        }
+    }
+
+    private fun strictInstrumentedClient(base: OkHttpClient): OkHttpClient {
+        val identity = System.identityHashCode(base)
+        return strictInstrumentedClients.computeIfAbsent(identity) {
+            base.newBuilder().eventListenerFactory {
+                object : EventListener() {
+                    override fun connectionAcquired(call: Call, connection: Connection) {
+                        val strictTag = call.request().tag(NtkStrictSourceCallTag::class.java)
+                            ?.takeIf { it.isProductionStrict }
+                        val quarantineIdentity =
+                            call.request().tag(NtkQuarantineSourceCallIdentity::class.java)
+                                ?.takeIf { it.isValid }
+                        val operationId = strictTag?.operationId
+                            ?: quarantineIdentity?.operationId
+                            ?: return
+                        val connectionIdentity = System.identityHashCode(connection)
+                        val prior = strictConnectionUses
+                            .computeIfAbsent(connectionIdentity) { AtomicInteger(0) }
+                            .getAndIncrement()
+                        strictConnectionByOperation[operationId] = StrictConnectionObservation(
+                            connectionId = NtkStripDigests.sha256Tokens(
+                                "ntk-source-connection-v1",
+                                connectionIdentity.toString()
+                            ).take(16),
+                            reused = prior > 0
+                        )
+                    }
+                }
+            }.retryOnConnectionFailure(false).build()
+        }
+    }
+
+    private fun takeStrictConnectionObservation(tag: NtkStrictSourceCallTag?): StrictConnectionObservation =
+        tag?.let { strictConnectionByOperation.remove(it.operationId) }
+            ?: StrictConnectionObservation("", false)
+
+    private fun reportStrictNetworkObservation(
+        tag: NtkStrictSourceCallTag?,
+        protocol: String,
+        observation: StrictConnectionObservation,
+        callFactoryId: String,
+        callFactory: Call.Factory
+    ) {
+        if (tag == null || !tag.isProductionStrict) return
+        reportNetworkObservation(
+            tag.pageIndex,
+            protocol,
+            observation,
+            callFactoryId,
+            callFactory
+        )
+    }
+
+    private fun reportNetworkObservation(
+        pageIndex: Int,
+        protocol: String,
+        observation: StrictConnectionObservation,
+        callFactoryId: String,
+        callFactory: Call.Factory
+    ) {
+        if (pageIndex < 0) return
+        val connectionIdHash = if (observation.connectionId.isBlank()) {
+            "none"
+        } else {
+            NtkStripDigests.sha256Tokens(
+                "viewer-connection-observation-v1",
+                observation.connectionId
+            )
+        }
+        val clientInstanceId = NtkStripDigests.sha256Tokens(
+            "viewer-http-client-instance-v1",
+            callFactoryId,
+            System.identityHashCode(callFactory).toString()
+        )
+        ViewerTelemetry.networkObservation(
+            pageIndex,
+            protocol.ifBlank { "unknown" },
+            connectionIdHash,
+            observation.reused,
+            clientInstanceId
+        )
+    }
+
+    private fun takeQuarantineConnectionObservation(
+        identity: NtkQuarantineSourceCallIdentity?
+    ): StrictConnectionObservation =
+        identity?.let { strictConnectionByOperation.remove(it.operationId) }
+            ?: StrictConnectionObservation("", false)
+
+    /**
+     * Resolves immutable source geometry without creating a bitmap. Cached originals use
+     * inJustDecodeBounds. Network sources use exact 8-KiB-to-512-KiB adaptive prefixes; a server
+     * that ignores Range tees its one full response into the strict body/proof publication.
+     */
+    fun probeNtkSourceMetadata(
+        context: Context,
+        manga: Manga,
+        image: String,
+        cancellation: Cancellation,
+        requireEncodedOriginalIdentity: Boolean = false,
+        manifestSeal: NtkEpisodeManifestSeal? = null,
+        pageIndex: Int = -1,
+        resolvedRoute: NtkResolvedSourceRoute? = null,
+        strictOperationFactory: ((Long, Long) -> NtkStrictCallContext)? = null
+    ): NtkSourceMetadataProbe {
+        cancellation.throwIfCancelled()
+        val canonicalAsset = ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+        require(canonicalAsset.isNotEmpty())
+        if (manifestSeal != null) {
+            require(manifestSeal.isStructurallyComplete)
+            require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
+            require(manifestSeal.normalizedCanonicalAssets[pageIndex] == canonicalAsset)
+            strictCachedPublishedBody(context, manga, image, manifestSeal, pageIndex)?.let { cached ->
+                val authority = cached.metadata.authority
+                return NtkSourceMetadataProbe(
+                    cached.metadata.sourceWidth,
+                    cached.metadata.sourceHeight,
+                    canonicalAsset,
+                    cachedFile = true,
+                    fullBodyFallback = false,
+                    promotedBodyFile = cached.file,
+                    acquisition = authority.acquisition,
+                    responseIdentityDigest = authority.responseIdentityDigest,
+                    byteWitnessSha256 = authority.byteWitnessSha256,
+                    byteWitnessLength = authority.byteWitnessLength,
+                    encodedLength = authority.encodedLength,
+                    strongValidatorDigest = authority.strongValidatorDigest,
+                    imageFormat = authority.imageFormat
+                )
+            }
+        }
+        val cached = when {
+            // A manifest-bound strict lookup may consume only strictCachedPublishedBody above.
+            // If its v2 binding does not match, continue to the owned physical session.
+            manifestSeal != null -> null
+            requireEncodedOriginalIdentity -> strictCachedExactFile(context, manga, image)
+            else -> cachedFile(context, manga, image)
+        }
+        cached?.let { file ->
+            val bounds = decodeNtkSourceBounds(file)
+                ?: throw IOException("Invalid cached source bounds")
+            return NtkSourceMetadataProbe(
+                bounds.first,
+                bounds.second,
+                canonicalAsset,
+                cachedFile = true,
+                fullBodyFallback = false,
+                acquisition = NtkMetadataAcquisition.VERIFIED_CACHE_BODY,
+                responseIdentityDigest = strictResponseIdentityDigest(canonicalAsset),
+                byteWitnessSha256 = encodedOriginalByteProof(manga, image, file)?.encodedSha256.orEmpty(),
+                byteWitnessLength = file.length(),
+                encodedLength = file.length(),
+                strongValidatorDigest = NtkStripDigests.sha256Tokens(
+                    "ntk-strong-validator-v1",
+                    "verified-cache-v1"
+                ),
+                imageFormat = exactImageFormat(file).orEmpty()
+            )
+        }
+        probeNtkSourceMetadataRange(
+            context.applicationContext,
+            manga,
+            image,
+            cancellation,
+            manifestSeal,
+            pageIndex,
+            resolvedRoute,
+            strictOperationFactory
+        )
+            ?.let { return it }
+        cancellation.throwIfCancelled()
+        if (manifestSeal != null && resolvedRoute != null && strictOperationFactory != null) {
+            val published = fetchStrictSourceBody(
+                context.applicationContext,
+                manga,
+                image,
+                manifestSeal,
+                pageIndex,
+                resolvedRoute,
+                strictOperationFactory = strictOperationFactory,
+                expectedMetadata = null,
+                acquisition = NtkMetadataAcquisition.PRIMARY_BODY_TEE,
+                cancellation = cancellation
+            )
+            val authority = published.metadata.authority
+            return NtkSourceMetadataProbe(
+                published.metadata.sourceWidth,
+                published.metadata.sourceHeight,
+                canonicalAsset,
+                cachedFile = false,
+                fullBodyFallback = true,
+                promotedBodyFile = published.file,
+                acquisition = authority.acquisition,
+                responseIdentityDigest = authority.responseIdentityDigest,
+                byteWitnessSha256 = authority.byteWitnessSha256,
+                byteWitnessLength = authority.byteWitnessLength,
+                encodedLength = authority.encodedLength,
+                strongValidatorDigest = authority.strongValidatorDigest,
+                imageFormat = authority.imageFormat
+            )
+        }
+        val file = if (requireEncodedOriginalIdentity) {
+            getOrFetchStrictEncodedOriginalFileForeground(
+                context,
+                manga,
+                image,
+                cancellation,
+                visiblePriority = false
+            )
+        } else {
+            getOrFetchFileForeground(
+                context,
+                manga,
+                image,
+                cancellation,
+                visiblePriority = false
+            )
+        }
+        val bounds = decodeNtkSourceBounds(file)
+            ?: throw IOException("Invalid full-body fallback source bounds")
+        return NtkSourceMetadataProbe(
+            bounds.first,
+            bounds.second,
+            canonicalAsset,
+            cachedFile = false,
+            fullBodyFallback = true,
+            promotedBodyFile = file
+        )
+    }
+
+    private fun probeNtkSourceMetadataRange(
+        context: Context,
+        manga: Manga,
+        image: String,
+        cancellation: Cancellation,
+        manifestSeal: NtkEpisodeManifestSeal? = null,
+        pageIndex: Int = -1,
+        resolvedRoute: NtkResolvedSourceRoute? = null,
+        strictOperationFactory: ((Long, Long) -> NtkStrictCallContext)? = null
+    ): NtkSourceMetadataProbe? {
+        val route = resolvedRoute ?: NtkResolvedSourceRoute(
+            routeKey = "legacy-image-client|${requestFor(manga, image).url.host}",
+            requestTemplate = requestFor(manga, image, foregroundPriority = true),
+            callFactory = getHttpClient().imageClient,
+            responseIdentityPolicy = NtkResponseIdentityPolicy.EXACT_VALIDATED,
+            callFactoryId = "image"
+        )
+        var previous = ByteArray(0)
+        var acceptedContentRangeTotal = -1L
+        var acceptedStrongValidator: String? = null
+        var acceptedResponseIdentityDigest: String? = null
+        var fullBodyFallbackRequired = false
+        var requestedBytes = NTK_SOURCE_METADATA_INITIAL_PROBE_BYTES
+        while (requestedBytes <= NTK_SOURCE_METADATA_MAX_PROBE_BYTES) {
+            cancellation.throwIfCancelled()
+            val end = requestedBytes.toLong() - 1L
+            val operation = strictOperationFactory?.invoke(0L, end)
+            val requestBuilder = route.requestTemplate.newBuilder()
+                .header("Range", "bytes=0-$end")
+                .header("Accept-Encoding", "identity")
+            operation?.let { requestBuilder.tag(NtkStrictSourceCallTag::class.java, it.tag) }
+            val call = try {
+                val request = requestBuilder.build()
+                newTrackedNtkEpisodeCall(manga, image, request, route.callFactory, cancellation)
+            } catch (failure: Throwable) {
+                // Admission already owns a global physical-operation slot. A Call.Factory
+                // failure before execute must release it just like every later failure path.
+                operation?.operationLease?.complete()
+                throw failure
+            }
+            var code = 0
+            var protocol = ""
+            var responseBytes = 0L
+            var witnessBytes = 0L
+            var acquisition = ""
+            var imageFormat = ""
+            var contentRangeTotal = -1L
+            var operationSucceeded = false
+            var partialBodyOperation = false
+            try {
+                call.execute().use { response ->
+                    code = response.code
+                    protocol = response.protocol.toString()
+                    when {
+                        response.code == 404 || response.code == 410 ->
+                            throw NtkTerminalSourceException("HTTP ${response.code} source metadata probe")
+                        response.code in 500..599 ->
+                            throw IOException("HTTP ${response.code} source metadata probe")
+                    }
+                    if (!validateNtkImageResponseUrl(manga, image, response, true, "metadata_probe")) {
+                        throw NtkSourceIdentityException("Metadata probe response identity mismatch")
+                    }
+                    if (response.header("x-mangaviewer-partial-image") == "1") {
+                        partialBodyOperation = true
+                        throw NtkSourceIdentityException("Partial metadata response is forbidden")
+                    }
+                    if (response.code == 200) {
+                        if (manifestSeal == null || pageIndex < 0 || operation == null) return null
+                        val responseIdentityDigest = strictResponseIdentityDigest(
+                            response.request.url.toString()
+                        )
+                        val responseValidator = strictStrongValidator(response)
+                        if (previous.isNotEmpty() &&
+                            (acceptedResponseIdentityDigest != responseIdentityDigest ||
+                                acceptedStrongValidator != responseValidator)
+                        ) {
+                            throw NtkSourceIdentityException(
+                                "Range-ignored body changed metadata response authority"
+                            )
+                        }
+                        val published = publishStrictFullBodyResponse(
+                            context,
+                            manga,
+                            image,
+                            manifestSeal,
+                            pageIndex,
+                            response,
+                            NtkMetadataAcquisition.PRIMARY_BODY_TEE,
+                            expectedMetadata = null,
+                            expectedPrefix = previous.takeIf { it.isNotEmpty() },
+                            cancellation = cancellation,
+                            expectedEncodedLength = acceptedContentRangeTotal
+                        )
+                        responseBytes = published.proof.encodedLength
+                        contentRangeTotal = published.proof.encodedLength
+                        witnessBytes = published.metadata.authority.byteWitnessLength
+                        acquisition = published.metadata.authority.acquisition.name
+                        imageFormat = published.metadata.authority.imageFormat
+                        operationSucceeded = true
+                        val authority = published.metadata.authority
+                        return NtkSourceMetadataProbe(
+                            published.metadata.sourceWidth,
+                            published.metadata.sourceHeight,
+                            image,
+                            cachedFile = false,
+                            fullBodyFallback = true,
+                            promotedBodyFile = published.file,
+                            acquisition = authority.acquisition,
+                            responseIdentityDigest = authority.responseIdentityDigest,
+                            byteWitnessSha256 = authority.byteWitnessSha256,
+                            byteWitnessLength = authority.byteWitnessLength,
+                            encodedLength = authority.encodedLength,
+                            strongValidatorDigest = authority.strongValidatorDigest,
+                            imageFormat = authority.imageFormat
+                        )
+                    }
+                    if (response.code != 206) {
+                        if (manifestSeal != null && strictOperationFactory != null) {
+                            throw NtkSourceIdentityException(
+                                "Strict metadata probe returned HTTP ${response.code}"
+                            )
+                        }
+                        return null
+                    }
+                    val parsedRange = parseStrictContentRange(response.header("Content-Range"))
+                        ?: throw NtkSourceIdentityException("Malformed strict Content-Range")
+                    val expectedRangeEnd = minOf(end, parsedRange.third - 1L)
+                    if (parsedRange.first != 0L || parsedRange.second != expectedRangeEnd ||
+                        parsedRange.third <= parsedRange.second
+                    ) {
+                        throw NtkSourceIdentityException("Strict Content-Range identity mismatch")
+                    }
+                    if (acceptedContentRangeTotal >= 0L &&
+                        acceptedContentRangeTotal != parsedRange.third
+                    ) {
+                        throw NtkSourceIdentityException("Metadata Content-Range total mutated")
+                    }
+                    acceptedContentRangeTotal = parsedRange.third
+                    contentRangeTotal = parsedRange.third
+                    val responseIdentityDigest = strictResponseIdentityDigest(
+                        response.request.url.toString()
+                    )
+                    if (acceptedResponseIdentityDigest == null) {
+                        acceptedResponseIdentityDigest = responseIdentityDigest
+                    } else if (acceptedResponseIdentityDigest != responseIdentityDigest) {
+                        throw NtkSourceIdentityException(
+                            "Metadata range response identity mutated"
+                        )
+                    }
+                    val responseValidator = strictStrongValidator(response)
+                    if (acceptedStrongValidator == null) {
+                        acceptedStrongValidator = responseValidator
+                    } else if (acceptedStrongValidator != responseValidator) {
+                        throw NtkSourceIdentityException(
+                            "Metadata range validator mutated"
+                        )
+                    }
+                    val body = response.body ?: throw IOException("Empty metadata range body")
+                    val bytes = ByteArrayOutputStream(requestedBytes).use { output ->
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(8 * 1024)
+                            while (output.size() < requestedBytes) {
+                                cancellation.throwIfCancelled()
+                                val count = input.read(
+                                    buffer,
+                                    0,
+                                    minOf(buffer.size, requestedBytes - output.size())
+                                )
+                                if (count < 0) break
+                                if (count == 0) continue
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                        output.toByteArray()
+                    }
+                    responseBytes = bytes.size.toLong()
+                    if (bytes.isEmpty() || parsedRange.second != bytes.size.toLong() - 1L) {
+                        throw NtkSourceIdentityException("Strict range byte count mismatch")
+                    }
+                    if (previous.isNotEmpty() &&
+                        (bytes.size < previous.size || !bytes.copyOf(previous.size).contentEquals(previous))
+                    ) {
+                        throw NtkSourceIdentityException("Metadata range prefix mutated")
+                    }
+                    when (val parsed = NtkExactImageHeaderParser().feed(bytes)) {
+                        is NtkExactImageHeaderParser.Result.Exact -> {
+                            witnessBytes = bytes.size.toLong()
+                            acquisition = NtkMetadataAcquisition.PRIMARY_BODY_TEE.name
+                            imageFormat = parsed.format
+                            val validator = responseValidator
+                            operationSucceeded = true
+                            return NtkSourceMetadataProbe(
+                                parsed.width,
+                                parsed.height,
+                                image,
+                                cachedFile = false,
+                                fullBodyFallback = false,
+                                acquisition = NtkMetadataAcquisition.PRIMARY_BODY_TEE,
+                                responseIdentityDigest = responseIdentityDigest,
+                                byteWitnessSha256 = sha256Bytes(bytes),
+                                byteWitnessLength = bytes.size.toLong(),
+                                encodedLength = parsedRange.third,
+                                strongValidatorDigest = strictStrongValidatorDigest(validator),
+                                imageFormat = parsed.format,
+                                witnessPrefix = bytes,
+                                strongValidator = validator
+                            )
+                        }
+                        is NtkExactImageHeaderParser.Result.Invalid -> {
+                            throw NtkSourceIdentityException(
+                                "Strict metadata header is invalid"
+                            )
+                        }
+                        is NtkExactImageHeaderParser.Result.NeedMore -> {
+                            previous = bytes
+                            if (requestedBytes == NTK_SOURCE_METADATA_MAX_PROBE_BYTES) {
+                                fullBodyFallbackRequired = true
+                            }
+                            operationSucceeded = true
+                        }
+                    }
+                }
+            } finally {
+                val connection = takeStrictConnectionObservation(operation?.tag)
+                reportStrictNetworkObservation(
+                    operation?.tag,
+                    protocol,
+                    connection,
+                    route.callFactoryId,
+                    route.callFactory
+                )
+                operation?.operationLease?.complete(
+                    httpCode = code,
+                    protocol = protocol,
+                    responseBytes = responseBytes,
+                    metadataWitnessBytes = witnessBytes,
+                    metadataAcquisition = acquisition,
+                    imageFormat = imageFormat,
+                    contentRangeTotal = contentRangeTotal,
+                    connectionId = connection.connectionId,
+                    connectionReused = connection.reused,
+                    succeeded = operationSucceeded,
+                    partialBodyOperation = partialBodyOperation
+                )
+            }
+            if (fullBodyFallbackRequired) break
+            requestedBytes = (requestedBytes shl 1).coerceAtMost(NTK_SOURCE_METADATA_MAX_PROBE_BYTES)
+        }
+        if (fullBodyFallbackRequired && manifestSeal != null && pageIndex >= 0 &&
+            strictOperationFactory != null
+        ) {
+            val published = fetchStrictSourceBody(
+                context,
+                manga,
+                image,
+                manifestSeal,
+                pageIndex,
+                route,
+                strictOperationFactory,
+                expectedMetadata = null,
+                acquisition = NtkMetadataAcquisition.PRIMARY_BODY_TEE,
+                cancellation = cancellation,
+                expectedPrefix = previous,
+                expectedResponseIdentityDigest = checkNotNull(acceptedResponseIdentityDigest),
+                expectedStrongValidator = checkNotNull(acceptedStrongValidator),
+                expectedEncodedLength = acceptedContentRangeTotal
+            )
+            val authority = published.metadata.authority
+            return NtkSourceMetadataProbe(
+                published.metadata.sourceWidth,
+                published.metadata.sourceHeight,
+                image,
+                cachedFile = false,
+                fullBodyFallback = true,
+                promotedBodyFile = published.file,
+                acquisition = authority.acquisition,
+                responseIdentityDigest = authority.responseIdentityDigest,
+                byteWitnessSha256 = authority.byteWitnessSha256,
+                byteWitnessLength = authority.byteWitnessLength,
+                encodedLength = authority.encodedLength,
+                strongValidatorDigest = authority.strongValidatorDigest,
+                imageFormat = authority.imageFormat
+            )
+        }
+        return null
+    }
+
+    /** Performs one session-owned full/tail body operation and publishes body+v1+v2 proofs. */
+    fun fetchStrictSourceBody(
+        context: Context,
+        manga: Manga,
+        image: String,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        resolvedRoute: NtkResolvedSourceRoute,
+        strictOperationFactory: (Long, Long) -> NtkStrictCallContext,
+        expectedMetadata: NtkSourceMetadata?,
+        acquisition: NtkMetadataAcquisition,
+        cancellation: Cancellation,
+        expectedPrefix: ByteArray? = null,
+        ifRangeValidator: String = "",
+        expectedResponseIdentityDigest: String = "",
+        expectedStrongValidator: String? = null,
+        expectedEncodedLength: Long = -1L
+    ): NtkStrictPublishedBody {
+        strictCachedPublishedBody(context, manga, image, manifestSeal, pageIndex)?.let { cached ->
+            if (expectedMetadata == null || cached.metadata.hasSameAuthority(expectedMetadata)) {
+                if (expectedResponseIdentityDigest.isNotEmpty() &&
+                    cached.metadata.authority.responseIdentityDigest != expectedResponseIdentityDigest
+                ) throw NtkSourceIdentityException("Cached body changed range response identity")
+                if (expectedMetadata != null &&
+                    cached.metadata.authority.strongValidatorDigest !=
+                    expectedMetadata.authority.strongValidatorDigest
+                ) throw NtkSourceIdentityException("Cached body changed range validator")
+                if (expectedEncodedLength > 0L && cached.proof.encodedLength != expectedEncodedLength) {
+                    throw NtkSourceIdentityException("Cached body changed range total")
+                }
+                if (expectedPrefix != null && expectedPrefix.isNotEmpty() &&
+                    !fileStartsWith(cached.file, expectedPrefix)
+                ) throw NtkSourceIdentityException("Cached body changed range prefix")
+                return cached
+            }
+            // A v2 proof bound to different metadata is not rewritten from cache. Continue into
+            // the owned physical body operation and publish only evidence observed by that call.
+        }
+        cancellation.throwIfCancelled()
+        // Admission represents a physical HTTP operation, not a queued body request. Create the
+        // lease only after the last cache-race check so an EOF publication by another producer
+        // cannot strand a global-gate slot or manufacture a call-start event with no Call.
+        val useTail = expectedMetadata != null && expectedPrefix != null && expectedPrefix.isNotEmpty() &&
+            ifRangeValidator.isNotBlank()
+        val operation = if (useTail) {
+            strictOperationFactory(
+                expectedPrefix!!.size.toLong(),
+                checkNotNull(expectedMetadata).authority.encodedLength - 1L
+            )
+        } else {
+            strictOperationFactory(-1L, -1L)
+        }
+        val requestBuilder = resolvedRoute.requestTemplate.newBuilder()
+            .removeHeader("Range")
+            .removeHeader("If-Range")
+            .header("Accept-Encoding", "identity")
+            .tag(NtkStrictSourceCallTag::class.java, operation.tag)
+        if (useTail) {
+            requestBuilder.header("Range", "bytes=${expectedPrefix!!.size}-")
+                .header("If-Range", ifRangeValidator)
+        }
+        val call = try {
+            val request = requestBuilder.build()
+            newTrackedNtkEpisodeCall(
+                manga,
+                image,
+                request,
+                resolvedRoute.callFactory,
+                cancellation
+            )
+        } catch (failure: Throwable) {
+            // The operation lease precedes Call construction so the global gate is authoritative.
+            // Never strand that lease when a custom/production Call.Factory rejects creation.
+            operation.operationLease.complete()
+            throw failure
+        }
+        var code = 0
+        var protocol = ""
+        var responseBytes = 0L
+        var witnessBytes = 0L
+        var metadataAcquisition = ""
+        var imageFormat = ""
+        var contentRangeTotal = -1L
+        var operationSucceeded = false
+        var partialBodyOperation = false
+        try {
+            call.execute().use { response ->
+                code = response.code
+                protocol = response.protocol.toString()
+                when {
+                    response.code == 404 || response.code == 410 ->
+                        throw NtkTerminalSourceException("HTTP ${response.code} strict source body")
+                    response.code in 500..599 ->
+                        throw IOException("HTTP ${response.code} strict source body")
+                    response.code !in 200..299 ->
+                        throw IOException("HTTP ${response.code} strict source body")
+                }
+                if (!validateNtkImageResponseUrl(manga, image, response, true, "strict_source_body")) {
+                    throw NtkSourceIdentityException("Strict body response identity mismatch")
+                }
+                if (response.header("x-mangaviewer-partial-image") == "1") {
+                    partialBodyOperation = true
+                    throw NtkSourceIdentityException("Partial strict body response is forbidden")
+                }
+                val responseIdentityDigest = strictResponseIdentityDigest(
+                    response.request.url.toString()
+                )
+                if (expectedResponseIdentityDigest.isNotEmpty() &&
+                    responseIdentityDigest != expectedResponseIdentityDigest
+                ) {
+                    throw NtkSourceIdentityException(
+                        "Strict body response identity changed range authority"
+                    )
+                }
+                val responseValidator = strictStrongValidator(response)
+                val expectedValidatorDigest =
+                    expectedMetadata?.authority?.strongValidatorDigest.orEmpty()
+                if (expectedValidatorDigest.isNotEmpty() &&
+                    strictStrongValidatorDigest(responseValidator) != expectedValidatorDigest
+                ) throw NtkSourceIdentityException("Strict body validator changed metadata authority")
+                if (response.code != 206 && !expectedStrongValidator.isNullOrBlank() &&
+                    responseValidator != expectedStrongValidator
+                ) throw NtkSourceIdentityException("Strict full body validator changed range authority")
+                var prefixToPrepend: ByteArray? = null
+                if (response.code == 206) {
+                    val range = parseStrictContentRange(response.header("Content-Range"))
+                        ?: throw NtkSourceIdentityException("Malformed strict body Content-Range")
+                    contentRangeTotal = range.third
+                    if (useTail) {
+                        if (range.first != expectedPrefix!!.size.toLong() ||
+                            expectedMetadata == null ||
+                            range.third != expectedMetadata.authority.encodedLength ||
+                            range.second != range.third - 1L
+                        ) {
+                            throw NtkSourceIdentityException("Strict body tail range identity mismatch")
+                        }
+                        if (responseValidator.isNotEmpty() &&
+                            responseValidator != ifRangeValidator
+                        ) throw NtkSourceIdentityException(
+                            "Strict tail validator changed accepted metadata authority"
+                        )
+                        prefixToPrepend = expectedPrefix
+                    } else {
+                        partialBodyOperation = true
+                        throw NtkSourceIdentityException("Unrequested partial strict body response")
+                    }
+                } else if (useTail && response.code != 200) {
+                    throw NtkSourceIdentityException("If-Range body did not return full or exact tail")
+                } else if (useTail && responseValidator != ifRangeValidator) {
+                    // A 200 can mean the If-Range validator no longer matched. Preserve accepted
+                    // metadata only when the server explicitly returns the same usable lineage.
+                    throw NtkSourceIdentityException(
+                        "Strict full body validator changed accepted metadata authority"
+                    )
+                }
+                val published = publishStrictFullBodyResponse(
+                    context.applicationContext,
+                    manga,
+                    image,
+                    manifestSeal,
+                    pageIndex,
+                    response,
+                    acquisition,
+                    expectedMetadata,
+                    expectedPrefix,
+                    cancellation,
+                    prefixToPrepend,
+                    expectedEncodedLength = expectedEncodedLength
+                )
+                responseBytes = published.proof.encodedLength - (prefixToPrepend?.size ?: 0)
+                if (contentRangeTotal < 0L) {
+                    contentRangeTotal = published.proof.encodedLength
+                }
+                witnessBytes = published.metadata.authority.byteWitnessLength
+                metadataAcquisition = published.metadata.authority.acquisition.name
+                imageFormat = published.metadata.authority.imageFormat
+                operationSucceeded = true
+                return published
+            }
+        } finally {
+            val connection = takeStrictConnectionObservation(operation.tag)
+            reportStrictNetworkObservation(
+                operation.tag,
+                protocol,
+                connection,
+                resolvedRoute.callFactoryId,
+                resolvedRoute.callFactory
+            )
+            operation.operationLease.complete(
+                httpCode = code,
+                protocol = protocol,
+                responseBytes = responseBytes,
+                metadataWitnessBytes = witnessBytes,
+                metadataAcquisition = metadataAcquisition,
+                imageFormat = imageFormat,
+                contentRangeTotal = contentRangeTotal,
+                connectionId = connection.connectionId,
+                connectionReused = connection.reused,
+                succeeded = operationSucceeded,
+                partialBodyOperation = partialBodyOperation
+            )
+        }
+    }
+
+    /**
+     * The production strict-source primitive: one uncached asset, one physical full-body GET, and
+     * two ordered milestones from that same response.  The metadata callback never releases the
+     * operation lease or physical lane; EOF validation and atomic body/proof publication remain
+     * owned by this call.
+     */
+    fun quarantineEffectiveRequestDigest(
+        route: NtkResolvedSourceRoute,
+        pageIndex: Int,
+        canonicalAsset: String,
+        canonicalAssetDigest: String = NtkStripDigests.canonicalAssetDigestSha256(canonicalAsset),
+    ): String {
+        require(NtkStripDigests.isSha256(canonicalAssetDigest))
+        val request = route.requestTemplate.newBuilder()
+            .removeHeader("Range")
+            .removeHeader("If-Range")
+            .header("Accept-Encoding", "identity")
+            .build()
+        val selected = listOf(
+            "cookie",
+            "referer",
+            "user-agent",
+            "accept",
+            "accept-language",
+            "accept-encoding"
+        ).map { name ->
+            "$name=${request.headers.values(name).joinToString(",")}"
+        }
+        return NtkStripDigests.sha256Tokens(
+            buildList {
+                add("ntk-quarantine-effective-request-v1")
+                add(request.method)
+                add(request.url.toString())
+                add(route.callFactoryId)
+                add("no-range")
+                add(pageIndex.toString())
+                add(canonicalAssetDigest)
+                addAll(selected)
+            }
+        )
+    }
+
+    fun openQuarantineFileLease(
+        context: Context,
+        binding: NtkQuarantinePlanBinding,
+        pageIndex: Int,
+        operationId: Long,
+        onReleased: () -> Unit
+    ): NtkQuarantineFileLease {
+        require(pageIndex in 0 until binding.pageCount)
+        require(operationId > 0L)
+        val root = File(
+            cacheDir(context.applicationContext),
+            "ntk-source/quarantine/${binding.discoveryGeneration}/${binding.bindingDigest}"
+        )
+        // Multiple physical source lanes can create the first quarantine files concurrently.
+        // mkdirs() may report false when another lane won that race, so re-observe the final
+        // filesystem state before treating creation as a failure.
+        if (!root.isDirectory && !root.mkdirs() && !root.isDirectory) {
+            throw IOException("Unable to create quarantine source directory")
+        }
+        val stem = "${pageIndex.toString().padStart(4, '0')}.$operationId"
+        val part = File(root, "$stem.part")
+        val sealed = File(root, "$stem.sealed")
+        part.delete()
+        sealed.delete()
+        return NtkQuarantineFileLease(part, sealed, onReleased)
+    }
+
+    internal fun spoolQuarantinedEncodedOriginal(
+        context: Context,
+        manga: Manga,
+        binding: NtkQuarantinePlanBinding,
+        pageIndex: Int,
+        canonicalAsset: String,
+        route: NtkResolvedSourceRoute,
+        callContext: NtkQuarantineCallContext,
+        tempLease: NtkQuarantineFileLease,
+        cancellation: Cancellation,
+        telemetryAfterImageHeaders: Boolean = false,
+        responseHeadersSink: () -> Unit = {},
+        validImageHeadersSink: (() -> Unit)? = null,
+        exactImageHeaderSink: (NtkStreamingImageHeaderParser.Result.Exact) -> Unit = {},
+        metadataSink: (NtkQuarantineMetadataEvidence) -> Unit,
+        bodyReadAdmission: (() -> Closeable)? = null,
+    ): NtkQuarantinedBody {
+        require(pageIndex in binding.normalizedOrderedCanonicalAssets.indices) {
+            "Quarantine page index is outside the bound plan"
+        }
+        val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
+        require(binding.normalizedOrderedCanonicalAssets[pageIndex] == canonical) {
+            "Quarantine canonical asset differs from the bound plan"
+        }
+        val identity = callContext.identity
+        require(identity.pageIndex == pageIndex) {
+            "Quarantine call identity page differs from the requested page"
+        }
+        require(identity.planBindingDigest == binding.bindingDigest) {
+            "Quarantine call identity differs from the plan binding"
+        }
+        require(identity.effectiveRequestDigest ==
+            quarantineEffectiveRequestDigest(route, pageIndex, canonical)) {
+            "Quarantine effective request changed after operation admission"
+        }
+
+        cancellation.throwIfCancelled()
+        val request = route.requestTemplate.newBuilder()
+            .removeHeader("Range")
+            .removeHeader("If-Range")
+            .header("Accept-Encoding", "identity")
+            .tag(NtkQuarantineSourceCallIdentity::class.java, identity)
+            .build()
+        val call = try {
+            newTrackedNtkEpisodeCall(
+                manga,
+                canonical,
+                request,
+                route.callFactory,
+                cancellation,
+                telemetryAfterImageHeaders,
+            )
+        } catch (failure: Throwable) {
+            callContext.operationLease.close()
+            tempLease.close()
+            throw failure
+        }
+
+        val physicalStartedAtNs = SystemClock.elapsedRealtimeNanos()
+        var headersAtNs = 0L
+        var firstBodyByteAtNs = 0L
+        var lastBodyReadAtNs = 0L
+        var maxBodyReadGapNs = 0L
+        var bodyReadLease: Closeable? = null
+        fun recordBodyRead() {
+            val now = SystemClock.elapsedRealtimeNanos()
+            if (firstBodyByteAtNs == 0L) firstBodyByteAtNs = now
+            if (lastBodyReadAtNs != 0L) {
+                maxBodyReadGapNs = maxOf(maxBodyReadGapNs, now - lastBodyReadAtNs)
+            }
+            lastBodyReadAtNs = now
+        }
+
+        var succeeded = false
+        var protocol = ""
+        var responseHeadersSignalled = false
+        try {
+            call.execute().use { response ->
+                headersAtNs = SystemClock.elapsedRealtimeNanos()
+                protocol = response.protocol.toString()
+                responseHeadersSignalled = true
+                runCatching(responseHeadersSink)
+                when {
+                    response.code == 404 || response.code == 410 ->
+                        throw NtkTerminalSourceException(
+                            "HTTP ${response.code} quarantine primary full body"
+                        )
+                    response.code !in 200..299 ->
+                        throw IOException("HTTP ${response.code} quarantine primary full body")
+                }
+                if (response.code == 206 || response.header("Content-Range") != null ||
+                    response.header("x-mangaviewer-partial-image") == "1"
+                ) throw NtkSourceIdentityException("Partial quarantine body is forbidden")
+                if (!validateNtkImageResponseUrl(
+                        manga,
+                        canonical,
+                        response,
+                        true,
+                        "quarantine_primary_full_body"
+                    )
+                ) throw NtkSourceIdentityException("Quarantine response identity mismatch")
+
+                if (validImageHeadersSink != null) {
+                    val responseContentType = response.header("Content-Type")
+                        .orEmpty()
+                        .substringBefore(';')
+                        .trim()
+                        .lowercase(Locale.ROOT)
+                    if (!responseContentType.startsWith("image/")) {
+                        throw NtkSourceIdentityException(
+                            "Observed replica response is not an explicit image content type"
+                        )
+                    }
+                    // Status, partial-body and final-URL checks precede this signal. EOF and byte
+                    // digest validation below remain the independent publication boundary.
+                    runCatching(validImageHeadersSink)
+                }
+
+                val body = response.body ?: throw IOException("Empty quarantine body")
+                val contentLength = body.contentLength()
+                if (contentLength == 0L) throw IOException("Empty quarantine body")
+                // Open every exact post-document GET through response headers first, then bound
+                // only active body consumption. This keeps the final pages from paying a second
+                // TLS/header wave while retaining the measured 96-body bandwidth ceiling.
+                bodyReadLease = bodyReadAdmission?.invoke()
+                val fullDigest = MessageDigest.getInstance("SHA-256")
+                val parser = NtkStreamingImageHeaderParser()
+                var parsed: NtkStreamingImageHeaderParser.Result.Exact? = null
+                var encodedLength = 0L
+                val boundedContentLength = contentLength
+                    .takeIf { it in 1..(64L * 1024L * 1024L) }
+                    ?.toInt()
+                val encodedBytes = if (boundedContentLength != null) {
+                    // This array is the final session-owned compressed body. The previous
+                    // ByteArrayOutputStream path allocated an equally large backing array and
+                    // copied it in toByteArray(), while also allocating one read buffer per
+                    // response. A 114-page strip consequently left 200+ large temporary arrays
+                    // for the first bitmap allocation wave to collect. ART's NativeAlloc GC then
+                    // overlapped and blocked the cold decoders for up to two seconds.
+                    val direct = ByteArray(boundedContentLength)
+                    body.byteStream().use { input ->
+                        var offset = 0
+                        while (offset < direct.size) {
+                            cancellation.throwIfCancelled()
+                            val count = input.read(direct, offset, direct.size - offset)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            recordBodyRead()
+                            fullDigest.update(direct, offset, count)
+                            encodedLength += count.toLong()
+                            if (parsed == null) {
+                                when (val header = parser.feed(direct, offset, count)) {
+                                    NtkStreamingImageHeaderParser.Result.NeedMore -> Unit
+                                    is NtkStreamingImageHeaderParser.Result.Invalid ->
+                                        throw NtkSourceIdentityException(
+                                            "Quarantine header invalid: ${header.reason}"
+                                        )
+                                    is NtkStreamingImageHeaderParser.Result.Exact -> {
+                                        parsed = header
+                                        runCatching { exactImageHeaderSink(header) }
+                                    }
+                                }
+                            }
+                            offset += count
+                        }
+                        if (offset != direct.size || input.read() >= 0) {
+                            throw NtkSourceIdentityException(
+                                "Quarantine Content-Length body mismatch"
+                            )
+                        }
+                    }
+                    direct
+                } else {
+                    val output = ByteArrayOutputStream(NTK_EXACT_BODY_WRITE_BUFFER_BYTES)
+                    output.use {
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
+                            while (true) {
+                                cancellation.throwIfCancelled()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                if (count == 0) continue
+                                recordBodyRead()
+                                it.write(buffer, 0, count)
+                                fullDigest.update(buffer, 0, count)
+                                encodedLength += count.toLong()
+                                if (parsed == null) {
+                                    when (val header = parser.feed(buffer, 0, count)) {
+                                        NtkStreamingImageHeaderParser.Result.NeedMore -> Unit
+                                        is NtkStreamingImageHeaderParser.Result.Invalid ->
+                                            throw NtkSourceIdentityException(
+                                                "Quarantine header invalid: ${header.reason}"
+                                            )
+                                        is NtkStreamingImageHeaderParser.Result.Exact -> {
+                                            parsed = header
+                                            runCatching { exactImageHeaderSink(header) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    output.toByteArray()
+                }
+                cancellation.throwIfCancelled()
+                val exact = parsed ?: throw NtkSourceIdentityException(
+                    "Quarantine body has no exact image header"
+                )
+                if (encodedLength <= 0L ||
+                    (contentLength > 0L && encodedLength != contentLength)
+                ) throw NtkSourceIdentityException("Quarantine encoded length mismatch")
+                val bodyDigest = NtkStripDigests.bytesToLowerHex(fullDigest.digest())
+                val selectedResponseHeaders = selectedHeadersDigest(
+                    response.headers.toMultimap()
+                )
+                val responseIdentity = NtkStripDigests.sha256Tokens(
+                    "ntk-quarantine-response-identity-v1",
+                    request.url.toString(),
+                    response.request.url.toString(),
+                    response.code.toString(),
+                    selectedResponseHeaders
+                )
+                val metadata = NtkQuarantineMetadataEvidence(
+                    networkCallIdentityDigest = identity.identityDigest,
+                    canonicalAssetDigest = identity.canonicalAssetDigest,
+                    requestUrl = request.url.toString(),
+                    finalUrl = response.request.url.toString(),
+                    selectedResponseHeadersDigest = selectedResponseHeaders,
+                    responseIdentityDigest = responseIdentity,
+                    strongValidatorDigest = strictStrongValidatorDigest(
+                        strictStrongValidator(response)
+                    ),
+                    encodedLength = encodedLength,
+                    byteWitnessSha256 = bodyDigest,
+                    byteWitnessLength = encodedLength,
+                    sourceWidth = exact.width,
+                    sourceHeight = exact.height,
+                    imageFormat = NtkSourceMetadataAuthority.normalizeImageFormat(exact.format)
+                )
+                metadataSink(metadata)
+                val completedAtNs = SystemClock.elapsedRealtimeNanos()
+                if (completedAtNs - physicalStartedAtNs >= 2_000_000_000L) {
+                    fun elapsedMs(from: Long, to: Long): String =
+                        String.format(Locale.ROOT, "%.3f", (to - from) / 1_000_000.0)
+                    Log.d(
+                        TAG,
+                        "reader_quarantine_source_stage page=$pageIndex," +
+                            "host=${request.url.host}," +
+                            "headersMs=${elapsedMs(physicalStartedAtNs, headersAtNs)}," +
+                            "firstByteMs=${elapsedMs(headersAtNs, firstBodyByteAtNs)}," +
+                            "bodyMs=${elapsedMs(headersAtNs, completedAtNs)}," +
+                            "maxBodyReadGapMs=${String.format(Locale.ROOT, "%.3f", maxBodyReadGapNs / 1_000_000.0)}," +
+                            "totalMs=${elapsedMs(physicalStartedAtNs, completedAtNs)}," +
+                            "bytes=$encodedLength"
+                    )
+                }
+                succeeded = true
+                return NtkQuarantinedBody(
+                    tempLease.sealedFile,
+                    pageIndex,
+                    canonical,
+                    identity,
+                    metadata,
+                    bodyDigest,
+                    encodedLength,
+                    consumedToEof = true,
+                    writerClosed = true,
+                    encodedBytes = encodedBytes
+                )
+            }
+        } finally {
+            bodyReadLease?.close()
+            // A failed cohort leader must not strand the actor behind a gate. Its normal source
+            // error still fails the page; this merely allows the other demanded bodies to finish.
+            if (!responseHeadersSignalled) runCatching(responseHeadersSink)
+            callContext.operationLease.close()
+            val connection = takeQuarantineConnectionObservation(identity)
+            reportNetworkObservation(
+                identity.pageIndex,
+                protocol,
+                connection,
+                route.callFactoryId,
+                route.callFactory
+            )
+            if (!succeeded) tempLease.close()
+        }
+    }
+
+    /**
+     * Decodes a sealed click-owned body without publishing it or consulting any app cache.
+     * Authority is intentionally absent here: the returned one-shot can be consumed only through
+     * an exact source lease after [adoptQuarantinedEncodedOriginal] succeeds.
+     */
+    fun predecodeQuarantinedOriginalAsync(
+        quarantinedBody: NtkQuarantinedBody,
+        executor: Executor,
+    ): NtkStrictPredecodedOriginal {
+        val abandoned = AtomicBoolean(false)
+        val completion: CompletableFuture<Bitmap?> = try {
+            CompletableFuture.supplyAsync<Bitmap?>(
+                {
+                    // An authoritative source worker may have reached these bytes before this
+                    // speculative executor lane. Do not spend CPU or allocate a duplicate bitmap
+                    // after that worker has chosen the immediate encoded-byte decode path.
+                    if (abandoned.get()) return@supplyAsync null
+                    val sourceKeyHash = quarantinedBody.callIdentity.canonicalAssetDigest
+                    val operationId = ViewerTelemetry.imageDecodeStarted(
+                        sourceKeyHash,
+                        quarantinedBody.pageIndex,
+                    )
+                    var decoded: Bitmap? = null
+                    try {
+                        val options = BitmapFactory.Options().apply {
+                            inPreferredConfig = Bitmap.Config.ARGB_8888
+                            inSampleSize = 1
+                            inScaled = false
+                            inMutable = false
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
+                            }
+                        }
+                        decoded = quarantinedBody.encodedBytes?.let { bytes ->
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                        } ?: BitmapFactory.decodeFile(
+                            quarantinedBody.sealedFile.absolutePath,
+                            options,
+                        )
+                        val bitmap = decoded ?: throw IOException("Private exact bitmap decode failed")
+                        val evidence = quarantinedBody.metadataEvidence
+                        check(
+                            bitmap.width == evidence.sourceWidth &&
+                                bitmap.height == evidence.sourceHeight &&
+                                bitmap.config == Bitmap.Config.ARGB_8888 &&
+                                !bitmap.isMutable
+                        ) { "Private exact bitmap decode changed source pixels" }
+                        ViewerTelemetry.imageDecodeFinished(
+                            operationId,
+                            bitmap.allocationByteCount.toLong(),
+                            "private_postclick_success",
+                        )
+                        bitmap.also { decoded = null }
+                    } catch (failure: Throwable) {
+                        decoded?.takeUnless(Bitmap::isRecycled)?.recycle()
+                        ViewerTelemetry.imageDecodeFinished(
+                            operationId,
+                            0L,
+                            "private_postclick_${failure.javaClass.simpleName}",
+                        )
+                        Log.d(
+                            "ViewerPerf",
+                            "reader_private_postclick_decode_failed page=${quarantinedBody.pageIndex}," +
+                                "error=${failure.javaClass.simpleName}",
+                        )
+                        null
+                    }
+                },
+                executor,
+            )
+        } catch (_: RejectedExecutionException) {
+            CompletableFuture.completedFuture(null)
+        }
+        return NtkStrictPredecodedOriginal(completion, abandoned)
+    }
+
+    fun adoptQuarantinedEncodedOriginal(
+        context: Context,
+        manga: Manga,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        quarantinedBody: NtkQuarantinedBody,
+        adoptionProof: NtkQuarantineAdoptionProof,
+        predecodedOriginal: NtkStrictPredecodedOriginal? = null,
+    ): NtkStrictPublishedBody {
+        require(manifestSeal.isStructurallyComplete)
+        require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
+        val canonical = manifestSeal.normalizedCanonicalAssets[pageIndex]
+        require(quarantinedBody.pageIndex == pageIndex)
+        require(areEquivalentManhwaReplicaAssets(quarantinedBody.canonicalAsset, canonical))
+        require(adoptionProof.pageIndex == pageIndex)
+        require(adoptionProof.networkCallIdentityDigest ==
+            quarantinedBody.callIdentity.identityDigest)
+        require(adoptionProof.responseIdentityDigest ==
+            quarantinedBody.metadataEvidence.responseIdentityDigest)
+        require(adoptionProof.encodedSha256 == quarantinedBody.encodedSha256)
+        require(adoptionProof.encodedLength == quarantinedBody.encodedLength)
+        require(adoptionProof.exactManifestDigest == manifestSeal.digestSha256)
+
+        val evidence = quarantinedBody.metadataEvidence
+        val authority = NtkSourceMetadataAuthority.createStrict(
+            acquisition = NtkMetadataAcquisition.ADOPTED_QUARANTINE_FULL_BODY,
+            responseIdentityDigest = evidence.responseIdentityDigest,
+            byteWitnessSha256 = evidence.byteWitnessSha256,
+            byteWitnessLength = evidence.byteWitnessLength,
+            encodedLength = evidence.encodedLength,
+            strongValidatorDigest = evidence.strongValidatorDigest,
+            imageFormat = evidence.imageFormat
+        )
+        val metadata = NtkSourceMetadata.createStrict(
+            manifestRevision = manifestSeal.revision,
+            manifestDigest = manifestSeal.digestSha256,
+            pageIndex = pageIndex,
+            canonicalAsset = canonical,
+            sourceWidth = evidence.sourceWidth,
+            sourceHeight = evidence.sourceHeight,
+            authority = authority
+        )
+        val proof = NtkEncodedOriginalProof.createStrict(
+            metadata,
+            quarantinedBody.encodedSha256,
+            quarantinedBody.encodedLength
+        )
+        val generation = cacheGeneration.get()
+        val cacheKey = key(manga.baseMode, canonical)
+        val finalFile = File(cacheDir(context.applicationContext), "$cacheKey.img")
+        val residentBytes = quarantinedBody.encodedBytes
+        if (residentBytes != null) {
+            // Publication to the exact session is an in-memory ownership transfer. Cache I/O is
+            // deliberately deferred until viewer retirement, after every render-critical decode.
+            return strictPublishedBody(
+                finalFile,
+                metadata,
+                proof,
+                residentBytes,
+                predecodedOriginal,
+            )
+        }
+        val published = withCurrentCachePublication(generation) {
+            withCacheWriteLock(cacheKey) {
+                val existing = strictCachedPublishedBodyLocked(
+                    context.applicationContext,
+                    manga,
+                    canonical,
+                    manifestSeal,
+                    pageIndex,
+                    canonical,
+                    cacheKey
+                )
+                if (existing != null) {
+                    if (existing.proof != proof ||
+                        !existing.metadata.hasSameAuthority(metadata)
+                    ) throw NtkSourceIdentityException(
+                        "Existing exact cache conflicts with quarantine adoption"
+                    )
+                    quarantinedBody.sealedFile.delete()
+                    touchCacheHitForLru(finalFile)
+                } else {
+                    if (finalFile.exists()) {
+                        retireUnprovedStrictCacheTarget(cacheKey, finalFile)
+                    }
+                    moveQuarantineBodyAtomically(
+                        quarantinedBody.sealedFile,
+                        finalFile,
+                        quarantinedBody.encodedLength
+                    )
+                    finalFile.setLastModified(System.currentTimeMillis())
+                    val resident = registerResidentStrictPublishedBody(
+                        generation,
+                        manga.baseMode,
+                        cacheKey,
+                        canonical,
+                        finalFile,
+                        metadata,
+                        proof
+                    )
+                    deferStrictProofPersistence(resident)
+                }
+                finalFile
+            }
+        } ?: throw IOException("Quarantine adoption cache generation invalidated")
+        scheduleTrim(context.applicationContext)
+        return strictPublishedBody(
+            published,
+            metadata,
+            proof,
+            predecodedOriginal = predecodedOriginal,
+        )
+    }
+
+    /**
+     * Persists a memory-published exact body only after its owning viewer has retired. This is a
+     * normal warm-cache optimization, never an input to the cold session that downloaded it.
+     */
+    fun persistAcceptedStrictPublishedBodyAsync(
+        context: Context,
+        manga: Manga,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        image: String,
+        published: NtkStrictPublishedBody
+    ) {
+        val bytes = published.encodedBytes ?: return
+        published.metadata.requireProductionAuthority()
+        published.proof.requireProductionAuthority(published.metadata)
+        require(pageIndex == published.metadata.pageIndex)
+        require(manifestSeal.digestSha256 == published.metadata.manifestDigest)
+        val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+        require(canonical == published.metadata.canonicalAsset)
+        val appContext = context.applicationContext
+        val generation = cacheGeneration.get()
+        val cacheKey = key(manga.baseMode, canonical)
+        foregroundCachePublishExecutor.execute {
+            var staged: File? = null
+            try {
+                val committed = withCurrentCachePublication(generation) {
+                    withCacheWriteLock(cacheKey) {
+                        val finalFile = File(cacheDir(appContext), "$cacheKey.img")
+                        val existing = runCatching {
+                            strictCachedPublishedBodyLocked(
+                                appContext,
+                                manga,
+                                canonical,
+                                manifestSeal,
+                                pageIndex,
+                                canonical,
+                                cacheKey
+                            )
+                        }.getOrNull()
+                        if (existing != null && existing.proof == published.proof &&
+                            existing.metadata.hasSameAuthority(published.metadata)
+                        ) {
+                            touchCacheHitForLru(finalFile)
+                            return@withCacheWriteLock true
+                        }
+                        if (finalFile.exists()) retireUnprovedStrictCacheTarget(cacheKey, finalFile)
+                        val tmp = File(
+                            finalFile.parentFile,
+                            "$cacheKey.memory-${System.nanoTime().coerceAtLeast(1L)}.part"
+                        )
+                        staged = tmp
+                        FileOutputStream(tmp).buffered(NTK_EXACT_BODY_WRITE_BUFFER_BYTES).use {
+                            output ->
+                            output.write(bytes)
+                            output.flush()
+                        }
+                        if (!tmp.isFile || tmp.length() != published.proof.encodedLength) {
+                            throw IOException("Deferred exact cache body length changed")
+                        }
+                        replaceFileAtomically(tmp, finalFile, "deferred exact body")
+                        staged = null
+                        finalFile.setLastModified(System.currentTimeMillis())
+                        val resident = registerResidentStrictPublishedBody(
+                            generation,
+                            manga.baseMode,
+                            cacheKey,
+                            canonical,
+                            finalFile,
+                            published.metadata,
+                            published.proof
+                        )
+                        deferStrictProofPersistence(resident)
+                        true
+                    }
+                } == true
+                if (committed) scheduleTrim(appContext)
+            } catch (failure: Throwable) {
+                Log.w(
+                    TAG,
+                    "reader_strict_deferred_body_publish_failed page=$pageIndex," +
+                        "error=${failure.javaClass.simpleName}",
+                )
+            } finally {
+                staged?.delete()
+            }
+        }
+    }
+
+    /**
+     * These are the finite production replica origins emitted interchangeably by the signed image
+     * API. Equivalence is deliberately narrower than URL normalization: HTTPS only, default port
+     * only, and the exact same immutable work/episode/page stem with no query/fragment. Replica
+     * aliases can expose identical page bytes through a different image suffix (for example a
+     * GIF body behind both p002.jpg and p002.gif), so the suffix is transport metadata rather than
+     * logical page identity.
+     */
+    fun areEquivalentManhwaReplicaAssets(first: String, second: String): Boolean {
+        val left = ReaderPreparedStore.canonicalOriginalAssetIdentity(first)
+        val right = ReaderPreparedStore.canonicalOriginalAssetIdentity(second)
+        if (left == right) return true
+        val leftUri = runCatching { URI(left) }.getOrNull() ?: return false
+        val rightUri = runCatching { URI(right) }.getOrNull() ?: return false
+        val replicaHosts = setOf(
+            "booktoki8.org",
+            "booktoki9.org",
+            "mana.apihost93.com",
+            "aws-cdn1.site",
+        )
+        val immutablePath = Regex(
+            "^(/manhwa/\\d{1,12}/\\d{1,12}/p\\d{3})\\.(?:jpg|jpeg|png|webp|gif)$",
+            RegexOption.IGNORE_CASE,
+        )
+        val leftPath = immutablePath.matchEntire(leftUri.rawPath.orEmpty()) ?: return false
+        val rightPath = immutablePath.matchEntire(rightUri.rawPath.orEmpty()) ?: return false
+        return leftUri.scheme.equals("https", ignoreCase = true) &&
+            rightUri.scheme.equals("https", ignoreCase = true) &&
+            leftUri.rawUserInfo == null && rightUri.rawUserInfo == null &&
+            leftUri.port in setOf(-1, 443) && rightUri.port in setOf(-1, 443) &&
+            leftUri.host.orEmpty().lowercase(Locale.ROOT) in replicaHosts &&
+            rightUri.host.orEmpty().lowercase(Locale.ROOT) in replicaHosts &&
+            leftPath.groupValues[1].equals(rightPath.groupValues[1], ignoreCase = true) &&
+            leftUri.rawQuery == null && rightUri.rawQuery == null &&
+            leftUri.rawFragment == null && rightUri.rawFragment == null
+    }
+
+    fun spoolStrictPublishedBody(
+        context: Context,
+        manga: Manga,
+        canonicalAsset: String,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        route: NtkResolvedSourceRoute,
+        callContext: NtkStrictCallContext,
+        cancellation: Cancellation,
+        onMetadata: (NtkSourceMetadata) -> Unit
+    ): NtkStrictPublishedBody {
+        require(manifestSeal.isStructurallyComplete)
+        require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
+        val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
+        require(manifestSeal.normalizedCanonicalAssets[pageIndex] == canonical)
+        require(callContext.tag.kind == NtkStrictSourceOperationKind.PRIMARY_FULL_BODY)
+
+        cancellation.throwIfCancelled()
+        val generation = cacheGeneration.get()
+        val cacheKey = key(manga.baseMode, canonical)
+        val finalFile = File(cacheDir(context.applicationContext), "$cacheKey.img")
+
+        // A click-owned quarantine flight may have downloaded and fully proved this exact body
+        // while the signed manifest was being established. Consult that atomic publication
+        // before even constructing a physical Call. The publication read lock makes the lookup
+        // generation-stable, while the per-key lock closes the adoption -> strict-source race.
+        val cachedBeforeCall = run {
+            cachePublicationLock.readLock().lock()
+            try {
+                if (generation != cacheGeneration.get()) {
+                    null
+                } else {
+                    withCacheWriteLock(cacheKey) {
+                        strictCachedPublishedBodyLocked(
+                            context.applicationContext,
+                            manga,
+                            canonical,
+                            manifestSeal,
+                            pageIndex,
+                            canonical,
+                            cacheKey
+                        )
+                    }
+                }
+            } finally {
+                cachePublicationLock.readLock().unlock()
+            }
+        }
+        if (cachedBeforeCall != null) {
+            try {
+                cancellation.throwIfCancelled()
+                onMetadata(cachedBeforeCall.metadata)
+                cancellation.throwIfCancelled()
+                val authority = cachedBeforeCall.metadata.authority
+                callContext.operationLease.complete(
+                    httpCode = 200,
+                    protocol = "strict-cache",
+                    responseBytes = cachedBeforeCall.proof.encodedLength,
+                    metadataWitnessBytes = authority.byteWitnessLength,
+                    metadataAcquisition = authority.acquisition.name,
+                    imageFormat = authority.imageFormat,
+                    contentRangeTotal = cachedBeforeCall.proof.encodedLength,
+                    connectionId = "",
+                    connectionReused = false,
+                    succeeded = true,
+                    partialBodyOperation = false,
+                    responseIdentityDigest = authority.responseIdentityDigest,
+                    metadataBindingDigest = cachedBeforeCall.metadata.metadataBindingDigest,
+                    bodyDigest = cachedBeforeCall.proof.encodedSha256
+                )
+                Log.d(
+                    TAG,
+                    "reader_strict_source_cache_hit_before_call page=$pageIndex," +
+                        "acquisition=${authority.acquisition.name}," +
+                        "bytes=${cachedBeforeCall.proof.encodedLength}"
+                )
+                return cachedBeforeCall
+            } catch (failure: Throwable) {
+                callContext.operationLease.complete()
+                throw failure
+            }
+        }
+
+        val request = route.requestTemplate.newBuilder()
+            .removeHeader("Range")
+            .removeHeader("If-Range")
+            .header("Accept-Encoding", "identity")
+            .tag(NtkStrictSourceCallTag::class.java, callContext.tag)
+            .build()
+        val call = try {
+            newTrackedNtkEpisodeCall(
+                manga,
+                canonicalAsset,
+                request,
+                route.callFactory,
+                cancellation
+            )
+        } catch (failure: Throwable) {
+            callContext.operationLease.complete()
+            throw failure
+        }
+
+        // Normal viewer images have a bounded Content-Length and finish in their final
+        // session-owned ByteArray. Do not create/delete 100+ empty temp files on that hot path;
+        // allocate a spool file lazily only for an unbounded/oversized response that really needs
+        // disk backing.
+        var tmp: File? = null
+        var code = 0
+        var protocol = ""
+        var responseBytes = 0L
+        var witnessBytes = 0L
+        var imageFormat = ""
+        var contentLength = -1L
+        var responseIdentityDigest = ""
+        var metadataBindingDigest = ""
+        var bodyDigest = ""
+        var succeeded = false
+        val physicalStartedAtNs = SystemClock.elapsedRealtimeNanos()
+        var headersAtNs = 0L
+        var bodyEofAtNs = 0L
+        var proofReadyAtNs = 0L
+        var publishedAtNs = 0L
+        var responseRangeCapable = false
+        var responseValidatorKind = "none"
+        var firstBodyByteAtNs = 0L
+        var lastBodyProgressAtNs = 0L
+        var maxBodyReadGapNs = 0L
+        var observedEncodedLength = 0L
+        fun elapsedMs(startNs: Long, endNs: Long): String =
+            String.format(Locale.ROOT, "%.3f", (endNs - startNs) / 1_000_000.0)
+        try {
+            call.execute().use { response ->
+                headersAtNs = SystemClock.elapsedRealtimeNanos()
+                code = response.code
+                protocol = response.protocol.toString()
+                when {
+                    response.code == 404 || response.code == 410 ->
+                        throw NtkTerminalSourceException(
+                            "HTTP ${response.code} strict primary full body"
+                        )
+                    response.code !in 200..299 ->
+                        throw IOException("HTTP ${response.code} strict primary full body")
+                }
+                if (response.code == 206 || response.header("Content-Range") != null) {
+                    throw NtkSourceIdentityException("Partial strict primary body is forbidden")
+                }
+                if (response.header("x-mangaviewer-partial-image") == "1") {
+                    throw NtkSourceIdentityException("Marked partial strict primary body is forbidden")
+                }
+                if (!validateNtkImageResponseUrl(
+                        manga,
+                        canonicalAsset,
+                        response,
+                        true,
+                        "strict_primary_full_body"
+                    )
+                ) throw NtkSourceIdentityException("Strict primary response identity mismatch")
+
+                responseIdentityDigest = strictResponseIdentityDigest(
+                    response.request.url.toString()
+                )
+                val strongValidatorDigest = strictStrongValidatorDigest(
+                    strictStrongValidator(response)
+                )
+                responseRangeCapable = response.header("Accept-Ranges")
+                    ?.split(',')
+                    ?.any { it.trim().equals("bytes", ignoreCase = true) } == true
+                responseValidatorKind = when {
+                    response.header("ETag")?.trim()?.let {
+                        it.isNotEmpty() && !it.startsWith("W/", ignoreCase = true)
+                    } == true -> "etag"
+                    !response.header("Last-Modified").isNullOrBlank() -> "last_modified"
+                    else -> "none"
+                }
+                val body = response.body ?: throw IOException("Empty strict primary body")
+                contentLength = body.contentLength()
+                if (contentLength == 0L) throw IOException("Empty strict primary body")
+
+                val fullDigest = MessageDigest.getInstance("SHA-256")
+                val metadataDigest = MessageDigest.getInstance("SHA-256")
+                val parser = NtkStreamingImageHeaderParser()
+                var parsed: NtkStreamingImageHeaderParser.Result.Exact? = null
+                var metadata: NtkSourceMetadata? = null
+                var encodedLength = 0L
+
+                fun publishMetadata(authoritativeLength: Long) {
+                    if (metadata != null) return
+                    val exact = parsed ?: throw NtkSourceIdentityException(
+                        "Strict primary body has no exact header proof"
+                    )
+                    require(authoritativeLength > 0L)
+                    val witnessSha = NtkStripDigests.bytesToLowerHex(metadataDigest.digest())
+                    val authority = NtkSourceMetadataAuthority.createStrict(
+                        acquisition = NtkMetadataAcquisition.PRIMARY_BODY_TEE,
+                        responseIdentityDigest = responseIdentityDigest,
+                        byteWitnessSha256 = witnessSha,
+                        byteWitnessLength = witnessBytes,
+                        encodedLength = authoritativeLength,
+                        strongValidatorDigest = strongValidatorDigest,
+                        imageFormat = exact.format
+                    )
+                    metadata = NtkSourceMetadata.createStrict(
+                        manifestSeal.revision,
+                        manifestSeal.digestSha256,
+                        pageIndex,
+                        canonical,
+                        exact.width,
+                        exact.height,
+                        authority
+                    )
+                    metadataBindingDigest = checkNotNull(metadata).metadataBindingDigest
+                    imageFormat = authority.imageFormat
+                    onMetadata(checkNotNull(metadata))
+                }
+
+                fun consumeChunk(buffer: ByteArray, offset: Int, count: Int) {
+                    val progressAtNs = SystemClock.elapsedRealtimeNanos()
+                    val priorProgressAtNs = lastBodyProgressAtNs.takeIf { it > 0L } ?: headersAtNs
+                    maxBodyReadGapNs = maxOf(maxBodyReadGapNs, progressAtNs - priorProgressAtNs)
+                    if (firstBodyByteAtNs == 0L) firstBodyByteAtNs = progressAtNs
+                    lastBodyProgressAtNs = progressAtNs
+                    val before = encodedLength
+                    fullDigest.update(buffer, offset, count)
+                    encodedLength += count.toLong()
+                    observedEncodedLength = encodedLength
+                    if (parsed != null) return
+                    when (val header = parser.feed(buffer, offset, count)) {
+                        NtkStreamingImageHeaderParser.Result.NeedMore -> {
+                            metadataDigest.update(buffer, offset, count)
+                            witnessBytes += count.toLong()
+                        }
+                        is NtkStreamingImageHeaderParser.Result.Invalid ->
+                            throw NtkSourceIdentityException(
+                                "Strict primary header invalid: ${header.reason}"
+                            )
+                        is NtkStreamingImageHeaderParser.Result.Exact -> {
+                            val currentWitness = header.consumedBytes
+                            val currentChunkWitness = currentWitness - before
+                            check(currentChunkWitness in 1..count.toLong()) {
+                                "Strict primary metadata witness offset mismatch"
+                            }
+                            metadataDigest.update(
+                                buffer,
+                                offset,
+                                currentChunkWitness.toInt()
+                            )
+                            witnessBytes = currentWitness
+                            parsed = header
+                            if (contentLength > 0L) publishMetadata(contentLength)
+                        }
+                    }
+                }
+
+                // The exact response is already bounded, immutable and SHA/header checked. Keep
+                // normal-sized bodies in their final session-owned byte array so decode can start
+                // at EOF while the rest of the episode is still downloading. Disk persistence is
+                // performed by persistAcceptedStrictPublishedBodyAsync only after viewer retire.
+                val residentBytes = contentLength
+                    .takeIf { it in 1..(64L * 1024L * 1024L) }
+                    ?.toInt()
+                    ?.let { expectedLength ->
+                        val direct = ByteArray(expectedLength)
+                        body.byteStream().use { input ->
+                            var offset = 0
+                            while (offset < direct.size) {
+                                cancellation.throwIfCancelled()
+                                val count = input.read(direct, offset, direct.size - offset)
+                                if (count < 0) break
+                                if (count == 0) continue
+                                consumeChunk(direct, offset, count)
+                                offset += count
+                            }
+                            if (offset != direct.size || input.read() >= 0) {
+                                throw NtkSourceIdentityException(
+                                    "Strict primary Content-Length body mismatch"
+                                )
+                            }
+                        }
+                        direct
+                }
+                if (residentBytes == null) {
+                    val diskTmp = createStrictSpoolFile(
+                        context.applicationContext,
+                        "strict-primary-${callContext.tag.operationId}-"
+                    ).also { tmp = it }
+                    FileOutputStream(diskTmp)
+                        .buffered(NTK_EXACT_BODY_WRITE_BUFFER_BYTES)
+                        .use { output ->
+                            body.byteStream().use { input ->
+                                val buffer = ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
+                                while (true) {
+                                    cancellation.throwIfCancelled()
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    if (count == 0) continue
+                                    output.write(buffer, 0, count)
+                                    consumeChunk(buffer, 0, count)
+                                }
+                                output.flush()
+                            }
+                        }
+                }
+                bodyEofAtNs = SystemClock.elapsedRealtimeNanos()
+
+                cancellation.throwIfCancelled()
+                if (encodedLength <= 0L) throw IOException("Empty strict primary body")
+                if (contentLength > 0L && encodedLength != contentLength) {
+                    throw NtkSourceIdentityException("Strict primary encoded length mismatch")
+                }
+                responseBytes = encodedLength
+                if (metadata == null) publishMetadata(encodedLength)
+                val acceptedMetadata = checkNotNull(metadata)
+                check(acceptedMetadata.authority.encodedLength == encodedLength) {
+                    "Strict primary metadata/body length mismatch"
+                }
+
+                bodyDigest = NtkStripDigests.bytesToLowerHex(fullDigest.digest())
+                val proof = NtkEncodedOriginalProof.createStrict(
+                    acceptedMetadata,
+                    bodyDigest,
+                    encodedLength
+                )
+                proof.requireProductionAuthority(acceptedMetadata)
+                proofReadyAtNs = SystemClock.elapsedRealtimeNanos()
+
+                val published = if (residentBytes != null) {
+                    strictPublishedBody(finalFile, acceptedMetadata, proof, residentBytes)
+                } else {
+                    val diskTmp = checkNotNull(tmp) {
+                        "Strict disk-backed body omitted its spool file"
+                    }
+                    val publishedFile = withCurrentCachePublication(generation) {
+                        withCacheWriteLock(cacheKey) {
+                            val existing = strictCachedPublishedBodyLocked(
+                                context.applicationContext,
+                                manga,
+                                canonical,
+                                manifestSeal,
+                                pageIndex,
+                                canonical,
+                                cacheKey
+                            )
+                            if (existing != null) {
+                                if (!existing.metadata.hasSameAuthority(acceptedMetadata) ||
+                                    existing.proof != proof
+                                ) throw NtkSourceIdentityException(
+                                    "Strict primary cache authority changed"
+                                )
+                                diskTmp.delete()
+                                touchCacheHitForLru(finalFile)
+                            } else {
+                                replaceStrictEncodedBody(diskTmp, finalFile, encodedLength)
+                                finalFile.setLastModified(System.currentTimeMillis())
+                                publishStrictEncodedOriginalProofV2(
+                                    manga,
+                                    canonical,
+                                    finalFile,
+                                    acceptedMetadata,
+                                    proof
+                                )
+                            }
+                            finalFile
+                        }
+                    } ?: throw IOException(
+                        "Strict primary cache publication generation invalidated"
+                    )
+                    scheduleTrim(context.applicationContext)
+                    strictPublishedBody(publishedFile, acceptedMetadata, proof)
+                }
+                publishedAtNs = SystemClock.elapsedRealtimeNanos()
+                succeeded = true
+                // The ownership ledger remains exact for every body. Formatting 114 detailed
+                // success records on source threads competes with EOF/SHA and JPEG decode during
+                // the only cold deadline; page zero is the representative stage breakdown while
+                // every failure is still reported by the operation completion path.
+                if (pageIndex == 0 || publishedAtNs - physicalStartedAtNs >= 2_000_000_000L) {
+                    Log.d(
+                        TAG,
+                        "reader_strict_source_stage page=$pageIndex," +
+                            "headersMs=${elapsedMs(physicalStartedAtNs, headersAtNs)}," +
+                            "firstByteMs=${elapsedMs(headersAtNs, firstBodyByteAtNs)}," +
+                            "bodyMs=${elapsedMs(headersAtNs, bodyEofAtNs)}," +
+                            "maxBodyReadGapMs=${String.format(Locale.ROOT, "%.3f", maxBodyReadGapNs / 1_000_000.0)}," +
+                            "proofMs=${elapsedMs(bodyEofAtNs, proofReadyAtNs)}," +
+                            "publicationMs=${elapsedMs(proofReadyAtNs, publishedAtNs)}," +
+                            "totalMs=${elapsedMs(physicalStartedAtNs, publishedAtNs)}," +
+                            "bytes=$encodedLength,rangeCapable=$responseRangeCapable," +
+                            "validator=$responseValidatorKind," +
+                            "storage=${if (residentBytes != null) "resident" else "disk"}"
+                    )
+                }
+                return published
+            }
+        } finally {
+            if (!succeeded && headersAtNs > 0L) {
+                val endedAtNs = SystemClock.elapsedRealtimeNanos()
+                Log.w(
+                    TAG,
+                    "reader_strict_source_body_failure_stage page=$pageIndex," +
+                        "headersMs=${elapsedMs(physicalStartedAtNs, headersAtNs)}," +
+                        "firstByteMs=${if (firstBodyByteAtNs > 0L) elapsedMs(headersAtNs, firstBodyByteAtNs) else "none"}," +
+                        "bodyElapsedMs=${elapsedMs(headersAtNs, endedAtNs)}," +
+                        "maxBodyReadGapMs=${String.format(Locale.ROOT, "%.3f", maxBodyReadGapNs / 1_000_000.0)}," +
+                        "receivedBytes=$observedEncodedLength,contentLength=$contentLength," +
+                        "rangeCapable=$responseRangeCapable,validator=$responseValidatorKind"
+                )
+            }
+            tmp?.let(::releaseStrictSpoolFile)
+            val connection = takeStrictConnectionObservation(callContext.tag)
+            reportStrictNetworkObservation(
+                callContext.tag,
+                protocol,
+                connection,
+                route.callFactoryId,
+                route.callFactory
+            )
+            callContext.operationLease.complete(
+                httpCode = code,
+                protocol = protocol,
+                responseBytes = responseBytes,
+                metadataWitnessBytes = witnessBytes,
+                metadataAcquisition = NtkMetadataAcquisition.PRIMARY_BODY_TEE.name,
+                imageFormat = imageFormat,
+                contentRangeTotal = contentLength,
+                connectionId = connection.connectionId,
+                connectionReused = connection.reused,
+                succeeded = succeeded,
+                partialBodyOperation = false,
+                responseIdentityDigest = responseIdentityDigest,
+                metadataBindingDigest = metadataBindingDigest,
+                bodyDigest = bodyDigest
+            )
+        }
+    }
+
+    private fun fileStartsWith(file: File, prefix: ByteArray): Boolean {
+        if (!file.isFile || prefix.isEmpty() || file.length() < prefix.size.toLong()) return false
+        return file.inputStream().buffered().use { input ->
+            val actual = ByteArray(prefix.size)
+            var offset = 0
+            while (offset < actual.size) {
+                val count = input.read(actual, offset, actual.size - offset)
+                if (count < 0) return@use false
+                if (count == 0) continue
+                offset += count
+            }
+            actual.contentEquals(prefix)
+        }
+    }
+
+    private fun publishStrictFullBodyResponse(
+        context: Context,
+        manga: Manga,
+        image: String,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        response: Response,
+        acquisition: NtkMetadataAcquisition,
+        expectedMetadata: NtkSourceMetadata?,
+        expectedPrefix: ByteArray?,
+        cancellation: Cancellation,
+        prefixToPrepend: ByteArray? = null,
+        expectedEncodedLength: Long = -1L
+    ): NtkStrictPublishedBody {
+        require(manifestSeal.isStructurallyComplete)
+        require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
+        val canonicalAsset = ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+        require(manifestSeal.normalizedCanonicalAssets[pageIndex] == canonicalAsset)
+        val generation = cacheGeneration.get()
+        val cacheKey = key(manga.baseMode, image)
+        val finalFile = File(cacheDir(context), "$cacheKey.img")
+        val tmp = createStrictSpoolFile(context, "strict-full-")
+        try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val header = ByteArrayOutputStream(NTK_SOURCE_METADATA_MAX_PROBE_BYTES)
+            var encodedLength = 0L
+            FileOutputStream(tmp)
+                .buffered(NTK_EXACT_BODY_WRITE_BUFFER_BYTES)
+                .use { output ->
+                fun writeChunk(bytes: ByteArray, offset: Int, length: Int) {
+                    if (length <= 0) return
+                    output.write(bytes, offset, length)
+                    digest.update(bytes, offset, length)
+                    encodedLength += length.toLong()
+                    if (header.size() < NTK_SOURCE_METADATA_MAX_PROBE_BYTES) {
+                        val keep = minOf(length, NTK_SOURCE_METADATA_MAX_PROBE_BYTES - header.size())
+                        header.write(bytes, offset, keep)
+                    }
+                }
+                prefixToPrepend?.let { writeChunk(it, 0, it.size) }
+                val body = response.body ?: throw IOException("Empty strict source body")
+                body.byteStream().use { input ->
+                    val buffer = ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
+                    while (true) {
+                        cancellation.throwIfCancelled()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (count == 0) continue
+                        writeChunk(buffer, 0, count)
+                    }
+                }
+            }
+            if (encodedLength <= 0L) throw IOException("Empty strict encoded body")
+            if (expectedEncodedLength > 0L && encodedLength != expectedEncodedLength) {
+                throw NtkSourceIdentityException("Strict full body length changed range authority")
+            }
+            val headerBytes = header.toByteArray()
+            if (expectedPrefix != null && expectedPrefix.isNotEmpty() &&
+                (headerBytes.size < expectedPrefix.size ||
+                    !headerBytes.copyOf(expectedPrefix.size).contentEquals(expectedPrefix))
+            ) {
+                throw NtkSourceIdentityException("Metadata/body prefix witness mismatch")
+            }
+            val parsed = exactImageHeader(tmp) ?: throw NtkSourceIdentityException(
+                "Strict body has no exact header proof"
+            )
+            val bounds = parsed.width to parsed.height
+            val format = NtkSourceMetadataAuthority.normalizeImageFormat(parsed.format)
+            val encodedSha = NtkStripDigests.bytesToLowerHex(digest.digest())
+            // Bind authority to the final, validated response identity. Digesting only the
+            // requested canonical asset would allow metadata and body to finish on two different
+            // trusted redirects without invalidating the accepted metadata.
+            val responseIdentityDigest = strictResponseIdentityDigest(
+                response.request.url.toString()
+            )
+            val metadata = if (expectedMetadata != null) {
+                expectedMetadata.requireProductionAuthority()
+                if (expectedMetadata.manifestRevision != manifestSeal.revision ||
+                    expectedMetadata.manifestDigest != manifestSeal.digestSha256 ||
+                    expectedMetadata.pageIndex != pageIndex ||
+                    expectedMetadata.canonicalAsset != canonicalAsset ||
+                    expectedMetadata.authority.responseIdentityDigest != responseIdentityDigest ||
+                    expectedMetadata.authority.encodedLength != encodedLength ||
+                    expectedMetadata.sourceWidth != bounds.first ||
+                    expectedMetadata.sourceHeight != bounds.second
+                ) {
+                    throw NtkSourceIdentityException("Strict body changed accepted metadata authority")
+                }
+                expectedMetadata
+            } else {
+                val authority = NtkSourceMetadataAuthority.createStrict(
+                    acquisition = acquisition,
+                    responseIdentityDigest = responseIdentityDigest,
+                    byteWitnessSha256 = encodedSha,
+                    byteWitnessLength = encodedLength,
+                    encodedLength = encodedLength,
+                    strongValidatorDigest = strictStrongValidatorDigest(strictStrongValidator(response)),
+                    imageFormat = format
+                )
+                NtkSourceMetadata.createStrict(
+                    manifestSeal.revision,
+                    manifestSeal.digestSha256,
+                    pageIndex,
+                    canonicalAsset,
+                    bounds.first,
+                    bounds.second,
+                    authority
+                )
+            }
+            if (expectedMetadata != null && expectedMetadata.authority.byteWitnessLength > 0L) {
+                val authority = expectedMetadata.authority
+                val witnessMatches = if (authority.byteWitnessLength == encodedLength) {
+                    // STAGE_BODY/RANGE_IGNORED metadata binds the whole encoded body. The
+                    // streaming digest is the exact witness even when the image exceeds the
+                    // 512-KiB adaptive-header ceiling.
+                    encodedSha == authority.byteWitnessSha256
+                } else {
+                    val witnessLength = authority.byteWitnessLength
+                    witnessLength <= headerBytes.size.toLong() &&
+                        sha256Bytes(headerBytes.copyOf(witnessLength.toInt())) ==
+                        authority.byteWitnessSha256
+                }
+                if (!witnessMatches) {
+                    throw NtkSourceIdentityException("Strict body byte witness changed")
+                }
+            }
+            val proof = NtkEncodedOriginalProof.createStrict(metadata, encodedSha, encodedLength)
+            val published = withCurrentCachePublication(generation) {
+                withCacheWriteLock(cacheKey) {
+                    val existing = encodedOriginalByteProof(manga, image, finalFile)
+                    if (existing != null) {
+                        if (existing.encodedSha256 != encodedSha || existing.encodedLength != encodedLength) {
+                            throw NtkSourceIdentityException("Encoded body mutated for strict source key")
+                        }
+                        tmp.delete()
+                        touchCacheHitForLru(finalFile)
+                    } else {
+                        replaceStrictEncodedBody(tmp, finalFile, encodedLength)
+                        finalFile.setLastModified(System.currentTimeMillis())
+                    }
+                    publishStrictEncodedOriginalProofV2(manga, image, finalFile, metadata, proof)
+                    finalFile
+                }
+            } ?: throw IOException("Strict cache publication generation invalidated")
+            scheduleTrim(context)
+            return strictPublishedBody(published, metadata, proof)
+        } catch (failure: Throwable) {
+            val recovered = strictCachedPublishedBody(context, manga, image, manifestSeal, pageIndex)
+            if (recovered != null &&
+                (expectedMetadata == null || recovered.metadata.hasSameAuthority(expectedMetadata))
+            ) return recovered
+            throw failure
+        } finally {
+            releaseStrictSpoolFile(tmp)
+        }
+    }
+
+    private fun parseStrictContentRange(value: String?): Triple<Long, Long, Long>? {
+        val match = Regex("(?i)^bytes\\s+(\\d+)-(\\d+)/(\\d+)$")
+            .matchEntire(value?.trim().orEmpty()) ?: return null
+        val start = match.groupValues[1].toLongOrNull() ?: return null
+        val end = match.groupValues[2].toLongOrNull() ?: return null
+        val total = match.groupValues[3].toLongOrNull() ?: return null
+        return Triple(start, end, total)
+    }
+
+    private fun strictStrongValidator(response: Response): String =
+        response.header("ETag")?.trim()?.takeIf {
+            it.isNotEmpty() && !it.startsWith("W/", ignoreCase = true)
+        }
+            ?: response.header("Last-Modified")?.trim().orEmpty()
+
+    private fun strictStrongValidatorDigest(value: String): String = NtkStripDigests.sha256Tokens(
+        "ntk-strong-validator-v1",
+        value.ifBlank { "none" }
+    )
+
+    private fun sha256Bytes(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return NtkStripDigests.bytesToLowerHex(digest)
+    }
+
+    private fun fullBodyMagicFormat(bytes: ByteArray): String? = when (imageByteFormat(bytes)) {
+        ImageByteFormat.JPEG -> "JPEG"
+        ImageByteFormat.PNG -> "PNG"
+        ImageByteFormat.WEBP -> "WEBP"
+        ImageByteFormat.GIF -> "GIF"
+        ImageByteFormat.UNKNOWN -> null
+    }
+
+    /** Publishes a Range-ignored 200 response as the ordinary immutable encoded body. */
+    private fun promoteNtkMetadataFullBodyResponse(
+        context: Context,
+        manga: Manga,
+        image: String,
+        response: Response,
+        cancellation: Cancellation
+    ): File {
+        val generation = cacheGeneration.get()
+        val cacheKey = key(manga.baseMode, image)
+        val finalFile = File(cacheDir(context), "$cacheKey.img")
+        val tmp = File(finalFile.parentFile, "${finalFile.name}.metadata.${System.nanoTime()}")
+        try {
+            val body = response.body ?: throw IOException("Empty metadata fallback body")
+            val proof = copyResponseBodyToFile(body, tmp, null, cancellation)
+            if (decodeNtkSourceBounds(tmp) == null) {
+                throw IOException("Invalid metadata fallback body")
+            }
+            val published = withCurrentCachePublication(generation) {
+                withCacheWriteLock(cacheKey) {
+                    val existingProof = if (isUsableImage(finalFile)) {
+                        encodedOriginalByteProof(manga, image, finalFile)
+                    } else null
+                    if (existingProof != null) {
+                        tmp.delete()
+                        touchCacheHitForLru(finalFile)
+                    } else {
+                        replaceEncodedBody(tmp, finalFile)
+                        finalFile.setLastModified(System.currentTimeMillis())
+                        publishEncodedOriginalByteProof(manga, image, finalFile, proof)
+                    }
+                    finalFile
+                }
+            } ?: throw IOException("Metadata fallback cache generation invalidated")
+            scheduleTrim(context)
+            notifyForegroundByteFlights(context, manga, image)
+            return published
+        } catch (failure: Throwable) {
+            tmp.delete()
+            val recovered = cachedImageFile(context, manga, image)
+            if (recovered != null && encodedOriginalByteProof(manga, image, recovered) != null) {
+                return recovered
+            }
+            throw failure
+        }
+    }
+
+    private fun decodeNtkSourceBounds(file: File): Pair<Int, Int>? {
+        if (!file.isFile || !file.canRead() || file.length() <= 0L) return null
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, options)
+        return if (options.outWidth > 0 && options.outHeight > 0) {
+            options.outWidth to options.outHeight
+        } else null
+    }
+
+    private fun decodeNtkSourceBounds(bytes: ByteArray): Pair<Int, Int>? {
+        if (bytes.isEmpty()) return null
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        return if (options.outWidth > 0 && options.outHeight > 0) {
+            options.outWidth to options.outHeight
+        } else null
+    }
+
+    private fun isKpNativeUnsafeUploadPayload(manga: Manga, image: String): Boolean {
+        return isNtkKpWebtoonSlugPathKey(manga.ntkEpisodePath?.trim().orEmpty()) &&
+            isNtkNativeUnsafeUploadPayloadUrl(image)
+    }
+
+    private fun throwIfKpNativeUnsafeUploadPayload(manga: Manga, image: String, source: String) {
+        if (!isKpNativeUnsafeUploadPayload(manga, image)) return
+        logCacheEvent(
+            "kp_native_unsafe_upload_payload_rejected",
+            manga,
+            image,
+            true,
+            "source=$source"
+        )
+        throw java.io.IOException("KP upload payload URL is not a renderable native image: $source")
     }
 
     fun cachedExactFile(context: Context, manga: Manga, image: String): File? {
@@ -691,13 +6482,824 @@ object ReaderImageCache {
         return finalFile.takeIf { isUsableImage(it) }
     }
 
+    /**
+     * Returns only proof captured while the encoded body was written. This method reads at most
+     * the tiny proof sidecar; it never re-reads the image body to manufacture a late digest.
+     */
+    @JvmStatic
+    fun encodedOriginalByteProof(
+        manga: Manga,
+        image: String,
+        file: File
+    ): EncodedOriginalByteProof? = encodedOriginalByteProof(manga.baseMode, image, file)
+
+    /** Returns only a complete v2 authority already bound to this exact manifest/page. */
+    fun strictCachedPublishedBody(
+        context: Context,
+        manga: Manga,
+        image: String,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int
+    ): NtkStrictPublishedBody? {
+        if (!manifestSeal.isStructurallyComplete || pageIndex !in manifestSeal.normalizedCanonicalAssets.indices) {
+            return null
+        }
+        val canonicalAsset = ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+        if (manifestSeal.normalizedCanonicalAssets[pageIndex] != canonicalAsset) return null
+        if (!manga.isOnline) return null
+        val cacheKey = key(manga.baseMode, image)
+        return withCacheWriteLock(cacheKey) {
+            strictCachedPublishedBodyLocked(
+                context,
+                manga,
+                image,
+                manifestSeal,
+                pageIndex,
+                canonicalAsset,
+                cacheKey
+            )
+        }
+    }
+
+    /** The body and v2 sidecar are a single in-process publication transaction. */
+    private fun strictCachedPublishedBodyLocked(
+        context: Context,
+        manga: Manga,
+        image: String,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        canonicalAsset: String,
+        cacheKey: String
+    ): NtkStrictPublishedBody? {
+        val file = File(
+            cacheDir(context.applicationContext),
+            "$cacheKey.img"
+        )
+        residentStrictPublishedBody(
+            manga,
+            canonicalAsset,
+            manifestSeal,
+            pageIndex,
+            cacheKey,
+            file
+        )?.let { return it }
+        val persisted = readStrictEncodedOriginalProofV2(manga, image, file) ?: return null
+        if (persisted.manifestRevision != manifestSeal.revision ||
+            persisted.manifestDigest != manifestSeal.digestSha256 ||
+            persisted.pageIndex != pageIndex
+        ) return null
+        val byteProof = encodedOriginalByteProof(manga, image, file) ?: return null
+        val parsed = exactImageHeader(file) ?: return null
+        val bounds = parsed.width to parsed.height
+        val format = NtkSourceMetadataAuthority.normalizeImageFormat(parsed.format)
+        if (persisted.encodedLength != byteProof.encodedLength ||
+            persisted.encodedSha256 != byteProof.encodedSha256 ||
+            persisted.sourceWidth != bounds.first || persisted.sourceHeight != bounds.second ||
+            persisted.imageFormat != format
+        ) return null
+        val authority = NtkSourceMetadataAuthority.createStrict(
+            acquisition = persisted.metadataAcquisition,
+            responseIdentityDigest = persisted.responseIdentityDigest,
+            byteWitnessSha256 = persisted.byteWitnessSha256,
+            byteWitnessLength = persisted.byteWitnessLength,
+            encodedLength = persisted.encodedLength,
+            strongValidatorDigest = persisted.strongValidatorDigest,
+            imageFormat = persisted.imageFormat
+        )
+        val metadata = NtkSourceMetadata.createStrict(
+            manifestRevision = manifestSeal.revision,
+            manifestDigest = manifestSeal.digestSha256,
+            pageIndex = pageIndex,
+            canonicalAsset = canonicalAsset,
+            sourceWidth = bounds.first,
+            sourceHeight = bounds.second,
+            authority = authority
+        )
+        val proof = NtkEncodedOriginalProof.createStrict(
+            metadata,
+            byteProof.encodedSha256,
+            byteProof.encodedLength
+        )
+        if (persisted.metadataBindingDigest != metadata.metadataBindingDigest ||
+            persisted.encodedSha256 != proof.encodedSha256 ||
+            persisted.encodedLength != proof.encodedLength
+        ) return null
+        // The actor synchronously converts this cache hit into an authority-bound lifetime pin.
+        // Refresh the proof-sidecar LRU clock while the same per-key lock is still held so a
+        // concurrent trim cannot delete an old body in the lookup -> pin handoff interval.
+        touchCacheHitForLru(file)
+        return strictPublishedBody(file, metadata, proof)
+    }
+
+    private fun registerResidentStrictPublishedBody(
+        generation: Long,
+        baseMode: Int,
+        cacheKey: String,
+        canonicalAsset: String,
+        file: File,
+        metadata: NtkSourceMetadata,
+        proof: NtkEncodedOriginalProof
+    ): ResidentStrictPublishedBody {
+        metadata.requireProductionAuthority()
+        proof.requireProductionAuthority(metadata)
+        val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
+        require(metadata.canonicalAsset == canonical)
+        require(file.isFile && file.length() == proof.encodedLength)
+        val resident = ResidentStrictPublishedBody(
+            generation = generation,
+            baseMode = baseMode,
+            cacheKey = cacheKey,
+            canonicalAsset = canonical,
+            assetIdentityDigest = encodedOriginalAssetIdentityDigest(baseMode, canonical),
+            file = file,
+            fileLength = file.length(),
+            fileLastModified = file.lastModified(),
+            metadata = metadata,
+            proof = proof
+        )
+        residentStrictPublishedBodies[file.absolutePath] = resident
+        return resident
+    }
+
+    private fun residentStrictAuthorityMatches(
+        resident: ResidentStrictPublishedBody,
+        baseMode: Int,
+        canonicalAsset: String,
+        file: File,
+        expectedMetadata: NtkSourceMetadata,
+        expectedProof: NtkEncodedOriginalProof
+    ): Boolean {
+        val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
+        return resident.generation == cacheGeneration.get() &&
+            resident.baseMode == baseMode &&
+            resident.cacheKey == key(baseMode, canonical) &&
+            resident.canonicalAsset == canonical &&
+            resident.assetIdentityDigest == encodedOriginalAssetIdentityDigest(baseMode, canonical) &&
+            resident.file.absolutePath == file.absolutePath &&
+            file.isFile && file.length() == resident.fileLength &&
+            file.lastModified() == resident.fileLastModified &&
+            resident.fileLength == resident.proof.encodedLength &&
+            resident.metadata.hasSameAuthority(expectedMetadata) &&
+            resident.proof == expectedProof
+    }
+
+    private fun residentStrictPublishedBody(
+        manga: Manga,
+        canonicalAsset: String,
+        manifestSeal: NtkEpisodeManifestSeal,
+        pageIndex: Int,
+        cacheKey: String,
+        file: File
+    ): NtkStrictPublishedBody? {
+        val resident = residentStrictPublishedBodies[file.absolutePath] ?: return null
+        val authorityMatches = residentStrictAuthorityMatches(
+            resident,
+            manga.baseMode,
+            canonicalAsset,
+            file,
+            resident.metadata,
+            resident.proof
+        ) && resident.cacheKey == cacheKey &&
+            resident.metadata.manifestRevision == manifestSeal.revision &&
+            resident.metadata.manifestDigest == manifestSeal.digestSha256 &&
+            resident.metadata.pageIndex == pageIndex
+        if (!authorityMatches) {
+            residentStrictPublishedBodies.remove(file.absolutePath, resident)
+            pendingStrictProofPublications.remove(file.absolutePath, resident)
+            return null
+        }
+        return strictPublishedBody(file, resident.metadata, resident.proof)
+    }
+
+    /** Removes only a cache body that has neither a valid persisted proof nor resident authority. */
+    private fun retireUnprovedStrictCacheTarget(cacheKey: String, file: File) {
+        check((activeReads[cacheKey]?.get() ?: 0) == 0) {
+            "Unproved strict cache target is still leased"
+        }
+        residentStrictPublishedBodies.remove(file.absolutePath)
+        pendingStrictProofPublications.remove(file.absolutePath)
+        encodedOriginalByteProofs.remove(file.absolutePath)
+        strictEncodedOriginalProofSidecar(file).delete()
+        encodedOriginalProofSidecar(file).delete()
+        if (file.exists() && !file.delete()) {
+            throw IOException("Unable to retire unproved strict cache target")
+        }
+    }
+
+    private fun deferStrictProofPersistence(resident: ResidentStrictPublishedBody) {
+        pendingStrictProofPublications[resident.file.absolutePath] = resident
+        scheduleStrictProofPersistence()
+    }
+
+    private fun scheduleStrictProofPersistence() {
+        if (!strictProofPersistenceScheduled.compareAndSet(false, true)) return
+        trimExecutor.schedule({
+            try {
+                pendingStrictProofPublications.values.toList().forEach { resident ->
+                    persistResidentStrictProof(resident)
+                }
+            } finally {
+                strictProofPersistenceScheduled.set(false)
+                if (pendingStrictProofPublications.isNotEmpty()) {
+                    scheduleStrictProofPersistence()
+                }
+            }
+        }, STRICT_PROOF_PERSIST_DELAY_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private fun persistResidentStrictProof(resident: ResidentStrictPublishedBody) {
+        val path = resident.file.absolutePath
+        if (resident.generation != cacheGeneration.get()) {
+            pendingStrictProofPublications.remove(path, resident)
+            residentStrictPublishedBodies.remove(path, resident)
+            return
+        }
+        cachePublicationLock.readLock().lock()
+        try {
+            if (resident.generation != cacheGeneration.get()) {
+                pendingStrictProofPublications.remove(path, resident)
+                residentStrictPublishedBodies.remove(path, resident)
+                return
+            }
+            withCacheWriteLock(resident.cacheKey) {
+                if (pendingStrictProofPublications[path] !== resident ||
+                    residentStrictPublishedBodies[path] !== resident ||
+                    !residentStrictAuthorityMatches(
+                        resident,
+                        resident.baseMode,
+                        resident.canonicalAsset,
+                        resident.file,
+                        resident.metadata,
+                        resident.proof
+                    )
+                ) {
+                    pendingStrictProofPublications.remove(path, resident)
+                    return@withCacheWriteLock
+                }
+                publishStrictEncodedOriginalProofV2(
+                    resident.baseMode,
+                    resident.canonicalAsset,
+                    resident.file,
+                    resident.metadata,
+                    resident.proof
+                )
+                pendingStrictProofPublications.remove(path, resident)
+            }
+        } catch (failure: Throwable) {
+            Log.w(TAG, "Deferred strict proof persistence failed for ${resident.cacheKey}", failure)
+        } finally {
+            cachePublicationLock.readLock().unlock()
+        }
+    }
+
+    private data class StrictEncodedOriginalProofV2(
+        val assetIdentityDigest: String,
+        val responseIdentityDigest: String,
+        val encodedLength: Long,
+        val encodedSha256: String,
+        val sourceWidth: Int,
+        val sourceHeight: Int,
+        val metadataBindingDigest: String,
+        val bodyFileName: String,
+        val bodyFileLength: Long,
+        val bodyFileModified: Long,
+        val strongValidatorDigest: String,
+        val imageFormat: String,
+        val metadataAcquisition: NtkMetadataAcquisition,
+        val byteWitnessSha256: String,
+        val byteWitnessLength: Long,
+        val manifestRevision: Long,
+        val manifestDigest: String,
+        val pageIndex: Int
+    )
+
+    private fun strictEncodedOriginalProofSidecar(file: File): File =
+        File(file.parentFile, "${file.name}.encoded-proof-v2")
+
+    private fun readStrictEncodedOriginalProofV2(
+        manga: Manga,
+        image: String,
+        file: File
+    ): StrictEncodedOriginalProofV2? {
+        val sidecar = strictEncodedOriginalProofSidecar(file)
+        val lines = try {
+            if (!sidecar.isFile || sidecar.length() !in 128L..4096L) return null
+            sidecar.bufferedReader(Charsets.UTF_8).use { it.readLines() }
+        } catch (_: Throwable) {
+            return null
+        }
+        if (lines.size != 19 || lines[0] != "ntk-encoded-original-proof-v2") return null
+        val acquisition = runCatching { NtkMetadataAcquisition.valueOf(lines[13]) }
+            .getOrNull() ?: return null
+        val value = StrictEncodedOriginalProofV2(
+            assetIdentityDigest = lines[1],
+            responseIdentityDigest = lines[2],
+            encodedLength = lines[3].toLongOrNull() ?: return null,
+            encodedSha256 = lines[4],
+            sourceWidth = lines[5].toIntOrNull() ?: return null,
+            sourceHeight = lines[6].toIntOrNull() ?: return null,
+            metadataBindingDigest = lines[7],
+            bodyFileName = lines[8],
+            bodyFileLength = lines[9].toLongOrNull() ?: return null,
+            bodyFileModified = lines[10].toLongOrNull() ?: return null,
+            strongValidatorDigest = lines[11],
+            imageFormat = lines[12],
+            metadataAcquisition = acquisition,
+            byteWitnessSha256 = lines[14],
+            byteWitnessLength = lines[15].toLongOrNull() ?: return null,
+            manifestRevision = lines[16].toLongOrNull() ?: return null,
+            manifestDigest = lines[17],
+            pageIndex = lines[18].toIntOrNull() ?: return null
+        )
+        val expectedAsset = encodedOriginalAssetIdentityDigest(manga, image)
+        return value.takeIf {
+            it.assetIdentityDigest == expectedAsset &&
+                it.bodyFileName == file.name &&
+                it.bodyFileLength == file.length() &&
+                it.bodyFileModified == file.lastModified() &&
+                it.encodedLength == file.length() &&
+                it.sourceWidth > 0 && it.sourceHeight > 0 &&
+                NtkStripDigests.isSha256(it.responseIdentityDigest) &&
+                NtkStripDigests.isSha256(it.encodedSha256) &&
+                NtkStripDigests.isSha256(it.metadataBindingDigest) &&
+                NtkStripDigests.isSha256(it.strongValidatorDigest) &&
+                it.imageFormat.isNotBlank() &&
+                it.imageFormat == NtkSourceMetadataAuthority.normalizeImageFormat(it.imageFormat) &&
+                NtkStripDigests.isSha256(it.byteWitnessSha256) &&
+                it.byteWitnessLength > 0L &&
+                it.byteWitnessLength <= it.encodedLength &&
+                (it.metadataAcquisition == NtkMetadataAcquisition.PRIMARY_BODY_TEE ||
+                    it.byteWitnessLength == it.encodedLength) &&
+                it.manifestRevision >= 0L &&
+                NtkStripDigests.isSha256(it.manifestDigest) &&
+                it.pageIndex >= 0
+        }
+    }
+
+    private fun publishStrictEncodedOriginalProofV2(
+        manga: Manga,
+        image: String,
+        file: File,
+        metadata: NtkSourceMetadata,
+        proof: NtkEncodedOriginalProof
+    ) = publishStrictEncodedOriginalProofV2(
+        manga.baseMode,
+        image,
+        file,
+        metadata,
+        proof
+    )
+
+    private fun publishStrictEncodedOriginalProofV2(
+        baseMode: Int,
+        image: String,
+        file: File,
+        metadata: NtkSourceMetadata,
+        proof: NtkEncodedOriginalProof
+    ) {
+        metadata.requireProductionAuthority()
+        proof.requireProductionAuthority(metadata)
+        check(file.isFile && file.length() == proof.encodedLength)
+        val sidecar = strictEncodedOriginalProofSidecar(file)
+        val tmp = File(sidecar.parentFile, "${sidecar.name}.${System.nanoTime()}")
+        try {
+            FileOutputStream(tmp).bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.appendLine("ntk-encoded-original-proof-v2")
+                writer.appendLine(encodedOriginalAssetIdentityDigest(baseMode, image))
+                writer.appendLine(metadata.authority.responseIdentityDigest)
+                writer.appendLine(proof.encodedLength.toString())
+                writer.appendLine(proof.encodedSha256)
+                writer.appendLine(proof.sourceWidth.toString())
+                writer.appendLine(proof.sourceHeight.toString())
+                writer.appendLine(proof.metadataBindingDigest)
+                writer.appendLine(file.name)
+                writer.appendLine(file.length().toString())
+                writer.appendLine(file.lastModified().toString())
+                writer.appendLine(metadata.authority.strongValidatorDigest)
+                writer.appendLine(metadata.authority.imageFormat)
+                writer.appendLine(metadata.authority.acquisition.name)
+                writer.appendLine(metadata.authority.byteWitnessSha256)
+                writer.appendLine(metadata.authority.byteWitnessLength.toString())
+                writer.appendLine(metadata.manifestRevision.toString())
+                writer.appendLine(metadata.manifestDigest)
+                writer.appendLine(metadata.pageIndex.toString())
+            }
+            replaceProofSidecar(tmp, sidecar)
+            // v2 contains the same immutable SHA/length/file binding plus strict authority.
+            // Keep exactly one proof sidecar per strict body.
+            val legacySidecar = encodedOriginalProofSidecar(file)
+            if (legacySidecar.isFile && !legacySidecar.delete()) {
+                sidecar.delete()
+                throw IOException("Unable to retire legacy proof after strict upgrade")
+            }
+            encodedOriginalByteProofs[file.absolutePath] = StoredEncodedOriginalByteProof(
+                assetIdentityDigest = encodedOriginalAssetIdentityDigest(baseMode, image),
+                fileLength = file.length(),
+                fileLastModified = file.lastModified(),
+                proof = EncodedOriginalByteProof(proof.encodedSha256, proof.encodedLength),
+                sidecarVersion = 2
+            )
+        } finally {
+            tmp.delete()
+        }
+    }
+
+    private fun strictResponseIdentityDigest(value: String): String = NtkStripDigests.sha256Tokens(
+        "ntk-response-identity-v1",
+        ReaderPreparedStore.canonicalOriginalAssetIdentity(value)
+    )
+
+    private fun exactImageFormat(file: File): String? = exactImageHeader(file)?.format?.let {
+        NtkSourceMetadataAuthority.normalizeImageFormat(it)
+    }
+
+    /** Reads encoded header bytes only, growing past the range-probe cap when a full body exists. */
+    private fun exactImageHeader(file: File): NtkExactImageHeaderParser.Result.Exact? {
+        if (!file.isFile || file.length() <= 0L || file.length() > Int.MAX_VALUE.toLong()) return null
+        val output = ByteArrayOutputStream(
+            minOf(file.length(), NTK_SOURCE_METADATA_MAX_PROBE_BYTES.toLong()).toInt()
+                .coerceAtLeast(32)
+        )
+        val parser = NtkExactImageHeaderParser()
+        file.inputStream().buffered().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count == 0) continue
+                output.write(buffer, 0, count)
+                when (val result = parser.feed(output.toByteArray())) {
+                    is NtkExactImageHeaderParser.Result.Exact -> return result
+                    is NtkExactImageHeaderParser.Result.Invalid -> return null
+                    is NtkExactImageHeaderParser.Result.NeedMore -> Unit
+                }
+            }
+        }
+        return (NtkExactImageHeaderParser().feed(output.toByteArray()) as?
+            NtkExactImageHeaderParser.Result.Exact)
+    }
+
+    private fun encodedOriginalByteProof(
+        baseMode: Int,
+        image: String,
+        file: File
+    ): EncodedOriginalByteProof? {
+        if (!file.isFile || file.length() <= 0L) return null
+        val mapKey = file.absolutePath
+        val expectedAsset = encodedOriginalAssetIdentityDigest(baseMode, image)
+        val v2 = strictEncodedOriginalProofSidecar(file)
+        val legacy = encodedOriginalProofSidecar(file)
+        encodedOriginalByteProofs[mapKey]?.let { stored ->
+            val currentSidecarGeneration = when {
+                v2.isFile && !legacy.isFile -> 2
+                !v2.isFile -> 1
+                else -> 0 // both generations must converge through the validated v2 path below
+            }
+            if (stored.sidecarVersion == currentSidecarGeneration &&
+                stored.assetIdentityDigest == expectedAsset &&
+                stored.fileLength == file.length() &&
+                stored.fileLastModified == file.lastModified()
+            ) return stored.proof
+            encodedOriginalByteProofs.remove(mapKey, stored)
+        }
+        val length: Long
+        val modified: Long
+        val sha256: String
+        if (v2.isFile) {
+            // v2 is the authoritative restart-safe proof. If a crash left both generations,
+            // validate the complete v2 binding first and then retire v1. Never silently
+            // downgrade to v1 merely because a present v2 is malformed or partially written.
+            val lines = try {
+                if (v2.length() !in 128L..4096L) return null
+                v2.bufferedReader(Charsets.UTF_8).use { it.readLines() }
+            } catch (_: Exception) {
+                return null
+            }
+            length = lines.getOrNull(3)?.toLongOrNull() ?: return null
+            modified = lines.getOrNull(10)?.toLongOrNull() ?: return null
+            sha256 = lines.getOrNull(4) ?: return null
+            val acquisition = lines.getOrNull(13)?.let { value ->
+                runCatching { NtkMetadataAcquisition.valueOf(value) }.getOrNull()
+            } ?: return null
+            val witnessLength = lines.getOrNull(15)?.toLongOrNull() ?: return null
+            if (lines.size != 19 || lines[0] != "ntk-encoded-original-proof-v2" ||
+                lines[1] != expectedAsset || !NtkStripDigests.isSha256(lines[2]) ||
+                length <= 0L || !NtkStripDigests.isSha256(sha256) ||
+                (lines[5].toIntOrNull() ?: 0) <= 0 ||
+                (lines[6].toIntOrNull() ?: 0) <= 0 ||
+                !NtkStripDigests.isSha256(lines[7]) || lines[8] != file.name ||
+                lines[9].toLongOrNull() != file.length() ||
+                length != file.length() || modified != file.lastModified() ||
+                !NtkStripDigests.isSha256(lines[11]) || lines[12].isBlank() ||
+                lines[12] != NtkSourceMetadataAuthority.normalizeImageFormat(lines[12]) ||
+                !NtkStripDigests.isSha256(lines[14]) || witnessLength <= 0L ||
+                witnessLength > length ||
+                (acquisition != NtkMetadataAcquisition.PRIMARY_BODY_TEE &&
+                    witnessLength != length) ||
+                (lines[16].toLongOrNull() ?: -1L) < 0L ||
+                !NtkStripDigests.isSha256(lines[17]) ||
+                (lines[18].toIntOrNull() ?: -1) < 0
+            ) return null
+            if (legacy.isFile) {
+                val retired = withCacheWriteLock(file.name.removeSuffix(".img")) {
+                    !legacy.isFile || legacy.delete()
+                }
+                if (!retired) return null
+            }
+        } else {
+            // Legacy-only v1 remains readable for migration. Any strict use upgrades it to v2.
+            val v1 = encodedOriginalProofSidecar(file)
+            val lines = try {
+                if (!v1.isFile || v1.length() !in 64L..1024L) return null
+                v1.bufferedReader(Charsets.UTF_8).use { it.readLines() }
+            } catch (_: Exception) {
+                return null
+            }
+            if (lines.size != 6 || lines[0] != "ntk-encoded-original-proof-v1" ||
+                lines[1] != expectedAsset || lines[5] != file.name
+            ) return null
+            length = lines[2].toLongOrNull() ?: return null
+            modified = lines[3].toLongOrNull() ?: return null
+            sha256 = lines[4]
+            if (length != file.length() || modified != file.lastModified() ||
+                !NtkStripDigests.isSha256(sha256)
+            ) return null
+        }
+        val stored = StoredEncodedOriginalByteProof(
+            assetIdentityDigest = expectedAsset,
+            fileLength = length,
+            fileLastModified = modified,
+            proof = EncodedOriginalByteProof(sha256, length),
+            sidecarVersion = if (v2.isFile) 2 else 1
+        )
+        encodedOriginalByteProofs[mapKey] = stored
+        return stored.proof
+    }
+
+    private fun encodedOriginalAssetIdentityDigest(manga: Manga, image: String): String =
+        encodedOriginalAssetIdentityDigest(manga.baseMode, image)
+
+    private fun encodedOriginalAssetIdentityDigest(baseMode: Int, image: String): String =
+        NtkStripDigests.sha256Tokens(
+            "reader-image-encoded-original-v1",
+            baseMode.toString(),
+            ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+        )
+
+    private fun encodedOriginalProofSidecar(file: File): File =
+        File(file.parentFile, "${file.name}.encoded-proof-v1")
+
+    /**
+     * The body mtime is part of the encoded-original proof and is therefore immutable after
+     * publication. Proof-backed entries use the sidecar mtime as their LRU clock; legacy entries
+     * without a proof keep using the body mtime. All touches serialize with body publication and
+     * eviction for the same cache key.
+     */
+    private fun touchCacheHitForLru(file: File) {
+        val cacheKey = file.name.removeSuffix(".img")
+        withCacheWriteLock(cacheKey) {
+            if (!file.isFile) return@withCacheWriteLock
+            val strictProof = strictEncodedOriginalProofSidecar(file)
+            val legacyProof = encodedOriginalProofSidecar(file)
+            val accessClock = when {
+                strictProof.isFile -> strictProof
+                legacyProof.isFile -> legacyProof
+                else -> file
+            }
+            val current = accessClock.lastModified()
+            val touchedAt = maxOf(current, System.currentTimeMillis())
+            if (touchedAt != current) accessClock.setLastModified(touchedAt)
+        }
+    }
+
+    private fun cacheLastAccessModified(file: File): Long {
+        val bodyModified = file.lastModified()
+        val strictProof = strictEncodedOriginalProofSidecar(file)
+        val legacyProof = encodedOriginalProofSidecar(file)
+        return when {
+            strictProof.isFile -> maxOf(bodyModified, strictProof.lastModified())
+            legacyProof.isFile -> maxOf(bodyModified, legacyProof.lastModified())
+            else -> bodyModified
+        }
+    }
+
+    /** Must be called only after the matching body bytes have been atomically published. */
+    private fun publishEncodedOriginalByteProof(
+        manga: Manga,
+        image: String,
+        file: File,
+        proof: EncodedOriginalByteProof
+    ) = publishEncodedOriginalByteProof(manga.baseMode, image, file, proof)
+
+    private fun publishEncodedOriginalByteProof(
+        baseMode: Int,
+        image: String,
+        file: File,
+        proof: EncodedOriginalByteProof
+    ) {
+        check(file.isFile && file.length() == proof.encodedLength)
+        val stored = StoredEncodedOriginalByteProof(
+            assetIdentityDigest = encodedOriginalAssetIdentityDigest(baseMode, image),
+            fileLength = file.length(),
+            fileLastModified = file.lastModified(),
+            proof = proof
+        )
+        val sidecar = encodedOriginalProofSidecar(file)
+        val tmp = File(sidecar.parentFile, "${sidecar.name}.${System.nanoTime()}")
+        try {
+            FileOutputStream(tmp).bufferedWriter(Charsets.UTF_8).use { writer ->
+                writer.appendLine("ntk-encoded-original-proof-v1")
+                writer.appendLine(stored.assetIdentityDigest)
+                writer.appendLine(stored.fileLength.toString())
+                writer.appendLine(stored.fileLastModified.toString())
+                writer.appendLine(stored.proof.encodedSha256)
+                writer.appendLine(file.name)
+            }
+            replaceProofSidecar(tmp, sidecar)
+            encodedOriginalByteProofs[file.absolutePath] = stored
+        } catch (failure: Throwable) {
+            tmp.delete()
+            encodedOriginalByteProofs.remove(file.absolutePath)
+            throw java.io.IOException("Unable to publish encoded-original proof", failure)
+        }
+    }
+
+    private fun replaceProofSidecar(tmp: File, sidecar: File) {
+        if (!tmp.isFile || tmp.length() <= 0L) throw java.io.FileNotFoundException(tmp.absolutePath)
+        replaceFileAtomically(tmp, sidecar, "encoded-original proof sidecar")
+        if (!sidecar.isFile || sidecar.length() <= 0L) {
+            throw java.io.IOException("Encoded-original proof sidecar publication failed")
+        }
+    }
+
+    private fun replaceEncodedBody(tmp: File, finalFile: File) {
+        if (!tmp.isFile) throw java.io.FileNotFoundException(tmp.absolutePath)
+        tmp.copyTo(finalFile, overwrite = true)
+        tmp.delete()
+        if (!isUsableImage(finalFile)) {
+            throw java.io.IOException("Encoded-original cache publication is not usable")
+        }
+    }
+
+    /** Strict publication has already proved header, bounds, length, and SHA before publication. */
+    private fun replaceStrictEncodedBody(tmp: File, finalFile: File, encodedLength: Long) {
+        val destinationTmp = stageStrictEncodedBodyForAtomicPublication(
+            tmp,
+            finalFile,
+            encodedLength
+        )
+        try {
+            // Only the destination-side temp is renamed. The final path is therefore never a
+            // partial cross-directory copy, even if noBackup and cacheDir are different mounts.
+            replaceFileAtomically(destinationTmp, finalFile, "strict encoded-original body")
+        } finally {
+            releaseStrictPublishTemp(destinationTmp)
+        }
+        if (!finalFile.isFile || finalFile.length() != encodedLength) {
+            throw java.io.IOException("Strict encoded-original cache publication is incomplete")
+        }
+    }
+
+    private fun stageStrictEncodedBodyForAtomicPublication(
+        source: File,
+        finalFile: File,
+        encodedLength: Long,
+        tryRename: (File, File) -> Boolean = ::tryRenameStrictSpoolToDestinationTemp,
+        trackActive: Boolean = true
+    ): File {
+        if (!source.isFile || source.length() != encodedLength) {
+            throw java.io.FileNotFoundException(source.absolutePath)
+        }
+        val destinationDir = finalFile.parentFile
+            ?: throw java.io.IOException("Strict encoded-original destination is absent")
+        if (!destinationDir.isDirectory) {
+            destinationDir.mkdirs()
+            if (!destinationDir.isDirectory) {
+                throw java.io.IOException("Strict encoded-original destination is unavailable")
+            }
+        }
+        if (trackActive) cleanupStaleStrictPublishTemps(destinationDir)
+        val destinationTmp = File.createTempFile(
+            "${finalFile.name}.strict.publish.",
+            ".tmp",
+            destinationDir
+        )
+        if (trackActive) activeStrictPublishTempFiles.add(destinationTmp.absolutePath)
+        try {
+            // noBackupFilesDir and cacheDir normally share a filesystem. Adopt the verified body
+            // with an O(1) rename in that case; only EXDEV is allowed to take the copy fallback.
+            if (tryRename(source, destinationTmp)) {
+                if (source.exists() || !destinationTmp.isFile ||
+                    destinationTmp.length() != encodedLength
+                ) throw java.io.IOException("Strict encoded-original staging rename is incomplete")
+                return destinationTmp
+            }
+            if (!source.isFile || source.length() != encodedLength) {
+                throw java.io.FileNotFoundException(source.absolutePath)
+            }
+            val copied = source.inputStream().use { input ->
+                FileOutputStream(destinationTmp).use { output ->
+                    val count = input.copyTo(output)
+                    output.flush()
+                    count
+                }
+            }
+            if (copied != encodedLength || destinationTmp.length() != encodedLength) {
+                throw java.io.IOException("Strict encoded-original staging copy is incomplete")
+            }
+            return destinationTmp
+        } catch (failure: Throwable) {
+            if (trackActive) activeStrictPublishTempFiles.remove(destinationTmp.absolutePath)
+            destinationTmp.delete()
+            throw failure
+        }
+    }
+
+    private fun tryRenameStrictSpoolToDestinationTemp(source: File, destination: File): Boolean {
+        return try {
+            Os.rename(source.absolutePath, destination.absolutePath)
+            true
+        } catch (failure: ErrnoException) {
+            if (failure.errno == OsConstants.EXDEV) {
+                false
+            } else {
+                throw java.io.IOException(
+                    "Unable to stage strict encoded-original body by rename",
+                    failure
+                )
+            }
+        }
+    }
+
+    @JvmStatic
+    internal fun stageStrictEncodedBodyForTest(
+        source: File,
+        finalFile: File,
+        encodedLength: Long,
+        tryRename: (File, File) -> Boolean
+    ): File = stageStrictEncodedBodyForAtomicPublication(
+        source,
+        finalFile,
+        encodedLength,
+        tryRename,
+        trackActive = false
+    )
+
+    private fun moveQuarantineBodyAtomically(
+        sealedFile: File,
+        finalFile: File,
+        encodedLength: Long
+    ) {
+        if (!sealedFile.isFile || sealedFile.length() != encodedLength) {
+            throw FileNotFoundException(sealedFile.absolutePath)
+        }
+        val cacheRoot = finalFile.parentFile?.canonicalFile
+            ?: throw IOException("Exact cache root is absent")
+        val quarantineCanonical = sealedFile.canonicalFile
+        check(quarantineCanonical.path.startsWith(cacheRoot.path + File.separator)) {
+            "Quarantine body escaped the exact cache filesystem"
+        }
+        try {
+            Os.rename(sealedFile.absolutePath, finalFile.absolutePath)
+        } catch (failure: Throwable) {
+            throw IOException("Unable to atomically adopt quarantine body", failure)
+        }
+        if (sealedFile.exists() || !finalFile.isFile ||
+            finalFile.length() != encodedLength
+        ) throw IOException("Atomic quarantine adoption did not commit")
+    }
+
+    /** Both paths are created in the same cache directory; POSIX rename replaces atomically. */
+    private fun replaceFileAtomically(tmp: File, destination: File, label: String) {
+        check(tmp.parentFile == destination.parentFile) { "$label must stay on one filesystem" }
+        try {
+            Os.rename(tmp.absolutePath, destination.absolutePath)
+        } catch (failure: Throwable) {
+            throw IOException("Unable to atomically publish $label", failure)
+        }
+        if (tmp.exists() || !destination.isFile) {
+            throw IOException("Atomic $label publication did not commit")
+        }
+    }
+
     fun hasActiveFetch(manga: Manga, image: String): Boolean {
         if (!manga.isOnline) return false
         val logicalStreamKey = foregroundStreamKey(manga, image)
+        cleanupCompletedForegroundStream(logicalStreamKey)
         return ntkGeneratedCacheLookupImages(image).any { candidate ->
             val key = key(manga.baseMode, candidate)
             flights.containsKey(key)
         } || foregroundStreams.containsKey(logicalStreamKey)
+    }
+
+    /** Returns only a live canonical foreground byte owner, never a queued/full-file tail flight. */
+    fun hasActiveForegroundStream(manga: Manga, image: String): Boolean {
+        if (!manga.isOnline) return false
+        val logicalStreamKey = foregroundStreamKey(manga, image)
+        cleanupCompletedForegroundStream(logicalStreamKey)
+        val stream = foregroundStreams[logicalStreamKey]
+        return (stream != null && !stream.isDone && !stream.isCancelled) ||
+            logicalStreamKey in foregroundStreamPublications
     }
 
     @JvmStatic
@@ -785,7 +7387,12 @@ object ReaderImageCache {
         val previous = ntkAckRecoveryLaunchHolds[key]
         if (previous != null && previous >= until) return
         ntkAckRecoveryLaunchHolds[key] = until
-        Log.d(TAG, "reader_ntk_ack_recovery_launch_hold_extend path=$key,reason=$reason,untilMs=$until")
+        val now = SystemClock.elapsedRealtime()
+        val logKey = "$key|$reason"
+        val lastLogAt = ntkAckRecoveryLaunchHoldLogAt[logKey] ?: 0L
+        if (now - lastLogAt >= 500L && ntkAckRecoveryLaunchHoldLogAt.replace(logKey, lastLogAt, now) || lastLogAt == 0L && ntkAckRecoveryLaunchHoldLogAt.putIfAbsent(logKey, now) == null) {
+            Log.d(TAG, "reader_ntk_ack_recovery_launch_hold_extend path=$key,reason=$reason,untilMs=$until")
+        }
     }
 
     @JvmStatic
@@ -833,32 +7440,385 @@ object ReaderImageCache {
     }
 
     fun addEarlyNtkImageUrlsListener(listener: (String, List<String>) -> Unit): () -> Unit {
+        val wrapped: (String, List<String>, String) -> Unit = { key, urls, _ -> listener(key, urls) }
+        earlyNtkImageUrlListeners.add(wrapped)
+        return { earlyNtkImageUrlListeners.remove(wrapped) }
+    }
+
+    fun addEarlyNtkImageUrlsSourceListener(listener: (String, List<String>, String) -> Unit): () -> Unit {
         earlyNtkImageUrlListeners.add(listener)
         return { earlyNtkImageUrlListeners.remove(listener) }
     }
 
     @JvmStatic
-    fun rememberEarlyNtkImageUrls(path: String?, urls: List<String>?) {
+    fun rememberNtkApiPageSlotCandidates(path: String?, primary: String?, candidates: List<String>?) {
+        val pathKey = earlyNtkPathKey(path)
+        val primaryValue = normalizeNtkUploadImageHttps(primary?.trim())
+        if (pathKey.isEmpty() || primaryValue.isEmpty() || candidates.isNullOrEmpty()) return
+        val slot = Regex("(?:[?#&])mvpage=(\\d{1,6})(?:[&#].*)?$", RegexOption.IGNORE_CASE)
+            .find(primaryValue)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: return
+        val trusted = LinkedHashSet<String>()
+        fun add(candidate: String?) {
+            val value = normalizeNtkUploadImageHttps(candidate?.trim())
+            if (value.isEmpty()) return
+            val candidateSlot = Regex("(?:[?#&])mvpage=(\\d{1,6})(?:[&#].*)?$", RegexOption.IGNORE_CASE)
+                .find(value)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+            if (candidateSlot != slot) return
+            if (!isTrustedNtkImageUrl(value) && !isTrustedProtectedViewerApiImageForPath(pathKey, value)) return
+            trusted.add(value)
+        }
+        add(primaryValue)
+        candidates.forEach { add(it) }
+        if (trusted.size <= 1) return
+        val stored = Collections.unmodifiableList(ArrayList(trusted.take(3)))
+        val entry = NtkApiPageSlotCandidates(pathKey, stored, SystemClock.elapsedRealtime())
+        ntkApiPageSlotCandidates[primaryValue] = entry
+        Log.d(
+            TAG,
+            "reader_ntk_api_page_slot_candidates path=$pathKey,page=$slot,count=${stored.size}," +
+                "hosts=${stored.mapNotNull { runCatching { Uri.parse(it).host }.getOrNull() }.joinToString("|")}"
+        )
+    }
+
+    private fun recentNtkApiPageSlotCandidates(image: String): List<String> {
+        val entry = ntkApiPageSlotCandidates[image] ?: return emptyList()
+        if (SystemClock.elapsedRealtime() - entry.createdAtMs > EARLY_NTK_IMAGE_URL_TTL_MS) {
+            ntkApiPageSlotCandidates.remove(image, entry)
+            return emptyList()
+        }
+        return entry.urls
+    }
+
+    private fun strictManifestPublicationAllowed(
+        path: String,
+        urls: List<String>,
+        strictExactOwner: Boolean = false
+    ): Boolean {
+        val strictEpisode = path.matches(
+            Regex("^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$", RegexOption.IGNORE_CASE)
+        )
+        if (strictEpisode && !strictExactOwner) return false
+        if (NtkSourceSpoolRegistry.isDiscoveryActive(path)) return false
+        val authority = NtkSourceSpoolRegistry.currentAuthoritativeManifest(path)
+            ?: return !strictEpisode
+        val incoming = urls.map(NtkStripDigests::canonicalAsset)
+        return incoming == authority.seal.normalizedCanonicalAssets
+    }
+
+    @JvmStatic
+    @JvmOverloads
+    fun rememberEarlyNtkImageUrls(
+        path: String?,
+        urls: List<String>?,
+        producerGeneration: Long = cacheGeneration.get(),
+        strictExactOwner: Boolean = false
+    ) {
+        cachePublicationLock.readLock().lock()
+        try {
+        if (producerGeneration != cacheGeneration.get()) return
         val key = earlyNtkPathKey(path)
         if (key.isEmpty() || urls.isNullOrEmpty()) return
+        if (!strictManifestPublicationAllowed(key, urls, strictExactOwner)) {
+            Log.d(TAG, "reader_early_ntk_urls_fenced_by_strict_authority path=$key")
+            return
+        }
         val trustedRaw = urls.mapNotNull {
-            it?.trim()?.takeIf { value -> isTrustedNtkImageUrl(value) || isNaverWebtoonPageImage(value) }
+            normalizeNtkUploadImageHttps(it?.trim())
+                .takeIf { value ->
+                    isTrustedNtkImageUrl(value) ||
+                    isNaverWebtoonPageImage(value) ||
+                        isTrustedProtectedViewerApiImageForPath(key, value)
+                }
         }
         val trusted = compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(trustedRaw))
         if (trusted.isEmpty()) return
+        if (
+            isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkNativeUnsafeUploadPayloadUrl(it) && !isNtkKpCvDescriptorImageUrl(it) }
+        ) {
+            val existing = earlyNtkImageUrls[key]
+            if (existing?.urls?.isNotEmpty() == true &&
+                existing.urls.none { isNtkNativeUnsafeUploadPayloadUrl(it) }
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_remember_hold_kp_native_unsafe_upload_payload_preserve_existing path=$key," +
+                        "incoming=${trusted.size},existing=${existing.urls.size}," +
+                        "first=${safeImageName(trusted.firstOrNull())}"
+                )
+                return
+            }
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_remember_hold_kp_native_unsafe_upload_payload path=$key," +
+                    "count=${trusted.size},first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkUploadCdnImageUrl(it) } &&
+            trusted.size < 4
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_remember_defer_kp_upload_partial path=$key," +
+                    "count=${trusted.size},first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
         val existing = earlyNtkImageUrls[key]
+        val kpSlugPath = isNtkKpWebtoonSlugPathKey(key)
+        val incomingKpDirectUploadManifest = kpSlugPath &&
+            trusted.size >= 4 &&
+            trusted.any { it.contains("/board_uploads/", ignoreCase = true) } &&
+            trusted.none { isNtkProtectedViewerApiImage(it) || isNtkDescriptorImageUrl(it) }
+        val existingKpDirectUploadManifest = kpSlugPath &&
+            existing?.urls?.let { existingUrls ->
+                existingUrls.size >= 4 &&
+                    existingUrls.any { it.contains("/board_uploads/", ignoreCase = true) } &&
+                    existingUrls.none { isNtkProtectedViewerApiImage(it) || isNtkDescriptorImageUrl(it) }
+            } == true
+        if (
+            existingKpDirectUploadManifest &&
+            !incomingKpDirectUploadManifest
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_remember_keep_kp_board_upload_over_non_direct path=$key," +
+                    "existing=${existing?.urls?.size ?: 0},incoming=${trusted.size}," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            incomingKpDirectUploadManifest &&
+            existing != null &&
+            existing.urls != trusted
+        ) {
+            publishEarlyNtkImageUrls(key, trusted)
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_remember_replace_with_kp_board_upload_direct path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            kpSlugPath &&
+            trusted.any { isNtkUploadCdnImageUrl(it) } &&
+            trusted.any { isNtkProtectedViewerApiImage(it) } &&
+            (existing?.urls?.size ?: 0) >= 4 &&
+            existing?.urls?.any { isNtkUploadCdnImageUrl(it) } == true &&
+            existing.urls.none { isNtkProtectedViewerApiImage(it) }
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_kp_mixed_protected_tail path=$key," +
+                    "incoming=${trusted.size},existing=${existing.urls.size},source=remember"
+            )
+            return
+        }
+        if (
+            kpSlugPath &&
+            trusted.any { isNtkUploadCdnImageUrl(it) } &&
+            existing?.urls?.any { isNtkProtectedViewerApiImage(it) } == true
+        ) {
+            val replacement = trusted
+            if (replacement == existing.urls) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_remember_merge_upload_over_protected_skip_same path=$key," +
+                        "incoming=${trusted.size},existing=${existing.urls.size}"
+                )
+                return
+            }
+            publishEarlyNtkImageUrls(key, replacement)
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_remember_merge_upload_over_protected path=$key," +
+                    "incoming=${trusted.size},existing=${existing.urls.size}," +
+                    "stored=${replacement.size},first=${safeImageName(replacement.firstOrNull())}"
+            )
+            return
+        }
         val incomingAuthoritative = isAuthoritativeEarlyNtkGeneratedUrlList(key, trusted)
-        val existingAuthoritative = existing?.urls?.let { isAuthoritativeEarlyNtkGeneratedUrlList(key, it) } ?: false
+        val existingAuthoritative = existing?.let {
+            !isUnvalidatedCanonicalDirectSource(it.source) &&
+                isAuthoritativeEarlyNtkGeneratedUrlList(key, it.urls)
+        } ?: false
         val incomingGenerated = trusted.any { ntkGeneratedTarget(it) != null }
         val incomingGeneratedManhwa = trusted.any {
             ntkGeneratedTarget(it)?.path?.trimStart('/')?.startsWith("manhwa/", ignoreCase = true) == true
+        }
+        val incomingGeneratedExtensionVerified = incomingGenerated &&
+            trusted.any { ntkGeneratedTarget(it) != null } &&
+            trusted.all { url ->
+                ntkGeneratedTarget(url) == null || ntkGeneratedEpisodeExtensionMatches(url)
+            }
+        val now = SystemClock.elapsedRealtime()
+        val trustedCount = trustedNtkImageApiCounts[key]
+            ?.takeIf { now - it.createdAtMs <= EARLY_NTK_IMAGE_URL_TTL_MS }
+            ?.count ?: 0
+        val immutableNumericEpisode =
+            key.matches(Regex("^/(?:manhwa|webtoon)/\\d{1,12}/\\d{1,12}$", RegexOption.IGNORE_CASE))
+        val existingVerifiedGeneratedManifest =
+            immutableNumericEpisode &&
+                existing != null &&
+                trustedCount > 0 &&
+                existing.urls.size == trustedCount &&
+                existing.urls.all { candidate ->
+                    ntkGeneratedTarget(candidate) != null &&
+                        ntkGeneratedEpisodeExtensionMatches(candidate)
+                }
+        if (
+            existingVerifiedGeneratedManifest &&
+            !incomingGenerated &&
+            trusted.size >= trustedCount
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_hold_verified_generated_over_api_race path=$key," +
+                    "existing=${existing?.urls?.size ?: 0},incoming=${trusted.size},trusted=$trustedCount," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            immutableNumericEpisode &&
+            existing != null &&
+            existing.urls.size == trustedCount &&
+            trustedCount > 0 &&
+            trusted.size != trustedCount
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_skip_numeric_count_conflict path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},trusted=$trustedCount," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            trustedCount > 0 &&
+            existing.urls.size >= trustedCount &&
+            incomingGenerated &&
+            trusted.size >= trustedCount &&
+            !generatedUrlVariantPrefixMatches(existing.urls.take(trustedCount), trusted.take(trustedCount))
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                now
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_skip_trusted_count_variant_replace path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},trusted=$trustedCount," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            trustedCount > 0 &&
+            existing.urls.size >= trustedCount &&
+            incomingGenerated &&
+            trusted.size > trustedCount
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                now
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_skip_trusted_count_expand path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},trusted=$trustedCount," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (shouldRejectGeneratedExpansionPastTrustedManifest(key, existing, trusted, "remember", trustedCount)) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                now
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_remember_skip_generated_expand_past_trusted path=$key," +
+                    "existing=${existing?.urls?.size ?: 0},incoming=${trusted.size},trusted=$trustedCount," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            isUnvalidatedCanonicalDirectSource(existing.source) &&
+            incomingGenerated &&
+            trustedCount <= 0 &&
+            !incomingGeneratedExtensionVerified
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                now
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_hold_untrusted_canonical_direct_replacement path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            isUnvalidatedCanonicalDirectSource(existing.source) &&
+            incomingGenerated &&
+            trusted.size < existing.urls.size
+        ) {
+            publishEarlyNtkImageUrls(key, trusted)
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_replace_untrusted_canonical_direct path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            incomingGenerated &&
+            trustedCount > 0 &&
+            existing.urls.size >= trustedCount &&
+            trusted.size < trustedCount
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                now
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_skip_trusted_count_shrink path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},trusted=$trustedCount," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
         }
         if (
             existing != null &&
             existingAuthoritative &&
             incomingGenerated &&
             trusted.size <= existing.urls.size &&
-            generatedUrlPagePrefixMatches(existing.urls, trusted)
+            generatedUrlPagePrefixMatches(existing.urls, trusted) &&
+            generatedUrlVariantPrefixMatches(existing.urls, trusted)
         ) {
             Log.d(
                 TAG,
@@ -868,7 +7828,21 @@ object ReaderImageCache {
             )
             return
         }
-        if (incomingGeneratedManhwa || (incomingGenerated && !incomingAuthoritative)) {
+        val metadataBackedTailExpansion = metadataBackedGeneratedTailExpansion(key, existing, trusted)
+        if (metadataBackedTailExpansion != null) {
+            publishEarlyNtkImageUrls(key, metadataBackedTailExpansion, source = "payload-direct-metadata-tail")
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_merge_metadata_tail_over_payload_direct path=$key," +
+                    "existing=${existing?.urls?.size ?: 0},incoming=${trusted.size}," +
+                    "stored=${metadataBackedTailExpansion.size}," +
+                    "first=${safeImageName(metadataBackedTailExpansion.firstOrNull())}"
+            )
+            return
+        }
+        if (!incomingGeneratedExtensionVerified &&
+            (incomingGeneratedManhwa || (incomingGenerated && !incomingAuthoritative))
+        ) {
             speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
                 Collections.unmodifiableList(ArrayList(trusted)),
                 SystemClock.elapsedRealtime()
@@ -893,8 +7867,10 @@ object ReaderImageCache {
             existing != null &&
             existingAuthoritative &&
             incomingAuthoritative &&
+            !existing.source.contains("payload-direct-metadata-tail", ignoreCase = true) &&
             trusted.size <= existing.urls.size &&
-            generatedUrlPagePrefixMatches(existing.urls, trusted)
+            generatedUrlPagePrefixMatches(existing.urls, trusted) &&
+            generatedUrlVariantPrefixMatches(existing.urls, trusted)
         ) {
             Log.d(
                 TAG,
@@ -908,7 +7884,9 @@ object ReaderImageCache {
             existing != null &&
             existing.urls.size > trusted.size &&
             incomingAuthoritative &&
-            generatedUrlPagePrefixMatches(existing.urls, trusted)
+            !existing.source.contains("payload-direct-metadata-tail", ignoreCase = true) &&
+            generatedUrlPagePrefixMatches(existing.urls, trusted) &&
+            generatedUrlVariantPrefixMatches(existing.urls, trusted)
         ) {
             Log.d(
                 TAG,
@@ -923,6 +7901,23 @@ object ReaderImageCache {
                 TAG,
                 "reader_early_ntk_urls_remember_skip_unverified_over_authoritative path=$key," +
                     "existing=${existing.urls.size},incoming=${trusted.size},first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            !existingAuthoritative &&
+            incomingAuthoritative &&
+            existing.urls.size >= 4 &&
+            trusted.size < existing.urls.size &&
+            existing.urls.any { ntkGeneratedTarget(it) != null } &&
+            trusted.any { isNtkDescriptorImageUrl(it) }
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_remember_skip_descriptor_authoritative_shrink path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
             )
             return
         }
@@ -1003,6 +7998,32 @@ object ReaderImageCache {
             return
         }
         if (existing != null) {
+            if (
+                isNtkKpWebtoonSlugPathKey(key) &&
+                trusted.any { isNtkUploadCdnImageUrl(it) } &&
+                trusted.size >= 4 &&
+                existing.urls.any { isNtkProtectedViewerApiImage(it) || !isNtkUploadCdnImageUrl(it) }
+            ) {
+                if (
+                    existing.urls.any { isNtkProtectedViewerApiImage(it) } &&
+                    trusted.any { isNtkDescriptorImageUrl(it) }
+                ) {
+                    Log.d(
+                        TAG,
+                        "reader_early_ntk_urls_remember_keep_kp_protected_over_descriptor_upload path=$key," +
+                            "existing=${existing.urls.size},incoming=${trusted.size}," +
+                            "first=${safeImageName(trusted.firstOrNull())}"
+                    )
+                    return
+                }
+                publishEarlyNtkImageUrls(key, trusted)
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_remember_replace_kp_upload_manifest path=$key," +
+                        "existing=${existing.urls.size},incoming=${trusted.size},first=${safeImageName(trusted.firstOrNull())}"
+                )
+                return
+            }
             val preservedVerified = preserveExistingVerifiedPageImages(trusted, existing.urls)
             if (preservedVerified != null && preservedVerified != trusted) {
                 publishEarlyNtkImageUrls(key, preservedVerified)
@@ -1026,16 +8047,179 @@ object ReaderImageCache {
         }
         publishEarlyNtkImageUrls(key, trusted)
         Log.d(TAG, "reader_early_ntk_urls_remember path=$key,count=${trusted.size},first=${safeImageName(trusted.firstOrNull())}")
+        } finally {
+            cachePublicationLock.readLock().unlock()
+        }
     }
 
     @JvmStatic
-    fun rememberAuthoritativeNtkImageUrlsFromBrowser(path: String?, urls: List<String>?, source: String?) {
+    @JvmOverloads
+    fun rememberMetadataBackedTailEarlyNtkImageUrls(
+        path: String?,
+        urls: List<String>?,
+        producerGeneration: Long = cacheGeneration.get()
+    ) {
+        cachePublicationLock.readLock().lock()
+        try {
+            if (producerGeneration != cacheGeneration.get()) return
         val key = earlyNtkPathKey(path)
         if (key.isEmpty() || urls.isNullOrEmpty()) return
         val trustedRaw = urls.mapNotNull {
-            val value = it?.trim()?.takeIf { candidate ->
-                isTrustedNtkImageUrl(candidate) || isNaverWebtoonPageImage(candidate)
-            } ?: return@mapNotNull null
+            normalizeNtkUploadImageHttps(it?.trim())
+                .takeIf { value ->
+                    isTrustedNtkImageUrl(value) ||
+                        isNaverWebtoonPageImage(value) ||
+                        isTrustedProtectedViewerApiImageForPath(key, value)
+                }
+        }
+        val trusted = compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(trustedRaw))
+        if (trusted.isEmpty()) return
+        val firstGeneratedIndex = trusted.indexOfFirst { ntkGeneratedTarget(it) != null }
+        if (firstGeneratedIndex <= 0) {
+            rememberEarlyNtkImageUrls(path, trusted, producerGeneration)
+            return
+        }
+        for (index in firstGeneratedIndex until trusted.size) {
+            val target = ntkGeneratedTarget(trusted[index]) ?: run {
+                rememberEarlyNtkImageUrls(path, trusted, producerGeneration)
+                return
+            }
+            if (target.page != index + 1 || !earlyNtkGeneratedTargetMatchesKey(key, target)) {
+                rememberEarlyNtkImageUrls(path, trusted, producerGeneration)
+                return
+            }
+        }
+        val existing = earlyNtkImageUrls[key]
+        if (existing != null &&
+            existing.urls.size > trusted.size &&
+            !existing.source.contains("payload-direct-metadata-tail", ignoreCase = true)
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_metadata_tail_skip_smaller path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "firstGenerated=${firstGeneratedIndex + 1}"
+            )
+            return
+        }
+        if (existing != null && existing.urls.size <= trusted.size) {
+            for (index in existing.urls.indices) {
+                if (index >= trusted.size) break
+                if (normalizeNtkImageForPageCompare(existing.urls[index]) !=
+                    normalizeNtkImageForPageCompare(trusted[index])
+                ) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_metadata_tail_prefix_mismatch path=$key," +
+                        "index=${index + 1},existing=${safeImageName(existing.urls[index])}," +
+                        "incoming=${safeImageName(trusted[index])}"
+                )
+                    return
+                }
+            }
+        }
+        publishEarlyNtkImageUrls(key, trusted, source = "payload-direct-metadata-tail")
+        Log.d(
+            TAG,
+            "reader_early_ntk_urls_metadata_tail_remember path=$key,count=${trusted.size}," +
+                "firstGenerated=${firstGeneratedIndex + 1},first=${safeImageName(trusted.firstOrNull())}"
+        )
+        } finally {
+            cachePublicationLock.readLock().unlock()
+        }
+    }
+
+    @JvmStatic
+    fun rememberNtkGeneratedEpisodeExtensionHint(image: String?) {
+        val value = image?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        rememberNtkGeneratedEpisodeExtension(value)
+    }
+
+    @JvmStatic
+    @JvmOverloads
+    fun rememberVerifiedEarlyNtkGeneratedImageUrls(
+        path: String?,
+        urls: List<String>?,
+        producerGeneration: Long = cacheGeneration.get()
+    ) {
+        cachePublicationLock.readLock().lock()
+        try {
+            if (producerGeneration != cacheGeneration.get()) return
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty() || urls.isNullOrEmpty()) return
+        val trustedRaw = urls.mapNotNull {
+            val value = normalizeNtkUploadImageHttps(it?.trim())
+            value.takeIf { candidate ->
+                isTrustedNtkImageUrl(candidate) ||
+                    isNaverWebtoonPageImage(candidate) ||
+                    isTrustedProtectedViewerApiImageForPath(key, candidate)
+            }
+        }
+        val trusted = compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(trustedRaw))
+        if (trusted.isEmpty()) return
+        trusted.forEach { image -> rememberNtkGeneratedEpisodeExtension(image) }
+        publishEarlyNtkImageUrls(key, trusted)
+        val now = SystemClock.elapsedRealtime()
+        val trustedCount = trustedNtkImageApiCounts[key]
+            ?.takeIf { now - it.createdAtMs <= EARLY_NTK_APPEND_IMAGE_URL_TTL_MS }
+            ?.count
+            ?: 0
+        if (trustedCount > trusted.size) {
+            publishTrustedGeneratedCountExpansion(key, trustedCount)
+        }
+        Log.d(
+            TAG,
+            "reader_early_ntk_urls_verified_generated path=$key,count=${trusted.size}," +
+                "first=${safeImageName(trusted.firstOrNull())}"
+        )
+        } finally {
+            cachePublicationLock.readLock().unlock()
+        }
+    }
+
+    @JvmStatic
+    @JvmOverloads
+    fun rememberAuthoritativeNtkImageUrlsFromBrowser(
+        path: String?,
+        urls: List<String>?,
+        source: String?,
+        producerGeneration: Long = cacheGeneration.get()
+    ) {
+        cachePublicationLock.readLock().lock()
+        try {
+        if (producerGeneration != cacheGeneration.get()) return
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty() || urls.isNullOrEmpty()) return
+        if (!strictManifestPublicationAllowed(key, urls, strictExactOwner = false)) {
+            Log.d(
+                TAG,
+                "reader_authoritative_ntk_urls_fenced_by_strict_authority path=$key," +
+                    "source=${source.orEmpty()}"
+            )
+            return
+        }
+        val sourceValue = source.orEmpty()
+        val trustedRaw = urls.mapNotNull {
+            val value = normalizeNtkUploadImageHttps(it?.trim())
+            if (
+                (sourceValue.contains("payload-hint", ignoreCase = true) ||
+                    sourceValue.contains("payload-direct", ignoreCase = true)) &&
+                value.contains("/board_uploads/", ignoreCase = true)
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_authoritative_browser_skip_payload_banner path=$key," +
+                        "source=$sourceValue,image=${safeImageName(value)}"
+                )
+                return@mapNotNull null
+            }
+            if (
+                !isTrustedNtkImageUrl(value) &&
+                !isNaverWebtoonPageImage(value) &&
+                !isTrustedProtectedViewerApiImageForPath(key, value)
+            ) {
+                return@mapNotNull null
+            }
             if (!authoritativeBrowserImageMatchesPath(key, value)) {
                 Log.d(
                     TAG,
@@ -1046,17 +8230,344 @@ object ReaderImageCache {
             }
             value
         }
-        val trusted = compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(trustedRaw))
+        val preserveSlots =
+            sourceValue.contains("native-api-full", ignoreCase = true) ||
+                sourceValue.contains("viewer-api-token", ignoreCase = true) ||
+                sourceValue.contains("bridge-result", ignoreCase = true) ||
+                sourceValue.contains("webview-cache", ignoreCase = true)
+        val preserveGeneratedSlots = preserveSlots && trustedRaw.none { ntkGeneratedTarget(it) != null }
+        val trusted = if (preserveGeneratedSlots) {
+            trustedRaw
+        } else {
+            compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(trustedRaw))
+        }
         if (trusted.isEmpty()) return
-        val existing = earlyNtkImageUrls[key]
-        val incomingAuthoritative = isAuthoritativeEarlyNtkGeneratedUrlList(key, trusted)
-        val existingAuthoritative = existing?.urls?.let { isAuthoritativeEarlyNtkGeneratedUrlList(key, it) } ?: false
         if (
+            isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkNativeUnsafeUploadPayloadUrl(it) && !isNtkKpCvDescriptorImageUrl(it) }
+        ) {
+            val existing = earlyNtkImageUrls[key]
+            if (existing?.urls?.isNotEmpty() == true &&
+                existing.urls.none { isNtkNativeUnsafeUploadPayloadUrl(it) }
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_authoritative_browser_hold_kp_native_unsafe_upload_payload_preserve_existing path=$key," +
+                        "incoming=${trusted.size},existing=${existing.urls.size}," +
+                        "source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+                )
+                return
+            }
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_hold_kp_native_unsafe_upload_payload path=$key," +
+                    "count=${trusted.size},source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkUploadCdnImageUrl(it) } &&
+            trusted.size < 4
+        ) {
+            if (sourceValue.contains("partial", ignoreCase = true) ||
+                sourceValue.contains("first", ignoreCase = true)
+            ) {
+                publishEarlyNtkImageUrls(key, trusted, source = sourceValue)
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_authoritative_browser_seed_kp_upload_head path=$key," +
+                        "count=${trusted.size},source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+                )
+                return
+            }
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_defer_kp_upload_partial path=$key," +
+                    "count=${trusted.size},source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        val kpProtectedPartial = isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkProtectedViewerApiImage(it) } &&
+            trusted.size < 8 &&
+            !sourceValue.contains("complete", ignoreCase = true)
+        if (kpProtectedPartial) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_defer_kp_partial path=$key," +
+                    "count=${trusted.size},source=$sourceValue"
+            )
+            return
+        }
+        val existing = earlyNtkImageUrls[key]
+        val incomingGenerated = trusted.any { ntkGeneratedTarget(it) != null }
+        val trustedCount = trustedNtkImageApiCounts[key]
+            ?.takeIf { SystemClock.elapsedRealtime() - it.createdAtMs <= EARLY_NTK_IMAGE_URL_TTL_MS }
+            ?.count ?: 0
+        val authoritativeDirectApiReplacesGeneratedSpeculation =
+            key.matches(Regex("^/(?:manhwa|webtoon)/\\d{1,12}/\\d{1,12}$", RegexOption.IGNORE_CASE)) &&
+                existing?.urls?.isNotEmpty() == true &&
+                existing.urls.all { ntkGeneratedTarget(it) != null } &&
+                !incomingGenerated &&
+                trusted.size >= 4 &&
+                (
+                    sourceValue.contains("viewer-api-token", ignoreCase = true) ||
+                        sourceValue.contains("native-api", ignoreCase = true) ||
+                        sourceValue.contains("cached-payload-direct", ignoreCase = true)
+                    )
+        if (authoritativeDirectApiReplacesGeneratedSpeculation) {
+            speculativeNtkGeneratedUrls.remove(key)
+            trustedNtkImageApiCounts[key] = TrustedNtkImageApiCount(
+                trusted.size,
+                SystemClock.elapsedRealtime()
+            )
+            publishEarlyNtkImageUrls(key, trusted, source = sourceValue)
+            persistAuthoritativeNtkManifest(key, trusted, sourceValue, producerGeneration)
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_direct_replace_generated_speculation path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},oldTrusted=$trustedCount," +
+                    "source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            trustedCount > 0 &&
+            existing.urls.size >= trustedCount &&
+            incomingGenerated &&
+            trusted.size > trustedCount
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                SystemClock.elapsedRealtime()
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_trusted_count_expand path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},trusted=$trustedCount," +
+                    "source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            trustedCount > 0 &&
+            existing.urls.size >= trustedCount &&
+            incomingGenerated &&
+            trusted.size >= trustedCount &&
+            !generatedUrlVariantPrefixMatches(existing.urls.take(trustedCount), trusted.take(trustedCount))
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                SystemClock.elapsedRealtime()
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_trusted_count_variant_replace path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},trusted=$trustedCount," +
+                    "source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            sourceValue.contains("payload-direct-urls", ignoreCase = true) &&
+            trusted.size < existing.urls.size &&
+            existing.urls.size >= 12 &&
+            !hasTrustedCompleteNtkImageApiCount(key, trusted.size)
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_payload_direct_shrink path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size},trusted=$trustedCount," +
+                    "existingSource=${existing.source},source=$sourceValue," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            sourceValue.contains("viewer-api-token", ignoreCase = true) &&
+            existing != null &&
+            existing.urls.size >= 4 &&
+            trusted.size < existing.urls.size
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_viewer_token_shrink path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (shouldRejectGeneratedExpansionPastTrustedManifest(key, existing, trusted, sourceValue, trustedCount) ||
+            shouldRejectViewerTokenGeneratedAuthority(sourceValue, existing, trusted, trustedCount)
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                SystemClock.elapsedRealtime()
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_generated_expand_past_trusted path=$key," +
+                    "existing=${existing?.urls?.size ?: 0},incoming=${trusted.size},trusted=$trustedCount," +
+                    "source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            trusted.size > existing.urls.size &&
+            incomingGenerated &&
+            isPayloadBoundAuthoritativeSource(existing.source) &&
+            !sourceValue.contains("payload-direct-metadata-tail", ignoreCase = true)
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_payload_bound_generated_expand path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "existingSource=${existing.source},source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            isUnvalidatedCanonicalDirectSource(existing.source) &&
+            incomingGenerated &&
+            trusted.size < existing.urls.size
+        ) {
+            speculativeNtkGeneratedUrls.remove(key)
+            rememberTrustedNtkImageApiCount(key, trusted.size)
+            trusted.forEach {
+                rememberNtkGeneratedResolvedPage(
+                    it,
+                    "browser_${source.orEmpty()}",
+                    logResolved = true
+                )
+            }
+            publishEarlyNtkImageUrls(key, trusted, source = source.orEmpty())
+            persistAuthoritativeNtkManifest(key, trusted, source.orEmpty(), producerGeneration)
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_replace_untrusted_canonical_direct path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "source=${source.orEmpty()},first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkUploadCdnImageUrl(it) } &&
+            trusted.any { isNtkProtectedViewerApiImage(it) } &&
+            (existing?.urls?.size ?: 0) >= 4 &&
+            existing?.urls?.any { isNtkUploadCdnImageUrl(it) } == true &&
+            existing.urls.none { isNtkProtectedViewerApiImage(it) }
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_kp_mixed_protected_tail path=$key," +
+                    "incoming=${trusted.size},existing=${existing.urls.size},source=${source.orEmpty()}"
+            )
+            return
+        }
+        val allowVerifiedUploadOverProtected =
+            sourceValue.contains("viewer-api-token", ignoreCase = true) ||
+                sourceValue.contains("native-api", ignoreCase = true)
+        if (
+            isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkUploadCdnImageUrl(it) } &&
+            existing?.urls?.any { isNtkProtectedViewerApiImage(it) } == true &&
+            !allowVerifiedUploadOverProtected
+        ) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_upload_over_protected path=$key," +
+                    "incoming=${trusted.size},existing=${existing.urls.size},source=${source.orEmpty()}"
+            )
+            return
+        }
+        if (
+            isNtkKpWebtoonSlugPathKey(key) &&
+            trusted.any { isNtkUploadCdnImageUrl(it) } &&
+            existing?.urls?.any { isNtkProtectedViewerApiImage(it) } == true &&
+            existing.urls.size > trusted.size
+        ) {
+            if (trusted.any { isNtkDescriptorImageUrl(it) }) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_authoritative_browser_keep_kp_protected_over_descriptor_upload path=$key," +
+                        "incoming=${trusted.size},existing=${existing.urls.size},source=${source.orEmpty()}," +
+                        "first=${safeImageName(trusted.firstOrNull())}"
+                )
+                return
+            }
+            if (trusted.size >= 4) {
+                publishEarlyNtkImageUrls(key, trusted, source = source.orEmpty())
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_authoritative_browser_keep_kp_upload_head_drop_protected_tail path=$key," +
+                        "incoming=${trusted.size},existing=${existing.urls.size},source=${source.orEmpty()}," +
+                        "first=${safeImageName(trusted.firstOrNull())}"
+                )
+                return
+            }
+            val merged = mergeKpUploadHeadWithProtectedTail(existing.urls, trusted)
+            publishEarlyNtkImageUrls(key, merged, source = source.orEmpty())
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_merge_upload_head_protected_tail path=$key," +
+                    "incoming=${trusted.size},existing=${existing.urls.size},stored=${merged.size}," +
+                    "source=${source.orEmpty()},first=${safeImageName(merged.firstOrNull())}"
+            )
+            return
+        }
+        val unvalidatedCanonicalDirect = isUnvalidatedCanonicalDirectSource(sourceValue)
+        val incomingAuthoritative =
+            !unvalidatedCanonicalDirect && isAuthoritativeEarlyNtkGeneratedUrlList(key, trusted)
+        val existingAuthoritative = existing?.let {
+            !isUnvalidatedCanonicalDirectSource(it.source) &&
+                isAuthoritativeEarlyNtkGeneratedUrlList(key, it.urls)
+        } ?: false
+        val verifiedShortCapSource = sourceValue.contains("verified-api-short-cap", ignoreCase = true)
+        if (
+            verifiedShortCapSource &&
             existing != null &&
             existingAuthoritative &&
             incomingAuthoritative &&
             trusted.size < existing.urls.size &&
-            generatedUrlPagePrefixMatches(existing.urls, trusted)
+            trusted.size >= 4
+        ) {
+            speculativeNtkGeneratedUrls.remove(key)
+            trustedNtkImageApiCounts[key] = TrustedNtkImageApiCount(
+                trusted.size,
+                SystemClock.elapsedRealtime()
+            )
+            trusted.forEach {
+                rememberNtkGeneratedResolvedPage(
+                    it,
+                    "browser_$sourceValue",
+                    logResolved = true
+                )
+            }
+            publishEarlyNtkImageUrls(key, trusted, source = sourceValue)
+            persistAuthoritativeNtkManifest(key, trusted, sourceValue, producerGeneration)
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_verified_short_cap path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "source=$sourceValue,first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            existingAuthoritative &&
+            incomingAuthoritative &&
+            !existing.source.contains("payload-direct-metadata-tail", ignoreCase = true) &&
+            trusted.size < existing.urls.size &&
+            generatedUrlPagePrefixMatches(existing.urls, trusted) &&
+            generatedUrlVariantPrefixMatches(existing.urls, trusted)
         ) {
             Log.d(
                 TAG,
@@ -1066,7 +8577,53 @@ object ReaderImageCache {
             )
             return
         }
+        if (shouldKeepMetadataBackedTailOverAuthoritativeShrink(existing, trusted)) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_keep_metadata_tail path=$key," +
+                    "existing=${existing?.urls?.size ?: 0},incoming=${trusted.size}," +
+                    "source=${source.orEmpty()},first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
+        if (
+            existing != null &&
+            trusted.size > existing.urls.size &&
+            existing.urls.size >= 12 &&
+            isPayloadBoundAuthoritativeSource(sourceValue) &&
+            !sourceValue.contains("payload-direct-metadata-tail", ignoreCase = true)
+        ) {
+            speculativeNtkGeneratedUrls[key] = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(trusted)),
+                SystemClock.elapsedRealtime()
+            )
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_skip_payload_direct_expand path=$key," +
+                    "existing=${existing.urls.size},incoming=${trusted.size}," +
+                    "existingSource=${existing.source},source=$sourceValue," +
+                    "first=${safeImageName(trusted.firstOrNull())}"
+            )
+            return
+        }
         if (existing != null && existing.urls == trusted) {
+            if (!unvalidatedCanonicalDirect &&
+                (!existingAuthoritative || trustedCount < trusted.size)
+            ) {
+                rememberTrustedNtkImageApiCount(key, trusted.size)
+                // The URL list can be byte-for-byte identical while its authority
+                // changes from speculative to complete. Publish through the normal
+                // path so an already-registered prepared-reader listener observes
+                // that semantic transition and can begin bitmap preparation.
+                publishEarlyNtkImageUrls(key, trusted, source = sourceValue)
+                persistAuthoritativeNtkManifest(key, trusted, sourceValue, producerGeneration)
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_authoritative_browser_upgrade_identical path=$key," +
+                        "count=${trusted.size},oldSource=${existing.source},source=$sourceValue"
+                )
+                return
+            }
             Log.d(
                 TAG,
                 "reader_early_ntk_urls_authoritative_browser_skip_identical path=$key," +
@@ -1075,14 +8632,41 @@ object ReaderImageCache {
             return
         }
         speculativeNtkGeneratedUrls.remove(key)
-        trustedNtkImageApiCounts[key] = TrustedNtkImageApiCount(trusted.size, SystemClock.elapsedRealtime())
-        trusted.forEach { rememberNtkGeneratedResolvedPage(it, "browser_${source.orEmpty()}") }
-        publishEarlyNtkImageUrls(key, trusted)
+        if (!unvalidatedCanonicalDirect) {
+            rememberTrustedNtkImageApiCount(key, trusted.size)
+        } else {
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_authoritative_browser_untrusted_canonical_direct path=$key," +
+                    "count=${trusted.size},source=${source.orEmpty()},first=${safeImageName(trusted.firstOrNull())}"
+            )
+        }
+        val browserSource = "browser_${source.orEmpty()}"
+        val bulkCanonicalDirect = source.orEmpty().contains("canonical-direct", ignoreCase = true)
+        publishEarlyNtkImageUrls(key, trusted, source = source.orEmpty())
         Log.d(
             TAG,
             "reader_early_ntk_urls_authoritative_browser path=$key,count=${trusted.size}," +
                 "source=${source.orEmpty()},first=${safeImageName(trusted.firstOrNull())}"
         )
+        if (!unvalidatedCanonicalDirect && incomingGenerated) {
+            trusted.forEach {
+                rememberNtkGeneratedResolvedPage(it, browserSource, logResolved = !bulkCanonicalDirect)
+            }
+        }
+        if (bulkCanonicalDirect) {
+            Log.d(
+                TAG,
+                    "ntk_generated_resolved_pages_bulk path=$key,source=$browserSource," +
+                    "count=${trusted.size},trusted=${!unvalidatedCanonicalDirect}"
+            )
+        }
+        if (!unvalidatedCanonicalDirect) {
+            persistAuthoritativeNtkManifest(key, trusted, source.orEmpty(), producerGeneration)
+        }
+        } finally {
+            cachePublicationLock.readLock().unlock()
+        }
     }
 
     private fun authoritativeBrowserImageMatchesPath(key: String, image: String): Boolean {
@@ -1091,7 +8675,17 @@ object ReaderImageCache {
         val generatedTarget = ntkGeneratedTarget(image)
         if (generatedTarget != null) {
             val targetKey = generatedTarget.path.trim('/').lowercase()
-            return targetKey == normalizedKey
+            if (targetKey == normalizedKey) return true
+            val keyParts = normalizedKey.split('/')
+            val targetParts = targetKey.split('/')
+            if (keyParts.size >= 3 &&
+                targetParts.size >= 3 &&
+                keyParts[0].equals(targetParts[0], ignoreCase = true) &&
+                ntkPathEpisodeIdForGeneratedMatch(keyParts[2]) == targetParts[2]
+            ) {
+                return true
+            }
+            return false
         }
         if (isNaverWebtoonPageImage(image)) {
             return normalizedKey.startsWith("webtoon/")
@@ -1103,6 +8697,19 @@ object ReaderImageCache {
             RegexOption.IGNORE_CASE
         ).containsMatchIn(identity)
         return !directPage || identity.contains("/$normalizedKey/")
+    }
+
+    private fun mergeKpUploadHeadWithProtectedTail(
+        existing: List<String>,
+        incomingUploadHead: List<String>
+    ): List<String> {
+        if (incomingUploadHead.isEmpty() || existing.size <= incomingUploadHead.size) return incomingUploadHead
+        val merged = ArrayList<String>(existing.size)
+        merged.addAll(incomingUploadHead)
+        for (index in incomingUploadHead.size until existing.size) {
+            merged.add(existing[index])
+        }
+        return compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(merged))
     }
 
     private fun generatedUrlPagePrefixMatches(existing: List<String>, incoming: List<String>): Boolean {
@@ -1119,13 +8726,88 @@ object ReaderImageCache {
         return true
     }
 
+    private fun generatedUrlVariantPrefixMatches(existing: List<String>, incoming: List<String>): Boolean {
+        if (incoming.isEmpty() || incoming.size > existing.size) return false
+        for (index in incoming.indices) {
+            val existingRef = ntkGeneratedImageRef(existing[index])
+            val incomingRef = ntkGeneratedImageRef(incoming[index])
+            if (existingRef != null || incomingRef != null) {
+                if (existingRef == null || incomingRef == null) return false
+                if (existingRef.pageKey != incomingRef.pageKey) return false
+                if (existingRef.extension != incomingRef.extension) return false
+                continue
+            }
+            if (!existing[index].equals(incoming[index], ignoreCase = true)) return false
+        }
+        return true
+    }
+
     @JvmStatic
     fun hasAuthoritativeCompleteEarlyNtkImageUrls(path: String?, expected: Int, minCreatedAtMs: Long): Boolean {
         val key = earlyNtkPathKey(path)
         if (key.isEmpty() || expected <= 0) return false
-        val entry = earlyNtkImageUrls[key] ?: return false
+        val entry = earlyNtkImageUrls[key] ?: restoreAuthoritativeNtkManifest(key) ?: return false
+        if (isUnvalidatedCanonicalDirectSource(entry.source)) return false
         if (entry.createdAtMs < minCreatedAtMs || entry.urls.size < expected) return false
-        return isAuthoritativeEarlyNtkGeneratedUrlList(key, entry.urls.take(expected))
+        val head = entry.urls.take(expected)
+        if (
+            hasUnverifiedConstructedNtkGeneratedUrl(head) &&
+            trustedNtkImageApiCount(path, minCreatedAtMs) < expected
+        ) {
+            return false
+        }
+        return isAuthoritativeEarlyNtkGeneratedUrlList(key, head)
+    }
+
+    @JvmStatic
+    fun hasMetadataBackedTailEarlyNtkImageUrls(path: String?, expected: Int, minCreatedAtMs: Long): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty() || expected <= 0) return false
+        val entry = earlyNtkImageUrls[key] ?: restoreAuthoritativeNtkManifest(key) ?: return false
+        if (entry.createdAtMs < minCreatedAtMs || entry.urls.size < expected) return false
+        if (entry.source.contains("payload-direct-metadata-tail", ignoreCase = true)) return true
+        if (!entry.source.contains("payload-direct", ignoreCase = true)) return false
+        return entry.urls.take(expected).withIndex().any { (index, image) ->
+            index > 0 && ntkGeneratedTarget(image) != null
+        }
+    }
+
+    @JvmStatic
+    fun hasUnvalidatedCanonicalDirectEarlyNtkImageUrls(path: String?, minCreatedAtMs: Long): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return false
+        val entry = earlyNtkImageUrls[key] ?: restoreAuthoritativeNtkManifest(key) ?: return false
+        if (entry.createdAtMs < minCreatedAtMs) return false
+        return isUnvalidatedCanonicalDirectSource(entry.source)
+    }
+
+    @JvmStatic
+    fun hasCompleteValidatedNativeDirectEarlyNtkImageUrls(
+        path: String?,
+        expected: Int,
+        minCreatedAtMs: Long
+    ): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty() || expected <= 0) return false
+        val entry = earlyNtkImageUrls[key] ?: restoreAuthoritativeNtkManifest(key) ?: return false
+        if (isUnvalidatedCanonicalDirectSource(entry.source)) return false
+        if (entry.createdAtMs < minCreatedAtMs || entry.urls.size < expected) return false
+        val head = entry.urls.take(expected)
+        if (head.any { it.contains("/api/m/i?", ignoreCase = true) }) return false
+        val trustedCount = trustedNtkImageApiCount(path, minCreatedAtMs)
+        if (trustedCount >= expected) return true
+        if (hasUnverifiedConstructedNtkGeneratedUrl(head)) return false
+        return isAuthoritativeEarlyNtkGeneratedUrlList(key, head)
+    }
+
+    private fun hasUnverifiedConstructedNtkGeneratedUrl(urls: List<String>): Boolean {
+        for (url in urls) {
+            val target = ntkGeneratedTarget(url) ?: continue
+            if (!hasNtkGeneratedResolvedPage(target) && !ntkGeneratedEpisodeExtensionMatches(url)) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun isAuthoritativeEarlyNtkGeneratedUrlList(key: String, urls: List<String>): Boolean {
@@ -1149,7 +8831,7 @@ object ReaderImageCache {
                 if (keyParts.size < 3 ||
                     targetParts.size < 3 ||
                     !keyParts[0].equals(targetParts[0], ignoreCase = true) ||
-                    keyParts[2] != targetParts[2]
+                    ntkPathEpisodeIdForGeneratedMatch(keyParts[2]) != targetParts[2]
                 ) {
                     return false
                 }
@@ -1172,13 +8854,34 @@ object ReaderImageCache {
         }
         val parts = key.trim('/').split('/')
         val targetParts = target.path.trim('/').split('/')
+        if (earlyNtkPathKey(target.path).equals(earlyNtkPathKey(key), ignoreCase = true)) {
+            return true
+        }
         if (parts.size >= 3 && targetParts.size >= 3) {
             val segment = parts[0]
             val pathWorkId = parts[1]
             val pathEpisodeId = parts[2]
+            val generatedPathEpisodeId = ntkPathEpisodeIdForGeneratedMatch(pathEpisodeId)
             if (!segment.equals(targetParts[0], ignoreCase = true)) return false
             if (identity != null) {
                 return targetParts[1] == identity.workId && targetParts[2] == identity.episodeId
+            }
+            if (segment.equals("webtoon", ignoreCase = true) &&
+                pathWorkId.matches(Regex("\\d{1,12}")) &&
+                pathEpisodeId.startsWith("kp-", ignoreCase = true) &&
+                generatedPathEpisodeId.matches(Regex("\\d{1,12}")) &&
+                targetParts[1] == pathWorkId &&
+                targetParts[2] == generatedPathEpisodeId
+            ) {
+                return true
+            }
+            if (segment.equals("webtoon", ignoreCase = true) &&
+                pathEpisodeId.matches(Regex("\\d{1,12}")) &&
+                targetParts[1].matches(Regex("\\d{1,12}")) &&
+                targetParts[1] != pathWorkId &&
+                targetParts[2] == pathEpisodeId
+            ) {
+                return hasNtkGeneratedResolvedPage(target) || ntkGeneratedEpisodeExtensionMatches(url)
             }
             if (segment.equals("webtoon", ignoreCase = true) &&
                 pathWorkId.matches(Regex("\\d{1,12}")) &&
@@ -1193,20 +8896,200 @@ object ReaderImageCache {
         return hasNtkGeneratedResolvedPage(target) || ntkGeneratedEpisodeExtensionMatches(url)
     }
 
-    private fun publishEarlyNtkImageUrls(key: String, urls: List<String>) {
+    private fun ntkPathEpisodeIdForGeneratedMatch(pathEpisodeId: String): String {
+        val trimmed = pathEpisodeId.trim()
+        val kp = Regex("^kp-\\d{1,12}-(\\d{1,12})$", RegexOption.IGNORE_CASE)
+            .find(trimmed)
+            ?.groupValues
+            ?.getOrNull(1)
+        return kp ?: trimmed
+    }
+
+    private fun isUnvalidatedCanonicalDirectSource(source: String?): Boolean {
+        val value = source?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        if (!value.contains("canonical-direct")) return false
+        if (value.contains("validated") || value.contains("resolved")) return false
+        return value.contains("webtoon-canonical-direct") ||
+            value.contains("canonical-direct-immediate") ||
+            value.contains("canonical-direct-warm")
+    }
+
+    private fun isPayloadBoundAuthoritativeSource(source: String?): Boolean {
+        val value = source.orEmpty()
+        return value.contains("payload-direct", ignoreCase = true) ||
+            value.contains("reader-payload", ignoreCase = true) ||
+            value.contains("viewer-api-token", ignoreCase = true) ||
+            value.contains("native-api", ignoreCase = true)
+    }
+
+    private fun publishEarlyNtkImageUrls(
+        key: String,
+        urls: List<String>,
+        notifyListeners: Boolean = true,
+        source: String = ""
+    ) {
+        val numericEpisode =
+            key.matches(Regex("^/(?:manhwa|webtoon)/\\d{1,12}/\\d{1,12}$", RegexOption.IGNORE_CASE))
+        if (numericEpisode) {
+            val now = SystemClock.elapsedRealtime()
+            val current = earlyNtkImageUrls[key]
+            val trustedCount = trustedNtkImageApiCounts[key]
+                ?.takeIf { now - it.createdAtMs <= EARLY_NTK_IMAGE_URL_TTL_MS }
+                ?.count ?: 0
+            if (
+                current != null &&
+                trustedCount > 0 &&
+                current.urls.size == trustedCount &&
+                urls.size != trustedCount
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_publish_skip_numeric_count_race path=$key," +
+                        "existing=${current.urls.size},incoming=${urls.size},trusted=$trustedCount,source=$source"
+                )
+                return
+            }
+            val currentVerifiedGenerated =
+                current != null &&
+                    trustedCount > 0 &&
+                    current.urls.size == trustedCount &&
+                    current.urls.all { ntkGeneratedTarget(it) != null } &&
+                    current.urls.firstOrNull()?.let { ntkGeneratedEpisodeExtensionMatches(it) } == true
+            val incomingDirectManifest = urls.none { ntkGeneratedTarget(it) != null }
+            if (currentVerifiedGenerated && incomingDirectManifest && urls.size >= trustedCount) {
+                Log.d(
+                    TAG,
+                    "reader_early_ntk_urls_publish_hold_verified_generated_over_direct_race path=$key," +
+                        "existing=${current?.urls?.size ?: 0},incoming=${urls.size},trusted=$trustedCount,source=$source"
+                )
+                return
+            }
+        }
         val stored = Collections.unmodifiableList(ArrayList(urls))
-        earlyNtkImageUrls[key] = EarlyNtkImageUrls(stored, SystemClock.elapsedRealtime())
+        earlyNtkImageUrls[key] = EarlyNtkImageUrls(stored, SystemClock.elapsedRealtime(), source)
         rememberInitialGeneratedExtensions(stored)
-        notifyEarlyNtkImageUrlsChanged(key, stored)
+        if (notifyListeners) notifyEarlyNtkImageUrlsChanged(key, stored, source)
         prepareEarlyNtkImageTransportAfterPublish(key, stored)
     }
 
-    private fun notifyEarlyNtkImageUrlsChanged(key: String, urls: List<String>) {
+    private fun startEarlyNtkGeneratedAnchorBodyFetchAfterPublish(key: String, urls: List<String>) {
+        if (urls.isEmpty()) return
+        if (!key.startsWith("/webtoon/", ignoreCase = true) &&
+            !key.startsWith("/manhwa/", ignoreCase = true)
+        ) {
+            return
+        }
+        val context = MainApplication.appContext?.applicationContext ?: return
+        val baseMode = if (key.startsWith("/webtoon/", ignoreCase = true)) {
+            MTitle.base_webtoon
+        } else {
+            MTitle.base_comic
+        }
+        val anchorImage = urls.asSequence()
+            .map { image -> Utils.viewerImageRequestUrl(image, baseMode) }
+            .firstOrNull { image ->
+                val target = ntkGeneratedTarget(image)
+                if (target != null) {
+                    target.page == 1 && earlyNtkGeneratedTargetMatchesKey(key, target)
+                } else {
+                    ntkDirectManifestPageMatches(image, key, 1)
+                }
+            } ?: return
+        val target = ntkGeneratedTarget(anchorImage) ?: return
+        val fetchKey = "$key|${cacheGeneration.get()}|${normalizeNtkImageForPageCompare(anchorImage)}"
+        val task = FutureTask(Callable<Unit> {
+            val episodeId = key.substringAfterLast('/').substringBefore('?').toIntOrNull() ?: 0
+            val manga = Manga(episodeId, "", "", baseMode).also {
+                it.setNtkEpisodePath(key)
+                it.setNtkImageCount(urls.size)
+                it.setImgs(urls)
+                val parts = key.trim('/').split('/')
+                if (parts.size >= 3) {
+                    it.setNtkImageWorkId(parts[1])
+                    it.setNtkImageEpisodeId(parts[2])
+                }
+            }
+            val startedAt = SystemClock.elapsedRealtime()
+            logCacheEvent(
+                "early_anchor_body_fetch_start",
+                manga,
+                anchorImage,
+                true,
+                "page=${target.page},urls=${urls.size}"
+            )
+            try {
+                requestForegroundRace(
+                    context,
+                    manga,
+                    anchorImage,
+                    cancellation = null,
+                    raceAttempts = FOREGROUND_STREAM_RACE_ATTEMPTS,
+                    anchorHedge = false
+                ).use { response ->
+                    logCacheEvent(
+                        "early_anchor_body_fetch_done",
+                        manga,
+                        anchorImage,
+                        true,
+                        "page=${target.page},code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                    )
+                }
+            } catch (t: Throwable) {
+                rethrowIfFatal(t)
+                logCacheEvent(
+                    "early_anchor_body_fetch_error",
+                    manga,
+                    anchorImage,
+                    true,
+                    "page=${target.page},error=${throwableSummary(t)},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
+            }
+            Unit
+        })
+        val existing = earlyNtkGeneratedAnchorBodyFetches.putIfAbsent(fetchKey, task)
+        if (existing != null) return
+        try {
+            foregroundRaceExecutor.execute {
+                try {
+                    task.run()
+                } finally {
+                    scheduleEarlyNtkGeneratedAnchorBodyFetchExpiry(fetchKey, task)
+                }
+            }
+        } catch (e: RuntimeException) {
+            earlyNtkGeneratedAnchorBodyFetches.remove(fetchKey, task)
+            Log.d(TAG, "early_anchor_body_fetch_enqueue_error path=$key,error=${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun earlyNtkGeneratedTargetMatchesKey(key: String, target: NtkGeneratedTarget): Boolean {
+        val targetKey = earlyNtkPathKey(target.path)
+        if (targetKey.equals(key, ignoreCase = true)) return true
+        val keyParts = key.trim('/').split('/')
+        val targetParts = target.path.trim('/').split('/')
+        if (keyParts.size < 3 || targetParts.size < 3) return false
+        if (!keyParts[0].equals(targetParts[0], ignoreCase = true)) return false
+        return ntkPathEpisodeIdForGeneratedMatch(keyParts[2]) == targetParts[2]
+    }
+
+    private fun scheduleEarlyNtkGeneratedAnchorBodyFetchExpiry(key: String, task: FutureTask<Unit>) {
+        try {
+            trimExecutor.schedule(
+                { earlyNtkGeneratedAnchorBodyFetches.remove(key, task) },
+                FOREGROUND_STREAM_STALE_MS,
+                TimeUnit.MILLISECONDS
+            )
+        } catch (_: RuntimeException) {
+            earlyNtkGeneratedAnchorBodyFetches.remove(key, task)
+        }
+    }
+
+    private fun notifyEarlyNtkImageUrlsChanged(key: String, urls: List<String>, source: String) {
         if (earlyNtkImageUrlListeners.isEmpty()) return
         val snapshot = Collections.unmodifiableList(ArrayList(urls))
         for (listener in earlyNtkImageUrlListeners) {
             try {
-                listener(key, snapshot)
+                listener(key, snapshot, source)
             } catch (e: Throwable) {
                 Log.w(TAG, "reader_early_ntk_urls_listener_error path=$key", e)
             }
@@ -1226,10 +9109,147 @@ object ReaderImageCache {
         return false
     }
 
+    private fun metadataBackedGeneratedTailExpansion(
+        key: String,
+        existing: EarlyNtkImageUrls?,
+        incoming: List<String>
+    ): List<String>? {
+        val existingUrls = existing?.urls ?: return null
+        if (existingUrls.isEmpty() || incoming.size <= existingUrls.size) return null
+        if (!existing.source.contains("payload-direct-urls", ignoreCase = true) &&
+            !existing.source.contains("payload-direct-metadata-tail", ignoreCase = true)
+        ) {
+            return null
+        }
+        if (
+            existing.source.contains("payload-direct-urls", ignoreCase = true) &&
+            !existing.source.contains("payload-direct-metadata-tail", ignoreCase = true) &&
+            incoming.any { ntkGeneratedTarget(it) != null }
+        ) {
+            return null
+        }
+        for (index in existingUrls.indices) {
+            if (normalizeNtkImageForPageCompare(existingUrls[index]) !=
+                normalizeNtkImageForPageCompare(incoming[index])
+            ) {
+                return null
+            }
+        }
+        val merged = ArrayList(existingUrls)
+        var expectedPage = existingUrls.size + 1
+        for (index in existingUrls.size until incoming.size) {
+            val image = incoming[index]
+            val target = ntkGeneratedTarget(image) ?: return null
+            if (target.page != expectedPage) return null
+            if (!earlyNtkGeneratedTargetMatchesKey(key, target)) return null
+            merged.add(image)
+            expectedPage++
+        }
+        return compactEarlyNtkGeneratedPageUrls(merged)
+    }
+
+    private fun shouldRejectGeneratedExpansionPastTrustedManifest(
+        key: String,
+        existing: EarlyNtkImageUrls?,
+        incoming: List<String>,
+        source: String,
+        trustedCount: Int
+    ): Boolean {
+        if (incoming.none { ntkGeneratedTarget(it) != null }) return false
+        if (source.contains("payload-direct-metadata-tail", ignoreCase = true)) return false
+        val boundCount = when {
+            trustedCount > 0 -> trustedCount
+            existing != null && isPayloadBoundAuthoritativeSource(existing.source) -> existing.urls.size
+            else -> 0
+        }
+        if (boundCount <= 0 || incoming.size <= boundCount) return false
+        val existingUrls = existing?.urls.orEmpty()
+        if (existingUrls.isEmpty()) return true
+        val compareCount = minOf(boundCount, existingUrls.size, incoming.size)
+        for (index in 0 until compareCount) {
+            if (normalizeNtkImageForPageCompare(existingUrls[index]) !=
+                normalizeNtkImageForPageCompare(incoming[index])
+            ) {
+                return true
+            }
+        }
+        return !source.contains("payload-direct", ignoreCase = true)
+    }
+
+    private fun shouldRejectViewerTokenGeneratedAuthority(
+        source: String,
+        existing: EarlyNtkImageUrls?,
+        incoming: List<String>,
+        trustedCount: Int
+    ): Boolean {
+        if (!source.contains("viewer-api-token", ignoreCase = true)) return false
+        if (source.contains("payload-direct-metadata-tail", ignoreCase = true)) return false
+        if (incoming.none { ntkGeneratedTarget(it) != null }) return false
+        val firstGeneratedPage = incoming.firstNotNullOfOrNull { ntkGeneratedTarget(it)?.page }
+        if (firstGeneratedPage != null && firstGeneratedPage > 1) return true
+        if (trustedCount > 0 && incoming.size > trustedCount) return true
+        return existing != null &&
+            incoming.size > existing.urls.size &&
+            !source.contains("metadata-tail", ignoreCase = true)
+    }
+
+    private fun shouldKeepMetadataBackedTailOverAuthoritativeShrink(
+        existing: EarlyNtkImageUrls?,
+        incoming: List<String>
+    ): Boolean = false
+
     private fun hasTrustedCompleteNtkImageApiCount(key: String, count: Int): Boolean {
         val trustedCount = trustedNtkImageApiCounts[key] ?: return false
         if (trustedCount.count != count) return false
         return SystemClock.elapsedRealtime() - trustedCount.createdAtMs <= EARLY_NTK_APPEND_IMAGE_URL_TTL_MS
+    }
+
+    private fun publishTrustedGeneratedCountExpansion(key: String, count: Int) {
+        val existing = earlyNtkImageUrls[key] ?: return
+        val expanded = trustedGeneratedCountExpansion(key, existing.urls, count) ?: return
+        val source = if (existing.source.isBlank()) {
+            "trusted-api-count"
+        } else {
+            "${existing.source}|trusted-api-count"
+        }
+        publishEarlyNtkImageUrls(key, expanded, source = source)
+        Log.d(
+            TAG,
+            "reader_early_ntk_urls_expand_trusted_api_count path=$key," +
+                "from=${existing.urls.size},to=${expanded.size},trusted=$count," +
+                "first=${safeImageName(expanded.firstOrNull())}"
+        )
+    }
+
+    private fun trustedGeneratedCountExpansion(
+        key: String,
+        existing: List<String>,
+        count: Int
+    ): List<String>? {
+        if (count <= existing.size || count > NTK_TRUSTED_GENERATED_COUNT_EXPANSION_MAX) return null
+        val seed = existing.firstOrNull { image ->
+            val target = ntkGeneratedTarget(image) ?: return@firstOrNull false
+            earlyNtkGeneratedTargetMatchesKey(key, target)
+        } ?: return null
+        val expanded = ArrayList<String>(count)
+        for (index in 0 until count) {
+            val current = existing.getOrNull(index)
+            if (!current.isNullOrBlank()) {
+                expanded.add(current)
+                continue
+            }
+            val page = index + 1
+            val generated = ntkGeneratedPageImage(seed, page) ?: return null
+            val generatedTarget = ntkGeneratedTarget(generated) ?: return null
+            if (generatedTarget.page != page || !earlyNtkGeneratedTargetMatchesKey(key, generatedTarget)) {
+                return null
+            }
+            expanded.add(hintedNtkGeneratedImageUrl(generated) ?: generated)
+        }
+        if (expanded.size <= existing.size) return null
+        return compactEarlyNtkGeneratedPageUrls(expanded)
+            .takeIf { it.size >= count }
+            ?: expanded
     }
 
     @JvmStatic
@@ -1238,10 +9258,115 @@ object ReaderImageCache {
         if (key.isEmpty() || count <= 0) return
         val now = SystemClock.elapsedRealtime()
         val existing = trustedNtkImageApiCounts[key]
-        if (existing == null || count >= existing.count || existing.createdAtMs < now - EARLY_NTK_APPEND_IMAGE_URL_TTL_MS) {
+        val immutableNumericEpisode =
+            key.matches(Regex("^/(?:manhwa|webtoon)/\\d{1,12}/\\d{1,12}$", RegexOption.IGNORE_CASE))
+        if (
+            immutableNumericEpisode &&
+            existing != null &&
+            existing.count != count &&
+            existing.createdAtMs >= now - EARLY_NTK_IMAGE_URL_TTL_MS
+        ) {
+            Log.d(
+                TAG,
+                "reader_ntk_trusted_api_count_conflict_keep path=$key," +
+                    "existing=${existing.count},incoming=$count"
+            )
+            return
+        }
+        val currentDirectUploadManifest = isNtkKpWebtoonSlugPathKey(key) &&
+            earlyNtkImageUrls[key]?.urls?.let { urls ->
+                urls.size >= 4 &&
+                    urls.any { isNtkUploadCdnImageUrl(it) } &&
+                    urls.none { isNtkProtectedViewerApiImage(it) }
+            } == true
+        if (
+            existing == null ||
+            count >= existing.count ||
+            existing.createdAtMs < now - EARLY_NTK_APPEND_IMAGE_URL_TTL_MS ||
+            (currentDirectUploadManifest && count == earlyNtkImageUrls[key]?.urls?.size)
+        ) {
+            val countBecameAuthoritative = existing == null ||
+                existing.count != count ||
+                existing.createdAtMs < now - EARLY_NTK_APPEND_IMAGE_URL_TTL_MS
             trustedNtkImageApiCounts[key] = TrustedNtkImageApiCount(count, now)
             Log.d(TAG, "reader_ntk_trusted_api_count_remember path=$key,count=$count")
+            publishTrustedGeneratedCountExpansion(key, count)
+            // URL publication and trusted-count publication are separate asynchronous
+            // events.  If the complete URL list arrived first, expansion is a no-op and
+            // URL-only listeners otherwise never learn that the manifest just became
+            // authoritative.  Re-publish the existing immutable snapshot exactly once
+            // for that state transition so the production EpisodeActivity warmup can
+            // decode/stage before the user's ACTION_UP instead of falling back to a new
+            // Reader Activity.
+            val readyUrls = earlyNtkImageUrls[key]?.urls
+            if (countBecameAuthoritative && readyUrls != null && readyUrls.size >= count) {
+                notifyEarlyNtkImageUrlsChanged(
+                    key,
+                    readyUrls,
+                    "trusted-api-count-ready"
+                )
+            }
         }
+    }
+
+    /**
+     * Records the only count provenance permitted to seal a strict native manifest: an exact,
+     * successful viewer-image API response. Document declarations and generated-tail inference
+     * must continue to use [rememberTrustedNtkImageApiCount], which is deliberately unclaimable.
+     */
+    @JvmStatic
+    fun rememberExactNtkImageApiResponseCount(
+        path: String?,
+        count: Int,
+        source: String?,
+        canonicalAssets: List<String>?
+    ) {
+        val key = earlyNtkPathKey(path)
+        val sourceValue = source?.trim().orEmpty()
+        val assets = canonicalAssets
+            ?.map(ReaderPreparedStore::canonicalOriginalAssetIdentity)
+            ?.takeIf { it.size == count && it.none(String::isEmpty) }
+            ?: return
+        if (key.isEmpty() || count <= 0 || !sourceValue.startsWith("api-response:")) return
+        val orderedAssetsDigest = NtkEpisodeManifestSeal.computeDigestSha256(key, count, assets)
+        val proof = NtkImageApiCountProof(
+            count,
+            sourceValue,
+            orderedAssetsDigest,
+            SystemClock.elapsedRealtime()
+        )
+        exactNtkImageApiCountProofs[key] = proof
+        rememberTrustedNtkImageApiCount(key, count)
+        Log.d(
+            TAG,
+            "reader_ntk_exact_api_count_proof path=$key,count=$count,source=$sourceValue," +
+                "digest=${orderedAssetsDigest.take(12)}"
+        )
+        val readyUrls = earlyNtkImageUrls[key]?.urls
+        if (readyUrls != null && readyUrls.size == count &&
+            NtkEpisodeManifestSeal.computeDigestSha256(key, count, readyUrls) ==
+            proof.orderedAssetsDigestSha256
+        ) {
+            notifyEarlyNtkImageUrlsChanged(key, readyUrls, "exact-api-count-ready")
+        }
+    }
+
+    @JvmStatic
+    fun exactNtkImageApiCountProof(
+        path: String?,
+        minCreatedAtMs: Long
+    ): NtkImageApiCountProof? {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return null
+        val proof = exactNtkImageApiCountProofs[key] ?: return null
+        val now = SystemClock.elapsedRealtime()
+        if (proof.createdAtMs < minCreatedAtMs ||
+            now - proof.createdAtMs > EARLY_NTK_APPEND_IMAGE_URL_TTL_MS
+        ) {
+            exactNtkImageApiCountProofs.remove(key, proof)
+            return null
+        }
+        return proof
     }
 
     @JvmStatic
@@ -1255,6 +9380,49 @@ object ReaderImageCache {
             return 0
         }
         return entry.count
+    }
+
+    private fun normalizeNtkUploadImageHttps(raw: String?): String {
+        val value = raw?.trim().orEmpty()
+        if (value.isEmpty()) return ""
+        val lower = value.lowercase(Locale.ROOT)
+        if (
+            lower.startsWith("http://") &&
+            (
+                lower.contains("/webtoon_uploads/") ||
+                    lower.contains("/manhwa_uploads/") ||
+                    lower.contains("/comic_uploads/")
+                )
+        ) {
+            return "https://" + value.substring("http://".length)
+        }
+        if (
+            Regex("^(?:hkhk\\d+\\.store|ronald\\d+\\.online|christ\\d+\\.shop|aws-cdn\\d*\\.site|messiimage\\.online|fvcdn\\d*\\.com|flysky\\d*m\\.com|apihost\\d*\\.com)/", RegexOption.IGNORE_CASE)
+                .containsMatchIn(value)
+        ) {
+            return "https://$value"
+        }
+        return value
+    }
+
+    private fun isNtkKpWebtoonSlugPathKey(path: String): Boolean {
+        return path.matches(Regex("^/?webtoon/\\d{1,12}/kp-[^/?#]+(?:[/?#].*)?$", RegexOption.IGNORE_CASE))
+    }
+
+    private fun isNtkUploadCdnImageUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.ROOT)
+        if (isNtkDescriptorImageUrl(lower) && !isTrustedNtkUploadPayloadImagePath(lower)) return false
+        return lower.contains("/webtoon_uploads/") ||
+            lower.contains("/manhwa_uploads/") ||
+            lower.contains("/comic_uploads/") ||
+            Regex("^https?://(?:[^/?#]+\\.)?messiimage\\.online/[^/?#]+\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$").matches(lower)
+    }
+
+    private fun isTrustedProtectedViewerApiImageForPath(pathKey: String, value: String): Boolean {
+        val target = ntkProtectedApiGeneratedTarget(value) ?: return false
+        val currentKey = earlyNtkPathKey(pathKey)
+        val targetKey = earlyNtkPathKey(target.path)
+        return currentKey.isNotEmpty() && currentKey.equals(targetKey, ignoreCase = true)
     }
 
     private fun compactEarlyNtkGeneratedPageUrls(urls: List<String>): List<String> {
@@ -1289,10 +9457,14 @@ object ReaderImageCache {
         val compacted = ArrayList<String>(urls.size)
         var changed = false
         urls.forEach { url ->
-            val key = url
-                .trim()
-                .replace(Regex("(?i)^https?://"), "//")
-                .substringBefore('#')
+            val trimmed = url.trim()
+            val key = if (trimmed.contains("mvpage=", ignoreCase = true) && isNtkKpCvDescriptorImageUrl(trimmed)) {
+                trimmed.replace(Regex("(?i)^https?://"), "//")
+            } else {
+                trimmed
+                    .replace(Regex("(?i)^https?://"), "//")
+                    .substringBefore('#')
+            }
             if (!seen.add(key)) {
                 changed = true
                 return@forEach
@@ -1358,7 +9530,16 @@ object ReaderImageCache {
     }
 
     private fun prepareEarlyNtkImageTransport(key: String, urls: List<String>) {
+        if (!legacySourceOperationAllowed(key)) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_transport_prepare_suppressed path=${earlyNtkPathKey(key)}," +
+                    "reason=strict_source_reserved_or_owned"
+            )
+            return
+        }
         try {
+            earlyTransportPreparePhysicalCalls.incrementAndGet()
             getHttpClient().prepareNtkImageTransportForViewerUrls(urls, key)
         } catch (t: Throwable) {
             rethrowIfFatal(t)
@@ -1367,6 +9548,14 @@ object ReaderImageCache {
     }
 
     private fun prepareEarlyNtkImageTransportAfterPublish(key: String, urls: List<String>) {
+        if (!legacySourceOperationAllowed(key)) {
+            Log.d(
+                TAG,
+                "reader_early_ntk_transport_prepare_enqueue_suppressed path=${earlyNtkPathKey(key)}," +
+                    "reason=strict_source_reserved_or_owned"
+            )
+            return
+        }
         if (urls.size <= EARLY_NTK_IMAGE_TRANSPORT_SYNC_LIMIT) {
             prepareEarlyNtkImageTransport(key, urls)
             return
@@ -1571,12 +9760,11 @@ object ReaderImageCache {
         if (key.isEmpty()) return emptyList()
         val entry = earlyNtkGeneratedSuccessUrls[key] ?: return emptyList()
         val ageMs = SystemClock.elapsedRealtime() - entry.createdAtMs
-        if (entry.createdAtMs + EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS < minCreatedAtMs ||
-            ageMs > EARLY_NTK_IMAGE_URL_TTL_MS
-        ) {
+        if (ageMs > EARLY_NTK_IMAGE_URL_TTL_MS) {
             earlyNtkGeneratedSuccessUrls.remove(key, entry)
             return emptyList()
         }
+        if (entry.createdAtMs + EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS < minCreatedAtMs) return emptyList()
         return entry.urls
     }
 
@@ -1592,15 +9780,291 @@ object ReaderImageCache {
     private fun earlyNtkImageUrls(path: String?, minCreatedAtMs: Long, maxAgeMs: Long): List<String> {
         val key = earlyNtkPathKey(path)
         if (key.isEmpty()) return emptyList()
-        val entry = earlyNtkImageUrls[key] ?: return emptyList()
+        val entry = earlyNtkImageUrls[key] ?: restoreAuthoritativeNtkManifest(key) ?: return emptyList()
         val ageMs = SystemClock.elapsedRealtime() - entry.createdAtMs
-        if (entry.createdAtMs + EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS < minCreatedAtMs ||
-            ageMs > maxAgeMs
-        ) {
+        if (ageMs > maxAgeMs) {
             earlyNtkImageUrls.remove(key, entry)
             return emptyList()
         }
+        if (entry.createdAtMs + EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS < minCreatedAtMs) return emptyList()
         return entry.urls
+    }
+
+    private fun persistAuthoritativeNtkManifest(
+        key: String,
+        urls: List<String>,
+        source: String,
+        producerGeneration: Long
+    ) {
+        if (key.isBlank() || urls.isEmpty()) return
+        val context = MainApplication.appContext ?: return
+        try {
+            val array = JSONArray()
+            urls.forEach { array.put(it) }
+            val json = JSONObject()
+                .put("schemaVersion", NTK_AUTHORITATIVE_MANIFEST_SCHEMA_VERSION)
+                .put("path", key)
+                .put("source", source)
+                .put("createdAtWallMs", System.currentTimeMillis())
+                .put("urls", array)
+            val admitted = withCurrentCachePublication(producerGeneration) {
+                CacheFileStore.writeAsync(
+                    context.applicationContext,
+                    authoritativeManifestCacheKey(key),
+                    json.toString()
+                )
+                true
+            } ?: false
+            if (!admitted) {
+                Log.d(TAG, "reader_ntk_authoritative_manifest_persist_skip_generation path=$key")
+                return
+            }
+            Log.d(
+                TAG,
+                "reader_ntk_authoritative_manifest_persist path=$key,count=${urls.size},source=$source"
+            )
+        } catch (e: Throwable) {
+            Log.d(TAG, "reader_ntk_authoritative_manifest_persist_error path=$key,$e")
+        }
+    }
+
+    private fun restoreAuthoritativeNtkManifest(key: String): EarlyNtkImageUrls? {
+        if (key.isBlank()) return null
+        val context = MainApplication.appContext ?: return null
+        return try {
+            val raw = CacheFileStore.read(context.applicationContext, authoritativeManifestCacheKey(key))
+            if (raw.isBlank()) return null
+            val json = JSONObject(raw)
+            if (json.optInt("schemaVersion", 0) != NTK_AUTHORITATIVE_MANIFEST_SCHEMA_VERSION) {
+                CacheFileStore.delete(context.applicationContext, authoritativeManifestCacheKey(key))
+                Log.d(TAG, "reader_ntk_authoritative_manifest_restore_skip_schema path=$key")
+                return null
+            }
+            val createdAtWallMs = json.optLong("createdAtWallMs", 0L)
+            if (createdAtWallMs <= 0L ||
+                System.currentTimeMillis() - createdAtWallMs > NTK_AUTHORITATIVE_MANIFEST_CACHE_TTL_MS
+            ) {
+                CacheFileStore.delete(context.applicationContext, authoritativeManifestCacheKey(key))
+                return null
+            }
+            val array = json.optJSONArray("urls") ?: return null
+            val restored = ArrayList<String>(array.length())
+            for (index in 0 until array.length()) {
+                val value = array.optString(index, "").trim()
+                if (value.isNotEmpty()) restored.add(value)
+            }
+            if (restored.isEmpty()) return null
+            val compact = compactEarlyNtkGeneratedPageUrls(compactEarlyNtkEquivalentUrls(restored))
+            if (compact.isEmpty()) return null
+            val source = json.optString("source", "")
+            if (shouldRejectRestoredAuthoritativeManifest(source, compact)) {
+                CacheFileStore.delete(context.applicationContext, authoritativeManifestCacheKey(key))
+                Log.d(
+                    TAG,
+                    "reader_ntk_authoritative_manifest_restore_skip_untrusted_generated path=$key," +
+                        "count=${compact.size},source=$source,first=${safeImageName(compact.firstOrNull())}"
+                )
+                return null
+            }
+            val entry = EarlyNtkImageUrls(
+                Collections.unmodifiableList(ArrayList(compact)),
+                SystemClock.elapsedRealtime(),
+                source
+            )
+            earlyNtkImageUrls[key] = entry
+            rememberInitialGeneratedExtensions(compact)
+            notifyEarlyNtkImageUrlsChanged(key, compact, "disk-authoritative-manifest")
+            prepareEarlyNtkImageTransportAfterPublish(key, compact)
+            Log.d(
+                TAG,
+                "reader_ntk_authoritative_manifest_restore path=$key,count=${compact.size}," +
+                    "source=$source"
+            )
+            entry
+        } catch (e: Throwable) {
+            Log.d(TAG, "reader_ntk_authoritative_manifest_restore_error path=$key,$e")
+            null
+        }
+    }
+
+    @JvmStatic
+    fun clearPersistentNtkAuthoritativeManifestForTest(path: String?) {
+        val key = earlyNtkPathKey(path)
+        if (key.isEmpty()) return
+        val context = MainApplication.appContext ?: return
+        CacheFileStore.delete(context.applicationContext, authoritativeManifestCacheKey(key))
+        earlyNtkImageUrls.remove(key)
+        trustedNtkImageApiCounts.remove(key)
+        exactNtkImageApiCountProofs.remove(key)
+        Log.d(TAG, "reader_ntk_authoritative_manifest_clear_for_test path=$key")
+    }
+
+    @JvmStatic
+    fun clearAllPersistentNtkStateForTest(): Int {
+        val context = MainApplication.appContext ?: return 0
+        cachePublicationLock.writeLock().lock()
+        return try {
+            earlyNtkImageUrls.clear()
+            trustedNtkImageApiCounts.clear()
+            exactNtkImageApiCountProofs.clear()
+            val deleted = CacheFileStore.clearAllForTest(context.applicationContext)
+            Log.d(TAG, "reader_ntk_persistent_state_clear_for_test deleted=$deleted,remaining=0")
+            deleted
+        } finally {
+            cachePublicationLock.writeLock().unlock()
+        }
+    }
+
+    @JvmStatic
+    fun clearPersistentReaderImageFilesForTest(context: Context?): Int {
+        val appContext = context?.applicationContext ?: return 0
+        cachePublicationLock.writeLock().lock()
+        return try {
+            synchronized(strictSpoolLifecycleLock) {
+                val root = File(appContext.cacheDir, DIR_NAME)
+                val spoolRoot = File(appContext.noBackupFilesDir, STRICT_SPOOL_DIR_NAME)
+                check(activeStrictSpoolFiles.isEmpty()) {
+                    "Strict response spools remained active during persistent clear"
+                }
+                check(activeStrictPublishTempFiles.isEmpty()) {
+                    "Strict destination publication remained active during persistent clear"
+                }
+                check(activeReads.isEmpty()) {
+                    "Reader cache file leases remained active during persistent clear"
+                }
+                val deleted = deleteRecursivelyForStrictFresh(root) +
+                    deleteRecursivelyForStrictFresh(spoolRoot)
+                resolvedCacheDir.set(null)
+                lastStrictSpoolCleanupAt.set(0L)
+                lastStrictPublishTempCleanupAt.set(0L)
+                val remaining = countReadableImageCacheFilesForStrictFresh(root)
+                val remainingSpools = countPersistentFilesForStrictFresh(spoolRoot)
+                check(remaining == 0) {
+                    "Reader image cache remained after StrictFresh clear: " +
+                        "${root.absolutePath} count=$remaining"
+                }
+                check(remainingSpools == 0) {
+                    "Reader strict spool remained after StrictFresh clear: " +
+                        "${spoolRoot.absolutePath} count=$remainingSpools"
+                }
+                Log.d(
+                    TAG,
+                    "reader_image_cache_persistent_clear_for_test deleted=$deleted," +
+                        "remaining=$remaining,remainingSpools=$remainingSpools"
+                )
+                deleted
+            }
+        } finally {
+            cachePublicationLock.writeLock().unlock()
+        }
+    }
+
+    @JvmStatic
+    fun clearStrictFreshPersistentStateForTest(context: Context?, path: String?): Int {
+        val appContext = context?.applicationContext ?: return 0
+        val key = earlyNtkPathKey(path)
+        cachePublicationLock.writeLock().lock()
+        return try {
+            synchronized(strictSpoolLifecycleLock) {
+                check(activeStrictSpoolFiles.isEmpty()) {
+                    "Strict response spools remained active during StrictFresh clear"
+                }
+                check(activeStrictPublishTempFiles.isEmpty()) {
+                    "Strict destination publication remained active during StrictFresh clear"
+                }
+                check(activeReads.isEmpty()) {
+                    "Reader cache file leases remained active during StrictFresh clear"
+                }
+                earlyNtkImageUrls.clear()
+                trustedNtkImageApiCounts.clear()
+                exactNtkImageApiCountProofs.clear()
+                val structuredDeleted = if (key.isEmpty()) {
+                    CacheFileStore.clearAllForTest(appContext)
+                } else {
+                    val cacheKey = authoritativeManifestCacheKey(key)
+                    CacheFileStore.clearKeyForTest(appContext, cacheKey)
+                    check(CacheFileStore.read(appContext, cacheKey).isBlank()) {
+                        "Authoritative manifest remained after StrictFresh clear: $key"
+                    }
+                    0
+                }
+                val root = File(appContext.cacheDir, DIR_NAME)
+                val spoolRoot = File(appContext.noBackupFilesDir, STRICT_SPOOL_DIR_NAME)
+                val imageDeleted = deleteRecursivelyForStrictFresh(root)
+                val spoolDeleted = deleteRecursivelyForStrictFresh(spoolRoot)
+                resolvedCacheDir.set(null)
+                lastStrictSpoolCleanupAt.set(0L)
+                lastStrictPublishTempCleanupAt.set(0L)
+                val remainingImages = countReadableImageCacheFilesForStrictFresh(root)
+                val remainingSpools = countPersistentFilesForStrictFresh(spoolRoot)
+                check(remainingImages == 0) {
+                    "Reader image cache remained after StrictFresh clear: " +
+                        "${root.absolutePath} count=$remainingImages"
+                }
+                check(remainingSpools == 0) {
+                    "Reader strict spool remained after StrictFresh clear: " +
+                        "${spoolRoot.absolutePath} count=$remainingSpools"
+                }
+                Log.d(
+                    TAG,
+                    "reader_strict_fresh_persistent_barrier path=$key," +
+                        "structuredDeleted=$structuredDeleted,imageDeleted=$imageDeleted," +
+                        "spoolDeleted=$spoolDeleted,remainingStructured=0," +
+                        "remainingImages=$remainingImages,remainingSpools=$remainingSpools," +
+                        "generation=${cacheGeneration.get()}"
+                )
+                structuredDeleted + imageDeleted + spoolDeleted
+            }
+        } finally {
+            cachePublicationLock.writeLock().unlock()
+        }
+    }
+
+    private fun deleteRecursivelyForStrictFresh(file: File?): Int {
+        if (file == null || !file.exists()) return 0
+        var deleted = 0
+        if (file.isDirectory) {
+            file.listFiles()?.forEach { child ->
+                deleted += deleteRecursivelyForStrictFresh(child)
+            }
+        }
+        if (file.delete()) deleted++
+        return deleted
+    }
+
+    private fun countReadableImageCacheFilesForStrictFresh(file: File?): Int {
+        if (file == null || !file.exists()) return 0
+        if (file.isFile) return if (file.name.endsWith(".img", ignoreCase = true)) 1 else 0
+        return file.listFiles()?.sumOf(::countReadableImageCacheFilesForStrictFresh) ?: 0
+    }
+
+    private fun countPersistentFilesForStrictFresh(file: File?): Int {
+        if (file == null || !file.exists()) return 0
+        if (file.isFile) return 1
+        return file.listFiles()?.sumOf(::countPersistentFilesForStrictFresh) ?: 0
+    }
+
+    private fun shouldRejectRestoredAuthoritativeManifest(source: String, urls: List<String>): Boolean {
+        if (
+            (source.contains("payload-hint", ignoreCase = true) ||
+                source.contains("payload-direct", ignoreCase = true)) &&
+            urls.any { it.contains("/board_uploads/", ignoreCase = true) }
+        ) {
+            return true
+        }
+        if (
+            source.contains("payload-direct", ignoreCase = true) &&
+            urls.any { ntkGeneratedTarget(it) != null }
+        ) {
+            return true
+        }
+        if (!source.contains("viewer-api-token", ignoreCase = true)) return false
+        if (source.contains("payload-direct-metadata-tail", ignoreCase = true)) return false
+        return urls.any { ntkGeneratedTarget(it) != null }
+    }
+
+    private fun authoritativeManifestCacheKey(key: String): String {
+        return NTK_AUTHORITATIVE_MANIFEST_CACHE_PREFIX + key
     }
 
     fun cachedNtkApiFallbackImages(path: String?): List<String> {
@@ -1636,7 +10100,7 @@ object ReaderImageCache {
         val stream = foregroundStreams[streamKey]
         if (stream != null && !stream.isDone) {
             val startedAt = foregroundStreamStartedAt[streamKey] ?: return true
-            if (SystemClock.elapsedRealtime() - startedAt <= FOREGROUND_STREAM_STALE_MS) {
+            if (SystemClock.elapsedRealtime() - startedAt <= foregroundStreamStaleMs(image)) {
                 return true
             }
         }
@@ -1657,7 +10121,7 @@ object ReaderImageCache {
             if (target.page !in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) continue
             if (!ntkGeneratedTargetMatchesMangaEpisode(manga, target)) continue
             if (cachedFile(appContext, manga, image) != null) continue
-            val flightKey = initialGeneratedRangeFlightKey(manga.baseMode, image, target.page) ?: continue
+            val flightKey = initialGeneratedRangeFlightKey(manga.baseMode, image, target.page, manga.ntkEpisodePath) ?: continue
             val task = FutureTask {
                 val startedAt = SystemClock.elapsedRealtime()
                 try {
@@ -1741,22 +10205,38 @@ object ReaderImageCache {
     ): Boolean {
         val assetKey = ntkAnchorAssetKey(manga, image) ?: return false
         fun isReady(): Boolean {
+            ntkAnchorAssetBytes[assetKey]?.let { entry ->
+                if (SystemClock.elapsedRealtime() - entry.createdAtMs <= FOREGROUND_STREAM_HANDOFF_TTL_MS) {
+                    return true
+                }
+                ntkAnchorAssetBytes.remove(assetKey, entry)
+            }
             val file = ntkAnchorAssetFiles[assetKey] ?: return false
             if (isUsableImage(file)) return true
             ntkAnchorAssetFiles.remove(assetKey, file)
             return false
         }
         if (isReady()) {
-            foregroundRaceExecutor.execute(callback)
+            executeNtkAssetReadyCallback(callback)
             return true
         }
         val listeners = ntkAnchorAssetListeners.computeIfAbsent(assetKey) { CopyOnWriteArrayList() }
         listeners.add(callback)
         if (isReady() && ntkAnchorAssetListeners.remove(assetKey, listeners)) {
-            for (listener in listeners) foregroundRaceExecutor.execute(listener)
+            for (listener in listeners) executeNtkAssetReadyCallback(listener)
         }
         logCacheEvent("ntk_anchor_asset_listener_registered", manga, image, true, "asset=$assetKey")
         return true
+    }
+
+    fun ntkAnchorAssetBytes(manga: Manga, image: String): ByteArray? {
+        val assetKey = ntkAnchorAssetKey(manga, image) ?: return null
+        val entry = ntkAnchorAssetBytes[assetKey] ?: return null
+        if (SystemClock.elapsedRealtime() - entry.createdAtMs > FOREGROUND_STREAM_HANDOFF_TTL_MS) {
+            ntkAnchorAssetBytes.remove(assetKey, entry)
+            return null
+        }
+        return entry.bytes
     }
 
     fun runWhenNtkInitialGeneratedAssetReady(
@@ -1778,16 +10258,24 @@ object ReaderImageCache {
             return file
         }
         if (readyFile() != null) {
-            foregroundRaceExecutor.execute(callback)
+            executeNtkAssetReadyCallback(callback)
             return true
         }
         val listeners = ntkInitialGeneratedAssetListeners.computeIfAbsent(assetKey) { CopyOnWriteArrayList() }
         listeners.add(callback)
         if (readyFile() != null && ntkInitialGeneratedAssetListeners.remove(assetKey, listeners)) {
-            for (listener in listeners) foregroundRaceExecutor.execute(listener)
+            for (listener in listeners) executeNtkAssetReadyCallback(listener)
         }
         logCacheEvent("ntk_initial_generated_asset_listener_registered", manga, image, true, "asset=$assetKey")
         return true
+    }
+
+    private fun executeNtkAssetReadyCallback(callback: Runnable) {
+        try {
+            initialAssetListenerExecutor.execute(callback)
+        } catch (_: RejectedExecutionException) {
+            foregroundRaceExecutor.execute(callback)
+        }
     }
 
     fun completeInitialContinuousGeneratedPrefixes(
@@ -1829,7 +10317,7 @@ object ReaderImageCache {
     ) {
         if (cachedFile(context, manga, image) != null) return
         val target = ntkGeneratedTarget(image) ?: return
-        val flightKey = initialGeneratedRangeFlightKey(manga.baseMode, image, page) ?: return
+        val flightKey = initialGeneratedRangeFlightKey(manga.baseMode, image, page, manga.ntkEpisodePath) ?: return
         val startedAt = SystemClock.elapsedRealtime()
         val snapshot = initialGeneratedPrefixFlights[flightKey]?.let { task ->
             try {
@@ -1905,7 +10393,7 @@ object ReaderImageCache {
         cacheForegroundBytes(context, manga, actualImage, bytes, generation, trustedImageBytes = true)
         rememberEarlyNtkGeneratedSuccess(manga, actualImage)
         rememberNtkGeneratedEpisodeExtension(actualImage)
-        if (actualImage != image) {
+        if (actualImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, actualImage)) {
             cacheForegroundBytes(context, manga, image, bytes, generation, trustedImageBytes = true)
         }
         logCacheEvent(
@@ -1941,6 +10429,7 @@ object ReaderImageCache {
     ): Boolean {
         val page = target?.page ?: return false
         if (page <= 1) return false
+        if (page > NTK_PERMITLESS_INITIAL_VISIBLE_MAX_PAGE) return false
         if (!isVerifiedEarlyNtkGeneratedUrl(manga, image, target) &&
             !isActiveNearGeneratedPageWithVerifiedAnchor(manga, target)
         ) {
@@ -1958,6 +10447,7 @@ object ReaderImageCache {
         if (!visiblePriority) return false
         val page = target?.page ?: return false
         if (page !in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        if (page > NTK_PERMITLESS_INITIAL_VISIBLE_MAX_PAGE) return false
         if (pageIndex >= 0 && pageIndex != page - 1) return false
         val path = manga.ntkEpisodePath?.trim().orEmpty()
         if (!path.startsWith("/webtoon/", ignoreCase = true) &&
@@ -1983,6 +10473,34 @@ object ReaderImageCache {
         }
     }
 
+    private fun isActiveFuture(future: Future<*>?): Boolean {
+        return future != null && !future.isDone && !future.isCancelled
+    }
+
+    private fun hasActiveInitialGeneratedSharedWork(
+        manga: Manga,
+        image: String,
+        target: NtkGeneratedTarget?,
+        streamKey: String,
+        generation: Long
+    ): Boolean {
+        if (target == null) return false
+        if (target.page !in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        if (!ntkGeneratedTargetMatchesMangaEpisode(manga, target)) return false
+        val previewKey = "ntk-visible-preview|$streamKey"
+        if (isActiveFuture(initialVisibleGeneratedPreviewFlights[previewKey])) return true
+        val completeKey = initialGeneratedCompleteBytesFlightKey(manga, image, target, generation)
+        if (isActiveFuture(initialGeneratedCompleteBytesFlights[completeKey])) return true
+        initialGeneratedRangeFlightKey(manga.baseMode, image, target.page, manga.ntkEpisodePath)?.let { key ->
+            if (isActiveFuture(initialGeneratedRangeFlights[key])) return true
+            if (isActiveFuture(initialGeneratedPrefixFlights[key])) return true
+        }
+        initialGeneratedDirectRaceFlightKey(manga.baseMode, image, target.page, manga.ntkEpisodePath)?.let { key ->
+            if (isActiveFuture(initialGeneratedDirectRaceFlights[key])) return true
+        }
+        return false
+    }
+
     @JvmOverloads
     fun startForegroundStreamFetch(
         context: Context,
@@ -1992,10 +10510,40 @@ object ReaderImageCache {
         anchorHedge: Boolean = false,
         permit: NtkImagePermit? = null,
         pageIndex: Int = -1,
-        visiblePriority: Boolean = true
+        visiblePriority: Boolean = true,
+        verifiedEpisodeFanout: Boolean = false,
+        producerGeneration: Long = cacheGeneration.get()
     ): Boolean {
+        cachePublicationLock.readLock().lock()
+        try {
+        if (producerGeneration != cacheGeneration.get()) return false
         if (!manga.isOnline) return false
-        if (isNtkProtectedViewerApiImage(image)) {
+        if (!legacySourceOperationAllowed(manga)) {
+            logCacheEvent(
+                "foreground_stream_skip_strict_source_reserved_or_owned",
+                manga,
+                image,
+                true,
+                "page=$pageIndex"
+            )
+            return false
+        }
+        val ntkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
+        if (
+            isNtkKpWebtoonSlugPathKey(ntkEpisodePath) &&
+            isNtkNativeUnsafeUploadPayloadUrl(image)
+        ) {
+            logCacheEvent(
+                "foreground_stream_skip_kp_native_unsafe_upload_payload",
+                manga,
+                image,
+                true,
+                "page=$pageIndex"
+            )
+            ViewerWarmupManager.logMetric("reader_foreground_stream_skip_kp_native_unsafe_upload_payload", pageIndex.toLong())
+            return false
+        }
+        if (isNtkProtectedViewerApiImage(image) && !canNativeFetchProtectedViewerApi(manga, image)) {
             logCacheEvent(
                 "foreground_stream_skip_protected_api_browser_owned",
                 manga,
@@ -2007,8 +10555,43 @@ object ReaderImageCache {
         }
         val appContext = context.applicationContext
         val generatedTarget = ntkGeneratedTarget(image)
+        if (shouldSkipStaleForegroundViewerStream(manga, image, generatedTarget)) {
+            logCacheEvent(
+                "foreground_stream_skip_stale_foreground_path",
+                manga,
+                image,
+                true,
+                "page=$pageIndex,generatedPage=${generatedTarget?.page ?: 0}"
+            )
+            ViewerWarmupManager.logMetric("reader_foreground_stream_skip_stale_foreground_path", pageIndex.toLong())
+            return false
+        }
+        val protectedNativeReady =
+            isNtkProtectedViewerApiImage(image) && canNativeFetchProtectedViewerApi(manga, image)
+        val trustedVerifiedEpisodeFanout =
+            verifiedEpisodeFanout &&
+                visiblePriority &&
+                generatedTarget != null &&
+                pageIndex >= 0 &&
+                generatedTarget.page == pageIndex + 1 &&
+                ntkGeneratedTargetMatchesMangaEpisode(manga, generatedTarget) &&
+                ntkGeneratedEpisodeExtensionMatches(image)
+        if (permit == null && isPermitlessInitialGeneratedForegroundSuppressed(generatedTarget)) {
+            logCacheEvent(
+                "foreground_stream_skip_suppressed_permitless_initial",
+                manga,
+                image,
+                true,
+                "page=$pageIndex,generatedPage=${generatedTarget?.page ?: 0}"
+            )
+            ViewerWarmupManager.logMetric("reader_foreground_stream_skip_suppressed_permitless_initial", pageIndex.toLong())
+            return false
+        }
         val permitlessVerifiedEarlyGenerated = permit == null &&
-            canStreamVerifiedEarlyGeneratedWithoutPermit(appContext, manga, image, generatedTarget)
+            (
+                trustedVerifiedEpisodeFanout ||
+                    canStreamVerifiedEarlyGeneratedWithoutPermit(appContext, manga, image, generatedTarget)
+                )
         val permitlessInitialVisibleGenerated = permit == null &&
             (
                 permitlessVerifiedEarlyGenerated ||
@@ -2047,8 +10630,39 @@ object ReaderImageCache {
             ViewerWarmupManager.logMetric("reader_foreground_stream_missing_permit", pageIndex.toLong())
             return false
         }
-        cancellation?.throwIfCancelled()
+        val requestedGeneratedPage = if (pageIndex >= 0) pageIndex + 1 else -1
+        val isRequestedVisibleGeneratedPage =
+            generatedTarget != null && generatedTarget.page == requestedGeneratedPage
+        if (visiblePriority &&
+            generatedTarget != null &&
+            generatedTarget.page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
+            !isRequestedVisibleGeneratedPage &&
+            !hasNtkAnchorAssetForEpisode(manga)
+        ) {
+            logCacheEvent(
+                "foreground_stream_defer_until_anchor_asset",
+                manga,
+                image,
+                true,
+                "page=$pageIndex,generatedPage=${generatedTarget.page}"
+            )
+            return false
+        }
+        try {
+            cancellation?.throwIfCancelled()
+        } catch (_: IOException) {
+            logCacheEvent(
+                "foreground_stream_skip_cancelled",
+                manga,
+                image,
+                true,
+                "page=$pageIndex,generatedPage=${generatedTarget?.page ?: 0}"
+            )
+            return false
+        }
         if (cachedFile(appContext, manga, image) != null) {
+            publishNtkInitialGeneratedAssetFile(appContext, manga, image, "foreground_stream_cached")
+            publishNtkAnchorAssetFile(appContext, manga, image, "foreground_stream_cached")
             logCacheEvent(
                 "foreground_stream_skip_cached",
                 manga,
@@ -2058,8 +10672,29 @@ object ReaderImageCache {
             )
             return false
         }
+        if (
+            pageIndex > 0 &&
+            isNtkKpWebtoonSlugPathKey(ntkEpisodePath) &&
+            isNtkKpCvDescriptorImageUrl(image) &&
+            !hasNtkAnchorAssetForEpisode(manga)
+        ) {
+            logCacheEvent(
+                "foreground_stream_defer_kp_descriptor_until_anchor",
+                manga,
+                image,
+                true,
+                "page=$pageIndex"
+            )
+            ViewerWarmupManager.logMetric("reader_foreground_stream_defer_kp_descriptor_until_anchor", 1L)
+            return false
+        }
         val key = key(manga.baseMode, image)
         val streamKey = foregroundStreamKey(manga, image)
+        val initialGeneratedAnchorStream =
+            visiblePriority &&
+                generatedTarget?.page == 1 &&
+                pageIndex <= 0 &&
+                isFastOkHttpGeneratedImageUrl(image)
         if (shouldDropMismatchedHintedInitialGenerated(image)) {
             logCacheEvent(
                 "foreground_stream_skip_hinted_mismatch",
@@ -2079,12 +10714,26 @@ object ReaderImageCache {
             visiblePriority &&
                 permitlessVerifiedEarlyGenerated &&
                 generatedTarget?.page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+        val visibleInitialGeneratedAnchor =
+            visiblePriority &&
+                generatedTarget?.page == 1 &&
+                pageIndex <= 0 &&
+                isFastOkHttpGeneratedImageUrl(image)
+        val visibleInitialGeneratedFastPath =
+            visiblePriority &&
+                generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
+                (isFastOkHttpGeneratedImageUrl(image) || shouldPrioritizeHintedInitialGeneratedFullFetch(image))
         val allowVerifiedGeneratedVariant = verifiedInitialGeneratedVariant
             || verifiedInitialVisiblePreview
-        if (visiblePriority && verifiedInitialGeneratedVariant && generatedTarget != null) {
+            || visibleInitialGeneratedAnchor
+            || visibleInitialGeneratedFastPath
+            || protectedNativeReady
+        if (visiblePriority && (verifiedInitialGeneratedVariant || protectedNativeReady) && generatedTarget != null) {
             cancelOtherInitialGeneratedForegroundStreams(manga, image, generatedTarget)
         }
-        if (hasActiveFetch(manga, image) && !allowVerifiedGeneratedVariant) {
+        cleanupCompletedForegroundStream(streamKey)
+        val activeStreamForImage = foregroundStreams.containsKey(streamKey)
+        if (hasActiveFetch(manga, image) && !activeStreamForImage && !allowVerifiedGeneratedVariant) {
             logCacheEvent(
                 "foreground_stream_skip_active_fetch",
                 manga,
@@ -2106,14 +10755,35 @@ object ReaderImageCache {
             return false
         }
         val startedAt = SystemClock.elapsedRealtime()
-        val generation = cacheGeneration.get()
+        val generation = producerGeneration
         val task = FutureTask<ByteArray?> {
             try {
+                if (shouldSkipStaleForegroundViewerStream(manga, image, generatedTarget)) {
+                    logCacheEvent(
+                        "foreground_stream_async_abort_stale_foreground_path",
+                        manga,
+                        image,
+                        true,
+                        "page=$pageIndex,generatedPage=${generatedTarget?.page ?: 0}"
+                    )
+                    return@FutureTask null
+                }
+                val streamCancellation =
+                    if (shouldDetachInitialTrustedApiForegroundCancellation(
+                            image,
+                            pageIndex,
+                            visiblePriority
+                        )
+                    ) {
+                        null
+                    } else {
+                        cancellation
+                    }
                 val bytes = fetchForegroundBytes(
                     appContext,
                     manga,
                     image,
-                    cancellation,
+                    streamCancellation,
                     startedAt,
                     FOREGROUND_STREAM_RACE_ATTEMPTS,
                     anchorHedge,
@@ -2142,23 +10812,105 @@ object ReaderImageCache {
         }
         val existing = foregroundStreams.putIfAbsent(streamKey, task)
         if (existing != null) {
-            if (isStaleForegroundStream(streamKey, startedAt) &&
+            if (protectedNativeReady) {
+                val existingImage = foregroundStreamImages[streamKey].orEmpty()
+                if (isNtkProtectedViewerApiImage(existingImage)) {
+                    logCacheEvent(
+                        "foreground_stream_protected_strict_restart_skip_active_protected",
+                        manga,
+                        image,
+                        true,
+                        "page=$pageIndex"
+                    )
+                    logCacheEvent("foreground_stream_async_join", manga, image, true, "activeStream=true")
+                    ViewerWarmupManager.logMetric("reader_foreground_stream_async_join", 1L)
+                    return false
+                }
+                val previousRestart = protectedNativeStrictRestartAt.putIfAbsent(
+                    streamKey,
+                    SystemClock.elapsedRealtime()
+                )
+                if (previousRestart == null && foregroundStreams.remove(streamKey, existing)) {
+                    existing.cancel(true)
+                    foregroundStreamStartedAt.remove(streamKey)
+                    foregroundStreamImages.remove(streamKey)
+                    logCacheEvent(
+                        "foreground_stream_protected_strict_restart",
+                        manga,
+                        image,
+                        true,
+                        "page=$pageIndex,cancelled=1"
+                    )
+                    ViewerWarmupManager.logMetric("reader_foreground_stream_protected_strict_restart", 1L)
+                    return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority, verifiedEpisodeFanout, generation)
+                }
+                logCacheEvent(
+                    "foreground_stream_protected_strict_restart_skip_recent",
+                    manga,
+                    image,
+                    true,
+                    "page=$pageIndex,restarted=${previousRestart != null}"
+                )
+            }
+            if (shouldSupersedeInitialGeneratedForegroundStream(
+                    manga,
+                    image,
+                    streamKey,
+                    existing,
+                    trustedVerifiedEpisodeFanout
+                ) &&
                 foregroundStreams.remove(streamKey, existing)
             ) {
                 existing.cancel(true)
                 foregroundStreamStartedAt.remove(streamKey)
+                val oldImage = foregroundStreamImages.remove(streamKey).orEmpty()
+                logCacheEvent(
+                    "foreground_stream_supersede_initial_variant",
+                    manga,
+                    image,
+                    true,
+                    "old=${oldImage.substringAfterLast('/').takeLast(64)},page=${generatedTarget?.page ?: 0}"
+                )
+                ViewerWarmupManager.logMetric("reader_foreground_stream_supersede_initial_variant", 1L)
+                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority, verifiedEpisodeFanout, generation)
+            }
+            val protectActiveInitialWork = hasActiveInitialGeneratedSharedWork(
+                manga,
+                image,
+                generatedTarget,
+                streamKey,
+                generation
+            )
+            if (isStaleForegroundStream(streamKey, startedAt) &&
+                !protectActiveInitialWork &&
+                foregroundStreams.remove(streamKey, existing)
+            ) {
+                existing.cancel(true)
+                foregroundStreamStartedAt.remove(streamKey)
+                foregroundStreamImages.remove(streamKey)
                 logCacheEvent("foreground_stream_stale_restart", manga, image, true, "activeStream=true")
-                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority)
+                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority, verifiedEpisodeFanout, generation)
+            }
+            if (protectActiveInitialWork && !existing.isDone) {
+                logCacheEvent(
+                    "foreground_stream_stale_join_active_initial",
+                    manga,
+                    image,
+                    true,
+                    "page=$pageIndex,generatedPage=${generatedTarget?.page ?: 0}"
+                )
             }
             if (existing.isDone && foregroundStreams.remove(streamKey, existing)) {
                 foregroundStreamStartedAt.remove(streamKey)
-                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority)
+                foregroundStreamImages.remove(streamKey)
+                return startForegroundStreamFetch(context, manga, image, cancellation, anchorHedge, permit, pageIndex, visiblePriority, verifiedEpisodeFanout, generation)
             }
             logCacheEvent("foreground_stream_async_join", manga, image, true, "activeStream=true")
             ViewerWarmupManager.logMetric("reader_foreground_stream_async_join", 1L)
             return false
         }
         foregroundStreamStartedAt[streamKey] = startedAt
+        foregroundStreamImages[streamKey] = image
         logCacheEvent(
             "foreground_stream_async_start",
             manga,
@@ -2177,7 +10929,24 @@ object ReaderImageCache {
                 visiblePriority,
                 generatedTarget
             )
-            val streamExecutor = if (initialVisibleGeneratedStream || initialVisibleTrustedApiStream) {
+            val authoritativeNativeDirectManifestStream =
+                generatedTarget == null &&
+                    pageIndex >= 0 &&
+                    isAuthoritativeNativeDirectManifestImage(manga, image)
+            val streamExecutor = if (trustedVerifiedEpisodeFanout || authoritativeNativeDirectManifestStream) {
+                logCacheEvent(
+                    if (authoritativeNativeDirectManifestStream) {
+                        "foreground_stream_authoritative_direct_executor"
+                    } else {
+                        "foreground_stream_verified_episode_fanout_executor"
+                    },
+                    manga,
+                    image,
+                    true,
+                    "page=$pageIndex"
+                )
+                verifiedGeneratedFanoutFetchExecutor
+            } else if (initialVisibleGeneratedStream || initialVisibleTrustedApiStream) {
                 logCacheEvent(
                     "foreground_stream_initial_visible_executor",
                     manga,
@@ -2192,8 +10961,21 @@ object ReaderImageCache {
             }
             streamExecutor.execute {
                 try {
+                    if (shouldSkipStaleForegroundViewerStream(manga, image, generatedTarget)) {
+                        logCacheEvent(
+                            "foreground_stream_executor_abort_stale_foreground_path",
+                            manga,
+                            image,
+                            true,
+                            "page=$pageIndex,generatedPage=${generatedTarget?.page ?: 0}"
+                        )
+                        return@execute
+                    }
                     task.run()
                 } finally {
+                    if (streamKey !in foregroundStreamPublications) {
+                        notifyForegroundByteFlights(appContext, manga, image)
+                    }
                     scheduleForegroundStreamHandoffExpiry(streamKey, task)
                 }
             }
@@ -2219,9 +11001,110 @@ object ReaderImageCache {
             }
             true
         } catch (_: Exception) {
-            foregroundStreams.remove(streamKey, task)
-            foregroundStreamStartedAt.remove(streamKey)
+            if (foregroundStreams.remove(streamKey, task)) {
+                foregroundStreamStartedAt.remove(streamKey)
+                foregroundStreamImages.remove(streamKey)
+            }
             false
+        }
+        } finally {
+            cachePublicationLock.readLock().unlock()
+        }
+    }
+
+    /**
+     * Starts byte-only transport for the verified remainder of the current episode as soon as
+     * its immutable manifest is known. Submission and network work stay off the UI thread; the
+     * reader still owns viewport-bounded bitmap decode and delivery.
+     */
+    @JvmOverloads
+    fun startVerifiedGeneratedEpisodeTailPrefetch(
+        context: Context,
+        manga: Manga,
+        images: List<String>?,
+        startIndex: Int,
+        producerGeneration: Long = cacheGeneration.get()
+    ): Boolean {
+        cachePublicationLock.readLock().lock()
+        try {
+        if (producerGeneration != cacheGeneration.get()) return false
+        if (!manga.isOnline || images.isNullOrEmpty()) return false
+        val first = startIndex.coerceIn(0, images.size)
+        if (first >= images.size) return false
+        val path = earlyNtkPathKey(manga.ntkEpisodePath)
+        if (path.isBlank()) return false
+        val snapshot = ArrayList(images)
+        val extension = ntkGeneratedImageExtension(snapshot.firstOrNull().orEmpty())
+        val generation = producerGeneration
+        val prefetchKey = "$generation|${manga.baseMode}|$path|${snapshot.size}|$extension"
+        val episodeKey = "${manga.baseMode}|$path"
+        val batch = verifiedTailBatches.acquire(prefetchKey, episodeKey) ?: return false
+        var scheduled = 0
+        try {
+            for (index in first until snapshot.size) {
+                val image = snapshot[index]
+                val rollingRunwayHead = index == first
+                val work = batch.reserve() ?: break
+                try {
+                    verifiedGeneratedTailFetchExecutor.execute {
+                        try {
+                            if (!work.isCurrent() ||
+                                cacheGeneration.get() != generation ||
+                                earlyNtkPathKey(manga.ntkEpisodePath) != path
+                            ) return@execute
+                        // Do not register a tail flight while the physical launch runway is
+                        // still transferring. A later viewport request can then create its own
+                        // visible-priority flight instead of joining a queued tail request.
+                            if (!rollingRunwayHead) {
+                                waitForVisibleInitialGeneratedFetches(manga, image)
+                            }
+                            if (!work.isCurrent() ||
+                                cacheGeneration.get() != generation ||
+                                earlyNtkPathKey(manga.ntkEpisodePath) != path
+                            ) return@execute
+                            getOrFetch(
+                                context.applicationContext,
+                                manga,
+                                image,
+                                // The first page after the prepared Store is the hand-off between
+                                // immediate physical pixels and rolling fetch. Admit exactly this
+                                // one page as foreground while the list is still visible: OkHttp's
+                                // host limit leaves it queued behind p1..p5, then starts it on the
+                                // first free connection instead of idling until ACTION_UP.
+                                foreground = rollingRunwayHead,
+                                cancellation = null,
+                                visiblePriority = rollingRunwayHead,
+                                // This is compressed off-screen source only. Mark the flight so a real
+                                // viewport request can cancel and replace it with foreground transport.
+                                progressiveTail = !rollingRunwayHead,
+                                progressiveTailWork = if (rollingRunwayHead) null else work
+                            )
+                        } catch (t: Throwable) {
+                            rethrowIfFatal(t)
+                        } finally {
+                            work.close()
+                        }
+                    }
+                    scheduled++
+                } catch (_: RejectedExecutionException) {
+                    work.close()
+                    break
+                }
+            }
+        } finally {
+            batch.finishScheduling()
+        }
+        if (scheduled <= 0) {
+            return false
+        }
+        Log.d(
+            TAG,
+            "reader_verified_generated_tail_prefetch path=$path,start=$first," +
+                "total=${snapshot.size},scheduled=$scheduled"
+        )
+        return true
+        } finally {
+            cachePublicationLock.readLock().unlock()
         }
     }
 
@@ -2238,29 +11121,21 @@ object ReaderImageCache {
         val appContext = context.applicationContext
         if (cachedFile(appContext, manga, image) != null) return false
         val streamKey = foregroundStreamKey(manga, image)
+        val freshInitialForegroundStream = hasFreshInitialForegroundStream(streamKey, image)
         if (target.page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
             hasActiveFetch(manga, image)
         ) {
             logCacheEvent(
-                "visible_initial_preview_skip_active_fetch",
+                if (freshInitialForegroundStream) {
+                    "visible_initial_preview_race_active_fetch"
+                } else {
+                    "visible_initial_preview_bypass_stale_active_fetch"
+                },
                 manga,
                 image,
                 true,
                 "page=$pageIndex,generatedPage=${target.page}"
             )
-            return false
-        }
-        if (target.page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
-            hasFreshInitialForegroundStream(streamKey, image)
-        ) {
-            logCacheEvent(
-                "visible_initial_preview_skip_active_foreground_stream",
-                manga,
-                image,
-                true,
-                "page=$pageIndex,generatedPage=${target.page}"
-            )
-            return false
         }
         val previewKey = "ntk-visible-preview|$streamKey"
         val startedAt = SystemClock.elapsedRealtime()
@@ -2315,7 +11190,7 @@ object ReaderImageCache {
             "page=$pageIndex,generatedPage=${target.page}"
         )
         return try {
-            initialVisibleForegroundExecutor.execute {
+            generatedPreviewExecutor.execute {
                 try {
                     task.run()
                 } finally {
@@ -2335,8 +11210,10 @@ object ReaderImageCache {
         target: NtkGeneratedTarget?
     ): Boolean {
         if (!visiblePriority) return false
-        if (target?.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
-        return isFastOkHttpGeneratedImageUrl(image)
+        if (target == null) return false
+        if (target.page !in 1..NTK_PERMITLESS_INITIAL_VISIBLE_MAX_PAGE) return false
+        if (!isFastOkHttpGeneratedImageUrl(image)) return false
+        return true
     }
 
     private fun scheduleInitialGeneratedRecoveryHedge(
@@ -2564,7 +11441,17 @@ object ReaderImageCache {
         pageIndex: Int = -1
     ): Bitmap? {
         if (!manga.isOnline) return null
-        if (isNtkProtectedViewerApiImage(image)) {
+        if (!legacySourceOperationAllowed(manga)) {
+            logCacheEvent(
+                "foreground_decode_skip_strict_source_reserved_or_owned",
+                manga,
+                image,
+                true,
+                "page=$pageIndex"
+            )
+            return null
+        }
+        if (isNtkProtectedViewerApiImage(image) && !canNativeFetchProtectedViewerApi(manga, image)) {
             logCacheEvent(
                 "foreground_decode_skip_protected_api_browser_owned",
                 manga,
@@ -2597,6 +11484,11 @@ object ReaderImageCache {
         }
         val key = foregroundStreamKey(manga, image)
         val startedAt = SystemClock.elapsedRealtime()
+        val initialGeneratedAnchorStream =
+            visiblePriority &&
+                generatedTarget?.page == 1 &&
+                pageIndex <= 0 &&
+                isFastOkHttpGeneratedImageUrl(image)
         val generation = cacheGeneration.get()
         val task = FutureTask<ByteArray?> {
             fetchForegroundBytes(
@@ -2613,12 +11505,85 @@ object ReaderImageCache {
         }
         val existing = foregroundStreams.putIfAbsent(key, task)
         if (existing != null) {
-            if (isStaleForegroundStream(key, startedAt) &&
+            if (shouldSupersedeInitialGeneratedForegroundStream(manga, image, key, existing) &&
                 foregroundStreams.remove(key, existing)
             ) {
                 existing.cancel(true)
                 foregroundStreamStartedAt.remove(key)
+                val oldImage = foregroundStreamImages.remove(key).orEmpty()
+                logCacheEvent(
+                    "foreground_stream_decode_supersede_initial_variant",
+                    manga,
+                    image,
+                    true,
+                    "old=${oldImage.substringAfterLast('/').takeLast(64)},page=${generatedTarget?.page ?: 0}"
+                )
+                ViewerWarmupManager.logMetric("reader_foreground_stream_decode_supersede_initial_variant", 1L)
+                return decodeForegroundBitmap(
+                    context,
+                    manga,
+                    image,
+                    targetWidth,
+                    autoCut,
+                    allowSplit,
+                    cancellation,
+                    anchorHedge,
+                    visiblePriority,
+                    permit,
+                    pageIndex
+                )
+            }
+            val protectActiveInitialWork = hasActiveInitialGeneratedSharedWork(
+                manga,
+                image,
+                generatedTarget,
+                key,
+                generation
+            )
+            if (isStaleForegroundStream(key, startedAt) &&
+                !protectActiveInitialWork &&
+                foregroundStreams.remove(key, existing)
+            ) {
+                existing.cancel(true)
+                foregroundStreamStartedAt.remove(key)
+                foregroundStreamImages.remove(key)
             } else {
+                if (protectActiveInitialWork && !existing.isDone) {
+                    logCacheEvent(
+                        "foreground_stream_decode_stale_join_active_initial",
+                        manga,
+                        image,
+                        true,
+                        "page=$pageIndex,generatedPage=${generatedTarget?.page ?: 0}"
+                    )
+                }
+                val target = ntkGeneratedTarget(image)
+                if (initialGeneratedAnchorStream && !existing.isDone && target != null) {
+                    requestInitialGeneratedCompleteBytesRace(
+                        context,
+                        manga,
+                        image,
+                        target,
+                        cancellation,
+                        generation
+                    )?.let { bytes ->
+                        logCacheEvent(
+                            "foreground_stream_join_anchor_direct_bytes_hit",
+                            manga,
+                            image,
+                            true,
+                            "page=${target.page},bytes=${bytes.size}"
+                        )
+                        return decodeForegroundByteArray(
+                            bytes,
+                            startedAt,
+                            autoCut,
+                            allowSplit,
+                            targetWidth,
+                            fastInitialGenerated = true
+                        )
+                    }
+                }
                 ViewerWarmupManager.logMetric("reader_foreground_stream_join", 1L)
                 logCacheEvent(
                     "foreground_stream_join",
@@ -2627,9 +11592,34 @@ object ReaderImageCache {
                     true,
                     "activeStream=${!existing.isDone},doneStream=${existing.isDone}"
                 )
-                val target = ntkGeneratedTarget(image)
-                val effectiveJoinTimeoutMs = foregroundStreamJoinBudgetMs(key, image, startedAt)
+                val effectiveJoinTimeoutMs = foregroundStreamJoinBudgetMs(
+                    key,
+                    image,
+                    startedAt,
+                    pageIndex,
+                    visiblePriority
+                )
                 if (effectiveJoinTimeoutMs <= 0L) {
+                    if (existing.isDone) {
+                        logCacheEvent(
+                            "foreground_stream_join_done_zero_budget",
+                            manga,
+                            image,
+                            true,
+                            "page=${target?.page ?: 0},timeoutMs=${foregroundStreamJoinTimeoutMs(image)}"
+                        )
+                        return decodeForegroundBytesOrAnchor(
+                            appContext,
+                            manga,
+                            image,
+                            existing,
+                            startedAt,
+                            autoCut,
+                            allowSplit,
+                            targetWidth,
+                            1L
+                        )
+                    }
                     logCacheEvent(
                         "foreground_stream_join_skip_initial_recovery",
                         manga,
@@ -2638,6 +11628,26 @@ object ReaderImageCache {
                         "page=${target?.page ?: 0},timeoutMs=${foregroundStreamJoinTimeoutMs(image)}"
                     )
                     ViewerWarmupManager.logMetric("reader_foreground_stream_join_skip_initial_recovery", 1L)
+                    if (shouldDropInitialVisibleForegroundStreamOnJoinSkip(
+                            manga,
+                            image,
+                            pageIndex,
+                            visiblePriority,
+                            target
+                        ) &&
+                        foregroundStreams.remove(key, existing)
+                    ) {
+                        existing.cancel(true)
+                        foregroundStreamStartedAt.remove(key)
+                        foregroundStreamImages.remove(key)
+                        logCacheEvent(
+                            "foreground_stream_join_skip_initial_recovery_drop",
+                            manga,
+                            image,
+                            true,
+                            "page=${target?.page ?: 0},timeoutMs=${foregroundStreamJoinTimeoutMs(image)}"
+                        )
+                    }
                     return null
                 }
                 return try {
@@ -2653,14 +11663,15 @@ object ReaderImageCache {
                         effectiveJoinTimeoutMs
                     )
                 } finally {
-                    if (existing.isDone) {
-                        foregroundStreams.remove(key, existing)
+                    if (existing.isDone && foregroundStreams.remove(key, existing)) {
                         foregroundStreamStartedAt.remove(key)
+                        foregroundStreamImages.remove(key)
                     }
                 }
             }
         }
         foregroundStreamStartedAt[key] = startedAt
+        foregroundStreamImages[key] = image
         try {
             task.run()
             decodeForegroundCachedFileIfPresent(
@@ -2680,7 +11691,7 @@ object ReaderImageCache {
                 allowSplit,
                 targetWidth,
                 boundedWait = false,
-                fastInitialGenerated = generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                fastInitialGenerated = generatedTarget != null && generatedTarget.page >= 1
             )
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -2688,27 +11699,98 @@ object ReaderImageCache {
         } catch (e: ExecutionException) {
             return null
         } finally {
-            foregroundStreams.remove(key, task)
-            foregroundStreamStartedAt.remove(key)
-        }
-    }
-
-    private fun scheduleForegroundStreamHandoffExpiry(key: String, task: FutureTask<ByteArray?>) {
-        foregroundRaceExecutor.execute {
-            try {
-                Thread.sleep(FOREGROUND_STREAM_HANDOFF_TTL_MS)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            } finally {
-                foregroundStreams.remove(key, task)
+            if (foregroundStreams.remove(key, task)) {
                 foregroundStreamStartedAt.remove(key)
+                foregroundStreamImages.remove(key)
             }
         }
     }
 
+    private fun scheduleForegroundStreamHandoffExpiry(key: String, task: FutureTask<ByteArray?>) {
+        trimExecutor.schedule({
+            // A verified suffix may have replaced this speculative task while its delayed
+            // expiry was queued. Do not erase metadata that belongs to the replacement.
+            if (foregroundStreams.remove(key, task)) {
+                foregroundStreamStartedAt.remove(key)
+                foregroundStreamImages.remove(key)
+            }
+        }, FOREGROUND_STREAM_HANDOFF_TTL_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private fun scheduleInitialGeneratedDirectRaceExpiry(
+        key: String,
+        task: FutureTask<GeneratedRangeSnapshot?>
+    ) {
+        trimExecutor.schedule({
+            if (task.isDone) initialGeneratedDirectRaceFlights.remove(key, task)
+        }, FOREGROUND_STREAM_HANDOFF_TTL_MS, TimeUnit.MILLISECONDS)
+    }
+
     private fun isStaleForegroundStream(key: String, nowMs: Long): Boolean {
         val startedAt = foregroundStreamStartedAt[key] ?: return false
-        return nowMs - startedAt > FOREGROUND_STREAM_STALE_MS
+        return nowMs - startedAt > foregroundStreamStaleMs(foregroundStreamImages[key])
+    }
+
+    private fun cleanupCompletedForegroundStream(key: String) {
+        val stream = foregroundStreams[key] ?: return
+        if (!stream.isDone && !stream.isCancelled) return
+        if (foregroundStreams.remove(key, stream)) {
+            foregroundStreamStartedAt.remove(key)
+            foregroundStreamImages.remove(key)
+        }
+    }
+
+    private fun shouldSupersedeInitialGeneratedForegroundStream(
+        manga: Manga,
+        image: String,
+        streamKey: String,
+        existing: FutureTask<ByteArray?>,
+        authoritativeIncoming: Boolean = false
+    ): Boolean {
+        if (existing.isDone || existing.isCancelled) return false
+        val target = ntkGeneratedTarget(image) ?: return false
+        if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        if (!ntkGeneratedTargetMatchesMangaEpisode(manga, target)) return false
+        val oldImage = foregroundStreamImages[streamKey] ?: return false
+        if (oldImage == image) return false
+        // The unpublished runway task already races every candidate suffix. Replacing that
+        // task when the manifest confirms the winning suffix would interrupt the valid request
+        // in the race too, throwing away downloaded bytes and restarting the same image.
+        if (unpublishedInitialGeneratedRunwayStreams[streamKey] === existing) return false
+        val oldTarget = ntkGeneratedTarget(oldImage) ?: return false
+        if (oldTarget.page != target.page) return false
+        if (target.page == 1) {
+            val directRaceKey = initialGeneratedDirectRaceFlightKey(
+                manga.baseMode,
+                oldImage,
+                oldTarget.page,
+                manga.ntkEpisodePath
+            )
+            if (directRaceKey != null &&
+                isActiveFuture(initialGeneratedDirectRaceFlights[directRaceKey])
+            ) {
+                // The page-1 task now races complete bodies for every candidate suffix. Its seed
+                // name may still say .jpg after the .jpeg winner is already streaming; preserve
+                // the live body instead of restarting it from byte zero.
+                return false
+            }
+        }
+        if (foregroundStreamEpisodePath(manga.ntkEpisodePath, oldTarget) != foregroundStreamEpisodePath(manga.ntkEpisodePath, target)) {
+            return false
+        }
+        if (streamKey.endsWith("|initial-page")) {
+            // Initial generated pages deliberately share an extension-independent key while
+            // their suffix is unknown. Once the live manifest proves the exact variant, do not
+            // make that exact request wait behind the older jpg/png/jpeg guessing race.
+            if (!authoritativeIncoming || !ntkGeneratedEpisodeExtensionMatches(image)) return false
+            return !ntkGeneratedEpisodeExtensionMatches(oldImage)
+        }
+        if (target.page == 1) return false
+        val hintedOld = ntkGeneratedImageWithHintedExtension(oldImage)
+        val hintedNew = ntkGeneratedImageWithHintedExtension(image)
+        return hintedOld == image ||
+            hintedNew == image ||
+            shouldDropMismatchedHintedInitialGenerated(oldImage)
     }
 
     private fun cancelOtherInitialGeneratedForegroundStreams(
@@ -2717,6 +11799,7 @@ object ReaderImageCache {
         target: NtkGeneratedTarget
     ) {
         if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return
+        if (target.page == 1) return
         val keepKey = foregroundStreamKey(manga, image)
         val keepExtension = keepKey.substringAfterLast('|', "")
         val streamPath = foregroundStreamEpisodePath(manga.ntkEpisodePath, target)
@@ -2729,6 +11812,7 @@ object ReaderImageCache {
             val task = entry.value
             if (!foregroundStreams.remove(streamKey, task)) return@forEach
             foregroundStreamStartedAt.remove(streamKey)
+            foregroundStreamImages.remove(streamKey)
             task.cancel(true)
             logCacheEvent(
                 "foreground_stream_cancel_same_page_variant",
@@ -2759,7 +11843,7 @@ object ReaderImageCache {
         generation: Long = cacheGeneration.get(),
         visiblePriority: Boolean = false
     ): ByteArray? {
-        if (isNtkProtectedViewerApiImage(image)) {
+        if (isNtkProtectedViewerApiImage(image) && !canNativeFetchProtectedViewerApi(manga, image)) {
             logCacheEvent(
                 "foreground_stream_fetch_skip_protected_api_browser_owned",
                 manga,
@@ -2784,7 +11868,7 @@ object ReaderImageCache {
         val prioritizeInitialHintedFullFetch = shouldPrioritizeHintedInitialGeneratedFullFetch(image)
         val fastInitialVisibleGeneratedRange =
             visiblePriority &&
-                generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
+                generatedTarget?.page in 1..2 &&
                 isFastOkHttpGeneratedImageUrl(image)
         val anchorInitialVisibleGeneratedRange =
             fastInitialVisibleGeneratedRange && generatedTarget?.page == 1
@@ -2801,7 +11885,7 @@ object ReaderImageCache {
             )
             ViewerWarmupManager.logMetric("reader_foreground_stream_hinted_initial_priority", 1L)
         }
-        if (visiblePriority && anchorInitialCompleteRace) {
+        if (visiblePriority && fastInitialVisibleGeneratedRange) {
             tryInitialGeneratedForegroundRangeBytes(
                 context,
                 manga,
@@ -2812,16 +11896,13 @@ object ReaderImageCache {
             )?.let { bytes ->
                 return bytes
             }
-            if ((generatedTarget?.page ?: 0) > 1) {
-                logCacheEvent(
-                    "foreground_initial_range_preview_only_miss",
-                    manga,
-                    image,
-                    true,
-                    "page=${generatedTarget?.page ?: 0},fast=$fastInitialVisibleGeneratedRange"
-                )
-                return null
-            }
+            logCacheEvent(
+                "foreground_initial_range_fast_full_fallback",
+                manga,
+                image,
+                true,
+                "page=${generatedTarget?.page ?: 0}"
+            )
         }
         val shouldGateInitialVisible = visiblePriority && anchorInitialCompleteRace
         val response = if (shouldGateInitialVisible) {
@@ -2878,6 +11959,16 @@ object ReaderImageCache {
             val bodyStartAt = SystemClock.elapsedRealtime()
             val bytes = body.bytes()
             if (bytes.size > MAX_DIRECT_STREAM_DECODE_BYTES) return null
+            if (isNtkProtectedViewerApiImage(image) && bytes.size < 1024) {
+                logCacheEvent(
+                    "foreground_stream_protected_placeholder_rejected",
+                    manga,
+                    image,
+                    true,
+                    "bytes=${bytes.size},contentLength=$contentLength"
+                )
+                return null
+            }
             val bytesAt = SystemClock.elapsedRealtime()
             if (visiblePriority && prioritizeInitialHintedFullFetch) {
                 logCacheEvent(
@@ -2894,6 +11985,17 @@ object ReaderImageCache {
                     visiblePriority &&
                         generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
                 if (visibleInitialGenerated) {
+                    if (isDecodableImageBytes(bytes)) {
+                        ViewerWarmupManager.logMetric("reader_foreground_stream_partial_preview_visible", bytes.size.toLong())
+                        logCacheEvent(
+                            "foreground_stream_partial_preview_visible",
+                            manga,
+                            image,
+                            true,
+                            "page=${generatedTarget?.page ?: 0},bytes=${bytes.size},contentLength=$contentLength"
+                        )
+                        return bytes
+                    }
                     waitCachedFullBytesAfterPartial(context, manga, image, actualImage)?.let { fullBytes ->
                         if (isCompleteImageBytes(actualImage, fullBytes)) {
                             ViewerWarmupManager.logMetric(
@@ -2954,55 +12056,58 @@ object ReaderImageCache {
             }
             if (!partialImage) {
                 val cacheImage = foregroundResponseCacheImage(image, it)
-                val cacheTarget = ntkGeneratedTarget(cacheImage)
-                val deferInitialVisiblePublish = visiblePriority &&
-                    prioritizeInitialHintedFullFetch &&
-                    cacheTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                val targetPage = ntkGeneratedTarget(cacheImage)?.page ?: ntkGeneratedTarget(image)?.page ?: 0
+                val isLaunchAnchorBytes =
+                    ntkKpDescriptorPageNumber(cacheImage) == 1 ||
+                        ntkKpDescriptorPageNumber(image) == 1 ||
+                        targetPage == 1
+                if (visiblePriority && isLaunchAnchorBytes) {
+                    publishNtkAnchorAssetBytes(manga, cacheImage, bytes, "foreground_stream_bytes")
+                    if (cacheImage != image) {
+                        publishNtkAnchorAssetBytes(manga, image, bytes, "foreground_stream_bytes")
+                    }
+                }
                 val cacheStartAt = SystemClock.elapsedRealtime()
                 val publish = Runnable {
-                    cacheForegroundBytes(context, manga, cacheImage, bytes, generation, trustedImageBytes = true)
-                    rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
-                    if (cacheImage != image) {
-                        cacheForegroundBytes(
-                            context,
-                            manga,
-                            image,
-                            bytes,
-                            generation,
-                            trustedImageBytes = true
-                        )
+                    try {
+                        cacheForegroundBytes(context, manga, cacheImage, bytes, generation, trustedImageBytes = true)
+                        rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
+                        if (cacheImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, cacheImage)) {
+                            cacheForegroundBytes(
+                                context,
+                                manga,
+                                image,
+                                bytes,
+                                generation,
+                                trustedImageBytes = true
+                            )
+                            logCacheEvent(
+                                "foreground_cached_actual_url",
+                                manga,
+                                cacheImage,
+                                true,
+                                "requested=${image.substringAfterLast('/').takeLast(64)}"
+                            )
+                        }
                         logCacheEvent(
-                            "foreground_cached_actual_url",
+                            "foreground_stream_cache_publish",
                             manga,
                             cacheImage,
                             true,
-                            "requested=${image.substringAfterLast('/').takeLast(64)}"
+                            "cacheMs=${SystemClock.elapsedRealtime() - cacheStartAt},totalMs=${SystemClock.elapsedRealtime() - startedAt}"
+                        )
+                    } catch (t: Throwable) {
+                        rethrowIfFatal(t)
+                        logCacheEvent(
+                            "foreground_stream_cache_publish_error",
+                            manga,
+                            cacheImage,
+                            true,
+                            "error=${throwableSummary(t)},totalMs=${SystemClock.elapsedRealtime() - startedAt}"
                         )
                     }
-                    logCacheEvent(
-                        "foreground_stream_cache_publish",
-                        manga,
-                        cacheImage,
-                        true,
-                        "cacheMs=${SystemClock.elapsedRealtime() - cacheStartAt},totalMs=${SystemClock.elapsedRealtime() - startedAt}"
-                    )
                 }
-                if (deferInitialVisiblePublish) {
-                    logCacheEvent(
-                        "foreground_stream_cache_publish_async_initial",
-                        manga,
-                        cacheImage,
-                        true,
-                        "page=${ntkGeneratedTarget(cacheImage)?.page ?: 0},bytes=${bytes.size}"
-                    )
-                    try {
-                        foregroundCachePublishExecutor.execute(publish)
-                    } catch (_: RejectedExecutionException) {
-                        publish.run()
-                    }
-                } else {
-                    publish.run()
-                }
+                executeForegroundStreamPublication(context, manga, image, publish)
             }
             ViewerWarmupManager.logMetric("reader_foreground_stream_headers_ms", headersAt - startedAt)
             ViewerWarmupManager.logMetric("reader_foreground_stream_body_ms", bytesAt - headersAt)
@@ -3022,6 +12127,7 @@ object ReaderImageCache {
     ): ByteArray? {
         val target = ntkGeneratedTarget(image) ?: return null
         if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return null
+        if (shouldSkipKnownBadInitialGeneratedFallback(context, manga, image, target)) return null
         val imagePath = try {
             Uri.parse(image).encodedPath.orEmpty()
         } catch (_: Exception) {
@@ -3036,18 +12142,11 @@ object ReaderImageCache {
         val startedAt = SystemClock.elapsedRealtime()
         if (visibleCompleteOnly) {
             val rangeFirstInitial = shouldUseRangeFirstForInitialGenerated(image, target)
-            if (target.page == 1 && !rangeFirstInitial) {
-                requestInitialGeneratedForegroundModeCompleteBytes(
-                    context,
-                    manga,
-                    image,
-                    target,
-                    cancellation,
-                    generation,
-                    startedAt
-                )?.let { return it }
-            }
-            if ((target.page == 1 && !rangeFirstInitial) || hasNtkAnchorAssetForEpisode(manga)) {
+            val visibleNearPage = target.page in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+            if (target.page == 1 ||
+                visibleNearPage ||
+                hasNtkAnchorAssetForEpisode(manga)
+            ) {
                 requestInitialGeneratedCompleteBytesRace(
                     context,
                     manga,
@@ -3198,7 +12297,7 @@ object ReaderImageCache {
                                 trustedImageBytes = true
                             )
                             rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
-                            if (cacheImage != image) {
+                            if (cacheImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, cacheImage)) {
                                 cacheForegroundBytes(
                                     context,
                                     manga,
@@ -3294,7 +12393,7 @@ object ReaderImageCache {
                 val cacheImage = foregroundResponseCacheImage(image, it)
                 cacheForegroundBytes(context, manga, cacheImage, bytes, generation, trustedImageBytes = true)
                 rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
-                if (cacheImage != image) {
+                if (cacheImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, cacheImage)) {
                     cacheForegroundBytes(
                         context,
                         manga,
@@ -3317,6 +12416,34 @@ object ReaderImageCache {
             )
             return bytes
         }
+    }
+
+    private fun shouldSkipKnownBadInitialGeneratedFallback(
+        context: Context,
+        manga: Manga,
+        image: String,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        val exactFileReady = cachedFile(context, manga, image) != null
+        if (hasNtkGeneratedResolvedPage(target) && !exactFileReady) {
+            logCacheEvent(
+                "foreground_initial_generated_resolved_alternate_skip",
+                manga,
+                image,
+                true,
+                "page=${target.page}"
+            )
+            return true
+        }
+        if (!hasNtkGeneratedNotFound(manga, image)) return false
+        logCacheEvent(
+            "foreground_initial_generated_known_not_found_skip",
+            manga,
+            image,
+            true,
+            "page=${target.page}"
+        )
+        return true
     }
 
     private fun reassembleInitialGeneratedPreviewFullBytes(
@@ -3360,7 +12487,9 @@ object ReaderImageCache {
             trustedImageBytes = true
         )
         rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
-        if (cacheImage != requestedImage) {
+        if (cacheImage != requestedImage &&
+            shouldCacheResolvedBytesUnderRequestedImage(requestedImage, cacheImage)
+        ) {
             cacheForegroundBytes(
                 context,
                 manga,
@@ -3424,7 +12553,7 @@ object ReaderImageCache {
             val actualImage = it.request.url.toString()
             val actualTarget = ntkGeneratedTarget(actualImage)
             val actualMatches = actualTarget != null && isCompatibleNtkGeneratedPage(expected, actualTarget)
-            if (!actualMatches && !isTrustedNtkGeneratedStreamResponse(image, actualImage)) {
+            if (!actualMatches && !isTrustedNtkGeneratedStreamResponse(image, actualImage, it)) {
                 logCacheEvent(
                     "foreground_initial_direct_first_rejected",
                     manga,
@@ -3456,7 +12585,7 @@ object ReaderImageCache {
             rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
             rememberNtkGeneratedEpisodeExtension(actualImage)
             rememberEarlyNtkGeneratedSuccess(manga, actualImage)
-            if (cacheImage != image) {
+            if (cacheImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, cacheImage)) {
                 cacheForegroundBytes(context, manga, image, bytes, generation, trustedImageBytes = true)
             }
             logCacheEvent(
@@ -3477,6 +12606,108 @@ object ReaderImageCache {
         val code: Int
     )
 
+    /**
+     * Starts real full-body launch-runway fetches while the episode list is still on screen, without
+     * publishing a guessed URL as reader authority.  The logical initial-page stream key is
+     * extension independent, so speculative callers share one race. A later authoritative
+     * manifest can atomically replace that race with its exact suffix instead of waiting behind
+     * wrong candidates.
+     */
+    fun startUnpublishedInitialGeneratedRunwayRace(
+        context: Context,
+        manga: Manga,
+        firstImageSeed: String,
+        firstPage: Int,
+        lastPage: Int
+    ): Int {
+        val appContext = context.applicationContext
+        val seedTarget = ntkGeneratedTarget(firstImageSeed) ?: return 0
+        val safeFirst = maxOf(2, firstPage)
+        val safeLast = minOf(
+            lastPage,
+            NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+        )
+        if (safeLast < safeFirst) return 0
+        val expectedPath = earlyNtkPathKey(manga.ntkEpisodePath)
+        val generation = cacheGeneration.get()
+        var started = 0
+        for (pageNumber in safeFirst..safeLast) {
+            val image = ntkGeneratedPageImage(firstImageSeed, pageNumber) ?: continue
+            val target = ntkGeneratedTarget(image) ?: continue
+            if (target.page != pageNumber || target.path != seedTarget.path) continue
+            if (cachedImageFile(appContext, manga, image) != null) continue
+            val streamKey = foregroundStreamKey(manga, image)
+            cleanupCompletedForegroundStream(streamKey)
+            val startedAt = SystemClock.elapsedRealtime()
+            val task = FutureTask<ByteArray?> {
+                try {
+                    if (cacheGeneration.get() != generation ||
+                        earlyNtkPathKey(manga.ntkEpisodePath) != expectedPath ||
+                        shouldSkipStaleForegroundViewerStream(manga, image, target)
+                    ) {
+                        return@FutureTask null
+                    }
+                    requestInitialGeneratedCompleteBytesRaceCore(
+                        appContext,
+                        manga,
+                        image,
+                        target,
+                        null,
+                        generation,
+                        unpublishedStrongRace = true
+                    ).also { bytes ->
+                        logCacheEvent(
+                            "foreground_unpublished_runway_race_done",
+                            manga,
+                            image,
+                            true,
+                            "page=$pageNumber,bytes=${bytes?.size ?: 0},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                        )
+                    }
+                } catch (t: Throwable) {
+                    rethrowIfFatal(t)
+                    logCacheEvent(
+                        "foreground_unpublished_runway_race_error",
+                        manga,
+                        image,
+                        true,
+                        "page=$pageNumber,error=${throwableSummary(t)},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                    )
+                    null
+                }
+            }
+            if (foregroundStreams.putIfAbsent(streamKey, task) != null) continue
+            unpublishedInitialGeneratedRunwayStreams[streamKey] = task
+            foregroundStreamStartedAt[streamKey] = startedAt
+            foregroundStreamImages[streamKey] = image
+            try {
+                initialVisibleForegroundExecutor.execute {
+                    try {
+                        task.run()
+                    } finally {
+                        unpublishedInitialGeneratedRunwayStreams.remove(streamKey, task)
+                        scheduleForegroundStreamHandoffExpiry(streamKey, task)
+                    }
+                }
+                started++
+                logCacheEvent(
+                    "foreground_unpublished_runway_race_start",
+                    manga,
+                    image,
+                    true,
+                    "page=$pageNumber,path=$expectedPath"
+                )
+            } catch (_: RejectedExecutionException) {
+                unpublishedInitialGeneratedRunwayStreams.remove(streamKey, task)
+                if (foregroundStreams.remove(streamKey, task)) {
+                    foregroundStreamStartedAt.remove(streamKey)
+                    foregroundStreamImages.remove(streamKey)
+                }
+            }
+        }
+        return started
+    }
+
     private fun requestInitialGeneratedCompleteBytesRace(
         context: Context,
         manga: Manga,
@@ -3485,7 +12716,7 @@ object ReaderImageCache {
         cancellation: Cancellation?,
         generation: Long
     ): ByteArray? {
-        val flightKey = initialGeneratedCompleteBytesFlightKey(manga, target, generation)
+        val flightKey = initialGeneratedCompleteBytesFlightKey(manga, image, target, generation)
         val task = FutureTask<ByteArray?> {
             requestInitialGeneratedCompleteBytesRaceCore(
                 context,
@@ -3538,11 +12769,21 @@ object ReaderImageCache {
 
     private fun initialGeneratedCompleteBytesFlightKey(
         manga: Manga,
+        image: String,
         target: NtkGeneratedTarget,
         generation: Long
     ): String {
         val path = ntkFallbackKeyPath(manga, target)
-        return "ntk-initial-complete|${manga.baseMode}|$path|${target.page}|$generation"
+        val extension = Regex("\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.lowercase(Locale.ROOT)
+            .orEmpty()
+        if (target.page == 1) {
+            return "ntk-initial-complete|${manga.baseMode}|$path|${target.page}|anchor|$generation"
+        }
+        return "ntk-initial-complete|${manga.baseMode}|$path|${target.page}|$extension|$generation"
     }
 
     private fun requestInitialGeneratedCompleteBytesRaceCore(
@@ -3551,9 +12792,63 @@ object ReaderImageCache {
         image: String,
         target: NtkGeneratedTarget,
         cancellation: Cancellation?,
-        generation: Long
+        generation: Long,
+        unpublishedStrongRace: Boolean = false
     ): ByteArray? {
         val startedAt = SystemClock.elapsedRealtime()
+        if (!unpublishedStrongRace && isFastOkHttpGeneratedImageUrl(image)) {
+            requestForegroundRace(
+                context,
+                manga,
+                image,
+                cancellation,
+                FOREGROUND_STREAM_RACE_ATTEMPTS,
+                anchorHedge = false
+            )?.use { response ->
+                val body = response.body ?: return null
+                val bytes = body.bytes()
+                if (bytes.isNotEmpty() && isDecodableImageBytes(bytes)) {
+                    val cacheImage = foregroundResponseCacheImage(image, response)
+                    cacheForegroundBytes(
+                        context,
+                        manga,
+                        cacheImage,
+                        bytes,
+                        generation,
+                        trustedImageBytes = true
+                    )
+                    rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
+                    rememberNtkGeneratedEpisodeExtension(response.request.url.toString())
+                    rememberEarlyNtkGeneratedSuccess(manga, response.request.url.toString())
+                    if (cacheImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, cacheImage)) {
+                        cacheForegroundBytes(
+                            context,
+                            manga,
+                            image,
+                            bytes,
+                            generation,
+                            trustedImageBytes = true
+                        )
+                    }
+                    logCacheEvent(
+                        "foreground_initial_complete_race_join_direct",
+                        manga,
+                        image,
+                        true,
+                        "page=${target.page},bytes=${bytes.size},complete=${isCompleteImageBytes(response.request.url.toString(), bytes)},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                    )
+                    return bytes
+                }
+                logCacheEvent(
+                    "foreground_initial_complete_race_direct_rejected",
+                    manga,
+                    image,
+                    true,
+                    "page=${target.page},code=${response.code},bytes=${bytes.size},decodable=${isDecodableImageBytes(bytes)},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
+            }
+            return null
+        }
         val candidates = ntkInitialCompleteRaceCandidates(
             manga,
             image,
@@ -3562,11 +12857,15 @@ object ReaderImageCache {
                 NTK_GENERATED_INITIAL_COMPLETE_RACE_ANCHOR_CANDIDATES
             } else {
                 NTK_GENERATED_INITIAL_COMPLETE_RACE_NEAR_CANDIDATES
-            }
+            },
+            includeExtensionAlternates = unpublishedStrongRace
         )
         if (candidates.isEmpty()) return null
         val completion = ExecutorCompletionService<InitialCompleteBytes?>(foregroundRaceExecutor)
-        val includeRangeCandidates = target.page != 1
+        val includeRangeCandidates = !unpublishedStrongRace &&
+            target.page != 1 &&
+            !isFastOkHttpGeneratedImageUrl(image)
+        val candidateCancellation = if (unpublishedStrongRace) Cancellation() else cancellation
         val futures = ArrayList<Future<InitialCompleteBytes?>>(
             candidates.size * if (includeRangeCandidates) 2 else 1
         )
@@ -3585,7 +12884,7 @@ object ReaderImageCache {
                     image,
                     candidate,
                     target,
-                    cancellation
+                    candidateCancellation
                 )
             })
             if (includeRangeCandidates) {
@@ -3596,7 +12895,7 @@ object ReaderImageCache {
                         image,
                         candidate,
                         target,
-                        cancellation
+                        candidateCancellation
                     )
                 })
             }
@@ -3615,26 +12914,53 @@ object ReaderImageCache {
                     null
                 } ?: continue
                 if (!isCompleteImageBytes(result.image, result.bytes)) continue
-                cacheForegroundBytes(
-                    context,
-                    manga,
-                    result.image,
-                    result.bytes,
-                    generation,
-                    trustedImageBytes = true
-                )
-                rememberVerifiedForegroundNtkAnchor(manga, result.image)
-                rememberNtkGeneratedEpisodeExtension(result.image)
-                rememberEarlyNtkGeneratedSuccess(manga, result.image)
-                if (result.image != image) {
+                if (unpublishedStrongRace) {
+                    val actualExtension = ntkGeneratedImageExtension(result.image)
+                    val canonicalActual = if (actualExtension.isNotEmpty()) {
+                        replaceNtkGeneratedImageExtension(image, actualExtension)
+                    } else {
+                        result.image
+                    }
                     cacheForegroundBytes(
                         context,
                         manga,
-                        image,
+                        result.image,
                         result.bytes,
                         generation,
                         trustedImageBytes = true
                     )
+                    if (canonicalActual != result.image) {
+                        cacheForegroundBytes(
+                            context,
+                            manga,
+                            canonicalActual,
+                            result.bytes,
+                            generation,
+                            trustedImageBytes = true
+                        )
+                    }
+                } else {
+                    cacheForegroundBytes(
+                        context,
+                        manga,
+                        result.image,
+                        result.bytes,
+                        generation,
+                        trustedImageBytes = true
+                    )
+                    rememberVerifiedForegroundNtkAnchor(manga, result.image)
+                    rememberNtkGeneratedEpisodeExtension(result.image)
+                    rememberEarlyNtkGeneratedSuccess(manga, result.image)
+                    if (result.image != image && shouldCacheResolvedBytesUnderRequestedImage(image, result.image)) {
+                        cacheForegroundBytes(
+                            context,
+                            manga,
+                            image,
+                            result.bytes,
+                            generation,
+                            trustedImageBytes = true
+                        )
+                    }
                 }
                 logCacheEvent(
                     "foreground_initial_complete_race_win",
@@ -3643,6 +12969,7 @@ object ReaderImageCache {
                     true,
                     "page=${target.page},source=${result.source},code=${result.code},bytes=${result.bytes.size},ms=${SystemClock.elapsedRealtime() - startedAt},candidates=${candidates.size}"
                 )
+                candidateCancellation?.cancel()
                 futures.forEach { if (!it.isDone) it.cancel(true) }
                 return result.bytes
             }
@@ -3651,6 +12978,7 @@ object ReaderImageCache {
             Thread.currentThread().interrupt()
             null
         } finally {
+            if (unpublishedStrongRace) candidateCancellation?.cancel()
             futures.forEach { if (!it.isDone) it.cancel(true) }
         }
     }
@@ -3659,11 +12987,23 @@ object ReaderImageCache {
         manga: Manga,
         image: String,
         target: NtkGeneratedTarget,
-        limit: Int
+        limit: Int,
+        includeExtensionAlternates: Boolean = false
     ): List<String> {
+        if (includeExtensionAlternates) {
+            // Prelaunch must cover extension uncertainty before host redundancy. Ranking every
+            // equivalent host first filled all three slots with the same guessed .jpg, so the
+            // real .jpeg body was never requested. Keep one canonical full GET per suffix.
+            return (listOf(image) + ntkGeneratedExtensionFallbacks(image))
+                .distinct()
+                .take(limit.coerceAtLeast(1))
+        }
         val candidates = LinkedHashSet<String>()
         candidates.addAll(ntkPreferredGeneratedForegroundCandidates(manga, image, limit))
-        if (candidates.size <= 1 && target.path.startsWith("/webtoon/", ignoreCase = true)) {
+        if (candidates.size <= 1 &&
+            (target.path.startsWith("/webtoon/", ignoreCase = true) ||
+                target.path.startsWith("/manhwa/", ignoreCase = true))
+        ) {
             val parts = target.path.trim('/').split('/')
             if (parts.size >= 3) {
                 val workId = manga.ntkImageWorkId.trim().ifBlank { parts[1] }
@@ -3687,13 +13027,26 @@ object ReaderImageCache {
         } else {
             limit
         }
-        return candidates
+        val ranked = candidates
             .filterNot { Uri.parse(it).host.equals("moamoabon.com", ignoreCase = true) }
             .distinct()
             .sortedWith(
                 compareBy<String> { generatedPreviewRangeCandidateRank(it) }
                     .thenBy { it.length }
             )
+        val requestedExtension = ntkGeneratedImageRef(image)?.extension?.lowercase(Locale.ROOT).orEmpty()
+        val sameExtensionRanked =
+            if (!includeExtensionAlternates &&
+                target.page > 1 &&
+                requestedExtension in setOf("jpg", "jpeg", "png", "webp")
+            ) {
+                ranked.filter {
+                    ntkGeneratedImageRef(it)?.extension?.equals(requestedExtension, ignoreCase = true) == true
+                }
+            } else {
+                emptyList()
+            }
+        return (if (sameExtensionRanked.isNotEmpty()) sameExtensionRanked else ranked)
             .take(takeLimit.coerceAtLeast(1))
     }
 
@@ -3713,14 +13066,9 @@ object ReaderImageCache {
             .removeHeader("X-MangaViewer-Foreground")
             .header("X-MangaViewer-No-Quic", "1")
             .build()
-        val client = if (isNtkGeneratedImageUrl(candidate)) {
-            getHttpClient().ntkForegroundImageFastClient()
-        } else {
-            getHttpClient().imageClient
-        }
-        val call = client.newCall(request)
-        val activeCallKey = trackActiveNtkEpisodeCall(manga, candidate, call)
-        cancellation?.track(call)
+        val httpClient = getHttpClient()
+        val client = ntkGeneratedDirectClient(httpClient, candidate, request.url.toString())
+        val call = newTrackedNtkEpisodeCall(manga, candidate, request, client, cancellation)
         return try {
             val response = call.execute()
             response.use {
@@ -3744,7 +13092,7 @@ object ReaderImageCache {
                 val actualImage = it.request.url.toString()
                 val actualTarget = ntkGeneratedTarget(actualImage)
                 val actualMatches = actualTarget != null && isCompatibleNtkGeneratedPage(expected, actualTarget)
-                if (!actualMatches && !isTrustedNtkGeneratedStreamResponse(candidate, actualImage)) {
+                if (!actualMatches && !isTrustedNtkGeneratedStreamResponse(candidate, actualImage, it)) {
                     logCacheEvent(
                         "foreground_initial_complete_full_rejected",
                         manga,
@@ -3783,9 +13131,6 @@ object ReaderImageCache {
                 "page=${expected.page},error=${t.javaClass.simpleName},summary=${throwableSummary(t)}"
             )
             null
-        } finally {
-            cancellation?.untrack(call)
-            untrackActiveNtkEpisodeCall(activeCallKey)
         }
     }
 
@@ -3812,7 +13157,7 @@ object ReaderImageCache {
             val actualImage = it.request.url.toString()
             val actualTarget = ntkGeneratedTarget(actualImage)
             val actualMatches = actualTarget != null && isCompatibleNtkGeneratedPage(expected, actualTarget)
-            if (!actualMatches && !isTrustedNtkGeneratedStreamResponse(candidate, actualImage)) {
+            if (!actualMatches && !isTrustedNtkGeneratedStreamResponse(candidate, actualImage, it)) {
                 logCacheEvent(
                     "foreground_initial_complete_range_rejected",
                     manga,
@@ -3861,7 +13206,7 @@ object ReaderImageCache {
                 cancellation
             )
         }
-        val completion = ExecutorCompletionService<Pair<String, Response>?>(foregroundRaceExecutor)
+        val completion = ExecutorCompletionService<Pair<String, Response>?>(generatedPreviewRaceExecutor)
         val futures = ArrayList<Future<Pair<String, Response>?>>(candidates.size)
         val startedAt = SystemClock.elapsedRealtime()
         for (candidate in candidates) {
@@ -4061,7 +13406,7 @@ object ReaderImageCache {
                     val cacheImage = foregroundResponseCacheImage(image, response)
                     cacheForegroundBytes(context, manga, cacheImage, bytes, generation, trustedImageBytes = true)
                     rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
-                    if (cacheImage != image) {
+                    if (cacheImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, cacheImage)) {
                         cacheForegroundBytes(context, manga, image, bytes, generation, trustedImageBytes = true)
                     }
                     rememberNtkGeneratedEpisodeExtension(response.request.url.toString())
@@ -4100,24 +13445,34 @@ object ReaderImageCache {
         val tmp = File(finalFile.parentFile, "${finalFile.name}.${System.nanoTime()}")
         try {
             if (bytes.size < 32 || !looksLikeImage(bytes)) return
-            val existing = ntkInitialGeneratedAssetFiles[assetKey]
-            if (existing != null) {
-                if (existing.isFile && existing.length() >= 32L) {
-                    logCacheEvent(
-                        "foreground_initial_range_preview_publish_skip_existing",
-                        manga,
-                        image,
-                        true,
-                        "asset=$assetKey,bytes=${existing.length()}"
-                    )
-                    return
-                }
-                ntkInitialGeneratedAssetFiles.remove(assetKey, existing)
-            }
             FileOutputStream(tmp).use { it.write(bytes) }
-            replace(tmp, finalFile)
-            finalFile.setLastModified(System.currentTimeMillis())
-            val previous = ntkInitialGeneratedAssetFiles.put(assetKey, finalFile)
+            val publication = withCurrentCachePublication(generation) {
+                val existing = ntkInitialGeneratedAssetFiles[assetKey]
+                if (existing != null) {
+                    if (existing.isFile && existing.length() >= 32L) {
+                        tmp.delete()
+                        return@withCurrentCachePublication Pair(false, existing)
+                    }
+                    ntkInitialGeneratedAssetFiles.remove(assetKey, existing)
+                }
+                replace(tmp, finalFile)
+                finalFile.setLastModified(System.currentTimeMillis())
+                Pair(true, ntkInitialGeneratedAssetFiles.put(assetKey, finalFile))
+            } ?: run {
+                tmp.delete()
+                return
+            }
+            if (!publication.first) {
+                logCacheEvent(
+                    "foreground_initial_range_preview_publish_skip_existing",
+                    manga,
+                    image,
+                    true,
+                    "asset=$assetKey,bytes=${publication.second?.length() ?: 0L}"
+                )
+                return
+            }
+            val previous = publication.second
             logCacheEvent(
                 "foreground_initial_range_preview_published",
                 manga,
@@ -4155,6 +13510,36 @@ object ReaderImageCache {
         return bounds.outWidth > 0 && bounds.outHeight > 0
     }
 
+    private fun hasRealDecodableImageBounds(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        return bounds.outWidth >= MIN_REAL_IMAGE_DIMENSION_PX &&
+            bounds.outHeight >= MIN_REAL_IMAGE_DIMENSION_PX
+    }
+
+    private fun hasSampledDecodableImage(bytes: ByteArray): Boolean {
+        if (bytes.isEmpty()) return false
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth < MIN_REAL_IMAGE_DIMENSION_PX ||
+                bounds.outHeight < MIN_REAL_IMAGE_DIMENSION_PX
+            ) {
+                return false
+            }
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inSampleSize = sampledValidationDecodeSize(bounds.outWidth, bounds.outHeight)
+            }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return false
+            bitmap.recycle()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun isDecodableImageBytes(bytes: ByteArray): Boolean {
         if (bytes.isEmpty()) return false
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -4164,14 +13549,14 @@ object ReaderImageCache {
 
     private fun isCompleteImageBytes(image: String, bytes: ByteArray): Boolean {
         if (bytes.size < 16) return false
+        if (isDisallowedNtkImageAssetUrl(image)) return false
         if (!looksLikeImage(bytes) || !hasDecodableImageBounds(bytes)) return false
-        val lower = image.substringBefore('?').substringBefore('#').lowercase(Locale.ROOT)
-        return when {
-            lower.endsWith(".jpg") || lower.endsWith(".jpeg") ->
+        return when (imageByteFormat(bytes)) {
+            ImageByteFormat.JPEG ->
                 bytes.size >= 2 &&
                     (bytes[bytes.size - 2].toInt() and 0xff) == 0xff &&
                     (bytes[bytes.size - 1].toInt() and 0xff) == 0xd9
-            lower.endsWith(".png") -> {
+            ImageByteFormat.PNG -> {
                 val iend = byteArrayOf(
                     0x00, 0x00, 0x00, 0x00,
                     0x49, 0x45, 0x4e, 0x44,
@@ -4180,7 +13565,7 @@ object ReaderImageCache {
                 bytes.size >= iend.size &&
                     bytes.copyOfRange(bytes.size - iend.size, bytes.size).contentEquals(iend)
             }
-            lower.endsWith(".webp") ->
+            ImageByteFormat.WEBP ->
                 bytes.size >= 12 &&
                     bytes[0] == 0x52.toByte() &&
                     bytes[1] == 0x49.toByte() &&
@@ -4196,9 +13581,54 @@ object ReaderImageCache {
                             ((bytes[6].toInt() and 0xff).toLong() shl 16) or
                             ((bytes[7].toInt() and 0xff).toLong() shl 24)
                     ) + 8L == bytes.size.toLong()
-            lower.endsWith(".gif") -> bytes.last() == 0x3b.toByte()
+            ImageByteFormat.GIF -> bytes.last() == 0x3b.toByte()
             else -> true
         }
+    }
+
+    private fun isAcceptableNtkGeneratedForegroundImageBytes(
+        requestedImage: String,
+        actualImage: String,
+        bytes: ByteArray
+    ): Boolean {
+        if (isDisallowedNtkImageAssetUrl(actualImage)) return false
+        if (isCompleteImageBytes(actualImage, bytes) || isCompleteImageBytes(requestedImage, bytes)) {
+            return true
+        }
+        val target = ntkGeneratedTarget(requestedImage) ?: ntkGeneratedTarget(actualImage) ?: return false
+        if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        if (bytes.size < 16 || isDisallowedNtkImageAssetUrl(actualImage)) return false
+        if (!looksLikeImage(bytes) || !hasRealDecodableImageBounds(bytes)) return false
+        return hasSampledDecodableImage(bytes)
+    }
+
+    private enum class ImageByteFormat {
+        JPEG,
+        PNG,
+        WEBP,
+        GIF,
+        UNKNOWN
+    }
+
+    private fun imageByteFormat(bytes: ByteArray): ImageByteFormat {
+        if (bytes.size < 4) return ImageByteFormat.UNKNOWN
+        val b0 = bytes[0].toInt() and 0xff
+        val b1 = bytes[1].toInt() and 0xff
+        val b2 = bytes[2].toInt() and 0xff
+        val b3 = bytes[3].toInt() and 0xff
+        if (b0 == 0xff && b1 == 0xd8) return ImageByteFormat.JPEG
+        if (b0 == 0x89 && b1 == 0x50 && b2 == 0x4e && b3 == 0x47) return ImageByteFormat.PNG
+        if (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46 &&
+            bytes.size >= 12 &&
+            bytes[8] == 0x57.toByte() &&
+            bytes[9] == 0x45.toByte() &&
+            bytes[10] == 0x42.toByte() &&
+            bytes[11] == 0x50.toByte()
+        ) {
+            return ImageByteFormat.WEBP
+        }
+        if (b0 == 0x47 && b1 == 0x49 && b2 == 0x46) return ImageByteFormat.GIF
+        return ImageByteFormat.UNKNOWN
     }
 
     private fun foregroundPartialPreviewSampleSize(width: Int): Int {
@@ -4215,6 +13645,7 @@ object ReaderImageCache {
         image: String,
         cancellation: Cancellation?
     ): okhttp3.Response? {
+        if (isNtkProtectedViewerApiImage(image)) return null
         val target = ntkGeneratedTarget(image) ?: return null
         if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return null
         if (!shouldTryNtkGeneratedExtensionFallback(image)) return null
@@ -4364,6 +13795,15 @@ object ReaderImageCache {
             !isDisallowedNtkImageAssetUrl(image)
     }
 
+    private fun shouldDetachInitialTrustedApiForegroundCancellation(
+        image: String,
+        pageIndex: Int,
+        visiblePriority: Boolean
+    ): Boolean {
+        if (!visiblePriority || pageIndex > 0) return false
+        return isTrustedInitialNtkApiImageForEarlyStream(image)
+    }
+
     private fun shouldPrioritizeInitialTrustedNtkApiImage(
         image: String,
         pageIndex: Int,
@@ -4443,6 +13883,24 @@ object ReaderImageCache {
         } catch (_: ExecutionException) {
             return null
         } ?: return null
+        return decodeForegroundByteArray(
+            bytes,
+            startedAt,
+            autoCut,
+            allowSplit,
+            targetWidth,
+            fastInitialGenerated
+        )
+    }
+
+    private fun decodeForegroundByteArray(
+        bytes: ByteArray,
+        startedAt: Long,
+        autoCut: Boolean,
+        allowSplit: Boolean,
+        targetWidth: Int,
+        fastInitialGenerated: Boolean = false
+    ): Bitmap? {
         val bytesAt = SystemClock.elapsedRealtime()
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -4493,11 +13951,11 @@ object ReaderImageCache {
                     autoCut,
                     allowSplit,
                     targetWidth,
-                    fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                    fastInitialGenerated = shouldUseFastGeneratedForegroundDecode(image)
                 )
             }
             cachedImageFile(context, manga, image)?.let { cached ->
-                cached.setLastModified(System.currentTimeMillis())
+                touchCacheHitForLru(cached)
                 logCacheEvent(
                     "foreground_stream_join_disk_hit",
                     manga,
@@ -4512,7 +13970,7 @@ object ReaderImageCache {
                     autoCut,
                     allowSplit,
                     targetWidth,
-                    fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                    fastInitialGenerated = shouldUseFastGeneratedForegroundDecode(image)
                 )
             }
             if (task.isDone) {
@@ -4544,7 +14002,7 @@ object ReaderImageCache {
                     allowSplit,
                     targetWidth,
                     boundedWait = false,
-                    fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                    fastInitialGenerated = shouldUseFastGeneratedForegroundDecode(image)
                 )
             }
             val elapsed = SystemClock.elapsedRealtime() - waitStartedAt
@@ -4585,7 +14043,7 @@ object ReaderImageCache {
                         allowSplit,
                         targetWidth,
                         boundedWait = false,
-                        fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                        fastInitialGenerated = shouldUseFastGeneratedForegroundDecode(image)
                     )
                     if (bitmap != null) return bitmap
                 }
@@ -4602,7 +14060,12 @@ object ReaderImageCache {
 
     private fun shouldPreferForegroundBytesForInitialGenerated(image: String): Boolean {
         val target = ntkGeneratedTarget(image) ?: return false
-        return target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+        return target.page >= 1
+    }
+
+    private fun shouldUseFastGeneratedForegroundDecode(image: String): Boolean {
+        val target = ntkGeneratedTarget(image) ?: return false
+        return target.page >= 1
     }
 
     private fun decodeForegroundCachedFileIfPresent(
@@ -4625,11 +14088,11 @@ object ReaderImageCache {
                 autoCut,
                 allowSplit,
                 targetWidth,
-                fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                fastInitialGenerated = shouldUseFastGeneratedForegroundDecode(image)
             )
         }
         cachedImageFile(context, manga, image)?.let { cached ->
-            cached.setLastModified(System.currentTimeMillis())
+            touchCacheHitForLru(cached)
             logCacheEvent(stage + "_disk_hit", manga, image, true, "bytes=${cached.length()}")
             ViewerWarmupManager.logMetric("reader_" + stage + "_disk_hit", 1L)
             rememberNtkGeneratedResolvedPage(image, stage + "_disk_hit")
@@ -4639,7 +14102,7 @@ object ReaderImageCache {
                 autoCut,
                 allowSplit,
                 targetWidth,
-                fastInitialGenerated = ntkGeneratedTarget(image)?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+                fastInitialGenerated = shouldUseFastGeneratedForegroundDecode(image)
             )
         }
         return null
@@ -4678,6 +14141,9 @@ object ReaderImageCache {
     }
 
     private fun foregroundStreamJoinTimeoutMs(image: String): Long {
+        if (ntkKpDescriptorPageNumber(image) == 1) {
+            return FOREGROUND_INITIAL_ANCHOR_STREAM_JOIN_TIMEOUT_MS
+        }
         val target = ntkGeneratedTarget(image) ?: return FOREGROUND_STREAM_JOIN_TIMEOUT_MS
         if (target.page == 1) {
             return FOREGROUND_INITIAL_ANCHOR_STREAM_JOIN_TIMEOUT_MS
@@ -4686,6 +14152,26 @@ object ReaderImageCache {
             return FOREGROUND_INITIAL_STREAM_JOIN_TIMEOUT_MS
         }
         return FOREGROUND_STREAM_JOIN_TIMEOUT_MS
+    }
+
+    private fun foregroundStreamStaleMs(image: String?): Long {
+        if (image.isNullOrBlank()) return FOREGROUND_STREAM_STALE_MS
+        val target = ntkGeneratedTarget(image) ?: return FOREGROUND_STREAM_STALE_MS
+        if (target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
+            return FOREGROUND_INITIAL_VISIBLE_STREAM_STALE_MS
+        }
+        return FOREGROUND_STREAM_STALE_MS
+    }
+
+    private fun ntkKpDescriptorPageNumber(image: String): Int {
+        if (!isNtkKpCvDescriptorImageUrl(image)) return 0
+        return Regex("(?i)(?:[?#&])mvpage=(\\d+)")
+            .find(image)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?.takeIf { it > 0 }
+            ?: 1
     }
 
     private fun shouldPreferFileDecodeAfterForegroundCache(
@@ -4710,10 +14196,142 @@ object ReaderImageCache {
         generation: Long,
         trustedImageBytes: Boolean = false
     ) {
-        if (!writeForegroundBytesToCache(context, manga, image, bytes, generation, "foreground_cached", trustedImageBytes)) return
-        rememberNtkGeneratedResolvedPage(image, "foreground_cached")
-        publishNtkAnchorAssetFile(context, manga, image, "foreground_cached", trustedImageBytes)
-        publishNtkInitialGeneratedAssetFile(context, manga, image, "foreground_cached", trustedImageBytes)
+        withCurrentCachePublication(generation) {
+            if (!writeForegroundBytesToCache(
+                    context, manga, image, bytes, generation,
+                    "foreground_cached", trustedImageBytes
+                )
+            ) return@withCurrentCachePublication false
+            rememberNtkGeneratedResolvedPage(image, "foreground_cached")
+            publishNtkAnchorAssetFile(context, manga, image, "foreground_cached", trustedImageBytes)
+            publishNtkInitialGeneratedAssetFile(
+                context, manga, image, "foreground_cached", trustedImageBytes
+            )
+            true
+        }
+    }
+
+    @JvmStatic
+    fun cacheGenerationForProducer(): Long = cacheGeneration.get()
+
+    @JvmStatic
+    fun cacheTrustedNtkForegroundBytes(
+        context: Context,
+        manga: Manga,
+        image: String,
+        bytes: ByteArray,
+        source: String,
+        producerGeneration: Long = cacheGeneration.get()
+    ): Boolean {
+        if (bytes.size < 32) return false
+        if (!isCompleteImageBytes(image, bytes)) {
+            logCacheEvent(
+                "trusted_foreground_cache_incomplete_reject",
+                manga,
+                image,
+                true,
+                "source=$source,bytes=${bytes.size}"
+            )
+            return false
+        }
+        return withCurrentCachePublication(producerGeneration) {
+            val written = writeForegroundBytesToCache(
+                context,
+                manga,
+                image,
+                bytes,
+                producerGeneration,
+                source,
+                trustedImageBytes = true
+            )
+            if (!written) return@withCurrentCachePublication false
+            rememberNtkGeneratedResolvedPage(image, source)
+            publishNtkAnchorAssetFile(context, manga, image, source, trustedImageBytes = true)
+            publishNtkInitialGeneratedAssetFile(
+                context, manga, image, source, trustedImageBytes = true
+            )
+            true
+        } ?: false
+    }
+
+    @JvmStatic
+    fun cacheTrustedNtkGeneratedImageBytesForPath(
+        context: Context?,
+        path: String?,
+        image: String?,
+        bytes: ByteArray?,
+        source: String,
+        producerGeneration: Long = cacheGeneration.get()
+    ): Boolean {
+        val appContext = context?.applicationContext ?: return false
+        val value = image?.trim().orEmpty()
+        val data = bytes ?: return false
+        if (value.isEmpty() || data.size <= 1024 || ntkGeneratedTarget(value) == null) return false
+        if (!isCompleteImageBytes(value, data)) return false
+        val generation = producerGeneration
+        return withCurrentCachePublication(generation) {
+            val dir = cacheDir(appContext)
+            var wrote = false
+            val baseModes = intArrayOf(MTitle.base_webtoon, MTitle.base_comic)
+            for (baseMode in baseModes) {
+            val cacheKey = key(baseMode, value)
+            val finalFile = File(dir, "$cacheKey.img")
+            val modeWrote = withCurrentCachePublication(generation) {
+                if (isUsableImage(finalFile)) {
+                    val existingProof = encodedOriginalByteProof(baseMode, value, finalFile)
+                    if (existingProof != null) {
+                        touchCacheHitForLru(finalFile)
+                        return@withCurrentCachePublication true
+                    }
+                }
+                val tmp = File(finalFile.parentFile, "${finalFile.name}.trusted.${System.nanoTime()}")
+                try {
+                    val proof = writeEncodedBytesToFile(tmp, data)
+                    if (!isUsableImage(tmp)) {
+                        tmp.delete()
+                        return@withCurrentCachePublication false
+                    }
+                    withCacheWriteLock(cacheKey) {
+                        if (isUsableImage(finalFile)) {
+                            val existingProof = encodedOriginalByteProof(baseMode, value, finalFile)
+                            if (existingProof != null) {
+                                tmp.delete()
+                                touchCacheHitForLru(finalFile)
+                            } else {
+                                replaceEncodedBody(tmp, finalFile)
+                                finalFile.setLastModified(System.currentTimeMillis())
+                                publishEncodedOriginalByteProof(baseMode, value, finalFile, proof)
+                            }
+                        } else {
+                            replaceEncodedBody(tmp, finalFile)
+                            finalFile.setLastModified(System.currentTimeMillis())
+                            publishEncodedOriginalByteProof(baseMode, value, finalFile, proof)
+                        }
+                    }
+                    true
+                } catch (_: Throwable) {
+                    tmp.delete()
+                    false
+                }
+            } ?: return false
+                if (modeWrote) wrote = true
+            }
+            if (wrote) {
+                rememberNtkGeneratedResolvedPage(value, source)
+                scheduleTrim(appContext)
+                Log.d(
+                    TAG,
+                    "trusted_generated_cache_browser_bytes path=${path.orEmpty()},image=${safeImageName(value)}," +
+                        "bytes=${data.size},source=$source"
+                )
+            }
+            wrote
+        } ?: false
+    }
+
+    @JvmStatic
+    fun isCompleteNtkImageBytes(image: String, bytes: ByteArray): Boolean {
+        return isCompleteImageBytes(image, bytes)
     }
 
     private fun BitmapFactory.Options.applyInitialGeneratedDecodeScale(sourceWidth: Int, targetWidth: Int) {
@@ -4738,14 +14356,15 @@ object ReaderImageCache {
             return
         }
         val previous = ntkInitialGeneratedAssetFiles.put(assetKey, file)
-        if (previous?.absolutePath == file.absolutePath) return
-        logCacheEvent(
-            "ntk_initial_generated_asset_stream_satisfied",
-            manga,
-            image,
-            true,
-            "asset=$assetKey,source=$source,bytes=${file.length()}"
-        )
+        if (previous?.absolutePath != file.absolutePath) {
+            logCacheEvent(
+                "ntk_initial_generated_asset_stream_satisfied",
+                manga,
+                image,
+                true,
+                "asset=$assetKey,source=$source,bytes=${file.length()}"
+            )
+        }
         ntkInitialGeneratedAssetListeners.remove(assetKey)?.let { listeners ->
             logCacheEvent(
                 "ntk_initial_generated_asset_listener_fire",
@@ -4754,8 +14373,12 @@ object ReaderImageCache {
                 true,
                 "asset=$assetKey,count=${listeners.size},source=$source"
             )
-            for (listener in listeners) foregroundRaceExecutor.execute(listener)
+            for (listener in listeners) initialAssetListenerExecutor.execute(listener)
         }
+        // Cache publication, not a particular transport Future, is the authoritative byte-ready
+        // event. A race/hedge can publish while the older foreground stream remains alive; wake
+        // non-blocking pipeline subscribers immediately instead of waiting for that stale owner.
+        notifyForegroundByteFlights(context.applicationContext, manga, image)
     }
 
     private fun publishNtkAnchorAssetFile(
@@ -4773,15 +14396,16 @@ object ReaderImageCache {
             return
         }
         val previous = ntkAnchorAssetFiles.put(assetKey, file)
-        if (previous?.absolutePath == file.absolutePath) return
-        logCacheEvent(
-            "ntk_anchor_asset_stream_satisfied",
-            manga,
-            image,
-            true,
-            "asset=$assetKey,source=$source,bytes=${file.length()}"
-        )
-        ViewerWarmupManager.logMetric("ntk_anchor_asset_stream_satisfied", 1L)
+        if (previous?.absolutePath != file.absolutePath) {
+            logCacheEvent(
+                "ntk_anchor_asset_stream_satisfied",
+                manga,
+                image,
+                true,
+                "asset=$assetKey,source=$source,bytes=${file.length()}"
+            )
+            ViewerWarmupManager.logMetric("ntk_anchor_asset_stream_satisfied", 1L)
+        }
         ntkAnchorAssetListeners.remove(assetKey)?.let { listeners ->
             logCacheEvent(
                 "ntk_anchor_asset_listener_fire",
@@ -4789,6 +14413,35 @@ object ReaderImageCache {
                 image,
                 true,
                 "asset=$assetKey,count=${listeners.size},source=$source"
+            )
+            for (listener in listeners) foregroundRaceExecutor.execute(listener)
+        }
+        notifyForegroundByteFlights(context.applicationContext, manga, image)
+    }
+
+    private fun publishNtkAnchorAssetBytes(
+        manga: Manga,
+        image: String,
+        bytes: ByteArray,
+        source: String
+    ) {
+        if (bytes.size < 32) return
+        val assetKey = ntkAnchorAssetKey(manga, image) ?: return
+        ntkAnchorAssetBytes[assetKey] = AnchorAssetBytes(bytes, SystemClock.elapsedRealtime())
+        logCacheEvent(
+            "ntk_anchor_asset_bytes_satisfied",
+            manga,
+            image,
+            true,
+            "asset=$assetKey,source=$source,bytes=${bytes.size}"
+        )
+        ntkAnchorAssetListeners.remove(assetKey)?.let { listeners ->
+            logCacheEvent(
+                "ntk_anchor_asset_listener_fire",
+                manga,
+                image,
+                true,
+                "asset=$assetKey,count=${listeners.size},source=$source-bytes"
             )
             for (listener in listeners) foregroundRaceExecutor.execute(listener)
         }
@@ -4842,6 +14495,12 @@ object ReaderImageCache {
         val path = earlyNtkPathKey(manga.ntkEpisodePath)
         if (path.isEmpty()) return false
         val assetKey = "${manga.baseMode}|$path|1"
+        ntkAnchorAssetBytes[assetKey]?.let { entry ->
+            if (SystemClock.elapsedRealtime() - entry.createdAtMs <= FOREGROUND_STREAM_HANDOFF_TTL_MS) {
+                return true
+            }
+            ntkAnchorAssetBytes.remove(assetKey, entry)
+        }
         val file = ntkAnchorAssetFiles[assetKey] ?: return false
         if (isUsableImage(file)) return true
         ntkAnchorAssetFiles.remove(assetKey, file)
@@ -4849,8 +14508,9 @@ object ReaderImageCache {
     }
 
     private fun ntkAnchorAssetKey(manga: Manga, image: String): String? {
-        val target = ntkGeneratedTarget(image) ?: return null
-        if (target.page != 1) return null
+        val target = ntkGeneratedTarget(image)
+        val page = target?.page ?: ntkEarlyUrlPageNumber(manga, image, NTK_GENERATED_INITIAL_RECOVERY_PAGES) ?: return null
+        if (page != 1) return null
         val path = earlyNtkPathKey(manga.ntkEpisodePath)
         if (path.isEmpty()) return null
         if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return null
@@ -4858,12 +14518,43 @@ object ReaderImageCache {
     }
 
     private fun ntkInitialGeneratedAssetKey(manga: Manga, image: String): String? {
-        val target = ntkGeneratedTarget(image) ?: return null
-        if (target.page !in 1..NTK_GENERATED_INITIAL_RECOVERY_PAGES) return null
+        val target = ntkGeneratedTarget(image)
+        val page = target?.page ?: ntkEarlyUrlPageNumber(manga, image, NTK_VERIFIED_GENERATED_ASSET_PAGES) ?: return null
+        if (page !in 1..NTK_VERIFIED_GENERATED_ASSET_PAGES) return null
         val path = earlyNtkPathKey(manga.ntkEpisodePath)
         if (path.isEmpty()) return null
         if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return null
-        return "${manga.baseMode}|$path|${target.page}"
+        return "${manga.baseMode}|$path|$page"
+    }
+
+    private fun ntkEarlyUrlPageNumber(manga: Manga, image: String, maxPages: Int): Int? {
+        if (maxPages <= 0) return null
+        val path = earlyNtkPathKey(manga.ntkEpisodePath)
+        if (path.isEmpty()) return null
+        val normalized = normalizeNtkImageForPageCompare(image)
+        if (normalized.isEmpty()) return null
+        val urls = earlyNtkImageUrls(path, 0L)
+        val limit = minOf(maxPages, urls.size)
+        for (i in 0 until limit) {
+            if (normalizeNtkImageForPageCompare(urls[i]) == normalized) {
+                return i + 1
+            }
+        }
+        return null
+    }
+
+    private fun normalizeNtkImageForPageCompare(image: String): String {
+        val value = image.trim()
+        if (value.isEmpty()) return ""
+        return try {
+            val uri = Uri.parse(value)
+            val host = uri.host.orEmpty().lowercase(Locale.ROOT)
+            val path = uri.encodedPath.orEmpty().lowercase(Locale.ROOT)
+            if (host.isEmpty() || path.isEmpty()) value.substringBefore('#').lowercase(Locale.ROOT)
+            else "$host$path"
+        } catch (_: Throwable) {
+            value.substringBefore('#').substringBefore('?').lowercase(Locale.ROOT)
+        }
     }
 
     private fun writeForegroundBytesToCache(
@@ -4881,24 +14572,155 @@ object ReaderImageCache {
             logCacheEvent("foreground_cache_generation_skip", manga, image, true, "generation=$generation,current=${cacheGeneration.get()}")
             return false
         }
-        val finalFile = File(cacheDir(context), "${key(manga.baseMode, image)}.img")
-        if (isUsableImage(finalFile)) return true
+        val cacheKey = key(manga.baseMode, image)
+        val finalFile = File(cacheDir(context), "$cacheKey.img")
+        if (isUsableImage(finalFile) &&
+            encodedOriginalByteProof(manga, image, finalFile) != null
+        ) return true
+        if (trustedImageBytes) {
+            return writeTrustedForegroundBytesDirect(
+                context,
+                manga,
+                image,
+                bytes,
+                cacheKey,
+                finalFile,
+                generation,
+                stage
+            )
+        }
         val tmp = File(finalFile.parentFile, "${finalFile.name}.fg.${System.nanoTime()}")
         try {
-            FileOutputStream(tmp).use { it.write(bytes) }
+            val proof = writeEncodedBytesToFile(tmp, bytes)
             if (!trustedImageBytes && !isUsableImage(tmp)) {
                 tmp.delete()
                 return false
             }
-            replace(tmp, finalFile)
-            finalFile.setLastModified(System.currentTimeMillis())
-            logCacheEvent(stage, manga, image, true, "bytes=${finalFile.length()}")
+            val length = withCurrentCachePublication(generation) {
+                withCacheWriteLock(cacheKey) {
+                    if (isUsableImage(finalFile)) {
+                        val existingProof = encodedOriginalByteProof(manga, image, finalFile)
+                        if (existingProof != null) {
+                            tmp.delete()
+                            touchCacheHitForLru(finalFile)
+                            finalFile.length()
+                        } else {
+                            replaceEncodedBody(tmp, finalFile)
+                            finalFile.setLastModified(System.currentTimeMillis())
+                            publishEncodedOriginalByteProof(manga, image, finalFile, proof)
+                            finalFile.length()
+                        }
+                    } else {
+                        replaceEncodedBody(tmp, finalFile)
+                        finalFile.setLastModified(System.currentTimeMillis())
+                        publishEncodedOriginalByteProof(manga, image, finalFile, proof)
+                        finalFile.length()
+                    }
+                }
+            } ?: run {
+                tmp.delete()
+                return false
+            }
+            logCacheEvent(stage, manga, image, true, "bytes=$length")
             ViewerWarmupManager.logMetric("reader_foreground_stream_cached", 1L)
             scheduleTrim(context)
             return true
         } catch (e: Exception) {
             tmp.delete()
-            logCacheEvent("foreground_cache_error", manga, image, true, "error=${e.javaClass.simpleName}")
+            if (isUsableImage(finalFile) &&
+                encodedOriginalByteProof(manga, image, finalFile) != null
+            ) {
+                logCacheEvent(
+                    "foreground_cache_race_recovered",
+                    manga,
+                    image,
+                    true,
+                    "error=${e.javaClass.simpleName},bytes=${finalFile.length()}"
+                )
+                return true
+            }
+            logCacheEvent(
+                "foreground_cache_error",
+                manga,
+                image,
+                true,
+                "error=${e.javaClass.simpleName},message=${e.message.orEmpty().replace(',', ' ').take(96)}"
+            )
+            return false
+        }
+    }
+
+    private fun writeTrustedForegroundBytesDirect(
+        context: Context,
+        manga: Manga,
+        image: String,
+        bytes: ByteArray,
+        cacheKey: String,
+        finalFile: File,
+        generation: Long,
+        stage: String
+    ): Boolean {
+        if (generation != cacheGeneration.get()) return false
+        try {
+            val length = withCurrentCachePublication(generation) {
+                withCacheWriteLock(cacheKey) {
+                    if (isUsableImage(finalFile)) {
+                        val existingProof = encodedOriginalByteProof(manga, image, finalFile)
+                        if (existingProof != null) {
+                            touchCacheHitForLru(finalFile)
+                            finalFile.length()
+                        } else {
+                            val proof = writeEncodedBytesToFile(finalFile, bytes)
+                            finalFile.setLastModified(System.currentTimeMillis())
+                            if (!isUsableImage(finalFile)) {
+                                finalFile.delete()
+                                throw java.io.IOException(
+                                    "Trusted foreground image cache file is not usable: ${finalFile.absolutePath}"
+                                )
+                            }
+                            publishEncodedOriginalByteProof(manga, image, finalFile, proof)
+                            finalFile.length()
+                        }
+                    } else {
+                        val parent = finalFile.parentFile
+                        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                            throw java.io.IOException("Unable to create image cache dir: ${parent.absolutePath}")
+                        }
+                        val proof = writeEncodedBytesToFile(finalFile, bytes)
+                        finalFile.setLastModified(System.currentTimeMillis())
+                        if (!isUsableImage(finalFile)) {
+                            finalFile.delete()
+                            throw java.io.IOException("Trusted foreground image cache file is not usable: ${finalFile.absolutePath}")
+                        }
+                        publishEncodedOriginalByteProof(manga, image, finalFile, proof)
+                        finalFile.length()
+                    }
+                }
+            } ?: return false
+            logCacheEvent(stage, manga, image, true, "bytes=$length,direct=true")
+            ViewerWarmupManager.logMetric("reader_foreground_stream_cached", 1L)
+            scheduleTrim(context)
+            return true
+        } catch (e: Exception) {
+            if (isUsableImage(finalFile) &&
+                encodedOriginalByteProof(manga, image, finalFile) != null
+            ) {
+                logCacheEvent(
+                    "foreground_cache_direct_recovered",
+                    manga,
+                    image,
+                    true,
+                    "error=${e.javaClass.simpleName},bytes=${finalFile.length()}"
+                )
+                return true
+            }
+            logCacheEvent(
+                "foreground_cache_error",
+                manga,
+                image,
+                true,
+                "error=${e.javaClass.simpleName},message=${e.message.orEmpty().replace(',', ' ').take(96)},direct=true"
+            )
             return false
         }
     }
@@ -4907,6 +14729,31 @@ object ReaderImageCache {
         val actual = response.request.url.toString()
         if (actual.isBlank() || actual == image) return image
         return actual
+    }
+
+    /**
+     * A generated-image fallback may resolve the same page with a different real suffix. Keep the
+     * bytes under that resolved URL only: writing them under the guessed request makes an exact
+     * `.jpg` lookup appear authoritative even when the CDN proved `.jpeg`, poisoning every later
+     * page URL. Same-suffix host redirects remain safe aliases, and non-generated redirects retain
+     * their existing behavior.
+     */
+    private fun shouldCacheResolvedBytesUnderRequestedImage(
+        requestedImage: String,
+        resolvedImage: String
+    ): Boolean {
+        if (requestedImage == resolvedImage) return true
+        val requestedTarget = ntkGeneratedTarget(requestedImage) ?: return true
+        val requestedExtension = ntkGeneratedImageExtension(requestedImage)
+        val resolvedExtension = ntkGeneratedImageExtension(resolvedImage)
+        if (requestedExtension.isEmpty()) return true
+        if (resolvedExtension.isEmpty() ||
+            !requestedExtension.equals(resolvedExtension, ignoreCase = true)
+        ) {
+            return false
+        }
+        val resolvedTarget = ntkGeneratedTarget(resolvedImage) ?: return true
+        return isCompatibleNtkGeneratedPage(requestedTarget, resolvedTarget)
     }
 
     private fun validateNtkImageResponseUrl(
@@ -4933,7 +14780,7 @@ object ReaderImageCache {
                             )
                     ) &&
                 !isDisallowedNtkImageAssetUrl(actual) ||
-                isTrustedNtkGeneratedStreamResponse(image, actual)
+                isTrustedNtkGeneratedStreamResponse(image, actual, response)
         } else {
             (isTrustedNtkImageUrl(actual) || isNaverWebtoonPageImage(actual)) &&
                 !isDisallowedNtkImageAssetUrl(actual)
@@ -4951,17 +14798,58 @@ object ReaderImageCache {
         return allowed
     }
 
-    private fun isTrustedNtkGeneratedStreamResponse(requested: String, actual: String): Boolean {
-        if (ntkGeneratedTarget(requested) == null || isDisallowedNtkImageAssetUrl(actual)) return false
+    private fun isTrustedNtkGeneratedStreamResponse(
+        requested: String,
+        actual: String,
+        response: Response? = null
+    ): Boolean {
+        if (ntkGeneratedTarget(requested) == null) return false
+        if (isDisallowedNtkImageAssetUrl(actual)) return false
         return try {
             val actualUri = Uri.parse(actual)
+            val host = actualUri.host.orEmpty().lowercase(Locale.ROOT)
+            val scheme = actualUri.scheme.orEmpty().lowercase(Locale.ROOT)
+            if (scheme != "http" && scheme != "https") return false
             val actualPath = actualUri.path.orEmpty()
-            actualPath.substringAfterLast('/').matches(
+            val lowerPath = actualPath.lowercase(Locale.ROOT)
+            if (lowerPath.contains("/cdn-cgi/") ||
+                lowerPath.contains("/challenge") ||
+                lowerPath.contains("/turnstile") ||
+                lowerPath.contains("/cloudflare") ||
+                lowerPath.contains("/verification") ||
+                lowerPath.contains("/captcha")
+            ) {
+                return false
+            }
+            val streamFileName = actualPath.substringAfterLast('/').matches(
                 Regex("stream\\.(jpg|jpeg|png|webp)", RegexOption.IGNORE_CASE)
             )
+            if (!streamFileName) return false
+            if (isTrustedNtkGeneratedStreamHost(host) || isTrustedNtkImageUrl(actual)) return true
+            val contentType = response?.header("Content-Type")
+                ?.substringBefore(';')
+                ?.trim()
+                ?.lowercase(Locale.ROOT)
+                .orEmpty()
+            contentType.startsWith("image/")
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun isTrustedNtkGeneratedStreamHost(host: String): Boolean {
+        if (host.isBlank()) return false
+        if (host.contains("naver") || host.contains("pstatic")) return false
+        return host == "toonflix.app" ||
+            host.endsWith(".toonflix.app") ||
+            Regex("^flysky\\d*m\\.com$").matches(host) ||
+            Regex("^apihost\\d*\\.com$").matches(host) ||
+            host == "moamoabon.com" ||
+            Regex("^fvcdn\\d*\\.com$").matches(host) ||
+            Regex("^aws-cdn\\d*\\.site$").matches(host) ||
+            host == "ioiocdn.org" ||
+            Regex("^worldcup\\d+\\.xyz$").matches(host) ||
+            Regex("^[a-z0-9-]+\\.worldcup\\d+\\.xyz$").matches(host)
     }
 
     private data class ForegroundRaceResult(
@@ -5006,15 +14894,30 @@ object ReaderImageCache {
         image: String,
         foreground: Boolean = false,
         cancellation: Cancellation? = null,
-        visiblePriority: Boolean = foreground
+        visiblePriority: Boolean = foreground,
+        progressiveTail: Boolean = false,
+        progressiveTailWork: VerifiedTailBatchRegistry.Work? = null,
+        requireEncodedOriginalIdentity: Boolean = false
     ): File {
         val appContext = context.applicationContext
         cancellation?.throwIfCancelled()
         val key = key(manga.baseMode, image)
         val streamKey = foregroundStreamKey(manga, image)
         val finalFile = File(cacheDir(appContext), "$key.img")
-        cachedAnchorAssetFile(appContext, manga, image, foreground)?.let { cached ->
-            cached.setLastModified(System.currentTimeMillis())
+        if (requireEncodedOriginalIdentity) {
+            strictEncodedOriginalCandidate(manga, image, finalFile)?.let { cached ->
+                touchCacheHitForLru(cached)
+                logCacheEvent(
+                    "strict_encoded_original_disk_hit",
+                    manga,
+                    image,
+                    foreground,
+                    "bytes=${cached.length()}"
+                )
+                return cached
+            }
+        } else cachedAnchorAssetFile(appContext, manga, image, foreground)?.let { cached ->
+            touchCacheHitForLru(cached)
             logCacheEvent(
                 "anchor_asset_disk_hit",
                 manga,
@@ -5025,8 +14928,8 @@ object ReaderImageCache {
             ViewerWarmupManager.logMetric("reader_anchor_asset_disk_hit", 1L)
             return cached
         }
-        cachedImageFile(appContext, manga, image)?.let { cached ->
-            cached.setLastModified(System.currentTimeMillis())
+        if (!requireEncodedOriginalIdentity) cachedImageFile(appContext, manga, image)?.let { cached ->
+            touchCacheHitForLru(cached)
             val variant = cached.name != finalFile.name
             logCacheEvent(
                 if (variant) "disk_hit_variant" else "disk_hit",
@@ -5039,10 +14942,23 @@ object ReaderImageCache {
             if (variant) ViewerWarmupManager.logMetric("reader_image_cache_variant_disk_hit", 1L)
             return cached
         }
-        val streamAwait = awaitForegroundStreamFile(appContext, streamKey, finalFile, manga, image, foreground)
+        val streamAwait = awaitForegroundStreamFile(
+            appContext,
+            streamKey,
+            finalFile,
+            manga,
+            image,
+            foreground,
+            requireEncodedOriginalIdentity
+        )
         streamAwait?.file?.let { return it }
-        cachedAnchorAssetFile(appContext, manga, image, foreground)?.let { cached ->
-            cached.setLastModified(System.currentTimeMillis())
+        if (requireEncodedOriginalIdentity) {
+            strictEncodedOriginalCandidate(manga, image, finalFile)?.let { cached ->
+                touchCacheHitForLru(cached)
+                return cached
+            }
+        } else cachedAnchorAssetFile(appContext, manga, image, foreground)?.let { cached ->
+            touchCacheHitForLru(cached)
             logCacheEvent(
                 "anchor_asset_hit_after_foreground_stream_wait",
                 manga,
@@ -5053,9 +14969,13 @@ object ReaderImageCache {
             ViewerWarmupManager.logMetric("reader_anchor_asset_hit_after_foreground_stream_wait", 1L)
             return cached
         }
-        awaitForegroundStreamVariantFile(appContext, manga, image, foreground)?.file?.let { return it }
-        cachedImageFile(appContext, manga, image)?.let { cached ->
-            cached.setLastModified(System.currentTimeMillis())
+        if (!requireEncodedOriginalIdentity) {
+            awaitForegroundStreamVariantFile(appContext, manga, image, foreground)
+                ?.file
+                ?.let { return it }
+        }
+        if (!requireEncodedOriginalIdentity) cachedImageFile(appContext, manga, image)?.let { cached ->
+            touchCacheHitForLru(cached)
             logCacheEvent(
                 "disk_hit_after_foreground_stream_wait",
                 manga,
@@ -5073,28 +14993,111 @@ object ReaderImageCache {
             ntkGeneratedTarget(image) != null
         val requestForegroundDownload = downloadForeground || priorityFullDownload
         val generation = cacheGeneration.get()
-        val task = FutureTask {
+        val tailState = if (progressiveTail) {
+            val episodePath = earlyNtkPathKey(manga.ntkEpisodePath)
+            ProgressiveTailFlightState(
+                cacheKey = key,
+                episodePath = episodePath,
+                episodeKey = "${manga.baseMode}|$episodePath",
+                generation = generation,
+                batchWork = progressiveTailWork
+            )
+        } else {
+            null
+        }
+        lateinit var task: FutureTask<File>
+        task = FutureTask {
             withNtkGeneratedFetchPermit(
                 manga,
                 image,
                 requestForegroundDownload,
-                visiblePriority && requestForegroundDownload
+                visiblePriority && requestForegroundDownload,
+                backgroundVisibleYieldAlreadyDone = progressiveTail
             ) {
-                downloadAtomically(appContext, manga, image, finalFile, requestForegroundDownload, cancellation, generation)
+                if (tailState != null) {
+                    val admitted = synchronized(cacheFlightAdmissionLock) {
+                        progressiveTailFlightStates[task] === tailState &&
+                            flights[key] === task &&
+                            !tailState.cancelled.get() &&
+                            cacheGeneration.get() == tailState.generation &&
+                            tailState.batchWork?.isCurrent() != false
+                    }
+                    if (!admitted) {
+                        throw InterruptedIOException("Progressive tail flight retired before transport")
+                    }
+                }
+                downloadAtomically(
+                    appContext,
+                    manga,
+                    image,
+                    finalFile,
+                    requestForegroundDownload,
+                    cancellation,
+                    generation,
+                    progressiveTailState = tailState
+                )
             }
         }
-        var existing = flights.putIfAbsent(key, task)
-        if (existing != null && shouldSupersedeGeneratedVisibleFlight(
-                image,
-                foreground,
-                visiblePriority,
-                priorityFullDownload,
-                hasFreshInitialForegroundStream(streamKey, image),
-                existing
-            )
-        ) {
-            if (flights.remove(key, existing)) {
-                existing.cancel(true)
+        val declaresVisibleGeneratedAdmission = foreground &&
+            visiblePriority &&
+            ntkGeneratedTarget(image) != null
+        if (declaresVisibleGeneratedAdmission) visibleGeneratedFlightAdmissions.incrementAndGet()
+        var superseded: FutureTask<File>? = null
+        var existing: FutureTask<File>? = null
+        try {
+            synchronized(cacheFlightAdmissionLock) {
+                // This is the final priority check immediately adjacent to putIfAbsent. It occurs
+                // before tail ownership is published, so a background producer never registers
+                // and then waits behind the visible request that would otherwise join it.
+                if (tailState != null &&
+                    (tailState.batchWork?.isCurrent() == false ||
+                        cacheGeneration.get() != tailState.generation ||
+                        visibleGeneratedFlightAdmissions.get() > 0 ||
+                        activeVisibleInitialGeneratedFetches.get() > 0 ||
+                        ntkGeneratedForegroundFetchGate.visibleWaiterCount() > 0)
+                ) {
+                    tailState.cancelled.set(true)
+                    throw InterruptedIOException("Progressive tail admission deferred for visible fetch")
+                }
+                var admittedExisting = flights.putIfAbsent(key, task)
+                if (admittedExisting == null && tailState != null) {
+                    progressiveTailFlightStates[task] = tailState
+                }
+                if (admittedExisting != null && foreground && (visiblePriority || priorityFullDownload)) {
+                    val existingTailState = progressiveTailFlightStates[admittedExisting]
+                    val supersede = if (existingTailState != null) {
+                        !admittedExisting.isDone &&
+                            !admittedExisting.isCancelled &&
+                            existingTailState.bodyBytes.get() <= 0L
+                    } else {
+                        shouldSupersedeGeneratedVisibleFlight(
+                            image,
+                            foreground,
+                            visiblePriority,
+                            priorityFullDownload,
+                            hasFreshInitialForegroundStream(streamKey, image),
+                            admittedExisting,
+                            existingIsProgressiveTail = false,
+                            existingProgressiveTransferStarted = false
+                        )
+                    }
+                    if (supersede && flights.remove(key, admittedExisting)) {
+                        existingTailState?.cancelled?.set(true)
+                        if (existingTailState != null) {
+                            progressiveTailFlightStates.remove(admittedExisting, existingTailState)
+                        }
+                        superseded = admittedExisting
+                        admittedExisting = flights.putIfAbsent(key, task)
+                        if (admittedExisting == null && tailState != null) {
+                            progressiveTailFlightStates[task] = tailState
+                        }
+                    }
+                }
+                existing = admittedExisting
+            }
+            superseded?.cancel(true)
+            if (superseded != null) {
+                cacheFlightSupersedes.incrementAndGet()
                 logCacheEvent(
                     "flight_supersede_generated_visible",
                     manga,
@@ -5103,10 +15106,13 @@ object ReaderImageCache {
                     "activeFlight=true,foregroundDownload=$downloadForeground"
                 )
                 ViewerWarmupManager.logMetric("reader_image_cache_flight_supersede_generated_visible", 1L)
-                existing = flights.putIfAbsent(key, task)
             }
+        } catch (t: Throwable) {
+            if (declaresVisibleGeneratedAdmission) visibleGeneratedFlightAdmissions.decrementAndGet()
+            throw t
         }
         if (existing != null) {
+            cacheFlightJoins.incrementAndGet()
             logCacheEvent(
                 "flight_join",
                 manga,
@@ -5116,6 +15122,7 @@ object ReaderImageCache {
             )
             ViewerWarmupManager.logMetric("reader_image_cache_flight_join", 1L)
         } else {
+            cacheFlightStarts.incrementAndGet()
             logCacheEvent(
                 "download_start",
                 manga,
@@ -5128,6 +15135,11 @@ object ReaderImageCache {
         val running = existing ?: task.also { it.run() }
         return try {
             val result = running.get()
+            if (requireEncodedOriginalIdentity &&
+                strictEncodedOriginalCandidate(manga, image, result) == null
+            ) {
+                throw java.io.IOException("Strict encoded-original fetch returned an unproven body")
+            }
             if (bypassForegroundDownload) {
                 logCacheEvent(
                     "download_initial_recovery_done",
@@ -5149,8 +15161,34 @@ object ReaderImageCache {
             if (cause is Error) throw cause
             throw java.io.IOException("Image cache fetch failed", cause)
         } finally {
-            flights.remove(key, running)
+            synchronized(cacheFlightAdmissionLock) {
+                flights.remove(key, running)
+                progressiveTailFlightStates.remove(running)
+            }
+            if (declaresVisibleGeneratedAdmission) visibleGeneratedFlightAdmissions.decrementAndGet()
         }
+    }
+
+    @JvmStatic
+    fun cachedNtkGeneratedImageBytes(context: Context?, image: String?): ByteArray? {
+        val appContext = context?.applicationContext ?: return null
+        val value = image?.trim().orEmpty()
+        if (value.isEmpty() || ntkGeneratedTarget(value) == null) return null
+        val dir = cacheDir(appContext)
+        val baseModes = intArrayOf(MTitle.base_webtoon, MTitle.base_comic)
+        for (baseMode in baseModes) {
+            for (candidate in ntkGeneratedCacheLookupImages(value)) {
+                val file = File(dir, "${key(baseMode, candidate)}.img")
+                if (!isUsableImage(file)) continue
+                return try {
+                    touchCacheHitForLru(file)
+                    file.readBytes()
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+        }
+        return null
     }
 
     private fun awaitForegroundStreamFile(
@@ -5159,9 +15197,10 @@ object ReaderImageCache {
         finalFile: File,
         manga: Manga,
         image: String,
-        foreground: Boolean
+        foreground: Boolean,
+        requireEncodedOriginalIdentity: Boolean = false
     ): ForegroundStreamAwait? {
-        val stream = foregroundStreams[key] ?: return null
+        var stream = foregroundStreams[key] ?: return null
         val cacheDirectory = finalFile.parentFile
         if (shouldSkipForegroundStreamWaitForGeneratedFullDownload(key, cacheDirectory, manga, image, foreground, stream)) {
             return ForegroundStreamAwait(bypassForegroundDownload = true)
@@ -5177,8 +15216,13 @@ object ReaderImageCache {
         var timedOut = false
         try {
             while (true) {
-                cachedAnchorAssetFile(context, manga, image, foreground)?.let { cached ->
-                    cached.setLastModified(System.currentTimeMillis())
+                if (!requireEncodedOriginalIdentity) cachedAnchorAssetFile(
+                    context,
+                    manga,
+                    image,
+                    foreground
+                )?.let { cached ->
+                    touchCacheHitForLru(cached)
                     logCacheEvent(
                         "anchor_asset_hit_during_foreground_stream_wait",
                         manga,
@@ -5189,8 +15233,11 @@ object ReaderImageCache {
                     ViewerWarmupManager.logMetric("reader_anchor_asset_hit_during_foreground_stream_wait", 1L)
                     return ForegroundStreamAwait(file = cached)
                 }
-                if (isUsableImage(finalFile)) {
-                    finalFile.setLastModified(System.currentTimeMillis())
+                if ((!requireEncodedOriginalIdentity && isUsableImage(finalFile)) ||
+                    (requireEncodedOriginalIdentity &&
+                        strictEncodedOriginalCandidate(manga, image, finalFile) != null)
+                ) {
+                    touchCacheHitForLru(finalFile)
                     logCacheEvent(
                         "foreground_stream_wait_disk_hit_during_wait",
                         manga,
@@ -5201,7 +15248,21 @@ object ReaderImageCache {
                     ViewerWarmupManager.logMetric("reader_foreground_stream_wait_disk_hit_during_wait", 1L)
                     return ForegroundStreamAwait(file = finalFile)
                 }
-                if (stream.isDone) break
+                if (stream.isDone) {
+                    val replacement = foregroundStreams[key]
+                    if (replacement != null && replacement !== stream) {
+                        stream = replacement
+                        logCacheEvent(
+                            "foreground_stream_wait_follow_replacement",
+                            manga,
+                            image,
+                            foreground,
+                            "activeStream=true,elapsedMs=${SystemClock.elapsedRealtime() - waitStartedAt}"
+                        )
+                        continue
+                    }
+                    break
+                }
                 val elapsed = SystemClock.elapsedRealtime() - waitStartedAt
                 val remaining = waitTimeoutMs - elapsed
                 if (remaining <= 0L) {
@@ -5213,6 +15274,39 @@ object ReaderImageCache {
                     break
                 } catch (_: java.util.concurrent.TimeoutException) {
                     continue
+                } catch (_: java.util.concurrent.CancellationException) {
+                    // A verified generated suffix deliberately replaces the speculative stream
+                    // under the same logical page key. Follow that replacement inside the
+                    // original absolute join budget; treating the hand-off as an image failure
+                    // poisoned the whole immutable launch batch.
+                    val replacement = foregroundStreams[key]
+                    if (replacement != null && replacement !== stream) {
+                        stream = replacement
+                        logCacheEvent(
+                            "foreground_stream_wait_follow_replacement",
+                            manga,
+                            image,
+                            foreground,
+                            "activeStream=true,elapsedMs=${SystemClock.elapsedRealtime() - waitStartedAt}"
+                        )
+                        continue
+                    }
+                    return null
+                } catch (failure: ExecutionException) {
+                    val replacement = foregroundStreams[key]
+                    if (replacement != null && replacement !== stream) {
+                        stream = replacement
+                        logCacheEvent(
+                            "foreground_stream_wait_follow_replacement",
+                            manga,
+                            image,
+                            foreground,
+                            "activeStream=true,elapsedMs=${SystemClock.elapsedRealtime() - waitStartedAt}," +
+                                "cause=${failure.cause?.javaClass?.simpleName.orEmpty()}"
+                        )
+                        continue
+                    }
+                    return null
                 }
             }
         } catch (e: InterruptedException) {
@@ -5231,6 +15325,26 @@ object ReaderImageCache {
             )
             ViewerWarmupManager.logMetric("reader_foreground_stream_wait_timeout", 1L)
             if (shouldBypassForegroundStreamForInitialRecovery(cacheDirectory, manga, image, foreground)) {
+                if (shouldDropInitialVisibleForegroundStreamOnJoinSkip(
+                        manga,
+                        image,
+                        -1,
+                        foreground,
+                        target
+                    ) &&
+                    foregroundStreams.remove(key, stream)
+                ) {
+                    stream.cancel(true)
+                    foregroundStreamStartedAt.remove(key)
+                    foregroundStreamImages.remove(key)
+                    logCacheEvent(
+                        "foreground_stream_wait_timeout_initial_recovery_drop",
+                        manga,
+                        image,
+                        foreground,
+                        "activeStream=true,timeoutMs=$waitTimeoutMs"
+                    )
+                }
                 logCacheEvent(
                     "foreground_stream_wait_timeout_initial_recovery",
                     manga,
@@ -5249,11 +15363,75 @@ object ReaderImageCache {
             }
             return null
         }
-        if (!isUsableImage(finalFile)) return null
-        finalFile.setLastModified(System.currentTimeMillis())
+        if ((!requireEncodedOriginalIdentity && !isUsableImage(finalFile)) ||
+            (requireEncodedOriginalIdentity &&
+                strictEncodedOriginalCandidate(manga, image, finalFile) == null)
+        ) return null
+        touchCacheHitForLru(finalFile)
         logCacheEvent("foreground_stream_wait_hit", manga, image, foreground, "bytes=${finalFile.length()}")
         ViewerWarmupManager.logMetric("reader_foreground_stream_wait_hit", 1L)
         return ForegroundStreamAwait(file = finalFile)
+    }
+
+    private fun strictEncodedOriginalCandidate(
+        manga: Manga,
+        image: String,
+        file: File,
+        sourceKey: NtkStrictSourceKey? = null
+    ): File? = file.takeIf {
+        val persisted = readStrictEncodedOriginalProofV2(manga, image, it)
+        val parsed = exactImageHeader(it)
+        persisted != null && parsed != null &&
+            (sourceKey == null ||
+                (persisted.manifestDigest == sourceKey.manifestDigest &&
+                    persisted.pageIndex == sourceKey.pageIndex)) &&
+            encodedOriginalByteProof(manga, image, it) != null &&
+            persisted.sourceWidth == parsed.width &&
+            persisted.sourceHeight == parsed.height &&
+            persisted.imageFormat == NtkSourceMetadataAuthority.normalizeImageFormat(parsed.format)
+    }
+
+    /** Pixel-free proof-backed cache lookup used exclusively by the strict source plane. */
+    private fun strictCachedExactFile(
+        context: Context,
+        manga: Manga,
+        image: String,
+        sourceKey: NtkStrictSourceKey? = null
+    ): File? {
+        if (!manga.isOnline) return File(image).takeIf { it.isFile }
+        val file = File(cacheDir(context.applicationContext), "${key(manga.baseMode, image)}.img")
+        return strictEncodedOriginalCandidate(manga, image, file, sourceKey)
+    }
+
+    private fun shouldDropInitialVisibleForegroundStreamOnJoinSkip(
+        manga: Manga,
+        image: String,
+        pageIndex: Int,
+        visiblePriority: Boolean,
+        target: NtkGeneratedTarget?
+    ): Boolean {
+        if (!visiblePriority) return false
+        val generatedTarget = target ?: return false
+        if (generatedTarget.page !in 2..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        if (hasAuthoritativeDirectLaunchRunwayStream(manga, image, generatedTarget)) return false
+        if (!isFastOkHttpGeneratedImageUrl(image) && !shouldPrioritizeHintedInitialGeneratedFullFetch(image)) return false
+        return pageIndex < 0 || pageIndex == generatedTarget.page - 1
+    }
+
+    private fun hasAuthoritativeDirectLaunchRunwayStream(
+        manga: Manga,
+        image: String,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (path.isEmpty()) return false
+        val minCreatedAt = SystemClock.elapsedRealtime() - 30_000L
+        val expected = trustedNtkImageApiCount(path, minCreatedAt)
+        if (expected <= 0 || target.page > expected) return false
+        if (!hasCompleteValidatedNativeDirectEarlyNtkImageUrls(path, expected, minCreatedAt)) {
+            return false
+        }
+        return earlyNtkImageUrls(path, minCreatedAt).any { it == image }
     }
 
     private fun awaitForegroundStreamVariantFile(
@@ -5336,24 +15514,82 @@ object ReaderImageCache {
         visiblePriority: Boolean,
         priorityFullDownload: Boolean,
         freshInitialForegroundStream: Boolean,
-        existing: FutureTask<File>
+        existing: FutureTask<File>,
+        existingIsProgressiveTail: Boolean,
+        existingProgressiveTransferStarted: Boolean
     ): Boolean {
         if (!foreground || (!visiblePriority && !priorityFullDownload)) return false
         if (existing.isDone || existing.isCancelled) return false
         val target = ntkGeneratedTarget(image) ?: return false
+        if (existingIsProgressiveTail) {
+            // Preserve an accumulated body only after transport actually enters the download.
+            // A queued tail task can own the cache flight while still yielding for foreground;
+            // joining that producer makes the visible request wait behind itself.
+            return supersedeProgressiveTailPolicy(
+                existingIsProgressiveTail,
+                existingProgressiveTransferStarted
+            )
+        }
         if (target.page !in 1..NTK_GENERATED_INITIAL_RECOVERY_PAGES) return false
+        if (target.page == 1) return false
+        if (isFastOkHttpGeneratedImageUrl(image)) {
+            return priorityFullDownload && visiblePriority && !freshInitialForegroundStream
+        }
         return !freshInitialForegroundStream
     }
 
-    private fun foregroundStreamJoinBudgetMs(streamKey: String, image: String, requestStartedAtMs: Long): Long {
+    private fun supersedeProgressiveTailPolicy(
+        existingIsProgressiveTail: Boolean,
+        transferStarted: Boolean
+    ): Boolean = existingIsProgressiveTail && !transferStarted
+
+    @JvmStatic
+    fun supersedeProgressiveTailForTest(
+        existingIsProgressiveTail: Boolean,
+        transferStarted: Boolean
+    ): Boolean = supersedeProgressiveTailPolicy(existingIsProgressiveTail, transferStarted)
+
+    private fun foregroundStreamJoinBudgetMs(
+        streamKey: String,
+        image: String,
+        requestStartedAtMs: Long,
+        pageIndex: Int = -1,
+        visiblePriority: Boolean = false
+    ): Long {
+        if (isInitialSurfaceTrustedApiJoin(image, pageIndex, visiblePriority)) {
+            val streamStartedAt = foregroundStreamStartedAt[streamKey]
+                ?: return FOREGROUND_INITIAL_SURFACE_STREAM_JOIN_TIMEOUT_MS
+            val streamAgeMs = max(0L, requestStartedAtMs - streamStartedAt)
+            return max(0L, FOREGROUND_INITIAL_SURFACE_STREAM_JOIN_TIMEOUT_MS - streamAgeMs)
+        }
+        if (isInitialSurfaceGeneratedJoin(image, pageIndex, visiblePriority)) {
+            return FOREGROUND_INITIAL_SURFACE_STREAM_JOIN_TIMEOUT_MS
+        }
         val baseTimeoutMs = foregroundStreamJoinTimeoutMs(image)
-        val target = ntkGeneratedTarget(image)
         val streamStartedAt = foregroundStreamStartedAt[streamKey] ?: return baseTimeoutMs
         val streamAgeMs = max(0L, requestStartedAtMs - streamStartedAt)
-        if (target != null && target.page >= 1) {
-            return if (streamAgeMs < FOREGROUND_STREAM_STALE_MS) baseTimeoutMs else 0L
-        }
         return max(0L, baseTimeoutMs - streamAgeMs)
+    }
+
+    private fun isInitialSurfaceTrustedApiJoin(
+        image: String,
+        pageIndex: Int,
+        visiblePriority: Boolean
+    ): Boolean {
+        if (!visiblePriority || pageIndex > 0) return false
+        if (ntkGeneratedTarget(image) != null) return false
+        return isTrustedInitialNtkApiImageForEarlyStream(image)
+    }
+
+    private fun isInitialSurfaceGeneratedJoin(
+        image: String,
+        pageIndex: Int,
+        visiblePriority: Boolean
+    ): Boolean {
+        if (!visiblePriority) return false
+        val target = ntkGeneratedTarget(image) ?: return false
+        if (target.page !in 1..4) return false
+        return pageIndex == target.page - 1
     }
 
     private fun hasFreshInitialForegroundStream(streamKey: String, image: String): Boolean {
@@ -5415,15 +15651,171 @@ object ReaderImageCache {
         val bypassForegroundDownload: Boolean = false
     )
 
+    /**
+     * Strict response bodies remain outside cacheDir until their length, header, and digest have
+     * been proved. Android may evict cacheDir while a response is still streaming; noBackup is
+     * app-private, cleared with app data, excluded from backup, and is not a readable body cache.
+     */
+    private fun strictSpoolDir(context: Context): File {
+        val appContext = context.applicationContext ?: context
+        val dir = File(appContext.noBackupFilesDir, STRICT_SPOOL_DIR_NAME)
+        if (!dir.isDirectory) {
+            dir.mkdirs()
+            check(dir.isDirectory) { "Reader strict spool directory is unavailable" }
+        }
+        cleanupStaleStrictSpoolFiles(dir)
+        return dir
+    }
+
+    private fun createStrictSpoolFile(context: Context, prefix: String): File {
+        return synchronized(strictSpoolLifecycleLock) {
+            val safePrefix = prefix.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                .take(48)
+                .padEnd(3, '_')
+            val file = File.createTempFile(safePrefix, ".tmp", strictSpoolDir(context))
+            activeStrictSpoolFiles.add(file.absolutePath)
+            file
+        }
+    }
+
+    private fun releaseStrictSpoolFile(file: File) {
+        synchronized(strictSpoolLifecycleLock) {
+            activeStrictSpoolFiles.remove(file.absolutePath)
+            if (file.exists() && !file.delete()) {
+                Log.d(TAG, "reader_strict_spool_cleanup_deferred file=${file.name}")
+            }
+        }
+    }
+
+    /** Cleanup is deliberately old-file-only, active-owner-aware, debounced, and work-capped. */
+    private fun cleanupStaleStrictSpoolFiles(dir: File) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        while (true) {
+            val previous = lastStrictSpoolCleanupAt.get()
+            if (previous > 0L && nowElapsed - previous < STRICT_SPOOL_CLEANUP_DEBOUNCE_MS) return
+            if (lastStrictSpoolCleanupAt.compareAndSet(previous, nowElapsed)) break
+        }
+        try {
+            val staleBefore = System.currentTimeMillis() - STRICT_SPOOL_STALE_AGE_MS
+            val candidates = dir.listFiles() ?: return
+            var scanned = 0
+            var deleted = 0
+            for (candidate in candidates) {
+                if (scanned++ >= STRICT_SPOOL_CLEANUP_MAX_SCANNED ||
+                    deleted >= STRICT_SPOOL_CLEANUP_MAX_DELETES
+                ) break
+                if (!candidate.isFile || !candidate.name.endsWith(".tmp") ||
+                    candidate.lastModified() > staleBefore ||
+                    activeStrictSpoolFiles.contains(candidate.absolutePath)
+                ) continue
+                if (candidate.delete()) deleted++
+            }
+            if (deleted > 0) {
+                Log.d(TAG, "reader_strict_spool_stale_cleanup deleted=$deleted")
+            }
+        } catch (failure: Throwable) {
+            // Stale-file housekeeping must never prevent a fresh foreground response.
+            Log.d(TAG, "reader_strict_spool_stale_cleanup_error $failure")
+        }
+    }
+
+    private fun releaseStrictPublishTemp(file: File) {
+        activeStrictPublishTempFiles.remove(file.absolutePath)
+        if (file.exists() && !file.delete()) {
+            Log.d(TAG, "reader_strict_publish_temp_cleanup_deferred file=${file.name}")
+        }
+    }
+
+    private fun cleanupStaleStrictPublishTemps(dir: File) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        while (true) {
+            val previous = lastStrictPublishTempCleanupAt.get()
+            if (previous > 0L && nowElapsed - previous < STRICT_SPOOL_CLEANUP_DEBOUNCE_MS) return
+            if (lastStrictPublishTempCleanupAt.compareAndSet(previous, nowElapsed)) break
+        }
+        try {
+            val deleted = cleanupStaleStrictPublishTempsOnce(
+                dir,
+                System.currentTimeMillis() - STRICT_SPOOL_STALE_AGE_MS,
+                STRICT_SPOOL_CLEANUP_MAX_SCANNED,
+                STRICT_SPOOL_CLEANUP_MAX_DELETES
+            )
+            if (deleted > 0) {
+                Log.d(TAG, "reader_strict_publish_temp_stale_cleanup deleted=$deleted")
+            }
+        } catch (failure: Throwable) {
+            Log.d(TAG, "reader_strict_publish_temp_stale_cleanup_error $failure")
+        }
+    }
+
+    private fun cleanupStaleStrictPublishTempsOnce(
+        dir: File,
+        staleBeforeMs: Long,
+        maxScanned: Int,
+        maxDeletes: Int
+    ): Int {
+        require(maxScanned >= 0 && maxDeletes >= 0)
+        val candidates = dir.listFiles() ?: return 0
+        var scanned = 0
+        var deleted = 0
+        for (candidate in candidates) {
+            if (scanned++ >= maxScanned || deleted >= maxDeletes) break
+            if (!candidate.isFile ||
+                !candidate.name.contains(STRICT_PUBLISH_TEMP_MARKER) ||
+                !candidate.name.endsWith(".tmp") ||
+                candidate.lastModified() > staleBeforeMs ||
+                activeStrictPublishTempFiles.contains(candidate.absolutePath)
+            ) continue
+            if (candidate.delete()) deleted++
+        }
+        return deleted
+    }
+
+    @JvmStatic
+    internal fun cleanupStaleStrictPublishTempsForTest(
+        dir: File,
+        staleBeforeMs: Long,
+        maxScanned: Int,
+        maxDeletes: Int
+    ): Int = cleanupStaleStrictPublishTempsOnce(
+        dir,
+        staleBeforeMs,
+        maxScanned,
+        maxDeletes
+    )
+
     private fun cacheDir(context: Context): File {
-        return File(context.cacheDir, DIR_NAME).apply { mkdirs() }
+        resolvedCacheDir.get()?.let { cached ->
+            if (!cached.isDirectory) {
+                cached.mkdirs()
+                check(cached.isDirectory) { "Reader image cache directory is unavailable" }
+            }
+            return cached
+        }
+        val appContext = context.applicationContext ?: context
+        val dir = File(appContext.cacheDir, DIR_NAME)
+        if (!dir.isDirectory) {
+            dir.mkdirs()
+            check(dir.isDirectory) { "Reader image cache directory is unavailable" }
+        }
+        cleanupStaleStrictPublishTemps(dir)
+        return if (resolvedCacheDir.compareAndSet(null, dir)) {
+            dir
+        } else {
+            resolvedCacheDir.get() ?: dir
+        }
     }
 
     private fun key(baseMode: Int, image: String): String {
         val normalized = Utils.viewerImageRequestUrl(image, baseMode)
+        val generatedNamespace = if (ntkGeneratedTarget(normalized) != null) {
+            "|ntk-generated-v$NTK_GENERATED_CACHE_KEY_SCHEMA_VERSION"
+        } else {
+            ""
+        }
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest("$baseMode|$normalized".toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
+            .digest("$baseMode|$normalized$generatedNamespace".toByteArray(Charsets.UTF_8))
+        return NtkStripDigests.bytesToLowerHex(digest)
     }
 
     private fun foregroundStreamKey(manga: Manga, image: String): String {
@@ -5431,15 +15823,37 @@ object ReaderImageCache {
     }
 
     private fun foregroundStreamKey(baseMode: Int, image: String, activePath: String? = null): String {
-        val target = ntkGeneratedTarget(image) ?: return key(baseMode, image)
-        val extension = Regex("\\.(jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
-            .find(image)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.lowercase()
-            .orEmpty()
+        val scopedPath = earlyNtkPathKey(activePath).takeIf { isNtkEpisodePathKey(it) }
+        foregroundDescriptorStreamImage(image)?.let { descriptor ->
+            val imageKey = key(baseMode, descriptor)
+            return if (scopedPath != null) {
+                "ntk-generated-stream|$baseMode|$scopedPath|direct|$imageKey"
+            } else {
+                imageKey
+            }
+        }
+        val target = ntkGeneratedTarget(image)
+        if (target == null) {
+            val imageKey = key(baseMode, image)
+            return if (scopedPath != null) {
+                "ntk-generated-stream|$baseMode|$scopedPath|direct|$imageKey"
+            } else {
+                imageKey
+            }
+        }
         val path = foregroundStreamEpisodePath(activePath, target)
+        if (target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
+            return "ntk-generated-stream|$baseMode|$path|${target.page}|initial-page"
+        }
+        val extension = ntkGeneratedImageExtension(image)
         return "ntk-generated-stream|$baseMode|$path|${target.page}|$extension"
+    }
+
+    private fun foregroundDescriptorStreamImage(image: String): String? {
+        if (!isNtkKpCvDescriptorImageUrl(image)) return null
+        return image
+            .trim()
+            .replace(Regex("(?i)^http://"), "https://")
     }
 
     private fun foregroundStreamEpisodePath(activePath: String?, target: NtkGeneratedTarget): String {
@@ -5452,22 +15866,180 @@ object ReaderImageCache {
         return if (activeParts[2] == targetParts[2]) keepPath else target.path
     }
 
+    private fun shouldSkipStaleForegroundViewerStream(
+        manga: Manga,
+        image: String,
+        target: NtkGeneratedTarget?
+    ): Boolean {
+        if (target == null && !isNtkGeneratedImageUrl(image)) return false
+        val path = earlyNtkPathKey(manga.ntkEpisodePath)
+        if (path.isBlank() || !isNtkEpisodePathKey(path)) return false
+        if (!MainApplication.isNtkForegroundViewerPathActive()) return false
+        if (MainApplication.isNtkForegroundViewerPath(path)) return false
+        val allowedUntil = adjacentForegroundViewerPaths[path] ?: 0L
+        val now = SystemClock.elapsedRealtime()
+        if (allowedUntil > now) return false
+        if (allowedUntil > 0L) adjacentForegroundViewerPaths.remove(path, allowedUntil)
+        return true
+    }
+
+    @JvmStatic
+    fun allowAdjacentNtkForegroundViewerPath(path: String?, ttlMs: Long, reason: String) {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank() || !isNtkEpisodePathKey(key)) return
+        val now = SystemClock.elapsedRealtime()
+        val requestedUntil = now + ttlMs.coerceAtLeast(1000L)
+        val until = adjacentForegroundViewerPaths.merge(key, requestedUntil) { previous, requested ->
+            maxOf(previous, requested)
+        } ?: requestedUntil
+        trimExecutor.schedule({
+            val activeUntil = adjacentForegroundViewerPaths[key] ?: return@schedule
+            if (activeUntil == until && activeUntil <= SystemClock.elapsedRealtime()) {
+                adjacentForegroundViewerPaths.remove(key, activeUntil)
+                Log.d(TAG, "reader_image_cache_adjacent_foreground_path_expire path=$key,reason=$reason")
+            }
+        }, (until - now).coerceAtLeast(1000L), TimeUnit.MILLISECONDS)
+        Log.d(
+            TAG,
+            "reader_image_cache_adjacent_foreground_path_allow path=$key," +
+                "ttlMs=${until - now},reason=$reason"
+        )
+    }
+
+    @JvmStatic
+    fun releaseAdjacentNtkForegroundViewerPath(path: String?, reason: String): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank()) return false
+        val removed = adjacentForegroundViewerPaths.remove(key) != null
+        if (removed) {
+            Log.d(TAG, "reader_image_cache_adjacent_foreground_path_release path=$key,reason=$reason")
+        }
+        return removed
+    }
+
+    @JvmStatic
+    fun wasNtkEpisodeWorkCancelledSince(path: String?, startedAtMs: Long): Boolean {
+        if (startedAtMs <= 0L) return false
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank()) return false
+        val cancelledAt = ntkEpisodeWorkCancelledAt[key] ?: return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - cancelledAt > NTK_EPISODE_WORK_CANCELLATION_MARK_TTL_MS) {
+            ntkEpisodeWorkCancelledAt.remove(key, cancelledAt)
+            return false
+        }
+        return cancelledAt >= startedAtMs
+    }
+
+    private fun protectedNtkEpisodePaths(currentPath: String): Set<String> {
+        val now = SystemClock.elapsedRealtime()
+        val protected = LinkedHashSet<String>()
+        protected.add(currentPath)
+        for ((path, until) in adjacentForegroundViewerPaths.entries) {
+            if (until > now) {
+                protected.add(path)
+            } else {
+                adjacentForegroundViewerPaths.remove(path, until)
+            }
+        }
+        return protected
+    }
+
+    private fun recordNtkEpisodeWorkCancellation(paths: Collection<String>, reason: String) {
+        if (paths.isEmpty()) return
+        val cancelledAt = SystemClock.elapsedRealtime()
+        paths.forEach { path ->
+            if (isNtkEpisodePathKey(path)) ntkEpisodeWorkCancelledAt[path] = cancelledAt
+        }
+        trimExecutor.schedule({
+            paths.forEach { path -> ntkEpisodeWorkCancelledAt.remove(path, cancelledAt) }
+        }, NTK_EPISODE_WORK_CANCELLATION_MARK_TTL_MS, TimeUnit.MILLISECONDS)
+        Log.d(
+            TAG,
+            "reader_image_cache_ntk_episode_work_cancelled paths=${paths.size},reason=$reason"
+        )
+    }
+
     fun hasActiveInitialNtkForegroundStream(path: String?, baseMode: Int): Boolean {
-        if (path.isNullOrBlank()) return false
-        return earlyNtkImageUrls(path, 0L).any { image ->
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank()) return false
+        val candidates = LinkedHashSet<String>()
+        candidates.addAll(earlyNtkImageUrls(key, 0L))
+        speculativeNtkGeneratedUrls[key]?.let { entry ->
+            if (SystemClock.elapsedRealtime() - entry.createdAtMs <= EARLY_NTK_IMAGE_URL_TTL_MS) {
+                candidates.addAll(entry.urls)
+            } else {
+                speculativeNtkGeneratedUrls.remove(key, entry)
+            }
+        }
+        earlyNtkGeneratedSuccessUrls[key]?.let { entry ->
+            if (SystemClock.elapsedRealtime() - entry.createdAtMs <= EARLY_NTK_IMAGE_URL_TTL_MS) {
+                candidates.addAll(entry.urls)
+            } else {
+                earlyNtkGeneratedSuccessUrls.remove(key, entry)
+            }
+        }
+        return candidates.any { image ->
             val target = ntkGeneratedTarget(image) ?: return@any false
             if (target.page != 1) return@any false
-            val stream = foregroundStreams[foregroundStreamKey(baseMode, image, path)]
+            val stream = foregroundStreams[foregroundStreamKey(baseMode, image, key)]
                 ?: foregroundStreams[foregroundStreamKey(baseMode, image)]
                 ?: return@any false
             !stream.isDone
         }
     }
 
-    private fun initialGeneratedRangeFlightKey(baseMode: Int, image: String, page: Int): String? {
+    @JvmStatic
+    fun speculativeNtkGeneratedImageUrls(path: String?, minCreatedAtMs: Long): List<String> {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank()) return emptyList()
+        val entry = speculativeNtkGeneratedUrls[key] ?: return emptyList()
+        if (entry.createdAtMs < minCreatedAtMs ||
+            SystemClock.elapsedRealtime() - entry.createdAtMs > EARLY_NTK_IMAGE_URL_TTL_MS
+        ) {
+            speculativeNtkGeneratedUrls.remove(key, entry)
+            return emptyList()
+        }
+        return ArrayList(entry.urls)
+    }
+
+    private fun initialGeneratedRangeFlightKey(
+        baseMode: Int,
+        image: String,
+        page: Int,
+        activePath: String? = null
+    ): String? {
         val target = ntkGeneratedTarget(image) ?: return null
         if (target.page != page) return null
-        return "ntk-generated-range|$baseMode|${target.path}|$page"
+        val path = foregroundStreamEpisodePath(activePath, target)
+        if (target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
+            return "ntk-generated-range|$baseMode|$path|$page|initial-page"
+        }
+        return "ntk-generated-range|$baseMode|$path|$page|${ntkGeneratedImageExtension(image)}"
+    }
+
+    private fun initialGeneratedDirectRaceFlightKey(
+        baseMode: Int,
+        image: String,
+        page: Int,
+        activePath: String? = null
+    ): String? {
+        val target = ntkGeneratedTarget(image) ?: return null
+        if (target.page != page) return null
+        val path = foregroundStreamEpisodePath(activePath, target)
+        if (target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
+            return "ntk-generated-direct-race|$baseMode|$path|$page|initial-page"
+        }
+        return "ntk-generated-direct-race|$baseMode|$path|$page|${ntkGeneratedImageExtension(image)}"
+    }
+
+    private fun ntkGeneratedImageExtension(image: String): String {
+        return Regex("\\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+            .find(image)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.lowercase(Locale.ROOT)
+            .orEmpty()
     }
 
     private fun cachedImageFile(context: Context, manga: Manga, image: String): File? {
@@ -5502,6 +16074,8 @@ object ReaderImageCache {
 
     private fun isTrustedNtkImageUrl(value: String): Boolean {
         val lower = value.lowercase()
+        if (isTrustedNtkUploadPayloadImagePath(lower)) return true
+        if (isNtkDescriptorImageUrl(lower)) return false
         if (isDisallowedNtkImageAssetUrl(lower)) return false
         if (lower.startsWith("toonflix.app/") || lower.startsWith("//toonflix.app/")) return true
         if (Regex("^flysky\\d*m\\.com/").containsMatchIn(lower) ||
@@ -5514,6 +16088,8 @@ object ReaderImageCache {
             Regex("^//fvcdn\\d*\\.com/").containsMatchIn(lower) ||
             Regex("^aws-cdn\\d*\\.site/").containsMatchIn(lower) ||
             Regex("^//aws-cdn\\d*\\.site/").containsMatchIn(lower) ||
+            lower.startsWith("ioiocdn.org/") ||
+            lower.startsWith("//ioiocdn.org/") ||
             Regex("^[a-z0-9-]+\\.worldcup\\d+\\.xyz/").containsMatchIn(lower) ||
             Regex("^//[a-z0-9-]+\\.worldcup\\d+\\.xyz/").containsMatchIn(lower)
         ) return true
@@ -5521,6 +16097,10 @@ object ReaderImageCache {
             val parsed = Uri.parse(value)
             val host = parsed.host?.lowercase().orEmpty()
             val path = parsed.path?.lowercase().orEmpty()
+            if (!host.contains("naver") &&
+                !host.contains("pstatic") &&
+                isTrustedNtkUploadImagePath(path)
+            ) return true
             if (!host.contains("naver") &&
                 !host.contains("pstatic") &&
                 isSafeNtkPageImagePath(path)
@@ -5531,14 +16111,98 @@ object ReaderImageCache {
                 host == "moamoabon.com" ||
                 Regex("^fvcdn\\d*\\.com$").matches(host) ||
                 Regex("^aws-cdn\\d*\\.site$").matches(host) ||
+                host == "ioiocdn.org" ||
                 Regex("^[a-z0-9-]+\\.worldcup\\d+\\.xyz$").matches(host)
         } catch (_: Exception) {
             false
         }
     }
 
+    private fun isTrustedNtkUploadImagePath(path: String): Boolean {
+        if (path.isEmpty() || isDisallowedNtkImageAssetUrl(path)) return false
+        return Regex(
+            ".*/(?:webtoon_uploads|manhwa_uploads|comic_uploads)/[^/?#]+\\.(jpg|jpeg|png|webp)$",
+            RegexOption.IGNORE_CASE
+        ).matches(path)
+    }
+
+    private fun isTrustedNtkUploadPayloadImagePath(value: String): Boolean {
+        val lower = value.lowercase(Locale.ROOT)
+        if (isNtkKpCvDescriptorImageUrl(lower)) return true
+        if (isDisallowedNtkImageAssetUrl(lower)) return false
+        return Regex(
+            "^https?://(?:[^/?#]+\\.)?(?:hkhk\\d+\\.store|ronald\\d+\\.online|christ\\d+\\.shop|aws-cdn\\d*\\.site|messiimage\\.online|fvcdn\\d*\\.com|flysky\\d*m\\.com|apihost\\d*\\.com)/(?:webtoon_uploads|manhwa_uploads|comic_uploads)/[^/?#]+\\.(?:txt|xml)(?:[?#].*)?$",
+            RegexOption.IGNORE_CASE
+        ).matches(lower)
+    }
+
+    private fun isNtkKpCvDescriptorImageUrl(value: String): Boolean {
+        return try {
+            val uri = Uri.parse(value)
+            val host = uri.host?.lowercase(Locale.ROOT).orEmpty()
+            val path = uri.path?.lowercase(Locale.ROOT).orEmpty()
+            isNtkKpDescriptorHostPath(host, path) && hasNtkSignedDescriptorExtension(value)
+        } catch (_: Exception) {
+            NTK_SIGNED_DESCRIPTOR_URL_PATTERN.matches(value)
+        }
+    }
+
+    private fun isNtkKpDescriptorHostPath(host: String, path: String): Boolean {
+        val lowerHost = host.lowercase(Locale.ROOT)
+        val lowerPath = path.lowercase(Locale.ROOT)
+        if (lowerHost.isEmpty() || lowerPath.isEmpty()) return false
+        if (isDisallowedNtkImageAssetUrl(lowerPath)) return false
+        if (!hasNtkSignedDescriptorExtension(lowerPath)) return false
+        if (lowerHost == "ioiocdn.org" || lowerHost.endsWith(".ioiocdn.org")) return true
+        return NTK_SIGNED_DESCRIPTOR_PATH_PATTERN.matches(lowerPath)
+    }
+
+    private fun isNtkDescriptorImageUrl(value: String): Boolean {
+        val lower = value.lowercase(Locale.ROOT)
+        if (isNtkKpCvDescriptorImageUrl(lower)) return true
+        return Regex(".*(?:/webtoon_uploads/|/manhwa_uploads/|/comic_uploads/|messiimage\\.online/|aws-cdn\\d*\\.site/)[^/?#]+\\.(?:txt|xml|json|css|js)(?:[?#].*)?$").matches(lower)
+    }
+
+    private fun isNtkNativeUnsafeUploadPayloadUrl(value: String): Boolean {
+        val lower = value.lowercase(Locale.ROOT)
+        if (isNtkKpCvDescriptorImageUrl(lower)) return true
+        if (!Regex(".*\\.(?:txt|xml|json|css|js)(?:[?#].*)?$").matches(lower)) return false
+        val uri = try {
+            Uri.parse(lower)
+        } catch (_: Exception) {
+            null
+        }
+        val host = uri?.host.orEmpty()
+        val path = uri?.path ?: lower.substringBefore('?').substringBefore('#')
+        if (isNtkKpDescriptorHostPath(host, path)) {
+            return true
+        }
+        return path.contains("/webtoon_uploads/", ignoreCase = true) ||
+            path.contains("/manhwa_uploads/", ignoreCase = true) ||
+            path.contains("/comic_uploads/", ignoreCase = true)
+    }
+
+    private fun hasNtkSignedDescriptorExtension(value: String): Boolean {
+        return NTK_SIGNED_DESCRIPTOR_FILE_PATTERN.matches(value)
+    }
+
+    @JvmStatic
+    fun isNtkSignedDescriptorImageUrlForTest(value: String?): Boolean {
+        return !value.isNullOrBlank() && isNtkKpCvDescriptorImageUrl(value)
+    }
+
     private fun isDisallowedNtkImageAssetUrl(value: String): Boolean {
         val lower = value.lowercase()
+        val host = try {
+            Uri.parse(lower).host.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+        if (host == "cloudflare-terms-of-service-abuse.com" ||
+            host.endsWith(".cloudflare-terms-of-service-abuse.com")
+        ) {
+            return true
+        }
         val path = try {
             Uri.parse(lower).path.orEmpty()
         } catch (_: Exception) {
@@ -5583,10 +16247,24 @@ object ReaderImageCache {
     private fun isFastOkHttpGeneratedImageUrl(value: String): Boolean {
         return try {
             val host = Uri.parse(value).host?.lowercase().orEmpty()
+            if (isNtkDescriptorImageUrl(value)) return false
+            if (isNtkUploadCdnImageUrl(value)) return true
             Regex("^[a-z0-9-]+\\.worldcup\\d+\\.xyz$").matches(host) ||
-                Regex("^aws-cdn\\d*\\.site$").matches(host)
+                Regex("^aws-cdn\\d*\\.site$").matches(host) ||
+                Regex("^booktoki\\d*\\.org$").matches(host)
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun ntkGeneratedDirectClient(
+        httpClient: CustomHttpClient,
+        vararg urls: String
+    ): OkHttpClient {
+        return if (urls.any { isFastOkHttpGeneratedImageUrl(it) }) {
+            httpClient.externalViewerImageFastClient()
+        } else {
+            httpClient.imageClient
         }
     }
 
@@ -5614,10 +16292,12 @@ object ReaderImageCache {
             path.contains("/ads/") ||
             path.contains("/ad/")
         ) return false
-        return Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path) ||
-            Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path) ||
-            Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path) ||
-            Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)$").containsMatchIn(path)
+        return Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)$").containsMatchIn(path) ||
+            Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)$").containsMatchIn(path) ||
+            Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)$").containsMatchIn(path) ||
+            Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)$").containsMatchIn(path) ||
+            Regex("/(?:webtoon_uploads|manhwa_uploads|comic_uploads)/[^/?#]+\\.(jpg|jpeg|png|webp)$").containsMatchIn(path) ||
+            Regex("/board_uploads/\\d{4}/\\d{2}/\\d{2}/[^/?#]+\\.(jpg|jpeg|png|webp)$").containsMatchIn(path)
     }
 
     private fun <T> withNtkGeneratedFetchPermit(
@@ -5625,6 +16305,7 @@ object ReaderImageCache {
         image: String,
         foreground: Boolean,
         visiblePriority: Boolean = foreground,
+        backgroundVisibleYieldAlreadyDone: Boolean = false,
         block: () -> T
     ): T {
         val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
@@ -5635,20 +16316,6 @@ object ReaderImageCache {
         val initialForeground = foreground &&
             target != null &&
             target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
-        if (initialForeground &&
-            visiblePriority &&
-            target?.page == 1 &&
-            isFastOkHttpGeneratedImageUrl(requestUrl)
-        ) {
-            logCacheEvent(
-                "ntk_generated_fetch_gate_bypass_fast_okhttp_visible",
-                manga,
-                image,
-                foreground,
-                "page=${target?.page ?: 0}"
-            )
-            return block()
-        }
         if (initialForeground) {
             var acquired = false
             if (visiblePriority) activeVisibleInitialGeneratedFetches.incrementAndGet()
@@ -5671,7 +16338,12 @@ object ReaderImageCache {
             if (foreground) {
                 ntkGeneratedForegroundFetchGate.acquire(visiblePriority)
             } else {
-                waitForVisibleInitialGeneratedFetches(manga, image)
+                // Progressive tail workers already yielded before registering a cache flight.
+                // Repeating the yield after registration lets a visible waiter join this Future
+                // and then keeps its producer asleep behind that same waiter.
+                if (!backgroundVisibleYieldAlreadyDone) {
+                    waitForVisibleInitialGeneratedFetches(manga, image)
+                }
                 ntkGeneratedBackgroundFetchGate.acquire()
             }
             acquired = true
@@ -5738,12 +16410,18 @@ object ReaderImageCache {
             expectedCount,
             SystemClock.elapsedRealtime() - 30_000L
         )
-        val hasCompleteDirectManifest = hasCompleteDirectNtkManifestForPage(
-            path,
-            expectedCount,
-            target,
-            image
-        )
+        val allowGeneratedDirectManifest =
+            !isUnverifiedCanonicalWebtoonPathTarget(manga, target)
+        val hasDirectManifestPage = allowGeneratedDirectManifest &&
+            expectedCount >= target.page &&
+            ntkGeneratedTargetMatchesMangaEpisode(manga, target)
+        val hasCompleteDirectManifest = hasDirectManifestPage ||
+            hasCompleteDirectNtkManifestForPage(
+                path,
+                expectedCount,
+                target,
+                image
+            )
         val hasStrictAck = try {
             client.hasRecentStrictNtkAdAckProof(path)
         } catch (_: Throwable) {
@@ -5767,66 +16445,11 @@ object ReaderImageCache {
                 image,
                 foreground,
                 "page=${target.page},visiblePriority=$visiblePriority," +
-                    "expected=$expectedCount,known=${earlyNtkImageUrls(path, 0L).size}"
+                    "expected=$expectedCount,known=${earlyNtkImageUrls(path, 0L).size}," +
+                    "unverifiedWebtoonPath=${!allowGeneratedDirectManifest}"
             )
             throw InterruptedIOException("Waiting for verified NTK snapshot")
         }
-        val inFlight = try {
-            client.isNtkWebViewAckPreflightInFlight(path)
-        } catch (_: Throwable) {
-            false
-        }
-        if (!inFlight) return
-        val waitMs = when {
-            foreground && visiblePriority -> NTK_GENERATED_ACK_GATE_VISIBLE_WAIT_MS
-            foreground -> NTK_GENERATED_ACK_GATE_FOREGROUND_WAIT_MS
-            else -> NTK_GENERATED_ACK_GATE_BACKGROUND_WAIT_MS
-        }
-        if (waitMs <= 0L) {
-            val stage = if (foreground && visiblePriority) {
-                "ntk_generated_ack_gate_skip_visible"
-            } else {
-                "ntk_generated_ack_gate_skip_foreground"
-            }
-            logCacheEvent(
-                stage,
-                manga,
-                image,
-                foreground,
-                "page=${target.page},visiblePriority=$visiblePriority"
-            )
-            return
-        }
-        val startedAt = SystemClock.elapsedRealtime()
-        var ok = false
-        while (SystemClock.elapsedRealtime() - startedAt < waitMs) {
-            ok = try {
-                client.hasRecentNtkServerAckProof(path)
-            } catch (_: Throwable) {
-                false
-            }
-            if (ok) break
-            val stillInFlight = try {
-                client.isNtkWebViewAckPreflightInFlight(path)
-            } catch (_: Throwable) {
-                false
-            }
-            if (!stillInFlight) break
-            try {
-                Thread.sleep(80L)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                break
-            }
-        }
-        logCacheEvent(
-            "ntk_generated_ack_gate_done",
-            manga,
-            image,
-            foreground,
-            "page=${target.page},ok=$ok,visiblePriority=$visiblePriority," +
-                "waitMs=$waitMs,ms=${SystemClock.elapsedRealtime() - startedAt}"
-        )
     }
 
     private fun waitForVisibleInitialGeneratedFetches(manga: Manga, image: String) {
@@ -5867,6 +16490,7 @@ object ReaderImageCache {
 
     private fun logCacheEvent(stage: String, manga: Manga, image: String, foreground: Boolean, detail: String) {
         if (!foreground && !stage.contains("error", ignoreCase = true)) return
+        if (stage.endsWith("_cached_hit") || stage == "anchor_asset_disk_hit") return
         val path = manga.ntkEpisodePath?.trim().orEmpty()
         if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return
         val imageName = image.substringAfterLast('/').takeLast(48)
@@ -5881,11 +16505,14 @@ object ReaderImageCache {
         foreground: Boolean = false,
         cancellation: Cancellation? = null,
         generation: Long = cacheGeneration.get(),
-        anchorHedge: Boolean = false
+        anchorHedge: Boolean = false,
+        progressiveTailState: ProgressiveTailFlightState? = null
     ): File {
+        val cacheKey = finalFile.name.removeSuffix(".img")
         val tmp = File(finalFile.parentFile, "${finalFile.name}.part.${System.nanoTime()}")
         val startedAt = SystemClock.elapsedRealtime()
         try {
+            var bodyProof: EncodedOriginalByteProof? = null
             cancellation?.throwIfCancelled()
             val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
             requestWithNtkGeneratedFallback(
@@ -5914,7 +16541,7 @@ object ReaderImageCache {
                 if (response.header("x-mangaviewer-partial-image") == "1") {
                     throw java.io.IOException("Partial foreground image response is not cacheable")
                 }
-                FileOutputStream(tmp).use { out -> body.byteStream().copyTo(out) }
+                bodyProof = copyResponseBodyToFile(body, tmp, progressiveTailState)
                 if (foreground) {
                     val copiedAt = SystemClock.elapsedRealtime()
                     ViewerWarmupManager.logMetric("reader_foreground_image_headers_ms", headersAt - startedAt)
@@ -5929,50 +16556,162 @@ object ReaderImageCache {
                     "headersMs=${headersAt - startedAt},bytes=$contentLength"
                 )
             }
-            if (!isUsableImage(tmp) &&
-                !replaceWithImageExtractedFromHtml(context, manga, image, tmp) &&
-                !replaceInvalidNtkGeneratedImageWithFallback(context, manga, image, tmp, foreground, cancellation)
-            ) {
-                if (isLikelyInvalidGeneratedTail(manga, image)) {
-                    throw java.io.IOException("Generated image past tail: $image")
+            if (!isUsableImage(tmp)) {
+                val replacementProof =
+                    replaceWithImageExtractedFromHtml(context, manga, image, tmp)
+                        ?: replaceInvalidNtkGeneratedImageWithFallback(
+                            context,
+                            manga,
+                            image,
+                            tmp,
+                            foreground,
+                            cancellation
+                        )
+                if (replacementProof == null) {
+                    if (isLikelyInvalidGeneratedTail(manga, image)) {
+                        throw java.io.IOException("Generated image past tail: $image")
+                    }
+                    throw java.io.IOException("Invalid image cache file")
                 }
-                throw java.io.IOException("Invalid image cache file")
+                bodyProof = replacementProof
+            }
+            val exactBodyProof = bodyProof
+                ?: throw java.io.IOException("Encoded-original proof missing after body copy")
+            if (tmp.length() != exactBodyProof.encodedLength) {
+                throw java.io.IOException("Encoded-original length changed before publication")
             }
             if (foreground) {
                 ViewerWarmupManager.logMetric("reader_foreground_image_validate_ms", SystemClock.elapsedRealtime() - startedAt)
             }
-            if (generation != cacheGeneration.get()) {
-                throw java.io.IOException("Image cache generation invalidated")
-            }
-            replace(tmp, finalFile)
-            finalFile.setLastModified(System.currentTimeMillis())
+            val length = withCurrentCachePublication(generation) {
+                withCacheWriteLock(cacheKey) {
+                    if (isUsableImage(finalFile)) {
+                        val existingProof = encodedOriginalByteProof(manga, image, finalFile)
+                        if (existingProof != null) {
+                            tmp.delete()
+                            touchCacheHitForLru(finalFile)
+                            finalFile.length()
+                        } else {
+                            replaceEncodedBody(tmp, finalFile)
+                            finalFile.setLastModified(System.currentTimeMillis())
+                            publishEncodedOriginalByteProof(manga, image, finalFile, exactBodyProof)
+                            finalFile.length()
+                        }
+                    } else {
+                        replaceEncodedBody(tmp, finalFile)
+                        finalFile.setLastModified(System.currentTimeMillis())
+                        publishEncodedOriginalByteProof(manga, image, finalFile, exactBodyProof)
+                        finalFile.length()
+                    }
+                }
+            } ?: throw java.io.IOException("Image cache generation invalidated")
             logCacheEvent(
                 "download_done",
                 manga,
                 image,
                 foreground,
-                "ms=${SystemClock.elapsedRealtime() - startedAt},bytes=${finalFile.length()}"
+                "ms=${SystemClock.elapsedRealtime() - startedAt},bytes=$length"
             )
             ViewerWarmupManager.logMetric("reader_image_cache_download_done", 1L)
             scheduleTrim(context)
             return finalFile
         } catch (t: Throwable) {
             tmp.delete()
+            if (isUsableImage(finalFile) &&
+                encodedOriginalByteProof(manga, image, finalFile) != null
+            ) {
+                logCacheEvent(
+                    "download_race_recovered",
+                    manga,
+                    image,
+                    foreground,
+                    "error=${t.javaClass.simpleName},bytes=${finalFile.length()}"
+                )
+                return finalFile
+            }
             throw t
         }
     }
 
+    private fun copyResponseBodyToFile(
+        body: ResponseBody,
+        target: File,
+        progressiveTailState: ProgressiveTailFlightState?,
+        cancellation: Cancellation? = null
+    ): EncodedOriginalByteProof {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var encodedLength = 0L
+        FileOutputStream(target).use { out ->
+            val input = body.byteStream()
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                cancellation?.throwIfCancelled()
+                if (progressiveTailState?.cancelled?.get() == true) {
+                    throw InterruptedIOException("Progressive tail body retired")
+                }
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count == 0) continue
+                if (progressiveTailState != null && progressiveTailState.bodyBytes.get() == 0L) {
+                    if (progressiveTailState.batchWork?.isCurrent() == false) {
+                        throw InterruptedIOException("Progressive tail batch retired")
+                    }
+                    // Serialize the first durable write with visible supersession. A visible
+                    // request can replace this flight throughout DNS/connect/headers, but once
+                    // this block completes it observes real accumulated body bytes and joins.
+                    synchronized(cacheFlightAdmissionLock) {
+                        if (progressiveTailState.cancelled.get() ||
+                            cacheGeneration.get() != progressiveTailState.generation
+                        ) {
+                            throw InterruptedIOException("Progressive tail body lost ownership")
+                        }
+                        out.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                        encodedLength = Math.addExact(encodedLength, count.toLong())
+                        progressiveTailState.bodyBytes.addAndGet(count.toLong())
+                    }
+                } else {
+                    if (progressiveTailState?.cancelled?.get() == true) {
+                        throw InterruptedIOException("Progressive tail body cancelled")
+                    }
+                    out.write(buffer, 0, count)
+                    digest.update(buffer, 0, count)
+                    encodedLength = Math.addExact(encodedLength, count.toLong())
+                    progressiveTailState?.bodyBytes?.addAndGet(count.toLong())
+                }
+            }
+        }
+        if (encodedLength <= 0L) throw java.io.IOException("Empty encoded image body")
+        return EncodedOriginalByteProof(
+            encodedSha256 = NtkStripDigests.bytesToLowerHex(digest.digest()),
+            encodedLength = encodedLength
+        )
+    }
+
+    /** Writes and hashes the already-received body bytes in the same cache publication flight. */
+    private fun writeEncodedBytesToFile(target: File, bytes: ByteArray): EncodedOriginalByteProof {
+        if (bytes.isEmpty()) throw java.io.IOException("Empty encoded image body")
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileOutputStream(target).use { out ->
+            digest.update(bytes)
+            out.write(bytes)
+        }
+        return EncodedOriginalByteProof(
+            encodedSha256 = NtkStripDigests.bytesToLowerHex(digest.digest()),
+            encodedLength = bytes.size.toLong()
+        )
+    }
+
     private fun request(context: Context, manga: Manga, image: String, cancellation: Cancellation? = null): okhttp3.Response {
         cancellation?.throwIfCancelled()
-        val call = getHttpClient().imageClient.newCall(requestFor(manga, image))
-        val activeCallKey = trackActiveNtkEpisodeCall(manga, image, call)
-        cancellation?.track(call)
-        return try {
-            call.execute()
-        } finally {
-            cancellation?.untrack(call)
-            untrackActiveNtkEpisodeCall(activeCallKey)
-        }
+        val request = requestFor(manga, image)
+        return newTrackedNtkEpisodeCall(
+            manga,
+            image,
+            request,
+            getHttpClient().imageClient,
+            cancellation
+        ).execute()
     }
 
     private fun requestFor(
@@ -5984,18 +16723,46 @@ object ReaderImageCache {
         val requestBuilder = Request.Builder().url(Utils.viewerImageRequestUrl(image, manga.baseMode))
         val ntkEpisodeReferer = ntkEpisodeImageReferer(manga, image)
         val ntkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
+        val generatedTarget = ntkGeneratedTarget(image)
+        val directManifestGeneratedImage = generatedTarget != null &&
+            hasCompleteDirectNtkManifestForTarget(manga, generatedTarget)
+        val foregroundKpDescriptor =
+            foregroundPriority &&
+                isNtkKpCvDescriptorImageUrl(image) &&
+                ntkEpisodeReferer != null
         val ntkEpisodeCookie = if (ntkEpisodeReferer != null && !isNaverWebtoonPageImage(image)) {
-            getHttpClient().getMergedNtkViewerImageCookieHeaderForPath(ntkEpisodePath)
+            if (directManifestGeneratedImage || foregroundKpDescriptor) {
+                getHttpClient().getCookieHeader()
+            } else {
+                getHttpClient().getMergedNtkViewerImageCookieHeaderForPath(ntkEpisodePath)
+            }
         } else {
             ""
         }
-        for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
-            if (ntkEpisodeReferer != null && entry.key.equals("Referer", ignoreCase = true)) {
-                requestBuilder.addHeader(entry.key, ntkEpisodeReferer)
-            } else if (ntkEpisodeCookie.isNotBlank() && entry.key.equals("Cookie", ignoreCase = true)) {
-                continue
-            } else {
-                requestBuilder.addHeader(entry.key, entry.value)
+        val skipGenericViewerHeaders =
+            foregroundKpDescriptor &&
+                ntkEpisodeCookie.isNotBlank() &&
+                isNtkKpCvDescriptorImageUrl(image)
+        if (skipGenericViewerHeaders) {
+            requestBuilder.addHeader("User-Agent", getHttpClient().agent)
+            ntkEpisodeReferer?.let { requestBuilder.addHeader("Referer", it) }
+            requestBuilder.addHeader("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            requestBuilder.addHeader("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7")
+            requestBuilder.addHeader("Sec-Fetch-Dest", "image")
+            requestBuilder.addHeader("Sec-Fetch-Mode", "no-cors")
+            requestBuilder.addHeader("Sec-Fetch-Site", "cross-site")
+            requestBuilder.addHeader("Sec-CH-UA", "\"Chromium\";v=\"124\", \"Android WebView\";v=\"124\", \"Not-A.Brand\";v=\"99\"")
+            requestBuilder.addHeader("Sec-CH-UA-Mobile", "?1")
+            requestBuilder.addHeader("Sec-CH-UA-Platform", "\"Android\"")
+        } else {
+            for (entry in Utils.viewerImageRequestHeaders(image, manga.baseMode).entries) {
+                if (ntkEpisodeReferer != null && entry.key.equals("Referer", ignoreCase = true)) {
+                    requestBuilder.addHeader(entry.key, ntkEpisodeReferer)
+                } else if (ntkEpisodeCookie.isNotBlank() && entry.key.equals("Cookie", ignoreCase = true)) {
+                    continue
+                } else {
+                    requestBuilder.addHeader(entry.key, entry.value)
+                }
             }
         }
         if (ntkEpisodeCookie.isNotBlank()) {
@@ -6016,7 +16783,21 @@ object ReaderImageCache {
     private fun ntkEpisodeImageReferer(manga: Manga, image: String): String? {
         val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
         naverWebtoonImageReferer(requestUrl)?.let { return it }
-        if (ntkGeneratedTarget(image) == null && !isTrustedNtkImageUrl(requestUrl)) {
+        if (isNtkKpCvDescriptorImageUrl(requestUrl)) {
+            val path = manga.ntkEpisodePath?.trim().orEmpty()
+            if (!isNtkKpWebtoonSlugPathKey(path)) return null
+            val root = try {
+                getHttpClient().getUrl(manga.baseMode)
+            } catch (_: Throwable) {
+                ""
+            }.trimEnd('/')
+            if (!root.startsWith("http")) return null
+            return root + ntkEncodedPath(path)
+        }
+        if (ntkGeneratedTarget(image) == null &&
+            !isTrustedNtkImageUrl(requestUrl) &&
+            !isNtkProtectedViewerApiImage(requestUrl)
+        ) {
             return null
         }
         val path = manga.ntkEpisodePath?.trim().orEmpty()
@@ -6115,6 +16896,16 @@ object ReaderImageCache {
             )
         }
         val initialTarget = ntkGeneratedTarget(image)
+        if (foreground && isPermitlessInitialGeneratedForegroundSuppressed(initialTarget)) {
+            logCacheEvent(
+                "generated_initial_permitless_suppressed",
+                manga,
+                image,
+                true,
+                "page=${initialTarget?.page ?: 0}"
+            )
+            throw IOException("Suppressed permitless initial generated foreground: page=${initialTarget?.page ?: 0}")
+        }
         if (initialTarget != null && hasNtkGeneratedHardBlocked(manga, image)) {
             throw IOException("Generated image Cloudflare hard block: page=${initialTarget.page} code=403")
         }
@@ -6140,6 +16931,17 @@ object ReaderImageCache {
                 )
             }
             throw IOException("Generated image not found: page=${initialTarget.page} code=404")
+        }
+        if (isNtkProtectedViewerApiImage(image) && canNativeFetchProtectedViewerApi(manga, image)) {
+            return requestForForegroundMode(
+                context,
+                manga,
+                image,
+                foreground,
+                cancellation,
+                foregroundRaceAttempts,
+                anchorHedge
+            )
         }
         val foregroundApiFallbackTask: FutureTask<List<String>?>? =
             if (foreground && initialTarget != null)
@@ -6283,6 +17085,28 @@ object ReaderImageCache {
                 }
                 rangeResponse.close()
             }
+        }
+        if (foreground &&
+            initialTarget != null &&
+            initialTarget.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
+            shouldUseInitialGeneratedForegroundCandidateRace(image, initialTarget) &&
+            foregroundApiFallbackTask != null
+        ) {
+            logCacheEvent(
+                "generated_initial_api_race_before_direct",
+                manga,
+                image,
+                true,
+                "page=${initialTarget.page}"
+            )
+            requestForegroundGeneratedRace(
+                context,
+                manga,
+                image,
+                foregroundApiFallbackTask,
+                includeDirectRetries = false,
+                apiOnlyWaitMs = NTK_GENERATED_INITIAL_API_RACE_BEFORE_DIRECT_MS
+            )?.let { return it }
         }
         var initialFailure: IOException? = null
             val response = try {
@@ -6652,6 +17476,7 @@ object ReaderImageCache {
         image: String,
         target: NtkGeneratedTarget
     ): Boolean {
+        if (isFastOkHttpGeneratedImageUrl(image)) return false
         if (shouldUseRangeFirstForInitialGenerated(image, target)) return true
         if (target.page == 1 && isSupportedNtkGeneratedImageExtension(image)) return false
         return target.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
@@ -7038,6 +17863,36 @@ object ReaderImageCache {
         page: Int,
         stage: String
     ): Response? {
+        val target = ntkGeneratedTarget(image)
+        if (
+            foreground &&
+            target?.path?.startsWith("/webtoon/", ignoreCase = true) == true &&
+            page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+        ) {
+            requestDirectInitialGeneratedForeground(
+                context,
+                manga,
+                image,
+                cancellation,
+                anchorHedge
+            )?.let { response ->
+                logCacheEvent(
+                    "${stage}_direct_webtoon_initial_hit",
+                    manga,
+                    response.request.url.toString(),
+                    true,
+                    "page=$page,code=${response.code}"
+                )
+                return response
+            }
+            logCacheEvent(
+                "${stage}_direct_webtoon_initial_miss",
+                manga,
+                image,
+                true,
+                "page=$page"
+            )
+        }
         val useDirectOnlyAnchor =
             foreground &&
                 page <= 1 &&
@@ -7087,11 +17942,7 @@ object ReaderImageCache {
         val completion = ExecutorCompletionService<Response?>(foregroundRaceExecutor)
         val finished = AtomicBoolean(false)
         completion.submit(Callable {
-            val response = if (page <= 1) {
-                requestSharedInitialGeneratedRange(context, manga, image, cancellation, page, stage)
-            } else {
-                requestGeneratedRangeReassembled(context, manga, image, cancellation, page, stage)
-            }
+            val response = requestSharedInitialGeneratedRange(context, manga, image, cancellation, page, stage)
             if (response != null && response.isSuccessful) finished.set(true)
             response
         })
@@ -7193,7 +18044,7 @@ object ReaderImageCache {
         page: Int,
         stage: String
     ): Response? {
-        val flightKey = initialGeneratedRangeFlightKey(manga.baseMode, image, page)
+        val flightKey = initialGeneratedRangeFlightKey(manga.baseMode, image, page, manga.ntkEpisodePath)
             ?: return requestGeneratedRangeReassembled(context, manga, image, cancellation, page, stage)
         val startedAt = SystemClock.elapsedRealtime()
         val task = FutureTask {
@@ -7317,6 +18168,15 @@ object ReaderImageCache {
             if (firstResponse.code == 200) {
                 val bytes = firstResponse.body?.bytes() ?: return null
                 if (!looksLikeImage(bytes)) return null
+                val actualImage = firstResponse.request.url.toString()
+                val generation = cacheGeneration.get()
+                cacheForegroundBytes(context, manga, actualImage, bytes, generation, trustedImageBytes = true)
+                rememberEarlyNtkGeneratedSuccess(manga, actualImage)
+                rememberNtkGeneratedEpisodeExtension(actualImage)
+                rememberVerifiedForegroundNtkAnchor(manga, actualImage)
+                if (actualImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, actualImage)) {
+                    cacheForegroundBytes(context, manga, image, bytes, generation, trustedImageBytes = true)
+                }
                 logCacheEvent(
                     "${stage}_range_reassemble_full_hit",
                     manga,
@@ -7375,6 +18235,14 @@ object ReaderImageCache {
                     "page=$page,bytes=${bytes.size}"
                 )
                 return null
+            }
+            val generation = cacheGeneration.get()
+            cacheForegroundBytes(context, manga, actualImage, bytes, generation, trustedImageBytes = true)
+            rememberEarlyNtkGeneratedSuccess(manga, actualImage)
+            rememberNtkGeneratedEpisodeExtension(actualImage)
+            rememberVerifiedForegroundNtkAnchor(manga, actualImage)
+            if (actualImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, actualImage)) {
+                cacheForegroundBytes(context, manga, image, bytes, generation, trustedImageBytes = true)
             }
             logCacheEvent(
                 "${stage}_range_reassemble_hit",
@@ -7667,7 +18535,10 @@ object ReaderImageCache {
 
     private fun ntkEquivalentGeneratedCdnImages(image: String): List<String> {
         val target = ntkGeneratedTarget(image) ?: return listOf(image)
-        if (!target.path.startsWith("/webtoon/", ignoreCase = true)) return listOf(image)
+        val generatedPath = target.path
+        if (!generatedPath.startsWith("/webtoon/", ignoreCase = true) &&
+            !generatedPath.startsWith("/manhwa/", ignoreCase = true)
+        ) return listOf(image)
         val uri = try {
             Uri.parse(image)
         } catch (_: Exception) {
@@ -7694,7 +18565,9 @@ object ReaderImageCache {
             }
             blackSuffix = "/black/episodes/$workId/$episodeId/$pageName"
             blacktoonSuffix = "/blacktoon/episodes/$workId/$episodeId/$pageName"
-        } else if (target.path.startsWith("/webtoon/", ignoreCase = true)) {
+        } else if (generatedPath.startsWith("/webtoon/", ignoreCase = true) ||
+            generatedPath.startsWith("/manhwa/", ignoreCase = true)
+        ) {
             val targetParts = target.path.trim('/').split('/')
             if (targetParts.size < 3) return listOf(image)
             val workId = targetParts[1]
@@ -7765,30 +18638,8 @@ object ReaderImageCache {
         end: Long,
         cancellation: Cancellation?
     ): Response? {
-        val request = requestFor(manga, image)
-            .newBuilder()
-            .removeHeader("X-MangaViewer-Foreground")
-            .header("X-MangaViewer-No-Quic", "1")
-            .header("Accept-Encoding", "identity")
-            .header("Range", "bytes=$start-$end")
-            .build()
-        val headers = LinkedHashMap<String, String>()
-        for (name in request.headers.names()) {
-            request.header(name)?.let { headers[name] = it }
-        }
-        return try {
-            getHttpClient().fetchNtkGeneratedImageRange(request.url.toString(), headers, start, end)
-        } catch (t: Throwable) {
-            rethrowIfFatal(t)
-            logCacheEvent(
-                "generated_range_chunk_error",
-                manga,
-                image,
-                true,
-                "start=$start,end=$end,error=${t.javaClass.simpleName},summary=${throwableSummary(t)}"
-            )
-            null
-        }
+        // Retired architecture: strict NTK sources never issue partial-body operations.
+        return null
     }
 
     private fun parseContentRangeTotal(value: String?): Long {
@@ -7939,6 +18790,23 @@ object ReaderImageCache {
         return names.joinToString(">")
     }
 
+    private fun safeAsciiSnippet(bytes: ByteArray, limit: Int = 80): String {
+        if (bytes.isEmpty()) return ""
+        val out = StringBuilder()
+        val size = minOf(bytes.size, limit)
+        for (index in 0 until size) {
+            val value = bytes[index].toInt() and 0xff
+            out.append(
+                when (value) {
+                    9, 10, 13 -> ' '
+                    in 32..126 -> value.toChar()
+                    else -> '.'
+                }
+            )
+        }
+        return out.toString().replace(',', ';').replace('\n', ' ').replace('\r', ' ')
+    }
+
     private fun imageFailureCode(error: Throwable?): Int {
         var current = error
         while (current != null) {
@@ -7980,7 +18848,8 @@ object ReaderImageCache {
         manga: Manga,
         image: String,
         apiFallbackTask: FutureTask<List<String>?>,
-        includeDirectRetries: Boolean = true
+        includeDirectRetries: Boolean = true,
+        apiOnlyWaitMs: Long = 1_700L
     ): okhttp3.Response? {
         val target = ntkGeneratedTarget(image) ?: return null
         val startedAt = SystemClock.elapsedRealtime()
@@ -8043,7 +18912,7 @@ object ReaderImageCache {
         submitted++
         repeat(submitted) {
             val response = try {
-                completion.poll(if (includeDirectRetries) 2200L else 1700L, TimeUnit.MILLISECONDS)?.get()
+                completion.poll(if (includeDirectRetries) 2200L else apiOnlyWaitMs, TimeUnit.MILLISECONDS)?.get()
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return null
@@ -8084,112 +18953,6 @@ object ReaderImageCache {
             if (fallback.isSuccessful) return fallback
             fallback.close()
         }
-        return null
-    }
-
-    private fun startNtkGeneratedAckRecovery(
-        context: Context,
-        manga: Manga,
-        image: String
-    ): FutureTask<Boolean>? {
-        val target = ntkGeneratedTarget(image) ?: return null
-        val path = ntkFallbackKeyPath(manga, target)
-        ntkAckRecoveryPriorityBlocker(path)?.let { priority ->
-            logCacheEvent(
-                "generated_webview_ack_recovery_skip",
-                manga,
-                image,
-                true,
-                "path=$path,reason=current_ack_priority,current=$priority"
-            )
-            return null
-        }
-        if (isNtkAckRecoveryLaunchHeld(path)) {
-            logCacheEvent(
-                "generated_webview_ack_recovery_skip",
-                manga,
-                image,
-                true,
-                "path=$path,reason=launch_first_drawable_hold"
-            )
-            return null
-        }
-        val key = "${target.baseUrl}$path"
-        val task = FutureTask {
-            val startedAt = SystemClock.elapsedRealtime()
-            logCacheEvent(
-                "generated_webview_ack_recovery_start",
-                manga,
-                image,
-                true,
-                "path=$path"
-            )
-            val client = getHttpClient()
-            if (!client.hasCloudflareClearance() && !client.hasRecentStrictNtkAdAckProof(path)) {
-                logCacheEvent(
-                    "generated_webview_ack_recovery_skip_no_clearance",
-                    manga,
-                    image,
-                    true,
-                    "path=$path,ms=${SystemClock.elapsedRealtime() - startedAt}"
-                )
-                return@FutureTask false
-            }
-            val ok = try {
-                client.performNtkWebViewAckPreflight(path)
-            } catch (_: Exception) {
-                false
-            }
-            logCacheEvent(
-                "generated_webview_ack_recovery_done",
-                manga,
-                image,
-                true,
-                "path=$path,success=$ok,ms=${SystemClock.elapsedRealtime() - startedAt}"
-            )
-            ok
-        }
-        val existing = ntkGeneratedAckRecoveryFlights.putIfAbsent(key, task)
-        if (existing != null) return existing
-        try {
-            ntkApiFallbackExecutor.execute(task)
-        } catch (_: Exception) {
-            task.run()
-        }
-        return task
-    }
-
-    private fun retryNtkGeneratedAfterWebViewAck(
-        context: Context,
-        manga: Manga,
-        image: String,
-        foreground: Boolean,
-        runningTask: FutureTask<Boolean>?,
-        cancellation: Cancellation? = null
-    ): okhttp3.Response? {
-        val target = ntkGeneratedTarget(image) ?: return null
-        val task = runningTask ?: startNtkGeneratedAckRecovery(context, manga, image) ?: return null
-        val ok = try {
-            task.get(if (foreground) 5L else 26L, TimeUnit.SECONDS)
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
-        } catch (_: Exception) {
-            false
-        } finally {
-            ntkGeneratedAckRecoveryFlights.remove("${target.baseUrl}${ntkFallbackKeyPath(manga, target)}", task)
-        }
-        if (!ok) return null
-        cancellation?.throwIfCancelled()
-        ViewerWarmupManager.logMetric("ntk_generated_image_webview_ack_retry", target.page.toLong())
-        val retry = try {
-            requestForForegroundMode(context, manga, image, foreground, cancellation)
-        } catch (t: Throwable) {
-            rethrowIfFatal(t)
-            null
-        }
-        if (retry != null && retry.isSuccessful) return retry
-        retry?.close()
         return null
     }
 
@@ -8365,60 +19128,22 @@ object ReaderImageCache {
         foreground: Boolean,
         page: Int
     ): Boolean {
-        val initialProof = try {
+        val proof = try {
             client.hasRecentNtkServerAckProof(path)
         } catch (_: Throwable) {
             false
         }
-        if (initialProof) return true
-        val inFlight = try {
-            client.isNtkWebViewAckPreflightInFlight(path)
-        } catch (_: Throwable) {
-            false
-        }
-        if (!inFlight) {
+        if (!proof) {
             logCacheEvent(
-                "generated_native_ack_retry_no_webview",
+                "generated_native_ack_retry_no_exact_proof",
                 manga,
                 image,
                 foreground,
                 "page=$page"
             )
-            return false
         }
-        val waitMs = if (foreground && page == 1) 360L else if (foreground) 1_200L else 320L
-        val startedAt = SystemClock.elapsedRealtime()
-        var ok = false
-        while (SystemClock.elapsedRealtime() - startedAt < waitMs) {
-            ok = try {
-                client.hasRecentNtkServerAckProof(path)
-            } catch (_: Throwable) {
-                false
-            }
-            if (ok) break
-            val stillInFlight = try {
-                client.isNtkWebViewAckPreflightInFlight(path)
-            } catch (_: Throwable) {
-                false
-            }
-            if (!stillInFlight) break
-            try {
-                Thread.sleep(80L)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                break
-            }
-        }
-        logCacheEvent(
-            "generated_native_ack_retry_light_wait_done",
-            manga,
-            image,
-            foreground,
-            "page=$page,acked=$ok,waitMs=$waitMs,ms=${SystemClock.elapsedRealtime() - startedAt}"
-        )
-        return ok
+        return proof
     }
-
     private fun shouldAllowGeneratedNativeAckDuringLaunchHold(
         path: String,
         target: NtkGeneratedTarget,
@@ -8698,6 +19423,18 @@ object ReaderImageCache {
         waitMs: Long = 18_000L
     ): List<String>? {
         val key = "${target.baseUrl}${ntkFallbackKeyPath(manga, target)}"
+        if (shouldSkipApiFallbackForCompleteDirectManifest(manga, target)) {
+            logCacheEvent(
+                "generated_api_fallback_skip_direct_manifest",
+                manga,
+                "${target.baseUrl}${target.path}/p${target.page.toString().padStart(3, '0')}",
+                true,
+                "page=${target.page},path=${ntkFallbackKeyPath(manga, target)}"
+            )
+            runningTask?.cancel(true)
+            ntkApiFallbackFlights.remove(key, runningTask)
+            return null
+        }
         ntkApiFallbackImages[key]?.let {
             ViewerWarmupManager.logMetric("ntk_generated_image_api_fallback_cache_hit", target.page.toLong())
             return it
@@ -8735,6 +19472,30 @@ object ReaderImageCache {
         target: NtkGeneratedTarget
     ): FutureTask<List<String>?> {
         val key = "${target.baseUrl}${ntkFallbackKeyPath(manga, target)}"
+        val episodePath = manga.ntkEpisodePath?.trim().orEmpty()
+        if (MainApplication.isNtkForegroundViewerPathActive() &&
+            episodePath.isNotEmpty() &&
+            !MainApplication.isNtkForegroundViewerPath(episodePath)
+        ) {
+            logCacheEvent(
+                "generated_api_fallback_start_defer_adjacent_until_foreground",
+                manga,
+                "${target.baseUrl}${target.path}/p${target.page.toString().padStart(3, '0')}",
+                true,
+                "page=${target.page},path=$episodePath"
+            )
+            return FutureTask<List<String>?> { null }.also { it.run() }
+        }
+        if (shouldSkipApiFallbackForCompleteDirectManifest(manga, target)) {
+            logCacheEvent(
+                "generated_api_fallback_start_skip_direct_manifest",
+                manga,
+                "${target.baseUrl}${target.path}/p${target.page.toString().padStart(3, '0')}",
+                true,
+                "page=${target.page},path=${ntkFallbackKeyPath(manga, target)}"
+            )
+            return FutureTask<List<String>?> { null }.also { it.run() }
+        }
         val task = FutureTask {
             try {
                 val fallbackManga = ntkFallbackFetchCopy(manga)
@@ -8757,6 +19518,34 @@ object ReaderImageCache {
             task.run()
         }
         return task
+    }
+
+    private fun shouldSkipApiFallbackForCompleteDirectManifest(
+        manga: Manga,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        return hasCompleteDirectNtkManifestForTarget(manga, target)
+    }
+
+    private fun hasCompleteDirectNtkManifestForTarget(
+        manga: Manga,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        val expectedCount = manga.ntkImageCount
+        if (expectedCount <= 0) return false
+        val path = ntkFallbackKeyPath(manga, target)
+        val urls = earlyNtkImageUrls(path, 0L)
+        if (urls.size < expectedCount) return false
+        val candidate = urls.getOrNull(target.page - 1) ?: return false
+        if (isNtkProtectedViewerApiImage(candidate)) return false
+        val candidateTarget = ntkGeneratedTarget(candidate)
+        if (candidateTarget != null) {
+            return candidateTarget.page == target.page &&
+                ntkGeneratedTargetsSameEpisode(candidateTarget, target)
+        }
+        val expectedPath = path.trim().trimStart('/')
+        return (isTrustedNtkImageUrl(candidate) || isNaverWebtoonPageImage(candidate)) &&
+            ntkDirectManifestPageMatches(candidate, expectedPath, target.page)
     }
 
     private fun ntkFallbackKeyPath(manga: Manga, target: NtkGeneratedTarget): String {
@@ -8787,6 +19576,40 @@ object ReaderImageCache {
         anchorHedge: Boolean = false
     ): okhttp3.Response {
         if (!foreground) return request(context, manga, image, cancellation)
+        val generatedTarget = ntkGeneratedTarget(image)
+        if (
+            isNtkKpWebtoonSlugPathKey(manga.ntkEpisodePath?.trim().orEmpty()) &&
+            isNtkNativeUnsafeUploadPayloadUrl(image)
+        ) {
+            logCacheEvent(
+                "foreground_transport_skip_kp_browser_owned_descriptor",
+                manga,
+                image,
+                true,
+                "page=${generatedTarget?.page ?: 0}"
+            )
+            throw IOException("KP descriptor is browser-owned and must not be fetched by native foreground transport")
+        }
+        if (isPermitlessInitialGeneratedForegroundSuppressed(generatedTarget)) {
+            logCacheEvent(
+                "foreground_transport_skip_suppressed_permitless_initial",
+                manga,
+                image,
+                true,
+                "page=${generatedTarget?.page ?: 0}"
+            )
+            throw IOException("Suppressed permitless initial generated foreground transport: page=${generatedTarget?.page ?: 0}")
+        }
+        if (isNtkProtectedViewerApiImage(image)) {
+            logCacheEvent(
+                "foreground_protected_viewer_api_single_fetch",
+                manga,
+                image,
+                true,
+                "page=${generatedTarget?.page ?: 0}"
+            )
+            return request(context, manga, image, cancellation)
+        }
         requestDirectInitialGeneratedForeground(context, manga, image, cancellation, anchorHedge)?.let {
             return it
         }
@@ -8815,20 +19638,22 @@ object ReaderImageCache {
         if (!target.path.startsWith("/webtoon/", ignoreCase = true) &&
             !target.path.startsWith("/manhwa/", ignoreCase = true)
         ) return null
+        if (isNtkProtectedViewerApiImage(image)) return null
         if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return null
-        if (image.contains("/wt/episodes/", ignoreCase = true)) {
-            logCacheEvent(
-                "foreground_direct_initial_generated_defer_wt_race",
-                manga,
-                image,
-                true,
-                "page=${target.page}"
-            )
-            return null
+        val extensionUnknownAnchor = target.page == 1 &&
+            !ntkGeneratedEpisodeExtensionMatches(image)
+        val equivalentCandidates = if (extensionUnknownAnchor) {
+            // Host redundancy cannot recover a wrong suffix.  Before page 1 proves the immutable
+            // episode extension, race one canonical full body for every supported suffix.  The
+            // winning response publishes the extension and all later pages stay on that one URL.
+            initialGeneratedDirectRaceCandidates(image)
+        } else if (isFastOkHttpGeneratedImageUrl(image)) {
+            listOf(image)
+        } else {
+            ntkEquivalentGeneratedCdnImagesForActiveEpisode(manga, image)
+                .filterNot { Uri.parse(it).host.equals("moamoabon.com", ignoreCase = true) }
+                .distinct()
         }
-        val equivalentCandidates = ntkEquivalentGeneratedCdnImagesForActiveEpisode(manga, image)
-            .filterNot { Uri.parse(it).host.equals("moamoabon.com", ignoreCase = true) }
-            .distinct()
         if (equivalentCandidates.size > 1) {
             return requestDirectInitialGeneratedCandidateRace(
                 manga,
@@ -8839,14 +19664,147 @@ object ReaderImageCache {
                 target
             )
         }
+        if (image.contains("/wt/episodes/", ignoreCase = true)) {
+            logCacheEvent(
+                "foreground_direct_initial_generated_defer_wt_single_candidate",
+                manga,
+                image,
+                true,
+                "page=${target.page}"
+            )
+            return null
+        }
+        val flightKey = initialGeneratedDirectRaceFlightKey(manga.baseMode, image, target.page, manga.ntkEpisodePath)
+        if (flightKey != null) {
+            val sharedStartedAt = SystemClock.elapsedRealtime()
+            val task = FutureTask<GeneratedRangeSnapshot?> {
+                requestDirectInitialGeneratedSingleSnapshot(
+                    context,
+                    manga,
+                    image,
+                    anchorHedge,
+                    target
+                )
+            }
+            val existing = initialGeneratedDirectRaceFlights.putIfAbsent(flightKey, task)
+            val running = if (existing == null) {
+                task.run()
+                task
+            } else {
+                logCacheEvent(
+                    "foreground_direct_initial_generated_join",
+                    manga,
+                    image,
+                    true,
+                    "page=${target.page}"
+                )
+                ViewerWarmupManager.logMetric("reader_generated_initial_direct_single_shared_join", target.page.toLong())
+                existing
+            }
+            var keepSharedFlight = false
+            return try {
+                cancellation?.throwIfCancelled()
+                val snapshot = running.get() ?: return null
+                keepSharedFlight = true
+                logCacheEvent(
+                    "foreground_direct_initial_generated_shared_hit",
+                    manga,
+                    image,
+                    true,
+                    "page=${target.page},bytes=${snapshot.bytes.size},ms=${SystemClock.elapsedRealtime() - sharedStartedAt}"
+                )
+                responseFromSnapshot(snapshot)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                null
+            } catch (e: ExecutionException) {
+                null
+            } finally {
+                if (keepSharedFlight && running.isDone && !running.isCancelled) {
+                    scheduleInitialGeneratedDirectRaceExpiry(flightKey, running)
+                } else {
+                    initialGeneratedDirectRaceFlights.remove(flightKey, running)
+                }
+            }
+        }
+        return requestDirectInitialGeneratedSingleResponse(context, manga, image, cancellation, anchorHedge, target)
+    }
+
+    private fun requestDirectInitialGeneratedSingleSnapshot(
+        context: Context,
+        manga: Manga,
+        image: String,
+        anchorHedge: Boolean,
+        target: NtkGeneratedTarget
+    ): GeneratedRangeSnapshot? {
+        requestDirectInitialGeneratedSingleResponse(context, manga, image, null, anchorHedge, target)?.use { response ->
+            return snapshotGeneratedRangeResponse(response)
+        }
+        return null
+    }
+
+    private fun requestDirectInitialGeneratedSingleResponse(
+        context: Context,
+        manga: Manga,
+        image: String,
+        cancellation: Cancellation?,
+        anchorHedge: Boolean,
+        target: NtkGeneratedTarget
+    ): okhttp3.Response? {
         val startedAt = SystemClock.elapsedRealtime()
         val request = requestFor(manga, image, foregroundPriority = true, anchorHedge = anchorHedge)
-        val call = getHttpClient().imageClient.newCall(request)
-        val activeCallKey = trackActiveNtkEpisodeCall(manga, image, call)
-        cancellation?.track(call)
+        cachedImageFile(context, manga, image)?.let { cached ->
+            val bytes = try {
+                cached.readBytes()
+            } catch (_: IOException) {
+                null
+            }
+            if (bytes != null &&
+                bytes.isNotEmpty() &&
+                isAcceptableNtkGeneratedForegroundImageBytes(image, image, bytes)
+            ) {
+                touchCacheHitForLru(cached)
+                logCacheEvent(
+                    "foreground_direct_initial_generated_disk_hit",
+                    manga,
+                    image,
+                    true,
+                    "page=${target.page},bytes=${bytes.size},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
+                return responseFromBytes(
+                    Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(ResponseBody.create(null, ByteArray(0)))
+                        .build(),
+                    bytes
+                )
+            }
+        }
+        val httpClient = getHttpClient()
+        val call = newTrackedNtkEpisodeCall(
+            manga,
+            image,
+            request,
+            ntkGeneratedDirectClient(httpClient, image, request.url.toString()),
+            cancellation
+        )
         return try {
             val response = call.execute()
             if (response.isSuccessful) {
+                if (!validateNtkImageResponseUrl(
+                        manga,
+                        image,
+                        response,
+                        true,
+                        "foreground_direct_initial_generated"
+                    )
+                ) {
+                    response.close()
+                    return null
+                }
                 val bytes = response.body?.bytes()
                 val actualImage = response.request.url.toString()
                 logCacheEvent(
@@ -8859,7 +19817,37 @@ object ReaderImageCache {
                 if (bytes == null || bytes.isEmpty()) {
                     response.close()
                     null
+                } else if (!isAcceptableNtkGeneratedForegroundImageBytes(image, actualImage, bytes)) {
+                    logCacheEvent(
+                        "foreground_direct_initial_generated_reject_non_image",
+                        manga,
+                        image,
+                        true,
+                        "page=${target.page},code=${response.code},bytes=${bytes.size}," +
+                            "actual=${safeImageName(actualImage)},body=${safeAsciiSnippet(bytes)}"
+                    )
+                    response.close()
+                    null
                 } else {
+                    val generation = cacheGeneration.get()
+                    cacheForegroundBytes(
+                        context,
+                        manga,
+                        actualImage,
+                        bytes,
+                        generation,
+                        trustedImageBytes = true
+                    )
+                    if (actualImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, actualImage)) {
+                        cacheForegroundBytes(
+                            context,
+                            manga,
+                            image,
+                            bytes,
+                            generation,
+                            trustedImageBytes = true
+                        )
+                    }
                     val cachedResponse = responseFromBytes(response, bytes)
                     logCacheEvent(
                         "foreground_direct_initial_generated_handoff",
@@ -8908,9 +19896,6 @@ object ReaderImageCache {
                     "summary=${throwableSummary(t)}"
             )
             null
-        } finally {
-            cancellation?.untrack(call)
-            untrackActiveNtkEpisodeCall(activeCallKey)
         }
     }
 
@@ -8922,9 +19907,94 @@ object ReaderImageCache {
         anchorHedge: Boolean,
         target: NtkGeneratedTarget
     ): okhttp3.Response? {
-        val completion = ExecutorCompletionService<Pair<String, okhttp3.Response>?>(foregroundRaceExecutor)
+        val flightKey = initialGeneratedDirectRaceFlightKey(manga.baseMode, image, target.page, manga.ntkEpisodePath)
+            ?: return requestDirectInitialGeneratedCandidateRaceUnshared(
+                manga,
+                image,
+                candidates,
+                cancellation,
+                anchorHedge,
+                target
+            )?.let(::responseFromSnapshot)
+        val startedAt = SystemClock.elapsedRealtime()
+        val task = FutureTask<GeneratedRangeSnapshot?> {
+            requestDirectInitialGeneratedCandidateRaceUnshared(
+                manga,
+                image,
+                candidates,
+                cancellation,
+                anchorHedge,
+                target
+            )
+        }
+        val existing = initialGeneratedDirectRaceFlights.putIfAbsent(flightKey, task)
+        val running = if (existing == null) {
+            task.run()
+            task
+        } else {
+            logCacheEvent(
+                "foreground_direct_initial_generated_cdn_race_join",
+                manga,
+                image,
+                true,
+                "page=${target.page},candidates=${candidates.size}"
+            )
+            ViewerWarmupManager.logMetric("reader_generated_initial_direct_race_shared_join", target.page.toLong())
+            existing
+        }
+        var keepSharedFlight = false
+        return try {
+            val snapshot = running.get() ?: return null
+            keepSharedFlight = true
+            publishNtkAnchorAssetBytes(
+                manga,
+                image,
+                snapshot.bytes,
+                "foreground_direct_initial_generated_cdn_race_shared"
+            )
+            val resolvedImage = snapshot.request.url.toString()
+            if (resolvedImage != image) {
+                publishNtkAnchorAssetBytes(
+                    manga,
+                    resolvedImage,
+                    snapshot.bytes,
+                    "foreground_direct_initial_generated_cdn_race_shared"
+                )
+            }
+            logCacheEvent(
+                "foreground_direct_initial_generated_cdn_race_shared_hit",
+                manga,
+                image,
+                true,
+                "page=${target.page},bytes=${snapshot.bytes.size},ms=${SystemClock.elapsedRealtime() - startedAt}"
+            )
+            responseFromSnapshot(snapshot)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            null
+        } catch (e: ExecutionException) {
+            null
+        } finally {
+            if (keepSharedFlight && running.isDone && !running.isCancelled) {
+                scheduleInitialGeneratedDirectRaceExpiry(flightKey, running)
+            } else {
+                initialGeneratedDirectRaceFlights.remove(flightKey, running)
+            }
+        }
+    }
+
+    private fun requestDirectInitialGeneratedCandidateRaceUnshared(
+        manga: Manga,
+        image: String,
+        candidates: List<String>,
+        cancellation: Cancellation?,
+        anchorHedge: Boolean,
+        target: NtkGeneratedTarget
+    ): GeneratedRangeSnapshot? {
+        val completion = ExecutorCompletionService<Pair<String, GeneratedRangeSnapshot>?>(foregroundRaceExecutor)
         val calls = Collections.synchronizedList(ArrayList<Call>())
-        val futures = ArrayList<Future<Pair<String, okhttp3.Response>?>>(candidates.size)
+        val futures = ArrayList<Future<Pair<String, GeneratedRangeSnapshot>?>>(candidates.size)
+        val retired = AtomicBoolean(false)
         val startedAt = SystemClock.elapsedRealtime()
         logCacheEvent(
             "foreground_direct_initial_generated_cdn_race_start",
@@ -8936,44 +20006,77 @@ object ReaderImageCache {
         for (candidate in candidates) {
             futures += completion.submit(Callable {
                 cancellation?.throwIfCancelled()
+                if (retired.get()) throw InterruptedIOException("Generated candidate race retired")
                 val request = requestFor(manga, candidate, foregroundPriority = true, anchorHedge = anchorHedge)
-                val call = getHttpClient().imageClient.newCall(request)
-                val activeCallKey = trackActiveNtkEpisodeCall(manga, candidate, call)
-                cancellation?.track(call)
+                val httpClient = getHttpClient()
+                val call = newTrackedNtkEpisodeCall(
+                    manga,
+                    candidate,
+                    request,
+                    ntkGeneratedDirectClient(httpClient, candidate, request.url.toString()),
+                    cancellation
+                )
                 calls.add(call)
-                try {
-                    val response = call.execute()
-                    if (response.isSuccessful &&
-                        validateNtkImageResponseUrl(manga, image, response, true, "foreground_direct_initial_generated_cdn_race")
-                    ) {
-                        candidate to response
-                    } else {
-                        if (isPermanentGeneratedMissingCode(response.code)) {
-                            rememberNtkGeneratedNotFound(
-                                manga,
-                                response.request.url.toString(),
-                                "foreground_direct_initial_generated_cdn_race"
-                            )
-                        }
-                        logCacheEvent(
-                            "foreground_direct_initial_generated_cdn_race_miss",
-                            manga,
-                            candidate,
-                            true,
-                            "page=${target.page},code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
-                        )
-                        response.close()
-                        null
+                if (retired.get()) {
+                    call.cancel()
+                    throw InterruptedIOException("Generated candidate race retired")
+                }
+                val response = call.execute()
+                if (response.isSuccessful &&
+                    validateNtkImageResponseUrl(manga, image, response, true, "foreground_direct_initial_generated_cdn_race")
+                ) {
+                    response.use { source ->
+                            val snapshot = snapshotGeneratedRangeResponse(source)
+                            val actualImage = snapshot?.request?.url?.toString().orEmpty()
+                            if (snapshot != null &&
+                                isAcceptableNtkGeneratedForegroundImageBytes(
+                                    candidate,
+                                    actualImage,
+                                    snapshot.bytes
+                                )
+                            ) {
+                                candidate to snapshot
+                            } else {
+                                logCacheEvent(
+                                    "foreground_direct_initial_generated_cdn_race_body_rejected",
+                                    manga,
+                                    candidate,
+                                    true,
+                                    "page=${target.page},bytes=${snapshot?.bytes?.size ?: 0}," +
+                                        "ms=${SystemClock.elapsedRealtime() - startedAt}"
+                                )
+                                null
+                            }
                     }
-                } finally {
-                    cancellation?.untrack(call)
-                    untrackActiveNtkEpisodeCall(activeCallKey)
+                } else {
+                    if (isPermanentGeneratedMissingCode(response.code)) {
+                        rememberNtkGeneratedNotFound(
+                            manga,
+                            response.request.url.toString(),
+                            "foreground_direct_initial_generated_cdn_race"
+                        )
+                    }
+                    logCacheEvent(
+                        "foreground_direct_initial_generated_cdn_race_miss",
+                        manga,
+                        candidate,
+                        true,
+                        "page=${target.page},code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                    )
+                    response.close()
+                    null
                 }
             })
         }
         return try {
-            repeat(futures.size) {
-                val result = completion.take().get()
+            var remaining = futures.size
+            val deadlineMs = startedAt + NTK_GENERATED_INITIAL_DIRECT_RACE_DEADLINE_MS
+            while (remaining > 0) {
+                val waitMs = deadlineMs - SystemClock.elapsedRealtime()
+                if (waitMs <= 0L) break
+                val future = completion.poll(minOf(waitMs, 150L), TimeUnit.MILLISECONDS) ?: continue
+                remaining--
+                val result = future.get()
                 if (result != null) {
                     logCacheEvent(
                         "foreground_direct_initial_generated_cdn_race_hit",
@@ -8985,6 +20088,13 @@ object ReaderImageCache {
                     return result.second
                 }
             }
+            logCacheEvent(
+                "foreground_direct_initial_generated_cdn_race_timeout",
+                manga,
+                image,
+                true,
+                "page=${target.page},ms=${SystemClock.elapsedRealtime() - startedAt},candidates=${candidates.size}"
+            )
             null
         } catch (t: Throwable) {
             rethrowIfFatal(t)
@@ -8998,9 +20108,13 @@ object ReaderImageCache {
             )
             null
         } finally {
+            retired.set(true)
             futures.forEach { future ->
                 if (!future.isDone) future.cancel(true)
             }
+            // The winner has already been snapshotted into memory; every live Call is now a
+            // redundant body transfer and can be stopped without discarding winning bytes.
+            calls.forEach { call -> call.cancel() }
         }
     }
 
@@ -9049,6 +20163,53 @@ object ReaderImageCache {
         return true
     }
 
+    private fun shouldSuppressDirectCandidateRaceForFastVisibleInitial(
+        image: String,
+        target: NtkGeneratedTarget?
+    ): Boolean {
+        if (target == null) return false
+        if (target.page !in 2..NTK_PERMITLESS_INITIAL_VISIBLE_MAX_PAGE) return false
+        if (!isFastOkHttpGeneratedImageUrl(image)) return false
+        return ntkGeneratedEpisodeExtensionMatches(image) ||
+            shouldPrioritizeHintedInitialGeneratedFullFetch(image)
+    }
+
+    private fun initialGeneratedDirectRaceCandidates(image: String): List<String> {
+        val target = ntkGeneratedTarget(image) ?: return listOf(image)
+        if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return listOf(image)
+        val candidates = LinkedHashSet<String>()
+        fun addCandidate(candidate: String) {
+            val candidateTarget = ntkGeneratedTarget(candidate) ?: return
+            if (!isCompatibleNtkGeneratedPage(target, candidateTarget)) return
+            val ref = ntkGeneratedImageRef(candidate)
+            if (ref != null && hasNtkGeneratedNotFoundInitialExtension(ref, ref.extension)) return
+            candidates.add(candidate)
+        }
+        addCandidate(image)
+        ntkGeneratedImageWithHintedExtension(image)
+            .takeIf { it != image }
+            ?.let { addCandidate(it) }
+        ntkGeneratedExtensionFallbacks(image)
+            .forEach { addCandidate(it) }
+        if (candidates.isEmpty()) candidates.add(image)
+        return candidates.take(NTK_GENERATED_INITIAL_COMPLETE_RACE_ANCHOR_CANDIDATES)
+    }
+
+    private fun shouldUseInitialGeneratedForegroundCandidateRace(
+        image: String,
+        target: NtkGeneratedTarget?
+    ): Boolean {
+        if (target == null) return false
+        if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return false
+        if (target.page <= 1) {
+            if (isFastOkHttpGeneratedImageUrl(image) && ntkGeneratedEpisodeExtensionMatches(image)) return false
+            return true
+        }
+        if (target.page <= NTK_PERMITLESS_INITIAL_VISIBLE_MAX_PAGE) return true
+        if (!isFastOkHttpGeneratedImageUrl(image)) return true
+        return !ntkGeneratedEpisodeExtensionMatches(image)
+    }
+
     private fun requestForegroundRace(
         context: Context,
         manga: Manga,
@@ -9064,7 +20225,7 @@ object ReaderImageCache {
             anchorHedge = anchorHedge
         )
         val firstEarlyNtkImage = isFirstEarlyNtkImage(manga, image)
-        val attempts = foregroundRaceAttempts(manga, foregroundRequest, raceAttempts, firstEarlyNtkImage)
+        val baseAttempts = foregroundRaceAttempts(manga, image, foregroundRequest, raceAttempts, firstEarlyNtkImage)
         val calls = Collections.synchronizedList(ArrayList<Call>())
         val completion = ExecutorCompletionService<ForegroundRaceResult>(foregroundRaceExecutor)
         val completed = AtomicBoolean(false)
@@ -9074,17 +20235,37 @@ object ReaderImageCache {
                 if (delayMs > 0L) Thread.sleep(delayMs)
                 cancellation?.throwIfCancelled()
                 if (completed.get()) throw IOException("Foreground image race already completed")
-                val call = attempt.client.newCall(attempt.request)
-                val activeCallKey = trackActiveNtkEpisodeCall(manga, image, call)
-                cancellation?.track(call)
+                val call = newTrackedNtkEpisodeCall(
+                    manga,
+                    image,
+                    attempt.request,
+                    attempt.client,
+                    cancellation
+                )
                 calls.add(call)
+                if (completed.get()) {
+                    call.cancel()
+                    throw IOException("Foreground image race already completed")
+                }
                 try {
                     val response = call.execute()
                     if (completed.get()) {
                         response.close()
                         throw IOException("Foreground image race already completed")
                     }
-                    ForegroundRaceResult(attempt, call, response)
+                    val bodyRacedResponse = maybeReadGeneratedInitialForegroundRaceBody(
+                        context,
+                        manga,
+                        image,
+                        attempt,
+                        response,
+                        startedAt
+                    )
+                    if (bodyRacedResponse !== response) {
+                        ForegroundRaceResult(attempt, call, bodyRacedResponse)
+                    } else {
+                        ForegroundRaceResult(attempt, call, response)
+                    }
                 } catch (t: Throwable) {
                     logCacheEvent(
                         "foreground_race_call_error",
@@ -9094,33 +20275,65 @@ object ReaderImageCache {
                         "transport=${attempt.transport},error=${t.javaClass.simpleName},ms=${SystemClock.elapsedRealtime() - startedAt}"
                     )
                     throw t
-                } finally {
-                    cancellation?.untrack(call)
-                    untrackActiveNtkEpisodeCall(activeCallKey)
                 }
             })
         }
-        fun submitGeneratedDirect(target: NtkGeneratedTarget) {
+        fun submitGeneratedDirect(target: NtkGeneratedTarget, candidate: String, transport: String) {
             completion.submit(Callable {
                 cancellation?.throwIfCancelled()
                 if (completed.get()) throw IOException("Foreground image race already completed")
-                val response = requestGeneratedDirectOriginal(context, manga, image, cancellation)
+                val candidateRequest = requestFor(
+                    manga,
+                    candidate,
+                    foregroundPriority = true,
+                    anchorHedge = anchorHedge
+                )
+                var directCall: Call? = null
+                val response = requestGeneratedDirectOriginal(
+                    context,
+                    manga,
+                    candidate,
+                    cancellation
+                ) { call ->
+                    directCall = call
+                    calls.add(call)
+                    if (completed.get()) {
+                        call.cancel()
+                        throw IOException("Foreground image race already completed")
+                    }
+                }
                     ?: throw IOException("Foreground generated direct race failed")
                 if (completed.get()) {
                     response.close()
                     throw IOException("Foreground image race already completed")
                 }
+                val bodyRacedResponse = maybeReadGeneratedInitialForegroundRaceBody(
+                    context,
+                    manga,
+                    candidate,
+                    ForegroundRaceAttempt(
+                        transport,
+                        ntkGeneratedDirectClient(getHttpClient(), candidate, candidateRequest.url.toString()),
+                        candidateRequest
+                    ),
+                    response,
+                    startedAt
+                )
                 ForegroundRaceResult(
-                    ForegroundRaceAttempt("generated-direct", getHttpClient().imageClient, foregroundRequest),
-                    null,
-                    response
+                    ForegroundRaceAttempt(
+                        transport,
+                        ntkGeneratedDirectClient(getHttpClient(), candidate, candidateRequest.url.toString()),
+                        candidateRequest
+                    ),
+                    directCall,
+                    bodyRacedResponse
                 ).also {
                     logCacheEvent(
                         "foreground_race_generated_direct_done",
                         manga,
-                        image,
+                        candidate,
                         true,
-                        "page=${target.page},code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                        "page=${target.page},code=${bodyRacedResponse.code},transport=$transport,ms=${SystemClock.elapsedRealtime() - startedAt}"
                     )
                 }
             })
@@ -9129,7 +20342,7 @@ object ReaderImageCache {
         val wtEpisodeImage = image.contains("/wt/episodes/", ignoreCase = true)
         val includeGeneratedDirectLane = generatedTarget != null &&
             !wtEpisodeImage &&
-            generatedTarget.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES
+            shouldUseInitialGeneratedForegroundCandidateRace(image, generatedTarget)
         if (generatedTarget != null && !includeGeneratedDirectLane) {
             logCacheEvent(
                 "foreground_race_generated_direct_defer_initial_pages",
@@ -9139,24 +20352,93 @@ object ReaderImageCache {
                 "page=${generatedTarget.page}"
             )
         }
-        if (includeGeneratedDirectLane) {
-            submitGeneratedDirect(generatedTarget!!)
+        val directManifestGeneratedLane = includeGeneratedDirectLane &&
+            generatedTarget?.path?.let {
+                it.startsWith("/manhwa/", ignoreCase = true) ||
+                    it.startsWith("/webtoon/", ignoreCase = true)
+            } == true &&
+            isFastOkHttpGeneratedImageUrl(image)
+        val generatedDirectCandidates = if (includeGeneratedDirectLane) {
+            initialGeneratedDirectRaceCandidates(image)
+        } else {
+            emptyList()
+        }
+        val suppressDirectCandidateRace =
+            shouldSuppressDirectCandidateRaceForFastVisibleInitial(image, generatedTarget)
+        if (directManifestGeneratedLane &&
+            !suppressDirectCandidateRace &&
+            generatedTarget != null &&
+            generatedDirectCandidates.isNotEmpty()
+        ) {
+            requestDirectInitialGeneratedCandidateRace(
+                manga,
+                image,
+                generatedDirectCandidates,
+                cancellation,
+                anchorHedge,
+                generatedTarget
+            )?.let { response ->
+                logCacheEvent(
+                    "foreground_race_generated_direct_shared_hit",
+                    manga,
+                    image,
+                    true,
+                    "page=${generatedTarget.page},candidates=${generatedDirectCandidates.size}," +
+                        "code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
+                return response
+            }
+            throw IOException("Foreground generated direct shared race failed")
+        }
+        if (directManifestGeneratedLane && suppressDirectCandidateRace && generatedTarget != null) {
+            logCacheEvent(
+                "foreground_race_generated_direct_candidate_suppressed",
+                manga,
+                image,
+                true,
+                "page=${generatedTarget.page},candidates=${generatedDirectCandidates.size}"
+            )
+        }
+        val attempts = if (directManifestGeneratedLane && !suppressDirectCandidateRace) emptyList() else baseAttempts
+        if (includeGeneratedDirectLane && !suppressDirectCandidateRace) {
+            generatedDirectCandidates.forEachIndexed { index, candidate ->
+                submitGeneratedDirect(
+                    generatedTarget!!,
+                    candidate,
+                    if (index == 0) "generated-direct" else "generated-direct-extension"
+                )
+            }
             logCacheEvent(
                 "foreground_race_generated_direct_start",
                 manga,
                 image,
                 true,
-                "page=${generatedTarget.page},total=${attempts.size + 1}"
+                "page=${generatedTarget.page},total=${attempts.size + generatedDirectCandidates.size}," +
+                    "directOnly=$directManifestGeneratedLane,candidates=${generatedDirectCandidates.size}"
             )
         }
         attempts.forEachIndexed { index, attempt ->
-            val delayMs = if (firstEarlyNtkImage) 0L else FOREGROUND_RACE_DELAY_MS * index
+            val generatedDirectLeadMs =
+                if (includeGeneratedDirectLane &&
+                    !directManifestGeneratedLane &&
+                    generatedTarget?.page in 2..NTK_PERMITLESS_INITIAL_VISIBLE_MAX_PAGE &&
+                    isFastOkHttpGeneratedImageUrl(image)
+                ) {
+                    650L
+                } else {
+                    0L
+                }
+            val delayMs = if (firstEarlyNtkImage) {
+                generatedDirectLeadMs
+            } else {
+                generatedDirectLeadMs + FOREGROUND_RACE_DELAY_MS * index
+            }
             submit(attempt, delayMs)
         }
         val generatedAnchor = generatedTarget?.page == 1
         val generatedFastFallback = generatedAnchor && !includeGeneratedDirectLane && !wtEpisodeImage
         var failure: Throwable? = null
-        val totalAttempts = attempts.size + (if (includeGeneratedDirectLane) 1 else 0)
+        val totalAttempts = attempts.size + generatedDirectCandidates.size
         repeat(totalAttempts) { completedIndex ->
             try {
                 var future = if (generatedAnchor && completedIndex == 0) {
@@ -9221,7 +20503,8 @@ object ReaderImageCache {
                 }
                 failure = IOException("Image request failed: ${response.code}")
                 if (isPermanentGeneratedMissingCode(response.code) &&
-                    completedIndex >= totalAttempts - 1
+                    (completedIndex >= totalAttempts - 1 ||
+                        ntkGeneratedTarget(response.request.url.toString()) != null)
                 ) {
                     rememberNtkGeneratedNotFound(manga, response.request.url.toString(), "foreground_race")
                 }
@@ -9239,7 +20522,7 @@ object ReaderImageCache {
                     image,
                     true,
                     "transport=${result.attempt.transport},completed=$completedIndex,total=$totalAttempts,code=${response.code},ms=${SystemClock.elapsedRealtime() - startedAt}"
-                        + ",block=$hardBlock"
+                        + ",block=$hardBlock,actual=${response.request.url}"
                 )
                 response.close()
                 if (generatedFastFallback && completedIndex == 0) {
@@ -9270,6 +20553,110 @@ object ReaderImageCache {
         }
         for (call in calls) call.cancel()
         throw IOException("Foreground image race failed", failure)
+    }
+
+    private fun maybeReadGeneratedInitialForegroundRaceBody(
+        context: Context,
+        manga: Manga,
+        image: String,
+        attempt: ForegroundRaceAttempt,
+        response: Response,
+        startedAt: Long
+    ): Response {
+        val target = ntkGeneratedTarget(image) ?: return response
+        if (target.page !in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) return response
+        if (!response.isSuccessful) return response
+        val body = response.body ?: return response
+        val length = body.contentLength()
+        if (length > MAX_DIRECT_STREAM_DECODE_BYTES) return response
+        return try {
+            val readStartedAt = SystemClock.elapsedRealtime()
+            val bytes = body.bytes()
+            if (bytes.isEmpty() || bytes.size > MAX_DIRECT_STREAM_DECODE_BYTES) {
+                response.close()
+                throw IOException("Foreground generated race body is not usable")
+            } else {
+                val actualImage = response.request.url.toString()
+                if (!isAcceptableNtkGeneratedForegroundImageBytes(image, actualImage, bytes)) {
+                    logCacheEvent(
+                        "foreground_race_body_reject_non_image",
+                        manga,
+                        image,
+                        true,
+                        "transport=${attempt.transport},page=${target.page},bytes=${bytes.size}," +
+                            "body=${safeAsciiSnippet(bytes)},ms=${SystemClock.elapsedRealtime() - startedAt}"
+                    )
+                    response.close()
+                    throw IOException("Foreground generated race body is not an image")
+                }
+                val cacheImage = foregroundResponseCacheImage(image, response)
+                val generation = cacheGeneration.get()
+                val raced = responseFromBytes(response, bytes)
+                response.close()
+                logCacheEvent(
+                    "foreground_race_body_ready",
+                    manga,
+                    image,
+                    true,
+                    "transport=${attempt.transport},page=${target.page},bytes=${bytes.size}," +
+                        "bodyMs=${SystemClock.elapsedRealtime() - readStartedAt}," +
+                        "ms=${SystemClock.elapsedRealtime() - startedAt}"
+                )
+                if (target.page == 1) {
+                    publishNtkAnchorAssetBytes(manga, cacheImage, bytes, "foreground_race_body_bytes")
+                    if (cacheImage != image) {
+                        publishNtkAnchorAssetBytes(manga, image, bytes, "foreground_race_body_bytes")
+                    }
+                }
+                executeForegroundStreamPublication(context, manga, image, Runnable {
+                    val cacheStartedAt = SystemClock.elapsedRealtime()
+                    try {
+                        cacheForegroundBytes(
+                            context,
+                            manga,
+                            cacheImage,
+                            bytes,
+                            generation,
+                            trustedImageBytes = true
+                        )
+                        rememberNtkGeneratedEpisodeExtension(actualImage)
+                        rememberEarlyNtkGeneratedSuccess(manga, actualImage)
+                        rememberVerifiedForegroundNtkAnchor(manga, cacheImage)
+                        if (cacheImage != image && shouldCacheResolvedBytesUnderRequestedImage(image, cacheImage)) {
+                            cacheForegroundBytes(
+                                context,
+                                manga,
+                                image,
+                                bytes,
+                                generation,
+                                trustedImageBytes = true
+                            )
+                            rememberVerifiedForegroundNtkAnchor(manga, image)
+                        }
+                        logCacheEvent(
+                            "foreground_race_body_cache_published",
+                            manga,
+                            image,
+                            true,
+                            "page=${target.page},cacheMs=${SystemClock.elapsedRealtime() - cacheStartedAt}"
+                        )
+                    } catch (t: Throwable) {
+                        rethrowIfFatal(t)
+                        logCacheEvent(
+                            "foreground_race_body_cache_publish_error",
+                            manga,
+                            image,
+                            true,
+                            "page=${target.page},error=${throwableSummary(t)}"
+                        )
+                    }
+                })
+                raced
+            }
+        } catch (t: Throwable) {
+            response.close()
+            throw t
+        }
     }
 
     private fun ntkImageHardBlock(response: Response): String {
@@ -9305,25 +20692,30 @@ object ReaderImageCache {
         context: Context,
         manga: Manga,
         image: String,
-        cancellation: Cancellation? = null
+        cancellation: Cancellation? = null,
+        onCallCreated: (Call) -> Unit = {}
     ): Response? {
         val request = requestFor(manga, image, foregroundPriority = true, anchorHedge = false)
-        val call = getHttpClient().ntkForegroundImageFastClient().newCall(request)
-        val activeCallKey = trackActiveNtkEpisodeCall(manga, image, call)
-        cancellation?.track(call)
+        val httpClient = getHttpClient()
+        val client = ntkGeneratedDirectClient(httpClient, image, request.url.toString())
         return try {
+            val call = newTrackedNtkEpisodeCall(manga, image, request, client, cancellation)
+            try {
+                onCallCreated(call)
+            } catch (failure: Throwable) {
+                call.cancel()
+                throw failure
+            }
             call.execute()
         } catch (t: Throwable) {
             rethrowIfFatal(t)
             null
-        } finally {
-            cancellation?.untrack(call)
-            untrackActiveNtkEpisodeCall(activeCallKey)
         }
     }
 
     private fun foregroundRaceAttempts(
         manga: Manga,
+        image: String,
         foregroundRequest: Request,
         raceAttempts: Int,
         firstEarlyNtkImage: Boolean
@@ -9331,10 +20723,61 @@ object ReaderImageCache {
         val httpClient = getHttpClient()
         val attempts = raceAttempts.coerceIn(1, 2)
         val generatedTarget = ntkGeneratedTarget(foregroundRequest.url.toString())
-        val imageRaceClient = if (generatedTarget != null) {
-            httpClient.ntkForegroundImageFastClient()
-        } else {
-            httpClient.imageClient
+        val imageRaceClient = ntkGeneratedDirectClient(
+            httpClient,
+            foregroundRequest.url.toString()
+        )
+        val apiPageSlotCandidates = recentNtkApiPageSlotCandidates(image)
+        if (generatedTarget == null && apiPageSlotCandidates.size > 1) {
+            return apiPageSlotCandidates.take(3).mapIndexed { index, candidate ->
+                val request = foregroundRequest.newBuilder()
+                    .url(candidate)
+                    .removeHeader("X-MangaViewer-Foreground")
+                    .header("X-MangaViewer-No-Quic", "1")
+                    .build()
+                ForegroundRaceAttempt(
+                    "api-page-slot-${index + 1}",
+                    httpClient.externalViewerImageFastClient(),
+                    request
+                )
+            }
+        }
+        if (generatedTarget == null &&
+            isAuthoritativeNativeDirectManifestImage(manga, foregroundRequest.url.toString())
+        ) {
+            val directRequest = foregroundRequest.newBuilder()
+                .removeHeader("X-MangaViewer-Foreground")
+                .header("X-MangaViewer-No-Quic", "1")
+                .build()
+            return listOf(
+                ForegroundRaceAttempt(
+                    "authoritative-direct",
+                    httpClient.externalViewerImageFastClient(),
+                    directRequest
+                )
+            )
+        }
+        if (generatedTarget == null &&
+            firstEarlyNtkImage &&
+            isTrustedInitialNtkApiImageForEarlyStream(foregroundRequest.url.toString())
+        ) {
+            val directRequest = foregroundRequest.newBuilder()
+                .removeHeader("X-MangaViewer-Foreground")
+                .header("X-MangaViewer-No-Quic", "1")
+                .build()
+            return listOf(
+                ForegroundRaceAttempt(
+                    "trusted-direct-fast",
+                    httpClient.externalViewerImageFastClient(),
+                    directRequest
+                ),
+                ForegroundRaceAttempt(
+                    "trusted-direct-foreground",
+                    httpClient.ntkForegroundImageFastClient(),
+                    directRequest
+                ),
+                ForegroundRaceAttempt("trusted-direct-full", httpClient.imageClient, directRequest)
+            )
         }
         if (isNaverWebtoonPageImage(foregroundRequest.url.toString())) {
             val directRequest = foregroundRequest.newBuilder()
@@ -9348,6 +20791,20 @@ object ReaderImageCache {
                     directRequest
                 ),
                 ForegroundRaceAttempt("image-full", httpClient.imageClient, directRequest)
+            )
+        }
+        if (isNtkUploadCdnImageUrl(foregroundRequest.url.toString())) {
+            val directRequest = foregroundRequest.newBuilder()
+                .removeHeader("X-MangaViewer-Foreground")
+                .header("X-MangaViewer-No-Quic", "1")
+                .build()
+            return listOf(
+                ForegroundRaceAttempt(
+                    "upload-fast",
+                    httpClient.externalViewerImageFastClient(),
+                    directRequest
+                ),
+                ForegroundRaceAttempt("upload-full", httpClient.imageClient, directRequest)
             )
         }
         if (generatedTarget != null &&
@@ -9380,6 +20837,15 @@ object ReaderImageCache {
                 .header("X-MangaViewer-No-Quic", "1")
                 .build()
             return listOf(ForegroundRaceAttempt("image-full", imageRaceClient, fullRequest))
+        }
+        if (generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES &&
+            !shouldUseInitialGeneratedForegroundCandidateRace(foregroundRequest.url.toString(), generatedTarget)
+        ) {
+            val directRequest = foregroundRequest.newBuilder()
+                .removeHeader("X-MangaViewer-Foreground")
+                .header("X-MangaViewer-No-Quic", "1")
+                .build()
+            return listOf(ForegroundRaceAttempt("generated-visible-single", imageRaceClient, directRequest))
         }
         if (generatedTarget?.page in 1..NTK_GENERATED_INITIAL_TRANSIENT_RETRY_PAGES) {
             val candidates = ntkPreferredGeneratedForegroundCandidates(
@@ -9420,6 +20886,25 @@ object ReaderImageCache {
             return listOf(fullAttempt) + foregroundAttempts
         }
         return foregroundAttempts + fullAttempt
+    }
+
+    private fun isAuthoritativeNativeDirectManifestImage(manga: Manga, image: String): Boolean {
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        if (path.isEmpty() || image.isBlank()) return false
+        val minCreatedAt = SystemClock.elapsedRealtime() - 30_000L
+        val expected = maxOf(
+            trustedNtkImageApiCount(path, minCreatedAt),
+            manga.ntkImageCount.coerceAtLeast(0)
+        )
+        if (expected <= 0 ||
+            !hasCompleteValidatedNativeDirectEarlyNtkImageUrls(path, expected, minCreatedAt)
+        ) {
+            return false
+        }
+        val identity = normalizedNtkImageIdentity(image)
+        return earlyNtkImageUrls(path, minCreatedAt)
+            .take(expected)
+            .any { normalizedNtkImageIdentity(it) == identity }
     }
 
     private fun isFirstEarlyNtkImage(manga: Manga, image: String): Boolean {
@@ -9513,6 +20998,26 @@ object ReaderImageCache {
         return activeParts[2] == targetParts[2]
     }
 
+    private fun isUnverifiedCanonicalWebtoonPathTarget(
+        manga: Manga,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        val path = manga.ntkEpisodePath?.trim().orEmpty()
+        val activeParts = path.trim('/').split('/')
+        val targetParts = target.path.trim('/').split('/')
+        if (activeParts.size < 3 || targetParts.size < 3) return false
+        if (!activeParts[0].equals("webtoon", ignoreCase = true)) return false
+        if (!targetParts[0].equals("webtoon", ignoreCase = true)) return false
+        if (!activeParts[1].matches(Regex("\\d{1,12}"))) return false
+        if (!activeParts[2].matches(Regex("\\d{1,12}"))) return false
+        if (!targetParts[1].matches(Regex("\\d{1,12}"))) return false
+        if (targetParts[1] != activeParts[1]) return false
+        val imageWorkId = manga.ntkImageWorkId?.trim().orEmpty()
+        if (imageWorkId.isNotEmpty() && imageWorkId != activeParts[1]) return false
+        val recentTrusted = trustedNtkImageApiCount(path, SystemClock.elapsedRealtime() - 30_000L)
+        return recentTrusted <= 0
+    }
+
     private fun ntkGeneratedTargetsSameEpisode(
         first: NtkGeneratedTarget,
         second: NtkGeneratedTarget
@@ -9545,10 +21050,10 @@ object ReaderImageCache {
                 || lower.contains("://moamoabon.com/")
                 || Regex("://fvcdn\\d*\\.com/").containsMatchIn(lower))
             && (
-                Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
-                    Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
-                    Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower) ||
-                    Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp)(?:[?#].*)?$").containsMatchIn(lower)
+                Regex("/(manhwa|webtoon)/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/black/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/blacktoon/episodes/\\d+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$").containsMatchIn(lower) ||
+                    Regex("/wt/episodes/[^/?#]+/[^/?#]+/p\\d{3}\\.(jpg|jpeg|png|webp|gif)(?:[?#].*)?$").containsMatchIn(lower)
                 )
     }
 
@@ -9560,7 +21065,7 @@ object ReaderImageCache {
 
     private fun ntkGeneratedTarget(image: String): NtkGeneratedTarget? {
         ntkProtectedApiGeneratedTarget(image)?.let { return it }
-        val numericMatch = Regex("^(https?://[^/]+)/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+        val numericMatch = Regex("^(https?://[^/]+)/(manhwa|webtoon)/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp|gif)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
             .find(image)
         if (numericMatch != null) {
             val segment = numericMatch.groupValues[2]
@@ -9569,7 +21074,7 @@ object ReaderImageCache {
             val page = numericMatch.groupValues[5].toIntOrNull() ?: return null
             return NtkGeneratedTarget(numericMatch.groupValues[1], "/$segment/$workId/$episodeId", page)
         }
-        val blacktoonMatch = Regex("^(https?://[^/]+)/(?:blacktoon|black)/episodes/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+        val blacktoonMatch = Regex("^(https?://[^/]+)/(?:blacktoon|black)/episodes/(\\d+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp|gif)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
             .find(image)
         if (blacktoonMatch != null) {
             val workId = blacktoonMatch.groupValues[2]
@@ -9577,12 +21082,16 @@ object ReaderImageCache {
             val page = blacktoonMatch.groupValues[4].toIntOrNull() ?: return null
             return NtkGeneratedTarget(blacktoonMatch.groupValues[1], "/webtoon/$workId/$episodeId", page)
         }
-        val slugMatch = Regex("^(https?://[^/]+)/wt/episodes/([^/?#]+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
+        val slugMatch = Regex("^(https?://[^/]+)/wt/episodes/([^/?#]+)/([^/?#]+)/p(\\d{3})\\.(?:jpg|jpeg|png|webp|gif)(?:[?#].*)?$", RegexOption.IGNORE_CASE)
             .find(image) ?: return null
         val slug = slugMatch.groupValues[2]
         val episodeId = slugMatch.groupValues[3]
         val page = slugMatch.groupValues[4].toIntOrNull() ?: return null
         return NtkGeneratedTarget(slugMatch.groupValues[1], "/webtoon/$slug/$episodeId", page)
+    }
+
+    internal fun isCanonicalNtkGeneratedPageForTest(image: String): Boolean {
+        return ntkGeneratedTarget(image) != null && !isDisallowedNtkImageAssetUrl(image)
     }
 
     private fun ntkProtectedApiGeneratedTarget(image: String): NtkGeneratedTarget? {
@@ -9605,7 +21114,30 @@ object ReaderImageCache {
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.replace("\\/", "/")
-                ?: return null
+                ?: run {
+                    val workId = Regex("\"w\"\\s*:\\s*\"?([^\",}]+)\"?").find(json)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.trim()
+                        .orEmpty()
+                    val episodeId = Regex("\"e\"\\s*:\\s*\"?([^\",}]+)\"?").find(json)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.trim()
+                        .orEmpty()
+                    val type = Regex("\"t\"\\s*:\\s*\"?([^\",}]+)\"?").find(json)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.trim()
+                        ?.lowercase(Locale.ROOT)
+                        .orEmpty()
+                    if (workId.isBlank() || episodeId.isBlank()) return null
+                    val segment = when (type) {
+                        "manhwa" -> "manhwa"
+                        else -> "webtoon"
+                    }
+                    "/$segment/$workId/$episodeId"
+                }
             if (!scope.startsWith("/manhwa/") && !scope.startsWith("/webtoon/")) return null
             val base = "${uri.scheme}://${uri.host}"
             NtkGeneratedTarget(base, scope, page)
@@ -9613,6 +21145,21 @@ object ReaderImageCache {
             null
         }
     }
+
+    /** Shared preflight for legacy transports which bypass the tagged OkHttp image client. */
+    internal fun legacySourceOperationAllowed(manga: Manga): Boolean {
+        return legacySourceOperationAllowed(manga.ntkEpisodePath)
+    }
+
+    internal fun legacySourceOperationAllowed(path: String?): Boolean {
+        val normalizedPath = path?.trim().orEmpty()
+        return normalizedPath.isEmpty() ||
+            (!NtkSourceSpoolRegistry.isDiscoveryActive(normalizedPath) &&
+                NtkStrictSourceOwnershipRegistry.owner(normalizedPath) == null)
+    }
+
+    internal fun earlyTransportPreparePhysicalCallsForTest(): Long =
+        earlyTransportPreparePhysicalCalls.get()
 
     private fun canonicalNtkGeneratedImageForActiveEpisode(manga: Manga, image: String): String? {
         val target = ntkGeneratedTarget(image) ?: return null
@@ -9678,6 +21225,15 @@ object ReaderImageCache {
         }
     }
 
+    private fun canNativeFetchProtectedViewerApi(manga: Manga, image: String): Boolean {
+        val target = ntkProtectedApiGeneratedTarget(image) ?: return false
+        val currentKey = earlyNtkPathKey(manga.ntkEpisodePath)
+        val targetKey = earlyNtkPathKey(target.path)
+        if (currentKey.isEmpty() || !currentKey.equals(targetKey, ignoreCase = true)) return false
+        if (isNtkKpWebtoonSlugPathKey(currentKey)) return false
+        return false
+    }
+
     private data class NtkGeneratedImageRef(
         val episodeKey: String,
         val pageKey: String,
@@ -9718,11 +21274,45 @@ object ReaderImageCache {
             return
         }
         if (shouldPreserveNtkGeneratedPageScopedExtension(image, ref)) return
-        val previousPage = ntkGeneratedPageExtensions.put(ref.pageKey, ref.extension)
-        if (previousPage != ref.extension) {
-            Log.d(TAG, "ntk_generated_page_extension_hint key=${ref.pageKey},extension=${ref.extension},previous=${previousPage.orEmpty()}")
-        }
+        val previousPage = ntkGeneratedPageExtensions[ref.pageKey]
         val existingEpisode = ntkGeneratedEpisodeExtensions[ref.episodeKey]
+        if (
+            existingEpisode != null &&
+            existingEpisode != ref.extension &&
+            !hasNtkGeneratedNotFoundInitialExtension(ref, existingEpisode)
+        ) {
+            val actualSuccessOverridesJpegHint =
+                (ref.extension == "png" || ref.extension == "webp") &&
+                    (existingEpisode == "jpg" || existingEpisode == "jpeg")
+            if (actualSuccessOverridesJpegHint) {
+                Log.d(
+                    TAG,
+                    "ntk_generated_episode_extension_override_actual_success key=${ref.episodeKey}," +
+                        "existing=$existingEpisode,incoming=${ref.extension},page=${ref.page}"
+                )
+            } else {
+            if (previousPage == null) {
+                ntkGeneratedPageExtensions[ref.pageKey] = ref.extension
+                Log.d(TAG, "ntk_generated_page_extension_hint key=${ref.pageKey},extension=${ref.extension},previous=")
+            } else if (previousPage != ref.extension) {
+                Log.d(
+                    TAG,
+                    "ntk_generated_page_extension_preserve key=${ref.pageKey}," +
+                        "existing=$previousPage,incoming=${ref.extension}"
+                )
+            }
+            Log.d(
+                TAG,
+                "ntk_generated_episode_extension_preserve key=${ref.episodeKey}," +
+                    "existing=$existingEpisode,incoming=${ref.extension}"
+            )
+            return
+            }
+        }
+        val updatedPreviousPage = ntkGeneratedPageExtensions.put(ref.pageKey, ref.extension)
+        if (updatedPreviousPage != ref.extension) {
+            Log.d(TAG, "ntk_generated_page_extension_hint key=${ref.pageKey},extension=${ref.extension},previous=${updatedPreviousPage.orEmpty()}")
+        }
         if (ref.extension == "jpg" && existingEpisode != null && existingEpisode != "jpg") {
             if (hasNtkGeneratedNotFoundInitialExtension(ref, existingEpisode)) {
                 Log.d(
@@ -9737,7 +21327,44 @@ object ReaderImageCache {
         val previousEpisode = ntkGeneratedEpisodeExtensions.put(ref.episodeKey, ref.extension)
         if (previousEpisode != ref.extension) {
             Log.d(TAG, "ntk_generated_episode_extension_hint key=${ref.episodeKey},extension=${ref.extension},previous=${previousEpisode.orEmpty()}")
+            promoteEarlyNtkImageUrlsToEpisodeExtension(ref)
         }
+    }
+
+    private fun promoteEarlyNtkImageUrlsToEpisodeExtension(ref: NtkGeneratedImageRef) {
+        if (ref.extension.isBlank()) return
+        val matchingKeys = earlyNtkImageUrls.keys.filter {
+            it.trim('/').equals(ref.episodeKey.trim('/'), ignoreCase = true)
+        }
+        for (key in matchingKeys) {
+            val existing = earlyNtkImageUrls[key]?.urls ?: continue
+            var changed = false
+            val promoted = existing.map { image ->
+                val imageRef = ntkGeneratedImageRef(image)
+                if (imageRef == null ||
+                    !imageRef.episodeKey.equals(ref.episodeKey, ignoreCase = true) ||
+                    imageRef.extension == ref.extension
+                ) {
+                    image
+                } else {
+                    changed = true
+                    replaceNtkGeneratedImageExtension(image, ref.extension)
+                }
+            }
+            if (!changed || promoted == existing) continue
+            publishEarlyNtkImageUrls(key, promoted, notifyListeners = true)
+            Log.d(
+                TAG,
+                "reader_early_ntk_urls_promote_episode_extension path=$key," +
+                    "extension=${ref.extension},count=${promoted.size},sourcePage=${ref.page}"
+            )
+        }
+    }
+
+    private fun replaceNtkGeneratedImageExtension(image: String, extension: String): String {
+        val match = Regex("(?i)\\.(jpg|jpeg|png|webp)([?#].*)?$").find(image) ?: return image
+        val suffix = match.groupValues.getOrNull(2).orEmpty()
+        return image.substring(0, match.range.first) + ".$extension$suffix"
     }
 
     private fun shouldPreserveNtkGeneratedPageScopedExtension(
@@ -9755,6 +21382,15 @@ object ReaderImageCache {
 
     private fun rememberNtkGeneratedNotFound(manga: Manga, image: String, source: String) {
         val target = ntkGeneratedTarget(image) ?: return
+        if (shouldIgnoreNtkGeneratedStateForManga(manga, target)) {
+            Log.d(
+                TAG,
+                "ntk_generated_not_found_skip_manga_mismatch key=${ntkGeneratedImageStateKey(image, target)}," +
+                    "active=${manga.ntkEpisodePath.orEmpty()},source=$source," +
+                    "image=${image.substringAfterLast('/').takeLast(64)}"
+            )
+            return
+        }
         if (hasNtkGeneratedResolvedPage(target)) {
             Log.d(
                 TAG,
@@ -9776,6 +21412,15 @@ object ReaderImageCache {
 
     private fun rememberNtkGeneratedHardBlocked(manga: Manga, image: String, source: String) {
         val target = ntkGeneratedTarget(image) ?: return
+        if (shouldIgnoreNtkGeneratedStateForManga(manga, target)) {
+            Log.d(
+                TAG,
+                "ntk_generated_hardblock_skip_manga_mismatch key=${ntkGeneratedImageStateKey(image, target)}," +
+                    "active=${manga.ntkEpisodePath.orEmpty()},source=$source," +
+                    "image=${image.substringAfterLast('/').takeLast(64)}"
+            )
+            return
+        }
         val key = ntkGeneratedImageStateKey(image, target)
         val challengeImage = ntkCurrentEpisodeChallengeImage(manga, image, target)
         try {
@@ -9818,6 +21463,7 @@ object ReaderImageCache {
 
     private fun hasNtkGeneratedNotFound(manga: Manga, image: String): Boolean {
         val target = ntkGeneratedTarget(image) ?: return false
+        if (shouldIgnoreNtkGeneratedStateForManga(manga, target)) return false
         if (hasNtkGeneratedResolvedPage(target)) {
             ntkGeneratedNotFoundPages.remove(ntkGeneratedImageStateKey(image, target))
             return false
@@ -9862,6 +21508,7 @@ object ReaderImageCache {
 
     private fun hasNtkGeneratedHardBlocked(manga: Manga, image: String): Boolean {
         val target = ntkGeneratedTarget(image) ?: return false
+        if (shouldIgnoreNtkGeneratedStateForManga(manga, target)) return false
         return ntkGeneratedHardBlockedPages.contains(ntkGeneratedImageStateKey(image, target))
     }
 
@@ -9939,6 +21586,19 @@ object ReaderImageCache {
         return "${target.path}|${target.page}|$extension"
     }
 
+    private fun shouldIgnoreNtkGeneratedStateForManga(
+        manga: Manga,
+        target: NtkGeneratedTarget
+    ): Boolean {
+        val activePath = manga.ntkEpisodePath?.trim().orEmpty()
+        if (activePath.isBlank()) return false
+        val activeParts = activePath.trim('/').split('/')
+        val targetParts = target.path.trim('/').split('/')
+        if (activeParts.size < 3 || targetParts.size < 3) return false
+        if (activeParts[0].equals(targetParts[0], ignoreCase = true)) return false
+        return activeParts[1] == targetParts[1] && activeParts[2] == targetParts[2]
+    }
+
     private fun ntkGeneratedResolvedPageKey(target: NtkGeneratedTarget): String {
         return "${target.path}|${target.page}"
     }
@@ -9947,12 +21607,12 @@ object ReaderImageCache {
         return ntkGeneratedResolvedPages.contains(ntkGeneratedResolvedPageKey(target))
     }
 
-    private fun rememberNtkGeneratedResolvedPage(image: String, source: String) {
+    private fun rememberNtkGeneratedResolvedPage(image: String, source: String, logResolved: Boolean = true) {
         val target = ntkGeneratedTarget(image) ?: return
         val key = ntkGeneratedResolvedPageKey(target)
         val added = ntkGeneratedResolvedPages.add(key)
         val removedMissing = ntkGeneratedNotFoundPages.removeAll { it.startsWith("$key|") }
-        if (added || removedMissing) {
+        if ((added || removedMissing) && logResolved) {
             Log.d(
                 TAG,
                 "ntk_generated_resolved_page key=$key,source=$source," +
@@ -10175,29 +21835,30 @@ object ReaderImageCache {
         manga: Manga,
         image: String,
         htmlFile: File
-    ): Boolean {
-        if (!looksLikeHtml(htmlFile)) return false
+    ): EncodedOriginalByteProof? {
+        if (!looksLikeHtml(htmlFile)) return null
         val html = try {
             htmlFile.readText(Charsets.UTF_8)
         } catch (_: Exception) {
-            return false
+            return null
         }
         val sourceUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
         for (candidate in extractImageCandidates(html, sourceUrl, manga.baseMode)) {
             val candidateFile = File(htmlFile.parentFile, "${htmlFile.name}.htmlimg.${System.nanoTime()}")
             try {
+                var candidateProof: EncodedOriginalByteProof? = null
                 request(context, manga, candidate).use { response ->
                     if (!response.isSuccessful) return@use
                     val body = response.body ?: return@use
-                    FileOutputStream(candidateFile).use { out -> body.byteStream().copyTo(out) }
+                    candidateProof = copyResponseBodyToFile(body, candidateFile, null)
                 }
-                if (isUsableImage(candidateFile)) {
+                if (isUsableImage(candidateFile) && candidateProof != null) {
                     if (htmlFile.exists()) htmlFile.delete()
                     if (!candidateFile.renameTo(htmlFile)) {
                         candidateFile.copyTo(htmlFile, overwrite = true)
                         candidateFile.delete()
                     }
-                    return true
+                    return candidateProof
                 }
             } catch (_: Exception) {
                 // Try the next extracted candidate.
@@ -10205,7 +21866,7 @@ object ReaderImageCache {
                 if (candidateFile.exists()) candidateFile.delete()
             }
         }
-        return false
+        return null
     }
 
     private fun replaceInvalidNtkGeneratedImageWithFallback(
@@ -10215,20 +21876,21 @@ object ReaderImageCache {
         targetFile: File,
         foreground: Boolean,
         cancellation: Cancellation?
-    ): Boolean {
-        if (!shouldTryNtkGeneratedExtensionFallback(image)) return false
+    ): EncodedOriginalByteProof? {
+        if (!shouldTryNtkGeneratedExtensionFallback(image)) return null
         val candidates = ntkGeneratedExtensionFallbacks(image)
-        if (candidates.isEmpty()) return false
+        if (candidates.isEmpty()) return null
         for (candidate in candidates) {
             cancellation?.throwIfCancelled()
             val candidateFile = File(targetFile.parentFile, "${targetFile.name}.fallback.${System.nanoTime()}")
             try {
+                var candidateProof: EncodedOriginalByteProof? = null
                 requestForForegroundMode(context, manga, candidate, foreground, cancellation).use { response ->
                     if (!response.isSuccessful) return@use
                     val body = response.body ?: return@use
-                    FileOutputStream(candidateFile).use { out -> body.byteStream().copyTo(out) }
+                    candidateProof = copyResponseBodyToFile(body, candidateFile, null)
                 }
-                if (isUsableImage(candidateFile)) {
+                if (isUsableImage(candidateFile) && candidateProof != null) {
                     if (targetFile.exists()) targetFile.delete()
                     replace(candidateFile, targetFile)
                     logCacheEvent(
@@ -10239,7 +21901,7 @@ object ReaderImageCache {
                         "source=${image.substringAfterLast('/').takeLast(48)}"
                     )
                     ViewerWarmupManager.logMetric("ntk_generated_invalid_extension_fallback", 1L)
-                    return true
+                    return candidateProof
                 }
             } catch (_: Exception) {
                 // Try the next extension candidate.
@@ -10247,7 +21909,7 @@ object ReaderImageCache {
                 if (candidateFile.exists()) candidateFile.delete()
             }
         }
-        return false
+        return null
     }
 
     internal fun extractImageCandidates(html: String, sourceUrl: String, baseMode: Int): List<String> {
@@ -10312,6 +21974,7 @@ object ReaderImageCache {
         return lower.contains("/webtoon_uploads/")
             || lower.contains("/manhwa_uploads/")
             || lower.contains("/comic_uploads/")
+            || lower.contains("/board_uploads/")
             || lower.contains("/blacktoon/episodes/")
             || lower.contains("/webtoon/")
             || lower.contains("/manhwa/")
@@ -10375,11 +22038,41 @@ object ReaderImageCache {
         }
     }
 
+    private inline fun <T> withCacheWriteLock(cacheKey: String, block: () -> T): T {
+        val lock = cacheWriteLocks.computeIfAbsent(cacheKey) { ReentrantLock() }
+        lock.lock()
+        return try {
+            block()
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    private inline fun <T : Any> withCurrentCachePublication(
+        generation: Long,
+        block: () -> T
+    ): T? {
+        cachePublicationLock.readLock().lock()
+        return try {
+            if (generation != cacheGeneration.get()) null else block()
+        } finally {
+            cachePublicationLock.readLock().unlock()
+        }
+    }
+
     private fun replace(tmp: File, finalFile: File) {
-        if (finalFile.exists()) finalFile.delete()
-        if (!tmp.renameTo(finalFile)) {
-            tmp.copyTo(finalFile, overwrite = true)
+        if (!tmp.exists()) {
+            if (isUsableImage(finalFile)) return
+            throw java.io.FileNotFoundException(tmp.absolutePath)
+        }
+        if (isUsableImage(finalFile)) {
             tmp.delete()
+            return
+        }
+        tmp.copyTo(finalFile, overwrite = true)
+        tmp.delete()
+        if (!isUsableImage(finalFile)) {
+            throw java.io.IOException("Replaced image cache file is not usable: ${finalFile.absolutePath}")
         }
     }
 
@@ -10478,12 +22171,34 @@ object ReaderImageCache {
             ?: return
         var total = files.sumOf { it.length() }
         if (total <= MAX_CACHE_BYTES) return
-        for (file in files.sortedBy { it.lastModified() }) {
+        val protectedAfterMs = startedAt - 30_000L
+        for (file in files.sortedBy(::cacheLastAccessModified)) {
             if (total <= TARGET_CACHE_BYTES) break
             val key = file.name.removeSuffix(".img")
-            if ((activeReads[key]?.get() ?: 0) > 0) continue
-            val length = file.length()
-            if (file.delete()) total -= length
+            val deletedLength = withCacheWriteLock(key) {
+                if (!ReaderImageCacheTrimAdmissionPolicy.canDelete(
+                        file.isFile,
+                        cacheLastAccessModified(file),
+                        protectedAfterMs,
+                        (activeReads[key]?.get() ?: 0).coerceAtLeast(0)
+                    )
+                ) {
+                    0L
+                } else {
+                    val length = file.length()
+                    if (file.delete()) {
+                        encodedOriginalProofSidecar(file).delete()
+                        strictEncodedOriginalProofSidecar(file).delete()
+                        encodedOriginalByteProofs.remove(file.absolutePath)
+                        residentStrictPublishedBodies.remove(file.absolutePath)
+                        pendingStrictProofPublications.remove(file.absolutePath)
+                        length
+                    } else {
+                        0L
+                    }
+                }
+            }
+            total -= deletedLength
         }
         ViewerWarmupManager.logMetric("reader_cache_trim_ms", System.currentTimeMillis() - startedAt)
     }

@@ -988,7 +988,14 @@ public class MainPageWebtoon {
             end = path.length();
         if(end <= start)
             return "";
-        return marker + path.substring(start, end);
+        String titleToken = path.substring(start, end);
+        if(isNtkNavigationTitleToken(titleToken))
+            return "";
+        return marker + titleToken;
+    }
+
+    private static boolean isNtkNavigationTitleToken(String value) {
+        return value != null && "updates".equalsIgnoreCase(value.trim());
     }
 
     private static boolean hasSecondPathSegment(String href, String segment) {

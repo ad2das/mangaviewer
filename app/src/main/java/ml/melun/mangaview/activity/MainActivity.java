@@ -35,6 +35,7 @@ import androidx.fragment.app.FragmentTransaction;
 
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -127,6 +128,8 @@ public class MainActivity extends AppCompatActivity
     private boolean ntkCaptchaCheckScheduled = false;
     private boolean resumed = false;
     private long lastNtkCaptchaCheckAt = 0L;
+    private int bottomNavTouchPreviousItemId = View.NO_ID;
+    private int bottomNavTouchItemId = View.NO_ID;
     private final List<BroadcastReceiver> internalReceivers = new ArrayList<>();
     private static final int FIRST_TIME_ACTIVITY = 9;
 
@@ -272,10 +275,9 @@ public class MainActivity extends AppCompatActivity
 
         //check prefs
         if (p.getSharedPref().getLong("eula2", -1)<0) {
-            p.setDefUrl(DEFAULT_COMIC_URL);
-            p.setUrl(DEFAULT_COMIC_URL);
-            p.setWebtoonUrl(WEBTOON_URL);
-            p.setAutoUrl(false);
+            // Preference already owns the fresh-install defaults.  Do not replace
+            // a site preset explicitly restored or selected before the first
+            // Activity (diagnostics, deep links, backup restore, etc.).
             p.getSharedPref().edit()
                     .putLong("eula2", System.currentTimeMillis())
                     .putBoolean("manamoa", false)
@@ -399,8 +401,12 @@ public class MainActivity extends AppCompatActivity
             applyBottomNavigationChrome();
             bottomNavigationView.setOnItemSelectedListener(item -> {
                 int index = getFragmentIndex(item.getItemId());
+                android.util.Log.d("ViewerPerf", "main_bottom_nav_selected item=" + item.getItemId()
+                        + ",index=" + index + ",current=" + currentTab);
                 if(index < 0)
                     return false;
+                if(index != currentTab)
+                    Utils.suppressNtkCaptchaForNavigation(2_000L);
                 changeFragment(index);
                 toolbar.setTitle(getTabTitle(currentTab));
                 return true;
@@ -417,6 +423,7 @@ public class MainActivity extends AppCompatActivity
                     toolbar.setTitle(getTabTitle(2));
                 }
             });
+            installBottomNavigationPressListeners();
         }
         PerfTrace.end("main_chrome_setup_ms", chromeStartedAt);
 
@@ -585,9 +592,16 @@ public class MainActivity extends AppCompatActivity
     }
 
     private boolean maybeOpenNtkCaptcha() {
-        if(isFinishing() || isDestroyed())
+        if(isFinishing() || isDestroyed() || !resumed || !hasWindowFocus())
             return false;
-        return Utils.startNtkTurnstileCaptchaIfNeeded(this, 3, null, p);
+        // Captcha is only relevant to the network-backed Home surface. Never
+        // cover local Library/Recent navigation after the user selected it.
+        if(currentTab != 0)
+            return false;
+        Fragment home = fragments[0];
+        if(!(home instanceof MainMain))
+            return false;
+        return Utils.startNtkTurnstileCaptchaIfNeeded(this, 3, home, p);
     }
 
     private void scheduleNtkCaptchaCheck(long delayMs) {
@@ -613,11 +627,10 @@ public class MainActivity extends AppCompatActivity
     private void refreshNtkDomainIfNeeded() {
         if(p == null || !p.isNtkSite())
             return;
-        AppDispatchers.runUserAction(() -> {
-            boolean changed = getHttpClient().resolveNtkDomainNow();
-            if(changed)
-                AppDispatchers.runOnMain(this::invalidateOptionsMenu);
-        });
+        // NTK transport recovery is demand-driven by the request that actually fails. A startup
+        // scan performs unrelated DNS/TLS work, contends with visible catalog/search traffic, and
+        // silently warms the same origin before a reader click.
+        android.util.Log.d("ViewerPerf", "ntk_domain_refresh_deferred_to_demand_failure");
     }
 
     private void refreshWfwfDomainIfNeeded() {
@@ -651,12 +664,10 @@ public class MainActivity extends AppCompatActivity
             }, startupWfwfDomainRefreshDelayMsForTest());
             return;
         }
-        AppDispatchers.runUserAction(() -> {
-            boolean changed = getHttpClient().resolveNtkDomainNow();
-            if(changed)
-                AppDispatchers.runOnMain(this::invalidateOptionsMenu);
-            ContinueReadinessCoordinator.primeColdStart(appContext);
-        });
+        // Do not prepare a saved reader or probe domains at NTK process start. The selected
+        // episode click owns the first manifest/image work and domain recovery follows only an
+        // observed request failure.
+        android.util.Log.d("ViewerPerf", "ntk_startup_network_demand_driven");
     }
 
     private void startDeferredUrlUpdate() {
@@ -1016,6 +1027,70 @@ public class MainActivity extends AppCompatActivity
             item.setChecked(true);
     }
 
+    /**
+     * Material's item click is dispatched at ACTION_UP. On high-refresh displays a short
+     * physical tap can finish between two UI frames, so committing the already-hit tab at
+     * ACTION_DOWN keeps navigation responsive without enlarging or synthesizing a target.
+     * A cancelled/dragged gesture restores the tab that was selected before the press.
+     */
+    private void installBottomNavigationPressListeners() {
+        if(bottomNavigationView == null || bottomNavigationView.getChildCount() == 0)
+            return;
+        View menu = bottomNavigationView.getChildAt(0);
+        if(!(menu instanceof ViewGroup))
+            return;
+        ViewGroup menuView = (ViewGroup) menu;
+        for(int i = 0; i < menuView.getChildCount(); i++) {
+            View itemView = menuView.getChildAt(i);
+            int itemId = itemView.getId();
+            if(bottomNavigationView.getMenu().findItem(itemId) == null)
+                continue;
+            itemView.setOnTouchListener((view, event) -> {
+                handleBottomNavigationItemTouch(itemId, view, event);
+                return false;
+            });
+        }
+    }
+
+    private void handleBottomNavigationItemTouch(int itemId, View itemView, MotionEvent event) {
+        if(bottomNavigationView == null || itemView == null || event == null)
+            return;
+        switch(event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN: {
+                android.util.Log.d("ViewerPerf", "main_bottom_nav_down item=" + itemId
+                        + ",selected=" + bottomNavigationView.getSelectedItemId());
+                bottomNavTouchPreviousItemId = bottomNavigationView.getSelectedItemId();
+                bottomNavTouchItemId = itemId;
+                if(itemId != bottomNavTouchPreviousItemId)
+                    bottomNavigationView.setSelectedItemId(itemId);
+                break;
+            }
+            case MotionEvent.ACTION_MOVE:
+                if(bottomNavTouchItemId != View.NO_ID
+                        && (event.getX() < 0 || event.getX() >= itemView.getWidth()
+                        || event.getY() < 0 || event.getY() >= itemView.getHeight()))
+                    cancelBottomNavigationTouch();
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                cancelBottomNavigationTouch();
+                break;
+            case MotionEvent.ACTION_UP:
+                bottomNavTouchPreviousItemId = View.NO_ID;
+                bottomNavTouchItemId = View.NO_ID;
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void cancelBottomNavigationTouch() {
+        if(bottomNavTouchPreviousItemId != View.NO_ID
+                && bottomNavTouchPreviousItemId != bottomNavigationView.getSelectedItemId())
+            bottomNavigationView.setSelectedItemId(bottomNavTouchPreviousItemId);
+        bottomNavTouchPreviousItemId = View.NO_ID;
+        bottomNavTouchItemId = View.NO_ID;
+    }
+
     @Override
     public void onBackPressed() {
         DrawerLayout drawer = (DrawerLayout) findViewById(R.id.drawer_layout);
@@ -1130,8 +1205,13 @@ public class MainActivity extends AppCompatActivity
         if(callback != null)
             callback.callback(true);
         Toast.makeText(context, label + " 사이트로 변경되었습니다.", Toast.LENGTH_SHORT).show();
+        // Modern NTK catalog/document/image routes establish their own exact server authority.
+        // Opening the legacy WebView merely because the user selected the site hides the real UI,
+        // performs unrelated pre-demand network work, and is wrong when no challenge exists.
+        // A transport that actually receives a challenge still owns the normal explicit captcha
+        // recovery path at that point.
         if("NTK".equals(label))
-            content.post(() -> Utils.startNtkTurnstileCaptchaIfNeeded(this, 3, null, p));
+            android.util.Log.d("ViewerPerf", "ntk_site_selected captcha=demand_driven");
     }
 
     boolean changeFragment(int index){

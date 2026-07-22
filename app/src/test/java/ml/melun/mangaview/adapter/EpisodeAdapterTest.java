@@ -60,4 +60,25 @@ public class EpisodeAdapterTest {
         assertTrue(overview.contains("NTK"));
         assertTrue(overview.contains("0\uAC1C"));
     }
+
+    @Test
+    public void everyValidNtkEpisodePathIsImmediatelyPressEligible() {
+        assertTrue(EpisodeAdapter.isValidNtkExactEpisodePathForTest(
+                "/manhwa/25883/309911"));
+        assertTrue(EpisodeAdapter.isValidNtkExactEpisodePathForTest(
+                "/webtoon/123/kp-random-slug"));
+        assertTrue(EpisodeAdapter.isValidNtkExactEpisodePathForTest(
+                "/WEBTOON/work/episode"));
+    }
+
+    @Test
+    public void invalidOrNonEpisodeNtkPathsStayDisabled() {
+        assertFalse(EpisodeAdapter.isValidNtkExactEpisodePathForTest(null));
+        assertFalse(EpisodeAdapter.isValidNtkExactEpisodePathForTest(""));
+        assertFalse(EpisodeAdapter.isValidNtkExactEpisodePathForTest("/manhwa/25883"));
+        assertFalse(EpisodeAdapter.isValidNtkExactEpisodePathForTest(
+                "/manhwa/25883/309911/extra"));
+        assertFalse(EpisodeAdapter.isValidNtkExactEpisodePathForTest(
+                "/other/25883/309911"));
+    }
 }

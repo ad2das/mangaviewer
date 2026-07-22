@@ -12,6 +12,7 @@ import android.net.http.UploadDataSink;
 import android.os.Build;
 
 import java.io.ByteArrayOutputStream;
+import java.net.ProtocolException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -58,6 +59,16 @@ public final class NtkQuicFetcher {
 
     public interface PartialBytesObserver {
         boolean onPartialBytes(int code, Map<String, List<String>> headers, byte[] bytes);
+    }
+
+    /**
+     * Linearizes an HttpEngine request with the foreground viewer generation that owns it.
+     * Registration happens before {@link UrlRequest#start()}, so a retired owner can reject the
+     * request without putting any bytes on the wire. Implementations must make cancel idempotent.
+     */
+    public interface RequestOwner {
+        boolean register(UrlRequest request);
+        void unregister(UrlRequest request);
     }
 
     public static boolean isAvailable() {
@@ -257,7 +268,32 @@ public final class NtkQuicFetcher {
                                           PartialTextObserver partialTextObserver,
                                           PartialBytesObserver partialBytesObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, partialTextObserver, partialBytesObserver, null, null, null);
+                method, body, timeoutMs, partialTextObserver, partialBytesObserver, null, null, null,
+                null, true);
+    }
+
+    /**
+     * Executes one exact, non-redirecting request on an existing shared HttpEngine session.
+     * This is the strict viewer transport: no retry, hedge, redirect, or detached request is
+     * permitted, and the complete response is consumed before returning.
+     */
+    public static Result fetchWithEngineExactOwned(
+            HttpEngine engine,
+            ExecutorService executor,
+            String url,
+            String userAgent,
+            String cookieHeader,
+            Map<String, String> requestHeaders,
+            String method,
+            byte[] body,
+            long timeoutMs,
+            RequestOwner requestOwner
+    ) throws InterruptedException {
+        if(requestOwner == null)
+            throw new IllegalArgumentException("Exact HttpEngine request owner is null");
+        return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader,
+                requestHeaders, method, body, timeoutMs, null, null, null,
+                null, null, requestOwner, false);
     }
 
     public static Result fetchWithEngineUntilText(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -265,7 +301,7 @@ public final class NtkQuicFetcher {
                                                   String method, byte[] body, long timeoutMs,
                                                   EarlyTextObserver earlyTextObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, null, null, earlyTextObserver, null, null);
+                method, body, timeoutMs, null, null, earlyTextObserver, null, null, null, true);
     }
 
     public static Result fetchWithEngineObserve(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -274,7 +310,8 @@ public final class NtkQuicFetcher {
                                                 EarlyTextObserver earlyTextObserver,
                                                 ResponseStartedObserver responseStartedObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, null, null, earlyTextObserver, responseStartedObserver, null);
+                method, body, timeoutMs, null, null, earlyTextObserver, responseStartedObserver,
+                null, null, true);
     }
 
     public static Result fetchWithEngineUntilResponseStarted(HttpEngine engine, ExecutorService executor,
@@ -286,7 +323,8 @@ public final class NtkQuicFetcher {
                                                              EarlyResponseStartedObserver earlyResponseStartedObserver)
             throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, null, null, null, null, earlyResponseStartedObserver);
+                method, body, timeoutMs, null, null, null, null, earlyResponseStartedObserver,
+                null, true);
     }
 
     private static Result fetchWithEngineInternal(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -296,7 +334,9 @@ public final class NtkQuicFetcher {
                                                   PartialBytesObserver partialBytesObserver,
                                                   EarlyTextObserver earlyTextObserver,
                                                   ResponseStartedObserver responseStartedObserver,
-                                                  EarlyResponseStartedObserver earlyResponseStartedObserver) throws InterruptedException {
+                                                  EarlyResponseStartedObserver earlyResponseStartedObserver,
+                                                  RequestOwner requestOwner,
+                                                  boolean followRedirects) throws InterruptedException {
         CountDownLatch done = new CountDownLatch(1);
         State state = new State();
         UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
@@ -306,6 +346,13 @@ public final class NtkQuicFetcher {
 
                 @Override
                 public void onRedirectReceived(UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
+                    if(!followRedirects) {
+                        state.error = new ProtocolException(
+                                "Exact HttpEngine request redirected to " + newLocationUrl);
+                        done.countDown();
+                        request.cancel();
+                        return;
+                    }
                     request.followRedirect();
                 }
 
@@ -313,6 +360,7 @@ public final class NtkQuicFetcher {
                 public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
                     state.code = info.getHttpStatusCode();
                     state.headers = new HashMap<>(info.getHeaders().getAsMap());
+                    state.negotiatedProtocol = info.getNegotiatedProtocol();
                     if(responseStartedObserver != null) {
                         try {
                             responseStartedObserver.onResponseStarted(state.code, state.headers);
@@ -333,7 +381,8 @@ public final class NtkQuicFetcher {
                     }
                     notifyPartialText = (partialTextObserver != null || earlyTextObserver != null)
                             && Result.shouldDecodeBodyAsText(state.headers);
-                    notifyPartialBytes = partialBytesObserver != null && !Result.shouldDecodeBodyAsText(state.headers);
+                    notifyPartialBytes = partialBytesObserver != null
+                            && !Result.shouldDecodeBodyAsText(state.headers);
                     int bufferBytes = partialTextObserver != null
                             ? 256
                             : (notifyPartialText || notifyPartialBytes ? 1024 : 128 * 1024);
@@ -385,6 +434,7 @@ public final class NtkQuicFetcher {
                 public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
                     state.code = info.getHttpStatusCode();
                     state.headers = new HashMap<>(info.getHeaders().getAsMap());
+                    state.negotiatedProtocol = info.getNegotiatedProtocol();
                     state.bodyBytes = response.toByteArray();
                     done.countDown();
                 }
@@ -396,6 +446,7 @@ public final class NtkQuicFetcher {
                         try {
                             state.code = info.getHttpStatusCode();
                             state.headers = new HashMap<>(info.getHeaders().getAsMap());
+                            state.negotiatedProtocol = info.getNegotiatedProtocol();
                         } catch (Exception ignored) {
                         }
                     }
@@ -406,7 +457,8 @@ public final class NtkQuicFetcher {
                 public void onCanceled(UrlRequest request, UrlResponseInfo info) {
                     if(state.completedEarly)
                         return;
-                    state.error = new InterruptedException("cancelled");
+                    if(state.error == null)
+                        state.error = new InterruptedException("cancelled");
                     done.countDown();
                 }
         });
@@ -428,16 +480,40 @@ public final class NtkQuicFetcher {
         if(cookieHeader != null && cookieHeader.length() > 0)
             builder.addHeader("Cookie", cookieHeader);
         UrlRequest request = builder.build();
-        request.start();
-        if(!done.await(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS)) {
-            request.cancel();
-            done.await(750, TimeUnit.MILLISECONDS);
-            return Result.error(new java.net.SocketTimeoutException("QUIC fetch timed out"));
+        boolean registered = false;
+        if(requestOwner != null) {
+            registered = requestOwner.register(request);
+            if(!registered) {
+                request.cancel();
+                return Result.error(new InterruptedException("Exact request owner retired"));
+            }
         }
-        if(state.error != null)
-            return Result.error(state.error);
-        return new Result(state.code, state.bodyBytes == null ? new byte[0] : state.bodyBytes,
-                state.headers == null ? Collections.emptyMap() : state.headers, null);
+        try {
+            request.start();
+            final boolean completed;
+            try {
+                completed = done.await(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS);
+            } catch(InterruptedException e) {
+                // Future.cancel(true) interrupts the waiting owner, but HttpEngine's request keeps
+                // running unless it is explicitly cancelled. Letting that orphan continue retains
+                // direct buffers and its callback executor across the reader hand-off.
+                request.cancel();
+                throw e;
+            }
+            if(!completed) {
+                request.cancel();
+                done.await(750, TimeUnit.MILLISECONDS);
+                return Result.error(new java.net.SocketTimeoutException("QUIC fetch timed out"));
+            }
+            if(state.error != null)
+                return Result.error(state.error);
+            return new Result(state.code, state.bodyBytes == null ? new byte[0] : state.bodyBytes,
+                    state.headers == null ? Collections.emptyMap() : state.headers,
+                    state.negotiatedProtocol, null);
+        } finally {
+            if(registered)
+                requestOwner.unregister(request);
+        }
     }
 
     private static void addForwardedHeaders(UrlRequest.Builder builder, Map<String, String> headers) {
@@ -491,12 +567,19 @@ public final class NtkQuicFetcher {
         public final String body;
         public final byte[] bodyBytes;
         public final Map<String, List<String>> headers;
+        public final String negotiatedProtocol;
         public final Throwable error;
 
         Result(int code, byte[] bodyBytes, Map<String, List<String>> headers, Throwable error) {
+            this(code, bodyBytes, headers, "", error);
+        }
+
+        Result(int code, byte[] bodyBytes, Map<String, List<String>> headers,
+               String negotiatedProtocol, Throwable error) {
             this.code = code;
             this.bodyBytes = bodyBytes == null ? new byte[0] : bodyBytes;
             this.headers = headers;
+            this.negotiatedProtocol = negotiatedProtocol == null ? "" : negotiatedProtocol;
             this.body = shouldDecodeBodyAsText(headers)
                     ? new String(this.bodyBytes, StandardCharsets.UTF_8)
                     : "";
@@ -563,6 +646,7 @@ public final class NtkQuicFetcher {
         int code;
         byte[] bodyBytes;
         Map<String, List<String>> headers;
+        String negotiatedProtocol;
         Throwable error;
         boolean completedEarly;
     }

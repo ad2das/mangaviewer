@@ -2,14 +2,15 @@ package ml.melun.mangaview;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.webkit.WebView;
-import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatDelegate;
@@ -20,13 +21,17 @@ import androidx.work.WorkManager;
 import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.ClassificationDbStore;
 import ml.melun.mangaview.activity.NtkQuicFetcher;
-import ml.melun.mangaview.activity.NtkBrowserSessionBroker;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
+import ml.melun.mangaview.mangaview.NtkWebViewFallbackManager;
 import ml.melun.mangaview.report.CrashReporter;
+import ml.melun.mangaview.reader.ReaderImageCache;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.MainThreadStallMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.ViewerColdStateSnapshot;
+import ml.melun.mangaview.ntkack.NtkAckProcessRuntime;
+import ml.melun.mangaview.ntkack.ProcessRole;
 
 
 
@@ -46,19 +51,36 @@ public class MainApplication extends MultiDexApplication implements Configuratio
     private static final Object firebaseSyncLock = new Object();
     private static final Object deferredServicesLock = new Object();
     private static final Object workManagerLock = new Object();
+    private static final Object ntkForegroundViewerLock = new Object();
     private static volatile boolean workManagerInitialized = false;
-    private static volatile String ntkBrowserWarmPath = "";
-    private static volatile long ntkBrowserWarmStartedAtMs = 0L;
+    private static final long NTK_FOREGROUND_VIEWER_ACTIVE_MS = 30000L;
+    private static final String PREF_LAST_NTK_VIEWER_PATH = "lastNtkViewerPath";
+    private static final String PREF_LAST_NTK_VIEWER_WORK_ID = "lastNtkViewerWorkId";
+    private static final String PREF_LAST_NTK_VIEWER_EPISODE_ID = "lastNtkViewerEpisodeId";
+    private static volatile String ntkForegroundViewerPath = "";
+    private static volatile long ntkForegroundViewerStartedAtMs = 0L;
+    private static volatile long ntkForegroundViewerInputAtMs = 0L;
     @Override
     protected void attachBaseContext(Context base) {
+        String processName = ProcessRole.resolveProcessName(base);
+        if(ProcessRole.isNtkAckProcess(processName)
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WebView.setDataDirectorySuffix("ntk_ack_v1");
+        }
         super.attachBaseContext(base);
     }
 
     @Override
     public void onCreate() {
+        super.onCreate();
+        if(ProcessRole.isNtkAckProcess(this)) {
+            appContext = this;
+            NtkAckProcessRuntime.initialize(this);
+            return;
+        }
+        ViewerColdStateSnapshot.captureAtProcessStart(this).record();
         long appStartedAt = PerfTrace.start("app_on_create_ms");
         appContext = this;
-        WebView.setWebContentsDebuggingEnabled(false);
         MainThreadStallMonitor.install(Log.isLoggable("MainStall", Log.DEBUG));
         long crashReporterStartedAt = PerfTrace.start("app_crash_reporter_install_ms");
         CrashReporter.install(this);
@@ -66,7 +88,6 @@ public class MainApplication extends MultiDexApplication implements Configuratio
             @Override
             public void onActivityResumed(Activity activity) {
                 currentActivity = activity;
-                maybeWarmNtkBrowserSession(activity);
             }
 
             @Override
@@ -93,259 +114,166 @@ public class MainApplication extends MultiDexApplication implements Configuratio
         refreshWebViewDebuggingPolicy();
         PerfTrace.end("app_preference_init_ms", preferenceStartedAt);
         AppDispatchers.runIo(() -> ClassificationDbStore.cleanupLegacyFiles(appContext));
-        long superStartedAt = PerfTrace.start("app_super_on_create_ms");
-        super.onCreate();
-        PerfTrace.end("app_super_on_create_ms", superStartedAt);
         PerfTrace.end("app_on_create_ms", appStartedAt);
-        AppDispatchers.runIo(() -> preWarmNtkAck());
     }
 
-    private static volatile java.util.concurrent.ScheduledExecutorService ntkTrustRefresher;
-
-    private void preWarmNtkAck() {
-        try {
-            if(p == null || !p.isNtkSite())
-                return;
-            java.util.List<ml.melun.mangaview.mangaview.MTitle> recent = p.getRecent();
-            if(recent == null || recent.isEmpty())
-                return;
-            ml.melun.mangaview.mangaview.MTitle item = recent.get(0);
-            if(item == null)
-                return;
-            ml.melun.mangaview.mangaview.Title title = item instanceof ml.melun.mangaview.mangaview.Title
-                    ? (ml.melun.mangaview.mangaview.Title) item
-                    : new ml.melun.mangaview.mangaview.Title(item);
-            ml.melun.mangaview.mangaview.Manga manga = ml.melun.mangaview.activity.ViewerResumeResolver.resumeManga(title);
-            if(manga == null || !manga.isOnline())
-                return;
-            manga.setTitle(title);
-            manga.setTitleId(title.getId());
-            manga.ensureNtkEpisodePathFromIdentity();
-            String ntkPath = manga.getNtkEpisodePath();
-            if(ntkPath == null || ntkPath.length() == 0)
-                return;
-            CustomHttpClient client = getHttpClient();
-            if(client == null || !client.isNtk())
-                return;
-            String baseUrl = client.getUrl(ntkPath);
-            client.syncCookiesFromWebView(baseUrl, true);
-            client.syncCookiesFromWebView(baseUrl + ntkPath, true);
-            Activity activity = currentActivity;
-            if(!client.hasCloudflareClearanceForUrl(baseUrl)) {
-                android.util.Log.d("MainApplication", "ntk_prewarm_ack_no_clearance_start_browser path=" + ntkPath);
-                if(activity != null)
-                new Handler(Looper.getMainLooper()).post(
-                        () -> maybeWarmNtkBrowserSession(activity, manga, baseUrl, ntkPath, client, true));
-            }
-            android.util.Log.d("MainApplication", "ntk_prewarm_ack_start path=" + ntkPath);
-            boolean ackOk = client.preWarmStrictNtkAckForPath(ntkPath, 3500L);
-            boolean keyOk = client.warmNtkViewerRequestKey(baseUrl, ntkPath);
-            String imagePrimeKey = Utils.startNtkGeneratedInitialRunwayPrewarm(appContext, manga);
-            if(activity != null)
-                maybeWarmNtkBrowserSession(activity, manga, baseUrl, ntkPath, client, true);
-            android.util.Log.d("MainApplication", "ntk_prewarm_ack_done path=" + ntkPath
-                    + ",ack=" + ackOk
-                    + ",key=" + keyOk
-                    + ",imagePrime=" + (imagePrimeKey != null));
-            ml.melun.mangaview.runtime.ContinueReadinessCoordinator.primeColdStart(appContext);
-            startNtkTrustRefresher(ntkPath);
-        } catch(Exception e) {
-            android.util.Log.d("MainApplication", "ntk_prewarm_ack_error " + e);
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        boolean aggressive = level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
+                || level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE;
+        if(aggressive) {
+            ReaderImageCache.trimVolatileMemory(this, true);
+        } else if(level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            ReaderImageCache.trimVolatileMemory(this, false);
         }
     }
 
-    private void maybeWarmNtkBrowserSession(Activity activity) {
-        if(activity == null || p == null || !p.isNtkSite())
-            return;
-        AppDispatchers.runIo(() -> {
-            try {
-                java.util.List<ml.melun.mangaview.mangaview.MTitle> recent = p.getRecent();
-                if(recent == null || recent.isEmpty())
-                    return;
-                ml.melun.mangaview.mangaview.MTitle item = recent.get(0);
-                if(item == null)
-                    return;
-                ml.melun.mangaview.mangaview.Title title = item instanceof ml.melun.mangaview.mangaview.Title
-                        ? (ml.melun.mangaview.mangaview.Title) item
-                        : new ml.melun.mangaview.mangaview.Title(item);
-                ml.melun.mangaview.mangaview.Manga manga =
-                        ml.melun.mangaview.activity.ViewerResumeResolver.resumeManga(title);
-                if(manga == null || !manga.isOnline())
-                    return;
-                manga.setTitle(title);
-                manga.setTitleId(title.getId());
-                manga.ensureNtkEpisodePathFromIdentity();
-                String path = manga.getNtkEpisodePath();
-                if(path == null || !(path.startsWith("/webtoon/") || path.startsWith("/manhwa/")))
-                    return;
-                CustomHttpClient client = getHttpClient();
-                if(client == null || !client.isNtk())
-                    return;
-                String baseUrl = client.getUrl(path);
-                client.syncCookiesFromWebView(baseUrl, true);
-                client.syncCookiesFromWebView(baseUrl + path, true);
-                if(!client.hasCloudflareClearanceForUrl(baseUrl))
-                    Log.d("MainApplication", "ntk_browser_session_warm_no_clearance path=" + path);
-                new Handler(Looper.getMainLooper()).post(
-                        () -> maybeWarmNtkBrowserSession(activity, manga, baseUrl, path, client, true));
-            } catch(Exception e) {
-                Log.d("MainApplication", "ntk_browser_session_warm_resolve_error " + e);
-            }
-        });
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        ReaderImageCache.trimVolatileMemory(this, true);
     }
 
-    private static void maybeWarmNtkBrowserSession(Activity activity,
-                                                   ml.melun.mangaview.mangaview.Manga manga,
-                                                   String baseUrl,
-                                                   String path,
-                                                   CustomHttpClient client,
-                                                   boolean force) {
-        if(activity == null || activity.isFinishing() || path == null || path.length() == 0 || client == null)
+    public static void noteNtkForegroundViewerPath(String path) {
+        if(path == null || path.length() == 0)
+            return;
+        if(!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/"))
             return;
         long now = android.os.SystemClock.elapsedRealtime();
-        if(path.equals(ntkBrowserWarmPath) && now - ntkBrowserWarmStartedAtMs < 60000L)
-            return;
-        if(!force && ntkBrowserWarmPath != null && ntkBrowserWarmPath.length() > 0
-                && !path.equals(ntkBrowserWarmPath)
-                && now - ntkBrowserWarmStartedAtMs < 12000L) {
-            Log.d("MainApplication", "ntk_browser_session_warm_visible_skip_active current="
-                    + ntkBrowserWarmPath + ",candidate=" + path);
-            return;
-        }
-        FrameLayout parent = activity.findViewById(android.R.id.content);
-        if(parent == null)
-            return;
-        ntkBrowserWarmPath = path;
-        ntkBrowserWarmStartedAtMs = now;
-        try {
-            NtkBrowserSessionBroker.INSTANCE.attach(
-                    activity,
-                    parent,
-                    baseUrl,
+        boolean runPathSideEffects;
+        synchronized(ntkForegroundViewerLock) {
+            runPathSideEffects = shouldRunNtkForegroundPathSideEffects(
+                    ntkForegroundViewerPath,
+                    ntkForegroundViewerStartedAtMs,
                     path,
-                    client.agent,
-                    java.util.Collections.emptyMap(),
-                    false,
-                    new NtkBrowserSessionBroker.Listener() {
-                        @Override
-                        public void onImages(@NonNull NtkBrowserSessionBroker.ImageSnapshot snapshot) {
-                            Log.d("MainApplication", "ntk_browser_session_warm_images path="
-                                    + snapshot.getPath() + ",count=" + snapshot.getImages().size());
-                        }
-
-                        @Override
-                        public void onState(@NonNull String statePath, boolean cloudflare,
-                                            @NonNull String title, @NonNull String bodySample) {
-                            if(cloudflare)
-                                Log.d("MainApplication", "ntk_browser_session_warm_cf path=" + statePath);
-                        }
-
-                        @Override
-                        public void onFirstDrawable(@NonNull String drawablePath) {
-                            Log.d("MainApplication", "ntk_browser_session_warm_first_drawable path=" + drawablePath);
-                        }
-
-                        @Override
-                        public void onViewportReady(@NonNull String readyPath) {
-                            Log.d("MainApplication", "ntk_browser_session_warm_viewport_ready path=" + readyPath);
-                        }
-
-                        @Override
-                        public void onScroll(@NonNull NtkBrowserSessionBroker.ScrollSnapshot snapshot) {
-                        }
-
-                        @Override
-                        public void onCoverage(@NonNull NtkBrowserSessionBroker.VisibleCoverageSnapshot snapshot) {
-                        }
-
-                        @Override
-                        public void onNeedsUserVerification(@NonNull String verificationPath) {
-                            Log.d("MainApplication", "ntk_browser_session_warm_needs_verification path=" + verificationPath);
-                        }
-
-                        @Override
-                        public void onError(@NonNull String errorPath, @NonNull String message) {
-                            Log.d("MainApplication", "ntk_browser_session_warm_error path="
-                                    + errorPath + "," + message);
-                        }
-                    },
-                    manga.getNtkImageCount());
-            Log.d("MainApplication", "ntk_browser_session_warm_start path=" + path);
-        } catch(Exception e) {
-            Log.d("MainApplication", "ntk_browser_session_warm_attach_error path=" + path + "," + e);
-        }
-    }
-
-    public static void warmNtkBrowserSessionForEpisode(Activity activity,
-                                                       ml.melun.mangaview.mangaview.Manga manga,
-                                                       ml.melun.mangaview.mangaview.Title title) {
-        if(activity == null || manga == null)
-            return;
-        try {
-            manga.setTitle(title);
-            if(title != null)
-                manga.setTitleId(title.getId());
-            manga.ensureNtkEpisodePathFromIdentity();
-            String path = manga.getNtkEpisodePath();
-            if(path == null || !(path.startsWith("/webtoon/") || path.startsWith("/manhwa/")))
+                    now);
+            ntkForegroundViewerPath = path;
+            ntkForegroundViewerStartedAtMs = now;
+            ntkForegroundViewerInputAtMs = 0L;
+            if(!runPathSideEffects) {
+                Log.d("MainApplication", "ntk_foreground_viewer_path_refresh path=" + path);
                 return;
-            CustomHttpClient client = getHttpClient();
-            if(client == null || !client.isNtk())
-                return;
-            String baseUrl = client.getUrl(path);
-            maybeWarmNtkBrowserSession(activity, manga, baseUrl, path, client, true);
-        } catch(Exception e) {
-            Log.d("MainApplication", "ntk_browser_session_warm_episode_error " + e);
-        }
-    }
-
-    public static void warmVisibleNtkBrowserSessionForEpisode(Activity activity,
-                                                              ml.melun.mangaview.mangaview.Manga manga,
-                                                              ml.melun.mangaview.mangaview.Title title) {
-        if(activity == null || manga == null)
-            return;
-        try {
-            manga.setTitle(title);
-            if(title != null)
-                manga.setTitleId(title.getId());
-            manga.ensureNtkEpisodePathFromIdentity();
-            String path = manga.getNtkEpisodePath();
-            if(path == null || !(path.startsWith("/webtoon/") || path.startsWith("/manhwa/")))
-                return;
-            CustomHttpClient client = getHttpClient();
-            if(client == null || !client.isNtk())
-                return;
-            String baseUrl = client.getUrl(path);
-            maybeWarmNtkBrowserSession(activity, manga, baseUrl, path, client, false);
-        } catch(Exception e) {
-            Log.d("MainApplication", "ntk_browser_session_warm_visible_error " + e);
-        }
-    }
-
-    private void startNtkTrustRefresher(String path) {
-        if(ntkTrustRefresher != null)
-            return;
-        ntkTrustRefresher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "ntk-trust-refresher");
-            t.setDaemon(true);
-            return t;
-        });
-        ntkTrustRefresher.scheduleAtFixedRate(() -> {
-            try {
-                CustomHttpClient client = getHttpClient();
-                if(client == null || !client.isNtk())
-                    return;
-                android.util.Log.d("MainApplication", "ntk_trust_refresh path=" + path);
-                String baseUrl = client.getUrl(path);
-                boolean ackOk = client.preWarmStrictNtkAckForPath(path, 2500L);
-                boolean keyOk = client.warmNtkViewerRequestKey(baseUrl, path);
-                android.util.Log.d("MainApplication", "ntk_trust_refresh_done path=" + path
-                        + ",ack=" + ackOk
-                        + ",key=" + keyOk);
-            } catch(Exception e) {
-                android.util.Log.d("MainApplication", "ntk_trust_refresh_error " + e);
             }
-        }, 4, 4, java.util.concurrent.TimeUnit.MINUTES);
+        }
+        if(runPathSideEffects) {
+            final String activePath = path;
+            AppDispatchers.submitNtkViewerCritical(() -> {
+                rememberLastNtkViewerPath(activePath, "", "", false);
+                try {
+                    ReaderImageCache.INSTANCE.cancelOtherNtkEpisodeVolatile(
+                            activePath, "foreground_viewer_path");
+                } catch(Throwable t) {
+                    Log.d("MainApplication", "ntk_foreground_viewer_cancel_other_error path="
+                            + activePath + "," + t);
+                }
+                try {
+                    NtkWebViewFallbackManager.get(appContext)
+                            .cancelViewerImageFetchesExceptPath(
+                                    activePath, "foreground_viewer_path");
+                } catch(Throwable t) {
+                    Log.d("MainApplication",
+                            "ntk_foreground_viewer_cancel_other_webview_error path="
+                                    + activePath + "," + t);
+                }
+            });
+        }
+        Log.d("MainApplication", "ntk_foreground_viewer_path path=" + path);
+    }
+
+    static boolean shouldRunNtkForegroundPathSideEffects(String currentPath,
+                                                          long currentStartedAtMs,
+                                                          String nextPath,
+                                                          long nowMs) {
+        return currentPath == null
+                || !nextPath.equals(currentPath)
+                || nowMs - currentStartedAtMs >= NTK_FOREGROUND_VIEWER_ACTIVE_MS;
+    }
+
+    public static void clearNtkForegroundViewerPath(String path) {
+        synchronized(ntkForegroundViewerLock) {
+            if(!shouldClearNtkForegroundViewerPath(ntkForegroundViewerPath, path))
+                return;
+            ntkForegroundViewerPath = "";
+            ntkForegroundViewerStartedAtMs = 0L;
+            ntkForegroundViewerInputAtMs = 0L;
+        }
+        Log.d("MainApplication", "ntk_foreground_viewer_path_clear path=" + path);
+    }
+
+    static boolean shouldClearNtkForegroundViewerPath(String currentPath, String closingPath) {
+        String current = currentPath == null ? "" : currentPath.trim();
+        String closing = closingPath == null ? "" : closingPath.trim();
+        return current.length() > 0 && current.equals(closing);
+    }
+
+    public static void noteNtkForegroundViewerInput(String path) {
+        if(path == null || path.length() == 0)
+            return;
+        String foreground = ntkForegroundViewerPath;
+        if(foreground == null || !path.equals(foreground))
+            return;
+        ntkForegroundViewerInputAtMs = android.os.SystemClock.elapsedRealtime();
+    }
+
+    public static void rememberLastNtkViewerPath(String path, String workId, String episodeId) {
+        rememberLastNtkViewerPath(path, workId, episodeId, true);
+    }
+
+    public static void rememberLastNtkViewerPath(String path, String workId, String episodeId,
+                                                 boolean replaceIdentity) {
+        if(appContext == null || path == null || path.length() == 0)
+            return;
+        if(!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/"))
+            return;
+        try {
+            android.content.SharedPreferences.Editor editor =
+                    appContext.getSharedPreferences("mangaView", Context.MODE_PRIVATE)
+                            .edit()
+                            .putString(PREF_LAST_NTK_VIEWER_PATH, path);
+            if(replaceIdentity || (workId != null && workId.length() > 0))
+                editor.putString(PREF_LAST_NTK_VIEWER_WORK_ID, workId == null ? "" : workId);
+            if(replaceIdentity || (episodeId != null && episodeId.length() > 0))
+                editor.putString(PREF_LAST_NTK_VIEWER_EPISODE_ID, episodeId == null ? "" : episodeId);
+            editor.apply();
+        } catch(Exception e) {
+            Log.d("MainApplication", "ntk_last_viewer_path_store_error " + e);
+        }
+    }
+
+    public static boolean isNtkForegroundViewerPathActive() {
+        String foreground = ntkForegroundViewerPath;
+        return foreground != null
+                && foreground.length() > 0
+                && android.os.SystemClock.elapsedRealtime() - ntkForegroundViewerStartedAtMs
+                < NTK_FOREGROUND_VIEWER_ACTIVE_MS;
+    }
+
+    public static String activeNtkForegroundViewerPath() {
+        return isNtkForegroundViewerPathActive() ? ntkForegroundViewerPath : "";
+    }
+
+    public static boolean isNtkForegroundViewerPath(String path) {
+        if(path == null || path.length() == 0)
+            return false;
+        String foreground = ntkForegroundViewerPath;
+        return foreground != null
+                && path.equals(foreground)
+                && android.os.SystemClock.elapsedRealtime() - ntkForegroundViewerStartedAtMs
+                < NTK_FOREGROUND_VIEWER_ACTIVE_MS;
+    }
+
+    public static long ntkForegroundViewerInputQuietRemainingMs(String path, long quietMs) {
+        if(path == null || path.length() == 0 || quietMs <= 0L)
+            return 0L;
+        String foreground = ntkForegroundViewerPath;
+        if(foreground == null || !path.equals(foreground))
+            return 0L;
+        long inputAt = ntkForegroundViewerInputAtMs;
+        if(inputAt <= 0L)
+            return 0L;
+        long elapsed = android.os.SystemClock.elapsedRealtime() - inputAt;
+        return elapsed >= quietMs ? 0L : quietMs - Math.max(0L, elapsed);
     }
 
     public static CustomHttpClient getHttpClient() {
@@ -417,6 +345,8 @@ public class MainApplication extends MultiDexApplication implements Configuratio
         boolean debuggable = (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         boolean enabled = shouldEnableWebViewDebuggingForTest(debuggable,
                 preference != null && preference.isNtkSite());
+        if(!enabled)
+            return;
         if(Looper.myLooper() == Looper.getMainLooper()) {
             WebView.setWebContentsDebuggingEnabled(enabled);
         } else {
@@ -426,7 +356,7 @@ public class MainApplication extends MultiDexApplication implements Configuratio
     }
 
     static boolean shouldEnableWebViewDebuggingForTest(boolean debuggable, boolean ntkSite) {
-        return debuggable && !ntkSite;
+        return false;
     }
 
     @NonNull

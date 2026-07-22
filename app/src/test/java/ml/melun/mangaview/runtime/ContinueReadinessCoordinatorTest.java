@@ -20,7 +20,8 @@ public class ContinueReadinessCoordinatorTest {
     public void ntkColdStartSkipsAmbiguousSource() {
         assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("", true));
         assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest(null, true));
-        assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("ntk", true));
+        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("ntk", true));
+        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("ntk", false));
         assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("", false));
     }
 

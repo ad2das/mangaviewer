@@ -156,6 +156,14 @@ public class UtilsTest {
     }
 
     @Test
+    public void preparedContinuePreventsBackgroundMainCaptchaFromStealingFocus() {
+        assertTrue(Utils.shouldSkipPreparedMainCaptchaLaunchForTest(true, true, true));
+        assertFalse(Utils.shouldSkipPreparedMainCaptchaLaunchForTest(true, true, false));
+        assertFalse(Utils.shouldSkipPreparedMainCaptchaLaunchForTest(true, false, true));
+        assertFalse(Utils.shouldSkipPreparedMainCaptchaLaunchForTest(false, true, true));
+    }
+
+    @Test
     public void ntkRecentChallengePreventsProofSuppression() {
         assertTrue(Utils.shouldSuppressNtkCaptchaAfterRecentVerificationForTest(true, true, false));
         assertFalse(Utils.shouldSuppressNtkCaptchaAfterRecentVerificationForTest(true, true, true));

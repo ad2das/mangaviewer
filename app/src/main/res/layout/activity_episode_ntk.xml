@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/ntk_episode_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/appSurface"
+    android:descendantFocusability="blocksDescendants"
+    android:focusable="true"
+    android:focusableInTouchMode="true"
+    android:importantForAutofill="noExcludeDescendants">
+
+    <!-- The episode list is metadata-only. The strict SurfaceView and all discovery, source,
+         decode, and EGL work are created only after the user commits an episode click. -->
+    <ml.melun.mangaview.reader.NtkInlineReaderHostView
+        android:id="@+id/ntk_inline_reader_host"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="false"
+        android:importantForAccessibility="noHideDescendants"
+        android:visibility="visible">
+
+        <FrameLayout
+            android:id="@+id/ntk_strip_surface_slot"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clickable="false"
+            android:focusable="false"
+            android:importantForAccessibility="no" />
+
+        <!-- Legacy/non-strip compatibility surface; never participates in Strict NTK drawing. -->
+        <ml.melun.mangaview.reader.ReaderSurfaceView
+            android:id="@id/strip"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clickable="false"
+            android:focusable="false"
+            android:importantForAccessibility="no"
+            android:visibility="invisible" />
+    </ml.melun.mangaview.reader.NtkInlineReaderHostView>
+
+    <FrameLayout
+        android:id="@+id/ntk_episode_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="yes">
+
+        <ml.melun.mangaview.ui.DragHandleRecyclerView
+            android:id="@+id/EpisodeList"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_marginTop="56dp"
+            android:clipToPadding="false"
+            android:overScrollMode="never"
+            android:paddingTop="8dp"
+            android:paddingBottom="14dp"
+            android:scrollbars="none" />
+
+        <ml.melun.mangaview.ui.EpisodeToolbarView
+            android:id="@+id/episode_light_toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="56dp" />
+
+        <ViewStub
+            android:id="@+id/episode_empty_stub"
+            android:inflatedId="@id/episode_empty_state"
+            android:layout="@layout/episode_empty_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="56dp" />
+
+        <ViewStub
+            android:id="@+id/episode_fab_stub"
+            android:inflatedId="@+id/fab_container"
+            android:layout="@layout/episode_fab_controls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="10dp" />
+    </FrameLayout>
+
+</FrameLayout>

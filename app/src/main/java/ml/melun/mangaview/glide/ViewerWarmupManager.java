@@ -1808,7 +1808,7 @@ public class ViewerWarmupManager {
         if(context == null || snapshot == null || snapshot.images.size() == 0)
             return;
         try {
-            CacheFileStore.write(context.getApplicationContext(), prefix + key, GSON.toJson(new PersistedSnapshot(snapshot)));
+            CacheFileStore.writeAsync(context.getApplicationContext(), prefix + key, GSON.toJson(new PersistedSnapshot(snapshot)));
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }

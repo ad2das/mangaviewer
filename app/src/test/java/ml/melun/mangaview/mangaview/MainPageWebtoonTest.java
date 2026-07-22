@@ -157,6 +157,23 @@ public class MainPageWebtoonTest {
     }
 
     @Test
+    public void parseWolfSearchHtmlFastReadsCurrentNtkSearchCardFlightShape() {
+        String body = "<script>self.__next_f.push([1,\"4e:[\\\"$\\\",\\\"div\\\",null,{"
+                + "\\\"children\\\":[[\\\"$\\\",\\\"a\\\",\\\"w-4492\\\",{"
+                + "\\\"children\\\":[[\\\"$\\\",\\\"p\\\",null,{\\\"className\\\":\\\"subject\\\","
+                + "\\\"children\\\":\\\"사우러스\\\"}]],"
+                + "\\\"href\\\":\\\"/webtoon/726211\\\",\\\"data-ntk-soft-link\\\":\\\"\\\"}]]}]\\n\"])</script>";
+
+        ArrayList<Title> titles = MainPageWebtoon.parseWolfSearchHtmlFast(
+                body, base_webtoon, 0, "ntk");
+
+        assertEquals(1, titles.size());
+        assertEquals("사우러스", titles.get(0).getName());
+        assertEquals(726211, titles.get(0).getId());
+        assertEquals("/webtoon/726211", titles.get(0).getPath());
+    }
+
+    @Test
     public void parseWolfSearchHtmlFastSkipsNtkPlatformThumbFallback() {
         MainPageWebtoon.clearClassificationDbForTest();
         try {
@@ -432,6 +449,21 @@ public class MainPageWebtoonTest {
         assertEquals("338", titles.get(0).getRelease());
         assertEquals("Slug Work", titles.get(1).getName());
         assertEquals("/manhwa/u-slug-id", titles.get(1).getPath());
+    }
+
+    @Test
+    public void parseNtkTitleListPayloadRejectsTheUpdatesNavigationCard() {
+        String html = "<a class=\"card\" href=\"/manhwa/updates\">"
+                + "<p class=\"subject\">업데이트</p></a>"
+                + "<a class=\"card\" href=\"/manhwa/2\">"
+                + "<p class=\"subject\">원피스</p></a>";
+
+        ArrayList<Title> titles = MainPageWebtoon.parseNtkTitleListPayload(
+                html, base_comic, 10);
+
+        assertEquals(1, titles.size());
+        assertEquals("/manhwa/2", titles.get(0).getPath());
+        assertEquals("원피스", titles.get(0).getName());
     }
 
     @Test

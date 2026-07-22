@@ -1,0 +1,649 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mangaviewer.local/schemas/ntk-cold-result-v1.json",
+  "title": "NTK true-cold 10+10 qualification summary",
+  "type": "object",
+  "required": [
+    "schema",
+    "profile",
+    "generatedAt",
+    "seed",
+    "seedSelectionMode",
+    "expectedWebtoon",
+    "expectedManhwa",
+    "completedCases",
+    "passedCases",
+    "smokePassed",
+    "provisionalPassed",
+    "passed",
+    "finalDeviceStatus",
+    "qualificationDeviceMode",
+    "deviceRequirementSatisfied",
+    "physicalDeviceRequirementSatisfied",
+    "hostGpuEmulatorRequirementSatisfied",
+    "qualificationTargetSatisfied",
+    "warmReopenRequirementSatisfied",
+    "firstImageSlaRequirementSatisfied",
+    "allImagesSlaRequirementSatisfied",
+    "freshRandomSeedRequirementSatisfied",
+    "diagnosticOnly",
+    "requestedCountPerType",
+    "firstImageSlaMs",
+    "webtoonImageSlaMs",
+    "manhwaImageSlaMs",
+    "includeWarmReopen",
+    "compilation",
+    "device",
+    "apks",
+    "catalogCounts",
+    "cases",
+    "reproducibility"
+  ],
+  "properties": {
+    "schema": { "const": 1 },
+    "profile": { "const": "ntk-real-ui-cold-10-plus-10-v1" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "seed": { "type": "integer", "minimum": 1 },
+    "seedSelectionMode": {
+      "enum": ["FRESH_RANDOM", "FIXED_SEED_REPRODUCTION"]
+    },
+    "expectedWebtoon": { "type": "integer", "minimum": 1 },
+    "expectedManhwa": { "type": "integer", "minimum": 1 },
+    "completedCases": { "type": "integer", "minimum": 0 },
+    "passedCases": { "type": "integer", "minimum": 0 },
+    "smokePassed": { "type": "boolean" },
+    "provisionalPassed": { "type": "boolean" },
+    "passed": { "type": "boolean" },
+    "finalDeviceStatus": {
+      "enum": ["PROVISIONAL_EMULATOR", "HOST_GPU_EMULATOR", "UNVERIFIED_DEVICE", "PHYSICAL_DEVICE"]
+    },
+    "qualificationDeviceMode": {
+      "enum": ["PHYSICAL_DEVICE", "HOST_GPU_EMULATOR"]
+    },
+    "deviceRequirementSatisfied": { "type": "boolean" },
+    "physicalDeviceRequirementSatisfied": { "type": "boolean" },
+    "hostGpuEmulatorRequirementSatisfied": { "type": "boolean" },
+    "qualificationTargetSatisfied": { "type": "boolean" },
+    "warmReopenRequirementSatisfied": { "type": "boolean" },
+    "firstImageSlaRequirementSatisfied": { "type": "boolean" },
+    "allImagesSlaRequirementSatisfied": { "type": "boolean" },
+    "freshRandomSeedRequirementSatisfied": { "type": "boolean" },
+    "diagnosticOnly": { "type": "boolean" },
+    "requestedCountPerType": { "type": "integer", "minimum": 1 },
+    "firstImageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
+    "webtoonImageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
+    "manhwaImageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
+    "includeWarmReopen": { "type": "boolean" },
+    "compilation": { "type": "string", "minLength": 1 },
+    "device": {
+      "type": "object",
+      "required": [
+        "serial",
+        "manufacturer",
+        "model",
+        "androidRelease",
+        "sdk",
+        "abi",
+        "qemu",
+        "bootQemu",
+        "virtualDeviceDetected",
+        "virtualDeviceMarkers",
+        "positivePhysicalIdentity",
+        "physicalIdentitySatisfied",
+        "eglHardware",
+        "hwuiRenderer",
+        "surfaceFlingerGles",
+        "hostTranslatorDetected",
+        "softwareGpuDetected",
+        "hostGpuEmulatorSatisfied",
+        "refreshHz",
+        "networkType"
+      ],
+      "properties": {
+        "serial": { "type": "string", "minLength": 1 },
+        "manufacturer": { "type": "string" },
+        "model": { "type": "string", "minLength": 1 },
+        "androidRelease": { "type": "string", "minLength": 1 },
+        "sdk": { "type": "string", "pattern": "^[0-9]+$" },
+        "abi": { "type": "string", "minLength": 1 },
+        "qemu": { "type": "boolean" },
+        "bootQemu": { "type": "boolean" },
+        "virtualDeviceDetected": { "type": "boolean" },
+        "virtualDeviceMarkers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "positivePhysicalIdentity": { "type": "boolean" },
+        "physicalIdentitySatisfied": { "type": "boolean" },
+        "eglHardware": { "type": "string" },
+        "hwuiRenderer": { "type": "string" },
+        "surfaceFlingerGles": { "type": "string" },
+        "hostTranslatorDetected": { "type": "boolean" },
+        "softwareGpuDetected": { "type": "boolean" },
+        "hostGpuEmulatorSatisfied": { "type": "boolean" },
+        "refreshHz": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "networkType": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "apks": {
+      "type": "object",
+      "required": ["app", "appSha256", "benchmark", "benchmarkSha256"],
+      "properties": {
+        "app": { "type": "string", "minLength": 1 },
+        "appSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "benchmark": { "type": "string", "minLength": 1 },
+        "benchmarkSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "catalogCounts": {
+      "type": "object",
+      "required": ["webtoon", "manhwa"],
+      "properties": {
+        "webtoon": { "type": "integer", "minimum": 10 },
+        "manhwa": { "type": "integer", "minimum": 10 }
+      },
+      "additionalProperties": false
+    },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/case" }
+    },
+    "reproducibility": { "$ref": "#/$defs/reproducibility" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "seedSelectionMode": { "const": "FRESH_RANDOM" } },
+        "required": ["seedSelectionMode"]
+      },
+      "then": {
+        "properties": { "freshRandomSeedRequirementSatisfied": { "const": true } }
+      },
+      "else": {
+        "properties": { "freshRandomSeedRequirementSatisfied": { "const": false } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "firstImageSlaRequirementSatisfied": { "const": true } },
+        "required": ["firstImageSlaRequirementSatisfied"]
+      },
+      "then": {
+        "properties": {
+          "firstImageSlaMs": { "const": 4000 },
+          "webtoonImageSlaMs": { "const": 4000 },
+          "manhwaImageSlaMs": { "const": 4000 },
+          "allImagesSlaRequirementSatisfied": { "const": true }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "provisionalPassed": { "const": true } },
+        "required": ["provisionalPassed"]
+      },
+      "then": {
+        "properties": {
+          "expectedWebtoon": { "const": 10 },
+          "expectedManhwa": { "const": 10 },
+          "requestedCountPerType": { "const": 10 },
+          "completedCases": { "const": 20 },
+          "passedCases": { "const": 20 },
+          "smokePassed": { "const": true },
+          "qualificationTargetSatisfied": { "const": true },
+          "warmReopenRequirementSatisfied": { "const": true },
+          "firstImageSlaRequirementSatisfied": { "const": true },
+          "allImagesSlaRequirementSatisfied": { "const": true },
+          "freshRandomSeedRequirementSatisfied": { "const": true },
+          "seedSelectionMode": { "const": "FRESH_RANDOM" },
+          "diagnosticOnly": { "const": false },
+          "firstImageSlaMs": { "const": 4000 },
+          "webtoonImageSlaMs": { "const": 4000 },
+          "manhwaImageSlaMs": { "const": 4000 },
+          "cases": { "minItems": 20, "maxItems": 20 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "passed": { "const": true } },
+        "required": ["passed"]
+      },
+      "then": {
+        "properties": {
+          "provisionalPassed": { "const": true },
+          "deviceRequirementSatisfied": { "const": true },
+          "freshRandomSeedRequirementSatisfied": { "const": true },
+          "seedSelectionMode": { "const": "FRESH_RANDOM" },
+          "diagnosticOnly": { "const": false },
+          "completedCases": { "const": 20 },
+          "passedCases": { "const": 20 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "passed": { "const": true },
+          "qualificationDeviceMode": { "const": "PHYSICAL_DEVICE" }
+        },
+        "required": ["passed", "qualificationDeviceMode"]
+      },
+      "then": {
+        "properties": {
+          "finalDeviceStatus": { "const": "PHYSICAL_DEVICE" },
+          "physicalDeviceRequirementSatisfied": { "const": true },
+          "device": {
+            "type": "object",
+            "required": [
+              "qemu",
+              "bootQemu",
+              "virtualDeviceDetected",
+              "positivePhysicalIdentity",
+              "physicalIdentitySatisfied"
+            ],
+            "properties": {
+              "qemu": { "const": false },
+              "bootQemu": { "const": false },
+              "virtualDeviceDetected": { "const": false },
+              "positivePhysicalIdentity": { "const": true },
+              "physicalIdentitySatisfied": { "const": true }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "passed": { "const": true },
+          "qualificationDeviceMode": { "const": "HOST_GPU_EMULATOR" }
+        },
+        "required": ["passed", "qualificationDeviceMode"]
+      },
+      "then": {
+        "properties": {
+          "finalDeviceStatus": { "const": "HOST_GPU_EMULATOR" },
+          "hostGpuEmulatorRequirementSatisfied": { "const": true },
+          "device": {
+            "type": "object",
+            "required": [
+              "qemu",
+              "virtualDeviceDetected",
+              "eglHardware",
+              "hwuiRenderer",
+              "hostTranslatorDetected",
+              "softwareGpuDetected",
+              "hostGpuEmulatorSatisfied"
+            ],
+            "properties": {
+              "virtualDeviceDetected": { "const": true },
+              "eglHardware": { "const": "emulation" },
+              "hwuiRenderer": { "enum": ["skiagl", "skiavk"] },
+              "hostTranslatorDetected": { "const": true },
+              "softwareGpuDetected": { "const": false },
+              "hostGpuEmulatorSatisfied": { "const": true }
+            },
+            "anyOf": [
+              {
+                "properties": { "qemu": { "const": true } },
+                "required": ["qemu"]
+              },
+              {
+                "properties": { "bootQemu": { "const": true } },
+                "required": ["bootQemu"]
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "coldState": {
+      "type": "object",
+      "required": [
+        "memoryCacheEntries",
+        "diskCacheFiles",
+        "diskCacheBytes",
+        "contentCacheEntries",
+        "activeRequests",
+        "activeDecodes",
+        "client"
+      ],
+      "properties": {
+        "memoryCacheEntries": { "const": 0 },
+        "diskCacheFiles": { "const": 0 },
+        "diskCacheBytes": { "const": 0 },
+        "contentCacheEntries": { "const": 0 },
+        "activeRequests": { "const": 0 },
+        "activeDecodes": { "const": 0 },
+        "client": { "const": "not_created" }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "required": [
+        "directory",
+        "instrumentation",
+        "logcat",
+        "meminfo",
+        "gfxinfo",
+        "cpuinfo",
+        "benchmark",
+        "screenshots"
+      ],
+      "properties": {
+        "directory": { "type": "string", "minLength": 1 },
+        "instrumentation": { "type": "string", "minLength": 1 },
+        "logcat": { "type": "string", "minLength": 1 },
+        "meminfo": { "type": "string", "minLength": 1 },
+        "gfxinfo": { "type": "string", "minLength": 1 },
+        "cpuinfo": { "type": "string", "minLength": 1 },
+        "benchmark": { "type": "string", "minLength": 1 },
+        "screenshots": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "reproducibility": {
+      "type": "object",
+      "required": [
+        "build",
+        "installApp",
+        "installBenchmark",
+        "macrobenchmark",
+        "perfettoPush",
+        "perfettoStart",
+        "perfettoStop",
+        "perfettoPull",
+        "rerun",
+        "output",
+        "authentication"
+      ],
+      "properties": {
+        "build": { "type": "string", "minLength": 1 },
+        "installApp": { "type": "string", "minLength": 1 },
+        "installBenchmark": { "type": "string", "minLength": 1 },
+        "macrobenchmark": { "type": "string", "minLength": 1 },
+        "perfettoPush": { "type": "string", "minLength": 1 },
+        "perfettoStart": { "type": "string", "minLength": 1 },
+        "perfettoStop": { "type": "string", "minLength": 1 },
+        "perfettoPull": { "type": "string", "minLength": 1 },
+        "rerun": { "type": "string", "minLength": 1 },
+        "output": { "type": "string", "minLength": 1 },
+        "authentication": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "case": {
+      "type": "object",
+      "required": [
+        "schema",
+        "caseId",
+        "ordinal",
+        "workType",
+        "workId",
+        "passed",
+        "violations"
+      ],
+      "properties": {
+        "schema": { "const": 1 },
+        "caseId": { "type": "string", "minLength": 1 },
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "workType": { "enum": ["webtoon", "manhwa"] },
+        "workId": { "type": "string", "minLength": 1 },
+        "episodeId": { "type": ["string", "null"] },
+        "episodePath": { "type": ["string", "null"] },
+        "testedAt": { "type": ["string", "null"], "format": "date-time" },
+        "completedAt": { "type": ["string", "null"], "format": "date-time" },
+        "networkType": { "type": ["string", "null"] },
+        "deviceModel": { "type": ["string", "null"] },
+        "androidVersion": { "type": ["string", "null"] },
+        "refreshHz": { "type": ["number", "null"], "minimum": 0 },
+        "randomSeed": { "type": ["integer", "null"], "minimum": 1 },
+        "passed": { "type": "boolean" },
+        "violations": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "firstActualMs": { "type": ["number", "null"], "minimum": 0 },
+        "imageSlaMs": { "type": ["integer", "null"], "minimum": 250, "maximum": 30000 },
+        "allImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
+        "allImagesReadyPageCount": { "type": ["integer", "null"], "minimum": 0 },
+        "androidxAllImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
+        "androidxFrameCommitTraceKind": { "type": ["string", "null"] },
+        "androidxFrameCommitMaxMs": { "type": ["number", "null"], "minimum": 0 },
+        "firstActualPageIndex": { "type": ["integer", "null"], "minimum": 0 },
+        "authoritativePageCount": { "type": ["integer", "null"], "minimum": 1 },
+        "observedSourceCount": { "type": ["integer", "null"], "minimum": 0 },
+        "missingSourceIndexes": { "type": ["string", "null"] },
+        "manifestDigest": { "type": ["string", "null"] },
+        "traversalManifestDigest": { "type": ["string", "null"] },
+        "validCommittedFrames": { "type": ["integer", "null"], "minimum": 0 },
+        "invalidCommittedFrames": { "type": ["integer", "null"], "minimum": 0 },
+        "firstImageRequestStartElapsedNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "firstImageResponseElapsedNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "firstImageDecodeElapsedNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "firstImageDrawElapsedNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "viewerGeneration": { "type": ["integer", "null"], "minimum": 1 },
+        "preEntryWorkCount": { "type": ["integer", "null"], "minimum": 0 },
+        "preEntryImageRequestCount": { "type": ["integer", "null"], "minimum": 0 },
+        "preEntryDecodeCount": { "type": ["integer", "null"], "minimum": 0 },
+        "preEntryPageListRequestCount": { "type": ["integer", "null"], "minimum": 0 },
+        "zeroGenerationPreClickCount": { "type": ["integer", "null"], "minimum": 0 },
+        "postCloseWorkCount": { "type": ["integer", "null"], "minimum": 0 },
+        "foreignGenerationWorkCount": { "type": ["integer", "null"], "minimum": 0 },
+        "viewerDrainTimedOut": { "type": ["boolean", "null"] },
+        "imageFailureCount": { "type": ["integer", "null"], "minimum": 0 },
+        "imageCancellationCount": { "type": ["integer", "null"], "minimum": 0 },
+        "decodeFailureCount": { "type": ["integer", "null"], "minimum": 0 },
+        "decodeCancellationCount": { "type": ["integer", "null"], "minimum": 0 },
+        "pageListFailureCount": { "type": ["integer", "null"], "minimum": 0 },
+        "pageListCancellationCount": { "type": ["integer", "null"], "minimum": 0 },
+        "requestQueueMetricsMeasured": { "type": ["boolean", "null"] },
+        "peakActiveRequestQueue": { "type": ["integer", "null"], "minimum": 0 },
+        "peakActiveRequestQueueLimit": { "type": ["integer", "null"], "minimum": 1 },
+        "requestQueueTerminalBalance": { "type": ["integer", "null"], "minimum": 0 },
+        "requestQueueMetricProblems": {
+          "type": ["array", "null"],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forwardTraversalMetricsMeasured": { "type": ["boolean", "null"] },
+        "forwardTraversalGestureCount": { "type": ["integer", "null"], "minimum": 1 },
+        "forwardTraversalGestureMin": { "type": ["integer", "null"], "minimum": 1 },
+        "forwardTraversalGestureMax": { "type": ["integer", "null"], "minimum": 1 },
+        "forwardTraversalStartElapsedNanos": { "type": ["integer", "null"], "minimum": 1 },
+        "forwardTraversalEndElapsedNanos": { "type": ["integer", "null"], "minimum": 1 },
+        "duplicateRequestCount": { "type": ["integer", "null"], "minimum": 0 },
+        "jankRatio": { "type": ["number", "null"], "minimum": 0 },
+        "maxFrameMs": { "type": ["number", "null"], "minimum": 0 },
+        "activePresentedFrameCount": { "type": ["number", "null"], "minimum": 0 },
+        "activePresentationIntervalCount": { "type": ["number", "null"], "minimum": 0 },
+        "activePresentationFps": { "type": ["number", "null"], "minimum": 0 },
+        "activePresentationFpsTarget": { "type": ["number", "null"], "minimum": 0 },
+        "activePresentationJankPercent": { "type": ["number", "null"], "minimum": 0 },
+        "activePresentationGapMaxMs": { "type": ["number", "null"], "minimum": 0 },
+        "activeRefreshPeriodMs": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "activeRefreshHz": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "activeCpuPercent": { "type": ["number", "null"], "minimum": 0 },
+        "activeMainThreadRunningMaxMs": { "type": ["number", "null"], "minimum": 0 },
+        "viewportDefectFrames": { "type": ["integer", "null"], "minimum": 0 },
+        "runwayDefectFrames": { "type": ["integer", "null"], "minimum": 0 },
+        "preSubmitViewportGaps": { "type": ["integer", "null"], "minimum": 0 },
+        "initialBlankFrames": { "type": ["integer", "null"], "minimum": 0 },
+        "blankAreaCount": { "type": ["integer", "null"], "minimum": 0 },
+        "wrongBindingCount": { "type": ["integer", "null"], "minimum": 0 },
+        "maxPssMb": { "type": ["number", "null"], "minimum": 0 },
+        "retainedPssGrowthKb": { "type": ["number", "null"] },
+        "retainedPssGrowthLimitKb": { "type": ["number", "null"], "minimum": 0 },
+        "retainedPssGrowthMeasured": { "type": ["boolean", "null"] },
+        "networkObservationCount": { "type": ["integer", "null"], "minimum": 0 },
+        "macroTraceArtifactCount": { "type": ["integer", "null"], "minimum": 0 },
+        "nonEmptyMacroTraceArtifactCount": { "type": ["integer", "null"], "minimum": 0 },
+        "emptyMacroTraceArtifactCount": { "type": ["integer", "null"], "minimum": 0 },
+        "macroTraceArtifactBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "macroTraceArtifacts": {
+          "type": ["array", "null"],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "visualEvidenceArtifactCount": { "type": ["integer", "null"], "minimum": 0 },
+        "nonEmptyVisualEvidenceArtifactCount": { "type": ["integer", "null"], "minimum": 0 },
+        "emptyVisualEvidenceArtifactCount": { "type": ["integer", "null"], "minimum": 0 },
+        "visualEvidenceArtifactBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "visualEvidenceArtifacts": {
+          "type": ["array", "null"],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "benchmarkArtifactPullExitCode": { "type": ["integer", "null"] },
+        "visualEvidencePullExitCode": { "type": ["integer", "null"] },
+        "coldState": { "type": ["object", "null"] },
+        "artifacts": { "type": ["object", "null"] },
+        "androidxBenchmark": { "type": ["object", "null"] },
+        "macroResult": { "type": ["object", "null"] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "passed": { "const": true } },
+            "required": ["passed"]
+          },
+          "then": {
+            "required": [
+              "episodeId",
+              "episodePath",
+              "testedAt",
+              "completedAt",
+              "randomSeed",
+              "firstActualMs",
+              "imageSlaMs",
+              "allImagesReadyMs",
+              "allImagesReadyPageCount",
+              "androidxAllImagesReadyMs",
+              "androidxFrameCommitTraceKind",
+              "androidxFrameCommitMaxMs",
+              "firstActualPageIndex",
+              "authoritativePageCount",
+              "observedSourceCount",
+              "missingSourceIndexes",
+              "manifestDigest",
+              "traversalManifestDigest",
+              "validCommittedFrames",
+              "invalidCommittedFrames",
+              "firstImageRequestStartElapsedNanos",
+              "firstImageResponseElapsedNanos",
+              "firstImageDecodeElapsedNanos",
+              "firstImageDrawElapsedNanos",
+              "viewerGeneration",
+              "jankRatio",
+              "maxFrameMs",
+              "activePresentedFrameCount",
+              "activePresentationIntervalCount",
+              "activePresentationFps",
+              "activePresentationFpsTarget",
+              "activePresentationJankPercent",
+              "activePresentationGapMaxMs",
+              "activeRefreshPeriodMs",
+              "activeRefreshHz",
+              "activeCpuPercent",
+              "activeMainThreadRunningMaxMs",
+              "viewportDefectFrames",
+              "runwayDefectFrames",
+              "preSubmitViewportGaps",
+              "initialBlankFrames",
+              "blankAreaCount",
+              "wrongBindingCount",
+              "maxPssMb",
+              "requestQueueMetricsMeasured",
+              "peakActiveRequestQueue",
+              "peakActiveRequestQueueLimit",
+              "requestQueueTerminalBalance",
+              "requestQueueMetricProblems",
+              "forwardTraversalMetricsMeasured",
+              "forwardTraversalGestureCount",
+              "forwardTraversalGestureMin",
+              "forwardTraversalGestureMax",
+              "forwardTraversalStartElapsedNanos",
+              "forwardTraversalEndElapsedNanos",
+              "networkObservationCount",
+              "macroTraceArtifactCount",
+              "nonEmptyMacroTraceArtifactCount",
+              "emptyMacroTraceArtifactCount",
+              "macroTraceArtifactBytes",
+              "macroTraceArtifacts",
+              "visualEvidenceArtifactCount",
+              "nonEmptyVisualEvidenceArtifactCount",
+              "emptyVisualEvidenceArtifactCount",
+              "visualEvidenceArtifactBytes",
+              "visualEvidenceArtifacts",
+              "benchmarkArtifactPullExitCode",
+              "visualEvidencePullExitCode",
+              "coldState",
+              "artifacts",
+              "androidxBenchmark",
+              "macroResult"
+            ],
+            "properties": {
+              "violations": { "maxItems": 0 },
+              "episodeId": { "type": "string", "minLength": 1 },
+              "episodePath": { "type": "string", "minLength": 1 },
+              "firstActualMs": { "type": "number", "minimum": 0 },
+              "imageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
+              "allImagesReadyMs": { "type": "number", "minimum": 0 },
+              "allImagesReadyPageCount": { "type": "integer", "minimum": 1 },
+              "androidxAllImagesReadyMs": { "type": "number", "minimum": 0 },
+              "firstActualPageIndex": { "const": 0 },
+              "observedSourceCount": { "type": "integer", "minimum": 1 },
+              "manifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "traversalManifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "invalidCommittedFrames": { "const": 0 },
+              "viewportDefectFrames": { "const": 0 },
+              "preSubmitViewportGaps": { "const": 0 },
+              "initialBlankFrames": { "const": 0 },
+              "blankAreaCount": { "const": 0 },
+              "wrongBindingCount": { "const": 0 },
+              "requestQueueMetricsMeasured": { "const": true },
+              "peakActiveRequestQueueLimit": { "const": 120 },
+              "requestQueueTerminalBalance": { "const": 0 },
+              "requestQueueMetricProblems": { "type": "array", "maxItems": 0 },
+              "forwardTraversalMetricsMeasured": { "const": true },
+              "forwardTraversalGestureMin": { "const": 3 },
+              "forwardTraversalGestureMax": { "const": 500 },
+              "networkObservationCount": { "type": "integer", "minimum": 1 },
+              "macroTraceArtifactCount": { "type": "integer", "minimum": 1 },
+              "nonEmptyMacroTraceArtifactCount": { "type": "integer", "minimum": 1 },
+              "emptyMacroTraceArtifactCount": { "const": 0 },
+              "macroTraceArtifactBytes": { "type": "integer", "minimum": 1 },
+              "macroTraceArtifacts": { "type": "array", "minItems": 1 },
+              "visualEvidenceArtifactCount": { "type": "integer", "minimum": 1 },
+              "nonEmptyVisualEvidenceArtifactCount": { "type": "integer", "minimum": 1 },
+              "emptyVisualEvidenceArtifactCount": { "const": 0 },
+              "visualEvidenceArtifactBytes": { "type": "integer", "minimum": 1 },
+              "visualEvidenceArtifacts": { "type": "array", "minItems": 1 },
+              "benchmarkArtifactPullExitCode": { "const": 0 },
+              "visualEvidencePullExitCode": { "const": 0 },
+              "coldState": { "$ref": "#/$defs/coldState" },
+              "artifacts": { "$ref": "#/$defs/artifacts" },
+              "androidxBenchmark": {
+                "type": "object",
+                "required": ["valid"],
+                "properties": { "valid": { "const": true } }
+              },
+              "macroResult": {
+                "type": "object",
+                "required": ["passed"],
+                "properties": { "passed": { "const": true } }
+              }
+            }
+          },
+          "else": { "properties": { "violations": { "minItems": 1 } } }
+        }
+      ],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

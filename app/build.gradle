@@ -1,8 +1,32 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'kotlin-parcelize'
+
+import groovy.json.JsonSlurper
+
+def ntkQualificationManifestFile = rootProject.file("tools/ntk_qualification_manifest.json")
+if (!ntkQualificationManifestFile.isFile()) {
+    throw new GradleException("NTK qualification manifest is missing")
+}
+def ntkQualificationManifest = new JsonSlurper().parse(ntkQualificationManifestFile)
+def ntkQualificationProfileId = ntkQualificationManifest.profileId?.toString()?.trim()
+if (!(ntkQualificationProfileId ==~ /[a-z0-9-]+/)) {
+    throw new GradleException("NTK qualification profileId is invalid")
+}
+
+def ntkSourceTreeSha256 = project.findProperty("ntkSourceTreeSha256") == null
+        ? "unsealed"
+        : project.property("ntkSourceTreeSha256").toString().trim()
+if (ntkSourceTreeSha256 != "unsealed" &&
+        !(ntkSourceTreeSha256 ==~ /[0-9a-f]{64}/)) {
+    throw new GradleException("ntkSourceTreeSha256 must be 64 lowercase hexadecimal characters")
+}
+
 android {
     buildFeatures {
+        aidl true
         buildConfig false
+        prefab true
     }
 
     compileOptions {
@@ -35,11 +59,31 @@ android {
         targetSdkVersion 33
         versionName "4.6-" + code
         versionCode code
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner "ml.melun.mangaview.NtkAndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         multiDexEnabled true
+        resValue "string", "ntk_source_tree_sha256", ntkSourceTreeSha256
+
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++20 -fno-exceptions -fno-rtti'
+                arguments '-DANDROID_STL=c++_shared',
+                        "-DNTK_QUALIFICATION_PROFILE_ID=${ntkQualificationProfileId}"
+            }
+        }
 
         setProperty("archivesBaseName", "mangaViewer_" + code)
+    }
+    ndkVersion '27.2.12479018'
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
     }
     buildTypes {
         release {
@@ -51,7 +95,40 @@ android {
         debug {
             signingConfig signingConfigs.debug
         }
+        benchmark {
+            initWith release
+            signingConfig signingConfigs.debug
+            debuggable false
+            // Macrobenchmark must exercise the same optimized code shape shipped to users.
+            minifyEnabled true
+            shrinkResources true
+            matchingFallbacks = ['release']
+        }
+        ntkDiagnostic {
+            initWith release
+            signingConfig signingConfigs.debug
+            debuggable false
+            minifyEnabled false
+            shrinkResources false
+            matchingFallbacks = ['release']
+        }
     }
+    // Native SurfaceView authority tests need a stable window without launching the app's
+    // launcher/splash/navigation stack. Keep that host out of release and the real-UI
+    // Macrobenchmark target; expose it only to debug and the explicit diagnostic variant.
+    sourceSets {
+        debug {
+            java.srcDir 'src/ntkTestHost/java'
+            manifest.srcFile 'src/ntkTestHost/AndroidManifest.xml'
+        }
+        ntkDiagnostic {
+            java.srcDir 'src/ntkTestHost/java'
+            manifest.srcFile 'src/ntkTestHost/AndroidManifest.xml'
+        }
+    }
+    // Keep fast diagnostics on debug by default, while allowing the strict
+    // device-like qualification runner to target the production/minified binary.
+    testBuildType project.findProperty("androidTestBuildType") ?: "debug"
     namespace 'ml.melun.mangaview'
     kotlinOptions {
         jvmTarget = '1.8'
@@ -75,6 +152,199 @@ afterEvaluate {
     }
 }
 
+// Builds the Android-native Oracle tests, selects the connected device ABI,
+// and executes both fresh binaries on-device.  A cross-compiled executable is
+// not a test result until this task has observed its process exit status.
+tasks.register("runNtkNativeOracleTests") {
+    group = "verification"
+    description = "Run production Swappy fixed-admission and Oracle parity tests on an Android device"
+    dependsOn("externalNativeBuildDebug")
+    doNotTrackState("Always execute the freshly built native tests on the selected device")
+
+    doLast {
+        def adbFileName = System.getProperty("os.name").toLowerCase().contains("windows")
+                ? "adb.exe"
+                : "adb"
+        def adb = new File(android.sdkDirectory, "platform-tools/${adbFileName}")
+        if (!adb.isFile()) {
+            throw new GradleException("adb not found: ${adb}")
+        }
+        def serial = (project.findProperty("ntkNativeTestSerial")
+                ?: System.getenv("ANDROID_SERIAL")
+                ?: "emulator-5554").toString().trim()
+
+        def runAdb = { List<String> arguments, int timeoutSeconds = 30 ->
+            def command = ([adb.absolutePath, "-s", serial] + arguments)
+                    .collect { it.toString() }
+            def stdout = new ByteArrayOutputStream()
+            def stderr = new ByteArrayOutputStream()
+            Process process
+            try {
+                process = new ProcessBuilder(command).start()
+            } catch (Exception startFailure) {
+                logger.error("[adb stderr] <process did not start>")
+                throw new GradleException(
+                        "Failed to start adb for ${arguments.first()}", startFailure)
+            }
+
+            def pump = { InputStream input, OutputStream output, String name ->
+                def thread = new Thread({
+                    try {
+                        byte[] buffer = new byte[8192]
+                        int count
+                        while ((count = input.read(buffer)) != -1) {
+                            output.write(buffer, 0, count)
+                        }
+                    } catch (IOException ignored) {
+                        // A host timeout closes the process pipes.  The timeout
+                        // disposition below remains the authoritative failure.
+                    }
+                } as Runnable, name)
+                thread.daemon = true
+                thread.start()
+                return thread
+            }
+            def stdoutPump = pump(
+                    process.inputStream, stdout, "ntk-adb-stdout")
+            def stderrPump = pump(
+                    process.errorStream, stderr, "ntk-adb-stderr")
+
+            boolean completed = process.waitFor(
+                    timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroy()
+                if (!process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
+            stdoutPump.join(2000)
+            stderrPump.join(2000)
+
+            def stdoutText = stdout.toString("UTF-8").trim()
+            def stderrText = stderr.toString("UTF-8").trim()
+            if (!stdoutText.isEmpty()) {
+                logger.lifecycle("[adb stdout]\n${stdoutText}")
+            }
+            if (!stderrText.isEmpty()) {
+                logger.error("[adb stderr]\n${stderrText}")
+            }
+            if (!completed) {
+                if (stderrText.isEmpty()) logger.error("[adb stderr] <empty>")
+                throw new GradleException(
+                        "adb timed out after ${timeoutSeconds}s: ${arguments.join(' ')}")
+            }
+            if (process.exitValue() != 0) {
+                if (stderrText.isEmpty()) logger.error("[adb stderr] <empty>")
+                throw new GradleException(
+                        "adb exited ${process.exitValue()}: ${arguments.join(' ')}")
+            }
+            return stdoutText
+        }
+
+        def deviceState = runAdb(["get-state"])
+                .readLines()
+                .collect { it.trim() }
+                .find { it == "device" }
+        if (deviceState != "device") {
+            throw new GradleException("Android target is not ready: ${serial}")
+        }
+        def deviceAbi = runAdb(["shell", "getprop", "ro.product.cpu.abi"])
+                .readLines()
+                .collect { it.trim() }
+                .find { it in ["x86_64", "arm64-v8a"] }
+        if (!(deviceAbi in ["x86_64", "arm64-v8a"])) {
+            throw new GradleException("Unsupported test device ABI '${deviceAbi}'")
+        }
+
+        // Ask the exact AGP task that just ran for its configured Cxx model.
+        // Its active ABI soFolder contains the current configuration hash;
+        // scanning every historical hash and picking the newest timestamp can
+        // silently execute a stale binary from an unrelated configuration.
+        def nativeBuildTask = tasks.named("externalNativeBuildDebug").get()
+        def builderGetter = nativeBuildTask.class.methods.find {
+            it.name == 'getBuilder$gradle_core' && it.parameterCount == 0
+        }
+        if (builderGetter == null) {
+            throw new GradleException(
+                    "AGP externalNativeBuildDebug does not expose its configured builder")
+        }
+        def nativeBuilder = builderGetter.invoke(nativeBuildTask)
+        def modelGetter = nativeBuilder.class.methods.find {
+            it.name == "getModel" && it.parameterCount == 0
+        }
+        if (modelGetter == null) {
+            throw new GradleException(
+                    "AGP externalNativeBuildDebug builder does not expose its active Cxx model")
+        }
+        def cxxModel = modelGetter.invoke(nativeBuilder)
+        def activeAbiModels = cxxModel.activeAbis.findAll {
+            it.activeAbi && it.info.name == deviceAbi
+        }
+        if (activeAbiModels.size() != 1) {
+            throw new GradleException(
+                    "Expected one current AGP Debug model for ${deviceAbi}, found ${activeAbiModels.size()}")
+        }
+        def debugCxxRoot = file("${buildDir}/intermediates/cxx/Debug")
+                .canonicalFile
+        def currentAbiOutput = activeAbiModels[0].soFolder.canonicalFile
+        if (!currentAbiOutput.toPath().startsWith(debugCxxRoot.toPath())) {
+            throw new GradleException(
+                    "Current AGP native output escaped Debug Cxx root: ${currentAbiOutput}")
+        }
+        logger.lifecycle(
+                "Native Oracle AGP output for ${deviceAbi}: ${currentAbiOutput}")
+        def currentAbiFile = { String name ->
+            def candidate = new File(currentAbiOutput, name)
+            if (!candidate.isFile()) {
+                throw new GradleException(
+                        "Current externalNativeBuildDebug did not produce ${candidate}")
+            }
+            return candidate
+        }
+
+        def testNames = [
+                "FixedNonPipelinePhaseOracleParityTest",
+                "FixedExternalTransportAdmissionTest",
+                "FixedPresentJoinStateMachineTest",
+                "HardwareBufferRenderTargetPoolTest",
+                "SurfaceControlPresentBackendTest",
+                "SwappyExternalSubmissionContractTest",
+                "SwappyExternalTransportStateTest",
+                "RendererPostSubmitFatalContractTest",
+                "GpuSceneAdmissionLedgerTest",
+                "PreparedSceneBankLedgerTest",
+                "FixedDepthOneSchedulerTest",
+                "SwappyCommonFixedAdmissionTest",
+                "UnownedSurfaceBootstrapAuthorityTest",
+                "ExactManifestSurfaceEpochPromotionTest",
+                "AttachGenerationContractTest",
+                "NativeSurfaceLeaseRegistryTest",
+                "DetachedWarmLifecycleContractTest",
+        ]
+        def nativeTests = testNames.collectEntries { [(it): currentAbiFile(it)] }
+        def sharedCpp = currentAbiFile("libc++_shared.so")
+        def remoteDir = "/data/local/tmp/mangaviewer-native-oracle-tests"
+        runAdb(["shell", "mkdir", "-p", remoteDir])
+        runAdb(["push", sharedCpp.absolutePath, "${remoteDir}/libc++_shared.so"])
+
+        nativeTests.each { name, binary ->
+            runAdb(["push", binary.absolutePath, "${remoteDir}/${name}"])
+            runAdb(["shell", "chmod", "700", "${remoteDir}/${name}"])
+            runAdb([
+                    "shell",
+                    "timeout",
+                    "-s",
+                    "KILL",
+                    "30s",
+                    "env",
+                    "LD_LIBRARY_PATH=${remoteDir}",
+                    "${remoteDir}/${name}",
+            ], 40)
+        }
+    }
+}
+
 repositories {
     mavenCentral()
     maven { url "https://jitpack.io" }
@@ -83,6 +353,7 @@ repositories {
 
 
 dependencies {
+    implementation 'androidx.games:games-frame-pacing:2.1.3'
     implementation 'com.google.android.flexbox:flexbox:3.0.0'
     implementation 'androidx.documentfile:documentfile:1.0.1'
     implementation 'androidx.appcompat:appcompat:1.5.1'
@@ -105,7 +376,9 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.8.7'
     implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7'
-    implementation 'androidx.metrics:metrics-performance:1.0.0-beta04'
+    implementation 'androidx.metrics:metrics-performance:1.0.0'
+    implementation 'androidx.profileinstaller:profileinstaller:1.4.1'
+    implementation 'androidx.tracing:tracing:1.1.0'
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
     implementation 'androidx.work:work-runtime:2.9.1'
@@ -114,9 +387,11 @@ dependencies {
     implementation 'com.google.guava:guava:33.3.1-android'
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20240303'
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
     androidTestImplementation 'androidx.test.uiautomator:uiautomator:2.3.0'
+    androidTestImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
     implementation 'com.google.code.gson:gson:2.10'
     implementation 'androidx.cardview:cardview:1.0.0'
     implementation 'com.github.omadahealth:swipy:1.2.3@aar'

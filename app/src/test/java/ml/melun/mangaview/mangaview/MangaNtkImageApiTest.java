@@ -8,10 +8,10 @@ import static org.junit.Assert.assertTrue;
 
 public class MangaNtkImageApiTest {
     @Test
-    public void slugViewerImageApiDoesNotPromoteSyntheticTitleId() {
+    public void slugViewerImageApiUsesRouteWorkIdInsteadOfSyntheticTitleId() {
         String body = "{\"imagesToken\":\"token\",\"imageMetas\":[{\"page\":1}]}";
 
-        assertEquals("", Manga.ntkViewerCanonicalWorkIdForImageApiForTest(
+        assertEquals("u-bt-aw0260-574c7e11", Manga.ntkViewerCanonicalWorkIdForImageApiForTest(
                 body, "/webtoon/u-bt-aw0260-574c7e11/bt-aw0260-1", 913843212,
                 "u-bt-aw0260-574c7e11"));
     }

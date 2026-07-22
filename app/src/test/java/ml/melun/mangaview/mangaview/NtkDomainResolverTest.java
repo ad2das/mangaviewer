@@ -2,12 +2,102 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class NtkDomainResolverTest {
+    @Test
+    public void documentProbeFallsBackToManhwaOnlyAfterWebtoonNotFound() {
+        assertEquals("/webtoon", NtkDomainResolver.firstDocumentProbePath());
+        assertEquals("/manhwa", NtkDomainResolver.nextDocumentProbePath("/webtoon", 404));
+        assertNull(NtkDomainResolver.nextDocumentProbePath("/manhwa", 404));
+    }
+
+    @Test
+    public void documentProbeDoesNotFallbackAfterBlocksGuidesOrRedirects() {
+        assertNull(NtkDomainResolver.nextDocumentProbePath("/webtoon", 200));
+        assertNull(NtkDomainResolver.nextDocumentProbePath("/webtoon", 302));
+        assertNull(NtkDomainResolver.nextDocumentProbePath("/webtoon", 403));
+        assertNull(NtkDomainResolver.nextDocumentProbePath("/webtoon", 451));
+    }
+
+    @Test
+    public void usesRealtimeAddressGuideBeforeTelegramFallback() {
+        assertEquals("https://sites.google.com/view/newtoki33/",
+                NtkDomainResolver.ADDRESS_GUIDE_URL);
+        assertEquals(NtkDomainResolver.ADDRESS_GUIDE_URL,
+                NtkDomainResolver.firstResolverSourceForTest());
+        assertEquals("https://t.me/s/newtoki_juso", NtkDomainResolver.CHANNEL_URL);
+    }
+
+    @Test
+    public void parsesOfficialGoogleSitesRootsInPublishedOrder() {
+        String html = "<script type=\"application/ld+json\">"
+                + "{ &quot;itemListElement&quot;: ["
+                + "{ &quot;position&quot;: 1, &quot;url&quot;: &quot;https:\\/\\/toki30.com&quot; },"
+                + "{ &quot;position&quot;: 2, &quot;url&quot;: &quot;https:\\/\\/sbxh9.com&quot; },"
+                + "{ &quot;position&quot;: 3, &quot;url&quot;: &quot;https:\\/\\/newtoki1.org&quot; }] }"
+                + "</script>"
+                + "&lt;a href=&quot;https://toki30.com&quot;&gt;\uC2E4\uC2DC\uAC04\uC8FC\uC18C&lt;/a&gt;";
+
+        List<String> roots = NtkDomainResolver.parseOfficialAddressGuideRoots(html);
+
+        assertEquals(3, roots.size());
+        assertEquals("https://toki30.com", roots.get(0));
+        assertEquals("https://sbxh9.com", roots.get(1));
+        assertEquals("https://newtoki1.org", roots.get(2));
+    }
+
+    @Test
+    public void returnsImmediatelyWhenOfficialGuideProvidesRoots() {
+        AtomicInteger requestCount = new AtomicInteger();
+        OkHttpClient client = new OkHttpClient.Builder()
+                .addInterceptor(chain -> {
+                    requestCount.incrementAndGet();
+                    String body = "https://toki30.com https://sbxh9.com https://newtoki1.org";
+                    return new Response.Builder()
+                            .request(chain.request())
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(ResponseBody.create(body, MediaType.parse("text/html")))
+                            .build();
+                })
+                .build();
+
+        List<String> roots = NtkDomainResolver.resolveCandidates(
+                client, Collections.emptyMap(), null);
+
+        assertEquals(1, requestCount.get());
+        assertEquals(3, roots.size());
+        assertEquals("https://toki30.com", roots.get(0));
+        assertEquals("https://sbxh9.com", roots.get(1));
+        assertEquals("https://newtoki1.org", roots.get(2));
+    }
+
+    @Test
+    public void officialGuideParserRejectsLookalikeHosts() {
+        String html = "https://toki30.com.evil.example "
+                + "https://evil.toki30.com https://newtoki1.com "
+                + "https://sbxh9.com";
+
+        List<String> roots = NtkDomainResolver.parseOfficialAddressGuideRoots(html);
+
+        assertEquals(1, roots.size());
+        assertEquals("https://sbxh9.com", roots.get(0));
+    }
+
     @Test
     public void parsesCurrentAddressFromTelegramMessage() {
         String html = "<div class=\"tgme_widget_message_text\">"

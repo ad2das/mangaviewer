@@ -33,10 +33,18 @@ public class PreferenceTest {
     public void siteUrlNormalizationKeepsDynamicNtkHost() {
         assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest(NTK_WEBTOON_URL));
         assertEquals(NTK_WEBTOON_URL, Preference.normalizeWebtoonUrlForTest(NTK_COMIC_URL));
-        assertEquals("https://newto03.com/manhwa", Preference.normalizeComicUrlForTest("https://newto03.com"));
-        assertEquals("https://newto03.com", Preference.normalizeWebtoonUrlForTest("https://newto03.com/manhwa"));
+        assertEquals(NTK_COMIC_URL, Preference.normalizeComicUrlForTest("https://newto03.com"));
+        assertEquals(NTK_WEBTOON_URL, Preference.normalizeWebtoonUrlForTest("https://newto03.com/manhwa"));
         assertEquals("https://toonflix.app/manhwa", Preference.normalizeComicUrlForTest("https://toonflix.app"));
         assertEquals("https://toonflix.app", Preference.normalizeWebtoonUrlForTest("https://toonflix.app/manhwa"));
+    }
+
+    @Test
+    public void siteUrlNormalizationRecognizesNumberedTokiHost() {
+        assertEquals("https://toki30.com/manhwa",
+                Preference.normalizeComicUrlForTest("https://toki30.com"));
+        assertEquals("https://toki30.com",
+                Preference.normalizeWebtoonUrlForTest("https://toki30.com/manhwa"));
     }
 
     @Test
@@ -107,6 +115,24 @@ public class PreferenceTest {
         assertEquals(210, merged.getBookmarkEpisodeId());
         assertEquals(18, merged.getBookmarkEpisodeIndex());
         assertEquals(120, merged.getEpisodeCount());
+    }
+
+    @Test
+    public void progressMergeKeepsResumeImageIdentityForSameEpisodePath() {
+        MTitle incoming = new MTitle("target", 25694, "", "", null, "", MTitle.base_comic);
+        incoming.setSourceSite("ntk");
+        incoming.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+
+        MTitle existing = new MTitle("target", 25694, "", "", null, "", MTitle.base_comic);
+        existing.setSourceSite("ntk");
+        existing.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+        existing.setResumeNtkImageIdentity("25694", "1767091", 4);
+
+        MTitle merged = Preference.preserveMoreCompleteProgressForTest(incoming, existing);
+
+        assertEquals("25694", merged.getResumeNtkImageWorkId());
+        assertEquals("1767091", merged.getResumeNtkImageEpisodeId());
+        assertEquals(4, merged.getResumeNtkImageCount());
     }
 
     @Test

@@ -10,6 +10,8 @@ final class HttpDocumentPolicy {
                                                CustomHttpClient.FetchMode fetchMode) {
         if(fetchMode != CustomHttpClient.FetchMode.ALLOW_SHARED_WEBVIEW || !ntkUrl || !missingResponse || path == null)
             return false;
+        if(isNtkEpisodeDocumentPath(path))
+            return false;
         return isNtkWebViewFetchPath(path);
     }
 
@@ -40,6 +42,8 @@ final class HttpDocumentPolicy {
     static boolean shouldUseFastNtkPageDirect(boolean ntkUrl, String path, CustomHttpClient.FetchMode fetchMode) {
         if(!ntkUrl || path == null || fetchMode == CustomHttpClient.FetchMode.CACHE_ONLY)
             return false;
+        if(isNtkEpisodeDocumentPath(path))
+            return false;
         return isNtkWebViewFetchPath(path);
     }
 
@@ -60,7 +64,7 @@ final class HttpDocumentPolicy {
     }
 
     static boolean isNtkWebViewFetchPath(String path) {
-        return isNtkNavigableDocumentPath(path)
+        return (isNtkNavigableDocumentPath(path) && !isNtkEpisodeDocumentPath(path))
                 || isNtkApiPath(path)
                 || isNtkSearchPath(path);
     }

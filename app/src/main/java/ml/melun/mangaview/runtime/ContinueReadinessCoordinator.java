@@ -112,6 +112,11 @@ public final class ContinueReadinessCoordinator {
         } else {
             title = manga.getTitle();
         }
+        if(isNtkContinue(sourceSite, p != null && p.isNtkSite())) {
+            manga.ensureNtkEpisodePathFromIdentity();
+            ViewerWarmupManager.logMetric("continue_ntk_metadata_only", manga.getId());
+            return;
+        }
         State current = state(context, manga, title);
         if(current == State.FIRST_FRAME_READY) {
             ViewerWarmupManager.logMetric("continue_prime_already_ready", manga.getId());
@@ -149,22 +154,7 @@ public final class ContinueReadinessCoordinator {
         if(title == null || p == null || title.getId() <= 0)
             return null;
         p.ensureSourceSiteForTitle(title);
-        int bookmark = p.getBookmark(title);
-        if(bookmark <= 0)
-            bookmark = title.getBookmark();
-        if(bookmark <= 0)
-            bookmark = title.getBookmarkEpisodeId();
-        if(bookmark <= 0)
-            return null;
-        title.setBookmark(bookmark);
-        Manga manga = new Manga(bookmark, "", "", title.getBaseMode());
-        manga.setTitle(title);
-        manga.setTitleId(title.getId());
-        List<Manga> episodes = Utils.snapshotEpisodes(title);
-        if(episodes.size() > 0)
-            manga.setEps(episodes);
-        manga.ensureNtkEpisodePathFromIdentity();
-        return manga;
+        return ViewerResumeResolver.resumeManga(title);
     }
 
     private static synchronized boolean markSubmitted(String key, long now) {
@@ -210,7 +200,12 @@ public final class ContinueReadinessCoordinator {
     }
 
     public static boolean shouldSkipNtkContinuePrefetchForTest(String sourceSite, boolean ntkPreference) {
-        return ntkPreference && (sourceSite == null || sourceSite.trim().length() == 0);
+        return isNtkContinue(sourceSite, ntkPreference);
+    }
+
+    private static boolean isNtkContinue(String sourceSite, boolean ntkPreference) {
+        String normalized = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        return "ntk".equals(normalized) || (ntkPreference && normalized.length() == 0);
     }
 
     private static int coldStartLimit(boolean dataSave) {

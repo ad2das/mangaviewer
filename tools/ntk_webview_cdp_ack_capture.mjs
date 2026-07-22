@@ -15,7 +15,7 @@ function parseArgs(argv) {
     urlMatches: ["/api/ad/ack"],
     successMatch: "",
     targetPath: "/webtoon/17332/1515337",
-    siteRoot: "https://sbxh7.com",
+    siteRoot: "https://sbxh9.com",
     packageName: "ml.melun.mangaview",
     outDir: "",
     runProbe: false,
@@ -90,7 +90,7 @@ Options:
                                   Default: first --url-match value
   --out-dir <dir>                Artifact dir. Default: build/ntk-cdp-ack/<timestamp>
   --run-probe                    Start tools/ntk_ack_ux_probe.ps1 and capture in parallel
-  --site-root <url>              Probe site root / CDP target hint. Default: https://sbxh7.com
+  --site-root <url>              Probe site root / CDP target hint. Default: https://sbxh9.com
   --target-path <path>           Probe target path. Default: /webtoon/17332/1515337
   --package <name>               Android app package. Default: ml.melun.mangaview
   --max-ms <ms>                  Probe max ms when --run-probe is set. Default: 65000

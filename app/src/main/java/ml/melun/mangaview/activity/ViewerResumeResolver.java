@@ -183,6 +183,15 @@ public final class ViewerResumeResolver {
             if(resumePath.length() > 0)
                 resolved.setNtkEpisodePath(resumePath);
         }
+        if("ntk".equals(title.getSourceSite())
+                && resolved.getNtkEpisodePath().equals(title.getResumeNtkEpisodePath())) {
+            if(resolved.getNtkImageWorkId().length() == 0)
+                resolved.setNtkImageWorkId(title.getResumeNtkImageWorkId());
+            if(resolved.getNtkImageEpisodeId().length() == 0)
+                resolved.setNtkImageEpisodeId(title.getResumeNtkImageEpisodeId());
+            if(resolved.getNtkImageCount() <= 0)
+                resolved.setNtkImageCount(title.getResumeNtkImageCount());
+        }
         if(episodes.size() > 0)
             resolved.setEps(episodes);
         return resolved;
