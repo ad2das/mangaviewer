@@ -55,6 +55,7 @@ jobs:
             /tools/patch_apk_manifest_version.py
             /tools/release_latest_ci.sh
             /tools/release_latest.ps1
+            /tools/ntk_qualification_manifest.json
             /build.gradle
             /gradle.properties
             /gradlew

@@ -40,6 +40,7 @@ jobs:
             /app/
             /config/
             /gradle/
+            /tools/ntk_qualification_manifest.json
             /build.gradle
             /gradle.properties
             /gradlew
