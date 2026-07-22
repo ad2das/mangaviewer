@@ -1179,7 +1179,11 @@ private:
     bool drawFrame(const FrameCommand& frame, bool windowCoordinates = false) noexcept {
         glViewport(0, 0, frame.width, frame.height);
         glDisable(GL_BLEND);
-        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        // ReaderSurfaceView owns an RGBA SurfaceView above the HWUI fallback. Keep pixels outside
+        // the exact native texture coverage transparent so a device-specific delayed or rejected
+        // BufferQueue texture never turns the otherwise valid fallback frame permanently black.
+        // Decoded page textures are opaque and still replace the fallback wherever they draw.
+        glClearColor(0.0F, 0.0F, 0.0F, 0.0F);
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(program_);
         glBindVertexArray(vao_);

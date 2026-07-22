@@ -1,5 +1,6 @@
 package ml.melun.mangaview.reader
 
+import android.os.SystemClock
 import android.util.Log
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
@@ -1242,7 +1243,19 @@ object NtkStrictSourceOwnershipRegistry {
 
     private const val MATERIAL_GATE_WAIT_MS = 10L
 
-    private fun monotonicMs(): Long = System.nanoTime() / 1_000_000L
+    /**
+     * Keep ownership evidence in the same time domain as [NtkStrictSourceSession].
+     *
+     * `System.nanoTime()` and `SystemClock.elapsedRealtime()` do not advance identically while a
+     * physical device is suspended. Comparing an ownership claim recorded with the former to an
+     * exact seal recorded with the latter therefore made promotion fail on long-running devices,
+     * cancelling every image request before any body could be published. The JVM fallback keeps
+     * the registry's pure local tests usable where the Android clock is only a throwing stub.
+     */
+    private fun monotonicMs(): Long = runCatching { SystemClock.elapsedRealtime() }
+        .getOrNull()
+        ?.takeIf { it > 0L }
+        ?: (System.nanoTime() / 1_000_000L)
 
     private fun logDebug(message: String) {
         // android.util.Log is a no-op contractually; keeping it non-authoritative also permits the

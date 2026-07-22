@@ -15,6 +15,12 @@ class NtkColdRendererPreparationArchitectureTest {
     private val sessionSource = File(
         "src/main/java/ml/melun/mangaview/reader/ReaderSession.kt"
     ).readText()
+    private val rollingRendererSource = File(
+        "src/main/cpp/ntk_rolling_surface_renderer.cpp"
+    ).readText()
+    private val strictOwnershipSource = File(
+        "src/main/java/ml/melun/mangaview/reader/NtkStrictSourceOwnershipRegistry.kt"
+    ).readText()
 
     @Test
     fun directStrictColdSessionEnablesGpuRunwayWithoutChangingPixelProofMode() {
@@ -79,6 +85,26 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(submit.contains("NtkRollingNativeBridge.nativeSubmit("))
         assertFalse(submit.contains("nativePrewarmTile"))
         assertFalse(submit.contains("NATIVE_PREWARM_OFFSCREEN_GAP_PX"))
+    }
+
+    @Test
+    fun translucentNativeSurfaceCannotOccludeTheHwuiFallbackWithBlack() {
+        val draw = functionBody("bool drawFrame(", rollingRendererSource)
+
+        assertTrue(source.contains("nativeSurfaceView.holder.setFormat(PixelFormat.TRANSLUCENT)"))
+        assertTrue(draw.contains("glClearColor(0.0F, 0.0F, 0.0F, 0.0F)"))
+        assertFalse(draw.contains("glClearColor(0.0F, 0.0F, 0.0F, 1.0F)"))
+    }
+
+    @Test
+    fun exactSealAndOwnershipClaimUseTheSameSuspendAwareClockDomain() {
+        val ownershipClock = functionBody(
+            "private fun monotonicMs()",
+            strictOwnershipSource
+        )
+
+        assertTrue(ownershipClock.contains("SystemClock.elapsedRealtime()"))
+        assertFalse(ownershipClock.startsWith("private fun monotonicMs(): Long = System.nanoTime()"))
     }
 
     @Test
