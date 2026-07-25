@@ -180,6 +180,8 @@ public final class ViewerResumeResolver {
         resolved.setTitleId(title.getId());
         if(resolved.getNtkEpisodePath().length() == 0 && "ntk".equals(title.getSourceSite())) {
             String resumePath = title.getResumeNtkEpisodePath();
+            if(resumePath.length() == 0)
+                resumePath = restoreNumericNtkResumePath(title);
             if(resumePath.length() > 0)
                 resolved.setNtkEpisodePath(resumePath);
         }
@@ -195,6 +197,42 @@ public final class ViewerResumeResolver {
         if(episodes.size() > 0)
             resolved.setEps(episodes);
         return resolved;
+    }
+
+    /**
+     * Older recent-history rows can contain the authoritative NTK image identity while missing
+     * the equivalent viewer route.  The numeric NTK APIs use the same source work/episode ids in
+     * that route, so reconstructing it is exact and avoids treating a valid home resume as an
+     * unresolvable placeholder.
+     */
+    private static String restoreNumericNtkResumePath(Title title) {
+        if(title == null || !"ntk".equals(title.getSourceSite()))
+            return "";
+        String workId = title.getResumeNtkImageWorkId();
+        String episodeId = title.getResumeNtkImageEpisodeId();
+        if(!isPositiveNumericIdentity(workId) || !isPositiveNumericIdentity(episodeId))
+            return "";
+        // Some slug-based webtoons use a separate upstream image work id. It is not a viewer
+        // route and must never be substituted for the title's source work id.
+        if(title.getId() <= 0 || !String.valueOf(title.getId()).equals(workId))
+            return "";
+        String segment = title.getBaseMode() == ml.melun.mangaview.mangaview.MTitle.base_webtoon
+                ? "webtoon" : "manhwa";
+        String path = "/" + segment + "/" + workId + "/" + episodeId;
+        int imageCount = title.getResumeNtkImageCount();
+        title.setResumeNtkEpisodePath(path);
+        title.setResumeNtkImageIdentity(workId, episodeId, imageCount);
+        return path;
+    }
+
+    private static boolean isPositiveNumericIdentity(String value) {
+        if(value == null || !value.matches("\\d{1,12}"))
+            return false;
+        try {
+            return Long.parseLong(value) > 0L;
+        } catch(NumberFormatException ignored) {
+            return false;
+        }
     }
 
     public static boolean sameManga(Manga a, Manga b) {

@@ -164,6 +164,49 @@ public class ViewerResumeResolverTest {
     }
 
     @Test
+    public void ntkHomeResumeReconstructsExactNumericRouteFromPersistedImageIdentity() {
+        Title title = new Title("legacy recent", "", "", null, "", 25694, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setBookmark(1767091);
+        title.setResumeNtkImageIdentity("25694", "1767091", 112);
+
+        Manga resume = ViewerResumeResolver.resumeManga(title);
+
+        assertTrue(resume != null);
+        assertEquals("/manhwa/25694/1767091", resume.getNtkEpisodePath());
+        assertEquals("/manhwa/25694/1767091", title.getResumeNtkEpisodePath());
+        assertEquals("25694", resume.getNtkImageWorkId());
+        assertEquals("1767091", resume.getNtkImageEpisodeId());
+        assertEquals(112, resume.getNtkImageCount());
+    }
+
+    @Test
+    public void ntkWebtoonHomeResumeUsesWebtoonRouteWhenRestoringIdentity() {
+        Title title = new Title("legacy webtoon", "", "", null, "", 16968, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setBookmark(1463195);
+        title.setResumeNtkImageIdentity("16968", "1463195", 81);
+
+        Manga resume = ViewerResumeResolver.resumeManga(title);
+
+        assertTrue(resume != null);
+        assertEquals("/webtoon/16968/1463195", resume.getNtkEpisodePath());
+    }
+
+    @Test
+    public void ntkSlugWebtoonImageIdentityIsNotMisusedAsViewerRoute() {
+        Title title = new Title("slug webtoon", "", "", null, "", 16968, MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setBookmark(1463195);
+        title.setResumeNtkImageIdentity("834922", "1463195", 81);
+
+        Manga resume = ViewerResumeResolver.resumeManga(title);
+
+        assertTrue(resume != null);
+        assertEquals("", resume.getNtkEpisodePath());
+    }
+
+    @Test
     public void resumeMangaPrefersSavedEpisodeIdOverStaleProgressIndex() {
         Title title = new Title("마왕의 딸은 너무 착해!!", "", "", null, "", 1001, MTitle.base_webtoon);
         title.setSourceSite("wfwf");

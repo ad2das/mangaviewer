@@ -70,6 +70,7 @@ import java.util.WeakHashMap;
 import ml.melun.mangaview.activity.CaptchaActivity;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ViewerIntentContract;
+import ml.melun.mangaview.activity.ViewerResumeResolver;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
 import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
@@ -382,9 +383,154 @@ public class Utils {
 
     public static void openContinueViewer(Context context, Manga manga, int code, boolean returnToEpisodes,
                                           boolean recent, Title title, boolean includeTitleEpisodes) {
+        Title launchTitle = title != null ? title : (manga == null ? null : manga.getTitle());
+        if(isNtkContinueLaunch(manga, launchTitle)) {
+            openNtkContinueViewer(context, manga, code, returnToEpisodes, recent, launchTitle);
+            return;
+        }
         openViewerPrepared(context, manga, code, returnToEpisodes, true, recent,
-                title != null ? title : (manga == null ? null : manga.getTitle()),
-                includeTitleEpisodes, false, true);
+                launchTitle, includeTitleEpisodes, false, true);
+    }
+
+    /**
+     * Home resume is already committed user navigation. For an exact NTK route, ReaderV2 owns
+     * manifest discovery just like a cold episode click; requiring a prepared image key here
+     * makes path-only recent rows permanently fail with "회차 준비 중".
+     */
+    private static void openNtkContinueViewer(Context context, Manga manga, int code,
+                                              boolean returnToEpisodes, boolean recent,
+                                              Title title) {
+        if(context == null || manga == null || title == null)
+            return;
+        if(context instanceof Activity && !canUseActivity((Activity) context))
+            return;
+        if(p != null)
+            p.ensureSourceSiteForTitle(title);
+        switchToTitleSourceSite(title);
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        ml.melun.mangaview.runtime.BackgroundPrefetchBudget.suppressForUserNavigation();
+        int launchToken = nextViewerLaunchToken(context);
+
+        Manga resolved = resolvedNtkContinueCandidate(manga, title);
+        if(resolved != null) {
+            launchColdNtkContinue(context, resolved, code, returnToEpisodes, recent, title, launchToken);
+            return;
+        }
+
+        Context appContext = context.getApplicationContext();
+        AppDispatchers.submitNavigation(() -> {
+            MangaRepository.Cancellation cancellation = MangaRepository.cancellation()
+                    .userVisible()
+                    .prioritizeWebViewFallback();
+            int result = MangaRepository.fetchEpisodesForeground(title, cancellation);
+            Manga fetched = result == Title.LOAD_OK
+                    ? resolvedNtkContinueCandidate(manga, title)
+                    : null;
+            AppDispatchers.runOnMain(() -> {
+                if(fetched != null) {
+                    launchColdNtkContinue(context, fetched, code, returnToEpisodes, recent,
+                            title, launchToken);
+                    return;
+                }
+                if(!cancelViewerLaunchToken(context, launchToken))
+                    return;
+                if(result == Title.LOAD_CAPTCHA) {
+                    showCaptchaPopup(title.getUrl(), context, REQUEST_CAPTCHA, p);
+                    return;
+                }
+                ViewerWarmupManager.logMetric("viewer_continue_ntk_route_unresolved", manga.getId());
+                // Preserve a useful recovery path for legacy history rows that predate exact NTK
+                // route persistence. EpisodeActivity can refresh and let the user pick the same
+                // title instead of leaving the home card in a permanent retry-toast loop.
+                try {
+                    context.startActivity(episodeIntent(context, title));
+                } catch(RuntimeException error) {
+                    ml.melun.mangaview.report.CrashReporter.record(error);
+                    Toast.makeText(context,
+                            "회차 정보를 불러오지 못했습니다. 다시 시도해주세요.",
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
+    }
+
+    private static boolean isNtkContinueLaunch(Manga manga, Title title) {
+        if(manga == null || !manga.isOnline() || title == null)
+            return false;
+        if(p != null)
+            p.ensureSourceSiteForTitle(title);
+        return "ntk".equals(title.getSourceSite());
+    }
+
+    private static Manga resolvedNtkContinueCandidate(Manga manga, Title title) {
+        if(manga == null || title == null)
+            return null;
+        manga.setTitle(title);
+        manga.setTitleId(title.getId());
+        manga.ensureNtkEpisodePathFromIdentity();
+        if(isNtkViewerEpisodePath(manga.getNtkEpisodePath()))
+            return manga;
+        Manga resolved = ViewerResumeResolver.resumeManga(title);
+        if(resolved != null) {
+            resolved.setTitle(title);
+            resolved.setTitleId(title.getId());
+            resolved.ensureNtkEpisodePathFromIdentity();
+            if(isNtkViewerEpisodePath(resolved.getNtkEpisodePath()))
+                return resolved;
+        }
+        resolved = ViewerResumeResolver.concreteNtkResumeCandidate(manga, title);
+        if(resolved == null)
+            return null;
+        resolved.setTitle(title);
+        resolved.setTitleId(title.getId());
+        resolved.ensureNtkEpisodePathFromIdentity();
+        return isNtkViewerEpisodePath(resolved.getNtkEpisodePath()) ? resolved : null;
+    }
+
+    private static boolean isNtkViewerEpisodePath(String path) {
+        return path != null && (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"));
+    }
+
+    private static void launchColdNtkContinue(Context context, Manga manga, int code,
+                                              boolean returnToEpisodes, boolean recent,
+                                              Title title, int launchToken) {
+        if(context == null || manga == null || title == null
+                || !isNtkViewerEpisodePath(manga.getNtkEpisodePath()))
+            return;
+        if(!consumeViewerLaunchToken(context, launchToken,
+                viewerLaunchDebounceKey(manga, title, false)))
+            return;
+        if(context instanceof Activity && !canUseActivity((Activity) context))
+            return;
+
+        Intent viewer = new Intent(context, ml.melun.mangaview.activity.ReaderV2Activity.class);
+        ml.melun.mangaview.activity.ReaderLaunchPayloadStore.attachColdExactReaderPayload(
+                viewer, manga, title);
+        viewer.putExtra("online", true);
+        viewer.putExtra(ViewerIntentContract.EXTRA_EXACT_EPISODE, true);
+        if(returnToEpisodes)
+            viewer.putExtra("returnToEpisodes", true);
+        if(recent)
+            viewer.putExtra("recent", true);
+        viewer.putExtra("viewerLaunchStartedAtMs", SystemClock.elapsedRealtime());
+        viewer.putExtra("viewerLaunchSourceSite", "ntk");
+        viewer.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        try {
+            if(context instanceof Activity) {
+                ((Activity) context).startActivityForResult(viewer, code);
+                ((Activity) context).overridePendingTransition(0, 0);
+            } else {
+                viewer.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(viewer);
+            }
+            ViewerWarmupManager.logMetric("viewer_continue_ntk_direct_launch", manga.getId());
+            android.util.Log.d("ViewerPerf",
+                    "viewer_continue_ntk_direct_launch path=" + manga.getNtkEpisodePath()
+                            + ",prepared=false,startAtSavedPage=true");
+        } catch(RuntimeException error) {
+            ml.melun.mangaview.report.CrashReporter.record(error);
+        }
     }
 
     private static void openViewerPrepared(Context context, Manga manga, int code, boolean returnToEpisodes,
