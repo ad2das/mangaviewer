@@ -160,6 +160,46 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkFastEpisodeParserReadsEscapedNextRowsWithoutDroppingEpisodes() {
+        Title title = new Title("천공 침범", "", "", new ArrayList<>(), "", 3540, MTitle.base_comic);
+        String payload = "self.__next_f.push([1,\""
+                + "\\u003ca href=\\\"/manhwa/3540/135918\\\" class=\\\"ep-row-v2-link\\\"\\u003e"
+                + "\\u003cspan class=\\\"ep-row-v2-no\\\"\\u003e258\\u003c/span\\u003e"
+                + "\\u003cstrong\\u003e258화\\u003c/strong\\u003e 26.07.25"
+                + "\\u003c/a\\u003e"
+                + "\\u003ca class=\\\"ep-row-v2-link\\\" href=\\\"/manhwa/3540/44827\\\"\\u003e"
+                + "\\u003cstrong\\u003e1화\\u003c/strong\\u003e 17.01.01"
+                + "\\u003c/a\\u003e\"]);";
+
+        NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parseEpisodeRowsFast(
+                payload, "manhwa", "3540", MTitle.base_comic, title);
+
+        assertEquals(2, parsed.episodes.size());
+        assertEquals("258화", parsed.episodes.get(0).getName());
+        assertEquals("/manhwa/3540/135918", parsed.episodes.get(0).getNtkEpisodePath());
+        assertEquals("1화", parsed.episodes.get(1).getName());
+        assertEquals("/manhwa/3540/44827", parsed.episodes.get(1).getNtkEpisodePath());
+    }
+
+    @Test
+    public void ntkFastEpisodeParserKeepsRowIdentityAndEmbeddedImageMetadata() {
+        Title title = new Title("title", "", "", new ArrayList<>(), "", 2, MTitle.base_comic);
+        String payload = "<a class='ep-row-v2-link' href='/manhwa/2/slug-episode'>"
+                + "<span class='ep-row-v2-no'>1292</span><strong>1182화</strong></a>"
+                + "<script>{\"allEpisodes\":[{\"sourceEpisodeId\":\"slug-episode\","
+                + "\"id\":\"81234\",\"epNo\":1292,\"title\":\"1182화\","
+                + "\"imageCount\":47,\"imagesStatus\":2}]}</script>";
+
+        NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parseEpisodeRowsFast(
+                payload, "manhwa", "2", MTitle.base_comic, title);
+
+        assertEquals(1, parsed.episodes.size());
+        assertEquals(1292, parsed.episodes.get(0).getId());
+        assertEquals("81234", parsed.episodes.get(0).getNtkImageEpisodeId());
+        assertEquals(47, parsed.episodes.get(0).getNtkImageCount());
+    }
+
+    @Test
     public void modernNumericManhwaUsesAuthoritativeTitleDocumentBeforeRemovedEpisodeApi() {
         assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "33727", true));
         assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("webtoon", "840894", false));

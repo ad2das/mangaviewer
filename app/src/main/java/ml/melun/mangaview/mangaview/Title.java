@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.CompletionService;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -21,6 +22,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
 import okhttp3.Response;
+import ml.melun.mangaview.runtime.AppDispatchers;
 
 import static ml.melun.mangaview.MainApplication.p;
 
@@ -247,7 +249,7 @@ public class Title extends MTitle {
                     return LOAD_OK;
                 }
             }
-            if(shouldPreferNtkRscTitlePayload(titlePath)) {
+            if(!preferDocumentMetadata && shouldPreferNtkRscTitlePayload(titlePath)) {
                 NtkEpisodeParser.ParseResult payloadOnly = parseNtkEpisodesFromNextPayloads(client, titlePath, "",
                         segment, titleKey, baseMode);
                 if(payloadOnly.episodes.size() > 0) {
@@ -442,7 +444,8 @@ public class Title extends MTitle {
                 thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
 
             Elements episodeLinks = d.select("a[href]");
-            NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(d, segment, titleKey, baseMode, this);
+            NtkEpisodeParser.ParseResult parsed = parseNtkEpisodeRowsWithFallback(
+                    page.body, d, segment, titleKey, baseMode);
             parsed = appendNtkEpisodePages(
                     client, titlePath, page.body, segment, titleKey, baseMode, parsed, false);
             eps = parsed.episodes;
@@ -495,7 +498,7 @@ public class Title extends MTitle {
                 }
                 return LOAD_ERROR;
             }
-            if(shouldEnrichNtkEpisodeImageCounts(eps)) {
+            if(ntkEpisodePageCount(page.body) <= 1 && shouldEnrichNtkEpisodeImageCounts(eps)) {
                 NtkEpisodeParser.ParseResult payloadParsed = parseNtkEpisodesFromNextPayloads(client, titlePath, page.body,
                         segment, titleKey, baseMode);
                 if(payloadParsed.episodes.size() > 0 && hasNtkEpisodeImageCount(payloadParsed.episodes)) {
@@ -637,9 +640,14 @@ public class Title extends MTitle {
             if(page.code >= 400 || page.body == null || page.body.length() == 0
                     || client.isCloudflareChallengeResponse(page.code, page.body))
                 return empty;
-            NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(Jsoup.parse(page.body),
-                    segment, titleKey, baseMode, this);
-            if(parsed.episodes.size() > 0 || parsed.definitiveEmptyEpisodeList)
+            Document document = Jsoup.parse(page.body);
+            NtkEpisodeParser.ParseResult parsed = parseNtkEpisodeRowsWithFallback(
+                    page.body, document, segment, titleKey, baseMode);
+            if(parsed.episodes.size() > 0) {
+                return appendNtkEpisodePages(
+                        client, titlePath, page.body, segment, titleKey, baseMode, parsed, false);
+            }
+            if(parsed.definitiveEmptyEpisodeList)
                 return parsed;
             return parseNtkEpisodesFromNextPayloads(client, titlePath, page.body, segment, titleKey, baseMode);
         } catch(Exception e) {
@@ -667,8 +675,14 @@ public class Title extends MTitle {
                     + ",fromCache=" + (rsc != null && rsc.fromCache)
                     + ",bodyLen=" + (body == null ? 0 : body.length()));
             if(body != null && body.length() > 0) {
-                NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(Jsoup.parse(safeHtml + "<script>" + body + "</script>"),
-                        segment, titleKey, baseMode, this);
+                Document fallbackDocument = null;
+                NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parseEpisodeRowsFast(
+                        body, segment, titleKey, baseMode, this);
+                if(parsed.episodes.size() == 0 && !parsed.definitiveEmptyEpisodeList) {
+                    fallbackDocument = Jsoup.parse(safeHtml + "<script>" + body + "</script>");
+                    parsed = NtkEpisodeParser.parse(
+                            fallbackDocument, segment, titleKey, baseMode, this);
+                }
                 if(parsed.episodes.size() > 0 || parsed.definitiveEmptyEpisodeList) {
                     parsed = appendNtkEpisodePages(
                             client, titlePath, body, segment, titleKey, baseMode, parsed, true);
@@ -732,39 +746,73 @@ public class Title extends MTitle {
         merged.matchedEpisodeLinks += firstPage.matchedEpisodeLinks;
         merged.definitiveEmptyEpisodeList = firstPage.definitiveEmptyEpisodeList;
         int fetchedPages = 1;
+        Set<Integer> completedPages = new HashSet<>();
+        int submittedPages = 0;
+        CompletionService<NtkEpisodePageResult> completionService =
+                AppDispatchers.ioCompletionService();
+        CustomHttpClient.RequestGroup requestGroup = client.currentRequestGroup();
         for(int pageNumber = 2; pageNumber <= pageCount; pageNumber++) {
             if(isNtkEpisodeRequestCancelled(client))
                 break;
-            String pagePath = ntkEpisodePagePath(titlePath, pageNumber);
+            final int requestedPage = pageNumber;
+            final String pagePath = ntkEpisodePagePath(titlePath, requestedPage);
+            completionService.submit(() -> {
+                try {
+                    CustomHttpClient.RequestWork<CustomHttpClient.PageResponse> fetch =
+                            () -> fetchNtkEpisodePage(client, pagePath, preferRsc);
+                    CustomHttpClient.PageResponse response = requestGroup == null
+                            ? fetch.run()
+                            : client.runWithRequestGroup(requestGroup, fetch);
+                    String body = response == null || response.body == null ? "" : response.body;
+                    NtkEpisodeParser.ParseResult parsed = null;
+                    if(response != null && response.code < 400 && body.length() > 0
+                            && !client.isCloudflareChallengeResponse(response.code, body)) {
+                        parsed = parseNtkEpisodeRowsWithFallback(
+                                body, null, segment, titleKey, baseMode);
+                    }
+                    return new NtkEpisodePageResult(
+                            requestedPage, pagePath, response, parsed, null);
+                } catch(Exception e) {
+                    return new NtkEpisodePageResult(
+                            requestedPage, pagePath, null, null, e);
+                }
+            });
+            submittedPages++;
+        }
+        for(int completedPage = 0; completedPage < submittedPages; completedPage++) {
+            if(isNtkEpisodeRequestCancelled(client))
+                break;
             try {
-                CustomHttpClient.PageResponse response =
-                        fetchNtkEpisodePage(client, pagePath, preferRsc);
-                if(isNtkEpisodeRequestCancelled(client))
-                    break;
+                NtkEpisodePageResult result = completionService.take().get();
+                if(result.error != null) {
+                    Log.d(TAG, "ntk_episode_rsc_page_failed path="
+                            + result.pagePath + "," + result.error);
+                    continue;
+                }
+                CustomHttpClient.PageResponse response = result.response;
                 String body = response == null || response.body == null ? "" : response.body;
-                Log.d(TAG, "ntk_episode_rsc_page path=" + pagePath
-                        + ",page=" + pageNumber
+                Log.d(TAG, "ntk_episode_rsc_page path=" + result.pagePath
+                        + ",page=" + result.pageNumber
                         + ",pageCount=" + pageCount
                         + ",code=" + (response == null ? 0 : response.code)
                         + ",mode=" + (preferRsc ? "rsc" : "document")
                         + ",fromCache=" + (response != null && response.fromCache)
                         + ",bodyLen=" + body.length());
-                if(response == null || response.code >= 400 || body.length() == 0
-                        || client.isCloudflareChallengeResponse(response.code, body))
+                if(result.parsed == null || result.parsed.episodes.size() == 0)
                     continue;
-                NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(
-                        Jsoup.parse("<script>" + body + "</script>"),
-                        segment,
-                        titleKey,
-                        baseMode,
-                        this);
-                appendUniqueNtkEpisodes(merged.episodes, seen, parsed.episodes);
-                merged.matchedEpisodeLinks += parsed.matchedEpisodeLinks;
+                appendUniqueNtkEpisodes(merged.episodes, seen, result.parsed.episodes);
+                merged.matchedEpisodeLinks += result.parsed.matchedEpisodeLinks;
                 merged.definitiveEmptyEpisodeList =
-                        merged.definitiveEmptyEpisodeList && parsed.definitiveEmptyEpisodeList;
+                        merged.definitiveEmptyEpisodeList
+                                && result.parsed.definitiveEmptyEpisodeList;
                 fetchedPages++;
+                completedPages.add(result.pageNumber);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             } catch(Exception e) {
-                Log.d(TAG, "ntk_episode_rsc_page_failed path=" + pagePath + "," + e);
+                Log.d(TAG, "ntk_episode_rsc_page_completion_failed path="
+                        + titlePath + "," + e);
             }
         }
         EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(merged.episodes);
@@ -772,7 +820,54 @@ public class Title extends MTitle {
                 + ",expectedPages=" + pageCount
                 + ",fetchedPages=" + fetchedPages
                 + ",episodes=" + merged.episodes.size());
+        if(!isNtkEpisodeRequestCancelled(client)
+                && completedPages.size() != pageCount - 1) {
+            Log.w(TAG, "ntk_episode_rsc_pages_incomplete path=" + titlePath
+                    + ",expectedPages=" + pageCount
+                    + ",fetchedPages=" + fetchedPages
+                    + ",episodes=" + merged.episodes.size());
+            return new NtkEpisodeParser.ParseResult();
+        }
         return merged;
+    }
+
+    private NtkEpisodeParser.ParseResult parseNtkEpisodeRowsWithFallback(
+            String body,
+            Document parsedDocument,
+            String segment,
+            String titleKey,
+            int baseMode
+    ) {
+        NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parseEpisodeRowsFast(
+                body, segment, titleKey, baseMode, this);
+        if(parsed.episodes.size() > 0 || parsed.definitiveEmptyEpisodeList)
+            return parsed;
+        Document document = parsedDocument == null
+                ? Jsoup.parse("<script>" + (body == null ? "" : body) + "</script>")
+                : parsedDocument;
+        return NtkEpisodeParser.parse(document, segment, titleKey, baseMode, this);
+    }
+
+    private static final class NtkEpisodePageResult {
+        final int pageNumber;
+        final String pagePath;
+        final CustomHttpClient.PageResponse response;
+        final NtkEpisodeParser.ParseResult parsed;
+        final Exception error;
+
+        NtkEpisodePageResult(
+                int pageNumber,
+                String pagePath,
+                CustomHttpClient.PageResponse response,
+                NtkEpisodeParser.ParseResult parsed,
+                Exception error
+        ) {
+            this.pageNumber = pageNumber;
+            this.pagePath = pagePath;
+            this.response = response;
+            this.parsed = parsed;
+            this.error = error;
+        }
     }
 
     private CustomHttpClient.PageResponse fetchNtkEpisodePage(

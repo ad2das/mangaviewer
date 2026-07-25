@@ -7,13 +7,26 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class NtkEpisodeParser {
+    private static final Pattern FAST_EPISODE_ANCHOR_PATTERN =
+            Pattern.compile("(?is)<a\\b([^>]*)>(.*?)</a>");
+    private static final Pattern FAST_HREF_PATTERN =
+            Pattern.compile("(?is)\\bhref\\s*=\\s*[\"']([^\"']+)[\"']");
+    private static final Pattern FAST_STRONG_PATTERN =
+            Pattern.compile("(?is)<strong\\b[^>]*>(.*?)</strong>");
+    private static final Pattern FAST_EPISODE_NUMBER_PATTERN =
+            Pattern.compile("(?is)<span\\b[^>]*class\\s*=\\s*[\"'][^\"']*ep-row-v2-no[^\"']*[\"'][^>]*>(.*?)</span>");
+    private static final Pattern FAST_DATE_PATTERN =
+            Pattern.compile("(\\d{2}\\.\\d{2}\\.\\d{2})");
+
     private NtkEpisodeParser() {
     }
 
@@ -67,6 +80,160 @@ final class NtkEpisodeParser {
         Collections.sort(result.episodes, (left, right) -> Integer.compare(right.getId(), left.getId()));
         EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(result.episodes);
         return result;
+    }
+
+    static ParseResult parseEpisodeRowsFast(
+            String payload,
+            String segment,
+            String titleKey,
+            int baseMode,
+            Title title
+    ) {
+        ParseResult result = new ParseResult();
+        if(payload == null || payload.length() == 0
+                || segment == null || segment.length() == 0
+                || titleKey == null || titleKey.length() == 0)
+            return result;
+        String normalized = normalizeFastEpisodePayload(payload);
+        result.definitiveEmptyEpisodeList = looksLikeDefinitiveEmptyEpisodeList(normalized);
+        int titleId = title == null ? parsePositiveInt(titleKey) : title.getId();
+        String imageWorkId = preferredTitleImageWorkId(
+                extractTitleImageWorkId(normalized, titleKey), titleKey, titleId);
+        Set<String> seenEpisodePaths = new HashSet<>();
+        Matcher anchorMatcher = FAST_EPISODE_ANCHOR_PATTERN.matcher(normalized);
+        while(anchorMatcher.find()) {
+            String attributes = anchorMatcher.group(1);
+            if(attributes == null || !attributes.toLowerCase(java.util.Locale.ROOT)
+                    .contains("ep-row-v2-link"))
+                continue;
+            Matcher hrefMatcher = FAST_HREF_PATTERN.matcher(attributes);
+            if(!hrefMatcher.find())
+                continue;
+            String epPath = normalizeEpisodePath(hrefMatcher.group(1), segment, titleKey);
+            if(epPath.length() == 0 || !seenEpisodePaths.add(epPath))
+                continue;
+            result.matchedEpisodeLinks++;
+            String row = anchorMatcher.group(2);
+            String epTitle = fastEpisodeTitle(row);
+            if(isActionTitle(epTitle))
+                continue;
+            Matcher numberMatcher = FAST_EPISODE_NUMBER_PATTERN.matcher(row == null ? "" : row);
+            int epId = numberMatcher.find() ? parsePositiveInt(cleanFastEpisodeText(numberMatcher.group(1))) : 0;
+            if(epId <= 0)
+                epId = MainPageWebtoon.getSecondPathId(epPath, segment);
+            if(epId <= 0)
+                epId = parsePositiveInt(Manga.visibleEpisodeNumberKey(epTitle));
+            if(epId <= 0)
+                epId = parsePositiveInt(epTitle);
+            if(epId <= 0)
+                continue;
+            String date = "";
+            Matcher dateMatcher = FAST_DATE_PATTERN.matcher(row == null ? "" : row);
+            if(dateMatcher.find())
+                date = dateMatcher.group(1);
+            Manga manga = new Manga(epId, epTitle, date, baseMode);
+            manga.setMode(0);
+            manga.setTitle(title);
+            manga.setTitleId(titleId);
+            manga.setNtkEpisodePath(epPath);
+            String sourceEpisodeId = epPath.substring(epPath.lastIndexOf('/') + 1);
+            manga.setNtkImageEpisodeId(sourceEpisodeId);
+            if(imageWorkId.length() > 0)
+                manga.setNtkImageWorkId(imageWorkId);
+            result.episodes.add(manga);
+        }
+        mergeEmbeddedEpisodeMetadata(
+                result, normalized, seenEpisodePaths, segment, titleKey, baseMode, title, titleId);
+        EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(result.episodes);
+        return result;
+    }
+
+    private static void mergeEmbeddedEpisodeMetadata(
+            ParseResult result,
+            String normalized,
+            Set<String> seenEpisodePaths,
+            String segment,
+            String titleKey,
+            int baseMode,
+            Title title,
+            int titleId
+    ) {
+        ParseResult embedded = new ParseResult();
+        appendEmbeddedEpisodes(
+                embedded,
+                normalized,
+                new HashSet<>(),
+                segment,
+                titleKey,
+                baseMode,
+                title,
+                titleId);
+        if(embedded.episodes.size() == 0)
+            return;
+        Map<String, Manga> parsedByPath = new HashMap<>();
+        for(Manga episode : result.episodes) {
+            if(episode != null && episode.getNtkEpisodePath().length() > 0)
+                parsedByPath.put(episode.getNtkEpisodePath(), episode);
+        }
+        for(Manga metadata : embedded.episodes) {
+            if(metadata == null || metadata.getNtkEpisodePath().length() == 0)
+                continue;
+            Manga episode = parsedByPath.get(metadata.getNtkEpisodePath());
+            if(episode == null) {
+                if(seenEpisodePaths.add(metadata.getNtkEpisodePath())) {
+                    result.episodes.add(metadata);
+                    parsedByPath.put(metadata.getNtkEpisodePath(), metadata);
+                }
+                continue;
+            }
+            if(metadata.getNtkImageEpisodeId().length() > 0)
+                episode.setNtkImageEpisodeId(metadata.getNtkImageEpisodeId());
+            if(metadata.getNtkImageWorkId().length() > 0)
+                episode.setNtkImageWorkId(metadata.getNtkImageWorkId());
+            if(metadata.getNtkImageCount() > 0)
+                episode.setNtkImageCount(metadata.getNtkImageCount());
+            if(metadata.getNtkViewerPayloadHint().length() > 0)
+                episode.setNtkViewerPayloadHint(metadata.getNtkViewerPayloadHint());
+        }
+    }
+
+    private static String normalizeFastEpisodePayload(String payload) {
+        return payload.replace("\\u003c", "<")
+                .replace("\\u003C", "<")
+                .replace("\\u003e", ">")
+                .replace("\\u003E", ">")
+                .replace("\\u0026", "&")
+                .replace("\\/", "/")
+                .replace("\\\"", "\"")
+                .replace("&quot;", "\"")
+                .replace("&#34;", "\"")
+                .replace("&#39;", "'");
+    }
+
+    private static String fastEpisodeTitle(String row) {
+        String value = row == null ? "" : row;
+        Matcher titleMatcher = FAST_STRONG_PATTERN.matcher(value);
+        if(titleMatcher.find())
+            value = titleMatcher.group(1);
+        else {
+            Matcher numberMatcher = FAST_EPISODE_NUMBER_PATTERN.matcher(value);
+            value = numberMatcher.find() ? numberMatcher.group(1) : "";
+        }
+        return cleanFastEpisodeText(value);
+    }
+
+    private static String cleanFastEpisodeText(String value) {
+        if(value == null || value.length() == 0)
+            return "";
+        return value.replaceAll("(?is)<[^>]+>", " ")
+                .replace("\\n", " ")
+                .replace("\\t", " ")
+                .replace("&nbsp;", " ")
+                .replace("&amp;", "&")
+                .replace("&#39;", "'")
+                .replace("&quot;", "\"")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     static List<Manga> parseForTest(String html, String segment, String titleKey, int baseMode) {
