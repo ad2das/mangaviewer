@@ -48,7 +48,8 @@ class NtkAckTransport(
     // preserves the proof-specific cookie jar and no-retry policy while reusing only the normal
     // user-flow connection pool/DNS state already established by detail navigation. No request is
     // created until this click-owned transport executes an allowlisted operation.
-    private val client = (MainApplication.getHttpClient().client ?: OkHttpClient()).newBuilder()
+    private val client = (MainApplication.getHttpClient().ntkAckTransportClient()
+        ?: OkHttpClient()).newBuilder()
         .cookieJar(cookieJar)
         .followRedirects(false)
         .followSslRedirects(false)

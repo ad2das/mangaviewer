@@ -52,6 +52,52 @@ internal object NtkStrictSourceActorCloseRearmPolicy {
     }
 }
 
+/**
+ * Serializes actor callback admission with the final close-barrier snapshot.
+ *
+ * The actor executor itself cannot provide this boundary: a producer can increment the pending
+ * callback count after the actor observed zero but before it publishes the close proof. Closing
+ * this gate only when the current callback is the sole remaining callback makes the zero in that
+ * proof stable. Any later producer is rejected without mutating the pending count.
+ */
+internal class NtkStrictSourceActorCallbackGate {
+    private val lock = Any()
+    private var pendingCallbacks = 0
+    private var admissionsClosed = false
+
+    fun admit(submit: () -> Unit): Boolean = synchronized(lock) {
+        if (admissionsClosed) return@synchronized false
+        pendingCallbacks++
+        try {
+            submit()
+            true
+        } catch (failure: Throwable) {
+            pendingCallbacks--
+            check(pendingCallbacks >= 0)
+            throw failure
+        }
+    }
+
+    fun finish(): Int = synchronized(lock) {
+        pendingCallbacks--
+        check(pendingCallbacks >= 0)
+        pendingCallbacks
+    }
+
+    fun remainingExcludingCurrent(currentCallbackDepth: Int): Int = synchronized(lock) {
+        val currentAllowance = if (currentCallbackDepth > 0) 1 else 0
+        (pendingCallbacks - currentAllowance).coerceAtLeast(0)
+    }
+
+    fun closeAdmissionsIfDrained(currentCallbackDepth: Int): Boolean = synchronized(lock) {
+        if (admissionsClosed) return@synchronized true
+        val currentAllowance = if (currentCallbackDepth > 0) 1 else 0
+        if (pendingCallbacks - currentAllowance != 0) return@synchronized false
+        admissionsClosed = true
+        true
+    }
+}
+
 private fun prestartedStrictLane(
     name: String,
     androidThreadPriority: Int = Process.THREAD_PRIORITY_DEFAULT,
@@ -808,7 +854,7 @@ internal class NtkStrictSourceSession(
     private val activeBodyLeaseCount = AtomicInteger()
     private val temporaryFileLeaseCount = AtomicInteger()
     private val activeAdoptionTaskCount = AtomicInteger()
-    private val pendingActorCallbacks = AtomicInteger()
+    private val actorCallbackGate = NtkStrictSourceActorCallbackGate()
     private val physicalCompletions = ConcurrentLinkedQueue<PhysicalCompletion>()
     private val physicalCompletionDrainScheduled = AtomicBoolean(false)
     private val listenerSequence = AtomicLong(1L)
@@ -3015,6 +3061,10 @@ internal class NtkStrictSourceSession(
                 sessionId
             ) != 0
         ) return
+        // Freeze callback admission in the same critical section that proves no queued callback
+        // remains. Without this boundary, a lease/worker callback can arrive between the earlier
+        // zero check and the close-proof construction below.
+        if (!actorCallbackGate.closeAdmissionsIfDrained(actorCallbackDepthValue())) return
         if (closeFinalized.get()) return
         val terminalCause = (phase as? SessionPhase.Closing)?.cause
         // This is the final retirement transaction and every descriptor lease has drained.
@@ -3102,7 +3152,7 @@ internal class NtkStrictSourceSession(
                 admissionsClosed = true,
                 completedAtMs = SystemClock.elapsedRealtime()
             )
-            check(barrier.isComplete)
+            check(barrier.isComplete) { "Incomplete exact source close barrier: $barrier" }
             onExactCloseBarrier(barrier)
         }
         routePreparationLanes.forEach(ExecutorService::shutdownNow)
@@ -3272,22 +3322,27 @@ internal class NtkStrictSourceSession(
 
     private fun <T> enqueueActorCommand(operation: () -> T): CompletableFuture<T> {
         val completion = CompletableFuture<T>()
-        pendingActorCallbacks.incrementAndGet()
         try {
-            actor.execute {
-                markAndAssertActorThread()
-                actorCallbackDepth.set(actorCallbackDepth.get() + 1)
-                try {
-                    completion.complete(operation())
-                } catch (failure: Throwable) {
-                    completion.completeExceptionally(failure)
-                    if (!closeRequested.get()) failSessionActor(failure)
-                } finally {
-                    finishActorCallbackActor()
+            val admitted = actorCallbackGate.admit {
+                actor.execute {
+                    markAndAssertActorThread()
+                    actorCallbackDepth.set(actorCallbackDepthValue() + 1)
+                    try {
+                        completion.complete(operation())
+                    } catch (failure: Throwable) {
+                        completion.completeExceptionally(failure)
+                        if (!closeRequested.get()) failSessionActor(failure)
+                    } finally {
+                        finishActorCallbackActor()
+                    }
                 }
             }
+            if (!admitted) {
+                completion.completeExceptionally(
+                    RejectedExecutionException("Strict source actor callback admissions closed")
+                )
+            }
         } catch (failure: RejectedExecutionException) {
-            pendingActorCallbacks.decrementAndGet()
             completion.completeExceptionally(failure)
         }
         return completion
@@ -3297,21 +3352,22 @@ internal class NtkStrictSourceSession(
         onRejected: () -> Unit = {},
         operation: () -> Unit
     ) {
-        pendingActorCallbacks.incrementAndGet()
         try {
-            actor.execute {
-                markAndAssertActorThread()
-                actorCallbackDepth.set(actorCallbackDepth.get() + 1)
-                try {
-                    operation()
-                } catch (failure: Throwable) {
-                    if (!closeRequested.get()) failSessionActor(failure)
-                } finally {
-                    finishActorCallbackActor()
+            val admitted = actorCallbackGate.admit {
+                actor.execute {
+                    markAndAssertActorThread()
+                    actorCallbackDepth.set(actorCallbackDepthValue() + 1)
+                    try {
+                        operation()
+                    } catch (failure: Throwable) {
+                        if (!closeRequested.get()) failSessionActor(failure)
+                    } finally {
+                        finishActorCallbackActor()
+                    }
                 }
             }
+            if (!admitted) onRejected()
         } catch (_: RejectedExecutionException) {
-            pendingActorCallbacks.decrementAndGet()
             onRejected()
         }
     }
@@ -3319,9 +3375,8 @@ internal class NtkStrictSourceSession(
     private fun finishActorCallbackActor() {
         assertActorThread()
         publishImmutableSessionViewActor()
-        actorCallbackDepth.set((actorCallbackDepth.get() - 1).coerceAtLeast(0))
-        val remaining = pendingActorCallbacks.decrementAndGet()
-        check(remaining >= 0)
+        actorCallbackDepth.set((actorCallbackDepthValue() - 1).coerceAtLeast(0))
+        val remaining = actorCallbackGate.finish()
         if (NtkStrictSourceActorCloseRearmPolicy.shouldRearm(
                 closeRequested.get(),
                 closeFinalized.get(),
@@ -3381,9 +3436,10 @@ internal class NtkStrictSourceSession(
     }
 
     private fun remainingActorCallbacksExcludingCurrent(): Int {
-        val currentAllowance = if (actorCallbackDepth.get() > 0) 1 else 0
-        return (pendingActorCallbacks.get() - currentAllowance).coerceAtLeast(0)
+        return actorCallbackGate.remainingExcludingCurrent(actorCallbackDepthValue())
     }
+
+    private fun actorCallbackDepthValue(): Int = actorCallbackDepth.get() ?: 0
 
     private fun logSourceEvent(event: String, fields: String) {
         assertActorThread()

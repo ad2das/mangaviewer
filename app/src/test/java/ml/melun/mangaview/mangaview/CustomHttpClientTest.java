@@ -2,9 +2,11 @@ package ml.melun.mangaview.mangaview;
 
 import org.junit.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InterruptedIOException;
 import java.net.ConnectException;
 import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -20,6 +22,54 @@ import static org.junit.Assert.assertTrue;
 
 public class CustomHttpClientTest {
     @Test
+    public void ntkCellularAlwaysUsesResilientTlsTransport() {
+        assertTrue(CustomHttpClient.shouldUseNtkCellularResilientTransportForTest(
+                true, false));
+        assertTrue(CustomHttpClient.shouldUseNtkCellularResilientTransportForTest(
+                true, true));
+    }
+
+    @Test
+    public void ntkNonCellularRoutesKeepNormalFastTlsTransport() {
+        assertFalse(CustomHttpClient.shouldUseNtkCellularResilientTransportForTest(
+                false, false));
+        assertFalse(CustomHttpClient.shouldUseNtkCellularResilientTransportForTest(
+                false, true));
+    }
+
+    @Test
+    public void ntkCellularPrefersDohOnlyForProtectedHosts() {
+        assertTrue(CustomHttpClient.shouldPreferNtkDohBeforeSystemForTest(
+                "sbxh5.com", true, false));
+        assertFalse(CustomHttpClient.shouldPreferNtkDohBeforeSystemForTest(
+                "sbxh5.com", false, false));
+        assertTrue(CustomHttpClient.shouldPreferNtkDohBeforeSystemForTest(
+                "sbxh5.com", true, true));
+        assertFalse(CustomHttpClient.shouldPreferNtkDohBeforeSystemForTest(
+                "example.com", true, false));
+    }
+
+    @Test
+    public void ntkStrictHttpEngineIsSkippedForCellularWithOrWithoutVpn() {
+        assertFalse(CustomHttpClient.shouldUseSharedHttpEngineForStrictNetworkForTest(
+                "document", true, false));
+        assertFalse(CustomHttpClient.shouldUseSharedHttpEngineForStrictNetworkForTest(
+                "signed_image_api", true, false));
+        assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictNetworkForTest(
+                "document", false, false));
+        assertFalse(CustomHttpClient.shouldUseSharedHttpEngineForStrictNetworkForTest(
+                "document", true, true));
+    }
+
+    @Test
+    public void targetedTlsFragmentationFindsExactSniHostname() throws Exception {
+        byte[] hello = clientHelloForHost("sbxh5.com");
+        assertEquals("sbxh5.com", CustomHttpClient.tlsClientHelloSniHostForTest(hello));
+        hello[0] = 0x17;
+        assertNull(CustomHttpClient.tlsClientHelloSniHostForTest(hello));
+    }
+
+    @Test
     public void transportFailuresAreNotInventedCloudflareChallenges() {
         assertFalse(CustomHttpClient.shouldMarkNtkChallengeForTransportFailureForTest(
                 new javax.net.ssl.SSLPeerUnverifiedException("hostname not verified")));
@@ -29,6 +79,50 @@ public class CustomHttpClientTest {
                 new java.net.SocketTimeoutException("timeout")));
         assertFalse(CustomHttpClient.shouldMarkNtkChallengeForTransportFailureForTest(
                 new Exception("ERR_CERT_COMMON_NAME_INVALID")));
+    }
+
+    private static byte[] clientHelloForHost(String hostname) throws Exception {
+        byte[] host = hostname.getBytes(StandardCharsets.US_ASCII);
+        ByteArrayOutputStream extensions = new ByteArrayOutputStream();
+        writeU16(extensions, 0);
+        writeU16(extensions, 5 + host.length);
+        writeU16(extensions, 3 + host.length);
+        extensions.write(0);
+        writeU16(extensions, host.length);
+        extensions.write(host);
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        body.write(new byte[]{0x03, 0x03});
+        body.write(new byte[32]);
+        body.write(0);
+        writeU16(body, 2);
+        body.write(new byte[]{0x13, 0x01});
+        body.write(1);
+        body.write(0);
+        writeU16(body, extensions.size());
+        extensions.writeTo(body);
+
+        ByteArrayOutputStream handshake = new ByteArrayOutputStream();
+        handshake.write(1);
+        writeU24(handshake, body.size());
+        body.writeTo(handshake);
+
+        ByteArrayOutputStream record = new ByteArrayOutputStream();
+        record.write(new byte[]{0x16, 0x03, 0x01});
+        writeU16(record, handshake.size());
+        handshake.writeTo(record);
+        return record.toByteArray();
+    }
+
+    private static void writeU16(ByteArrayOutputStream out, int value) {
+        out.write((value >>> 8) & 0xff);
+        out.write(value & 0xff);
+    }
+
+    private static void writeU24(ByteArrayOutputStream out, int value) {
+        out.write((value >>> 16) & 0xff);
+        out.write((value >>> 8) & 0xff);
+        out.write(value & 0xff);
     }
 
     @Test
