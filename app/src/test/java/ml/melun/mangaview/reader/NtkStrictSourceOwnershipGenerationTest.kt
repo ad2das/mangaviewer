@@ -117,6 +117,32 @@ class NtkStrictSourceOwnershipGenerationTest {
         )
     }
 
+    @Test
+    fun mixedCaseSlugKeepsOneExactOwnershipIdentity() {
+        val mixedCasePath = "/webtoon/u-bt-I_killed-863ce912/u-mqaz97dp-sc5w"
+        val token = token(
+            generation = 12L,
+            sessionId = 120L,
+            nonce = 1_200L,
+            episodePath = mixedCasePath,
+        )
+
+        NtkStrictSourceOwnershipRegistry.beginDiscoveryFence(
+            mixedCasePath,
+            token.discoveryGeneration,
+        )
+        val owner = NtkStrictSourceOwnershipRegistry.claimExact(
+            NtkStrictSourceOwnershipRegistry.reserveExact(token),
+            token.sessionId,
+        )
+
+        assertEquals(mixedCasePath, owner.path)
+        assertEquals(
+            owner,
+            NtkStrictSourceOwnershipRegistry.owner(mixedCasePath),
+        )
+    }
+
     private fun assertNotNullOwner(): NtkStrictSourceOwnershipRegistry.Owner {
         val owner = NtkStrictSourceOwnershipRegistry.owner(path)
         assertNotNull(owner)
@@ -127,8 +153,9 @@ class NtkStrictSourceOwnershipGenerationTest {
         generation: Long,
         sessionId: Long,
         nonce: Long,
+        episodePath: String = path,
     ) = NtkPromotionToken(
-        episodePath = path,
+        episodePath = episodePath,
         discoveryGeneration = generation,
         sessionId = sessionId,
         planBindingDigest = NtkStripDigests.sha256Tokens("plan", generation.toString()),

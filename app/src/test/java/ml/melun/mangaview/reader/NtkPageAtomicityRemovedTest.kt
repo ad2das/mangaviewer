@@ -11,7 +11,7 @@ class NtkPageAtomicityRemovedTest {
         val geometry = NtkStripGeometry.create(
             episode,
             viewportWidthPx = 1000,
-            assets = listOf(NtkPageAsset(0, "https://cdn/p0.jpg", 1000, 1200))
+            assets = listOf(NtkPageAsset(0, "https://cdn/p0.jpg", 1000, 5000))
         )
         assertEquals(3, geometry.pages.single().tiles.size)
 

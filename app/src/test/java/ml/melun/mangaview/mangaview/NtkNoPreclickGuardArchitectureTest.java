@@ -103,36 +103,28 @@ public final class NtkNoPreclickGuardArchitectureTest {
     }
 
     @Test
-    public void guardFuturesExistOnlyAfterAValidatedFullChallengeDecision() throws Exception {
+    public void guardProgramIsBundledAndNeverCreatesGuardNetworkFutures() throws Exception {
         String engine = read(ntkAckSourcePath("NtkAckBrowserEngine.kt"));
         String prerequisites = method(engine,
                 "private fun runNetworkPrerequisites(",
-                "private fun startFullChallengeGuardPair(");
+                "private fun loadBundledGuardPair(");
 
+        int loadBundled = prerequisites.indexOf("val executableGuard = loadBundledGuardPair()");
+        int challengeJoin = prerequisites.indexOf("challengeFuture.get()");
         int trustedDecision = prerequisites.indexOf("if (challengeObject == null)");
-        int trustedReturn = prerequisites.indexOf("return", trustedDecision);
-        int fullPairStart = prerequisites.indexOf(
-                "startFullChallengeGuardPair(current, transport, version)");
-        assertTrue(trustedDecision >= 0);
-        assertTrue(trustedReturn > trustedDecision);
-        assertTrue(fullPairStart > trustedReturn);
+        assertTrue(loadBundled >= 0);
+        assertTrue(challengeJoin > loadBundled);
+        assertTrue(trustedDecision > challengeJoin);
+        assertFalse(engine.contains("getGuardJavascript("));
+        assertFalse(engine.contains("getGuardWasm("));
+        assertFalse(engine.contains("FullChallengeGuardFutures("));
 
-        // The pre-decision path may create only key/challenge work. In particular, a trusted
-        // response cannot construct a guard future or call either guard transport operation.
-        String beforeFullDecision = prerequisites.substring(0, fullPairStart);
-        assertFalse(beforeFullDecision.contains("getGuardJavascript("));
-        assertFalse(beforeFullDecision.contains("getGuardWasm("));
-        assertFalse(beforeFullDecision.contains("FullChallengeGuardFutures("));
-
-        String fullPair = method(engine,
-                "private fun startFullChallengeGuardPair(",
+        String bundledPair = method(engine,
+                "private fun loadBundledGuardPair(",
                 "private fun completeTrustedServerGrant(");
-        assertEquals(1, occurrences(fullPair, "transport.getGuardJavascript(version)"));
-        assertEquals(1, occurrences(fullPair, "transport.getGuardWasm(version)"));
-        assertEquals(2, occurrences(fullPair, "workers.submit<NtkAckTransport.Result>"));
-        assertEquals(2, occurrences(fullPair, "current.tasks.track("));
-        assertTrue(prerequisites.contains("guardFutures.javascript.get()"));
-        assertTrue(prerequisites.contains("guardFutures.wasm.get()"));
+        assertEquals(1, occurrences(bundledPair, "context.assets.open(BUNDLED_GUARD_JAVASCRIPT)"));
+        assertEquals(1, occurrences(bundledPair, "context.assets.open(BUNDLED_GUARD_WASM)"));
+        assertTrue(bundledPair.contains("NtkAckGuardCodec.decode(javascript, wasm)"));
     }
 
     @Test

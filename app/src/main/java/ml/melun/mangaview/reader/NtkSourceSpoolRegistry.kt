@@ -330,6 +330,7 @@ object NtkSourceSpoolRegistry {
         val manga: Manga,
         val initialPageIndexHint: Int,
         val rollingAdmission: Boolean,
+        val viewerImageApiBacked: Boolean,
         val executionBootstrapFuture: CompletableFuture<NtkStrictSourceExecutionBootstrap>,
     )
 
@@ -423,7 +424,7 @@ object NtkSourceSpoolRegistry {
             val bootstrapStartedAt = SystemClock.elapsedRealtime()
             entry.executionBootstrapFuture = CompletableFuture.supplyAsync({
                 NtkStrictSourceExecutionBootstrap(
-                    deferWorkerLanes = path.startsWith("/manhwa/"),
+                    deferWorkerLanes = path.startsWith("/manhwa/", ignoreCase = true),
                 ).also { bootstrap ->
                     Log.d(
                         "ViewerPerf",
@@ -641,6 +642,7 @@ object NtkSourceSpoolRegistry {
                 entry.manga,
                 entry.initialPageIndexHint,
                 entry.rollingAdmission,
+                entry.quarantineAssetEvidence != null,
                 checkNotNull(entry.executionBootstrapFuture) {
                     "Strict execution bootstrap was not click-owned"
                 },
@@ -686,6 +688,7 @@ object NtkSourceSpoolRegistry {
                 rollingAdmission = spec.rollingAdmission,
                 initialExactBodies = initialExactBodies,
                 streamedExactBodies = streamedExactBodies,
+                viewerImageApiBacked = spec.viewerImageApiBacked,
             )
         } catch (failure: Throwable) {
             bootstrap.abortConstructionFailure()
@@ -819,6 +822,13 @@ object NtkSourceSpoolRegistry {
                     }
                 }
             } catch (failure: Throwable) {
+                Log.e(
+                    "ViewerPerf",
+                    "reader_quarantine_start_failed path=$path," +
+                        "generation=${lease.generation.value}," +
+                        "error=${failure.javaClass.simpleName}",
+                    failure,
+                )
                 failQuarantineSession(path, lease, failure)
                 return NtkPlanInstallResult(
                     NtkPlanInstallStatus.INVALID_PLAN_PROOF,
@@ -1882,6 +1892,9 @@ object NtkSourceSpoolRegistry {
             exactStagePageIndexes: Set<Int>
         ) = transport.onGeometrySealed(episode, geometryDigest, exactStagePageIndexes)
 
+        override fun onFirstActualFramePresented(episode: NtkEpisodeToken) =
+            transport.onFirstActualFramePresented(episode)
+
         override fun requestPreparationDrain(
             episode: NtkEpisodeToken,
             completion: (NtkSourceDrainProof) -> Unit
@@ -1920,10 +1933,15 @@ object NtkSourceSpoolRegistry {
 
     private fun mutationLock(path: String): Any = mutationLocks.computeIfAbsent(path) { Any() }
 
-    private fun normalizedPath(path: String?): String? {
-        val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty()).lowercase()
+    internal fun normalizedPath(path: String?): String? {
+        // Work and episode slugs are server-owned URL path segments and therefore
+        // case-sensitive. Lowercasing this key split the coordinator's exact path from its
+        // discovery lease for real slugs such as u-bt-I_killed-*, making the complete document
+        // fail ownership validation after it had already downloaded successfully.
+        val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty())
         return normalized.takeIf {
-            it.startsWith("/manhwa/") || it.startsWith("/webtoon/")
+            it.startsWith("/manhwa/", ignoreCase = true) ||
+                it.startsWith("/webtoon/", ignoreCase = true)
         }
     }
 

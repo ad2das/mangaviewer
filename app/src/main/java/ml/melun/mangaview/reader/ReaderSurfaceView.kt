@@ -658,10 +658,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var nativeTexturePrewarmAnchorPage = -1
     private val nativeTexturePrewarmPendingPages = LinkedHashSet<Int>()
     private var nativeTexturePrewarmPaused = false
-    private var nativeFullEpisodeTexturePrewarmRequested = false
-    private var nativeFullEpisodeTexturePrewarmCallback: Runnable? = null
-    private var lastNativeFullEpisodeRejectLogMs = 0L
+    private var lastNativeTextureRunwayRejectLogMs = 0L
     private var lastNativeSubmitDiagnosticLogMs = 0L
+    private var unmatchedNativePresentationCount = 0L
     private var firstNativeSubmitAccepted = false
     private var directRenderThread: HandlerThread? = null
     private var directRenderHandler: Handler? = null
@@ -677,6 +676,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pendingPixelMutationOldestNs = 0L
     private var pendingPixelMutationNewestNs = 0L
     private var pendingPixelMutationReasons = 0
+    private var downX = 0f
     private var downY = 0f
     private var dragOriginY = 0f
     private var dragOriginScrollOffset = 0f
@@ -901,7 +901,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun setLimitScrollToDrawablePrefix(enabled: Boolean) {
         var request: WindowRequest? = null
         synchronized(stateLock) {
-            val effectiveEnabled = enabled && !inlineRealPixelsOnly
+            val effectiveEnabled = effectiveDrawablePrefixScrollLimit(
+                enabled,
+                inlineRealPixelsOnly
+            )
             if (limitScrollToDrawablePrefix == effectiveEnabled) return
             limitScrollToDrawablePrefix = effectiveEnabled
             renderRequested = pages.isNotEmpty()
@@ -920,7 +923,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     /**
      * Keeps an inline reader honest: unresolved pages remain missing coverage instead of being
-     * painted as loading, error, or placeholder content. Readiness never restricts scrolling.
+     * painted as loading, error, or placeholder content. A separately requested drawable-prefix
+     * guard may retain the last complete real-pixel viewport while its next page is still in
+     * flight; real-pixels-only mode must not silently disable that production UX policy.
      */
     fun setInlineRealPixelsOnly(enabled: Boolean) {
         var request: WindowRequest? = null
@@ -929,7 +934,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             inlineRealPixelsOnly = enabled
             if (enabled) {
                 pageGapPx = 0
-                limitScrollToDrawablePrefix = false
             }
             nativeTexturePrewarmAnchorPage = -1
             if (enabled) requestResidentNativeTexturePrewarmLocked()
@@ -1575,23 +1579,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val creationGeneration: Long,
         val firstPage: Int,
         val lastPage: Int,
-        val fullEpisode: Boolean,
-        val fullEpisodeComplete: Boolean,
         val requestedPages: IntArray,
         val tileData: IntArray,
         val bitmaps: Array<Bitmap>
     )
 
     /**
-     * Transfers every already-installed authoritative original tile to the native renderer's
-     * ownership queue. This is post-click work and neither discovers URLs nor fetches/decodes an
-     * asset. The callback means that the complete immutable scene was accepted by the renderer;
-     * uploads continue opportunistically behind touch-owned frames until every tile is resident.
+     * Verifies that every authoritative original is installed, then queues only the current
+     * forward runway for native upload. The complete decoded scene remains owned by the View, so
+     * a later viewport can upload any page without network or decode work. Uploading the entire
+     * episode here made 100+ page works contend with physical scroll frames and retained hundreds
+     * of MiB of GPU textures even though only a few pages can be visible.
      */
-    fun queueAllAuthoritativeOriginalTextures(onQueued: Runnable): Boolean {
+    fun queueAllAuthoritativeOriginalTextures(
+        canonicalPageCount: Int,
+        onQueued: Runnable
+    ): Boolean {
         val hwuiBitmaps = synchronized(stateLock) {
-            if (!renderRunning || traversalStructureEpoch <= 0L || pages.isEmpty() ||
-                pages.any { page ->
+            if (canonicalPageCount <= 0 || pages.size < canonicalPageCount ||
+                !renderRunning || traversalStructureEpoch <= 0L ||
+                pages.take(canonicalPageCount).any { page ->
                     !usableAuthoritativeOriginalTilePage(
                         page.width,
                         page.height,
@@ -1631,8 +1638,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val requested = synchronized(stateLock) {
             if ((!inlineRealPixelsOnly && !forwardNativeTexturePrewarmEnabled) ||
                 !renderRunning || rollingNativeFatal || rollingNativeHandle == 0L ||
-                traversalStructureEpoch <= 0L || pages.isEmpty() ||
-                pages.any { page ->
+                traversalStructureEpoch <= 0L || canonicalPageCount <= 0 ||
+                pages.size < canonicalPageCount ||
+                pages.take(canonicalPageCount).any { page ->
                     !usableAuthoritativeOriginalTilePage(
                         page.width,
                         page.height,
@@ -1643,27 +1651,25 @@ class ReaderSurfaceView @JvmOverloads constructor(
             ) {
                 return@synchronized false
             }
-            nativeFullEpisodeTexturePrewarmRequested = true
-            nativeFullEpisodeTexturePrewarmCallback = onQueued
             nativeTexturePrewarmDirty = true
             requestResidentNativeTexturePrewarmLocked()
             true
         }
         if (requested) {
-            // Full-scene qualification is initiated by the last immutable decode/install and is
-            // not presentation work. Posting this snapshot behind the continuously refreshed
-            // frame-admission Handler let physical flings starve it for the entire traversal. The
-            // native call only copies validated identities/global references into its own queue;
-            // EGL upload still remains renderer-thread owned and visible frames retain priority.
+            // Queue the current runway in this turn so completion cannot be starved by a fling.
+            // "All images ready" is qualified by the exhaustive authoritative-page validation
+            // above; it never requires every offscreen page to occupy GPU memory simultaneously.
             flushResidentNativeTexturePrewarm()
+            onQueued.run()
         } else {
             val now = SystemClock.uptimeMillis()
             val rejection = synchronized(stateLock) {
-                if (now - lastNativeFullEpisodeRejectLogMs < 1_000L) {
+                if (now - lastNativeTextureRunwayRejectLogMs < 1_000L) {
                     null
                 } else {
-                    lastNativeFullEpisodeRejectLogMs = now
-                    val invalidPage = pages.indexOfFirst { page ->
+                    lastNativeTextureRunwayRejectLogMs = now
+                    val invalidPage = pages.take(canonicalPageCount.coerceAtLeast(0))
+                        .indexOfFirst { page ->
                         !usableAuthoritativeOriginalTilePage(
                             page.width,
                             page.height,
@@ -1673,7 +1679,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     }
                     val invalid = pages.getOrNull(invalidPage)
                     val recycledTiles = invalid?.tiles?.count { it.bitmap.isRecycled } ?: -1
-                    "reader_native_full_scene_rejected renderRunning=$renderRunning," +
+                    "reader_native_texture_runway_rejected renderRunning=$renderRunning," +
                         "fatal=$rollingNativeFatal,handle=${rollingNativeHandle != 0L}," +
                         "epoch=$traversalStructureEpoch,pages=${pages.size},invalidPage=$invalidPage," +
                         "invalidSize=${invalid?.width ?: -1}x${invalid?.height ?: -1}," +
@@ -1688,10 +1694,64 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     /**
-     * Coalesces decoded-pixel deliveries and normally snapshots the current page plus the next two
-     * unread pages. Once the complete strict scene is installed, one full-episode snapshot gives
-     * the native worker enough post-click work to make the far tail resident during forward
-     * reading instead of uploading it on first visibility.
+     * Queues only the currently visible exact runway for an oversized scene whose far historical
+     * originals may already have been evicted. Every canonical page has crossed authoritative
+     * installation before this is called; unlike [queueAllAuthoritativeOriginalTextures], current
+     * simultaneous residency is intentionally not an invariant.
+     */
+    fun queueResidentAuthoritativeTextureRunway(onQueued: Runnable): Boolean {
+        val hwuiBitmaps = synchronized(stateLock) {
+            if (!renderRunning || traversalStructureEpoch <= 0L || pages.isEmpty()) return false
+            rebuildLayoutLocked()
+            val first = if (width > 0 && height > 0) {
+                firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
+            } else {
+                0
+            }
+            val last = if (width > 0 && height > 0) {
+                val probe = min(
+                    max(0f, contentHeight - 1f),
+                    scrollOffset + max(1, height) - 1f,
+                )
+                firstVisiblePageLocked(probe).coerceIn(first, pages.lastIndex)
+            } else {
+                first
+            }
+            if ((first..last).any { index ->
+                    val page = pages[index]
+                    !usableAuthoritativeOriginalTilePage(
+                        page.width,
+                        page.height,
+                        page.tiles,
+                        page.originalProof,
+                    )
+                }
+            ) return false
+            if (rollingNativeHandle == 0L) {
+                collectUnpreparedHwuiRunwayLocked(HWUI_FORWARD_PREPARE_VIEWPORTS)
+            } else {
+                nativeTexturePrewarmDirty = true
+                requestResidentNativeTexturePrewarmLocked()
+                null
+            }
+        }
+        if (hwuiBitmaps != null) {
+            for (bitmap in hwuiBitmaps) {
+                if (!bitmap.isRecycled && bitmap.config != Bitmap.Config.HARDWARE) {
+                    runCatching { bitmap.prepareToDraw() }
+                }
+            }
+        } else {
+            flushResidentNativeTexturePrewarm()
+        }
+        onQueued.run()
+        return true
+    }
+
+    /**
+     * Coalesces decoded-pixel deliveries into a viewport-sized forward runway. Offscreen decoded
+     * pages remain immediately available from the immutable View scene but are not allowed to
+     * monopolize the renderer queue or GPU residency.
      */
     private fun requestResidentNativeTexturePrewarmLocked() {
         nativeTexturePrewarmDirty = true
@@ -1717,32 +1777,30 @@ class ReaderSurfaceView @JvmOverloads constructor(
             ) return@synchronized null
 
             rebuildLayoutLocked()
-            val fullEpisode = nativeFullEpisodeTexturePrewarmRequested
-            val requestedPages = if (fullEpisode) {
-                (0..pages.lastIndex).toList()
-            } else if (nativeTexturePrewarmPendingPages.isNotEmpty()) {
-                nativeTexturePrewarmPendingPages
-                    .asSequence()
-                    .filter { it in pages.indices }
-                    .take(NATIVE_PREWARM_MAX_TILES)
-                    .sorted()
-                    .toList()
+            val first = if (width > 0 && height > 0) {
+                firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
             } else {
-                val first = if (width > 0 && height > 0) {
-                    firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
-                } else {
-                    0
-                }
-                (first..min(pages.lastIndex, first + NATIVE_PREWARM_AHEAD_PAGES)).toList()
+                0
             }
+            val runwayEnd = if (width > 0 && height > 0) {
+                val endExclusive = min(
+                    contentHeight,
+                    scrollOffset + height.toFloat() *
+                        (1f + NATIVE_PREWARM_AHEAD_VIEWPORTS)
+                )
+                val probe = min(
+                    max(0f, contentHeight - FORWARD_REQUEST_END_EPSILON_PX),
+                    max(0f, endExclusive - FORWARD_REQUEST_END_EPSILON_PX)
+                )
+                firstVisiblePageLocked(probe).coerceIn(first, pages.lastIndex)
+            } else {
+                min(pages.lastIndex, first + NATIVE_PREWARM_FALLBACK_AHEAD_PAGES)
+            }
+            val requestedPages = (first..runwayEnd).toList()
             if (requestedPages.isEmpty()) return@synchronized null
             val firstPage = requestedPages.first()
             val lastPage = requestedPages.last()
-            val maxTiles = if (fullEpisode) {
-                NATIVE_FULL_EPISODE_PREWARM_MAX_TILES
-            } else {
-                NATIVE_PREWARM_MAX_TILES
-            }
+            val maxTiles = NATIVE_PREWARM_MAX_TILES
             val tileIntegers = ArrayList<Int>(maxTiles * 7)
             val bitmapList = ArrayList<Bitmap>(maxTiles)
 
@@ -1781,27 +1839,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
             }
             if (bitmapList.isEmpty()) return@synchronized null
-            val expectedFullEpisodeTiles = if (fullEpisode) {
-                pages.sumOf { page ->
-                    when {
-                        page.bitmap != null && !page.bitmap!!.isRecycled -> 1
-                        page.stripSlots.isNotEmpty() -> page.stripSlots.count { it != null }
-                        else -> page.tiles.size
-                    }
-                }
-            } else {
-                0
-            }
-            val fullEpisodeComplete = fullEpisode &&
-                firstPage == 0 && lastPage == pages.lastIndex &&
-                bitmapList.size == expectedFullEpisodeTiles &&
-                expectedFullEpisodeTiles <= maxTiles
             nativeTexturePrewarmDirty = false
             nativeTexturePrewarmAnchorPage = firstPage
-            if (!fullEpisode) {
-                nativeTexturePrewarmPendingPages.removeAll(requestedPages.toSet())
-                nativeTexturePrewarmDirty = nativeTexturePrewarmPendingPages.isNotEmpty()
-            }
+            nativeTexturePrewarmPendingPages.clear()
             NativeTexturePrewarmSnapshot(
                 handle = rollingNativeHandle,
                 structureEpoch = traversalStructureEpoch,
@@ -1809,8 +1849,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 creationGeneration = rollingNativeCreateGeneration,
                 firstPage = firstPage,
                 lastPage = lastPage,
-                fullEpisode = fullEpisode,
-                fullEpisodeComplete = fullEpisodeComplete,
                 requestedPages = requestedPages.toIntArray(),
                 tileData = tileIntegers.toIntArray(),
                 bitmaps = bitmapList.toTypedArray()
@@ -1826,9 +1864,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (!stillCurrent) {
             synchronized(stateLock) {
                 nativeTexturePrewarmDirty = true
-                if (!snapshot.fullEpisode) {
-                    snapshot.requestedPages.forEach(nativeTexturePrewarmPendingPages::add)
-                }
+                snapshot.requestedPages.forEach(nativeTexturePrewarmPendingPages::add)
             }
             return
         }
@@ -1840,40 +1876,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 snapshot.bitmaps
             )
         }.getOrDefault(false)
-        val completion = synchronized(stateLock) {
+        synchronized(stateLock) {
             if (!accepted) {
                 nativeTexturePrewarmDirty = true
-                if (!snapshot.fullEpisode) {
-                    snapshot.requestedPages.forEach(nativeTexturePrewarmPendingPages::add)
-                }
-                null
-            } else if (snapshot.fullEpisode && snapshot.fullEpisodeComplete &&
-                nativeFullEpisodeTexturePrewarmRequested &&
-                renderRunning && !rollingNativeFatal && rollingNativeHandle == snapshot.handle &&
-                traversalStructureEpoch == snapshot.structureEpoch &&
-                lifecycleEpoch == snapshot.lifecycleEpoch &&
-                rollingNativeCreateGeneration == snapshot.creationGeneration
-            ) {
-                nativeFullEpisodeTexturePrewarmRequested = false
-                nativeFullEpisodeTexturePrewarmCallback.also {
-                    nativeFullEpisodeTexturePrewarmCallback = null
-                }
-            } else {
-                if (snapshot.fullEpisode) nativeTexturePrewarmDirty = true
-                null
+                snapshot.requestedPages.forEach(nativeTexturePrewarmPendingPages::add)
             }
         }
-        if (completion != null) mainHandler.post(completion)
-        // A cold full-scene decode can coalesce dozens of resident-window snapshots. Logging
-        // every accepted three-page snapshot contends with the render and logcat collection
-        // threads for no diagnostic gain. Keep the terminal scene handoff and every rejection.
-        if (!accepted || snapshot.fullEpisode) {
+        if (!accepted) {
             Log.d(
                 TAG,
                 "reader_native_texture_prewarm_${if (accepted) "queued" else "rejected"} " +
                     "epoch=${snapshot.structureEpoch} pages=${snapshot.firstPage}-${snapshot.lastPage} " +
-                    "tiles=${snapshot.bitmaps.size} full=${snapshot.fullEpisode} " +
-                    "complete=${snapshot.fullEpisodeComplete}"
+                    "tiles=${snapshot.bitmaps.size}"
             )
         }
         synchronized(stateLock) {
@@ -1898,6 +1912,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     fun setPageBitmap(index: Int, bitmap: Bitmap) {
+        setPageBitmap(index, bitmap, forceImmediateGeometry = false)
+    }
+
+    fun setPageBitmap(index: Int, bitmap: Bitmap, forceImmediateGeometry: Boolean) {
         val request = synchronized(stateLock) {
             if (stripAuthorityToken != 0L) return@synchronized null
             val page = pages.getOrNull(index) ?: return
@@ -1913,7 +1931,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return@synchronized null
             }
             val hasCurrentDrawableBeforeLayout = page.bitmap != null || page.tiles.isNotEmpty()
-            if (hasCurrentDrawableBeforeLayout && shouldDeferDrawableReplacementLocked()) {
+            if (!forceImmediateGeometry &&
+                hasCurrentDrawableBeforeLayout &&
+                shouldDeferDrawableReplacementLocked()
+            ) {
                 page.pendingResolveType = PENDING_BITMAP
                 page.pendingBitmap = bitmap
                 page.pendingTiles = emptyList()
@@ -1930,7 +1951,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val viewportAnchor = progressPositionLocked()
             val newHeight = resolvedPageDrawHeightLocked(layoutWidth, layoutHeight)
             val hasCurrentDrawable = page.bitmap != null || page.tiles.isNotEmpty()
-            if (shouldFreezeGeometryForNextBoundaryLocked(index, oldTop, oldHeight, newHeight)) {
+            if (!forceImmediateGeometry &&
+                shouldFreezeGeometryForNextBoundaryLocked(index, oldTop, oldHeight, newHeight)
+            ) {
                 invalidateRetainedPageNodeIfBitmapChanged(index, page, bitmap)
                 page.bitmap = bitmap
                 page.tiles = emptyList()
@@ -1958,7 +1981,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 return@synchronized null
             }
-            if (shouldDeferInitialDrawableSizeLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
+            if (!forceImmediateGeometry &&
+                shouldDeferInitialDrawableSizeLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)
+            ) {
                 invalidateRetainedPageNodeIfBitmapChanged(index, page, bitmap)
                 page.bitmap = bitmap
                 page.tiles = emptyList()
@@ -1986,7 +2011,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 return@synchronized null
             }
-            if (hasCurrentDrawable && shouldDeferDrawableReplacementLocked()) {
+            if (!forceImmediateGeometry &&
+                hasCurrentDrawable &&
+                shouldDeferDrawableReplacementLocked()
+            ) {
                 page.pendingResolveType = PENDING_BITMAP
                 page.pendingBitmap = bitmap
                 page.pendingTiles = emptyList()
@@ -1997,7 +2025,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 schedulePendingResolveRetryLocked(markLayoutDirty = false)
                 return@synchronized null
             }
-            if (shouldDeferHeightChangingResolveLocked(oldTop, oldHeight, newHeight, hasCurrentDrawable)) {
+            if (!forceImmediateGeometry &&
+                shouldDeferHeightChangingResolveLocked(
+                    oldTop,
+                    oldHeight,
+                    newHeight,
+                    hasCurrentDrawable
+                )
+            ) {
                 if (hasCurrentDrawable) {
                     page.pendingResolveType = PENDING_BITMAP
                     page.pendingBitmap = bitmap
@@ -3926,6 +3961,44 @@ class ReaderSurfaceView @JvmOverloads constructor(
         dispatchWindowRequest(request)
     }
 
+    /**
+     * Oversized strict scenes transfer bitmap ownership to this View.  Clearing only the page
+     * reference leaves immutable native pixel storage waiting for a later ART collection, which
+     * lets a 168-page decode wave grow to several GiB. Retire those exact pixels after the native
+     * scene has had several frames to consume the clear, while protecting any identity that was
+     * reinstalled in the meantime.
+     */
+    fun clearRollingAuthoritativePage(index: Int) {
+        val retired = synchronized(stateLock) {
+            val page = pages.getOrNull(index) ?: return
+            LinkedHashSet<Bitmap>().apply {
+                page.bitmap?.takeUnless(Bitmap::isRecycled)?.let(::add)
+                page.tiles.forEach { tile ->
+                    tile.bitmap.takeUnless(Bitmap::isRecycled)?.let(::add)
+                }
+            }.toList()
+        }
+        clearPageBitmap(index)
+        if (retired.isEmpty()) return
+        mainHandler.postDelayed(
+            {
+                val current = synchronized(stateLock) {
+                    val page = pages.getOrNull(index)
+                    LinkedHashSet<Bitmap>().apply {
+                        page?.bitmap?.takeUnless(Bitmap::isRecycled)?.let(::add)
+                        page?.tiles?.forEach { tile ->
+                            tile.bitmap.takeUnless(Bitmap::isRecycled)?.let(::add)
+                        }
+                    }
+                }
+                retired.forEach { bitmap ->
+                    if (bitmap !in current && !bitmap.isRecycled) bitmap.recycle()
+                }
+            },
+            ROLLING_AUTHORITATIVE_RECYCLE_DELAY_MS,
+        )
+    }
+
     /** Bounded qualification diagnostic; contains pipeline state only, never image data. */
     fun renderPipelineDiagnosticSnapshot(): String = synchronized(stateLock) {
         "pipe=$framePipe,inFlight=$inFlightToken,pending=${pendingFrameCommits.size}," +
@@ -4101,8 +4174,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         traversalCommittedRunwayDefectFrames = 0L
         nativeTexturePrewarmAnchorPage = -1
         nativeTexturePrewarmPendingPages.clear()
-        nativeFullEpisodeTexturePrewarmRequested = false
-        nativeFullEpisodeTexturePrewarmCallback = null
         requestResidentNativeTexturePrewarmLocked()
     }
 
@@ -4685,6 +4756,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     scroller.forceFinished(true)
                     activeScrollerOffsetShift = 0f
                     activeInputDirection = 0
+                    downX = event.x
                     downY = event.y
                     resetDragResamplingLocked(event.y, event.eventTime * NANOS_PER_MILLISECOND)
                     lastVelocitySampleMs = event.eventTime
@@ -4794,8 +4866,24 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     )
                     val upMoved = settleDragTargetLocked()
                     val wasReleased = event.actionMasked == MotionEvent.ACTION_UP
-                    val wasTap = wasReleased && !targetChanged && !upMoved && !dragging &&
-                        abs(event.y - downY) <= touchSlop
+                    val wasTap = isTapGesture(
+                        wasReleased,
+                        event.x - downX,
+                        event.y - downY,
+                        touchSlop
+                    )
+                    // A real finger commonly produces sub-slop MOVE samples. The drag follower
+                    // may already have consumed those samples, but Android still defines the
+                    // gesture as a tap. Restore the exact DOWN viewport so toggling chrome never
+                    // nudges the page by a few pixels.
+                    if (wasTap && abs(scrollOffset - dragOriginScrollOffset) > SCROLL_OFFSET_EPSILON_PX) {
+                        setScrollOffsetLocked(dragOriginScrollOffset)
+                        scroller.forceFinished(true)
+                        activeScrollerOffsetShift = 0f
+                        renderRequested = true
+                        scheduleFrameLocked()
+                        stateLock.notifyAll()
+                    }
                     tap = wasTap
                     pointerDown = false
                     dragging = false
@@ -7706,7 +7794,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     null
                 }
             }
-        } ?: return
+        }
+        if (admission == null) {
+            synchronized(stateLock) {
+                // A sparse host/device MOVE can be fully interpolated and physically committed
+                // before the next MOVE arrives. There is then no frame to submit, so the
+                // post-submission close below is unreachable. Close only after the same strict
+                // settled proof used by a committed frame; an outstanding viewport version or
+                // drag target keeps the interval open and remains measurable.
+                if (shouldClosePhysicalMotionInterval(
+                        traceActive = physicalScrollTraceCookie != 0,
+                        scrollerFinished = scroller.isFinished,
+                        dragTargetPending = dragTargetPending,
+                        desiredVersion = desiredVersion,
+                        committedVersion = committedVersion
+                    )
+                ) {
+                    endPhysicalScrollTraceLocked()
+                    statsLastCallbackStartNs = 0L
+                    statsLastPostEndNs = 0L
+                }
+            }
+            return
+        }
 
         var rendered = false
         try {
@@ -7809,6 +7919,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         presentationKind: Int,
         allowBuffer: Boolean,
     ) {
+        var unmatchedDiagnostic: String? = null
         val submission = synchronized(stateLock) {
             val registered = pendingFrameCommits[token]
                 ?.takeIf { it.surfaceControlSubmission }
@@ -7824,8 +7935,36 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     presentationKind,
                 )
             }
+            if (registered == null && token !in earlyNativePresentations) {
+                // Page delivery, focus, or Surface lifecycle work can retire the Kotlin proof
+                // while the native producer is already swapping that exact buffer. The swap is
+                // real, but it cannot be identity-qualified after its proof was retired. Do not
+                // leave that first real-pixel buffer as the only submission forever: coalesce one
+                // fresh proof-bearing frame from the current immutable page state. This performs
+                // no loading/prewarming and never qualifies the unmatched buffer itself.
+                if (renderRunning && pages.isNotEmpty() && framePipe == FramePipe.IDLE &&
+                    directSurfaceReady && rollingNativeHandle != 0L &&
+                    rollingNativeAttachEpoch > 0L && !rollingNativeFatal
+                ) {
+                    renderRequested = true
+                    scheduleFrameLocked()
+                }
+                unmatchedNativePresentationCount++
+                if (unmatchedNativePresentationCount == 1L ||
+                    unmatchedNativePresentationCount % NATIVE_PRESENTATION_DIAGNOSTIC_INTERVAL == 0L
+                ) {
+                    unmatchedDiagnostic =
+                        "reader_native_presentation_unmatched count=$unmatchedNativePresentationCount," +
+                            "token=$token,kind=$presentationKind,pipe=$framePipe," +
+                            "inFlight=$inFlightToken,pending=${pendingFrameCommits.size}," +
+                            "running=$renderRunning,surface=$directSurfaceReady," +
+                            "attach=$rollingNativeAttachEpoch,requested=$renderRequested"
+                }
+            }
             registered
-        } ?: return
+        }
+        unmatchedDiagnostic?.let { Log.w(TAG, it) }
+        if (submission == null) return
         if (presentedUptimeNanos <= 0L) {
             onNtkRollingFrameDropped(token)
             return
@@ -9950,6 +10089,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     companion object {
         const val DIRECTION_PREVIOUS = -1
         const val DIRECTION_NEXT = 1
+        private const val ROLLING_AUTHORITATIVE_RECYCLE_DELAY_MS = 250L
 
         @JvmStatic
         fun transitionCardPageHeightForTest(): Float = TRANSITION_CARD_PAGE_HEIGHT_PX
@@ -9957,6 +10097,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         @JvmStatic
         fun shouldStartFlingForTest(dragDistance: Float, velocityY: Int, minVelocity: Int, touchSlop: Int): Boolean {
             return shouldStartFling(dragDistance, velocityY, minVelocity, touchSlop)
+        }
+
+        @JvmStatic
+        fun isTapGestureForTest(released: Boolean, deltaX: Float, deltaY: Float, touchSlop: Int): Boolean {
+            return isTapGesture(released, deltaX, deltaY, touchSlop)
         }
 
         @JvmStatic
@@ -9999,6 +10144,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private fun shouldStartFling(dragDistance: Float, velocityY: Int, minVelocity: Int, touchSlop: Int): Boolean {
             return dragDistance > touchSlop * FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER &&
                 abs(velocityY) > minVelocity * FLING_MIN_VELOCITY_MULTIPLIER
+        }
+
+        private fun isTapGesture(
+            released: Boolean,
+            deltaX: Float,
+            deltaY: Float,
+            touchSlop: Int
+        ): Boolean {
+            if (!released || touchSlop < 0) return false
+            val slop = touchSlop.toFloat()
+            return deltaX * deltaX + deltaY * deltaY <= slop * slop
         }
 
         private fun shouldAdvanceDesiredVersionForScrollerFrame(
@@ -10241,6 +10397,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val NATIVE_PRESENTATION_NONE = 0
         private const val NATIVE_PRESENTATION_SURFACE_CONTROL = 1
         private const val NATIVE_PRESENTATION_BUFFER_QUEUE = 2
+        private const val NATIVE_PRESENTATION_DIAGNOSTIC_INTERVAL = 90L
         private const val ACTIVE_SCROLL_TRACE_NAME = "ViewerActiveScroll"
         private const val ACTIVE_SCROLL_REFRESH_PERIOD_COUNTER = "ViewerActiveScrollRefreshPeriodNs"
         private const val PHYSICAL_SCROLL_TRACE_NAME = "ViewerPhysicalScrollMotion"
@@ -10260,12 +10417,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         // Current viewport plus six forward viewports covers fast downward flings without asking
         // RenderThread to upload an entire long episode in one burst.
         private const val HWUI_FORWARD_PREPARE_VIEWPORTS = 6f
-        // Keep the wider encoded/decoded runway ahead, while the rolling GPU window holds only the
-        // current page and next two unread pages. A completed strict scene gets one larger,
-        // identity-neutral transfer so its far tail can become resident during forward reading.
-        private const val NATIVE_PREWARM_AHEAD_PAGES = 2
+        // Encoded/decoded originals remain available for every page. GPU upload is limited to the
+        // current viewport plus a forward runway so physical input cannot compete with a complete
+        // 100+ page episode upload.
+        private const val NATIVE_PREWARM_AHEAD_VIEWPORTS = 6f
+        private const val NATIVE_PREWARM_FALLBACK_AHEAD_PAGES = 6
         private const val NATIVE_PREWARM_MAX_TILES = 12
-        private const val NATIVE_FULL_EPISODE_PREWARM_MAX_TILES = 1024
         // Kept in one production policy point while the exact no-sampling NTK proof is bound.
         private const val FORWARD_REQUEST_END_EPSILON_PX = 0.01f
         private const val TILE_SEAM_OVERLAP_PX = 1f
@@ -10383,6 +10540,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val SCROLLBAR_THUMB_ACTIVE_COLOR = -0x1
         private const val SCROLLBAR_GRIP_COLOR = 0x4D000000
         private const val FORWARD_CAP_LOG_INTERVAL_MS = 250L
+
+        private fun effectiveDrawablePrefixScrollLimit(
+            requested: Boolean,
+            @Suppress("UNUSED_PARAMETER") inlineRealPixelsOnly: Boolean
+        ): Boolean = requested
+
+        @JvmStatic
+        fun effectiveDrawablePrefixScrollLimitForTest(
+            requested: Boolean,
+            inlineRealPixelsOnly: Boolean
+        ): Boolean = effectiveDrawablePrefixScrollLimit(requested, inlineRealPixelsOnly)
 
         private fun shouldAdjustScrollForChangedPageHeight(
             lastBusy: Boolean,

@@ -799,6 +799,15 @@ public class Preference {
     }
 
     public void setNtkSitePresetForDiagnostics(String rootUrl) {
+        setResolvedNtkSitePreset(rootUrl);
+    }
+
+    /**
+     * Persists a replacement origin that has already passed the production resolver's document
+     * and API probes. Unlike manual preset selection, a verified compatibility alias must not be
+     * rewritten to a currently broken compiled-in default.
+     */
+    public void setResolvedNtkSitePreset(String rootUrl) {
         String root = normalizeNtkRoot(rootUrl);
         if(root.length() == 0)
             root = ntkRoot(NTK_WEBTOON_URL);

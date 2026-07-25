@@ -1237,9 +1237,8 @@ object NtkStrictSourceOwnershipRegistry {
         "${telemetry.preGeometryStageRunwayClosedAtMs}," +
         "physicalBodyProducerCountByKeyMax=${telemetry.producerMax},$tail"
 
-    private fun normalize(path: String?): String = path?.let(NtkStripDigests::normalizeEpisodePath)
-        ?.lowercase()
-        .orEmpty()
+    private fun normalize(path: String?): String =
+        path?.let(NtkStripDigests::normalizeEpisodePath).orEmpty()
 
     private const val MATERIAL_GATE_WAIT_MS = 10L
 

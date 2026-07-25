@@ -22,16 +22,17 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // One lane per bounded page prevents a second extension-discovery turn; by the time document
     // authority releases bodies, these H2/TLS sessions are normally already established.
     const val PROBE_LANES = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
-    // The initial bodies protect the document path; after exact-count validation, admit the whole
-    // finite network-operation frontier in one executor wave. The previous 64-thread executor left
-    // 48 pages of a 112-page/30 MiB book in an unavoidable second turn and missed the four-second
-    // cold deadline even though all 48 replica-local H2 pools were already healthy. Physical
-    // connections remain bounded by CONNECTION_SHARDS; these lanes only remove the artificial
-    // client-side stream queue and never open one socket per page.
-    const val BODY_LANES = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
-    const val ACTIVE_BODY_TRANSFERS = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
-    // r98 admitted 32 forward bodies while the exact document was in flight.
-    const val SPECULATION_DEBT_LIMIT = 32
+    // Admission now happens before Call creation, not after all page GETs have already opened
+    // their response headers. One transfer per measured connection shard therefore bounds real
+    // server/H2 pressure, and eight executor slots keep the ring full while completed bodies are
+    // committed. The next canonical page starts immediately when a permit is returned.
+    const val BODY_LANES = 32
+    const val ACTIVE_BODY_TRANSFERS = CONNECTION_SHARDS
+    // Keep the authority document's cold QUIC request alive: starting 32 bodies before exact-count
+    // proof saturated the emulator and made that independent request time out at 3.5 seconds.
+    // Eight bodies still cover the entry viewport; the bounded full-page wave is released after
+    // authority and the first visible body, so this never drops a canonical page.
+    const val SPECULATION_DEBT_LIMIT = 8
     // This is the protocol's finite production bound. Parallel metadata-only candidate races
     // start only after the committed viewer click; the fresh document cancels every page beyond
     // its exact count before any source can be published.
@@ -58,6 +59,17 @@ internal object NtkClickOwnedManhwaWavePolicy {
     fun connectionShard(pageIndex: Int): Int =
         replicaLocalPageIndex(pageIndex) % CONNECTION_SHARDS
 
+    /**
+     * Click-owned bodies reserve one short-lived ownership session per page. The registry's lane
+     * index is a bounded physical slot, not the canonical page number. Preserve the historical
+     * one-to-one mapping for pages 0..119 and fold only the larger supported episode tail back
+     * into that bounded namespace.
+     */
+    fun ownershipLane(pageIndex: Int): Int {
+        require(pageIndex in 0 until NtkSourceLanePolicy.MAX_EPISODE_PAGES)
+        return pageIndex % NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
+    }
+
     fun representativePageIndexForConnectionShard(shard: Int): Int {
         require(shard in 0 until CONNECTION_SHARDS)
         // booktoki9 occurs exactly once at index two of every stripe, so its local ordinal equals
@@ -70,9 +82,35 @@ internal object NtkClickOwnedManhwaWavePolicy {
 
     fun replicaHosts(): List<String> = REPLICA_HOST_RING.distinct()
 
+    /**
+     * Numeric books commonly use one extension for the whole volume.  The bounded click-time
+     * probe already resolves real candidates for the first transport frontier, so a sufficiently
+     * strong result can route pages beyond that frontier directly to the same extension.  A miss
+     * still enters the normal per-page resolver; this is only a preferred first attempt and can
+     * never remove a mixed-format page.
+     */
+    fun dominantTailExtension(candidates: List<String?>): String? {
+        val observed = candidates.mapNotNull { candidate ->
+            candidate
+                ?.substringBefore('?')
+                ?.substringBefore('#')
+                ?.substringAfterLast('.', "")
+                ?.lowercase()
+                ?.takeIf(CANDIDATE_EXTENSIONS::contains)
+        }
+        if (observed.size < MIN_DOMINANT_EXTENSION_EVIDENCE) return null
+        val winner = observed.groupingBy { it }.eachCount().maxByOrNull { it.value } ?: return null
+        return winner.key.takeIf {
+            winner.value * 100 >= observed.size * DOMINANT_EXTENSION_PERCENT
+        }
+    }
+
     // These are exact pNNN page candidates only. GIF is a real canonical book page format (not an
     // animation/advertisement fallback) and ReaderImageCache validates its bytes and dimensions.
     // GIF pages occur in production books and are cheap to identify by HEAD. Put them directly
     // behind JPG so a single mixed page cannot become the tail of an otherwise complete book.
     val CANDIDATE_EXTENSIONS = listOf("jpg", "gif", "webp", "png", "jpeg")
+
+    private const val MIN_DOMINANT_EXTENSION_EVIDENCE = 6
+    private const val DOMINANT_EXTENSION_PERCENT = 80
 }

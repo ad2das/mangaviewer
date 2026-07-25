@@ -51,7 +51,7 @@ class NtkStrictReverseDecodeRetentionTest {
         val strictWorkerGate = strictWorker.indexOf(
             "\"strict_exact_worker\""
         )
-        val strictDecode = strictWorker.indexOf("val result = opened.encodedBytes")
+        val strictDecode = strictWorker.indexOf("val result = opened.predecodedOriginal")
         assertTrue(strictRequestGate >= 0)
         assertTrue(strictWorkerGate > strictRequestGate && strictDecode > strictWorkerGate)
 

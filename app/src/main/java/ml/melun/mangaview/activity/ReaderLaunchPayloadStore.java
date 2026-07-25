@@ -2,7 +2,12 @@ package ml.melun.mangaview.activity;
 
 import android.content.Intent;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -43,6 +48,7 @@ public final class ReaderLaunchPayloadStore {
     private static final String EXTRA_TITLE_BOOKMARK_ID = COMPACT_PREFIX + "title.bookmarkId";
     private static final String EXTRA_TITLE_BOOKMARK_INDEX = COMPACT_PREFIX + "title.bookmarkIndex";
     private static final String EXTRA_TITLE_EPISODE_COUNT = COMPACT_PREFIX + "title.episodeCount";
+    private static final String EXTRA_NTK_EPISODE_METADATA = COMPACT_PREFIX + "ntk.episodeMetadata";
     private static final long TTL_MS = 30_000L;
     private static final AtomicLong IDS = new AtomicLong();
     private static final ConcurrentHashMap<String, Entry> ENTRIES = new ConcurrentHashMap<>();
@@ -121,8 +127,11 @@ public final class ReaderLaunchPayloadStore {
      * entry retains the caller's {@link Manga} object and could therefore carry an old image
      * collection into a supposedly cold exact-episode session.
      *
-     * <p>The receiving reader must resolve the authoritative manifest after it is visible; no
-     * prepared key, bitmap, image URL collection, or episode list crosses this boundary.</p>
+     * <p>The receiving reader must resolve the authoritative image manifest after it is visible;
+     * no prepared key, bitmap, image URL collection, page count, or decoded state crosses this
+     * boundary. A metadata-only NTK episode list may cross when the normally opened title screen
+     * already proved its latest episode, so the reader does not repeat that network request merely
+     * to discover the next path or prove that the current episode is terminal.</p>
      */
     public static void attachColdExactReaderPayload(Intent intent, Manga manga, Title title) {
         attachCompactReaderPayload(intent, manga, title);
@@ -136,6 +145,11 @@ public final class ReaderLaunchPayloadStore {
         // either would make the handoff depend on stale prepared content.
         intent.removeExtra(EXTRA_MANGA_NTK_PAYLOAD_HINT);
         intent.removeExtra(EXTRA_MANGA_NTK_IMAGE_COUNT);
+        String episodeMetadata = compactAuthoritativeNtkEpisodeMetadata(manga, title);
+        if(episodeMetadata.length() > 0)
+            intent.putExtra(EXTRA_NTK_EPISODE_METADATA, episodeMetadata);
+        else
+            intent.removeExtra(EXTRA_NTK_EPISODE_METADATA);
     }
 
     /** Restores the compact payload after the process-local entry is unavailable. */
@@ -183,7 +197,127 @@ public final class ReaderLaunchPayloadStore {
             manga.setTitle(title);
             manga.setTitleId(title.getId());
         }
+        restoreAuthoritativeNtkEpisodeMetadata(intent, manga, title);
         return new Entry(manga, title, null, android.os.SystemClock.elapsedRealtime());
+    }
+
+    private static String compactAuthoritativeNtkEpisodeMetadata(Manga current, Title title) {
+        if(current == null || title == null)
+            return "";
+        String currentPath = cleanNtkEpisodePath(current.getNtkEpisodePath());
+        int slash = currentPath.lastIndexOf('/');
+        if(slash <= 0)
+            return "";
+        String workPrefix = currentPath.substring(0, slash + 1);
+        List<Manga> source = title.getEps();
+        if(source == null || source.isEmpty())
+            source = current.getEps();
+        if(source == null || source.isEmpty())
+            return "";
+        boolean foundCurrent = false;
+        JSONArray items = new JSONArray();
+        try {
+            for(Manga episode : new ArrayList<>(source)) {
+                if(episode == null)
+                    continue;
+                String path = cleanNtkEpisodePath(episode.getNtkEpisodePath());
+                if(path.length() == 0 || !path.startsWith(workPrefix))
+                    continue;
+                if(path.equalsIgnoreCase(currentPath)
+                        || Manga.sameEpisodeIdentity(current, episode))
+                    foundCurrent = true;
+                JSONObject item = new JSONObject();
+                item.put("id", episode.getId());
+                item.put("name", episode.getName());
+                item.put("date", episode.getDate());
+                item.put("path", path);
+                items.put(item);
+            }
+            // This collection came from the normally opened episode screen in the same cold
+            // launch and contains the selected exact path. It is therefore stronger adjacency
+            // evidence than refetching the title document after the reader is already visible.
+            if(!foundCurrent || items.length() == 0)
+                return "";
+            JSONObject root = new JSONObject();
+            root.put("version", 1);
+            root.put("currentPath", currentPath);
+            root.put("items", items);
+            android.util.Log.d(
+                    "ViewerPerf",
+                    "reader_launch_ntk_episode_metadata_attached path=" + currentPath
+                            + ",episodes=" + items.length());
+            return root.toString();
+        } catch(Exception ignored) {
+            return "";
+        }
+    }
+
+    private static void restoreAuthoritativeNtkEpisodeMetadata(
+            Intent intent,
+            Manga current,
+            Title title) {
+        if(intent == null || current == null || title == null)
+            return;
+        String encoded = stringExtra(intent, EXTRA_NTK_EPISODE_METADATA);
+        if(encoded.length() == 0)
+            return;
+        String currentPath = cleanNtkEpisodePath(current.getNtkEpisodePath());
+        try {
+            JSONObject root = new JSONObject(encoded);
+            if(root.optInt("version", 0) != 1
+                    || !currentPath.equalsIgnoreCase(
+                            cleanNtkEpisodePath(root.optString("currentPath"))))
+                return;
+            JSONArray items = root.optJSONArray("items");
+            if(items == null || items.length() == 0 || items.length() > 2000)
+                return;
+            ArrayList<Manga> episodes = new ArrayList<>(items.length());
+            boolean foundCurrent = false;
+            for(int i = 0; i < items.length(); i++) {
+                JSONObject item = items.optJSONObject(i);
+                if(item == null)
+                    continue;
+                String path = cleanNtkEpisodePath(item.optString("path"));
+                if(path.length() == 0)
+                    continue;
+                Manga episode;
+                if(path.equalsIgnoreCase(currentPath)) {
+                    episode = current;
+                    foundCurrent = true;
+                } else {
+                    int id = item.optInt("id", -1);
+                    if(id <= 0)
+                        continue;
+                    episode = new Manga(
+                            id,
+                            item.optString("name"),
+                            item.optString("date"),
+                            current.getBaseMode());
+                    episode.setMode(current.getMode());
+                    episode.setTitle(title);
+                    episode.setTitleId(title.getId());
+                    episode.setNtkEpisodePath(path);
+                }
+                episodes.add(episode);
+            }
+            if(!foundCurrent || episodes.isEmpty())
+                return;
+            title.setEps(episodes);
+            current.setEps(title.getEps());
+            android.util.Log.d(
+                    "ViewerPerf",
+                    "reader_launch_ntk_episode_metadata_restored path=" + currentPath
+                            + ",episodes=" + episodes.size());
+        } catch(Exception ignored) {
+            // Invalid optional adjacency metadata must never block the exact reader launch.
+        }
+    }
+
+    private static String cleanNtkEpisodePath(String path) {
+        if(path == null)
+            return "";
+        String value = path.trim();
+        return value.startsWith("/webtoon/") || value.startsWith("/manhwa/") ? value : "";
     }
 
     private static String stringExtra(Intent intent, String key) {

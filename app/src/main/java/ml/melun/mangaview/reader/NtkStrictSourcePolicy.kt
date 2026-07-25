@@ -189,12 +189,30 @@ class NtkEncodedShaMismatchException(message: String) : NtkTerminalSourceExcepti
  * poison reverse scrolling. Integrity/identity failures remain terminal and are never retried.
  */
 object NtkStrictSourceFailurePolicy {
-    const val MAX_PHYSICAL_ATTEMPTS = 3
+    // One logical attempt already cycles every immutable replica, but a temporary CDN reset storm
+    // must not permanently poison a page. This remains finite for ownership/accounting invariants
+    // while giving a live viewer enough recovery opportunities to finish after network pressure
+    // subsides. Identity, integrity and terminal HTTP failures are still rejected immediately.
+    const val MAX_PHYSICAL_ATTEMPTS = 32
+    // Never recycle an exhausted operation ledger indefinitely. Thirty-two complete logical
+    // attempts already cover transient DNS/socket pressure; opening unbounded new ledgers leaves
+    // a permanently dead single-origin page spinning forever and prevents an honest terminal
+    // image error from reaching the viewer.
+    const val MAX_PHYSICAL_RECOVERY_CYCLES = 0
 
     @JvmStatic
     fun isRecoverablePhysicalFailure(failure: Throwable, attemptOrdinal: Int): Boolean {
         require(attemptOrdinal > 0)
         if (attemptOrdinal >= MAX_PHYSICAL_ATTEMPTS) return false
+        return isRetryableTransportFailure(failure)
+    }
+
+    /**
+     * Identity/integrity errors remain terminal. Transport errors may retry inside the finite
+     * attempt ledger; whether another ledger may open is decided separately and remains bounded.
+     */
+    @JvmStatic
+    fun isRetryableTransportFailure(failure: Throwable): Boolean {
         var cursor: Throwable? = failure
         var sawIo = false
         val seen = HashSet<Throwable>()
@@ -204,5 +222,30 @@ object NtkStrictSourceFailurePolicy {
             cursor = cursor.cause
         }
         return sawIo
+    }
+
+    @JvmStatic
+    fun shouldRetryPhysicalFailure(
+        failure: Throwable,
+        attemptOrdinal: Int,
+        completedRecoveryCycles: Int
+    ): Boolean {
+        require(attemptOrdinal > 0)
+        require(completedRecoveryCycles >= 0)
+        if (isRecoverablePhysicalFailure(failure, attemptOrdinal)) return true
+        return attemptOrdinal >= MAX_PHYSICAL_ATTEMPTS &&
+            completedRecoveryCycles < MAX_PHYSICAL_RECOVERY_CYCLES &&
+            isRetryableTransportFailure(failure)
+    }
+
+    @JvmStatic
+    fun retryDelayMs(attemptOrdinal: Int, recoveryCycle: Int): Long {
+        require(attemptOrdinal > 0)
+        require(recoveryCycle >= 0)
+        if (attemptOrdinal <= 3 && recoveryCycle == 0) return 0L
+        val attemptDelay = ((attemptOrdinal - 3).coerceAtLeast(1) * 50L)
+            .coerceAtMost(1_000L)
+        val cycleDelay = (recoveryCycle * 500L).coerceAtMost(3_000L)
+        return maxOf(attemptDelay, cycleDelay)
     }
 }

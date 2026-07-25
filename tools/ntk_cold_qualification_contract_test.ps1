@@ -150,8 +150,20 @@ if($source.Contains('Get-Sha256 "$script:Seed|$($Work.workType)|$($Work.workId)|
         -not $source.Contains('originallySelectedEpisodeId = [string]$original.episodeId',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('accessReplacementReason = $accessReplacementReason',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('[Net.Http.HttpMethod]::Head',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('$handler.AllowAutoRedirect = $false',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('[Net.Http.HttpCompletionOption]::ResponseHeadersRead',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('$statusCode -eq 404 -or $statusCode -eq 410',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains("ep_unavailable=1",
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('"CLEARLY_UNAVAILABLE"',
             [StringComparison]::Ordinal)) {
-    throw "Random work selection must retain canonical episode evidence and replace only a provider-gated non-native row"
+    throw "Random work selection must retain canonical evidence and replace only an explicitly inaccessible work without consuming viewer/image bodies"
 }
 if(([regex]::Matches($macroSource, '(?m)^\s*startActivityAndWait\(\)\s*$')).Count -ne 1) {
     throw "Cold qualification must launch the target exactly once"

@@ -302,6 +302,27 @@ class ReaderSessionListenerGateTest {
         assertNull(registry.origin(5))
     }
 
+    @Test
+    fun rollingEvictionPreservesItsDistinctDownstreamEventAndInvalidatesRegistry() {
+        val downstream = RecordingListener()
+        val registry = AdoptedDrawableRegistry().apply {
+            adopt(5, DrawableOrigin.READER_SESSION, AdoptedDrawableIdentity.token(Any()))
+        }
+        val gate = ReaderSessionListenerGate(
+            generation = 1,
+            isActive = { true },
+            adopted = registry,
+            installed = InstalledDrawableQuery { false },
+            downstream = downstream
+        )
+
+        gate.onStrictRollingHistoricalSceneActivated()
+        gate.onPageRollingEvicted(5)
+
+        assertEquals(listOf("rolling-mode", "rolling-evicted:5"), downstream.events)
+        assertNull(registry.origin(5))
+    }
+
     private open class RecordingListener : ReaderSession.Listener {
         val events = ArrayList<String>()
 
@@ -356,6 +377,14 @@ class ReaderSessionListenerGateTest {
 
         override fun onPageCleared(index: Int) {
             events += "cleared:$index"
+        }
+
+        override fun onStrictRollingHistoricalSceneActivated() {
+            events += "rolling-mode"
+        }
+
+        override fun onPageRollingEvicted(index: Int) {
+            events += "rolling-evicted:$index"
         }
 
         override fun onMessage(message: String) {

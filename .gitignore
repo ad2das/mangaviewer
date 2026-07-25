@@ -46,6 +46,9 @@ webtoon-classification-audit-details.json
 
 # Local emulator/performance/debug captures generated during refactor work.
 # Keep committed fixtures under app/src/test or an explicit docs/assets folder.
+.codex-remote-attachments/
+app/.cxx/
+artifacts/
 .playwright-cli/
 tmp-codex-emulator/
 tmp-*

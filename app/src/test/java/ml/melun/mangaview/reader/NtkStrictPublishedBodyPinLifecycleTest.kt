@@ -61,7 +61,7 @@ class NtkStrictPublishedBodyPinLifecycleTest {
             openLease,
             "synchronized(bodyLeaseAdmissionLock)",
             "activeBodyLeaseCount.incrementAndGet()",
-            "leaseStrictCachedEncodedOriginalFile("
+            "leaseAcceptedStrictPublishedBody("
         )
 
         val retirement = functionSlice(

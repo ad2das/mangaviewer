@@ -1,5 +1,6 @@
 package ml.melun.mangaview.reader
 
+import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -20,8 +21,8 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     }
 
     @Test
-    fun measuredSlowDripMovesOnlyItsUntouchedSuffix() {
-        assertTrue(
+    fun earlySlowSampleDoesNotAbandonAResponsiveColdStream() {
+        assertFalse(
             NtkManhwaProjectedBodyHedgePolicy.shouldResume(
                 sessionElapsedMs = 2_100L,
                 bodyElapsedMs = 1_000L,
@@ -32,13 +33,13 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     }
 
     @Test
-    fun lateAdmissionIsPartOfTheProjection() {
+    fun settledSlowDripMovesOnlyItsUntouchedSuffix() {
         assertTrue(
             NtkManhwaProjectedBodyHedgePolicy.shouldResume(
-                sessionElapsedMs = 2_500L,
-                bodyElapsedMs = 1_000L,
+                sessionElapsedMs = 5_500L,
+                bodyElapsedMs = 4_000L,
                 deliveredBytes = 150_000L,
-                expectedLength = 300_000L,
+                expectedLength = 400_000L,
             )
         )
     }
@@ -177,21 +178,18 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     }
 
     @Test
-    fun suffixNoProgressBudgetIsBoundedBelowTheMeasuredFiveSecondTail() {
-        assertEquals(1_000L, NtkManhwaRangeResumePolicy.BODY_IDLE_MS)
+    fun suffixNoProgressBudgetDoesNotResetAHealthyCongestedStream() {
+        assertEquals(3_000L, NtkManhwaRangeResumePolicy.BODY_IDLE_MS)
     }
 
     @Test
-    fun r129CriticalSerialCutoverOnlySelectsProjectedFiveSecondTails() {
-        assertFalse(
-            NtkManhwaProjectedBodyHedgePolicy.shouldForceCriticalSerialResume(null)
-        )
-        assertFalse(
-            NtkManhwaProjectedBodyHedgePolicy.shouldForceCriticalSerialResume(5_000.0)
-        )
-        assertTrue(
-            NtkManhwaProjectedBodyHedgePolicy.shouldForceCriticalSerialResume(5_027.0)
-        )
+    fun rateProjectionNeverAbandonsAStillReadablePrimaryBody() {
+        val source = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt"
+        ).readText()
+
+        assertFalse(source.contains("shouldForceCriticalSerialResume"))
+        assertFalse(source.contains("Critical projected manhwa tail"))
     }
 
 }

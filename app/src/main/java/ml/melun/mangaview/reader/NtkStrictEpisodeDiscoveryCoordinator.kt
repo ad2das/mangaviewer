@@ -61,7 +61,9 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val lease: NtkDiscoveryLease,
         val startedAtMs: Long,
         val viewerGeneration: Long,
-        val episodePath: String
+        val episodePath: String,
+        val rollingAdmission: Boolean,
+        val completedRouteRecoveryAttempts: Int,
     ) {
         val retirement = NtkStrictDiscoveryRetirementFence(
             episodePath,
@@ -89,19 +91,30 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     @JvmStatic
     fun start(client: CustomHttpClient?, manga: Manga?): Boolean {
-        return startInternal(client, manga, rollingAdmission = false)
+        return startInternal(
+            client,
+            manga,
+            rollingAdmission = false,
+            completedRouteRecoveryAttempts = 0,
+        )
     }
 
     /** Exact cold-reader discovery whose physical image body admission starts at source 0/1. */
     @JvmStatic
     fun startColdRolling(client: CustomHttpClient?, manga: Manga?): Boolean {
-        return startInternal(client, manga, rollingAdmission = true)
+        return startInternal(
+            client,
+            manga,
+            rollingAdmission = true,
+            completedRouteRecoveryAttempts = 0,
+        )
     }
 
     private fun startInternal(
         client: CustomHttpClient?,
         manga: Manga?,
-        rollingAdmission: Boolean
+        rollingAdmission: Boolean,
+        completedRouteRecoveryAttempts: Int,
     ): Boolean {
         if (client == null || manga == null) return false
         val path = normalizedPath(manga.ntkEpisodePath) ?: return false
@@ -120,7 +133,15 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             } else {
                 NtkSourceSpoolRegistry.beginDiscovery(client.context, manga)
             } ?: return false
-            Flight(client, lease, SystemClock.elapsedRealtime(), viewerGeneration, path).also {
+            Flight(
+                client,
+                lease,
+                SystemClock.elapsedRealtime(),
+                viewerGeneration,
+                path,
+                rollingAdmission,
+                completedRouteRecoveryAttempts,
+            ).also {
                 flights[path] = it
             }
         }
@@ -318,6 +339,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         var clickOwnedAnchor: NtkClickOwnedAnchorQuarantine? = null
         var clickOwnedManhwaProbe: NtkClickOwnedManhwaProbeFrontier? = null
         var streamingDocumentThread: Thread? = null
+        var routeRecoveryRequested = false
         try {
             requireDiscoveryOwnership(flight, "worker_start")
             val directWebtoon = isDirectTrustedWebtoon(path)
@@ -389,76 +411,87 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             var directGrantResolvedByOverlap = false
             val documentResponse = if (directWebtoon) {
                 val documentTask = FutureTask {
-                    val response = traceStage("NtkExactDocument") {
-                        tracePageListPhysicalRequest(flight) {
-                            client.fetchExactNtkEpisodeDocument(
-                                path,
-                                flight.physicalCalls,
-                                object : CustomHttpClient.NtkStrictDocumentStreamObserver {
-                                    override fun onResponseHeaders(
-                                        responseHead: CustomHttpClient.NtkBoundHttpResponse,
-                                    ) {
-                                        requireDiscoveryOwnership(flight, "document_response_headers")
-                                        if (documentCookiesPublished.compareAndSet(false, true)) {
-                                            withBoundedDiscoveryOwnership(
+                    try {
+                        val response = traceStage("NtkExactDocument") {
+                            tracePageListPhysicalRequest(flight) {
+                                client.fetchExactNtkEpisodeDocument(
+                                    path,
+                                    flight.physicalCalls,
+                                    object : CustomHttpClient.NtkStrictDocumentStreamObserver {
+                                        override fun onResponseHeaders(
+                                            responseHead: CustomHttpClient.NtkBoundHttpResponse,
+                                        ) {
+                                            requireDiscoveryOwnership(
                                                 flight,
-                                                "streaming_document_cookie_publication",
-                                            ) {
-                                                check(
-                                                    client.publishExactNtkEpisodeResponseCookies(
-                                                        responseHead,
-                                                        flight.physicalCalls,
-                                                    )
-                                                ) {
-                                                    "Streaming document cookie publication lost ownership"
-                                                }
-                                            }
-                                            logStage(flight, "document_headers_ready")
-                                        }
-                                    }
-
-                                    override fun onBodyPrefix(bodyPrefix: ByteArray): Boolean {
-                                        if (requestSeedFuture.isDone) return true
-                                        val seed = NtkViewerImageRequestSeedParser.parseIfPresent(
-                                            flight.lease,
-                                            path,
-                                            bodyPrefix,
-                                        ) ?: return false
-                                        if (requestSeedFuture.complete(seed)) {
-                                            Log.d(
-                                                "ViewerPerf",
-                                                "ntk_strict_document_request_seed_ready path=$path," +
-                                                    "generation=${flight.lease.generation.value}," +
-                                                    "bytes=${bodyPrefix.size}," +
-                                                    "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+                                                "document_response_headers",
                                             )
+                                            if (documentCookiesPublished.compareAndSet(false, true)) {
+                                                withBoundedDiscoveryOwnership(
+                                                    flight,
+                                                    "streaming_document_cookie_publication",
+                                                ) {
+                                                    check(
+                                                        client.publishExactNtkEpisodeResponseCookies(
+                                                            responseHead,
+                                                            flight.physicalCalls,
+                                                        )
+                                                    ) {
+                                                        "Streaming document cookie publication lost ownership"
+                                                    }
+                                                }
+                                                logStage(flight, "document_headers_ready")
+                                            }
                                         }
-                                        return true
-                                    }
-                                },
-                            )
+
+                                        override fun onBodyPrefix(bodyPrefix: ByteArray): Boolean {
+                                            if (requestSeedFuture.isDone) return true
+                                            val seed =
+                                                NtkViewerImageRequestSeedParser.parseIfPresent(
+                                                    flight.lease,
+                                                    path,
+                                                    bodyPrefix,
+                                                ) ?: return false
+                                            if (requestSeedFuture.complete(seed)) {
+                                                Log.d(
+                                                    "ViewerPerf",
+                                                    "ntk_strict_document_request_seed_ready path=$path," +
+                                                        "generation=${flight.lease.generation.value}," +
+                                                        "bytes=${bodyPrefix.size}," +
+                                                        "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+                                                )
+                                            }
+                                            return true
+                                        }
+                                    },
+                                )
+                            }
                         }
-                    }
-                    if (!requestSeedFuture.isDone) {
-                        val seed = NtkViewerImageRequestSeedParser.parseIfPresent(
-                            flight.lease,
-                            path,
-                            response.bodyBytes,
-                        )
-                        if (seed != null) {
-                            requestSeedFuture.complete(seed)
-                        } else {
-                            requestSeedFuture.complete(null)
-                            Log.d(
-                                "ViewerPerf",
-                                "ntk_strict_document_request_seed_absent path=$path," +
-                                    "generation=${flight.lease.generation.value}," +
-                                    "fallback=complete_document_request_identity," +
-                                    "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+                        if (!requestSeedFuture.isDone) {
+                            val seed = NtkViewerImageRequestSeedParser.parseIfPresent(
+                                flight.lease,
+                                path,
+                                response.bodyBytes,
                             )
+                            if (seed != null) {
+                                requestSeedFuture.complete(seed)
+                            } else {
+                                requestSeedFuture.complete(null)
+                                Log.d(
+                                    "ViewerPerf",
+                                    "ntk_strict_document_request_seed_absent path=$path," +
+                                        "generation=${flight.lease.generation.value}," +
+                                        "fallback=complete_document_request_identity," +
+                                        "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+                                )
+                            }
                         }
+                        response
+                    } catch (failure: Throwable) {
+                        // Without this hand-off a failed streaming document can leave the worker
+                        // waiting forever for a request seed that can no longer be produced.
+                        requestSeedFuture.completeExceptionally(failure)
+                        throw failure
                     }
-                    response
                 }
                 streamingDocumentThread = Thread(
                     documentTask,
@@ -590,52 +623,89 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     anchor.releaseForTokenBoundDocumentAuthority(tokenBoundAuthority.manifest)
                     val tokenBoundStream = anchor.streamIfExact(tokenBoundAuthority.manifest)
                     if (tokenBoundStream != null) {
-                        val planResult = withDiscoveryOwnership(
+                        // Some valid numeric documents expose only a finite page count. Their
+                        // generated pNNN names are virtual placeholders and every extension/replica
+                        // returns 404; the signed image API below is the only physical authority.
+                        // Do not publish generated authority until the already-running click probe
+                        // and its exact page-zero body have proved real bytes. This waits for no
+                        // extra request and does not delay a drawable: page zero could not render
+                        // before the same body completion.
+                        val sampledCandidate = tokenBoundStream.sampledAnchorCandidate?.let {
+                            runCatching { awaitFuture(it) }
+                        }
+                        val sampledRouteMissing =
+                            sampledCandidate?.isSuccess == true &&
+                                sampledCandidate.getOrNull() == null
+                        val exactAnchorBody = if (sampledRouteMissing) {
+                            null
+                        } else {
+                            runCatching {
+                                awaitFuture(checkNotNull(tokenBoundStream.bodyFutures[0]) {
+                                    "Token-bound numeric stream omitted page zero"
+                                })
+                            }.getOrNull()
+                        }
+                        requireDiscoveryOwnership(
                             flight,
-                            "token_bound_numeric_plan_reserve",
-                        ) {
-                            NtkSourceSpoolRegistry.reserveTokenBoundGeneratedDocumentPlan(
-                                client.context,
-                                manga,
-                                flight.lease,
-                                tokenBoundAuthority.plan,
-                                tokenBoundAuthority.manifest,
-                                streamedExactBodies = tokenBoundStream,
+                            "token_bound_numeric_anchor_validation",
+                        )
+                        if (exactAnchorBody == null) {
+                            tokenBoundStream.close()
+                            clickOwnedAnchor = null
+                            Log.d(
+                                "ViewerPerf",
+                                "ntk_token_bound_generated_route_rejected path=$path," +
+                                    "sampledRouteMissing=$sampledRouteMissing," +
+                                    "fallback=signed_image_api",
                             )
-                        }
-                        if (!planResult.accepted) tokenBoundStream.close()
-                        check(planResult.accepted) {
-                            "Token-bound numeric plan rejected: ${planResult.status}"
-                        }
-                        val authority = withDiscoveryOwnership(
-                            flight,
-                            "token_bound_numeric_manifest_install",
-                        ) {
-                            val install = NtkManifestAuthorityFactory
-                                .installTokenBoundGeneratedManhwaDocumentAuthority(
+                        } else {
+                            val planResult = withDiscoveryOwnership(
+                                flight,
+                                "token_bound_numeric_plan_reserve",
+                            ) {
+                                NtkSourceSpoolRegistry.reserveTokenBoundGeneratedDocumentPlan(
                                     client.context,
                                     manga,
                                     flight.lease,
-                                    tokenBoundAuthority,
+                                    tokenBoundAuthority.plan,
+                                    tokenBoundAuthority.manifest,
+                                    streamedExactBodies = tokenBoundStream,
                                 )
-                            check(install.accepted) {
-                                "Token-bound numeric manifest rejected: ${install.status}"
                             }
-                            checkNotNull(install.authoritativeManifest) {
-                                "Token-bound numeric install omitted exact authority"
-                            }.also { exactInstalled = true }
+                            if (!planResult.accepted) tokenBoundStream.close()
+                            check(planResult.accepted) {
+                                "Token-bound numeric plan rejected: ${planResult.status}"
+                            }
+                            val authority = withDiscoveryOwnership(
+                                flight,
+                                "token_bound_numeric_manifest_install",
+                            ) {
+                                val install = NtkManifestAuthorityFactory
+                                    .installTokenBoundGeneratedManhwaDocumentAuthority(
+                                        client.context,
+                                        manga,
+                                        flight.lease,
+                                        tokenBoundAuthority,
+                                    )
+                                check(install.accepted) {
+                                    "Token-bound numeric manifest rejected: ${install.status}"
+                                }
+                                checkNotNull(install.authoritativeManifest) {
+                                    "Token-bound numeric install omitted exact authority"
+                                }.also { exactInstalled = true }
+                            }
+                            clickOwnedAnchor = null
+                            ackRoute.cancel()
+                            completeOwnedFlight(
+                                manga,
+                                path,
+                                flight,
+                                authority,
+                                tokenBoundAuthority.plan,
+                                "token_bound_numeric_document",
+                            )
+                            return
                         }
-                        clickOwnedAnchor = null
-                        ackRoute.cancel()
-                        completeOwnedFlight(
-                            manga,
-                            path,
-                            flight,
-                            authority,
-                            tokenBoundAuthority.plan,
-                            "token_bound_numeric_document",
-                        )
-                        return
                     }
                 }
             }
@@ -911,7 +981,29 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 "viewer_image_api",
             )
         } catch (failure: Throwable) {
-            if (!exactInstalled &&
+            routeRecoveryRequested = !exactInstalled &&
+                NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) == null &&
+                NtkStrictRouteRecoveryPolicy.shouldRecover(
+                    failure,
+                    flight.completedRouteRecoveryAttempts,
+                ) &&
+                ViewerTelemetry.hasActiveSession() &&
+                ViewerTelemetry.activeGeneration() == flight.viewerGeneration &&
+                ViewerTelemetry.isActiveEpisode(path)
+            if (routeRecoveryRequested) {
+                // Keep the old lease/flight as a path reservation until domain recovery finishes.
+                // This prevents UI watchdogs from starting a competing flight in the gap.
+                ackRoute.cancel()
+                flight.physicalCalls.cancelAll()
+                Log.w(
+                    "ViewerPerf",
+                    "ntk_strict_route_recovery_scheduled path=$path," +
+                        "generation=${flight.lease.generation.value}," +
+                        "attempt=${flight.completedRouteRecoveryAttempts + 1}," +
+                        "failure=${failure.javaClass.simpleName}," +
+                        "ms=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+                )
+            } else if (!exactInstalled &&
                 NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) == null
             ) {
                 ackRoute.cancel()
@@ -945,11 +1037,69 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             clickOwnedManhwaProbe?.close()
             clickOwnedAnchor?.close()
             flight.retirement.detachWorker(Thread.currentThread())
-            if (!flight.completed.get() || flight.retirement.isRetired()) {
+            if (routeRecoveryRequested) {
+                // The resolver is intentionally demand-driven and may run only after the failed
+                // strict owner releases its network gate. The path slot stays reserved above.
+                client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)
+            } else if (!flight.completed.get() || flight.retirement.isRetired()) {
                 flights.remove(path, flight)
                 client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)
             }
         }
+        if (routeRecoveryRequested) {
+            recoverStrictRouteAndRestart(client, manga, path, flight)
+        }
+    }
+
+    private fun recoverStrictRouteAndRestart(
+        client: CustomHttpClient,
+        manga: Manga,
+        path: String,
+        failedFlight: Flight,
+    ) {
+        val originBefore = client.getUrl(path)
+        val changed = client.resolveNtkDomainAfterRouteFailure()
+        val originAfter = client.getUrl(path)
+        val stillOwned = ViewerTelemetry.hasActiveSession() &&
+            ViewerTelemetry.activeGeneration() == failedFlight.viewerGeneration &&
+            ViewerTelemetry.isActiveEpisode(path)
+        var releasedForReplacement = false
+        synchronized(flightLifecycleLock(path)) {
+            if (flights[path] === failedFlight) {
+                NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                    failedFlight.lease,
+                    "strict_route_recovery_${failedFlight.completedRouteRecoveryAttempts + 1}",
+                )
+                flights.remove(path, failedFlight)
+                releasedForReplacement = true
+            }
+        }
+        if (!stillOwned || !releasedForReplacement) {
+            Log.d(
+                "ViewerPerf",
+                "ntk_strict_route_recovery_abandoned path=$path," +
+                    "viewerGeneration=${failedFlight.viewerGeneration}," +
+                    "stillOwned=$stillOwned,released=$releasedForReplacement",
+            )
+            return
+        }
+        val restarted = startInternal(
+            client,
+            manga,
+            failedFlight.rollingAdmission,
+            failedFlight.completedRouteRecoveryAttempts + 1,
+        )
+        val joined = restarted ||
+            isInFlight(path) ||
+            NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null
+        Log.d(
+            "ViewerPerf",
+            "ntk_strict_route_recovery_result path=$path," +
+                "viewerGeneration=${failedFlight.viewerGeneration}," +
+                "attempt=${failedFlight.completedRouteRecoveryAttempts + 1}," +
+                "changed=$changed,restarted=$restarted,joined=$joined," +
+                "originBefore=$originBefore,originAfter=$originAfter",
+        )
     }
 
     private fun requireDiscoveryOwnership(flight: Flight, boundary: String) {
@@ -1151,10 +1301,24 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         )
     }
 
-    private fun normalizedPath(path: String?): String? {
-        val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty()).lowercase()
+    /**
+     * HTTP path segments are case-sensitive. Keep the exact catalog/click spelling for slug
+     * works while matching only the fixed route prefix without case sensitivity.
+     *
+     * Lowercasing the whole value made a real click such as
+     * `/webtoon/u-bt-I_killed-863ce912/...` differ from ViewerTelemetry's click authority. The
+     * coordinator then treated the already-committed click as a pre-click call and suppressed the
+     * only discovery flight, leaving the reader permanently empty.
+     */
+    internal fun normalizedPath(path: String?): String? {
+        val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty())
         return normalized.takeIf {
-            it.matches(Regex("""^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$"""))
+            it.matches(
+                Regex(
+                    """^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$""",
+                    RegexOption.IGNORE_CASE,
+                ),
+            )
         }
     }
 

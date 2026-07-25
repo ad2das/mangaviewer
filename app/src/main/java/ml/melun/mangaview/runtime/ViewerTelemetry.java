@@ -306,6 +306,40 @@ public final class ViewerTelemetry {
                 "responseToCommittedDrawMs");
     }
 
+    /**
+     * Publishes the immutable source identity of a page in a continuously appended episode.
+     *
+     * <p>The telemetry session remains owned by the original user click. Reopening it at a
+     * continuous-reading boundary would turn scrolling into a fake viewer-open event and cancel
+     * unrelated request/decode observations. The caller must validate this episode and source
+     * range against its immutable page manifest before calling.</p>
+     */
+    public static void actualImageDrawCommittedForEpisode(
+            View renderView,
+            long authority,
+            String physicalEpisodeId,
+            int firstVisibleSourcePage,
+            int lastVisibleSourcePage,
+            long committedAtNanos,
+            boolean viewportOriginalComplete,
+            long firstVisibleGapPx,
+            float velocityPxPerSecond) {
+        recordQualifiedActualFrame(
+                renderView,
+                authority,
+                firstVisibleSourcePage,
+                lastVisibleSourcePage,
+                committedAtNanos,
+                viewportOriginalComplete,
+                firstVisibleGapPx,
+                velocityPxPerSecond,
+                "actual_image_draw_commit",
+                "hwui_frame_commit",
+                "openToCommittedDrawMs",
+                "responseToCommittedDrawMs",
+                physicalEpisodeId);
+    }
+
     /** Called only when the native SurfaceControl path has a real compositor-latch proof. */
     public static void actualFramePresented(
             View renderView,
@@ -362,6 +396,36 @@ public final class ViewerTelemetry {
             String evidenceKind,
             String openDurationField,
             String responseDurationField) {
+        recordQualifiedActualFrame(
+                renderView,
+                authority,
+                firstVisiblePage,
+                lastVisiblePage,
+                evidenceAtNanos,
+                viewportOriginalComplete,
+                firstVisibleGapPx,
+                velocityPxPerSecond,
+                eventName,
+                evidenceKind,
+                openDurationField,
+                responseDurationField,
+                null);
+    }
+
+    private static void recordQualifiedActualFrame(
+            View renderView,
+            long authority,
+            int firstVisiblePage,
+            int lastVisiblePage,
+            long evidenceAtNanos,
+            boolean viewportOriginalComplete,
+            long firstVisibleGapPx,
+            float velocityPxPerSecond,
+            String eventName,
+            String evidenceKind,
+            String openDurationField,
+            String responseDurationField,
+            String physicalEpisodeId) {
         Session session = SESSION.get();
         if(session == null || !viewportOriginalComplete || firstVisibleGapPx >= 0L ||
                 firstVisiblePage < 0 || lastVisiblePage < firstVisiblePage)
@@ -398,7 +462,20 @@ public final class ViewerTelemetry {
         }
         // Lifecycle transitions deliberately clear semantics. Every later identity-valid commit
         // republishes it without changing the one-shot first-presentation timing event.
-        publishActualState(renderView, session, firstVisiblePage);
+        // A continuously appended episode can end in a valid full-width separator only a few
+        // pixels tall. Its previous page therefore remains the first visible item at max scroll.
+        // Publish the furthest physically visible canonical source for that episode while keeping
+        // the full first/last range below for frame-state accounting.
+        int actualStatePage = physicalEpisodeId == null || physicalEpisodeId.trim().isEmpty()
+                ? firstVisiblePage
+                : lastVisiblePage;
+        long actualStateAtNanos = session.firstActualFrameAtNanos > 0L
+                ? session.firstActualFrameAtNanos
+                : evidenceAtNanos > 0L
+                    ? evidenceAtNanos
+                    : SystemClock.elapsedRealtimeNanos();
+        session.latestActualAtNanos = actualStateAtNanos;
+        publishActualState(renderView, session, physicalEpisodeId, actualStatePage);
 
         String direction = velocityPxPerSecond > 25f
                 ? "forward"
@@ -494,20 +571,7 @@ public final class ViewerTelemetry {
                 0L, (completedAtNanos - session.openedAtNanos) / 1_000_000L);
         event("all_images_render_ready", session,
                 "pageCount=" + pageCount + ",openToAllImagesReadyMs=" + openToReadyMs);
-        event("image_pipeline_summary", session,
-                "requestStarted=" + session.imageRequestStarted.get()
-                        + ",requestSucceeded=" + session.imageRequestSucceeded.get()
-                        + ",requestCancelled=" + session.imageRequestCancelled.get()
-                        + ",requestFailed=" + session.imageRequestFailed.get()
-                        + ",responseBytes=" + session.imageResponseBytes.get()
-                        + ",metadataCount=" + session.imageMetadataCount.get()
-                        + ",encodedBytes=" + session.imageEncodedBytes.get()
-                        + ",averageWidth=" + average(session.imageWidthSum, session.imageMetadataCount)
-                        + ",averageHeight=" + average(session.imageHeightSum, session.imageMetadataCount)
-                        + ",maxWidth=" + session.imageMaxWidth.get()
-                        + ",maxHeight=" + session.imageMaxHeight.get()
-                        + ",formats=" + joinedKeys(session.imageFormats)
-                        + ",hosts=" + joinedKeys(session.imageHosts));
+        publishImagePipelineSummary(session);
         event("network_pipeline_summary", session,
                 "observationCount=" + session.networkObservationCount.get()
                         + ",connectionReusedCount=" + session.networkReusedCount.get()
@@ -638,6 +702,13 @@ public final class ViewerTelemetry {
         return session != null && episodeId != null && episodeId.equals(session.episodeId);
     }
 
+    public static void terminalImagePipelineSummary(String episodeId) {
+        Session session = SESSION.get();
+        if(session == null || episodeId == null || !episodeId.equals(session.episodeId))
+            return;
+        publishImagePipelineSummary(session);
+    }
+
     public static long activeGeneration() {
         Session session = SESSION.get();
         return session == null ? 0L : session.generation;
@@ -742,6 +813,11 @@ public final class ViewerTelemetry {
         session.publishNativeFrameTraceCounters();
         event("native_frame_summary", session, session.nativeFrameSummary());
         stopMemorySampling(session);
+        // A terminal source page cannot reach allImagesRenderReady(), but its completed sibling
+        // bodies and failed/cancelled attempts are still essential evidence. Publish the same
+        // aggregate on close so a partial 145/146 transfer is reported honestly instead of
+        // falling back to the single detailed page-0 event.
+        publishImagePipelineSummary(session);
         int activeRequests = REQUESTS.size();
         int activeDecodes = DECODES.size();
         event("viewer_closed", session,
@@ -753,6 +829,25 @@ public final class ViewerTelemetry {
         closeOutstandingOperations(DECODES);
         PerfTrace.counter("ViewerActiveRequests", 0L);
         PerfTrace.counter("ViewerActiveDecodes", 0L);
+    }
+
+    private static void publishImagePipelineSummary(Session session) {
+        if(session == null || !session.imagePipelineSummaryPublished.compareAndSet(false, true))
+            return;
+        event("image_pipeline_summary", session,
+                "requestStarted=" + session.imageRequestStarted.get()
+                        + ",requestSucceeded=" + session.imageRequestSucceeded.get()
+                        + ",requestCancelled=" + session.imageRequestCancelled.get()
+                        + ",requestFailed=" + session.imageRequestFailed.get()
+                        + ",responseBytes=" + session.imageResponseBytes.get()
+                        + ",metadataCount=" + session.imageMetadataCount.get()
+                        + ",encodedBytes=" + session.imageEncodedBytes.get()
+                        + ",averageWidth=" + average(session.imageWidthSum, session.imageMetadataCount)
+                        + ",averageHeight=" + average(session.imageHeightSum, session.imageMetadataCount)
+                        + ",maxWidth=" + session.imageMaxWidth.get()
+                        + ",maxHeight=" + session.imageMaxHeight.get()
+                        + ",formats=" + joinedKeys(session.imageFormats)
+                        + ",hosts=" + joinedKeys(session.imageHosts));
     }
 
     private static void attemptCloseAfterDrain(
@@ -885,12 +980,34 @@ public final class ViewerTelemetry {
     }
 
     private static void publishActualState(View view, Session session, int pageIndex) {
+        publishActualState(view, session, null, pageIndex);
+    }
+
+    private static void publishActualState(
+            View view,
+            Session session,
+            String physicalEpisodeId,
+            int pageIndex) {
         if(view == null)
             return;
+        String episodeId = physicalEpisodeId == null || physicalEpisodeId.trim().isEmpty()
+                ? session.episodeId
+                : physicalEpisodeId.trim();
         String description =
-                "actual:" + clean(session.episodeId) + ':' + pageIndex + ':' + session.generation;
+                "actual:" + clean(episodeId) + ':' + pageIndex + ':' + session.generation
+                    + ";actualAtNanos=" + Math.max(0L, session.latestActualAtNanos);
         session.latestActualDescription = description;
-        Runnable publish = () -> view.setContentDescription(description);
+        // Once the launch episode is fully render-ready, keep that one-shot evidence attached
+        // to every later physical commit. Continuous reading legitimately replaces the root
+        // node's episode/page identity with an appended episode; dropping the suffix here made
+        // the benchmark lose an already-observed completion and wait until timeout. This only
+        // preserves telemetry on the accessibility node and does not gate drawing or input.
+        String allReady = session.allImagesReady.get()
+                ? ";allReady=" + session.allImagesReadyPageCount
+                    + ";allReadyAtNanos=" + session.allImagesReadyAtNanos
+                : "";
+        String publishedDescription = description + allReady;
+        Runnable publish = () -> view.setContentDescription(publishedDescription);
         if(Looper.myLooper() == Looper.getMainLooper())
             publish.run();
         else
@@ -998,6 +1115,7 @@ public final class ViewerTelemetry {
         final AtomicBoolean scrollTraceOpen = new AtomicBoolean(false);
         final AtomicBoolean closeRequested = new AtomicBoolean(false);
         final AtomicBoolean closeFinalizing = new AtomicBoolean(false);
+        final AtomicBoolean imagePipelineSummaryPublished = new AtomicBoolean(false);
         final AtomicLong entryPssKb = new AtomicLong();
         final AtomicLong entryGcCount = new AtomicLong(-1L);
         final AtomicLong maxPssKb = new AtomicLong();
@@ -1018,6 +1136,7 @@ public final class ViewerTelemetry {
         final ConcurrentHashMap<String, Boolean> imageHosts = new ConcurrentHashMap<>();
         final ConcurrentHashMap<String, Boolean> networkProtocols = new ConcurrentHashMap<>();
         volatile long firstActualFrameAtNanos;
+        volatile long latestActualAtNanos;
         volatile long allImagesReadyAtNanos;
         volatile int allImagesReadyPageCount;
         volatile String latestActualDescription;

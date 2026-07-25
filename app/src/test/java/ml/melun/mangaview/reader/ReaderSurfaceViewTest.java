@@ -44,8 +44,22 @@ public class ReaderSurfaceViewTest {
     }
 
     @Test
+    public void subSlopFingerJitterStillCountsAsTap() {
+        assertTrue(ReaderSurfaceView.isTapGestureForTest(true, 5f, 6f, 16));
+        assertFalse(ReaderSurfaceView.isTapGestureForTest(true, 12f, 12f, 16));
+        assertFalse(ReaderSurfaceView.isTapGestureForTest(false, 0f, 0f, 16));
+    }
+
+    @Test
     public void slowDragDoesNotStartFling() {
         assertFalse(ReaderSurfaceView.shouldStartFlingForTest(80f, 30, 50, 16));
+    }
+
+    @Test
+    public void realPixelsOnlyModeKeepsRequestedDrawablePrefixGuard() {
+        assertTrue(ReaderSurfaceView.effectiveDrawablePrefixScrollLimitForTest(true, true));
+        assertTrue(ReaderSurfaceView.effectiveDrawablePrefixScrollLimitForTest(true, false));
+        assertFalse(ReaderSurfaceView.effectiveDrawablePrefixScrollLimitForTest(false, true));
     }
 
     @Test

@@ -114,7 +114,9 @@ import ml.melun.mangaview.ntkack.NtkAckSignature;
 import ml.melun.mangaview.ntkack.NtkAckTrustedGrantValidator;
 import ml.melun.mangaview.reader.NtkProvisionalEpisodePlan;
 import ml.melun.mangaview.reader.NtkQuarantineSourceCallIdentity;
+import ml.melun.mangaview.reader.NtkDocumentRouteResponseException;
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry;
+import ml.melun.mangaview.reader.NtkStrictRouteRecoveryPolicy;
 import ml.melun.mangaview.reader.NtkStrictSourceCallTag;
 import ml.melun.mangaview.reader.NtkStripDigests;
 import ml.melun.mangaview.reader.ReaderImageCache;
@@ -562,15 +564,24 @@ public class CustomHttpClient {
     /**
      * Webtoon assets are striped over three hosts. A 114-page/10 MiB cold trace showed all
      * response headers in ~600 ms but the multiplexed body tail remained ~2.6 s on three H2
-     * sessions per host. Eight sessions are the measured stable point: twelve over-admitted the
-     * replica and produced empty responses under a 200-page cold wave.
+     * sessions per host. The earlier eight-session layout could still expand to 64 simultaneous
+     * bodies after headers arrived; on a 30+ MiB episode that caused hundreds of H2 resets and was
+     * slower than a smaller continuously productive wave. Six host-local pools match the strict
+     * source's six-stream share and keep retry traffic from displacing useful body bytes while
+     * retaining enough aggregate bandwidth for a 100+ page episode.
      * Manga uses its own bounded post-click topology for its fewer, larger pages.
      */
     private static final int NTK_EXACT_IMAGE_CONNECTION_SHARDS = 24;
     // Large 200+ page strips otherwise place enough data behind each H2 flow to make one CDN tail
     // dominate the whole-scene deadline. This is a production, host-local stripe for every work.
-    private static final int NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 8;
+    private static final int NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 6;
     private static final int NTK_MANHWA_EXACT_IMAGE_CONNECTION_SHARDS = 24;
+    /**
+     * A failed pass over all three immutable webtoon replicas is no longer a useful H2 retry.
+     * Move the next pass, and every exact Range continuation, to independent HTTP/1.1 pools so a
+     * CDN stream-reset storm cannot keep poisoning the same multiplexed connection family.
+     */
+    private static final int NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT = 3;
     private static final long NTK_VIEWER_RSC_PAYLOAD_TIMEOUT_MS = 2_200L;
     private static final long NTK_VIEWER_IMAGES_API_TIMEOUT_MS = 2_100L;
     private static final long NTK_VIEWER_IMAGES_API_HEDGE_DELAY_MS = 0L;
@@ -1556,6 +1567,7 @@ public class CustomHttpClient {
     private OkHttpClient externalViewerImageFastClient;
     private OkHttpClient ntkDemandBoundExactImageFallbackClient;
     private OkHttpClient[] ntkDemandBoundExactImageFallbackShards;
+    private OkHttpClient[] ntkDemandBoundExactImageHttp1RecoveryShards;
     private Call.Factory ntkDemandBoundExactImageFactory;
     private volatile String lastReachableNtkRedirectRoot = "";
     private OkHttpClient wolfPageFastClient;
@@ -1710,6 +1722,26 @@ public class CustomHttpClient {
                             .retryOnConnectionFailure(false)
                             .followRedirects(false)
                             .followSslRedirects(false)
+                            // Strict source headers and byte-progress timeouts are more precise
+                            // than a three-second total timer. The total timer aborted responsive
+                            // 300+ KiB bodies and forced their remaining bytes through recovery.
+                            .callTimeout(0L, TimeUnit.MILLISECONDS)
+                            .build();
+        }
+        this.ntkDemandBoundExactImageHttp1RecoveryShards =
+                new OkHttpClient[NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS];
+        for(int shard = 0; shard < NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS; shard++) {
+            this.ntkDemandBoundExactImageHttp1RecoveryShards[shard] =
+                    this.externalViewerImageFastClient.newBuilder()
+                            .connectionPool(new ConnectionPool())
+                            .protocols(java.util.Collections.singletonList(Protocol.HTTP_1_1))
+                            .retryOnConnectionFailure(false)
+                            .followRedirects(false)
+                            .followSslRedirects(false)
+                            // Header failover and the strict body's byte-progress deadlines own
+                            // cancellation. A three-second total timer used to abort a healthy H1
+                            // suffix after it had already recovered most of a large image.
+                            .callTimeout(0L, TimeUnit.MILLISECONDS)
                             .build();
         }
         this.ntkDemandBoundExactImageFallbackClient =
@@ -1920,12 +1952,40 @@ public class CustomHttpClient {
                 NtkExactImagePhysicalAttempt physicalAttempt =
                         request.tag(NtkExactImagePhysicalAttempt.class);
                 int attemptOrdinal = physicalAttempt == null ? 0 : physicalAttempt.getOrdinal();
-                return shards[ntkWebtoonExactImageShardIndex(
-                        pageIndex, shardCount, attemptOrdinal)];
+                int shardIndex = ntkWebtoonExactImageShardIndex(
+                        pageIndex, shardCount, attemptOrdinal);
+                if(shouldUseNtkExactImageHttp1Recovery(request, attemptOrdinal)) {
+                    OkHttpClient[] recoveryShards = ntkDemandBoundExactImageHttp1RecoveryShards;
+                    if(recoveryShards != null && recoveryShards.length > 0)
+                        return recoveryShards[Math.floorMod(shardIndex, recoveryShards.length)];
+                }
+                return shards[shardIndex];
             } else {
-                return shards[0];
+                NtkExactImagePhysicalAttempt physicalAttempt =
+                        request.tag(NtkExactImagePhysicalAttempt.class);
+                int physicalOrdinal = physicalAttempt == null
+                        ? 0
+                        : physicalAttempt.getOrdinal();
+                int logicalOrdinal = strictTag != null
+                        ? strictTag.getAttemptOrdinal()
+                        : quarantineTag != null ? 1 : 0;
+                int shardIndex = ntkExactImageShardIndex(
+                        pageIndex + logicalOrdinal + physicalOrdinal, shards.length);
+                if(physicalOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT
+                        || logicalOrdinal >= 3) {
+                    OkHttpClient[] recoveryShards = ntkDemandBoundExactImageHttp1RecoveryShards;
+                    if(recoveryShards != null && recoveryShards.length > 0)
+                        return recoveryShards[Math.floorMod(shardIndex, recoveryShards.length)];
+                }
+                return shards[shardIndex];
             }
             return shards[ntkExactImageShardIndex(pageIndex, shardCount)];
+        }
+
+        private boolean shouldUseNtkExactImageHttp1Recovery(Request request,
+                                                             int physicalAttemptOrdinal) {
+            return request.header("Range") != null
+                    || physicalAttemptOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT;
         }
 
         /** Uses the stable global mixer for non-striped exact-image topologies such as manhwa. */
@@ -1993,10 +2053,11 @@ public class CustomHttpClient {
     }
 
     /**
-     * The exact webtoon authority deterministically stripes page N over three sorted CDN hosts.
-     * A shard is local to one host, so hash/modulo of the global page index creates uneven finite
-     * tails. Convert the global index to its host-local ordinal and round-robin the bounded pools;
-     * every host then differs by at most one body on every cold episode.
+     * The exact webtoon authority keeps pages zero and one on the same entry CDN so a short first
+     * page does not make the initial viewport depend on a second cold origin. Give those two
+     * visible pages separate host-local pools so their bodies run concurrently in the three-call
+     * anchor wave. Page two resumes the normal three-origin stripe; the adjusted local ordinals
+     * keep every actual origin evenly distributed over the bounded pool ring.
      */
     static int ntkWebtoonExactImageShardIndex(int pageIndex, int shardCount) {
         return ntkWebtoonExactImageShardIndex(pageIndex, shardCount, 0);
@@ -2010,7 +2071,18 @@ public class CustomHttpClient {
             throw new IllegalArgumentException("Exact image shard count must be positive");
         if(physicalAttemptOrdinal < 0)
             throw new IllegalArgumentException("Physical attempt ordinal must be non-negative");
-        int hostLocalOrdinal = pageIndex / NTK_WEBTOON_IMAGE_ORIGINS.length;
+        final int hostLocalOrdinal;
+        if(pageIndex <= 1) {
+            hostLocalOrdinal = pageIndex;
+        } else {
+            int originSlot = pageIndex % NTK_WEBTOON_IMAGE_ORIGINS.length;
+            if(originSlot == 0)
+                hostLocalOrdinal = pageIndex / NTK_WEBTOON_IMAGE_ORIGINS.length + 1;
+            else if(originSlot == 1)
+                hostLocalOrdinal = pageIndex / NTK_WEBTOON_IMAGE_ORIGINS.length - 1;
+            else
+                hostLocalOrdinal = pageIndex / NTK_WEBTOON_IMAGE_ORIGINS.length;
+        }
         return Math.floorMod(hostLocalOrdinal + physicalAttemptOrdinal, shardCount);
     }
 
@@ -3999,12 +4071,21 @@ public class CustomHttpClient {
     private void rememberNtkAccessChallengeFailure(String url, Exception e) {
         if(url == null || e == null || !isNtkUrlForTest(url))
             return;
-        if(!(e instanceof SSLException)
-                && !(e instanceof java.net.SocketException)
-                && !(e instanceof java.net.SocketTimeoutException)
-                && !(e instanceof java.net.ConnectException))
-            return;
-        markCloudflareChallenge(url);
+        // A TLS, DNS, connect, reset, or timeout exception contains no HTTP response and
+        // therefore cannot prove that Cloudflare presented a challenge. Treating transport
+        // failures as challenges opens a full-screen CaptchaActivity while demand-driven domain
+        // recovery is replacing a dead origin. Real challenge responses are recorded at their
+        // response parsing sites, where status and body evidence are available.
+        if(shouldMarkNtkChallengeForTransportFailure(e))
+            markCloudflareChallenge(url);
+    }
+
+    private static boolean shouldMarkNtkChallengeForTransportFailure(Exception error) {
+        return false;
+    }
+
+    static boolean shouldMarkNtkChallengeForTransportFailureForTest(Exception error) {
+        return shouldMarkNtkChallengeForTransportFailure(error);
     }
 
     private boolean shouldRecordRequestFailure(String url, Exception e, RequestGroup requestGroup, boolean fastNtkPageDirect) {
@@ -4189,6 +4270,14 @@ public class CustomHttpClient {
         return ensureNumberedDomain(true);
     }
 
+    /**
+     * Demand-only recovery for an origin that already failed certificate, DNS, or connection
+     * validation. The known compatibility alias is tried first with ordinary trusted TLS.
+     */
+    public boolean resolveNtkDomainAfterRouteFailure() {
+        return ensureNtkDomainAfterDemandRouteFailure();
+    }
+
     public void setNtkDomainAutoResolveDisabledForTest(boolean disabled) {
         ntkDomainAutoResolveDisabledForTest = disabled;
     }
@@ -4222,6 +4311,17 @@ public class CustomHttpClient {
         if(requestGroup != null && requestGroup.isCancelled())
             return false;
         return ensureNumberedDomain(true);
+    }
+
+    /**
+     * A certificate/DNS/connect failure proves that the configured origin itself is unusable.
+     * Resolve that global route even if the individual catalog request group was concurrently
+     * retired by a tab/site UI update. The replacement still requires normal trusted TLS.
+     */
+    private boolean ensureNtkDomainAfterDemandRouteFailure() {
+        if(!isNtk() || hasNtkStrictForegroundNetworkOwner())
+            return false;
+        return ensureNtkDomain(null, true);
     }
 
     private void logWfwfDomainCanceledOnce() {
@@ -4384,6 +4484,17 @@ public class CustomHttpClient {
     }
 
     private boolean ensureNtkDomain() {
+        return ensureNtkDomain(currentRequestGroup.get(), false);
+    }
+
+    private boolean ensureNtkDomain(RequestGroup resolverRequestGroup) {
+        return ensureNtkDomain(resolverRequestGroup, false);
+    }
+
+    private boolean ensureNtkDomain(
+            RequestGroup resolverRequestGroup,
+            boolean preferTrustedAlias
+    ) {
         if(hasNtkStrictForegroundNetworkOwner())
             return false;
         try {
@@ -4409,8 +4520,23 @@ public class CustomHttpClient {
                 Map<String, String> headers = new HashMap<>();
                 headers.put("User-Agent", agent);
                 headers.put("Referer", NtkDomainResolver.CHANNEL_URL);
-                List<String> resolvedRoots = NtkDomainResolver.resolveCandidates(client, headers, currentRequestGroup.get());
-                String reachable = reachableNtkRoot(currentRoot, resolvedRoots, headers);
+                List<String> resolvedRoots = new ArrayList<>();
+                String trustedAlias = NtkDomainResolver.normalizeRoot(
+                        "https://" + NTK_ALIAS_HOST);
+                String reachable = null;
+                if(preferTrustedAlias && trustedAlias != null
+                        && !trustedAlias.equalsIgnoreCase(currentRoot)
+                        && canReachNtkRoot(trustedAlias, headers)) {
+                    reachable = trustedAlias;
+                    Log.d(TAG, "ntk_domain_demand_failure_alias_ready current="
+                            + currentRoot + ",alias=" + trustedAlias);
+                }
+                if(reachable == null) {
+                    resolvedRoots =
+                            NtkDomainResolver.resolveCandidates(
+                                    client, headers, resolverRequestGroup);
+                    reachable = reachableNtkRoot(currentRoot, resolvedRoots, headers);
+                }
                 if(shouldApplyResolvedNtkRoot(currentRoot, reachable, resolvedRoots)) {
                     SiteOverride override = currentSiteOverride.get();
                     if(override != null) {
@@ -4418,10 +4544,12 @@ public class CustomHttpClient {
                         override.webtoonUrl = root;
                         override.comicUrl = root + "/manhwa";
                     } else {
-                        p.setNtkSitePreset(reachable);
+                        p.setResolvedNtkSitePreset(reachable);
                     }
                     resetCookie();
                     clearPageCache();
+                    if(preferTrustedAlias)
+                        clearRouteFailureChallengeForRoot(currentRoot);
                     changed = true;
                 }
                 return changed;
@@ -4667,96 +4795,10 @@ public class CustomHttpClient {
             rememberReachableNtkRedirectRoot(code, location);
             if(isReachableNtkChallengeTransportResponse(code, location, contentType, body))
                 return true;
-            response.close();
-            response = null;
-            call.cancel();
-
-            if(hasNtkStrictForegroundNetworkOwner())
-                return false;
-
-            OkHttpClient unsafeProbeClient = unsafeNtkApiFastClient == null
-                    ? probeClient
-                    : unsafeNtkApiFastClient.newBuilder()
-                    .connectTimeout(2, TimeUnit.SECONDS)
-                    .readTimeout(2, TimeUnit.SECONDS)
-                    .callTimeout(3, TimeUnit.SECONDS)
-                    .followRedirects(false)
-                    .followSslRedirects(false)
-                    .build();
-            call = unsafeProbeClient.newCall(builder.build());
-            response = executeNtkDomainProbe(call);
-            if(hasNtkStrictForegroundNetworkOwner())
-                return false;
-            if(response == null)
-                return false;
-            code = response.code();
-            location = response.header("location", "");
-            contentType = response.header("content-type", "");
-            body = "";
-            try {
-                body = response.peekBody(64 * 1024L).string();
-            } catch (Exception ignored) {
-            }
-            rememberReachableNtkRedirectRoot(code, location);
-            return isReachableNtkChallengeTransportResponse(code, location, contentType, body);
+            return false;
         } catch (Exception e) {
             if(hasNtkStrictForegroundNetworkOwner())
                 return false;
-            if(isNtkSslTrustFailure(e)) {
-                Response unsafeResponse = null;
-                Call unsafeCall = null;
-                try {
-                    OkHttpClient.Builder unsafeProbeBuilder = unsafeNtkApiFastClient == null
-                            ? client.newBuilder()
-                            : unsafeNtkApiFastClient.newBuilder();
-                    OkHttpClient unsafeProbeClient = unsafeProbeBuilder
-                            .connectTimeout(2, TimeUnit.SECONDS)
-                            .readTimeout(2, TimeUnit.SECONDS)
-                            .callTimeout(3, TimeUnit.SECONDS)
-                            .followRedirects(false)
-                            .followSslRedirects(false)
-                            .build();
-                    String normalizedRoot = trimTrailingSlash(root);
-                    Request.Builder unsafeBuilder = new Request.Builder()
-                            .url(normalizedRoot + "/api/ad/challenge")
-                            .get()
-                            .header("Accept", "application/json,text/plain,*/*")
-                            .header("Referer", normalizedRoot + "/");
-                    if(headers != null) {
-                        for(String key : headers.keySet()) {
-                            if(key == null)
-                                continue;
-                            String lower = key.toLowerCase(Locale.ROOT);
-                            if("accept".equals(lower) || "referer".equals(lower))
-                                continue;
-                            unsafeBuilder.header(key, headers.get(key));
-                        }
-                    }
-                    unsafeCall = unsafeProbeClient.newCall(unsafeBuilder.build());
-                    unsafeResponse = executeNtkDomainProbe(unsafeCall);
-                    if(hasNtkStrictForegroundNetworkOwner())
-                        return false;
-                    if(unsafeResponse == null)
-                        return false;
-                    String body = "";
-                    try {
-                        body = unsafeResponse.peekBody(64 * 1024L).string();
-                    } catch (Exception ignored) {
-                    }
-                    rememberReachableNtkRedirectRoot(unsafeResponse.code(),
-                            unsafeResponse.header("location", ""));
-                    return isReachableNtkChallengeTransportResponse(unsafeResponse.code(),
-                            unsafeResponse.header("location", ""),
-                            unsafeResponse.header("content-type", ""), body);
-                } catch (Exception ignored) {
-                    return false;
-                } finally {
-                    if(unsafeCall != null)
-                        unsafeCall.cancel();
-                    if(unsafeResponse != null)
-                        unsafeResponse.close();
-                }
-            }
             return false;
         } finally {
             if(call != null)
@@ -6172,6 +6214,34 @@ public class CustomHttpClient {
         }
     }
 
+    private void clearRouteFailureChallengeForRoot(String failedRoot) {
+        String challengeUrl = lastCloudflareChallengeUrl;
+        if(!sameOriginForRouteRecovery(failedRoot, challengeUrl))
+            return;
+        Log.d(TAG, "ntk_route_failure_stale_challenge_cleared root="
+                + failedRoot + ",challenge=" + challengeUrl);
+        clearLastCloudflareChallenge();
+    }
+
+    private static boolean sameOriginForRouteRecovery(String root, String url) {
+        try {
+            URI rootUri = URI.create(root == null ? "" : root);
+            URI urlUri = URI.create(url == null ? "" : url);
+            String rootHost = normalizeDnsHost(rootUri.getHost());
+            String urlHost = normalizeDnsHost(urlUri.getHost());
+            return rootHost.length() > 0
+                    && rootHost.equals(urlHost)
+                    && "https".equalsIgnoreCase(rootUri.getScheme())
+                    && "https".equalsIgnoreCase(urlUri.getScheme());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static boolean sameOriginForRouteRecoveryForTest(String root, String url) {
+        return sameOriginForRouteRecovery(root, url);
+    }
+
     private byte[] readNtkViewerPayloadRscOkHttpBody(ResponseBody responseBody,
                                                      String normalized,
                                                      NtkQuicFetcher.PartialTextObserver partialTextObserver,
@@ -6337,6 +6407,33 @@ public class CustomHttpClient {
         try {
             NtkQuicFetcher.Result result = fetchNtkQuic(baseUrl, baseUrl + encodedNormalized,
                     getCookieHeaderForNtkPath(normalized), headers, "GET", null, 7000L);
+            Throwable routeFailure = ntkRscRouteFailure(result);
+            if(routeFailure != null
+                    && NtkStrictRouteRecoveryPolicy.shouldRecover(routeFailure, 0)) {
+                String failedBaseUrl = baseUrl;
+                boolean changed = ensureNtkDomainAfterDemandRouteFailure();
+                String recoveredBaseUrl = getBaseUrl(normalized);
+                if(changed && !failedBaseUrl.equalsIgnoreCase(recoveredBaseUrl)) {
+                    baseUrl = recoveredBaseUrl;
+                    cacheKey = pageCacheKey(baseUrl, normalized) + "|rsc";
+                    headers = new HashMap<>();
+                    headers.put("accept", "text/x-component");
+                    headers.put("rsc", "1");
+                    headers.put("next-url", encodedNormalized);
+                    headers.put("origin", baseUrl);
+                    headers.put("referer", baseUrl + encodedNormalized);
+                    Log.d(TAG, "ntk_rsc_route_recovery_retry path=" + normalized
+                            + ",from=" + failedBaseUrl
+                            + ",to=" + baseUrl
+                            + ",failure=" + routeFailure.getClass().getSimpleName());
+                    result = fetchNtkQuic(baseUrl, baseUrl + encodedNormalized,
+                            getCookieHeaderForNtkPath(normalized), headers, "GET", null, 7000L);
+                } else {
+                    Log.d(TAG, "ntk_rsc_route_recovery_unavailable path=" + normalized
+                            + ",origin=" + failedBaseUrl
+                            + ",changed=" + changed);
+                }
+            }
             if(result == null || result.error != null)
                 markNtkQuicStrictTransportFailure(baseUrl,
                         result == null ? new IOException("RSC HttpEngine returned no result")
@@ -6611,6 +6708,23 @@ public class CustomHttpClient {
         if(!allowFallback)
             return new PageResponse(0, "", true);
         return mgetCachedPage(normalized, ttlMillis);
+    }
+
+    private static Throwable ntkRscRouteFailure(NtkQuicFetcher.Result result) {
+        if(result == null)
+            return new IOException("RSC HttpEngine returned no result");
+        if(result.error != null)
+            return result.error;
+        if(result.code >= 500 && result.code <= 599)
+            return new NtkDocumentRouteResponseException(result.code);
+        return null;
+    }
+
+    static boolean isNtkRscRouteFailureForTest(int code, Throwable error) {
+        NtkQuicFetcher.Result result = error == null
+                ? NtkQuicFetcher.Result.fromBytes(code, new byte[0], Collections.emptyMap())
+                : NtkQuicFetcher.Result.error(error);
+        return ntkRscRouteFailure(result) != null;
     }
 
     private static boolean shouldSuppressNonViewerNtkRsc(String normalized) {
@@ -10372,12 +10486,10 @@ public class CustomHttpClient {
     private static boolean isCloudflareChallenge(int code, String body) {
         if(body == null)
             return false;
-        if(code >= 500) {
-            String lower = body.toLowerCase(Locale.ROOT);
-            return lower.contains("cloudflare")
-                    || lower.contains("error code 522")
-                    || lower.contains("connection timed out");
-        }
+        // A 5xx Cloudflare-branded gateway page is an origin/route failure, not an interactive
+        // user challenge. Opening CaptchaActivity cannot repair it; demand route recovery can.
+        if(code >= 500)
+            return false;
         String lower = body.toLowerCase(Locale.ROOT);
         if(looksLikeNtkNormalPage(lower))
             return false;
@@ -10419,6 +10531,10 @@ public class CustomHttpClient {
     }
 
     public boolean isCloudflareChallengeResponse(int code, String body) {
+        return isCloudflareChallenge(code, body);
+    }
+
+    static boolean isCloudflareChallengeForTest(int code, String body) {
         return isCloudflareChallenge(code, body);
     }
 
@@ -10544,6 +10660,10 @@ public class CustomHttpClient {
             }
             return null;
         }
+    }
+
+    private static boolean isNtkImageOriginHost(String host) {
+        return isNtkWebtoonImageOriginHost(host) || isNtkManhwaImageOriginHost(host);
     }
 
     private HttpEngine buildNtkQuicEngine(String host) {
@@ -11755,11 +11875,10 @@ public class CustomHttpClient {
     /**
      * Executes one exact same-origin strict request. Transport selection is fixed before the
      * physical call starts: the strict control plane may continue on the user's already-existing
-     * same-origin HttpEngine session. The RSC document is only about 120 KiB and its request seed
-     * is at the end of the payload, so a separate cold OkHttp TLS path did not provide useful
-     * streaming overlap; it only added another handshake. No engine or connection is created
-     * speculatively here and a transport failure is terminal; there is no retry, hedge, or second
-     * physical request on the other transport.
+     * same-origin HttpEngine session. Image bodies are explicitly forced onto their host-local
+     * OkHttp pools, so they cannot occupy this same-origin engine. Keeping the document on the
+     * already-selected shared engine avoids adding a second cold TLS path while still issuing
+     * exactly one post-click physical authority request.
      */
     private NtkBoundHttpResponse executeStrictExactSameOriginRequest(
             NtkBoundHttpRequest boundRequest,

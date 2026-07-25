@@ -131,7 +131,7 @@ class NtkManifestEvidenceParserTest {
     }
 
     @Test
-    fun apiBalancesExplicitReplicaCandidatesAcrossHosts() {
+    fun apiKeepsOpeningViewportOnOnePoolThenBalancesExplicitReplicaCandidates() {
         val draft = parseDraft(component(3))
         val request = apiRequest(draft)
         val response = response(
@@ -149,7 +149,7 @@ class NtkManifestEvidenceParserTest {
         assertEquals(
             listOf(
                 "https://a.example/cv/1.jpg",
-                "https://m.example/cv/2.jpg",
+                "https://a.example/cv/2.jpg",
                 "https://z.example/cv/3.jpg"
             ),
             envelope.orderedAssets

@@ -32,7 +32,7 @@ public final class NtkStrictFreshArchitectureTest {
     }
 
     @Test
-    public void strictProductionOrderIsProofCookieQuiescenceSignThenOneExactRequest()
+    public void strictProductionOrderIsProofCookieQuiescenceThenOneIsolatedExactRequest()
             throws Exception {
         String coordinator = read(readerSourcePath("NtkStrictEpisodeDiscoveryCoordinator.kt"));
         String runFlight = method(coordinator,
@@ -40,7 +40,8 @@ public final class NtkStrictFreshArchitectureTest {
                 "private fun requireDiscoveryOwnership(");
         int document = runFlight.indexOf("client.fetchExactNtkEpisodeDocument(");
         int directBranch = runFlight.indexOf("if (directGrant != null)");
-        int isolatedBranch = runFlight.indexOf("} else {", directBranch);
+        int isolatedBranch = runFlight.indexOf(
+                "val ackHandle = ensureIsolatedAck(client, flight, ackRoute)");
         String direct = runFlight.substring(directBranch, isolatedBranch);
         String isolated = runFlight.substring(isolatedBranch);
 
@@ -56,14 +57,14 @@ public final class NtkStrictFreshArchitectureTest {
         int cookies = isolated.indexOf("importVerifiedNtkAckCookieGrants(");
         int unsigned = isolated.indexOf("buildUnsignedExactNtkViewerImageApiRequest(");
         int quiesce = isolated.indexOf("ackHandle.quiesce()");
-        int sign = isolated.indexOf("ackHandle.signExact(");
-        int execute = isolated.indexOf("executeSignedExactNtkViewerImageApi(");
+        int execute = isolated.indexOf("ackHandle.executeExact(");
+        int bind = isolated.indexOf("bindIsolatedExactNtkViewerImageApiResponse(");
         assertTrue(proof >= 0);
         assertTrue(cookies > proof);
         assertTrue(unsigned > cookies);
         assertTrue(quiesce > unsigned);
-        assertTrue(sign > quiesce);
-        assertTrue(execute > sign);
+        assertTrue(execute > quiesce);
+        assertTrue(bind > execute);
     }
 
     @Test
@@ -136,7 +137,7 @@ public final class NtkStrictFreshArchitectureTest {
                 "public long strictDocumentLogicalRequestCount()");
         String exactTransport = method(source,
                 "private NtkBoundHttpResponse executeStrictExactSameOriginRequest(",
-                "public NtkBoundHttpResponse fetchExactNtkEpisodeDocument(");
+                "private byte[] readStrictExactDocumentBody(");
 
         assertTrue(builder.contains(".retryOnConnectionFailure(false)"));
         assertTrue(builder.contains(".followRedirects(false)"));
@@ -197,7 +198,8 @@ public final class NtkStrictFreshArchitectureTest {
         int physicalPost = execute.indexOf("executeStrictExactSameOriginRequest(");
 
         assertTrue(coordinator.contains("ackProof.requestKeyId"));
-        assertTrue(coordinator.contains("ackHandle.signExact("));
+        assertTrue(coordinator.contains("ackHandle.executeExact("));
+        assertTrue(coordinator.contains("bindIsolatedExactNtkViewerImageApiResponse("));
         assertTrue(webtoonPayload >= 0 && manhwaBranch > webtoonPayload);
         assertTrue(bindManhwaBodyKey > manhwaBranch && serializeBody > bindManhwaBodyKey);
         assertTrue(bindNvSession > serializeBody);
@@ -311,26 +313,31 @@ public final class NtkStrictFreshArchitectureTest {
 
         String engine = read(ntkAckSourcePath("NtkAckBrowserEngine.kt"));
         String start = method(engine,
-                "fun startAck(request: NtkAckRequest, callback: (Result<NtkAckProof>) -> Unit)",
-                "fun cancel(identity: NtkAckFlightIdentity");
+                "fun startAck(",
+                "fun cancel(");
         int beginFlight = start.indexOf("requestKeyStore.beginFlight(created.identity)");
         int prerequisites = start.indexOf("startNetworkPrerequisites(created)");
+        int browser = start.indexOf("ensureFullChallengeBrowser(created)");
         assertTrue(beginFlight >= 0 && prerequisites > beginFlight);
+        assertTrue(browser > prerequisites);
         assertFalse(start.contains("createWebView("));
-        assertFalse(start.contains("\n        ensureFullChallengeBrowser("));
 
         String pageReady = method(engine,
                 "private fun pageReady(created: WebView)",
                 "private fun startNetworkPrerequisites(");
-        assertTrue(pageReady.contains("current.shellReady.set(true)"));
-        assertTrue(pageReady.contains("maybeRunGuardInWebView(current)"));
+        assertTrue(pageReady.contains("markFlightShellReady(current.request.flightId"));
         assertFalse(pageReady.contains("workers.submit { runNetworkPrerequisites"));
+        String shellReady = method(engine,
+                "private fun markFlightShellReady(",
+                "private fun startNetworkPrerequisites(");
+        assertTrue(shellReady.contains("current.shellReady.compareAndSet(false, true)"));
+        assertTrue(shellReady.contains("maybeRunGuardInWebView(current)"));
 
         String guard = method(engine,
                 "private fun maybeRunGuardInWebView(current: Flight)",
                 "private inner class FlightBridge");
         assertTrue(guard.contains("current.shellReady.get()"));
-        assertTrue(guard.contains("current.prerequisitesReady.get()"));
+        assertTrue(guard.contains("current.guardProgramReady.get()"));
         assertTrue(guard.contains("current.guardStarted.compareAndSet(false, true)"));
     }
 
@@ -351,10 +358,9 @@ public final class NtkStrictFreshArchitectureTest {
         int transportInstall = prerequisites.indexOf("current.transport = transport");
         int installRecheck = prerequisites.indexOf("checkActive(current)", transportInstall);
         int keyFuture = prerequisites.indexOf("val keyFuture:");
+        int bundledGuard = prerequisites.indexOf("val executableGuard = loadBundledGuardPair()");
         int challengeJoin = prerequisites.indexOf("challengeFuture.get()");
         int trustedDecision = prerequisites.indexOf("if (challengeObject == null)");
-        int guardFirstWave = prerequisites.indexOf(
-                "startFullChallengeGuardPair(current, transport, version)");
         int canaryFuture = prerequisites.indexOf(
                 "val canaryFuture: Future<NtkAckTransport.Result>");
         int metricJoin = prerequisites.indexOf("metricFutures.forEach");
@@ -362,14 +368,16 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(transportInstall >= 0);
         assertTrue(installRecheck > transportInstall);
         assertTrue(keyFuture > installRecheck);
-        assertTrue(challengeJoin > keyFuture);
+        assertTrue(bundledGuard > keyFuture);
+        assertTrue(challengeJoin > bundledGuard);
         assertTrue(trustedDecision > challengeJoin);
         assertTrue(canaryFuture > trustedDecision);
-        assertTrue(guardFirstWave > canaryFuture);
-        assertTrue(metricJoin > guardFirstWave);
+        assertTrue(metricJoin > canaryFuture);
         assertTrue(canaryJoin > metricJoin);
         assertFalse(prerequisites.substring(canaryFuture).contains(
                 "val canary = transport.postCanary(canaryBody)"));
+        assertFalse(prerequisites.contains("transport.getGuardJavascript("));
+        assertFalse(prerequisites.contains("transport.getGuardWasm("));
         assertTrue(prerequisites.contains("current.tasks.track("));
 
         String cancel = method(engine,
@@ -429,7 +437,7 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(completed.contains("strictTelemetryInitialBlankFrames++"));
         assertTrue(reader.contains("ViewerTelemetry.coverageSummary("));
         assertTrue(reader.contains("ViewerTelemetry.traversalSummary("));
-        assertTrue(completed.contains("ViewerTelemetry.actualImageDrawCommitted("));
+        assertTrue(completed.contains("ViewerTelemetry.actualImageDrawCommittedForEpisode("));
         assertFalse(completed.contains("ViewerTelemetry.actualFramePresented("));
 
         String foreground = method(activity,
@@ -460,14 +468,20 @@ public final class NtkStrictFreshArchitectureTest {
                 "client.enterNtkStrictForegroundNetwork(path, viewerGeneration)");
         int compatibilityCancel = startInternal.indexOf("client.cancelNtkWebViewFallbacks()", networkGate);
         int directChallengeWorker = startInternal.indexOf("val thread = Thread(task");
-        int ackOwner = startInternal.indexOf("startIsolatedAck(client, flight, bootstrap)");
         int documentWorker = startInternal.indexOf("val worker = Thread(");
         assertTrue(committedDemandGuard >= 0 && networkGate > committedDemandGuard);
         assertTrue(compatibilityCancel > networkGate);
         assertTrue(directChallengeWorker > compatibilityCancel);
-        assertTrue(ackOwner > compatibilityCancel);
         assertTrue(documentWorker > directChallengeWorker);
-        assertTrue(documentWorker > ackOwner);
+        assertFalse(startInternal.contains("startIsolatedAck("));
+        String challengeFallback = method(coordinator,
+                "private fun awaitDirectTrustedGrantOrStartIsolated(",
+                "private fun runFlight(");
+        int serverDecision = challengeFallback.indexOf(
+                "cause is CustomHttpClient.NtkStrictFullChallengeRequiredException");
+        int isolatedOwner = challengeFallback.indexOf(
+                "ensureIsolatedAck(client, flight, ackRoute)");
+        assertTrue(serverDecision >= 0 && isolatedOwner > serverDecision);
         assertTrue(coordinator.contains(
                 "client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)"));
 
@@ -515,7 +529,7 @@ public final class NtkStrictFreshArchitectureTest {
         assertFalse(probes.contains("call.execute()"));
         assertFalse(probes.contains("unsafeCall.execute()"));
         assertTrue(probes.contains("executeNtkDomainProbe(call)"));
-        assertTrue(probes.contains("executeNtkDomainProbe(unsafeCall)"));
+        assertTrue(occurrences(probes, "executeNtkDomainProbe(call)") >= 2);
 
         String fragmented = method(client,
                 "private boolean canReachNtkDocumentTransportFragmented(",
@@ -553,20 +567,14 @@ public final class NtkStrictFreshArchitectureTest {
     }
 
     @Test
-    public void backgroundResumeUsesOrdinaryLauncherIntentWithoutClearingTheReaderTask()
+    public void coldMacroUsesOneForwardOnlyColdLauncherStartWithoutResumeWarmPath()
             throws Exception {
         String macro = read(repositoryPath("macrobenchmark", "src", "main", "java", "ml",
                 "melun", "mangaview", "macrobenchmark", "NtkColdViewerMacrobenchmark.kt"));
-        String resume = method(macro,
-                "private fun resumeExistingTaskFromLauncher(",
-                "private fun UiDevice.requireObject(");
-
-        int removeClearTask = resume.indexOf(
-                "launchIntent.removeFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)");
-        int launchExistingTask = resume.indexOf("context.startActivity(launchIntent)");
-        assertTrue(removeClearTask >= 0);
-        assertTrue(launchExistingTask > removeClearTask);
-        assertFalse(resume.contains("\n        startActivityAndWait()"));
+        assertTrue(macro.contains("startupMode = StartupMode.COLD"));
+        assertTrue(occurrences(macro, "startActivityAndWait()") == 1);
+        assertFalse(macro.contains("resumeExistingTaskFromLauncher("));
+        assertFalse(macro.contains("FLAG_ACTIVITY_CLEAR_TASK"));
     }
 
     @Test
@@ -640,7 +648,8 @@ public final class NtkStrictFreshArchitectureTest {
                 "proof.surfaceQueueSubmissionObserved");
         int surfaceControlProvenance = completed.indexOf(
                 "proof.surfaceControlLatchObserved");
-        int actualEvent = completed.indexOf("ViewerTelemetry.actualImageDrawCommitted(");
+        int actualEvent = completed.indexOf(
+                "ViewerTelemetry.actualImageDrawCommittedForEpisode(");
         assertTrue(provenance >= 0);
         assertTrue(surfaceProvenance > provenance);
         assertTrue(surfaceControlProvenance > surfaceProvenance);
@@ -668,7 +677,8 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(completion.contains("rollingNativeFatal = false"));
         assertTrue(completion.contains(
                 "isAttachedToWindow && renderRunning && directSurfaceReady"));
-        assertTrue(completion.contains("attachRollingNativeSurface(holder"));
+        assertTrue(completion.contains(
+                "attachRollingNativeSurface(reattach.first, reattach.second, reattach.third)"));
     }
 
     @Test
@@ -772,8 +782,9 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(coordinator.contains("retirement.attachPhysicalCancellation"));
         assertTrue(coordinator.contains("physicalCalls.markCancelledAndDetachCalls()"));
         assertTrue(coordinator.contains("flight.retirement.attachWorker(worker)"));
-        assertTrue(coordinator.contains(
-                "client.fetchExactNtkEpisodeDocument(path, flight.physicalCalls)"));
+        assertTrue(occurrences(coordinator, "client.fetchExactNtkEpisodeDocument(") >= 2);
+        assertTrue(coordinator.contains("path,\n                                    flight.physicalCalls,"));
+        assertTrue(coordinator.contains("path,\n                            flight.physicalCalls,"));
         assertTrue(coordinator.contains("requireDiscoveryOwnership(flight, \"document_response\")"));
         assertTrue(coordinator.contains("publishExactNtkEpisodeResponseCookies("));
         assertTrue(coordinator.contains("flight.physicalCalls"));

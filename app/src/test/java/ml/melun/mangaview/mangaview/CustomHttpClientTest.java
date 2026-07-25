@@ -20,6 +20,41 @@ import static org.junit.Assert.assertTrue;
 
 public class CustomHttpClientTest {
     @Test
+    public void transportFailuresAreNotInventedCloudflareChallenges() {
+        assertFalse(CustomHttpClient.shouldMarkNtkChallengeForTransportFailureForTest(
+                new javax.net.ssl.SSLPeerUnverifiedException("hostname not verified")));
+        assertFalse(CustomHttpClient.shouldMarkNtkChallengeForTransportFailureForTest(
+                new java.net.ConnectException("connection refused")));
+        assertFalse(CustomHttpClient.shouldMarkNtkChallengeForTransportFailureForTest(
+                new java.net.SocketTimeoutException("timeout")));
+        assertFalse(CustomHttpClient.shouldMarkNtkChallengeForTransportFailureForTest(
+                new Exception("ERR_CERT_COMMON_NAME_INVALID")));
+    }
+
+    @Test
+    public void routeRecoveryClearsOnlyChallengeFromFailedOrigin() {
+        assertTrue(CustomHttpClient.sameOriginForRouteRecoveryForTest(
+                "https://sbxh9.com", "https://sbxh9.com/manhwa"));
+        assertTrue(CustomHttpClient.sameOriginForRouteRecoveryForTest(
+                "https://www.sbxh9.com/", "https://sbxh9.com/api/manhwa-list"));
+        assertFalse(CustomHttpClient.sameOriginForRouteRecoveryForTest(
+                "https://sbxh9.com", "https://newtoki1.org/manhwa"));
+        assertFalse(CustomHttpClient.sameOriginForRouteRecoveryForTest(
+                "http://sbxh9.com", "https://sbxh9.com/manhwa"));
+    }
+
+    @Test
+    public void rscServerErrorsAreRouteFailuresNotCaptchaChallenges() {
+        assertTrue(CustomHttpClient.isNtkRscRouteFailureForTest(502, null));
+        assertTrue(CustomHttpClient.isNtkRscRouteFailureForTest(503, null));
+        assertFalse(CustomHttpClient.isNtkRscRouteFailureForTest(403, null));
+        assertFalse(CustomHttpClient.isNtkRscRouteFailureForTest(404, null));
+        assertFalse(CustomHttpClient.isNtkRscRouteFailureForTest(200, null));
+        assertFalse(CustomHttpClient.isCloudflareChallengeForTest(
+                502, "<title>502 Bad Gateway | cloudflare</title>"));
+    }
+
+    @Test
     public void interruptedRequestsAreExpectedCancellation() {
         assertTrue(CustomHttpClient.isInterruptedRequestForTest(new InterruptedException()));
         assertTrue(CustomHttpClient.isInterruptedRequestForTest(new InterruptedIOException()));

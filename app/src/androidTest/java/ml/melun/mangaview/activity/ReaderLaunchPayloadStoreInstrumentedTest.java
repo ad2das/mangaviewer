@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.util.Arrays;
 import java.util.Collections;
 
 import ml.melun.mangaview.mangaview.Manga;
@@ -78,6 +79,41 @@ public class ReaderLaunchPayloadStoreInstrumentedTest {
         assertEquals("", restored.getManga().getNtkViewerPayloadHint());
         assertEquals(0, restored.getManga().getNtkImageCount());
         assertNull(intent.getStringExtra(ReaderLaunchPayloadStore.EXTRA_READER_KEY));
+    }
+
+    @Test
+    public void coldExactRestoreCarriesOnlyAuthoritativeEpisodeAdjacencyMetadata() {
+        Title title = new Title(
+                "Atomic",
+                "",
+                "",
+                Collections.emptyList(),
+                "",
+                44,
+                base_webtoon);
+        title.setSourceSite("ntk");
+        Manga current = manga(title);
+        Manga latest = new Manga(702, "13화", "", base_webtoon);
+        latest.setTitle(title);
+        latest.setTitleId(title.getId());
+        latest.setNtkEpisodePath("/webtoon/44/702");
+        latest.setNtkViewerPayloadHint("{\"images\":[\"https://cdn.example/leak.jpg\"]}");
+        latest.setNtkImageCount(99);
+        title.setEps(Arrays.asList(latest, current));
+        current.setEps(title.getEps());
+        Intent intent = new Intent();
+
+        ReaderLaunchPayloadStore.attachColdExactReaderPayload(intent, current, title);
+        ReaderLaunchPayloadStore.Entry restored =
+                ReaderLaunchPayloadStore.restoreCompactReaderPayload(intent);
+
+        assertNotNull(restored);
+        Manga restoredNext = restored.getManga().nextEp();
+        assertNotNull(restoredNext);
+        assertEquals("/webtoon/44/702", restoredNext.getNtkEpisodePath());
+        assertEquals("", restoredNext.getNtkViewerPayloadHint());
+        assertEquals(0, restoredNext.getNtkImageCount());
+        assertNull(restoredNext.nextEp());
     }
 
     private static Title title() {

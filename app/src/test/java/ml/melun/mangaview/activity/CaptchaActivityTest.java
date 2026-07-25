@@ -14,6 +14,20 @@ import static org.junit.Assert.assertTrue;
 
 public class CaptchaActivityTest {
     @Test
+    public void verifiedRouteChangeClosesOnlyCaptchaBoundToOldNtkOrigin() {
+        assertTrue(CaptchaActivity.shouldFinishStaleNtkRouteForTest(
+                true, true, "https://sbxh9.com/manhwa", "https://newtoki1.org"));
+        assertFalse(CaptchaActivity.shouldFinishStaleNtkRouteForTest(
+                true, true, "https://newtoki1.org/manhwa", "https://newtoki1.org"));
+        assertFalse(CaptchaActivity.shouldFinishStaleNtkRouteForTest(
+                true, false, "https://image-cdn.example/p001.jpg", "https://newtoki1.org"));
+        assertFalse(CaptchaActivity.shouldFinishStaleNtkRouteForTest(
+                false, true, "https://sbxh9.com/manhwa", "https://newtoki1.org"));
+        assertFalse(CaptchaActivity.shouldFinishStaleNtkRouteForTest(
+                true, true, "not-a-url", "https://newtoki1.org"));
+    }
+
+    @Test
     public void ntkCaptchaLoadErrorsDoNotShowGenericConnectionPopup() {
         assertTrue(CaptchaActivity.shouldSuppressNtkLoadErrorPopupForTest(true, "https://example.com", "https://example.com"));
         assertTrue(CaptchaActivity.shouldSuppressNtkLoadErrorPopupForTest(false, "https://sbxh1.com", "https://example.com"));

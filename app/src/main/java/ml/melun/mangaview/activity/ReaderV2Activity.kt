@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -22,6 +23,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
 import android.webkit.WebView
 import android.widget.Button
 import android.widget.FrameLayout
@@ -55,6 +57,7 @@ import ml.melun.mangaview.reader.NtkAuthoritativeManifestListener
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry
 import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator
 import ml.melun.mangaview.reader.NtkStripDigests
+import ml.melun.mangaview.reader.NtkVisibleIdentityPolicy
 import ml.melun.mangaview.reader.ReaderPreparedStore
 import ml.melun.mangaview.reader.ReaderPipelinePolicy
 import ml.melun.mangaview.reader.ReaderSessionListenerGate
@@ -106,7 +109,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private lateinit var nextButton: Button
     private lateinit var autoCutButton: Button
     private var readerRoot: FrameLayout? = null
+    private var terminalImageFailureDescription: String? = null
     private var toolbarAttached = false
+    private var toolbarWindowManager: WindowManager? = null
     private var session: ReaderSession? = null
     private data class StrictEarlySession(
         val path: String,
@@ -148,6 +153,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val strictRenderReadyPages = LinkedHashSet<Int>()
     private var strictRenderReadyGeneration = -1
     @Volatile private var strictAllImagesReadyPublished = false
+    @Volatile private var strictRollingHistoricalScene = false
     private val strictAuthoritativeInstallLock = Any()
     private val pendingStrictAuthoritativeInstalls = LinkedHashMap<Int, PendingStrictTileInstall>()
     private var strictAuthoritativeInstallFlushScheduled = false
@@ -474,6 +480,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var ntkInitialProofRetryCount = 0
     @Volatile
     private var ntkImmediateNativeAckProofPath = ""
+    @Volatile
+    private var strictDirectManifestAckSkipPath = ""
     private var deferredNtkAckPreflightBlockProbeAttempts = 0
     private val ntkAckPreflightGeneration = AtomicInteger(0)
     private val deferredNtkAckPreflightTimeoutRunnable = Runnable {
@@ -1444,6 +1452,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = -1
             strictAllImagesReadyPublished = false
+            strictRollingHistoricalScene = false
         }
         preparedSessionBuildTask?.cancel()
         preparedSessionBuildTask = null
@@ -1470,6 +1479,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         hybridNtkEarlyUrlListenerDisposer?.invoke()
         hybridNtkEarlyUrlListenerDisposer = null
         missingEpisodePromptState.dismiss()
+        detachToolbarWindows()
         removeInitialDrawGateListener()
         saveCurrentReadingProgress()
         pendingProgressInfo = null
@@ -2230,8 +2240,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 return@trace
             }
             if (pagesReady && index < pageCount) {
-                renderView.setPageProofBitmap(index, bitmap)
-                logLaunchDrawableMetric(index, "proof-bitmap")
+                if (isStrictContinuousAppendedPage(index)) {
+                    // An appended episode has no launch-seal authoritative replacement. Keeping
+                    // the learned placeholder height here would stretch its real bitmap for the
+                    // entire active fling (most visibly for a short final separator image).
+                    renderView.setPageBitmap(index, bitmap, forceImmediateGeometry = true)
+                    logLaunchDrawableMetric(index, "continuous-append-bitmap")
+                } else {
+                    renderView.setPageProofBitmap(index, bitmap)
+                    logLaunchDrawableMetric(index, "proof-bitmap")
+                }
             } else {
                 rememberPendingPageBitmap(index, bitmap)
                 publishContiguousPendingCurrentEpisodePages("proof_bitmap")
@@ -2248,13 +2266,33 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 return@trace
             }
             if (pagesReady && index < pageCount) {
-                renderView.setPageProofTiles(index, pageWidth, pageHeight, tiles)
-                logLaunchDrawableMetric(index, "proof-tiles")
+                if (isStrictContinuousAppendedPage(index)) {
+                    // See the bitmap path above: no later launch-seal write will repair geometry
+                    // for a continuously appended episode, so install its encoded aspect now.
+                    renderView.setPageTiles(
+                        index,
+                        pageWidth,
+                        pageHeight,
+                        tiles,
+                        forceImmediateGeometry = true
+                    )
+                    logLaunchDrawableMetric(index, "continuous-append-tiles")
+                } else {
+                    renderView.setPageProofTiles(index, pageWidth, pageHeight, tiles)
+                    logLaunchDrawableMetric(index, "proof-tiles")
+                }
             } else {
                 rememberPendingPageTiles(index, pageWidth, pageHeight, tiles)
                 publishContiguousPendingCurrentEpisodePages("proof_tiles")
             }
         }
+    }
+
+    private fun isStrictContinuousAppendedPage(index: Int): Boolean {
+        val launchSeal = strictExactLaunchSeal ?: return false
+        val identity = session?.pageIdentity(index) ?: return false
+        return identity.normalizedEpisodePath.isNotBlank() &&
+            identity.normalizedEpisodePath != launchSeal.normalizedEpisodePath
     }
 
     override fun onPageTilesReady(index: Int, pageWidth: Int, pageHeight: Int, tiles: List<ReaderTile>) {
@@ -2596,11 +2634,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 "ViewerPerf",
                 "reader_all_images_render_ready_progress generation=$generation," +
                     "count=${seal.pageCount},pageCount=${seal.pageCount}," +
-                    "page=$lastInstalledPage,nativeSceneQueued=true"
+                    "page=$lastInstalledPage,nativeRunwayQueued=true"
             )
             ViewerTelemetry.allImagesRenderReady(readerRoot ?: renderView, seal.pageCount)
         }
-        if (!renderView.queueAllAuthoritativeOriginalTextures(publishReady)) {
+        val queued = if (strictRollingHistoricalScene) {
+            renderView.queueResidentAuthoritativeTextureRunway(publishReady)
+        } else {
+            renderView.queueAllAuthoritativeOriginalTextures(seal.pageCount, publishReady)
+        }
+        if (!queued) {
             statusHandler.postDelayed(
                 {
                     if (activeReaderSessionGeneration.get() == generation &&
@@ -2641,7 +2684,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 strictRenderReadyGeneration == activeReaderSessionGeneration.get()
         }
         return historicallyComplete &&
-            renderView.hasCompleteAuthoritativeOriginalScene(pageCount)
+            (strictRollingHistoricalScene ||
+                renderView.hasCompleteAuthoritativeOriginalScene(pageCount))
+    }
+
+    override fun onStrictRollingHistoricalSceneActivated() {
+        strictRollingHistoricalScene = true
     }
 
     override fun onPageLaunchRunwayTilesReady(
@@ -2793,6 +2841,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictAllImagesReadyPublished = false
         }
         if (pagesReady) renderView.clearPageBitmap(index)
+    }
+
+    override fun onPageRollingEvicted(index: Int) {
+        if (pagesReady) renderView.clearRollingAuthoritativePage(index)
     }
 
     override fun onInitialPageDecoded(index: Int, bitmap: Bitmap): ReaderSession.InitialPrerenderResult {
@@ -3320,11 +3372,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 }
                 pendingTiles != null -> {
                     tiles++
-                    applyPageTiles(index, pendingTiles.pageWidth, pendingTiles.pageHeight, pendingTiles.tiles)
+                    applyPageTiles(
+                        index,
+                        pendingTiles.pageWidth,
+                        pendingTiles.pageHeight,
+                        pendingTiles.tiles,
+                        forceImmediateGeometry = isStrictContinuousAppendedPage(index)
+                    )
                 }
                 bitmap != null -> {
                     bitmaps++
-                    applyPageBitmap(index, bitmap)
+                    applyPageBitmap(
+                        index,
+                        bitmap,
+                        forceImmediateGeometry = isStrictContinuousAppendedPage(index)
+                    )
                 }
             }
         }
@@ -3396,10 +3458,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(TAG, "reader_render_attached_for_drawable")
     }
 
-    private fun applyPageBitmap(index: Int, bitmap: Bitmap) {
+    private fun applyPageBitmap(
+        index: Int,
+        bitmap: Bitmap,
+        forceImmediateGeometry: Boolean = false
+    ) {
         hideBoundaryStatus()
         ensureRenderViewAttached()
-        renderView.setPageBitmap(index, bitmap)
+        renderView.setPageBitmap(index, bitmap, forceImmediateGeometry)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         val coversInitialViewport = visibleInitialDrawable &&
             drawableCoversInitialViewport(bitmap.width, bitmap.height)
@@ -3474,6 +3540,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         hideBoundaryStatus()
         Log.d(TAG, "page_error_visible index=$index currentPage=$currentPage message=$message")
         renderView.setPageError(index, message)
+        if (isCurrentNtkReader()) {
+            val terminalDescription = "viewer-terminal-image-failure:$index"
+            terminalImageFailureDescription = terminalDescription
+            renderView.contentDescription = terminalDescription
+            renderView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            readerRoot?.contentDescription = terminalDescription
+            readerRoot?.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            renderView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+            readerRoot?.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        }
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         logLaunchDrawableMetric(index, "error")
         if (visibleInitialDrawable && !isCurrentNtkReader()) releaseInitialDrawGate("error")
@@ -3512,7 +3588,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val manga = currentManga ?: return false
         val path = manga.ntkEpisodePath ?: return false
         if (!path.startsWith("/webtoon/") && !path.startsWith("/manhwa/")) return false
-        return hasCompleteNativeDirectManifest(manga) || hasForegroundDirectManifestOwnership(manga, path)
+        return hasStrictDirectManifestAckAuthority(path) ||
+            hasCompleteNativeDirectManifest(manga) ||
+            hasForegroundDirectManifestOwnership(manga, path)
     }
 
     private fun afterFirstDrawableFollowupQuietRemainingMs(): Long {
@@ -3707,7 +3785,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         scheduleDrawableReadyDescription(index)
         if (shouldSkipPostDrawableNtkAckForDirectManifest("first_drawable")) {
-            clearDeferredNtkAckPreflightForCurrentDirectManifest("first_drawable")
+            clearDeferredNtkAckPreflightAfterValidatedDirectManifest("first_drawable")
         } else {
             startImmediateNtkNativeAckAfterFirstDrawable("first_drawable")
             scheduleDeferredNtkAckAfterFirstDrawable("first_drawable")
@@ -4389,7 +4467,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             Log.d("ViewerPerf", "reader_open_to_first_drawable source=$viewerLaunchSourceSite kind=viewport page=$currentPage ms=$elapsed")
             if (shouldSkipPostDrawableNtkAckForDirectManifest("viewport_drawable")) {
-                clearDeferredNtkAckPreflightForCurrentDirectManifest("viewport_drawable")
+                clearDeferredNtkAckPreflightAfterValidatedDirectManifest("viewport_drawable")
             } else {
                 startImmediateNtkNativeAckAfterFirstDrawable("viewport_drawable")
                 scheduleDeferredNtkAckAfterFirstDrawable("viewport_drawable")
@@ -4466,7 +4544,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun scheduleDeferredNtkAckAfterFirstDrawable(reason: String) {
         if (deferredNtkAckPreflightManga == null) return
         if (shouldSkipPostDrawableNtkAckForDirectManifest(reason)) {
-            clearDeferredNtkAckPreflightForCurrentDirectManifest(reason)
+            clearDeferredNtkAckPreflightAfterValidatedDirectManifest(reason)
             return
         }
         val quietMs = ntkAckPreflightQuietRemainingMs()
@@ -4486,24 +4564,49 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             Log.d(TAG, "reader_ntk_ack_post_drawable_skip_kp_slug reason=$reason,path=$path")
             return true
         }
+        if (hasStrictDirectManifestAckAuthority(path)) {
+            Log.d(TAG, "reader_ntk_ack_post_drawable_skip_strict_direct reason=$reason,path=$path")
+            return true
+        }
         if (!hasCompleteNativeDirectManifest(manga) && !hasForegroundDirectManifestOwnership(manga, path)) return false
         Log.d(TAG, "reader_ntk_ack_post_drawable_skip_direct_manifest reason=$reason,path=$path")
         return true
     }
 
-    private fun clearDeferredNtkAckPreflightForCurrentDirectManifest(reason: String) {
+    private fun rememberStrictDirectManifestAckAuthority(seal: StrictExactLaunchSeal) {
+        // StrictExactLaunchSeal is already a production-claimable, ordered source proof. Compute
+        // the direct-CDN property once while discovery owns the seal and before the full Bitmap
+        // wave starts. Re-reading ReaderImageCache from the first physical gesture made a
+        // 200-asset proof overlap NativeAlloc GC and withheld Surface submissions for 149 ms.
+        strictDirectManifestAckSkipPath =
+            if (seal.canonicalAssets.none { it.contains("/api/m/i?", ignoreCase = true) }) {
+                seal.normalizedEpisodePath
+            } else {
+                ""
+            }
+    }
+
+    private fun hasStrictDirectManifestAckAuthority(path: String): Boolean {
+        val normalized = NtkStripDigests.normalizeEpisodePath(path)
+        return normalized.isNotEmpty() && strictDirectManifestAckSkipPath == normalized
+    }
+
+    private fun clearDeferredNtkAckPreflightAfterValidatedDirectManifest(reason: String) {
         val manga = currentManga ?: deferredNtkAckPreflightManga ?: return
         val path = manga.ntkEpisodePath ?: return
-        if (
-            !isNtkKpWebtoonSlugPath(path) &&
-            !hasCompleteNativeDirectManifest(manga) &&
-            !hasForegroundDirectManifestOwnership(manga, path)
-        ) return
+        // Every caller reaches this method only after
+        // shouldSkipPostDrawableNtkAckForDirectManifest() returned true in the same main-loop
+        // turn. Re-scanning a 100-300 item direct manifest here made the first forward gesture
+        // repeat the complete URL proof under peak Bitmap pressure. The second scan accounted for
+        // a measured 207 ms uninterrupted main-thread slice on a 200-page cold episode.
+        //
+        // Clearing the owner is also enough to invalidate the two delayed callbacks: both
+        // callbacks enter through methods whose first operation reads this nullable owner and
+        // returns when it is absent. Handler.removeCallbacks() linearly scans the main MessageQueue,
+        // so doing two scans in this hot turn only moves unrelated image-install messages around.
         if (deferredNtkAckPreflightManga?.ntkEpisodePath == path) {
             deferredNtkAckPreflightManga = null
         }
-        statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
-        statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
         Log.d(TAG, "reader_ntk_ack_deferred_clear_direct_manifest reason=$reason,path=$path")
     }
     private fun startImmediateNtkNativeAckAfterFirstDrawable(reason: String) {
@@ -4906,21 +5009,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onNearBoundary(direction: Int, anchorPage: Int) {
         if (destroyed || isFinishing) return
         if (!shouldPrepareNearBoundaryForTest(direction)) return
-        if (
-            isCurrentNtkReader() &&
-            direction == ReaderSurfaceView.DIRECTION_NEXT
-        ) {
-            val quietMs = boundaryAppendQuietRemainingMs()
-            if (progressMovedInGesture || readerWindowBusy || quietMs > 0L) {
-                Log.d(
-                    TAG,
-                    "near_boundary_prepare_defer_active_ntk_scroll direction=$direction " +
-                        "anchor=$anchorPage quietMs=$quietMs busy=$readerWindowBusy " +
-                        "moved=$progressMovedInGesture"
-                )
-                return
-            }
-        }
+        // ReaderSurfaceView emits the near-edge transition once. Dropping it while the gesture is
+        // busy means there is no second callback after the finger lifts, so the next episode can
+        // never be prepared. ReaderSession owns the bounded input-quiet deferral and revalidates
+        // that the reader is still near the same edge before it publishes anything.
         val prepareAnchor = nearBoundaryPrepareAnchor(direction, anchorPage) ?: return
         session?.prepareAdjacentEpisode(prepareAnchor, direction)
     }
@@ -5000,6 +5092,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun publishStrictViewerEdge(atTop: Boolean, atBottom: Boolean) {
+        terminalImageFailureDescription?.let { terminalDescription ->
+            val publishTerminal = { view: View ->
+                view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+                view.contentDescription = terminalDescription
+                view.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+            }
+            readerRoot?.let(publishTerminal)
+            publishTerminal(renderView)
+            return
+        }
         // Publish on both stable accessibility nodes. Some emulator accessibility bridges cache
         // a SurfaceView child mutation while others coalesce the parent mutation; both values are
         // derived from the same identity-valid physical commit and affect no rendering behavior.
@@ -5482,6 +5584,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         activeReaderSessionGeneration.incrementAndGet()
         strictReaderSessionGeneration = -1
         strictExactLaunchSeal = null
+        strictDirectManifestAckSkipPath = ""
         strictNtkPendingSessionPath = ""
         strictNtkManifestSubscription?.close()
         strictNtkManifestSubscription = null
@@ -5573,6 +5676,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val launchSeal = strictExactLaunchSeal
         val activeSession = session
         if (launchSeal == null || activeSession == null) {
+            if (strictTelemetryInvalidCommittedFrames < 3L) {
+                Log.w(
+                    "ViewerPerf",
+                    "reader_ntk_strict_owner_rejected " +
+                        "seal=${launchSeal != null},session=${activeSession != null}," +
+                        "visible=${visible.joinToString("|")}"
+                )
+            }
             if (ReaderPipelinePolicy.shouldCountStrictInitialBlankFrame(
                     strictTelemetryActualInLifecycle,
                     blankOrRootCommit
@@ -5580,6 +5691,47 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ) {
                 strictTelemetryInitialBlankFrames++
             }
+            strictTelemetryInvalidCommittedFrames++
+            return
+        }
+        val identities = visible.mapNotNull { index ->
+            activeSession.pageIdentity(index)?.let { index to it }
+        }
+        val physicalIdentity = identities.firstOrNull()?.second
+        val physicalEpisodePath = physicalIdentity?.normalizedEpisodePath.orEmpty()
+        val physicalManifestDigest = physicalIdentity?.manifestDigest.orEmpty()
+        val physicalManifestPageCount = physicalIdentity?.manifestPageCount ?: 0
+        val identityValid = identities.size == visible.size &&
+            NtkVisibleIdentityPolicy.isValid(
+                identities.map { (_, identity) ->
+                    NtkVisibleIdentityPolicy.Identity(
+                        episodePath = identity.normalizedEpisodePath,
+                        sourcePageIndex = identity.sourcePageIndex,
+                        canonicalAsset = identity.canonicalAsset,
+                        manifestDigest = identity.manifestDigest,
+                        manifestPageCount = identity.manifestPageCount
+                    )
+                },
+                NtkVisibleIdentityPolicy.LaunchManifest(
+                    episodePath = launchSeal.normalizedEpisodePath,
+                    manifestDigest = launchSeal.manifestDigest,
+                    canonicalAssets = launchSeal.canonicalAssets
+                )
+            )
+        if (!identityValid) {
+            if (strictTelemetryIdentityInvalidFrames < 3L) {
+                Log.w(
+                    "ViewerPerf",
+                    "reader_ntk_strict_identity_rejected visible=${visible.joinToString("|")}," +
+                        "resolved=${identities.size},path=$physicalEpisodePath," +
+                        "manifest=$physicalManifestDigest,pages=$physicalManifestPageCount," +
+                        "identities=${identities.joinToString("|") { (_, identity) ->
+                            "${identity.normalizedEpisodePath}#${identity.sourcePageIndex}/" +
+                                "${identity.manifestPageCount}:${identity.manifestDigest.take(8)}"
+                        }}"
+                )
+            }
+            strictTelemetryIdentityInvalidFrames++
             strictTelemetryInvalidCommittedFrames++
             return
         }
@@ -5591,16 +5743,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictTelemetryRunwayDefectFrames++
         }
         val traversalEpoch = renderView.traversalSnapshot().structureEpoch
+        // `currentManga` is a toolbar/progress label updated from the main-thread page callback.
+        // The dedicated Surface producer can physically present an already identity-qualified
+        // forward-adjacent page one frame before that callback. Requiring the UI label to equal
+        // the submitted page therefore rejects correct seamless-next pixels. The immutable
+        // identities above already prove the episode path, manifest, asset and source order; keep
+        // telemetry ownership bound to the launch seal without racing the delayed UI label.
+        val telemetryEpisodeOwned =
+            ViewerTelemetry.isActiveEpisode(strictTelemetryEpisodePath) &&
+                launchSeal.matchesEpisodePath(strictTelemetryEpisodePath)
         val commitValid = ReaderPipelinePolicy.isStrictCommittedFrameValid(
             sessionGenerationMatches =
                 activeReaderSessionGeneration.get() == strictReaderSessionGeneration,
             telemetryGenerationMatches =
                 ViewerTelemetry.activeGeneration() == strictTelemetryGeneration,
-            episodeMatches = ViewerTelemetry.isActiveEpisode(strictTelemetryEpisodePath) &&
-                launchSeal.matchesEpisodePath(strictTelemetryEpisodePath) &&
-                NtkStripDigests.normalizeEpisodePath(
-                    currentManga?.ntkEpisodePath.orEmpty()
-                ).equals(strictTelemetryEpisodePath, ignoreCase = true),
+            episodeMatches = telemetryEpisodeOwned,
             hardwareAccelerated = proof.hardwareAccelerated,
             registeredHwuiFrameCommitCallbackObserved =
                 proof.registeredHwuiFrameCommitCallbackObserved,
@@ -5615,7 +5772,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             surfaceControlLatchObserved = proof.surfaceControlLatchObserved
         )
         if (!commitValid) {
-            if ((!strictTelemetryActualInLifecycle && strictTelemetryInvalidCommittedFrames < 3L) ||
+            if (strictTelemetryInvalidCommittedFrames < 3L ||
                 (viewportDefect && strictTelemetryViewportDefectFrames <= 3L)
             ) {
                 Log.w(
@@ -5650,30 +5807,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictTelemetryInvalidCommittedFrames++
             return
         }
-        val identities = visible.mapNotNull { index ->
-            activeSession.pageIdentity(index)?.let { index to it }
-        }
-        val identityValid = identities.size == visible.size && identities.all { (_, identity) ->
-            identity.normalizedEpisodePath == launchSeal.normalizedEpisodePath &&
-                identity.manifestDigest == launchSeal.manifestDigest &&
-                identity.sourcePageIndex in launchSeal.canonicalAssets.indices &&
-                identity.canonicalAsset == launchSeal.canonicalAssets[identity.sourcePageIndex]
-        }
-        if (!identityValid) {
-            if (!strictTelemetryActualInLifecycle && strictTelemetryIdentityInvalidFrames < 3L) {
-                Log.w(
-                    "ViewerPerf",
-                    "reader_ntk_strict_identity_rejected visible=${visible.joinToString("|")}," +
-                        "resolved=${identities.size},path=${launchSeal.normalizedEpisodePath}," +
-                        "manifest=${launchSeal.manifestDigest}"
-                )
+        if (physicalEpisodePath == launchSeal.normalizedEpisodePath) {
+            identities.forEach { (_, identity) ->
+                strictTelemetryObservedSources[identity.sourcePageIndex] = true
             }
-            strictTelemetryIdentityInvalidFrames++
-            strictTelemetryInvalidCommittedFrames++
-            return
-        }
-        identities.forEach { (_, identity) ->
-            strictTelemetryObservedSources[identity.sourcePageIndex] = true
         }
         strictTelemetryLastCleanSourcePage = identities.maxOf { (_, identity) ->
             identity.sourcePageIndex
@@ -5720,11 +5857,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
         // Emit the actual committed-frame marker before opening page > 1 source admission. This
         // preserves the cold proof ordering in log/Perfetto evidence.
-        ViewerTelemetry.actualImageDrawCommitted(
+        val firstVisibleSource = identities.minOf { (_, identity) -> identity.sourcePageIndex }
+        val lastVisibleSource = identities.maxOf { (_, identity) -> identity.sourcePageIndex }
+        ViewerTelemetry.actualImageDrawCommittedForEpisode(
             renderView,
             strictTelemetryGeneration,
-            first,
-            last,
+            physicalEpisodePath,
+            firstVisibleSource,
+            lastVisibleSource,
             presentedUptimeNanos,
             true,
             -1L,
@@ -6128,12 +6268,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     manga.setImgs(exactImages)
                     manga.ntkImageCount = exactImages.size
                     strictExactLaunchSeal = seal
+                    rememberStrictDirectManifestAckAuthority(seal)
                     val generation = activeReaderSessionGeneration.incrementAndGet()
                     strictReaderSessionGeneration = generation
                     synchronized(strictRenderReadyLock) {
                         strictRenderReadyPages.clear()
                         strictRenderReadyGeneration = generation
                         strictAllImagesReadyPublished = false
+                        strictRollingHistoricalScene = false
                     }
                     ReaderSession(
                         context = applicationContext,
@@ -6248,6 +6390,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             manga.setImgs(exactImages)
             manga.ntkImageCount = exactImages.size
             strictExactLaunchSeal = exactLaunchSeal
+            rememberStrictDirectManifestAckAuthority(exactLaunchSeal)
             strictTelemetryObservedSources = BooleanArray(exactLaunchSeal.pageCount)
             if (strictTelemetryManifestDigest != exactLaunchSeal.manifestDigest) {
                 ViewerTelemetry.manifestSummary(
@@ -6280,6 +6423,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = strictReaderSessionGeneration
             strictAllImagesReadyPublished = false
+            strictRollingHistoricalScene = false
         }
         // The early ReaderSession can decode before this main-thread adoption point. Enable the
         // worker-to-install-queue fast path only after the old queue/readiness ledger above has
@@ -6311,8 +6455,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             // first buffer, and it also exposes a white surface before any page can be drawn.
             if (exactLaunchSeal == null) {
                 renderView.visibility = View.VISIBLE
-            } else {
-                renderView.activateDeferredSurfaceProducer()
             }
         }
         val ntkPath = manga.ntkEpisodePath
@@ -6497,6 +6639,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     "reader_activity_session_start_returned path=$ntkPath,ms=${SystemClock.elapsedRealtime() - startStartedAt}"
                 )
             }
+        }
+        if (exactLaunchSeal != null && ::renderView.isInitialized) {
+            // The prestarted strict session can already have decoded pages queued. Do not let
+            // those pixels reach SurfaceFlinger until `session` points at the immutable identity
+            // provider that proves their episode, manifest and source index. Activating a few
+            // statements earlier creates a narrow race where correct pixels are visible but
+            // cannot be identity-qualified, especially for very small/fast manga.
+            renderView.activateDeferredSurfaceProducer()
         }
     }
 
@@ -9464,24 +9614,48 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun attachToolbarIfNeeded() {
         if (toolbarAttached) return
-        val root = readerRoot ?: return
         if (!ensureToolbarCreated()) return
-        if (topBar.parent == null) {
-            root.addView(topBar, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
+        val token = window.decorView.windowToken ?: return
+        val manager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        fun params(gravity: Int): WindowManager.LayoutParams {
+            return WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
                 60.dp(),
-                Gravity.TOP
-            ))
+                WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+                flags,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                this.gravity = gravity
+                this.token = token
+            }
         }
-        if (bottomBar.parent == null) {
-            root.addView(bottomBar, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                60.dp(),
-                Gravity.BOTTOM
-            ))
+        try {
+            manager.addView(topBar, params(Gravity.TOP))
+            manager.addView(bottomBar, params(Gravity.BOTTOM))
+        } catch (failure: RuntimeException) {
+            if (topBar.parent != null) runCatching { manager.removeViewImmediate(topBar) }
+            if (bottomBar.parent != null) runCatching { manager.removeViewImmediate(bottomBar) }
+            Log.e(TAG, "toolbar_window_attach_failed", failure)
+            return
         }
+        toolbarWindowManager = manager
         toolbarAttached = true
         updateAdjacentButtons()
+    }
+
+    private fun detachToolbarWindows() {
+        val manager = toolbarWindowManager ?: return
+        if (::topBar.isInitialized && topBar.parent != null) {
+            runCatching { manager.removeViewImmediate(topBar) }
+        }
+        if (::bottomBar.isInitialized && bottomBar.parent != null) {
+            runCatching { manager.removeViewImmediate(bottomBar) }
+        }
+        toolbarWindowManager = null
+        toolbarAttached = false
     }
 
     private fun hideBoundaryStatus() {
@@ -9640,6 +9814,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = -1
             strictAllImagesReadyPublished = false
+            strictRollingHistoricalScene = false
         }
         preparedSessionBuildTask?.cancel()
         preparedSessionBuildTask = null

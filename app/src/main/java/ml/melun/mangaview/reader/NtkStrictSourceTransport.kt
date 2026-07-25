@@ -138,6 +138,9 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
         exactStagePageIndexes: Set<Int>
     )
 
+    /** Opens post-anchor bulk transfer only after an identity-valid real-pixel frame committed. */
+    fun onFirstActualFramePresented(episode: NtkEpisodeToken)
+
     /** Completes only at the exact no-call/no-lease source drain boundary. */
     fun requestPreparationDrain(
         episode: NtkEpisodeToken,

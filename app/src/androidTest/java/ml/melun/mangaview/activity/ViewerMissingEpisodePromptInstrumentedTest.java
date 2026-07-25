@@ -27,6 +27,12 @@ import org.junit.runner.RunWith;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.nio.file.Files;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.SocketAddress;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -42,6 +48,11 @@ import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.repository.MangaRepository;
+import okhttp3.mockwebserver.Dispatcher;
+import okhttp3.mockwebserver.MockResponse;
+import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.RecordedRequest;
+import okio.Buffer;
 
 import static ml.melun.mangaview.mangaview.Title.LOAD_OK;
 import static org.junit.Assert.assertEquals;
@@ -171,6 +182,8 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     @Test
     public void wfwfScrollDownFromEpisode1AppendsEpisode2() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
+        ImageTestServer imageServer = startImageServer(new File(testImagePath(
+                context, "reader-toolbar-server-tall.png", Color.rgb(45, 105, 165))));
         Title title = new Title(
                 "WFWF Scroll Boundary",
                 "",
@@ -184,11 +197,14 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         Manga episodeTwo = new Manga(2, "WFWF Scroll Boundary 2화", "", MTitle.base_comic);
         episodeTwo.setTitle(title);
         episodeTwo.setTitleId(title.getId());
-        episodeTwo.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-tall-2.png", Color.rgb(30, 90, 170))));
+        episodeTwo.setImgs(Collections.singletonList(imageServer.url("/episode-2.png").toString()));
         Manga episodeOne = new Manga(1, "WFWF Scroll Boundary 1화", "", MTitle.base_comic);
         episodeOne.setTitle(title);
         episodeOne.setTitleId(title.getId());
-        episodeOne.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-tall-1.png", Color.rgb(170, 70, 30))));
+        ArrayList<String> firstEpisodeImages = new ArrayList<>();
+        for(int page = 1; page <= 6; page++)
+            firstEpisodeImages.add(imageServer.url("/episode-1-page-" + page + ".png"));
+        episodeOne.setImgs(firstEpisodeImages);
 
         ArrayList<Manga> episodes = new ArrayList<>();
         episodes.add(episodeTwo);
@@ -200,27 +216,79 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episodeOne, title));
         try {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-            assertTrue("Expected viewer to start on WFWF 1화",
-                    waitForToolbarTitle(activity, "1화", 10000));
             assertTrue("Expected viewer backing list to include WFWF 2화",
                     setViewerEpisodeImages(activity, 2, Collections.singletonList(
-                            testImagePath(context, "wfwf-boundary-tall-2.png", Color.rgb(30, 90, 170)))));
-
+                            imageServer.url("/episode-2.png"))));
             UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 10000);
+            assertNotNull("Expected reader surface", strip);
+            android.graphics.Rect stripBounds = strip.getVisibleBounds();
+            device.click(stripBounds.centerX(), stripBounds.centerY());
+            assertTrue("Expected viewer to start on WFWF 1화",
+                    waitForToolbarObjectText(device, "1화", 10000));
+
             int width = device.getDisplayWidth();
             int height = device.getDisplayHeight();
             int x = width / 2;
             int fromY = Math.min(height - 160, height * 3 / 4);
             int toY = Math.max(120, height / 4);
-            for(int swipe = 0; swipe < 8 && !toolbarTitle(activity).contains("2화"); swipe++) {
+            for(int swipe = 0; swipe < 24 && !toolbarObjectText(device).contains("2화"); swipe++) {
                 device.swipe(x, fromY, x, toY, 36);
                 SystemClock.sleep(450);
             }
 
             assertTrue("Expected downward scroll at bottom to move into next WFWF episode 2화",
-                    waitForToolbarTitle(activity, "2화", 10000));
+                    waitForToolbarObjectText(device, "2화", 10000));
         } finally {
             activity.finish();
+            imageServer.close();
+        }
+    }
+
+    @Test
+    public void readerSurfaceTapRevealsToolbar() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        ImageTestServer imageServer = startImageServer(new File(testImagePath(
+                context, "wfwf-boundary-server-tall.png", Color.rgb(30, 90, 170))));
+        Title title = new Title(
+                "Reader Toolbar Tap",
+                "",
+                "",
+                Collections.singletonList("test"),
+                "",
+                100003,
+                MTitle.base_webtoon);
+        title.setSourceSite("wfwf");
+
+        Manga episode = new Manga(1, "Reader Toolbar Tap 1화", "", MTitle.base_webtoon);
+        episode.setTitle(title);
+        episode.setTitleId(title.getId());
+        episode.setImgs(Collections.singletonList(imageServer.url("/toolbar.png").toString()));
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(episode);
+        title.setEps(episodes);
+        episode.setEps(episodes);
+
+        Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episode, title));
+        try {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 10000);
+            assertNotNull("Expected reader surface", strip);
+            android.graphics.Rect bounds = strip.getVisibleBounds();
+            device.click(bounds.centerX(), bounds.centerY());
+
+            UiObject2 visibleTitle = device.wait(
+                    Until.findObject(By.res(PACKAGE_NAME, "toolbar_title")),
+                    5000);
+            assertNotNull("Expected visible toolbar accessibility node after tapping reader", visibleTitle);
+            assertTrue("Expected tapped toolbar to show the current episode",
+                    visibleTitle.getText() != null && visibleTitle.getText().contains("1화"));
+            assertTrue("Expected toolbar title to remain inside the visible display",
+                    !visibleTitle.getVisibleBounds().isEmpty());
+        } finally {
+            activity.finish();
+            imageServer.close();
         }
     }
 
@@ -490,6 +558,64 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         return file.getAbsolutePath();
     }
 
+    private static ImageTestServer startImageServer(File image) throws Exception {
+        byte[] png = Files.readAllBytes(image.toPath());
+        MockWebServer server = new MockWebServer();
+        server.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                return new MockResponse()
+                        .setResponseCode(200)
+                        .setHeader("Content-Type", "image/png")
+                        .setHeader("Content-Length", png.length)
+                        .setBody(new Buffer().write(png));
+            }
+        });
+        server.start();
+        return new ImageTestServer(server);
+    }
+
+    private static final class ImageTestServer implements AutoCloseable {
+        private static final String IMAGE_HOST = "image-comic.pstatic.net";
+        private final MockWebServer server;
+        private final ProxySelector previousProxySelector;
+
+        private ImageTestServer(MockWebServer server) {
+            this.server = server;
+            this.previousProxySelector = ProxySelector.getDefault();
+            InetSocketAddress proxyAddress = new InetSocketAddress("127.0.0.1", server.getPort());
+            ProxySelector.setDefault(new ProxySelector() {
+                @Override
+                public List<Proxy> select(URI uri) {
+                    if(uri != null && "http".equalsIgnoreCase(uri.getScheme()) &&
+                            IMAGE_HOST.equalsIgnoreCase(uri.getHost())) {
+                        return Collections.singletonList(new Proxy(Proxy.Type.HTTP, proxyAddress));
+                    }
+                    return Collections.singletonList(Proxy.NO_PROXY);
+                }
+
+                @Override
+                public void connectFailed(URI uri, SocketAddress address, java.io.IOException failure) {
+                    // The assertion observes the image failure through the viewer itself.
+                }
+            });
+            MainApplication.httpClient = null;
+        }
+
+        private String url(String filename) {
+            String clean = filename == null ? "page.png" : filename.replaceAll("^/+", "");
+            return "http://" + IMAGE_HOST + ":" + server.getPort() +
+                    "/webtoon/12345/1/" + clean;
+        }
+
+        @Override
+        public void close() throws Exception {
+            MainApplication.httpClient = null;
+            ProxySelector.setDefault(previousProxySelector);
+            server.shutdown();
+        }
+    }
+
     private Intent viewerIntent(Context context, Manga episode, Title title, boolean newTask) {
         Intent intent = new Intent(context, ReaderV2Activity.class);
         intent.putExtra("online", true);
@@ -612,6 +738,21 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
             SystemClock.sleep(500);
         }
         return false;
+    }
+
+    private static boolean waitForToolbarObjectText(UiDevice device, String expectedText, long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            if(toolbarObjectText(device).contains(expectedText))
+                return true;
+            SystemClock.sleep(100);
+        }
+        return false;
+    }
+
+    private static String toolbarObjectText(UiDevice device) {
+        UiObject2 title = device.findObject(By.res(PACKAGE_NAME, "toolbar_title"));
+        return title == null || title.getText() == null ? "" : title.getText();
     }
 
     private static String toolbarTitle(Activity activity) {

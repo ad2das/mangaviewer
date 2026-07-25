@@ -246,7 +246,11 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     $startInfo.UseShellExecute = $true
     $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     foreach($argument in @(
-        "-avd", $avdName, "-port", [string]$port, "-gpu", "host",
+        "-avd", $avdName, "-port", [string]$port,
+        # Keep the explicitly provisioned qualification resources across every hard process
+        # restart. Falling back to the AVD defaults after case one made SurfaceFlinger present
+        # waits grow from one refresh period to 80-190ms even though app CPU/GPU work stayed flat.
+        "-cores", "8", "-memory", "8192", "-gpu", "host",
         # The windowed QEMU backend can remain alive before opening its adb port after a prior
         # host-GPU process is retired. The headless backend retains the same host GLES translator
         # and booted this AVD immediately in the reproduced failure.
@@ -305,6 +309,37 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     # Flush package metadata before a later hard QEMU retirement. The following
     # pm-clear remains the authoritative proof that no app or benchmark data survives.
     [void](Invoke-Adb @("shell", "sync") -TimeoutSeconds 30 -AllowFailure)
+    # boot_completed is published before PackageManager, broadcasts, the launcher window and
+    # UiAutomation are necessarily ready. Starting instrumentation in that gap can successfully
+    # launch MainActivity while UiDevice keeps returning the boot launcher's stale accessibility
+    # root for the entire navigation timeout. Prove system idleness and a real focused launcher
+    # before the cold case starts. This does not launch the app or touch content/network state.
+    $broadcastIdle = Invoke-Adb @(
+        "shell", "cmd", "activity", "wait-for-broadcast-idle"
+    ) -TimeoutSeconds 120
+    $packageHandlerIdle = Invoke-Adb @(
+        "shell", "cmd", "package", "wait-for-handler"
+    ) -TimeoutSeconds 120
+    [void](Invoke-Adb @("shell", "wm", "dismiss-keyguard") -TimeoutSeconds 30)
+    [void](Invoke-Adb @(
+        "shell", "input", "keyevent", "KEYCODE_HOME"
+    ) -TimeoutSeconds 30)
+    $launcherFocusDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    $launcherFocus = $null
+    do {
+        $launcherFocus = Invoke-Adb @(
+            "shell", "dumpsys", "window"
+        ) -TimeoutSeconds 30
+        if($launcherFocus.Stdout -match
+                'mCurrentFocus=.*com\.google\.android\.apps\.nexuslauncher') {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    } while([DateTime]::UtcNow -lt $launcherFocusDeadline)
+    if($launcherFocus.Stdout -notmatch
+            'mCurrentFocus=.*com\.google\.android\.apps\.nexuslauncher') {
+        throw "Restarted emulator did not publish a focused launcher within 30 seconds"
+    }
     $newProcesses = @(Get-CimInstance Win32_Process | Where-Object {
         $_.Name -in (@("emulator.exe") + $qemuProcessNames) -and
         $_.CommandLine -match "(?:^|\s)-port\s+$port(?:\s|$)"
@@ -323,6 +358,9 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         oldQemuWorkingSetBytes = $oldQemuWorkingSetBytes
         newProcessIds = @($newProcesses | ForEach-Object { [int]$_.ProcessId })
         reinstalledPackages = @($reinstalledPackages)
+        broadcastIdleExitCode = $broadcastIdle.ExitCode
+        packageHandlerIdleExitCode = $packageHandlerIdle.ExitCode
+        launcherFocusProven = $true
         gpu = $freshDevice.surfaceFlingerGles
         hostGpuSatisfied = [bool]$freshDevice.hostGpuEmulatorSatisfied
         performancePolicy = $freshProcessPolicy
@@ -551,12 +589,17 @@ function Get-CompleteCatalog([string]$WorkType) {
 }
 
 function Select-StableRandomWorks([object[]]$Works, [string]$WorkType) {
+    return @(Get-StableRandomWorkRanking $Works $WorkType |
+        Select-Object -First $script:CountPerType)
+}
+
+function Get-StableRandomWorkRanking([object[]]$Works, [string]$WorkType) {
     return @($Works | ForEach-Object {
         [pscustomobject][ordered]@{
             rank = Get-Sha256 "$script:Seed|$WorkType|$($_.workId)"
             value = $_
         }
-    } | Sort-Object rank | Select-Object -First $script:CountPerType |
+    } | Sort-Object rank |
         ForEach-Object { $_.value })
 }
 
@@ -634,6 +677,7 @@ function Get-EpisodeMetadata($Work) {
                 originallySelectedEpisodeId = ""
                 originallySelectedEpisodeTitle = ""
                 accessReplacementReason = $null
+                workAccessStatus = "UNKNOWN"
             }
         }
     }
@@ -649,6 +693,7 @@ function Get-EpisodeMetadata($Work) {
             originallySelectedEpisodeId = ""
             originallySelectedEpisodeTitle = ""
             accessReplacementReason = $null
+            workAccessStatus = "UNKNOWN"
         }
     }
     # Keep the randomly selected work. Some upstream catalogs prepend provider/imported rows whose
@@ -660,8 +705,10 @@ function Get-EpisodeMetadata($Work) {
     $original = $episodes[0]
     $value = $original
     $accessReplacementReason = $null
+    $nativeAccessible = @()
     $escapedNativeWorkId = [regex]::Escape([string]$Work.workId)
     $nativeEpisodePattern = "^(?:\d+|nv-$escapedNativeWorkId-\d+)$"
+    $providerImportedPattern = "^(?:kp-|tkor)"
     if(([string]$original.episodeId) -notmatch $nativeEpisodePattern) {
         $nativeAccessible = @($episodes | Where-Object {
             ([string]$_.episodeId) -match $nativeEpisodePattern
@@ -671,6 +718,18 @@ function Get-EpisodeMetadata($Work) {
             $accessReplacementReason =
                 "first episode uses a provider/imported metadata-only id; selected first native canonical episode"
         }
+    }
+    $workAccessStatus = if(
+        ([string]$original.metadataSource) -ceq "episode-api" -and
+        ([string]$original.episodeId) -match $providerImportedPattern -and
+        $nativeAccessible.Count -eq 0 -and
+        @($episodes | Where-Object {
+            ([string]$_.episodeId) -notmatch $providerImportedPattern
+        }).Count -eq 0
+    ) {
+        "NO_NATIVE_CANONICAL_EPISODE"
+    } else {
+        "ACCESSIBLE_OR_UNPROVEN"
     }
     return [pscustomobject][ordered]@{
         episodePath = [string]$value.episodePath
@@ -683,6 +742,81 @@ function Get-EpisodeMetadata($Work) {
         originallySelectedEpisodeId = [string]$original.episodeId
         originallySelectedEpisodeTitle = [string]$original.episodeTitle
         accessReplacementReason = $accessReplacementReason
+        workAccessStatus = $workAccessStatus
+    }
+}
+
+function Get-EpisodeAccessStatus($Work, $Episode) {
+    $episodePath = [string]$Episode.episodePath
+    if([string]::IsNullOrWhiteSpace($episodePath)) {
+        return [pscustomobject][ordered]@{
+            status = "ACCESSIBLE_OR_UNPROVEN"
+            httpStatus = $null
+            location = ""
+            error = "episode path is empty"
+        }
+    }
+
+    # This is metadata-only accessibility validation. HEAD neither requests an image URL nor
+    # consumes the viewer document body, and the app still starts from pm-clear with a newly
+    # created HTTP client. Only explicit deletion/unavailability evidence is replaceable.
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds(20)
+    $request = [Net.Http.HttpRequestMessage]::new(
+        [Net.Http.HttpMethod]::Head,
+        "$script:siteRoot$episodePath"
+    )
+    [void]$request.Headers.TryAddWithoutValidation(
+        "User-Agent",
+        "mangaviewer-ntk-cold-selector/1"
+    )
+    [void]$request.Headers.TryAddWithoutValidation("Cache-Control", "no-cache")
+    try {
+        $response = $client.Send(
+            $request,
+            [Net.Http.HttpCompletionOption]::ResponseHeadersRead
+        )
+        try {
+            $statusCode = [int]$response.StatusCode
+            $location = if($null -ne $response.Headers.Location) {
+                [string]$response.Headers.Location.OriginalString
+            } else {
+                ""
+            }
+            $explicitUnavailableRedirect =
+                $statusCode -ge 300 -and $statusCode -lt 400 -and
+                $location -match '(?:[?&])ep_unavailable=1(?:&|$)'
+            $clearlyUnavailable =
+                $statusCode -eq 404 -or $statusCode -eq 410 -or
+                $explicitUnavailableRedirect
+            return [pscustomobject][ordered]@{
+                status = if($clearlyUnavailable) {
+                    "CLEARLY_UNAVAILABLE"
+                } else {
+                    "ACCESSIBLE_OR_UNPROVEN"
+                }
+                httpStatus = $statusCode
+                location = $location
+                error = $null
+            }
+        } finally {
+            $response.Dispose()
+        }
+    } catch {
+        # DNS, TLS, timeout, 5xx and other transport outcomes do not prove deletion. Keep the
+        # randomly selected work so transient network quality cannot bias the selection.
+        return [pscustomobject][ordered]@{
+            status = "ACCESSIBLE_OR_UNPROVEN"
+            httpStatus = $null
+            location = ""
+            error = $_.Exception.Message
+        }
+    } finally {
+        $request.Dispose()
+        $client.Dispose()
+        $handler.Dispose()
     }
 }
 
@@ -1087,7 +1221,6 @@ function Get-AndroidxBenchmarkSummary([IO.FileInfo[]]$ArtifactFiles) {
     $singleValues = [ordered]@{}
     $sampleValues = [ordered]@{}
     $requiredSingle = @(
-        'frameCount',
         'timeToInitialDisplayMs',
         'memoryHeapSizeMaxKb', 'memoryRssAnonMaxKb',
         'memoryHeapSizeLastKb', 'memoryRssAnonLastKb',
@@ -1100,7 +1233,13 @@ function Get-AndroidxBenchmarkSummary([IO.FileInfo[]]$ArtifactFiles) {
         'viewerActivePresentationGapMaxMs', 'viewerActiveRefreshPeriodMs',
         'viewerActiveCpuPercent', 'viewerActiveMainThreadRunningMaxMs'
     )
-    $requiredSampled = @('frameDurationCpuMs', 'frameOverrunMs')
+    # The reader pixels are produced by their own Surface/BufferQueue. AndroidX
+    # FrameTimingMetric observes only the parent Activity's HWUI timeline and aborts when that
+    # timeline has no expect/actual rows, so it is intentionally not registered by the benchmark.
+    # Keep accepting those metrics when a platform happens to expose them, but qualify this reader
+    # with the required system-side ViewerActiveScroll SurfaceFlinger metrics above.
+    $optionalSingle = @('frameCount')
+    $optionalSampled = @('frameDurationCpuMs', 'frameOverrunMs')
     if($null -ne $testResult) {
         if((ConvertTo-FiniteDouble $testResult.warmupIterations) -ne 0.0) {
             $problems.Add('AndroidX warmupIterations was not exactly zero')
@@ -1137,12 +1276,24 @@ function Get-AndroidxBenchmarkSummary([IO.FileInfo[]]$ArtifactFiles) {
         if($commitMetricCount -eq 0) {
             $problems.Add('no renderer-specific AndroidX frame-commit metric was observed')
         }
-        foreach($name in $requiredSampled) {
+        foreach($name in $optionalSingle) {
+            $metric = Get-OptionalProperty $testResult.metrics $name
+            if($null -eq $metric) { continue }
+            $maximum = ConvertTo-FiniteDouble (Get-OptionalProperty $metric 'maximum')
+            $runs = @(ConvertTo-FiniteDoubleArray (Get-OptionalProperty $metric 'runs'))
+            if($null -eq $maximum -or $runs.Count -ne 1) {
+                $problems.Add("optional AndroidX metric was present but invalid: $name")
+            } else {
+                $singleValues[$name] = [double]$maximum
+            }
+        }
+        foreach($name in $optionalSampled) {
             $metric = Get-OptionalProperty $testResult.sampledMetrics $name
+            if($null -eq $metric) { continue }
             $p99 = ConvertTo-FiniteDouble (Get-OptionalProperty $metric 'P99')
             $runs = @(ConvertTo-FiniteDoubleArray (Get-OptionalProperty $metric 'runs'))
             if($null -eq $p99 -or $runs.Count -le 0) {
-                $problems.Add("required AndroidX sampled metric invalid or missing: $name")
+                $problems.Add("optional AndroidX sampled metric was present but invalid: $name")
             } else {
                 $sampleValues[$name] = [pscustomobject][ordered]@{
                     p50 = ConvertTo-FiniteDouble (Get-OptionalProperty $metric 'P50')
@@ -2741,29 +2892,107 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
     Write-Host "Fetching complete metadata catalogs on the host; no image URL is requested."
     $webtoonCatalog = @(Get-CompleteCatalog "webtoon")
     $manhwaCatalog = @(Get-CompleteCatalog "manhwa")
-    $selected = @(
-        @(Select-StableRandomWorks $webtoonCatalog "webtoon")
-        @(Select-StableRandomWorks $manhwaCatalog "manhwa")
-    )
     $targets = [Collections.Generic.List[object]]::new()
-    foreach($work in $selected) {
-        $episode = Get-EpisodeMetadata $work
-        $targets.Add([pscustomobject][ordered]@{
-            workType = $work.workType
-            workId = $work.workId
-            title = $work.title
-            latestEpisodeNumber = $work.latestEpisodeNumber
-            catalogPage = $work.catalogPage
-            episodeId = $episode.episodeId
-            episodeTitle = $episode.episodeTitle
-            episodePath = $episode.episodePath
-            metadataSource = $episode.metadataSource
-            metadataError = $episode.metadataError
-            originallySelectedEpisodePath = $episode.originallySelectedEpisodePath
-            originallySelectedEpisodeId = $episode.originallySelectedEpisodeId
-            originallySelectedEpisodeTitle = $episode.originallySelectedEpisodeTitle
-            accessReplacementReason = $episode.accessReplacementReason
-        })
+    $accessExcludedWorks = [Collections.Generic.List[object]]::new()
+    foreach($workType in @("webtoon", "manhwa")) {
+        $catalog = if($workType -ceq "webtoon") { $webtoonCatalog } else { $manhwaCatalog }
+        $ranked = @(Get-StableRandomWorkRanking $catalog $workType)
+        $initiallyRejected = [Collections.Generic.Queue[object]]::new()
+        $acceptedForType = 0
+        for($rankIndex = 0;
+                $rankIndex -lt $ranked.Count -and $acceptedForType -lt $script:CountPerType;
+                $rankIndex++) {
+            $work = $ranked[$rankIndex]
+            $episode = Get-EpisodeMetadata $work
+            if(([string]$episode.workAccessStatus) -ceq "NO_NATIVE_CANONICAL_EPISODE") {
+                $exclusion = [pscustomobject][ordered]@{
+                    workType = $work.workType
+                    workId = $work.workId
+                    title = $work.title
+                    rankOrdinal = $rankIndex + 1
+                    originallySelected = $rankIndex -lt $script:CountPerType
+                    reason = "episode-list API contains only provider/imported ids and no native canonical viewer episode"
+                    episodeCountSource = $episode.metadataSource
+                    firstEpisodeId = $episode.originallySelectedEpisodeId
+                    firstEpisodePath = $episode.originallySelectedEpisodePath
+                }
+                $accessExcludedWorks.Add($exclusion)
+                if($rankIndex -lt $script:CountPerType) {
+                    $initiallyRejected.Enqueue($exclusion)
+                }
+                Write-Warning "Replacing clearly inaccessible random work type=$workType id=$($work.workId) rank=$($rankIndex + 1): $($exclusion.reason)"
+                continue
+            }
+            $episodeAccess = Get-EpisodeAccessStatus $work $episode
+            if(([string]$episodeAccess.status) -ceq "CLEARLY_UNAVAILABLE") {
+                $exclusion = [pscustomobject][ordered]@{
+                    workType = $work.workType
+                    workId = $work.workId
+                    title = $work.title
+                    rankOrdinal = $rankIndex + 1
+                    originallySelected = $rankIndex -lt $script:CountPerType
+                    reason = "selected episode is explicitly unavailable"
+                    episodeCountSource = $episode.metadataSource
+                    firstEpisodeId = $episode.episodeId
+                    firstEpisodePath = $episode.episodePath
+                    accessHttpStatus = $episodeAccess.httpStatus
+                    accessLocation = $episodeAccess.location
+                }
+                $accessExcludedWorks.Add($exclusion)
+                if($rankIndex -lt $script:CountPerType) {
+                    $initiallyRejected.Enqueue($exclusion)
+                }
+                Write-Warning "Replacing clearly inaccessible random work type=$workType id=$($work.workId) rank=$($rankIndex + 1): $($exclusion.reason), status=$($episodeAccess.httpStatus), location=$($episodeAccess.location)"
+                continue
+            }
+            $originalWork = if(
+                $rankIndex -ge $script:CountPerType -and $initiallyRejected.Count -gt 0
+            ) {
+                $initiallyRejected.Dequeue()
+            } else {
+                $null
+            }
+            $targets.Add([pscustomobject][ordered]@{
+                workType = $work.workType
+                workId = $work.workId
+                title = $work.title
+                latestEpisodeNumber = $work.latestEpisodeNumber
+                catalogPage = $work.catalogPage
+                episodeId = $episode.episodeId
+                episodeTitle = $episode.episodeTitle
+                episodePath = $episode.episodePath
+                metadataSource = $episode.metadataSource
+                metadataError = $episode.metadataError
+                originallySelectedEpisodePath = $episode.originallySelectedEpisodePath
+                originallySelectedEpisodeId = $episode.originallySelectedEpisodeId
+                originallySelectedEpisodeTitle = $episode.originallySelectedEpisodeTitle
+                accessReplacementReason = $episode.accessReplacementReason
+                selectionAccessStatus = $episodeAccess.status
+                selectionAccessHttpStatus = $episodeAccess.httpStatus
+                selectionAccessLocation = $episodeAccess.location
+                selectionAccessError = $episodeAccess.error
+                originallySelectedWorkId = if($null -ne $originalWork) {
+                    [string]$originalWork.workId
+                } else {
+                    [string]$work.workId
+                }
+                originallySelectedWorkTitle = if($null -ne $originalWork) {
+                    [string]$originalWork.title
+                } else {
+                    [string]$work.title
+                }
+                workAccessReplacementReason = if($null -ne $originalWork) {
+                    [string]$originalWork.reason
+                } else {
+                    $null
+                }
+                selectionRankOrdinal = $rankIndex + 1
+            })
+            $acceptedForType++
+        }
+        if($acceptedForType -ne $script:CountPerType) {
+            throw "Unable to select $($script:CountPerType) accessible $workType works from the complete catalog"
+        }
     }
 
     $selection = [pscustomobject][ordered]@{
@@ -2777,6 +3006,7 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
             webtoon = $webtoonCatalog.Count
             manhwa = $manhwaCatalog.Count
         }
+        accessExcludedWorks = @($accessExcludedWorks)
         targets = @($targets)
     }
 }

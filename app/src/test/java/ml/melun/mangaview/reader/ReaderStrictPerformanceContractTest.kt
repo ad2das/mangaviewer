@@ -21,4 +21,40 @@ class ReaderStrictPerformanceContractTest {
         assertFalse(ReaderExactDecodeStoragePolicy.useSharedFullPageBitmap(false, 690, 1_600))
         assertFalse(ReaderExactDecodeStoragePolicy.useSharedFullPageBitmap(true, 1_080, 8_000))
     }
+
+    @Test
+    fun onlyMultiGibNumericBooksUseBoundedRollingPixelResidency() {
+        assertTrue(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/manhwa/3360/18755",
+                168,
+                1_432,
+                2_048,
+            )
+        )
+        assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/manhwa/34770/1791629",
+                34,
+                1_432,
+                2_048,
+            )
+        )
+        assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/webtoon/4642/821859",
+                200,
+                690,
+                1_600,
+            )
+        )
+        assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/manhwa/3360/18755",
+                159,
+                1_432,
+                2_048,
+            )
+        )
+    }
 }

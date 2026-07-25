@@ -15,6 +15,8 @@ import android.util.Log
 import ml.melun.mangaview.MainApplication
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.activity.LocalWebViewProxy
+import ml.melun.mangaview.activity.NtkQuicFetcher
 import ml.melun.mangaview.glide.ViewerWarmupManager
 import ml.melun.mangaview.mangaview.CustomHttpClient
 import ml.melun.mangaview.mangaview.Manga
@@ -32,6 +34,7 @@ import okhttp3.Dns
 import okhttp3.EventListener
 import okhttp3.Headers
 import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -52,6 +55,8 @@ import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.URI
 import java.security.MessageDigest
 import java.util.ArrayDeque
@@ -176,6 +181,39 @@ internal class VerifiedTailBatchRegistry {
     private fun Long?.orZero(): Long = this ?: 0L
 }
 
+/** Reference-counted launch-episode leases with no Android runtime dependency. */
+internal class RequiredNtkEpisodePathRegistry {
+    private val refs = ConcurrentHashMap<String, AtomicInteger>()
+
+    fun retain(path: String): Int =
+        refs.compute(path) { _, existing ->
+            (existing ?: AtomicInteger(0)).also { it.incrementAndGet() }
+        }?.get() ?: 0
+
+    /** Returns the remaining count, or null when no lease existed. */
+    fun release(path: String): Int? {
+        var released = false
+        var remaining = 0
+        refs.computeIfPresent(path) { _, count ->
+            released = true
+            remaining = count.decrementAndGet().coerceAtLeast(0)
+            if (remaining == 0) null else count
+        }
+        return if (released) remaining else null
+    }
+
+    fun contains(path: String): Boolean = (refs[path]?.get() ?: 0) > 0
+
+    fun refCount(path: String): Int = refs[path]?.get()?.coerceAtLeast(0) ?: 0
+
+    fun snapshot(): Set<String> = refs.entries.asSequence()
+        .filter { it.value.get() > 0 }
+        .map { it.key }
+        .toSet()
+
+    fun clear() = refs.clear()
+}
+
 /** Pure deletion admission shared by production trimming and deterministic host tests. */
 internal object ReaderImageCacheTrimAdmissionPolicy {
     fun canDelete(
@@ -191,10 +229,13 @@ internal object ReaderImageCacheTrimAdmissionPolicy {
 
 /** Pure admission rule for a disjoint manhwa suffix continuation. */
 internal object NtkManhwaProjectedBodyHedgePolicy {
-    // Source completion must leave bounded decode/handoff time inside the 4 s viewer contract.
-    // Unlike the old body-only 4.5 s threshold, this projection includes rolling admission and
-    // response-header time measured from the first real image Call in this click-owned session.
-    const val PROJECTED_SESSION_HEDGE_MS = 3_400L
+    // Do not turn an ordinary cold connection ramp into recovery traffic. A 112-page wave showed
+    // that projecting from the first one-second sample abandoned responsive streams and opened
+    // 173 Range calls, 82 of which were rejected by the already-loaded H2 origins. Real no-byte
+    // and no-progress deadlines below still recover a stopped stream; this rate-based split is
+    // reserved for a small tail that remains slow after the primary wave has had time to settle.
+    const val MIN_PROJECTED_HEDGE_SESSION_MS = 5_000L
+    const val PROJECTED_SESSION_HEDGE_MS = 12_000L
     private const val TAIL_HEAD_START_MS = 300L
     private const val MIN_TAIL_LEAD_BYTES = 24L * 1024L
     // The best hard-112 cold run (r75) used one 24 KiB disjoint lead. Increasing this to 64 KiB
@@ -205,8 +246,6 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
     private const val LATE_ADMISSION_BEFORE_BODY_MS = 1_800L
     private const val MAX_PROJECTED_STARTS_PER_SESSION = 6
     private const val MAX_LATE_RESERVED_STARTS_PER_SESSION = 0
-    private const val CRITICAL_SERIAL_COMPLETION_MS = 5_000L
-
     class SessionStarts {
         internal val ordinary = AtomicInteger(0)
         internal val lateReserved = AtomicInteger(0)
@@ -260,6 +299,7 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         deliveredBytes: Long,
         expectedLength: Long,
     ): Boolean {
+        if (sessionElapsedMs < MIN_PROJECTED_HEDGE_SESSION_MS) return false
         val projection = projectedSessionCompletionMs(
             sessionElapsedMs,
             bodyElapsedMs,
@@ -268,10 +308,6 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         ) ?: return false
         return projection > PROJECTED_SESSION_HEDGE_MS.toDouble()
     }
-
-    fun shouldForceCriticalSerialResume(projectedSessionCompletionMs: Double?): Boolean =
-        projectedSessionCompletionMs != null &&
-            projectedSessionCompletionMs > CRITICAL_SERIAL_COMPLETION_MS.toDouble()
 
     fun disjointTailStart(
         bodyElapsedMs: Long,
@@ -299,7 +335,10 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
 
 /** Exact byte ownership for a projected 206 suffix that loses forward progress. */
 internal object NtkManhwaRangeResumePolicy {
-    const val BODY_IDLE_MS = 1_000L
+    // A Range response competes with the surviving primary wave. One second repeatedly cancelled
+    // valid H2 streams before their next data frame; three seconds remains a finite no-progress
+    // bound while avoiding a reset loop.
+    const val BODY_IDLE_MS = 3_000L
 
     fun nextStart(segmentStart: Long, receivedBytes: Long, segmentEnd: Long): Long? {
         require(segmentStart >= 0L)
@@ -340,11 +379,23 @@ object ReaderImageCache {
         "shaomoi.org",
         "xiaomichina.com",
     )
-    // A 900ms idle boundary resumed a proved 131072/159881-byte stall correctly, but the final
-    // HWUI commit landed 28ms outside the four-second episode SLA. Starting the same exact-range
-    // handoff at 600ms preserves roughly 300ms for the alternate headers, final decode and commit.
-    private const val NTK_WEBTOON_BODY_IDLE_RESUME_MS = 600L
+    // Some old, single-origin webtoon assets still point at this legacy CDN family. Korean ISP
+    // filtering resets its TLS/TCP route before HTTP headers while the same immutable object
+    // remains available through Cloudflare QUIC. This is a transport-family fallback only: the
+    // exact URL, response body and strict manifest page identity remain unchanged.
+    private const val NTK_LEGACY_BLOCKED_IMAGE_ROOT = "webimg7.com"
+    private const val NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS = 12_000L
+    // At a bounded 24-body wave a healthy stream can wait around one scheduler/network quantum
+    // between chunks. The old 600ms guard converted ordinary progress into hundreds of Range
+    // continuations. Keep a real no-progress bound without repeatedly discarding useful sockets.
+    private const val NTK_WEBTOON_BODY_IDLE_RESUME_MS = 1_200L
     private const val NTK_WEBTOON_HEADER_FAILOVER_MS = 1_000L
+    // Keep a short bounded no-body recovery inside the logical operation. A 101-page/21.95 MiB
+    // reset-storm replay completed in 25.3 s with four rings, 26.3 s with six and 31.2 s with ten:
+    // retaining a dead lane longer delayed the complete scene and still did not prevent a later
+    // timeout. Four rings recover the common burst without duplicating successful bytes; a rarer
+    // sustained storm returns the page to the source actor so another queued body can use the lane.
+    private const val NTK_WEBTOON_LOGICAL_REPLICA_CYCLES = 4
     // Numeric manhwa pages are immutable across the replica ring. A headerless stream owns no
     // useful bytes, so cancel it and advance the same logical Call instead of launching a
     // concurrent duplicate body wave from the viewer coordinator.
@@ -363,8 +414,8 @@ object ReaderImageCache {
     // An origin can evade the idle limit by dripping small chunks while still taking >3s for one
     // 200 KiB body. Bound each replica segment's wall time as well; continuation begins at the
     // exact delivered offset, so responsive bytes are retained rather than downloaded twice.
-    private const val NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS = 750L
-    private const val NTK_WEBTOON_BODY_PROGRESS_DEADLINE_MS = 1_000L
+    private const val NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS = 1_200L
+    private const val NTK_WEBTOON_BODY_PROGRESS_DEADLINE_MS = 1_600L
     private const val NTK_WEBTOON_BODY_TAIL_GRACE_BYTES = 64L * 1024L
     private const val NTK_WEBTOON_MAX_RANGE_CONTINUATIONS = 3
     // Numeric manhwa uses the same immutable, validator-stable bytes on the three
@@ -377,9 +428,9 @@ object ReaderImageCache {
     // Keep the socket's first-byte idle allowance conservative: a shorter value restarted valid
     // cold responses at offset zero and created a request herd. Once bytes have arrived, the
     // separate progress deadline below can safely identify a genuinely stalled body.
-    private const val NTK_MANHWA_BODY_IDLE_RESUME_MS = 1_400L
-    private const val NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS = 1_200L
-    private const val NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS = 1_400L
+    private const val NTK_MANHWA_BODY_IDLE_RESUME_MS = 3_500L
+    private const val NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS = 3_500L
+    private const val NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS = 3_500L
     // Bunny's AWS mirror occasionally drips one otherwise valid 200 body for 3.8-4.5 seconds.
     // After this much active body time, preserve every delivered byte and continue only the
     // untouched suffix from a Range-capable Cloudflare mirror.
@@ -432,11 +483,14 @@ object ReaderImageCache {
     // disjoint requests on different mirrors. 128 KiB produced a queued third segment for most
     // pages and lost the gain to another header turn; 160 KiB keeps the first tail wave finite.
     private const val NTK_MANHWA_RANGE_SEGMENT_BYTES = 128L * 1024L
-    private const val NTK_MANHWA_RANGE_HEADER_DEADLINE_MS = 1_000L
+    private const val NTK_MANHWA_RANGE_HEADER_DEADLINE_MS = 3_000L
     // The all-page segmented experiments were slower in both H2 (r60: 5.179 s) and independent
-    // H1 (r61: 15.667 s). Keep the validator-safe implementation only for diagnostics; the normal
-    // path returns to one physical body per logical image.
+    // H1 (r61: 15.667 s), so normal runway pages retain one physical body per logical image.
+    // The click-owned anchor is different: one multi-megabyte H2 stream has repeatedly dominated
+    // both first-pixel and all-ready time. It may use the already validator-safe, byte-disjoint
+    // implementation without multiplying successful bytes for the rest of the episode.
     private const val NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED = false
+    private const val NTK_MANHWA_PAGE_ZERO_SEGMENTED_TRANSPORT_ENABLED = true
     private const val NTK_AUTHORITATIVE_MANIFEST_CACHE_PREFIX = "ntk_authoritative_manifest_v1:"
     private const val NTK_AUTHORITATIVE_MANIFEST_SCHEMA_VERSION = 3
     // v1 could store a resolved `.jpeg` body under the guessed `.jpg` exact key. Keep those
@@ -601,12 +655,20 @@ object ReaderImageCache {
     private val foregroundStreamStartedAt = ConcurrentHashMap<String, Long>()
     private val earlyTransportPreparePhysicalCalls = AtomicLong(0L)
     private val adjacentForegroundViewerPaths = ConcurrentHashMap<String, Long>()
+    /**
+     * Exact launch episodes retain this lease until their ReaderSession ends. Advancing into an
+     * appended episode must not cancel unfinished canonical bodies from the launch episode: that
+     * leaves the old strict transport retrying forever while all-images readiness can never
+     * complete. Reference counts make replacement sessions for the same path race-safe.
+     */
+    private val requiredNtkEpisodePaths = RequiredNtkEpisodePathRegistry()
     private val ntkEpisodeWorkCancelledAt = ConcurrentHashMap<String, Long>()
     private val activeNtkEpisodeCalls = ConcurrentHashMap<String, Call>()
     private val activeNtkEpisodeCallIds = AtomicLong(0L)
     private data class StrictConnectionObservation(val connectionId: String, val reused: Boolean)
     private val strictInstrumentedClients = ConcurrentHashMap<Int, OkHttpClient>()
     private val clickOwnedAnchorClients = ConcurrentHashMap<Long, OkHttpClient>()
+    private val replicaFailoverFactories = ConcurrentHashMap<Int, Call.Factory>()
     private val clickOwnedDnsBySharedClient = ConcurrentHashMap<Int, Dns>()
     private val clickOwnedProbeDispatcher = Dispatcher().apply {
         maxRequests = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
@@ -855,6 +917,23 @@ object ReaderImageCache {
     internal fun strictWebtoonReplicaUrlsForTest(url: String): List<String> =
         strictReplicaUrlsForTest(url)
 
+    internal fun strictManhwaExtensionFallbackUrlsForTest(
+        url: String,
+        pageIndex: Int? = null,
+    ): List<String> {
+        val request = runCatching { Request.Builder().url(url).build() }.getOrNull()
+            ?: return emptyList()
+        return strictManhwaExtensionFallbackRequests(request, pageIndex)
+            .map { it.url.toString() }
+    }
+
+    private fun isLegacyBlockedImageRequest(request: Request): Boolean {
+        if (!request.url.isHttps) return false
+        val host = request.url.host.lowercase(Locale.ROOT)
+        return host == NTK_LEGACY_BLOCKED_IMAGE_ROOT ||
+            host.endsWith(".$NTK_LEGACY_BLOCKED_IMAGE_ROOT")
+    }
+
     private fun strictReplicaRequests(
         request: Request,
         pageIndexOverride: Int? = null,
@@ -912,6 +991,39 @@ object ReaderImageCache {
         }
     }
 
+    /**
+     * A signed numeric manifest can retain the common JPG suffix for one uncommon GIF/WebP/PNG
+     * page. Only a complete explicit miss across the normal replica ring reaches this list.
+     * Every candidate preserves the immutable work/episode/page stem and the original operation
+     * tag; response validation still has to prove that exact logical page before publication.
+     */
+    private fun strictManhwaExtensionFallbackRequests(
+        request: Request,
+        pageIndexOverride: Int? = null,
+    ): List<Request> {
+        val url = request.url
+        if (url.host.lowercase(Locale.ROOT) !in NTK_MANHWA_IMAGE_REPLICA_HOSTS) {
+            return emptyList()
+        }
+        val match = Regex(
+            "^(/manhwa/\\d{1,12}/\\d{1,12}/p\\d{3})\\.(jpg|jpeg|png|webp|gif)$",
+            RegexOption.IGNORE_CASE,
+        ).matchEntire(url.encodedPath) ?: return emptyList()
+        val stem = match.groupValues[1]
+        val currentExtension = match.groupValues[2].lowercase(Locale.ROOT)
+        return NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS
+            .asSequence()
+            .filterNot { it.equals(currentExtension, ignoreCase = true) }
+            .flatMap { extension ->
+                val extensionRequest = request.newBuilder()
+                    .url(url.newBuilder().encodedPath("$stem.$extension").build())
+                    .build()
+                strictReplicaRequests(extensionRequest, pageIndexOverride).asSequence()
+            }
+            .distinctBy { it.url }
+            .toList()
+    }
+
     /** One logical strict image Call with bounded, failure-only physical replica failover. */
     private class NtkReplicaFailoverCall(
         private val delegateFactory: Call.Factory,
@@ -921,6 +1033,11 @@ object ReaderImageCache {
         private val cancelled = AtomicBoolean(false)
         private val active = AtomicReference<Call?>(null)
         private val segmentedPhysicalCalls = ConcurrentHashMap.newKeySet<Call>()
+        private val activeExactQuicRecovery =
+            AtomicReference<NtkQuicFetcher.CancelableExactRequest?>(null)
+        private val activeExactFragmentedRecoveryCall = AtomicReference<Call?>(null)
+        private val activeExactFragmentedRecoveryProxy =
+            AtomicReference<LocalWebViewProxy?>(null)
         private val firstCall = delegateFactory.newCall(originalRequest)
 
         override fun request(): Request = originalRequest
@@ -956,25 +1073,42 @@ object ReaderImageCache {
                     NtkManhwaProjectedBodyHedgePolicy.SessionStarts()
                 }
             }
-            if (NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED && manhwaRangeReplica) {
+            val strictPageIndex = originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
+                ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
+                ?: -1
+            val segmentedTransportEnabled = NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED ||
+                (NTK_MANHWA_PAGE_ZERO_SEGMENTED_TRANSPORT_ENABLED && strictPageIndex == 0)
+            if (segmentedTransportEnabled && manhwaRangeReplica) {
                 return executeSegmentedManhwa(candidates)
             }
-            // Three bounded physical cycles stay inside one logical source operation. The measured
-            // page-101 failure mode is: the first two origins reset, the third returns an empty
-            // 200 twice, then the next normal origin cycle succeeds. Letting that final recovery
-            // escape to the source-session layer records a cancellation and a duplicate logical
-            // request; keeping it here repeats no successful body and preserves exact ownership.
-            val attemptCandidates = (candidates + candidates + candidates).toMutableList()
+            // Four bounded physical cycles stay inside one logical webtoon source operation.
+            // Longer in-call retry trains monopolized physical lanes during a sustained reset
+            // storm; the source actor's finite retry can reschedule that page after other admitted
+            // bodies make progress. No successful body is repeated and exact ownership remains
+            // preserved in either path.
+            // Numeric manhwa has four distinct immutable mirrors and an independent extension
+            // resolver. Repeating a terminal 404 ring three times only delays the proven .png/gif
+            // replacement and multiplies useless traffic, so one complete mirror pass is enough.
+            val attemptCandidates = if (manhwaReplica) {
+                candidates.toMutableList()
+            } else {
+                List(NTK_WEBTOON_LOGICAL_REPLICA_CYCLES) { candidates }
+                    .flatten()
+                    .toMutableList()
+            }
             val webtoonReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
                 NTK_WEBTOON_IMAGE_REPLICA_HOSTS
             var lastFailure: IOException? = null
             var index = 0
+            var manhwaExtensionFallbackAdded = false
+            var exactQuicRecoveryAttempted = false
+            var exactFragmentedRecoveryAttempted = false
             val manhwaHeaderRecoveryPermitHeld = AtomicBoolean(false)
             try {
                 while (index < attemptCandidates.size) {
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
                 val candidate = attemptCandidates[index]
-                val physicalCandidate = if (webtoonReplica && index > 0) {
+                val physicalCandidate = if (index > 0) {
                     candidate.newBuilder()
                         .tag(
                             CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
@@ -1054,6 +1188,26 @@ object ReaderImageCache {
                         response.body?.contentLength() == 0L
                     val retryableMiss = response.code == 404 || response.code == 410 ||
                         emptySuccessfulBody
+                    if (
+                        retryableMiss &&
+                        index == attemptCandidates.lastIndex &&
+                        manhwaReplica &&
+                        !manhwaExtensionFallbackAdded
+                    ) {
+                        val extensionFallbacks =
+                            strictManhwaExtensionFallbackRequests(originalRequest)
+                        if (extensionFallbacks.isNotEmpty()) {
+                            manhwaExtensionFallbackAdded = true
+                            attemptCandidates.addAll(extensionFallbacks)
+                            Log.w(
+                                TAG,
+                                "reader_strict_manhwa_extension_failover " +
+                                    "page=$strictPageIndex,code=${response.code}," +
+                                    "from=${candidate.url.encodedPath.substringAfterLast('/')}," +
+                                    "candidates=${extensionFallbacks.size}",
+                            )
+                        }
+                    }
                     if (!retryableMiss || index == attemptCandidates.lastIndex) {
                         val canonicalIndex = candidates.indexOfFirst {
                             it.url == candidate.url
@@ -1075,6 +1229,23 @@ object ReaderImageCache {
                             "to=${attemptCandidates[index + 1].url.host}"
                     )
                 } catch (failure: IOException) {
+                    if (!exactQuicRecoveryAttempted &&
+                        shouldTryExactQuicLegacyImageRecovery(physicalCandidate)
+                    ) {
+                        exactQuicRecoveryAttempted = true
+                        executeExactQuicLegacyImageRecovery(physicalCandidate, failure)?.let {
+                            return it
+                        }
+                    }
+                    if (!exactFragmentedRecoveryAttempted &&
+                        isLegacyBlockedImageRequest(physicalCandidate)
+                    ) {
+                        exactFragmentedRecoveryAttempted = true
+                        executeExactFragmentedLegacyImageRecovery(
+                            physicalCandidate,
+                            failure,
+                        )?.let { return it }
+                    }
                     if (cancelled.get() || index == attemptCandidates.lastIndex) throw failure
                     lastFailure = failure
                     Log.w(
@@ -1094,6 +1265,255 @@ object ReaderImageCache {
                 if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
                     ntkManhwaHeaderFailoverPermits.release()
                 }
+            }
+        }
+
+        private fun shouldTryExactQuicLegacyImageRecovery(request: Request): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                !NtkQuicFetcher.isAvailable()
+            ) return false
+            return isLegacyBlockedImageRequest(request)
+        }
+
+        private fun executeExactQuicLegacyImageRecovery(
+            request: Request,
+            tcpFailure: IOException,
+        ): Response? {
+            if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+            val recovery = NtkQuicFetcher.CancelableExactRequest()
+            if (!activeExactQuicRecovery.compareAndSet(null, recovery)) return null
+            val startedAtMs = SystemClock.elapsedRealtime()
+            return try {
+                val forwardedHeaders = LinkedHashMap<String, String>()
+                request.headers.names().forEach { name ->
+                    request.header(name)?.takeIf { it.isNotBlank() }?.let { value ->
+                        forwardedHeaders[name] = value
+                    }
+                }
+                val result = recovery.fetch(
+                    MainApplication.appContext,
+                    request.url.toString(),
+                    request.header("User-Agent") ?: getHttpClient().agent,
+                    request.header("Cookie").orEmpty(),
+                    forwardedHeaders,
+                    NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS,
+                )
+                if (cancelled.get() || recovery.isCancelled) {
+                    throw InterruptedIOException("Replica image Call cancelled")
+                }
+                if (result.error != null ||
+                    result.code !in 200..299 ||
+                    result.bodyBytes.isEmpty()
+                ) {
+                    Log.w(
+                        TAG,
+                        "reader_strict_legacy_image_quic_recovery_failed " +
+                            "host=${request.url.host},code=${result.code}," +
+                            "protocol=${result.negotiatedProtocol}," +
+                            "tcpError=${tcpFailure.javaClass.simpleName}," +
+                            "quicError=${result.error?.javaClass?.simpleName ?: "none"}," +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                    )
+                    null
+                } else {
+                    val headers = Headers.Builder()
+                    result.headers.forEach { (name, values) ->
+                        if (name.equals("content-length", ignoreCase = true) ||
+                            name.equals("content-encoding", ignoreCase = true) ||
+                            name.startsWith(":")
+                        ) return@forEach
+                        values.forEach { value ->
+                            runCatching { headers.add(name, value) }
+                        }
+                    }
+                    val contentType = result.contentType().toMediaTypeOrNull()
+                    Log.d(
+                        TAG,
+                        "reader_strict_legacy_image_quic_recovered " +
+                            "host=${request.url.host},code=${result.code}," +
+                            "protocol=${result.negotiatedProtocol},bytes=${result.bodyBytes.size}," +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                    )
+                    Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_2)
+                        .code(result.code)
+                        .message("OK")
+                        .headers(headers.build())
+                        .removeHeader("Content-Encoding")
+                        .header("Content-Length", result.bodyBytes.size.toString())
+                        .header("x-mangaviewer-transport", "exact-quic-recovery")
+                        .body(ResponseBody.create(contentType, result.bodyBytes))
+                        .build()
+                }
+            } finally {
+                activeExactQuicRecovery.compareAndSet(recovery, null)
+            }
+        }
+
+        /**
+         * Some Korean access networks reset the legacy origin's TLS connection after inspecting
+         * an otherwise valid ClientHello. The in-process CONNECT proxy preserves the exact URL,
+         * Host, SNI, headers and response bytes; it only splits that first TLS record on the wire.
+         * This is a failure-only path for a known legacy image-host suffix, never a content proxy,
+         * identity substitution, or viewer prefetch.
+         */
+        private fun executeExactFragmentedLegacyImageRecovery(
+            request: Request,
+            transportFailure: IOException,
+        ): Response? {
+            if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+            val startedAtMs = SystemClock.elapsedRealtime()
+            val proxy = try {
+                LocalWebViewProxy.start()
+            } catch (failure: Exception) {
+                Log.w(
+                    TAG,
+                    "reader_strict_legacy_image_fragmented_proxy_start_failed " +
+                        "host=${request.url.host},error=${failure.javaClass.simpleName}",
+                )
+                return null
+            }
+            if (!activeExactFragmentedRecoveryProxy.compareAndSet(null, proxy)) {
+                proxy.close()
+                return null
+            }
+
+            var physicalCall: Call? = null
+            try {
+                val transport = getHttpClient().externalViewerImageFastClient()
+                    .newBuilder()
+                    .proxy(
+                        Proxy(
+                            Proxy.Type.HTTP,
+                            InetSocketAddress("127.0.0.1", proxy.port()),
+                        )
+                    )
+                    .followRedirects(false)
+                    .followSslRedirects(false)
+                    .connectTimeout(NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .readTimeout(NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .callTimeout(NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .build()
+                for (candidateRequest in listOf(request)) {
+                    val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+                    val remainingMs = NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS - elapsedMs
+                    if (remainingMs <= 0L) break
+                    // The browser marks these legacy cross-origin images no-referrer. Sending the
+                    // current NTK origin/cookie to that unrelated host can be deliberately hidden
+                    // as a 404 by its hotlink policy.
+                    val wireCandidateRequest = candidateRequest.newBuilder()
+                        .removeHeader("Referer")
+                        .removeHeader("Origin")
+                        .removeHeader("Cookie")
+                        .removeHeader("Sec-Fetch-Site")
+                        .build()
+                    val call = transport.newCall(wireCandidateRequest)
+                    physicalCall = call
+                    if (!activeExactFragmentedRecoveryCall.compareAndSet(null, call)) return null
+                    call.timeout().timeout(remainingMs, TimeUnit.MILLISECONDS)
+                    if (cancelled.get()) call.cancel()
+                    try {
+                        call.execute().use { response ->
+                            if (cancelled.get()) {
+                                throw InterruptedIOException("Replica image Call cancelled")
+                            }
+                            val body = response.body
+                            val contentType = body?.contentType()
+                            val bodyBytes = body?.bytes() ?: ByteArray(0)
+                            val exactCandidateIdentity =
+                                response.request.url == wireCandidateRequest.url
+                            val accepted = exactCandidateIdentity &&
+                                response.code in 200..299 &&
+                                bodyBytes.isNotEmpty() &&
+                                looksLikeImage(bodyBytes)
+                            if (!accepted) {
+                                Log.w(
+                                    TAG,
+                                    "reader_strict_legacy_image_fragmented_candidate_failed " +
+                                        "originalHost=${request.url.host}," +
+                                        "candidateHost=${candidateRequest.url.host}," +
+                                        "code=${response.code}," +
+                                        "exactIdentity=$exactCandidateIdentity," +
+                                        "bytes=${bodyBytes.size},type=${contentType ?: "none"}," +
+                                        "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                                )
+                                return@use
+                            }
+
+                            val headers = response.headers.newBuilder()
+                                .removeAll("Content-Encoding")
+                                .removeAll("Content-Length")
+                                .build()
+                            Log.d(
+                                TAG,
+                                "reader_strict_legacy_image_fragmented_recovered " +
+                                    "originalHost=${request.url.host}," +
+                                    "candidateHost=${candidateRequest.url.host}," +
+                                    "code=${response.code},protocol=${response.protocol}," +
+                                    "bytes=${bodyBytes.size}," +
+                                    "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                            )
+                            return Response.Builder()
+                                .request(request)
+                                .protocol(response.protocol)
+                                .code(response.code)
+                                .message(response.message)
+                                .headers(headers)
+                                .header("Content-Length", bodyBytes.size.toString())
+                                .header(
+                                    "x-mangaviewer-transport",
+                                    "exact-fragmented-tls-recovery",
+                                )
+                                .body(ResponseBody.create(contentType, bodyBytes))
+                                .build()
+                        }
+                    } catch (failure: IOException) {
+                        if (cancelled.get()) {
+                            throw InterruptedIOException("Replica image Call cancelled").apply {
+                                initCause(failure)
+                            }
+                        }
+                        Log.w(
+                            TAG,
+                            "reader_strict_legacy_image_fragmented_candidate_error " +
+                                "originalHost=${request.url.host}," +
+                                "candidateHost=${candidateRequest.url.host}," +
+                                "error=${failure.javaClass.simpleName}," +
+                                "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                        )
+                    } finally {
+                        activeExactFragmentedRecoveryCall.compareAndSet(call, null)
+                        physicalCall = null
+                    }
+                }
+                Log.w(
+                    TAG,
+                    "reader_strict_legacy_image_fragmented_recovery_exhausted " +
+                        "host=${request.url.host}," +
+                        "transportError=${transportFailure.javaClass.simpleName}," +
+                        "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                )
+                return null
+            } catch (failure: IOException) {
+                if (cancelled.get()) {
+                    throw InterruptedIOException("Replica image Call cancelled").apply {
+                        initCause(failure)
+                    }
+                }
+                Log.w(
+                    TAG,
+                    "reader_strict_legacy_image_fragmented_recovery_error " +
+                        "host=${request.url.host}," +
+                        "transportError=${transportFailure.javaClass.simpleName}," +
+                        "fragmentedError=${failure.javaClass.simpleName}," +
+                        "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                )
+                return null
+            } finally {
+                physicalCall?.let { activeExactFragmentedRecoveryCall.compareAndSet(it, null) }
+                activeExactFragmentedRecoveryProxy.compareAndSet(proxy, null)
+                proxy.close()
             }
         }
 
@@ -1479,7 +1899,12 @@ object ReaderImageCache {
                 expectedLength = contentLength,
                 validator = validator,
                 validatorHeaderName = validatorHeaderName,
-                absoluteInitialSegmentWallMs = if (manhwaBody) {
+                // Page zero owns the only immediately visible body. A rate-projected split can
+                // cap its healthy prefix and then make the UI wait for a congested Range tail
+                // (observed: p001.png was admitted at +0.76 s but the projected tail joined
+                // 24.8 s later). Keep its original stream continuous; the independent first-byte
+                // and no-progress deadlines below still recover a genuinely stalled socket.
+                absoluteInitialSegmentWallMs = if (manhwaBody && pageIndex != 0) {
                     NTK_MANHWA_BODY_WALL_MS
                 } else {
                     0L
@@ -1536,13 +1961,20 @@ object ReaderImageCache {
 
         override fun cancel() {
             cancelled.set(true)
+            activeExactQuicRecovery.getAndSet(null)?.cancel()
+            activeExactFragmentedRecoveryCall.getAndSet(null)?.cancel()
+            activeExactFragmentedRecoveryProxy.getAndSet(null)?.close()
             segmentedPhysicalCalls.forEach(Call::cancel)
             active.get()?.cancel() ?: firstCall.cancel()
         }
 
         override fun isExecuted(): Boolean = executed.get()
 
-        override fun isCanceled(): Boolean = cancelled.get() || active.get()?.isCanceled() == true
+        override fun isCanceled(): Boolean =
+            cancelled.get() ||
+                activeExactQuicRecovery.get()?.isCancelled == true ||
+                activeExactFragmentedRecoveryCall.get()?.isCanceled() == true ||
+                active.get()?.isCanceled() == true
 
         override fun timeout(): okio.Timeout = firstCall.timeout()
 
@@ -1781,31 +2213,14 @@ object ReaderImageCache {
                                     )
                                 ) {
                                     absoluteInitialDeadlineConsumed = true
-                                } else if (
-                                    NtkManhwaProjectedBodyHedgePolicy
-                                        .shouldForceCriticalSerialResume(
-                                            projectedSessionCompletionMs,
-                                        ) &&
-                                    ntkManhwaRangeContinuationPermits.tryAcquire()
-                                ) {
-                                    // Preserve the measured r129/r130 admission invariant: only
-                                    // abandon a responsive prefix after owning an immediately
-                                    // available exact-Range lane. Blocking after abandonment
-                                    // creates a herd of parked source workers and was 2.4 s slower.
-                                    manhwaRangeContinuationPermitsHeld = 1
-                                    absoluteInitialDeadlineConsumed = true
-                                    Log.w(
-                                        TAG,
-                                        "reader_strict_source_critical_serial_resume " +
-                                            "page=$pageIndex," +
-                                            "projectedSessionMs=$projectedSessionMs," +
-                                            "sessionElapsedMs=$sessionElapsedMs," +
-                                            "offset=$deliveredBytes,total=$expectedLength",
-                                    )
-                                    throw java.net.SocketTimeoutException(
-                                        "Critical projected manhwa tail"
-                                    )
                                 } else if (!projectedContinuationDeferredLogged) {
+                                    // A rate projection is not a transport failure. Abandoning a
+                                    // still-readable prefix here caused six small canonical bodies
+                                    // to restart during a congested 112-page wave; the final retry
+                                    // arrived 20 seconds after the original cohort. Keep reading
+                                    // the primary when the bounded disjoint-tail permits are busy.
+                                    // Real no-progress/EOF failures below still resume exactly
+                                    // from the next byte through the serial Range path.
                                     projectedContinuationDeferredLogged = true
                                     Log.d(
                                         TAG,
@@ -2297,7 +2712,9 @@ object ReaderImageCache {
         private val delegate: Call.Factory,
     ) : Call.Factory {
         override fun newCall(request: Request): Call =
-            if (strictReplicaRequests(request).size > 1) {
+            if (strictReplicaRequests(request).size > 1 ||
+                isLegacyBlockedImageRequest(request)
+            ) {
                 NtkReplicaFailoverCall(delegate, request)
             } else {
                 delegate.newCall(request)
@@ -2682,6 +3099,7 @@ object ReaderImageCache {
             foregroundStreamStartedAt.clear()
             earlyTransportPreparePhysicalCalls.set(0L)
             adjacentForegroundViewerPaths.clear()
+            requiredNtkEpisodePaths.clear()
             ntkEpisodeWorkCancelledAt.clear()
             earlyNtkImageUrls.clear()
             ntkApiPageSlotCandidates.clear()
@@ -3044,7 +3462,8 @@ object ReaderImageCache {
             val operationId = telemetryOperationId.getAndSet(0L)
             if (operationId <= 0L) return
             val cancelled = cancelRequested.get() || delegate.isCanceled() ||
-                failure is InterruptedException || failure is InterruptedIOException || !reachedEof
+                failure is InterruptedException || failure is InterruptedIOException ||
+                (failure == null && !reachedEof)
             when {
                 cancelled -> ViewerTelemetry.imageRequestCancelled(
                     operationId,
@@ -3138,7 +3557,21 @@ object ReaderImageCache {
         val requestedQuarantineIdentity =
             request.tag(NtkQuarantineSourceCallIdentity::class.java)
                 ?.takeIf { it.isValid }
-        if (path != null && requestedStrictTag == null && requestedQuarantineIdentity == null) {
+        // A sealed launch episode must use its strict/quarantine owner. The immediately adjacent
+        // episode is different: the reader has not promoted it into a strict source session yet,
+        // but the user has already reached the current tail and explicitly opened a short-lived
+        // foreground append window for it. Preserve the ownership guard for every other NTK path
+        // while allowing that bounded, user-driven append call to create the next drawable.
+        val requestedAdjacentViewerCall =
+            path != null &&
+                requestedStrictTag == null &&
+                requestedQuarantineIdentity == null &&
+                isAuthorizedAdjacentForegroundViewerPath(path)
+        if (path != null &&
+            requestedStrictTag == null &&
+            requestedQuarantineIdentity == null &&
+            !requestedAdjacentViewerCall
+        ) {
             throw LegacySourceCallSuppressedException(path)
         }
         val delegate = try {
@@ -3160,6 +3593,7 @@ object ReaderImageCache {
                     actualQuarantineIdentity
                 )
             path == null -> true
+            requestedAdjacentViewerCall -> true
             else -> false
         }
         if (!accepted) {
@@ -4059,7 +4493,15 @@ object ReaderImageCache {
         require(manifestSeal.isStructurallyComplete)
         require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
         require(manifestSeal.normalizedCanonicalAssets[pageIndex] == asset)
-        val base = requestFor(manga, asset, foregroundPriority = true).newBuilder()
+        // The manifest retains the document's canonical asset identity. A sampled suffix is
+        // transport routing only: exact response validation and fallback still reject a stale or
+        // genuinely mixed-page hint without changing the manifest seal.
+        val hintedTransportAsset = hintedNtkGeneratedImageUrl(asset) ?: asset
+        val transportAsset = stripeStrictManhwaTransportAsset(
+            hintedTransportAsset,
+            pageIndex,
+        )
+        val base = requestFor(manga, transportAsset, foregroundPriority = true).newBuilder()
             .removeHeader("X-MangaViewer-Foreground")
             // The three current image origins negotiate H2 reliably. Cold H3 was measured to
             // return replica 404s and a substantially longer terminal body tail, so the exact
@@ -4077,7 +4519,7 @@ object ReaderImageCache {
         // creates one cancellable HttpEngine request (or selects OkHttp before any UrlRequest
         // exists) and never retries, redirects, or hedges that source body.
         val baseFactory: Call.Factory = httpClient.ntkDemandBoundExactImageFactory()
-        val replicaAwareFactory: Call.Factory = NtkReplicaFailoverCallFactory(baseFactory)
+        val replicaAwareFactory = replicaFailoverFactory(baseFactory)
         val factoryId = "ntk-demand-bound-exact-image"
         val host = base.url.host.lowercase(Locale.ROOT)
         val port = base.url.port
@@ -4091,6 +4533,28 @@ object ReaderImageCache {
             responseIdentityPolicy = NtkResponseIdentityPolicy.EXACT_VALIDATED,
             callFactoryId = factoryId
         )
+    }
+
+    /**
+     * Numeric manhwa replicas expose the same immutable pNNN object and are already covered by
+     * strict response identity plus validator-safe failover. The document normally names one host
+     * for every page; retaining that host made the exact owner place its entire tail on one cold H2
+     * origin. Stripe only the transport URL, preserving the sealed canonical asset unchanged.
+     */
+    internal fun stripeStrictManhwaTransportAsset(asset: String, pageIndex: Int): String {
+        if (pageIndex < 0) return asset
+        val parsed = runCatching { Request.Builder().url(asset).build().url }.getOrNull()
+            ?: return asset
+        val host = parsed.host.lowercase(Locale.ROOT)
+        if (host !in NTK_MANHWA_RANGE_REPLICA_HOSTS ||
+            !Regex(
+                "^/manhwa/\\d{1,12}/\\d{1,12}/p\\d{3}\\.(?:jpg|jpeg|png|webp|gif)$",
+                RegexOption.IGNORE_CASE,
+            ).matches(parsed.encodedPath)
+        ) return asset
+        val stripedHost = NtkClickOwnedManhwaWavePolicy.replicaHost(pageIndex)
+        if (stripedHost == host) return asset
+        return parsed.newBuilder().host(stripedHost).build().toString()
     }
 
     fun resolveQuarantineSourceRoute(
@@ -4113,18 +4577,24 @@ object ReaderImageCache {
         manga: Manga,
         binding: NtkQuarantinePlanBinding,
         pageIndex: Int,
-        canonicalAsset: String
+        canonicalAsset: String,
     ): NtkResolvedSourceRoute {
         val asset = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
         require(pageIndex in binding.normalizedOrderedCanonicalAssets.indices)
         require(binding.normalizedOrderedCanonicalAssets[pageIndex] == asset)
-        val request = requestFor(manga, asset, foregroundPriority = true).newBuilder()
+        val requestBuilder = requestFor(manga, asset, foregroundPriority = true).newBuilder()
             .removeHeader("X-MangaViewer-Foreground")
+            // Page zero used to opt into a separate cold H3 transport. In production that path
+            // returned replica 404s slowly and also owned uncommon-extension recovery, so a valid
+            // p001.png/gif could remain blocked while later H2 pages completed. The existing
+            // page-to-shard mapping already gives page zero an independent cold H2 pool; keep the
+            // anchor on that bounded, measurable transport as well.
             .header("X-MangaViewer-No-Quic", "1")
-            .build()
-        val shared = getHttpClient().client ?: getHttpClient().imageClient
+        val request = requestBuilder.build()
+        val httpClient = getHttpClient()
+        val shared = httpClient.client ?: httpClient.imageClient
         val bounded = clickOwnedManhwaClient(shared, pageIndex)
-        val factory = NtkReplicaFailoverCallFactory(strictInstrumentedClient(bounded))
+        val factory = replicaFailoverFactory(strictInstrumentedClient(bounded))
         val factoryId = "ntk-click-anchor-okhttp"
         val refererHost = request.header("Referer")?.let { referer ->
             runCatching { Uri.parse(referer).host?.lowercase(Locale.ROOT).orEmpty() }
@@ -4390,6 +4860,19 @@ object ReaderImageCache {
                     }
                 }
             }.retryOnConnectionFailure(false).build()
+        }
+    }
+
+    /**
+     * One immutable wrapper belongs to each real transport factory. Rebuilding the wrapper for an
+     * uncommon-extension retry made page zero appear to switch HTTP clients even though both calls
+     * used the same host-local OkHttp pool. Reuse also removes allocation from every exact route
+     * preparation without changing request timing, replica order, or cancellation ownership.
+     */
+    private fun replicaFailoverFactory(delegate: Call.Factory): Call.Factory {
+        val identity = System.identityHashCode(delegate)
+        return replicaFailoverFactories.computeIfAbsent(identity) {
+            NtkReplicaFailoverCallFactory(delegate)
         }
     }
 
@@ -5188,6 +5671,16 @@ object ReaderImageCache {
         }
 
         cancellation.throwIfCancelled()
+        // This lease bounds the physical request, including headers. The former placement below
+        // call.execute() let a 112-page volume open all 112 H2 streams before the nominal
+        // 24-transfer gate, overwhelming the origins and creating 20-second retry tails.
+        var bodyReadLease: Closeable? = try {
+            bodyReadAdmission?.invoke()
+        } catch (failure: Throwable) {
+            callContext.operationLease.close()
+            tempLease.close()
+            throw failure
+        }
         val request = route.requestTemplate.newBuilder()
             .removeHeader("Range")
             .removeHeader("If-Range")
@@ -5204,6 +5697,7 @@ object ReaderImageCache {
                 telemetryAfterImageHeaders,
             )
         } catch (failure: Throwable) {
+            bodyReadLease?.close()
             callContext.operationLease.close()
             tempLease.close()
             throw failure
@@ -5214,7 +5708,6 @@ object ReaderImageCache {
         var firstBodyByteAtNs = 0L
         var lastBodyReadAtNs = 0L
         var maxBodyReadGapNs = 0L
-        var bodyReadLease: Closeable? = null
         fun recordBodyRead() {
             val now = SystemClock.elapsedRealtimeNanos()
             if (firstBodyByteAtNs == 0L) firstBodyByteAtNs = now
@@ -5272,10 +5765,6 @@ object ReaderImageCache {
                 val body = response.body ?: throw IOException("Empty quarantine body")
                 val contentLength = body.contentLength()
                 if (contentLength == 0L) throw IOException("Empty quarantine body")
-                // Open every exact post-document GET through response headers first, then bound
-                // only active body consumption. This keeps the final pages from paying a second
-                // TLS/header wave while retaining the measured 96-body bandwidth ceiling.
-                bodyReadLease = bodyReadAdmission?.invoke()
                 val fullDigest = MessageDigest.getInstance("SHA-256")
                 val parser = NtkStreamingImageHeaderParser()
                 var parsed: NtkStreamingImageHeaderParser.Result.Exact? = null
@@ -13514,8 +14003,7 @@ object ReaderImageCache {
         if (bytes.isEmpty()) return false
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        return bounds.outWidth >= MIN_REAL_IMAGE_DIMENSION_PX &&
-            bounds.outHeight >= MIN_REAL_IMAGE_DIMENSION_PX
+        return hasUsableImageDimensions(bounds.outWidth, bounds.outHeight)
     }
 
     private fun hasSampledDecodableImage(bytes: ByteArray): Boolean {
@@ -13523,9 +14011,7 @@ object ReaderImageCache {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (bounds.outWidth < MIN_REAL_IMAGE_DIMENSION_PX ||
-                bounds.outHeight < MIN_REAL_IMAGE_DIMENSION_PX
-            ) {
+            if (!hasUsableImageDimensions(bounds.outWidth, bounds.outHeight)) {
                 return false
             }
             val options = BitmapFactory.Options().apply {
@@ -13550,7 +14036,7 @@ object ReaderImageCache {
     private fun isCompleteImageBytes(image: String, bytes: ByteArray): Boolean {
         if (bytes.size < 16) return false
         if (isDisallowedNtkImageAssetUrl(image)) return false
-        if (!looksLikeImage(bytes) || !hasDecodableImageBounds(bytes)) return false
+        if (!looksLikeImage(bytes) || !hasRealDecodableImageBounds(bytes)) return false
         return when (imageByteFormat(bytes)) {
             ImageByteFormat.JPEG ->
                 bytes.size >= 2 &&
@@ -15876,11 +16362,58 @@ object ReaderImageCache {
         if (path.isBlank() || !isNtkEpisodePathKey(path)) return false
         if (!MainApplication.isNtkForegroundViewerPathActive()) return false
         if (MainApplication.isNtkForegroundViewerPath(path)) return false
-        val allowedUntil = adjacentForegroundViewerPaths[path] ?: 0L
-        val now = SystemClock.elapsedRealtime()
-        if (allowedUntil > now) return false
-        if (allowedUntil > 0L) adjacentForegroundViewerPaths.remove(path, allowedUntil)
+        if (requiredNtkEpisodePaths.contains(path)) return false
+        if (isAuthorizedAdjacentForegroundViewerPath(path)) return false
         return true
+    }
+
+    @JvmStatic
+    fun retainRequiredNtkEpisodePath(path: String?, reason: String): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank() || !isNtkEpisodePathKey(key)) return false
+        val refs = requiredNtkEpisodePaths.retain(key)
+        if (refs <= 0) return false
+        Log.d(
+            TAG,
+            "reader_image_cache_required_ntk_episode_retain path=$key," +
+                "refs=$refs,reason=$reason"
+        )
+        return true
+    }
+
+    @JvmStatic
+    fun releaseRequiredNtkEpisodePath(path: String?, reason: String): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank()) return false
+        val remaining = requiredNtkEpisodePaths.release(key)
+        if (remaining != null) {
+            Log.d(
+                TAG,
+                "reader_image_cache_required_ntk_episode_release path=$key," +
+                    "refs=$remaining,reason=$reason"
+            )
+        }
+        return remaining != null
+    }
+
+    internal fun requiredNtkEpisodePathRefCountForTest(path: String?): Int {
+        val key = earlyNtkPathKey(path)
+        return requiredNtkEpisodePaths.refCount(key)
+    }
+
+    private fun isAuthorizedAdjacentForegroundViewerPath(path: String?): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank() || !isNtkEpisodePathKey(key)) return false
+        // The global foreground marker has a launch-oriented TTL and can legitimately expire
+        // before a long chapter reaches its tail. The append grant below is issued at the tail,
+        // so use that fresh authority and still reject any path already owned by discovery/strict
+        // transport. This cannot reopen the launch episode's legacy route.
+        if (!legacySourceOperationAllowed(key)) return false
+        val allowedUntil = adjacentForegroundViewerPaths[key] ?: return false
+        val now = SystemClock.elapsedRealtime()
+        if (allowedUntil > now) return true
+        adjacentForegroundViewerPaths.remove(key, allowedUntil)
+        return false
     }
 
     @JvmStatic
@@ -15888,10 +16421,20 @@ object ReaderImageCache {
         val key = earlyNtkPathKey(path)
         if (key.isBlank() || !isNtkEpisodePathKey(key)) return
         val now = SystemClock.elapsedRealtime()
-        val requestedUntil = now + ttlMs.coerceAtLeast(1000L)
-        val until = adjacentForegroundViewerPaths.merge(key, requestedUntil) { previous, requested ->
-            maxOf(previous, requested)
-        } ?: requestedUntil
+        val safeTtlMs = ttlMs.coerceAtLeast(1000L)
+        val requestedUntil = now + safeTtlMs
+        var extended = false
+        val until = adjacentForegroundViewerPaths.compute(key) { _, previous ->
+            if (previous != null && previous - now >= safeTtlMs / 2L) {
+                previous
+            } else {
+                extended = true
+                maxOf(previous ?: 0L, requestedUntil)
+            }
+        } ?: return
+        // Visible appended pages renew this grant as the reader advances. Avoid one timer and log
+        // entry per page while still extending it well before a long forward read can expire.
+        if (!extended) return
         trimExecutor.schedule({
             val activeUntil = adjacentForegroundViewerPaths[key] ?: return@schedule
             if (activeUntil == until && activeUntil <= SystemClock.elapsedRealtime()) {
@@ -15935,6 +16478,7 @@ object ReaderImageCache {
         val now = SystemClock.elapsedRealtime()
         val protected = LinkedHashSet<String>()
         protected.add(currentPath)
+        protected.addAll(requiredNtkEpisodePaths.snapshot())
         for ((path, until) in adjacentForegroundViewerPaths.entries) {
             if (until > now) {
                 protected.add(path)
@@ -20436,7 +20980,12 @@ object ReaderImageCache {
             submit(attempt, delayMs)
         }
         val generatedAnchor = generatedTarget?.page == 1
-        val generatedFastFallback = generatedAnchor && !includeGeneratedDirectLane && !wtEpisodeImage
+        val generatedFastFallback = generatedAnchor &&
+            !includeGeneratedDirectLane &&
+            !wtEpisodeImage &&
+            NtkAdjacentRunwayPreparationPolicy.shouldFastFailGeneratedAnchor(
+                isAuthorizedAdjacentForegroundViewerPath(generatedTarget?.path)
+            )
         var failure: Throwable? = null
         val totalAttempts = attempts.size + generatedDirectCandidates.size
         repeat(totalAttempts) { completedIndex ->
@@ -22081,8 +22630,7 @@ object ReaderImageCache {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.absolutePath, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
-            if (bounds.outWidth < MIN_REAL_IMAGE_DIMENSION_PX || bounds.outHeight < MIN_REAL_IMAGE_DIMENSION_PX) return false
+            if (!hasUsableImageDimensions(bounds.outWidth, bounds.outHeight)) return false
             if (file.length() > FULL_DECODE_VALIDATION_MAX_BYTES) return true
             val options = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.RGB_565
@@ -22094,6 +22642,25 @@ object ReaderImageCache {
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun hasUsableImageDimensions(width: Int, height: Int): Boolean {
+        if (width <= 0 || height <= 0) return false
+        val longSide = max(width, height)
+        val shortSide = minOf(width, height)
+        val pixelArea = width.toLong() * height.toLong()
+        // Authoritative viewer manifests legitimately contain short, full-width strips (for
+        // example a 690x30 final separator). Requiring both sides to be at least 64px permanently
+        // discarded those pages. Keep tracking pixels and corrupt slivers out with independent
+        // short-side and decoded-area floors.
+        return longSide >= MIN_REAL_IMAGE_DIMENSION_PX &&
+            shortSide >= MIN_REAL_IMAGE_STRIP_DIMENSION_PX &&
+            pixelArea >= MIN_REAL_IMAGE_PIXEL_AREA
+    }
+
+    @JvmStatic
+    internal fun hasUsableImageDimensionsForTest(width: Int, height: Int): Boolean {
+        return hasUsableImageDimensions(width, height)
     }
 
     private fun sampledValidationDecodeSize(width: Int, height: Int): Int {
@@ -22116,7 +22683,7 @@ object ReaderImageCache {
             if (bytes.size < MIN_REAL_GIF_IMAGE_BYTES || bytes.size < 10) return false
             val width = (bytes[6].toInt() and 0xff) or ((bytes[7].toInt() and 0xff) shl 8)
             val height = (bytes[8].toInt() and 0xff) or ((bytes[9].toInt() and 0xff) shl 8)
-            return width >= MIN_REAL_GIF_DIMENSION_PX && height >= MIN_REAL_GIF_DIMENSION_PX
+            return hasUsableImageDimensions(width, height)
         }
         return false
     }
@@ -22205,8 +22772,9 @@ object ReaderImageCache {
 
     private val HTML_IMAGE_ATTRS = arrayOf("data-original", "data-src", "data-lazy-src", "data-url", "src")
     private const val MIN_REAL_IMAGE_DIMENSION_PX = 64
+    private const val MIN_REAL_IMAGE_STRIP_DIMENSION_PX = 8
+    private const val MIN_REAL_IMAGE_PIXEL_AREA = 4096L
     private const val MIN_REAL_GIF_IMAGE_BYTES = 2048
-    private const val MIN_REAL_GIF_DIMENSION_PX = 64
     private val HTML_IMAGE_URL_PATTERN = Regex(
         "https?://[^\\\"'<>\\s)]+\\.(?:jpg|jpeg|png|webp|gif)(?:[?#][^\\\"'<>\\s)]*)?",
         RegexOption.IGNORE_CASE

@@ -58,6 +58,12 @@ constexpr std::int64_t kDefaultRefreshPeriodNanos = 11'111'111;
 // next visible submission pay their fence cost.  Only a genuine reading pause may reopen the
 // non-presenting upload lane.
 constexpr std::int64_t kPrewarmResumeQuietNanos = 750'000'000;
+// The product's continuous reader is forward-biased. Keep a small bounce margin behind the
+// visible span, but do not let already-read GPU copies accumulate until the generic byte ceiling.
+// The immutable Java Bitmap remains installed, so an uncommon upward gesture can upload it again
+// without network or decode work. A 200-page 1280px trace otherwise retained 49 old textures
+// (about 299 MiB) and made gfxstream block eglSwapBuffers for 106 ms during a forward fling.
+constexpr int kRetainedBackwardTexturePages = 2;
 // This is the ordinary rolling-window floor. Once Kotlin hands over one exact immutable full-scene
 // snapshot, the renderer raises the epoch budget to that snapshot's checked RGBA byte count. A
 // fixed 288 MiB ceiling made a 112-page episode continually evict and re-upload about sixty pages,
@@ -111,7 +117,7 @@ int setNativeWindowAsyncSwap(ANativeWindow* window) noexcept {
     using SetSwapInterval = int (*)(ANativeWindow*, int);
     static SetSwapInterval setSwapInterval = []() noexcept {
         // Deliberately retain the library for the process lifetime: the resolved function is used
-        // on every queue operation and dlopen/dlclose itself would add renderer-thread jitter.
+        // for every surface attachment and dlopen/dlclose itself would add renderer-thread jitter.
         void* library = dlopen("libnativewindow.so", RTLD_NOW | RTLD_LOCAL);
         return reinterpret_cast<SetSwapInterval>(
             library != nullptr
@@ -542,6 +548,14 @@ public:
                     static_cast<unsigned long long>(fullSceneTextureBudgetBytes_),
                     static_cast<unsigned long long>(kMaxTextureBudgetBytes),
                     sceneBytesValid ? 1 : 0);
+            } else {
+                // A resident snapshot is a complete description of the newest visible/forward
+                // runway. Retaining older snapshots makes a fast fling upload pages the user has
+                // already passed before serving the current viewport. Replace queued (not
+                // in-flight) work; decoded originals remain owned by Kotlin and can be submitted
+                // again if the viewport returns.
+                for (auto& queued : prewarmTiles_) releaseTile(env, queued);
+                prewarmTiles_.clear();
             }
             for (auto& tile : incoming) {
                 if (ignoreIncoming) break;
@@ -1089,6 +1103,27 @@ private:
             eraseTexture(victim);
         }
 
+        // Retire already-read GPU copies independently of the byte ceiling. Waiting until the
+        // ceiling is crossed retains dozens of pages behind a one-way reader and makes the host
+        // GL translator reclaim storage in eglSwapBuffers, where the delay is user-visible.
+        if (lastPresentedStructureEpoch_ == structureEpoch &&
+            lastPresentedMinPage_ >= 0
+        ) {
+            const int oldestRetainedPage =
+                std::max(0, lastPresentedMinPage_ - kRetainedBackwardTexturePages);
+            for (auto entry = textures_.begin(); entry != textures_.end();) {
+                if (entry->first.structureEpoch != structureEpoch ||
+                    entry->first.page >= oldestRetainedPage ||
+                    protectedKeys.find(entry->first) != protectedKeys.end()
+                ) {
+                    ++entry;
+                    continue;
+                }
+                auto victim = entry++;
+                eraseTexture(victim);
+            }
+        }
+
         // Kotlin remains demand-bound and post-click. The bounded ceiling is large enough for the
         // production strict scene budget while remaining independent of work identity and test
         // state, so completed episodes are not evicted just before their first visibility.
@@ -1414,30 +1449,32 @@ private:
                 static_cast<double>(command.refreshPeriodNanos))
             : 60.0F;
         // This renderer is Choreographer-paced UI, not fixed-rate video. DEFAULT compatibility
-        // tells SurfaceFlinger the intended cadence without forcing a display-mode transition or
-        // throttling frame production. The dynamically resolved API remains safe below API 30.
+        // tells SurfaceFlinger the intended cadence without forcing a display-mode transition.
+        // The dynamically resolved API remains safe below API 30.
         const int frameRateResult = bufferControls.setFrameRate != nullptr
             ? bufferControls.setFrameRate(command.window, requestedFrameRate, 0)
             : -3;
-        const int sharedBufferResult = bufferControls.setSharedBufferMode != nullptr
-            ? bufferControls.setSharedBufferMode(command.window, true)
+        // Shared-buffer + auto-refresh exposes the same producer buffer while GLES is updating
+        // it. Several physical Samsung compositors scan that buffer out concurrently, which
+        // presents old/new image rows as a cascade of horizontal tears during a fling. Keep the
+        // producer, and publish only completed buffers through an ordinary multi-buffer queue so
+        // SurfaceFlinger switches the whole frame atomically.
+        const int sharedBufferOffResult = bufferControls.setSharedBufferMode != nullptr
+            ? bufferControls.setSharedBufferMode(command.window, false)
             : -3;
-        const int autoRefreshResult = sharedBufferResult == 0 &&
-                bufferControls.setAutoRefresh != nullptr
-            ? bufferControls.setAutoRefresh(command.window, true)
+        const int autoRefreshOffResult = bufferControls.setAutoRefresh != nullptr
+            ? bufferControls.setAutoRefresh(command.window, false)
             : -3;
-        const int bufferCountResult = sharedBufferResult == 0
-            ? -4
-            : (bufferControls.setBufferCount != nullptr
-                ? bufferControls.setBufferCount(command.window, 4)
-                : -3);
-        if (sharedBufferResult != 0 && bufferCountResult == 0 &&
+        const int bufferCountResult = bufferControls.setBufferCount != nullptr
+            ? bufferControls.setBufferCount(command.window, 4)
+            : -3;
+        if (bufferCountResult == 0 &&
             bufferControls.tryAllocateBuffers != nullptr) {
             bufferControls.tryAllocateBuffers(command.window);
         }
         (void)eglSurfaceAttrib(
             display_, window, EGL_SWAP_BEHAVIOR,
-            sharedBufferResult == 0 ? EGL_BUFFER_PRESERVED : EGL_BUFFER_DESTROYED);
+            EGL_BUFFER_DESTROYED);
         const std::int64_t end = nowNanos();
         windowSurface_ = window;
         nativeWindow_ = command.window;
@@ -1459,7 +1496,7 @@ private:
         height_ = command.height;
         refreshPeriodNanos_ = command.refreshPeriodNanos > 0
             ? command.refreshPeriodNanos : kDefaultRefreshPeriodNanos;
-        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d shared=%d autoRefresh=%d bufferCount4=%d intervalRange=%d..%d durationMs=%.3f",
+        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount4=%d intervalRange=%d..%d durationMs=%.3f",
               static_cast<unsigned long long>(surfaceEpoch_), width_, height_,
               static_cast<long long>(refreshPeriodNanos_),
               preparedWidth_ == width_ && preparedHeight_ == height_ ? 1 : 0,
@@ -1467,8 +1504,8 @@ private:
               nativeAsyncResult,
               static_cast<double>(requestedFrameRate),
               frameRateResult,
-              sharedBufferResult,
-              autoRefreshResult,
+              sharedBufferOffResult,
+              autoRefreshOffResult,
               bufferCountResult,
               minimumSwapInterval, maximumSwapInterval,
               static_cast<double>(end - begin) / 1'000'000.0);
@@ -1534,12 +1571,11 @@ private:
         }
         const std::int64_t drawEnd = nowNanos();
         const std::int64_t presentBegin = nowNanos();
-        // Swap interval zero is a Surface attachment property and was already accepted in
-        // attachBackend. Re-applying ANativeWindow_setSwapInterval on every 60Hz frame can enter
-        // BufferQueue synchronization; host-GPU traces attributed otherwise unexplained 23-24ms
-        // present calls to this combined section. Keep the established mode for the surface's
-        // lifetime and submit only the buffer here.
-        constexpr int nativeAsyncResult = 0;
+        // The asynchronous interval is a Surface attachment property. Re-applying
+        // ANativeWindow_setSwapInterval on every frame can itself enter BufferQueue
+        // synchronization, so keep the established mode for the surface's lifetime and submit
+        // only the complete buffer here.
+        constexpr int nativeSwapInterval = 0;
         if (eglSwapBuffers(display_, windowSurface_) != EGL_TRUE) {
             if (failureStage != nullptr) *failureStage = "window-swap";
             return PresentResult::FAILED;
@@ -1560,13 +1596,13 @@ private:
         if (submittedFrames_ == 1 || submittedFrames_ % 90 == 0 || slowLogDue) {
             if (slowLogDue) lastSlowPresentLogNanos_ = presentEnd;
             RLOGI(
-                "window present submitted=%llu token=%llu totalUs=%lld uploadUs=%lld drawUs=%lld presentUs=%lld kind=%d nativeSwap0=%d textures=%zu bytes=%llu pool=%zu poolBytes=%llu reused=%llu prewarmSkipped=%llu",
+                "window present submitted=%llu token=%llu totalUs=%lld uploadUs=%lld drawUs=%lld presentUs=%lld kind=%d nativeSwapInterval=%d textures=%zu bytes=%llu pool=%zu poolBytes=%llu reused=%llu prewarmSkipped=%llu",
                 static_cast<unsigned long long>(submittedFrames_),
                 static_cast<unsigned long long>(frame.token),
                 static_cast<long long>(totalUs),
                 static_cast<long long>(uploadUs),
                 static_cast<long long>(drawUs),
-                static_cast<long long>(presentUs), 2, nativeAsyncResult,
+                static_cast<long long>(presentUs), 2, nativeSwapInterval,
                 textures_.size(),
                 static_cast<unsigned long long>(residentTextureBytes_),
                 pooledTextures_.size(),

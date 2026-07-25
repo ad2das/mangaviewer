@@ -335,6 +335,16 @@ public class CaptchaActivity extends AppCompatActivity {
     private volatile String ntkBridgeUserAgent = null;
     private boolean ntkReloadedAckTargetAfterStaleRootError = false;
     private static final long NTK_ROOT_BOOTSTRAP_STAGE_LOG_MS = 8_000L;
+    private static final long NTK_ROUTE_CHANGE_GUARD_INTERVAL_MS = 200L;
+    private final Runnable ntkRouteChangeGuard = new Runnable() {
+        @Override
+        public void run() {
+            if(finishIfNtkRouteChanged())
+                return;
+            if(!isFinishing && !isDestroyed() && p != null && p.isNtkSite())
+                handler.postDelayed(this, NTK_ROUTE_CHANGE_GUARD_INTERVAL_MS);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -496,6 +506,7 @@ public class CaptchaActivity extends AppCompatActivity {
                 if(view != null)
                     view.requestFocus();
                 handler.removeCallbacksAndMessages(null);
+                scheduleNtkRouteChangeGuard();
                 hideCaptchaLoadError();
                 if(progressBar != null) {
                     progressBar.setIndeterminate(false);
@@ -670,6 +681,7 @@ public class CaptchaActivity extends AppCompatActivity {
 
         android.util.Log.d("CaptchaActivity", "Loading captcha URL: " + url);
         loadCaptchaUrl(url);
+        scheduleNtkRouteChangeGuard();
 
         infoText.setVisibility(View.GONE);
 
@@ -712,6 +724,60 @@ public class CaptchaActivity extends AppCompatActivity {
         setResult(RESULT_CAPTCHA, resultIntent);
         finish();
         return true;
+    }
+
+    private void scheduleNtkRouteChangeGuard() {
+        if(p == null || !p.isNtkSite() || isFinishing || isDestroyed())
+            return;
+        handler.removeCallbacks(ntkRouteChangeGuard);
+        handler.postDelayed(ntkRouteChangeGuard, NTK_ROUTE_CHANGE_GUARD_INTERVAL_MS);
+    }
+
+    private boolean finishIfNtkRouteChanged() {
+        if(p == null || !p.isNtkSite() || isFinishing || isDestroyed())
+            return false;
+        String currentRoot = p.getWebtoonUrl();
+        boolean sourceIsNtkOrigin = getHttpClient().isNtkUrl(captchaLoadUrl);
+        if(!shouldFinishStaleNtkRouteForTest(
+                true, sourceIsNtkOrigin, captchaLoadUrl, currentRoot))
+            return false;
+        Log.d("CaptchaActivity", "finish stale NTK captcha after verified route change from="
+                + captchaLoadUrl + ",to=" + currentRoot);
+        isFinishing = true;
+        handler.removeCallbacksAndMessages(null);
+        Intent resultIntent = new Intent();
+        resultIntent.putExtra("ntkRouteChanged", true);
+        setResult(RESULT_CAPTCHA, resultIntent);
+        finish();
+        return true;
+    }
+
+    static boolean shouldFinishStaleNtkRouteForTest(boolean ntkSite,
+                                                     boolean sourceIsNtkOrigin,
+                                                     String captchaUrl,
+                                                     String currentRoot) {
+        if(!ntkSite || !sourceIsNtkOrigin)
+            return false;
+        try {
+            URI source = URI.create(captchaUrl == null ? "" : captchaUrl);
+            URI current = URI.create(currentRoot == null ? "" : currentRoot);
+            String sourceHost = normalizedHost(source.getHost());
+            String currentHost = normalizedHost(current.getHost());
+            return sourceHost.length() > 0
+                    && currentHost.length() > 0
+                    && !sourceHost.equals(currentHost)
+                    && "https".equalsIgnoreCase(source.getScheme())
+                    && "https".equalsIgnoreCase(current.getScheme());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static String normalizedHost(String host) {
+        if(host == null)
+            return "";
+        String normalized = host.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("www.") ? normalized.substring(4) : normalized;
     }
 
     private String resolveCaptchaUrl(Intent intent, String purl) {

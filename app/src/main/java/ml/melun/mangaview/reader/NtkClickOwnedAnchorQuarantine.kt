@@ -1,6 +1,7 @@
 package ml.melun.mangaview.reader
 
 import android.content.Context
+import android.os.Process
 import android.util.Log
 import ml.melun.mangaview.mangaview.Manga
 import java.io.Closeable
@@ -14,16 +15,43 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+private fun ntkClickWorkerThread(
+    runnable: Runnable,
+    name: String,
+    androidPriority: Int = Process.THREAD_PRIORITY_DEFAULT,
+): Thread = Thread({
+    runCatching { Process.setThreadPriority(androidPriority) }
+    runnable.run()
+}, name).apply {
+    isDaemon = true
+    priority = Thread.NORM_PRIORITY + 1
+}
+
 /** Exact, manifest-bound completions for one finite post-click transfer wave. */
 class NtkClickOwnedExactBodyStream(
     val bodyFutures: Map<Int, CompletableFuture<ReaderImageCache.NtkStrictPublishedBody?>>,
     private val owner: Closeable,
+    private val firstActualFramePresented: () -> Unit = {},
+    val sourceRoutePreparationReady: CompletableFuture<Unit> =
+        CompletableFuture.completedFuture(Unit),
+    /**
+     * The click-time metadata probe for p001 across every supported extension/replica. A completed
+     * null proves that the document's generated pNNN names are virtual and the signed image table
+     * is required; absence means this stream was created without the early probe.
+     */
+    val sampledAnchorCandidate: CompletableFuture<String?>? = null,
+    val bulkSourcePhysicalAdmissionReady: CompletableFuture<Unit> =
+        sourceRoutePreparationReady,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
 
     init {
         require(bodyFutures.isNotEmpty())
         require(bodyFutures.keys.all { it >= 0 })
+    }
+
+    fun onFirstActualFramePresented() {
+        if (!closed.get()) firstActualFramePresented()
     }
 
     override fun close() {
@@ -82,9 +110,12 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
     private val episodeId: String,
     private val pageCancellations: Map<Int, ReaderImageCache.Cancellation>,
     private val jpgCandidates: Map<Int, CompletableFuture<String?>>,
+    private val preferredExtension: CompletableFuture<String>,
+    private val sourceRoutePreparationReady: CompletableFuture<Unit>,
 ) : Closeable {
     data class Claim(
         val candidateFutures: Map<Int, CompletableFuture<String?>>,
+        val sourceRoutePreparationReady: CompletableFuture<Unit>,
         val owner: NtkClickOwnedManhwaProbeFrontier,
     )
 
@@ -122,12 +153,19 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
             jpgCandidates.size != NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS ||
             !claimed.compareAndSet(false, true)
         ) return null
+        val maximumCandidates =
+            (0 until NtkSourceLanePolicy.MAX_EPISODE_PAGES).associateWith { pageIndex ->
+                jpgCandidates[pageIndex] ?: preferredExtension.thenApply { extension ->
+                    candidateAsset(workId, episodeId, pageIndex, extension)
+                }
+            }
         Log.d(
             TAG,
             "click_manhwa_probe_frontier_claim_maximum path=$episodePath," +
-                "pages=${jpgCandidates.size},ready=${jpgCandidates.values.count { it.isDone }}",
+                "pages=${maximumCandidates.size},probePages=${jpgCandidates.size}," +
+                "ready=${maximumCandidates.values.count { it.isDone }}",
         )
-        return Claim(jpgCandidates, this)
+        return Claim(maximumCandidates, sourceRoutePreparationReady, this)
     }
 
     private fun claimExactCount(path: String, sourceWorkId: String, sourceEpisodeId: String, pageCount: Int): Claim? {
@@ -153,7 +191,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                 "frontierPages=${jpgCandidates.size},ready=$readyAtClaim," +
                 "cancelledOrDeferred=${pageCount - readyAtClaim}",
         )
-        return Claim(claimedCandidates, this)
+        return Claim(claimedCandidates, sourceRoutePreparationReady, this)
     }
 
     override fun close() {
@@ -165,11 +203,9 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
     companion object {
         private const val TAG = "ViewerPerf"
         private const val FORMAT_SAMPLE_PAGES = 4
+
         private val SETUP_EXECUTOR = Executors.newFixedThreadPool(8) { runnable ->
-            Thread(runnable, "ntk-click-probe-setup").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY + 1
-            }
+            ntkClickWorkerThread(runnable, "ntk-click-probe-setup")
         }
 
         fun start(manga: Manga, normalizedEpisodePath: String): NtkClickOwnedManhwaProbeFrontier? {
@@ -211,6 +247,17 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                         NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS.indexOf(extension)
                 } ?: "jpg"
             }
+            val sourceRoutePreparationReady = preferredExtension.thenApply { extension ->
+                if (extension != "jpg") {
+                    // HEAD proves the immutable filename variant, not image bytes. Publish only
+                    // that routing hint so the later exact owner can place its one authoritative
+                    // tail GET on the sampled suffix instead of issuing JPG 404s plus five HEADs.
+                    ReaderImageCache.rememberNtkGeneratedEpisodeExtensionHint(
+                        candidateAsset(workId, episodeId, 0, extension)
+                    )
+                }
+                Unit
+            }
             val futures = (0 until NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES)
                 .associateWith { pageIndex ->
                     sampleFutures[pageIndex] ?: preferredExtension.thenApply { extension ->
@@ -231,6 +278,8 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                 episodeId,
                 pageCancellations,
                 futures,
+                preferredExtension,
+                sourceRoutePreparationReady,
             )
         }
 
@@ -265,6 +314,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private val episodeId: String,
     private val cancellation: ReaderImageCache.Cancellation,
     private val earlyJpgCandidates: Map<Int, CompletableFuture<String?>>,
+    private val earlySourceRoutePreparationReady: CompletableFuture<Unit>?,
     private val earlyProbeOwner: NtkClickOwnedManhwaProbeFrontier?,
 ) : Closeable {
     private data class HeldBody(
@@ -294,6 +344,22 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         .associateWith { ReaderImageCache.Cancellation() }
     private val observedCandidates = (0 until plan.pageCount)
         .associateWith { CompletableFuture<String>() }
+    private val dominantTailExtension: CompletableFuture<String?> =
+        if (plan.maximumNumericBound && earlyJpgCandidates.isNotEmpty()) {
+            val sample = earlyJpgCandidates.entries
+                .sortedBy { it.key }
+                .take(DOMINANT_EXTENSION_SAMPLE_PAGES)
+                .map { it.value }
+            CompletableFuture.allOf(*sample.toTypedArray()).handle { _, _ ->
+                NtkClickOwnedManhwaWavePolicy.dominantTailExtension(
+                    sample.map { future ->
+                        runCatching { future.getNow(null) }.getOrNull()
+                    },
+                )
+            }
+        } else {
+            CompletableFuture.completedFuture(null)
+        }
     private val retained = ConcurrentHashMap<Int, HeldBody>()
     // Every common JPG transfer binds the same immutable maximum numeric table. Rebuilding that
     // full table and its digest in every body worker was O(pageCount^2) allocation on the cold
@@ -315,8 +381,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS,
         true,
     )
+    // A proven uncommon page-zero extension must never queue behind the bulk transfer wave.
+    // This is one additional bounded body slot, not a preload: it is reachable only after the
+    // committed click and a successful image-only HEAD for that exact p001 asset.
+    private val anchorBodyTransferPermit = Semaphore(1, true)
     private val waveReleased = AtomicBoolean(false)
     private val networkRelease = CompletableFuture<Unit>()
+    private val firstActualFramePresented = CompletableFuture<Unit>()
     // A body worker used to enter awaitRollingNumericAdmission() and poll every 25 ms. A
     // 112-page book therefore parked 72-88 Java threads until document authority completed, then
     // made Android schedule all of them at once; r56 spread valid GET starts out to click +1008 ms.
@@ -559,9 +630,59 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         if (closed.get() || !waveReleased.compareAndSet(false, true)) return
         Log.d(
             TAG,
-            "click_forward_quarantine_release path=${plan.normalizedEpisodePath},reason=$reason",
+            "click_forward_quarantine_release_pending path=${plan.normalizedEpisodePath}," +
+                "reason=$reason,gate=first_actual_frame_presented",
         )
-        networkRelease.complete(Unit)
+        // The initial viewport is already a real post-click network request and page zero owns a
+        // dedicated transfer permit. Do not let the exact-document callback release the entire
+        // finite volume while that tiny anchor body is still in flight: on a cold 112-page run,
+        // 104 newly admitted H2 streams starved a 99 KiB page-zero response for 11 seconds.
+        //
+        // This is not a timer or a hidden preload. The user-visible page starts at the committed
+        // click. A successful anchor holds the tail until its identity-valid frame is actually
+        // committed by HWUI; merely reaching EOF or decoding a Bitmap is not a user-visible
+        // milestone. A failed anchor cannot deadlock the episode: it releases the tail so the
+        // strict source fallback can recover page zero.
+        waveFuture.whenComplete { wave, waveFailure ->
+            val anchor = if (waveFailure == null) wave?.futures?.get(0) else null
+            if (anchor == null) {
+                completeNetworkRelease(reason, "anchor_unavailable")
+            } else {
+                anchor.whenComplete { held, anchorFailure ->
+                    if (anchorFailure != null || held == null) {
+                        completeNetworkRelease(reason, "anchor_failed")
+                    } else {
+                        firstActualFramePresented.whenComplete { _, frameFailure ->
+                            completeNetworkRelease(
+                                reason,
+                                if (frameFailure == null) {
+                                    "first_actual_frame_presented"
+                                } else {
+                                    "first_actual_frame_aborted"
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun notifyFirstActualFramePresented() {
+        if (closed.get() || !firstActualFramePresented.complete(Unit)) return
+        Log.d(
+            TAG,
+            "click_forward_quarantine_first_actual path=${plan.normalizedEpisodePath}",
+        )
+    }
+
+    private fun completeNetworkRelease(reason: String, gateResult: String) {
+        if (closed.get() || !networkRelease.complete(Unit)) return
+        Log.d(
+            TAG,
+            "click_forward_quarantine_release path=${plan.normalizedEpisodePath}," +
+                "reason=$reason,gate=$gateResult",
+        )
     }
 
     /**
@@ -626,16 +747,42 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 }
             }
         }
-        val stream = NtkClickOwnedExactBodyStream(exactFutures, this)
+        val extensionRouteReady =
+            earlySourceRoutePreparationReady ?: CompletableFuture.completedFuture(Unit)
+        val bulkRouteReady = extensionRouteReady.thenCombine(firstActualFramePresented) { _, _ ->
+            Unit
+        }
+        val stream = NtkClickOwnedExactBodyStream(
+            bodyFutures = exactFutures,
+            owner = this,
+            firstActualFramePresented = ::notifyFirstActualFramePresented,
+            // URL derivation is CPU-only and must be ready before the source actor starts. Holding
+            // it behind the first frame deadlocks exact publication because that publication is
+            // what makes the streamed anchor renderable.
+            sourceRoutePreparationReady = extensionRouteReady,
+            sampledAnchorCandidate = earlyJpgCandidates[0],
+            // Only physical GET admission for pages outside the click-owned wave waits for the
+            // real frame. This protects page zero from bulk socket/decode contention without
+            // delaying source-session promotion or route preparation.
+            bulkSourcePhysicalAdmissionReady = bulkRouteReady,
+        )
         CompletableFuture.allOf(*exactFutures.values.toTypedArray()).whenComplete { _, _ ->
             val published = exactFutures.values.mapNotNull { it.getNow(null) }
+            val completeEpisodeStream =
+                exactFutures.size == effectivePageCount.get() &&
+                    published.size == exactFutures.size
             Log.d(
                 TAG,
                 "click_anchor_quarantine_stream_complete path=${plan.normalizedEpisodePath}," +
                     "pages=${published.size},expected=${exactFutures.size}," +
-                    "bytes=${published.sumOf { it.proof.encodedLength }}",
+                    "bytes=${published.sumOf { it.proof.encodedLength }}," +
+                    "completeEpisodeStream=$completeEpisodeStream",
             )
-            close()
+            // A partial click stream and the remaining exact routes share one source authority.
+            // Closing its owner merely because the first eight futures completed invalidates the
+            // token-bound plan while the exact session is still downloading pages 8..N. The
+            // source session closes the stream owner at its real terminal lifecycle boundary.
+            if (completeEpisodeStream) close()
         }
         Log.d(
             TAG,
@@ -706,21 +853,30 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         // HEAD responses contain no image body. Give every finite page its own lane so extension
         // resolution has no second executor wave; each completed page immediately starts its one
         // body GET on the separately bounded 120-operation ring.
-        val initialPageLimit = if (plan.maximumNumericBound) {
-            minOf(pageLimit, NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
-        } else {
-            pageLimit
-        }
+        // Materialize one future for every finite candidate. Only the initial speculation debt can
+        // issue a body before the fresh document is authoritative; applyExactPageCount cancels the
+        // rest of the 384-page numeric bound, and documentValidated + the real first-frame gate
+        // admits only the exact retained pages. streamIfExact then marks every retained future as
+        // externally owned, so NtkStrictSourceSession cannot start a competing GET for the tail.
+        //
+        // Restricting this map to eight pages was safe but accidentally moved every remaining page
+        // back to the slower source actor. Fresh random runs consequently needed 8-18 seconds for
+        // ordinary 15-34 page books. The earlier complete click-owned wave downloaded a 112-page,
+        // 30.36 MiB volume in 4.022 seconds. Restoring complete ownership here keeps the newer
+        // identity/adoption/fallback protections while removing the duplicate-owner condition that
+        // made the old full-wave experiment unsafe.
+        val initialPageLimit = pageLimit
         val candidateFutures = (0 until initialPageLimit).associateWith { pageIndex ->
             val earlyJpg = earlyJpgCandidates[pageIndex]
             if (earlyJpg == null) {
                 if (plan.maximumNumericBound) {
-                    // The click-time frontier intentionally probes only its bounded connection-
-                    // warming sample. Pages beyond it must not turn a 384-page numeric ownership
-                    // bound into 264 x five speculative HEADs. Once the exact document retains
-                    // such a page, race its common JPG directly; only a real body miss performs
-                    // uncommon-extension discovery in startCompletedHeadMissCandidate().
-                    CompletableFuture.completedFuture<String?>(null)
+                    // The click-time frontier intentionally probes only a bounded sample. Use its
+                    // strongly dominant real extension as the preferred first body for the exact
+                    // tail instead of making every page repeat JPG -> GIF -> full resolver. A
+                    // mixed page still falls through the unchanged exhaustive resolver.
+                    dominantTailExtension.thenApply { extension ->
+                        extension?.let { candidateAsset(pageIndex, it) }
+                    }
                 } else {
                     probeCandidates(pageIndex, NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS)
                 }
@@ -749,7 +905,11 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 // authoritative left the final finite pages idle for more than a second. Start the
                 // common immutable JPG path immediately when that gate opens; a proven uncommon
                 // extension can still win on the separate fallback executor and cancel it.
-                startClickPrimaryCandidateRace(pageIndex, candidateFuture)
+                if (pageIndex >= NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES) {
+                    startPreferredTailCandidate(pageIndex, candidateFuture)
+                } else {
+                    startClickPrimaryCandidateRace(pageIndex, candidateFuture)
+                }
             } else {
                 candidateFuture.thenCompose { candidate ->
                     if (closed.get()) {
@@ -776,44 +936,94 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 "pipelined=true",
         )
         val preparedInitial = attachPrivatePredecodes(initialBodyFutures)
-        if (!plan.maximumNumericBound || initialPageLimit == pageLimit) {
-            return Wave(preparedInitial)
-        }
+        // Once exact ownership opens, a second quarantine session cannot legally acquire the same
+        // episode. Every exact page is represented by this stream; the source owner only supplies
+        // a bounded fallback for an individual future that returns null.
+        return Wave(preparedInitial)
+    }
 
-        // Keep an exact future for every protocol page without submitting 384 body workers at
-        // click time. The complete document releases only pages 120..<exactCount; pages beyond it
-        // complete locally. A 112-page book therefore no longer drains 272 cancelled executor
-        // tasks while valid bodies are competing for the same CPU, while a 270-page book still
-        // receives one continuous rolling queue after its exact count is known.
-        val combined = LinkedHashMap<Int, CompletableFuture<HeldBody?>>(pageLimit)
-        combined.putAll(preparedInitial)
-        val latePlaceholders = (initialPageLimit until pageLimit).associateWith {
-            CompletableFuture<HeldBody?>()
+    /**
+     * Pages outside the metadata frontier are admitted only after exact document authority and
+     * the first real frame. By then the bounded head sample can normally prove the volume's
+     * dominant extension. Start that one body directly and retain the exhaustive resolver as the
+     * failure path, avoiding dozens of known-wrong JPG/GIF attempts on a uniform JPEG volume.
+     */
+    private fun startPreferredTailCandidate(
+        pageIndex: Int,
+        candidateFuture: CompletableFuture<String?>,
+    ): CompletableFuture<HeldBody?> {
+        val primaryCancellation = checkNotNull(pageCancellations[pageIndex])
+        val preferredCandidate = candidateFuture.handle { candidate, failure ->
+            if (failure == null && candidate != null) {
+                candidate
+            } else {
+                candidateAsset(pageIndex, DEFAULT_EXTENSION)
+            }
         }
-        combined.putAll(latePlaceholders)
-        documentValidated.whenCompleteAsync({ _, validationFailure ->
-            val exactCount = effectivePageCount.get()
-            latePlaceholders.forEach { (pageIndex, placeholder) ->
-                if (validationFailure != null || closed.get() || pageIndex >= exactCount) {
-                    placeholder.complete(null)
+        val preferred = preferredCandidate
+            .thenCombine(tailAdmissionFuture(pageIndex, primaryCancellation)) {
+                    candidate, admitted ->
+                if (pageIndex == NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES ||
+                    pageIndex == effectivePageCount.get() - 1
+                ) {
+                    Log.d(
+                        TAG,
+                        "click_preferred_tail_admission path=${plan.normalizedEpisodePath}," +
+                            "page=$pageIndex,candidate=${candidate.substringAfterLast('/')}," +
+                            "admitted=$admitted,effectivePages=${effectivePageCount.get()}," +
+                            "closed=${closed.get()}",
+                    )
+                }
+                if (admitted) candidate else null
+            }
+            .thenCompose { candidate ->
+                if (candidate == null || closed.get()) {
+                    CompletableFuture.completedFuture(null)
                 } else {
-                    val lateBody = attachPrivatePredecodes(
-                        mapOf(
-                            pageIndex to startClickPrimaryCandidateRace(
+                    CompletableFuture.supplyAsync(
+                        {
+                            fetchOwnedCandidate(
                                 pageIndex,
-                                CompletableFuture.completedFuture<String?>(null),
-                            ),
-                        ),
-                    ).getValue(pageIndex)
-                    lateBody.whenComplete { held, failure ->
-                        if (failure == null) placeholder.complete(held)
-                        else placeholder.completeExceptionally(failure)
-                    }
+                                candidate,
+                                primaryCancellation,
+                                telemetryAfterImageHeaders = true,
+                            )
+                        },
+                        BODY_EXECUTOR,
+                    )
                 }
             }
-        }, COORDINATOR_EXECUTOR)
-        return Wave(combined)
+        return preferred.thenCompose { held ->
+            if (held != null || closed.get() || pageIndex >= effectivePageCount.get()) {
+                CompletableFuture.completedFuture(held)
+            } else {
+                startCompletedHeadMissCandidate(pageIndex)
+            }
+        }
     }
+
+    /**
+     * The sampled tail is never speculative: it can start only after the exact document and the
+     * first real frame have both released the network gate. Bind it to those owner events directly.
+     * Reusing the rolling-frontier future here left pages beyond that 120-page frontier completed
+     * as null on a 168-page volume, handing the last 48 bodies back to the slower source actor.
+     */
+    private fun tailAdmissionFuture(
+        pageIndex: Int,
+        callCancellation: ReaderImageCache.Cancellation,
+    ): CompletableFuture<Boolean> =
+        documentValidated.thenCombine(networkRelease) { _, _ ->
+            if (closed.get() || pageIndex >= effectivePageCount.get()) {
+                false
+            } else {
+                runCatching {
+                    callCancellation.throwIfCancelled()
+                    true
+                }.getOrDefault(false)
+            }
+        }.handle { admitted, failure ->
+            failure == null && admitted == true
+        }
 
     private fun discardHeldBody(held: HeldBody) {
         retained.remove(held.body.pageIndex, held)
@@ -835,6 +1045,20 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             if (held == null || closed.get()) {
                 held?.let(::discardHeldBody)
                 null
+            } else if (pageIndex >= PRIVATE_PREDECODE_RUNWAY_PAGES) {
+                // Exact-manifest promotion normally precedes the bulk body tail. Starting a
+                // second speculative full-size Bitmap for every one of 100-200 pages therefore
+                // races the authoritative twelve-lane decoder for the same immutable bytes. If
+                // the speculative decode has not completed at lease-open time it is abandoned,
+                // but an already-running BitmapFactory call cannot be interrupted and briefly
+                // doubles native pixel allocation. The resulting NativeAlloc GC pause was
+                // visible as a 303 ms presentation gap in the 200-page cold traversal.
+                //
+                // Keep the finite entry runway overlapped so the first physical flings cannot
+                // outrun pixels. Every later exact body is still decoded immediately by the
+                // authoritative source session; it simply has one pixel producer instead of two.
+                retained[pageIndex] = held
+                held
             } else {
                 val executor = if (pageIndex == 0) {
                     ANCHOR_PREDECODE_EXECUTOR
@@ -865,14 +1089,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     ): CompletableFuture<HeldBody?> {
         val primaryCancellation = checkNotNull(pageCancellations[pageIndex])
         val alternativeCancellation = checkNotNull(fallbackCancellations[pageIndex])
-
-        fun awaitAdmission(callCancellation: ReaderImageCache.Cancellation): Boolean {
-            return if (plan.maximumNumericBound) {
-                awaitRollingNumericAdmission(pageIndex, callCancellation)
-            } else {
-                !closed.get() && pageIndex < effectivePageCount.get()
-            }
-        }
 
         val canonicalCandidate = candidateAsset(pageIndex, DEFAULT_EXTENSION)
         // Local request/binding preparation may overlap document I/O, but a BODY_EXECUTOR thread
@@ -908,19 +1124,31 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             ) {
                 CompletableFuture.completedFuture(null)
             } else {
-                CompletableFuture.supplyAsync(
-                    {
-                        if (!awaitAdmission(alternativeCancellation)) null
-                        else fetchOwnedCandidate(
-                            pageIndex,
-                            candidate,
-                            alternativeCancellation,
-                            telemetryAfterImageHeaders = true,
-                            onValidImageHeaders = primaryCancellation::cancel,
-                        )
-                    },
-                    FALLBACK_BODY_EXECUTOR,
-                )
+                // Candidate completion runs on the metadata event itself. Cancel here, before
+                // enqueueing on the bounded fallback executor, so one cancellation cannot sit
+                // behind 112 alternative-body runnables while their speculative JPG calls fan
+                // out. The proven body still waits for the normal per-page admission below.
+                primaryCancellation.cancel()
+                // Never park a fallback worker on numeric admission. The sampled extension for
+                // pages 8..119 can resolve before the initial-viewport sample; if those tail
+                // runnables occupy FALLBACK_BODY_EXECUTOR while waiting for first-actual release,
+                // a valid p002.jpeg sits behind them and the renderer cannot cover the first
+                // viewport needed to produce that very first actual frame. Attach to the page
+                // event first and submit physical work only after admission, exactly like the
+                // primary path above.
+                primaryAdmissionFuture(pageIndex, alternativeCancellation)
+                    .thenApplyAsync({ admitted ->
+                        if (!admitted || closed.get()) {
+                            null
+                        } else {
+                            fetchOwnedCandidate(
+                                pageIndex,
+                                candidate,
+                                alternativeCancellation,
+                                telemetryAfterImageHeaders = true,
+                            )
+                        }
+                    }, fallbackBodyExecutor(pageIndex))
             }
         }
         return firstSuccessfulBody(
@@ -984,7 +1212,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                                     telemetryAfterImageHeaders = true,
                                 )
                             },
-                            FALLBACK_BODY_EXECUTOR,
+                            fallbackBodyExecutor(pageIndex),
                         )
                     }
                 }
@@ -1053,7 +1281,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                                         telemetryAfterImageHeaders = true,
                                     )
                                 },
-                                FALLBACK_BODY_EXECUTOR,
+                                fallbackBodyExecutor(pageIndex),
                             )
                         }
                     }
@@ -1085,7 +1313,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                                     telemetryAfterImageHeaders = true,
                                 )
                             },
-                            FALLBACK_BODY_EXECUTOR,
+                            fallbackBodyExecutor(pageIndex),
                         )
                     }
                 }
@@ -1198,19 +1426,21 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }
 
     private fun acquireBodyTransferPermit(
+        pageIndex: Int,
         callCancellation: ReaderImageCache.Cancellation,
     ): Boolean {
+        val permits = if (pageIndex == 0) anchorBodyTransferPermit else bodyTransferPermits
         while (!closed.get()) {
             callCancellation.throwIfCancelled()
-            if (bodyTransferPermits.tryAcquire(BODY_TRANSFER_PERMIT_POLL_MS, TimeUnit.MILLISECONDS)) {
+            if (permits.tryAcquire(BODY_TRANSFER_PERMIT_POLL_MS, TimeUnit.MILLISECONDS)) {
                 try {
                     callCancellation.throwIfCancelled()
                     if (!closed.get()) return true
                 } catch (failure: Throwable) {
-                    bodyTransferPermits.release()
+                    permits.release()
                     throw failure
                 }
-                bodyTransferPermits.release()
+                permits.release()
                 return false
             }
         }
@@ -1218,29 +1448,21 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }
 
     private fun acquireBodyTransferLease(
+        pageIndex: Int,
         callCancellation: ReaderImageCache.Cancellation,
     ): Closeable {
-        if (!acquireBodyTransferPermit(callCancellation)) {
+        if (!acquireBodyTransferPermit(pageIndex, callCancellation)) {
             throw InterruptedException("Click-owned body admission closed")
         }
+        val permits = if (pageIndex == 0) anchorBodyTransferPermit else bodyTransferPermits
         val released = AtomicBoolean(false)
         return Closeable {
-            if (released.compareAndSet(false, true)) bodyTransferPermits.release()
+            if (released.compareAndSet(false, true)) permits.release()
         }
     }
 
-    private fun awaitRollingNumericAdmission(
-        pageIndex: Int,
-        callCancellation: ReaderImageCache.Cancellation,
-    ): Boolean {
-        val admission = numericAdmissionFutures[pageIndex] ?: return false
-        return runCatching {
-            callCancellation.throwIfCancelled()
-            admission.get()
-            callCancellation.throwIfCancelled()
-            !closed.get() && pageIndex < effectivePageCount.get()
-        }.getOrDefault(false)
-    }
+    private fun fallbackBodyExecutor(pageIndex: Int) =
+        if (pageIndex == 0) ANCHOR_FALLBACK_BODY_EXECUTOR else FALLBACK_BODY_EXECUTOR
 
     private fun primaryAdmissionFuture(
         pageIndex: Int,
@@ -1268,6 +1490,20 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
 
     private fun releaseSpeculationDebt(pageIndex: Int) {
         if (!speculationDebtHolders.remove(pageIndex)) return
+        // Image headers prove only that a replica accepted this one body; they do not prove the
+        // episode table. Before the fresh numeric document completes, rolling this credit forward
+        // can grow three entry probes into almost the entire book and starve the authority request.
+        // documentValidated + networkRelease already completes every in-range admission future at
+        // the real prerequisite event, so retain no polling or fixed delay here.
+        if (plan.maximumNumericBound && !documentValidated.isDone) {
+            Log.d(
+                TAG,
+                "click_anchor_rolling_credit_held path=${plan.normalizedEpisodePath}," +
+                    "page=$pageIndex,debt=${speculationDebtHolders.size}," +
+                    "frontier=${rollingSpeculationFrontier.get()}",
+            )
+            return
+        }
         var admittedPage = -1
         var frontier: Int
         while (true) {
@@ -1324,7 +1560,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             binding.bindingDigest,
             pageIndex,
             candidateAsset,
-            pageIndex,
+            NtkClickOwnedManhwaWavePolicy.ownershipLane(pageIndex),
             operationId,
             route.routeKeyHash,
             route.callFactoryId,
@@ -1370,7 +1606,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     releaseSpeculationDebt(pageIndex)
                 },
                 metadataSink = { },
-                bodyReadAdmission = { acquireBodyTransferLease(callCancellation) },
+                bodyReadAdmission = { acquireBodyTransferLease(pageIndex, callCancellation) },
             )
             val held = HeldBody(body, opened, binding)
             retained[pageIndex] = held
@@ -1420,6 +1656,9 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         fallbackCancellations.values.forEach(ReaderImageCache.Cancellation::cancel)
         earlyProbeOwner?.close()
         networkRelease.complete(Unit)
+        firstActualFramePresented.completeExceptionally(
+            InterruptedException("Click-owned first actual frame gate closed"),
+        )
         documentValidated.completeExceptionally(
             InterruptedException("Click-owned numeric candidate flight closed"),
         )
@@ -1463,6 +1702,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         private const val SPECULATIVE_CLICK_PAGES =
             NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT
         private const val FORMAT_VERIFIED_SPECULATIVE_PAGES = SPECULATIVE_CLICK_PAGES
+        private const val PRIVATE_PREDECODE_RUNWAY_PAGES = SPECULATIVE_CLICK_PAGES
+        private const val DOMINANT_EXTENSION_SAMPLE_PAGES = 12
         private const val NUMERIC_RAMP_BATCH_PAGES = 32
         private const val NUMERIC_RAMP_INTERVAL_MS = 150L
         private val SESSION_IDS = AtomicLong(Long.MAX_VALUE / 2L)
@@ -1470,51 +1711,51 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         private val PROBE_EXECUTOR = Executors.newFixedThreadPool(
             NtkClickOwnedManhwaWavePolicy.PROBE_LANES,
         ) { runnable ->
-            Thread(runnable, "ntk-click-replica-probe").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY + 1
-            }
+            ntkClickWorkerThread(runnable, "ntk-click-replica-probe")
         }
         // Connections stay bounded by the replica-local pool ring. The executor admits every
         // finite body to those pools without forcing a second client-side wave.
         private val BODY_EXECUTOR = Executors.newFixedThreadPool(
             NtkClickOwnedManhwaWavePolicy.BODY_LANES,
         ) { runnable ->
-            Thread(runnable, "ntk-click-anchor-quarantine").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY + 1
-            }
+            ntkClickWorkerThread(runnable, "ntk-click-anchor-quarantine")
         }
-        // Format corrections and transport retries must not wait behind the primary rolling queue.
-        private val FALLBACK_BODY_EXECUTOR = Executors.newFixedThreadPool(8) { runnable ->
-            Thread(runnable, "ntk-click-anchor-fallback").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY + 1
-            }
+        // A uniform JPEG/PNG/GIF book is not an exceptional retry: after the metadata-only probe,
+        // every canonical page legitimately enters this executor. Keeping only eight workers made
+        // the policy's 24 measured connection shards run in three serialized waves and delayed the
+        // final GET itself beyond the cold deadline. bodyTransferPermits remains the single
+        // physical admission bound, and page zero retains its dedicated executor below.
+        private val FALLBACK_BODY_EXECUTOR = Executors.newFixedThreadPool(
+            NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS,
+        ) { runnable ->
+            ntkClickWorkerThread(runnable, "ntk-click-anchor-fallback")
+        }
+        private val ANCHOR_FALLBACK_BODY_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
+            ntkClickWorkerThread(
+                runnable,
+                "ntk-click-page-zero-fallback",
+                Process.THREAD_PRIORITY_DISPLAY,
+            )
         }
         private val COORDINATOR_EXECUTOR = Executors.newFixedThreadPool(2) { runnable ->
-            Thread(runnable, "ntk-click-forward-coordinator").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY + 1
-            }
+            ntkClickWorkerThread(runnable, "ntk-click-forward-coordinator")
         }
         private val NUMERIC_RAMP_EXECUTOR = Executors.newSingleThreadScheduledExecutor { runnable ->
-            Thread(runnable, "ntk-click-numeric-ramp").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY + 1
-            }
+            ntkClickWorkerThread(runnable, "ntk-click-numeric-ramp")
         }
         private val ANCHOR_PREDECODE_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "ntk-click-anchor-predecode").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY + 1
-            }
+            ntkClickWorkerThread(
+                runnable,
+                "ntk-click-anchor-predecode",
+                Process.THREAD_PRIORITY_DISPLAY,
+            )
         }
         private val BULK_PREDECODE_EXECUTOR = Executors.newFixedThreadPool(6) { runnable ->
-            Thread(runnable, "ntk-click-bulk-predecode").apply {
-                isDaemon = true
-                priority = Thread.NORM_PRIORITY
-            }
+            ntkClickWorkerThread(
+                runnable,
+                "ntk-click-bulk-predecode",
+                Process.THREAD_PRIORITY_BACKGROUND,
+            )
         }
 
         fun start(
@@ -1654,6 +1895,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             episodeId,
             ReaderImageCache.Cancellation(),
             earlyClaim?.candidateFutures ?: emptyMap(),
+            earlyClaim?.sourceRoutePreparationReady,
             earlyClaim?.owner,
         )
     }

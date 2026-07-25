@@ -90,8 +90,8 @@ class ViewerScrollTraceMetric : TraceMetric() {
         // AndroidX FrameTimingMetric is intentionally inapplicable here: the rolling reader is a
         // separate Surface/BufferQueue producer, so its buffers are absent from the parent
         // Activity's actual_frame_timeline_slice rows and that metric aborts with no expect/actual
-        // slices. Measure the system-side SurfaceFlinger
-        // application of each exact NtkStripLayer buffer. Bounds begin with the first changed
+        // slices. Measure the system-side SurfaceFlinger present fence for every buffer of the
+        // ReaderV2Activity SurfaceView. Bounds begin with the first changed
         // physical viewport and close after its last submitted drag/fling frame; stationary
         // finger holds and automation gaps are therefore outside the cadence denominator.
         // App-side onDraw/callback spacing is not accepted as this evidence.
@@ -118,14 +118,15 @@ class ViewerScrollTraceMetric : TraceMetric() {
             ),
             presented AS (
                 SELECT active_bounds.bound_id AS bound_id,
-                       surface_frame.id AS frame_token,
-                       surface_frame.ts + surface_frame.dur AS present_ts
+                       surface_frame.frame_number AS frame_token,
+                       surface_frame.ts AS present_ts
                 FROM active_bounds
-                JOIN slice AS surface_frame
+                JOIN frame_slice AS surface_frame
                   ON surface_frame.ts >= active_bounds.start_ts
                  AND surface_frame.ts <= active_bounds.end_ts
-                WHERE surface_frame.name GLOB
-                    'setBuffer NtkStripLayer#* - hasBuffer=true'
+                WHERE surface_frame.name = 'PresentFenceSignaled'
+                  AND surface_frame.layer_name LIKE
+                    'SurfaceView%ReaderV2Activity%(BLAST)#%'
             ),
             ordered AS (
                 SELECT bound_id, frame_token, present_ts,

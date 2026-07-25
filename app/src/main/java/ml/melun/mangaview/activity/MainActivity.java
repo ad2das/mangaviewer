@@ -1182,6 +1182,14 @@ public class MainActivity extends AppCompatActivity
             return true;
         }else if (id == R.id.action_site_switch) {
             toggleSitePreset();
+            // Apply the new state to the object that owns the active action view immediately.
+            // Relying only on invalidateOptionsMenu() leaves a short (and on some emulator
+            // builds, permanent) stale accessibility title even though the preference already
+            // changed. Besides confusing accessibility clients, a second tap during that stale
+            // interval switches straight back to the previous site.
+            boolean ntk = p.isNtkSite();
+            item.setIcon(ntk ? R.drawable.ic_site_ntk : R.drawable.ic_site_wfwf);
+            item.setTitle(ntk ? "NTK" : "WFWF");
             return true;
         }else if (id == R.id.action_settings) {
             toggleAccountSignIn();

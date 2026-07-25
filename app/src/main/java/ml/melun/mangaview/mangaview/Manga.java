@@ -463,7 +463,8 @@ public class Manga {
                 return 0;
             }
         }
-        if(exactCount <= 0 || exactCount > 120 || ntkViewerMetaPageCount(normalized) != exactCount)
+        if(exactCount <= 0 || exactCount > NTK_MAX_GENERATED_PAGE_COUNT
+                || ntkViewerMetaPageCount(normalized) != exactCount)
             return 0;
         return exactCount;
     }

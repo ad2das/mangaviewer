@@ -12,6 +12,10 @@ import java.util.concurrent.atomic.AtomicLong
 
 class NtkManifestEvidenceException(message: String) : IllegalArgumentException(message)
 
+class NtkDocumentRouteResponseException(
+    val status: Int,
+) : IllegalArgumentException("NTK document origin returned recoverable HTTP status=$status")
+
 data class NtkExactViewerImageApiEnvelope(
     val request: CustomHttpClient.NtkBoundHttpRequest,
     val response: CustomHttpClient.NtkBoundHttpResponse,
@@ -52,6 +56,9 @@ object NtkEpisodeDocumentPlanParser {
     ): NtkEpisodeDocumentPlanDraft {
         invocationCount.incrementAndGet()
         val normalizedPath = NtkStripDigests.normalizeEpisodePath(episodePath)
+        if (response.status in 500..599) {
+            throw NtkDocumentRouteResponseException(response.status)
+        }
         if (normalizedPath != lease.episodePath ||
             response.request == null ||
             response.request.method != "GET" ||
@@ -744,12 +751,19 @@ object NtkViewerImageApiAuthorityParser {
         if (trusted.isEmpty()) return null
         if (trusted.size == 1) return trusted.single()
 
-        // The API explicitly publishes these as interchangeable per-page origins. Select one
-        // deterministic replica per page and distribute a cold episode evenly across origins;
-        // this prevents the response's `src` ordering from concentrating the critical batch on
-        // one CDN while preserving exactly one physical image request per page.
+        // The API explicitly publishes these as interchangeable per-page origins. Keep the first
+        // two pages on one deterministic origin: short first pages commonly expose both pages in
+        // the opening viewport, and sharing page zero's already-proven host-local H2 pool avoids
+        // making the first complete viewport wait for a second cold CDN connection. Page one is
+        // still a normal post-entry image request and starts only after page zero publishes; this
+        // is neither hidden preload nor duplicate transport. Stripe the remaining episode evenly
+        // so the full-scene deadline retains its measured multi-origin throughput.
         val byHost = trusted.groupBy { URI(it).host.lowercase() }.toSortedMap()
-        val preferredHost = byHost.keys.elementAt(pageIndex % byHost.size)
+        val preferredHost = if (pageIndex < 2) {
+            byHost.keys.first()
+        } else {
+            byHost.keys.elementAt(pageIndex % byHost.size)
+        }
         return checkNotNull(byHost.getValue(preferredHost).firstOrNull())
     }
 

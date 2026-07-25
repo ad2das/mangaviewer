@@ -1,10 +1,8 @@
 package ml.melun.mangaview.macrobenchmark
 
-import android.app.Instrumentation
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
-import android.view.accessibility.AccessibilityEvent
 import androidx.benchmark.macro.BaselineProfileMode
 import androidx.benchmark.macro.CompilationMode
 import androidx.benchmark.macro.ExperimentalMetricApi
@@ -59,6 +57,18 @@ class NtkColdViewerMacrobenchmark {
         val workTitle = args.requiredBase64Utf8("ntkWorkTitleBase64")
         val episodeTitle = args.optionalBase64Utf8("ntkEpisodeTitleBase64")
         val episodePath = args.getString("ntkEpisodePath").orEmpty().trim()
+        val expectedAdjacentEpisodePath = args.getString("ntkExpectedAdjacentEpisodePath")
+            .orEmpty()
+            .trim()
+        val expectedAdjacentPageCount = args.getString("ntkExpectedAdjacentPageCount")
+            ?.toIntOrNull()
+            ?.coerceAtLeast(0)
+            ?: 0
+        require(
+            expectedAdjacentEpisodePath.isBlank() || expectedAdjacentPageCount > 0
+        ) {
+            "ntkExpectedAdjacentPageCount must be positive when an adjacent episode is required"
+        }
         val caseId = args.getString("ntkCaseId")?.trim().orEmpty().ifBlank {
             "$workType-$workId"
         }
@@ -94,6 +104,9 @@ class NtkColdViewerMacrobenchmark {
         var forwardTraversalStartElapsedNanos = 0L
         var forwardTraversalEndElapsedNanos = 0L
         var forwardTraversalGestureCount = 0
+        var adjacentTraversalGestureCount = 0
+        var adjacentLastActualDescription = ""
+        var adjacentLastSourceIndex = -1
         var traceProcessingFailure: Throwable? = null
 
         try {
@@ -132,7 +145,6 @@ class NtkColdViewerMacrobenchmark {
                 val episode = findEpisodeRow(device, episodePath)
 
                 val actualObservation = clickAndAwaitActualImage(
-                    instrumentation,
                     device,
                     episode,
                     episodePath,
@@ -162,10 +174,28 @@ class NtkColdViewerMacrobenchmark {
                     forwardTraversalGestureCount++
                 }
 
-                forwardTraversalGestureCount += driveToEdge(
-                    device,
-                    edge = "bottom"
-                )
+                if (expectedAdjacentEpisodePath.isNotBlank()) {
+                    // An appendable reader has no stable global bottom: chasing "bottom" first can
+                    // run through several later episodes and manufacture network/decode contention
+                    // beyond the one adjacent episode this scenario is meant to qualify. Traverse
+                    // the launch episode and the explicitly expected next episode in one bounded
+                    // forward pass, stopping as soon as that episode's final canonical page is
+                    // physically committed.
+                    val adjacent = driveThroughExpectedAdjacentEpisode(
+                        device,
+                        expectedAdjacentEpisodePath,
+                        expectedAdjacentPageCount
+                    )
+                    adjacentTraversalGestureCount = adjacent.gestures
+                    forwardTraversalGestureCount += adjacent.gestures
+                    adjacentLastActualDescription = adjacent.actualDescription
+                    adjacentLastSourceIndex = adjacent.sourceIndex
+                } else {
+                    forwardTraversalGestureCount += driveToEdge(
+                        device,
+                        edge = "bottom"
+                    )
+                }
                 forwardTraversalEndElapsedNanos = SystemClock.elapsedRealtimeNanos()
                 capture(device, outputDirectory, "bottom")
 
@@ -221,7 +251,6 @@ class NtkColdViewerMacrobenchmark {
                 runCatching {
                     val warmEpisode = findEpisodeRow(device, episodePath)
                     val warmObservation = clickAndAwaitActualImage(
-                        instrumentation,
                         device,
                         warmEpisode,
                         episodePath,
@@ -298,6 +327,11 @@ class NtkColdViewerMacrobenchmark {
                 .put("forwardTraversalStartElapsedNanos", forwardTraversalStartElapsedNanos)
                 .put("forwardTraversalEndElapsedNanos", forwardTraversalEndElapsedNanos)
                 .put("forwardTraversalGestureCount", forwardTraversalGestureCount)
+                .put("expectedAdjacentEpisodePath", expectedAdjacentEpisodePath)
+                .put("expectedAdjacentPageCount", expectedAdjacentPageCount)
+                .put("adjacentTraversalGestureCount", adjacentTraversalGestureCount)
+                .put("adjacentLastActualDescription", adjacentLastActualDescription)
+                .put("adjacentLastSourceIndex", adjacentLastSourceIndex)
                 .put("sameProcessWarmAttempted", warmAttempted)
                 .put("sameProcessWarmPassed", warmPassed)
                 .put("warmClickElapsedNanos", warmClickElapsedNanos)
@@ -504,13 +538,89 @@ class NtkColdViewerMacrobenchmark {
             SystemClock.elapsedRealtime() < deadline &&
             gestures < MAX_EDGE_GESTURES
         ) {
+            device.throwIfTerminalImageFailure("the real $edge scroll edge")
             verticalSwipe(device, FAST_SWIPE_STEPS)
             gestures++
         }
+        device.throwIfTerminalImageFailure("the real $edge scroll edge")
         check(device.hasObject(selector)) {
             "Viewer did not publish its real $edge scroll edge after $gestures gestures"
         }
         return gestures
+    }
+
+    private data class AdjacentTraversalObservation(
+        val gestures: Int,
+        val actualDescription: String,
+        val sourceIndex: Int
+    )
+
+    /**
+     * A temporarily installed adjacent runway must not be mistaken for the work's final edge.
+     * Keep performing the same forward fling a reader uses until the exact adjacent episode's
+     * canonical final page is physically represented by committed `actual:` semantics.
+     */
+    private fun driveThroughExpectedAdjacentEpisode(
+        device: UiDevice,
+        expectedEpisodePath: String,
+        expectedPageCount: Int
+    ): AdjacentTraversalObservation {
+        val requiredLastSource = expectedPageCount - 1
+        val deadline = SystemClock.elapsedRealtime() + EDGE_TIMEOUT_MS
+        var gestures = 0
+        var lastDescription = ""
+        var lastSource = -1
+        var expectedEpisodeObserved = false
+        while (
+            SystemClock.elapsedRealtime() < deadline &&
+            gestures < MAX_EDGE_GESTURES
+        ) {
+            device.throwIfTerminalImageFailure("the expected adjacent episode")
+            for (node in device.findObjects(ACTUAL_IMAGE_SELECTOR)) {
+                val description = runCatching { node.contentDescription.orEmpty() }
+                    .getOrNull()
+                    .orEmpty()
+                val identity = ACTUAL_IDENTITY_PATTERN.matchEntire(description) ?: continue
+                if (identity.groupValues[1] != expectedEpisodePath) continue
+                expectedEpisodeObserved = true
+                val source = identity.groupValues[2].toIntOrNull() ?: continue
+                if (source >= lastSource) {
+                    lastSource = source
+                    lastDescription = description
+                }
+                if (source >= requiredLastSource) {
+                    return AdjacentTraversalObservation(
+                        gestures = gestures,
+                        actualDescription = description,
+                        sourceIndex = source
+                    )
+                }
+            }
+            if (expectedEpisodeObserved) {
+                // A full-height four-step fling can jump from the penultimate manga page into the
+                // following episode without ever committing the expected final page. Once the
+                // requested adjacent episode is physically observed, keep moving only forward but
+                // shorten the gesture so every remaining canonical page crosses the viewport.
+                adjacentEpisodeForwardSwipe(device)
+            } else {
+                verticalSwipe(device, FAST_SWIPE_STEPS)
+            }
+            gestures++
+        }
+        error(
+            "Adjacent episode did not physically render its final canonical page: " +
+                "expected=$expectedEpisodePath source=$requiredLastSource " +
+                "observed=$lastSource gestures=$gestures actual=$lastDescription"
+        )
+    }
+
+    private fun UiDevice.throwIfTerminalImageFailure(label: String) {
+        findObject(TERMINAL_IMAGE_FAILURE_SELECTOR)?.let { failure ->
+            error(
+                "Viewer reported a terminal image failure while waiting for $label: " +
+                    failure.contentDescription.orEmpty()
+            )
+        }
     }
 
     private fun edgeSelector(edge: String): BySelector = By.desc(
@@ -528,6 +638,15 @@ class NtkColdViewerMacrobenchmark {
         device.swipe(x, lower, x, upper, steps)
     }
 
+    private fun adjacentEpisodeForwardSwipe(device: UiDevice) {
+        val width = device.displayWidth
+        val height = device.displayHeight
+        val x = width / 2
+        val upper = (height * 0.42f).toInt()
+        val lower = (height * 0.68f).toInt()
+        device.swipe(x, lower, x, upper, FAST_SWIPE_STEPS)
+    }
+
     private fun capture(device: UiDevice, directory: File, label: String) {
         val destination = File(directory, "${label.safeFileComponent()}.png")
         check(device.takeScreenshot(destination)) { "Screenshot failed: $destination" }
@@ -540,82 +659,66 @@ class NtkColdViewerMacrobenchmark {
     )
 
     /**
-     * Arms the accessibility observer before injecting the physical tap. UiAutomator's
-     * Until.findObject polling can notice an already-committed node hundreds of milliseconds late;
-     * the content-description change event is emitted by the exact identity-valid commit that
-     * publishes `actual:` semantics and therefore records the real external observation edge.
+     * Polls the identity-valid committed node immediately after injecting the physical tap.
+     *
+     * Some Android builds coalesce the SurfaceView semantics mutation without emitting a matching
+     * accessibility event. `executeAndWaitForEvent` then waits for its full observation timeout
+     * even though the real image has already been committed. The node itself is published only by
+     * the HWUI-commit callback, never by a placeholder, so polling it is the authoritative
+     * state-based synchronization primitive. The observed timestamp remains conservative because
+     * it is captured after UiAutomator can see the committed node.
      */
     private fun clickAndAwaitActualImage(
-        instrumentation: Instrumentation,
         device: UiDevice,
         episode: UiObject2,
         expectedEpisodePath: String,
         timeoutMs: Long,
         label: String
     ): ActualImageObservation {
-        var clickNanos = 0L
-        var observedNanos = 0L
+        val clickNanos = SystemClock.elapsedRealtimeNanos()
         val expectedPath = expectedEpisodePath.takeIf { it.isNotBlank() }
-        instrumentation.uiAutomation.executeAndWaitForEvent(
-            {
-                // This timestamp deliberately precedes UiAutomator's physical tap dispatch. It
-                // cannot shorten the reported viewer-open interval.
-                clickNanos = SystemClock.elapsedRealtimeNanos()
-                episode.click()
-            },
-            { candidate: AccessibilityEvent ->
-                if (candidate.packageName?.toString() != TARGET_PACKAGE) {
-                    false
-                } else {
-                    val descriptions = buildList {
-                        candidate.contentDescription?.toString()?.let(::add)
-                        runCatching { candidate.source?.contentDescription?.toString() }
-                            .getOrNull()?.let(::add)
-                        candidate.text.mapNotNullTo(this) { it?.toString() }
-                    }
-                    val actualMatched = descriptions.firstOrNull { description ->
-                        val identity = ACTUAL_IDENTITY_PATTERN.matchEntire(description)
-                        identity != null &&
-                            (expectedPath == null || identity.groupValues[1] == expectedPath)
-                    }
-                    // Android may coalesce the child SurfaceView's `actual:` semantic mutation
-                    // into the root edge update emitted by the same identity-valid commit. The
-                    // edge marker is never published for a blank/placeholder frame; after this
-                    // event returns we still require and identity-check the actual child node.
-                    val committedEdgeMatched = descriptions.any {
-                        it == "viewer-edge:top" || it == "viewer-edge:bottom" ||
-                            ACTUAL_IDENTITY_PATTERN.matches(it)
-                    }
-                    if (actualMatched != null || committedEdgeMatched) {
-                        observedNanos = SystemClock.elapsedRealtimeNanos()
-                        true
-                    } else {
-                        false
-                    }
-                }
-            },
-            // Observation timeout is deliberately separate from the product SLA. A slow cold
-            // result still traverses the whole forward reader so its screenshots, trace and GPU
-            // evidence are retained; the caller fails the case against timeoutMs afterwards.
-            maxOf(timeoutMs, ACTUAL_IMAGE_OBSERVATION_TIMEOUT_MS)
-        )
-        check(clickNanos > 0L && observedNanos >= clickNanos) {
-            "Invalid accessibility timing for $label"
+        episode.click()
+        val observationTimeoutMs = maxOf(timeoutMs, ACTUAL_IMAGE_OBSERVATION_TIMEOUT_MS)
+        val deadline = SystemClock.elapsedRealtime() + observationTimeoutMs
+        var actual: UiObject2? = null
+        var observedNanos = 0L
+        do {
+            val candidate = device.findObject(ACTUAL_IMAGE_SELECTOR)
+            val description = runCatching { candidate?.contentDescription.orEmpty() }
+                .getOrNull()
+                .orEmpty()
+            val identity = ACTUAL_IDENTITY_PATTERN.matchEntire(description)
+            if (candidate != null && identity != null &&
+                (expectedPath == null || identity.groupValues[1] == expectedPath)
+            ) {
+                actual = candidate
+                observedNanos = identity.groupValues[4].toLongOrNull()
+                    ?.takeIf { it >= clickNanos }
+                    ?: SystemClock.elapsedRealtimeNanos()
+                break
+            }
+            device.throwIfTerminalImageFailure(label)
+            device.waitForWindowUpdate(TARGET_PACKAGE, ACTUAL_IMAGE_POLL_MS)
+        } while (SystemClock.elapsedRealtime() < deadline)
+        check(actual != null && observedNanos >= clickNanos) {
+            "Timed out waiting for $label after ${observationTimeoutMs}ms"
         }
-        val actual = device.requireObject(
-            ACTUAL_IMAGE_SELECTOR,
-            maxOf(timeoutMs, ACTUAL_IMAGE_OBSERVATION_TIMEOUT_MS),
-            label
-        )
-        return ActualImageObservation(clickNanos, observedNanos, actual)
+        return ActualImageObservation(clickNanos, observedNanos, requireNotNull(actual))
     }
 
     private fun UiDevice.requireObject(
         selector: BySelector,
         timeoutMs: Long,
         label: String
-    ): UiObject2 = wait(Until.findObject(selector), timeoutMs)
-        ?: error("Timed out waiting for $label after ${timeoutMs}ms")
+    ): UiObject2 {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        do {
+            findObject(selector)?.let { return it }
+            throwIfTerminalImageFailure(label)
+            waitForWindowUpdate(TARGET_PACKAGE, 250L)
+        } while (SystemClock.elapsedRealtime() < deadline)
+        error("Timed out waiting for $label after ${timeoutMs}ms")
+    }
 
     private fun UiDevice.requireDescription(
         selector: BySelector,
@@ -638,21 +741,29 @@ class NtkColdViewerMacrobenchmark {
     private fun UiDevice.selectNtkSiteThroughProductionUi() {
         val selector = By.res(TARGET_PACKAGE, "action_site_switch")
         val deadline = SystemClock.elapsedRealtime() + UI_TIMEOUT_MS
+        var selectionClicked = false
+        var settingsOverlayDismissed = false
         do {
             // Emulator SystemUI can occasionally open its data-usage activity over the app just
-            // as the toolbar is tapped. That is outside the product flow. Return through the
-            // visible system Back action and retry the same production toolbar control; never
-            // inject the site preference or bypass the real UI.
+            // as the toolbar is tapped. Dismiss that exact Settings overlay once, then wait for
+            // the target window. Repeated Back presses while WindowManager is still transitioning
+            // can otherwise close MainActivity too and leave the benchmark polling the launcher.
+            // This remains the production toolbar flow; no site preference is injected.
             if (currentPackageName != TARGET_PACKAGE) {
-                pressBack()
+                if (currentPackageName == SETTINGS_PACKAGE && !settingsOverlayDismissed) {
+                    pressBack()
+                    settingsOverlayDismissed = true
+                }
                 waitForWindowUpdate(TARGET_PACKAGE, 500L)
                 continue
             }
+            settingsOverlayDismissed = false
             val toggle = findObject(selector)
             val description = runCatching { toggle?.contentDescription.orEmpty() }.getOrNull()
             if (description?.contains("NTK", ignoreCase = true) == true) return
-            if (toggle != null) {
+            if (toggle != null && !selectionClicked) {
                 toggle.click()
+                selectionClicked = true
                 waitForWindowUpdate(TARGET_PACKAGE, 500L)
             } else {
                 waitForWindowUpdate(TARGET_PACKAGE, 250L)
@@ -678,10 +789,16 @@ class NtkColdViewerMacrobenchmark {
 
     private companion object {
         const val TARGET_PACKAGE = "ml.melun.mangaview"
+        const val SETTINGS_PACKAGE = "com.android.settings"
         const val RESULT_TAG = "NtkColdMacro"
         const val WEBTOON_ALL_IMAGES_SLA_MS = 4_000L
         const val MANHWA_ALL_IMAGES_SLA_MS = 4_000L
-        const val ACTUAL_IMAGE_OBSERVATION_TIMEOUT_MS = 15_000L
+        // Keep evidence collection independent from the product SLA. A slow result still fails
+        // against firstImageSlaMs above, but large cold sources must remain observable long enough
+        // to prove whether a real HWUI image was eventually committed instead of being mislabeled
+        // as a missing image at the old 15/30-second automation ceiling.
+        const val ACTUAL_IMAGE_OBSERVATION_TIMEOUT_MS = 60_000L
+        const val ACTUAL_IMAGE_POLL_MS = 16L
         // Navigation setup is outside the click-relative viewer SLA. Under sustained host-GPU
         // qualification, a data-cleared emulator can spend well over 30 seconds restoring system
         // UI/accessibility and resolving the content catalog. Every wait below targets a real UI
@@ -716,11 +833,16 @@ class NtkColdViewerMacrobenchmark {
         val ALL_IMAGES_READY_SELECTOR: BySelector = By.desc(
             Pattern.compile("^actual:.*;allReady=\\d+;allReadyAtNanos=\\d+$")
         )
+        val TERMINAL_IMAGE_FAILURE_SELECTOR: BySelector = By.desc(
+            Pattern.compile("^viewer-terminal-image-failure:\\d+$")
+        )
         val ACTUAL_IDENTITY_PATTERN =
-            Regex("^actual:(.+):(\\d+):(\\d+)(?:;edge=(?:top|middle|bottom))?" +
+            Regex("^actual:(.+):(\\d+):(\\d+)(?:;actualAtNanos=(\\d+))?" +
+                "(?:;edge=(?:top|middle|bottom))?" +
                 "(?:;allReady=\\d+;allReadyAtNanos=\\d+)?$")
         val ALL_IMAGES_READY_PATTERN =
-            Regex("^actual:.+:\\d+:\\d+;edge=(?:top|middle|bottom);" +
+            Regex("^actual:.+:\\d+:\\d+(?:;actualAtNanos=\\d+)?" +
+                "(?:;edge=(?:top|middle|bottom))?;" +
                 "allReady=(\\d+);allReadyAtNanos=(\\d+)$")
     }
 }

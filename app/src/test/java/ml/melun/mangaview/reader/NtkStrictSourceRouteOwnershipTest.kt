@@ -55,7 +55,7 @@ class NtkStrictSourceRouteOwnershipTest {
         assertTrue(publication > pendingClear)
 
         val routeStart = cache.indexOf("fun resolveStrictSourceRoute(")
-        val routeEnd = cache.indexOf("private fun strictInstrumentedClient(", routeStart)
+        val routeEnd = cache.indexOf("fun resolveQuarantineSourceRoute(", routeStart)
         assertTrue(routeStart >= 0)
         assertTrue(routeEnd > routeStart)
         val route = cache.substring(routeStart, routeEnd)
@@ -66,6 +66,35 @@ class NtkStrictSourceRouteOwnershipTest {
         assertTrue(route.contains("ntk-demand-bound-exact-image"))
         assertFalse(route.contains("isAuthoritativeNativeDirectManifestImage"))
         assertFalse(route.contains("httpClient.imageClient"))
+    }
+
+    @Test
+    fun untaggedNtkCallsRemainBlockedExceptForTheBoundedUserDrivenAdjacentWindow() {
+        val cache = readSource("ReaderImageCache.kt")
+        val trackedStart = cache.indexOf("private fun newTrackedNtkEpisodeCall(")
+        val trackedEnd = cache.indexOf("private fun imageTelemetrySourceKey(", trackedStart)
+        assertTrue(trackedStart >= 0)
+        assertTrue(trackedEnd > trackedStart)
+        val tracked = cache.substring(trackedStart, trackedEnd)
+
+        assertTrue(tracked.contains("requestedAdjacentViewerCall"))
+        assertTrue(tracked.contains("isAuthorizedAdjacentForegroundViewerPath(path)"))
+        assertTrue(tracked.contains("!requestedAdjacentViewerCall"))
+        assertTrue(tracked.contains("requestedAdjacentViewerCall -> true"))
+        assertTrue(tracked.contains("throw LegacySourceCallSuppressedException(path)"))
+
+        val authorizationStart =
+            cache.indexOf("private fun isAuthorizedAdjacentForegroundViewerPath(")
+        val authorizationEnd =
+            cache.indexOf("@JvmStatic", authorizationStart)
+        assertTrue(authorizationStart >= 0)
+        assertTrue(authorizationEnd > authorizationStart)
+        val authorization = cache.substring(authorizationStart, authorizationEnd)
+        assertTrue(authorization.contains("legacySourceOperationAllowed(key)"))
+        assertFalse(authorization.contains("MainApplication.isNtkForegroundViewerPathActive()"))
+        assertTrue(authorization.contains("adjacentForegroundViewerPaths[key]"))
+        assertTrue(authorization.contains("allowedUntil > now"))
+        assertTrue(authorization.contains("adjacentForegroundViewerPaths.remove(key, allowedUntil)"))
     }
 
     @Test
@@ -119,10 +148,33 @@ class NtkStrictSourceRouteOwnershipTest {
                 NtkStrictSourceFailurePolicy.MAX_PHYSICAL_ATTEMPTS
             )
         )
+        assertTrue(
+            NtkStrictSourceFailurePolicy.isRetryableTransportFailure(
+                IOException("transport errors remain classifiable")
+            )
+        )
+        assertFalse(
+            NtkStrictSourceFailurePolicy.shouldRetryPhysicalFailure(
+                IOException("attempt budget exhausted"),
+                NtkStrictSourceFailurePolicy.MAX_PHYSICAL_ATTEMPTS,
+                NtkStrictSourceFailurePolicy.MAX_PHYSICAL_RECOVERY_CYCLES
+            )
+        )
+        assertTrue(
+            NtkStrictSourceFailurePolicy.retryDelayMs(
+                NtkStrictSourceFailurePolicy.MAX_PHYSICAL_ATTEMPTS,
+                1
+            ) >= 500L
+        )
         assertFalse(
             NtkStrictSourceFailurePolicy.isRecoverablePhysicalFailure(
                 NtkSourceIdentityException("authority changed"),
                 1
+            )
+        )
+        assertFalse(
+            NtkStrictSourceFailurePolicy.isRetryableTransportFailure(
+                NtkSourceIdentityException("authority changed")
             )
         )
         assertFalse(

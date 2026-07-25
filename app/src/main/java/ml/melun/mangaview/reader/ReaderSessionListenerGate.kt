@@ -549,6 +549,10 @@ class ReaderSessionListenerGate(
         return downstream.areAllAuthoritativeDrawablesInstalled(pageCount)
     }
 
+    override fun onStrictRollingHistoricalSceneActivated() {
+        if (active()) downstream.onStrictRollingHistoricalSceneActivated()
+    }
+
     override fun onInitialPageDecoded(
         index: Int,
         bitmap: Bitmap
@@ -623,6 +627,19 @@ class ReaderSessionListenerGate(
             return
         }
         downstream.onPageCleared(index)
+    }
+
+    override fun onPageRollingEvicted(index: Int) {
+        if (!active()) return
+        val entry = adopted.entry(index)
+        if (entry?.origin == DrawableOrigin.PREPARED_STORE || suppressLegacyIndex(index)) return
+        // Rolling eviction intentionally preserves the downstream historical all-ready ledger,
+        // but it must retire the renderer's current bitmap identities and forget this adoption so
+        // the same canonical page can be decoded and adopted again when it reaches the runway.
+        downstream.onPageRollingEvicted(index)
+        if (entry?.origin == DrawableOrigin.READER_SESSION) {
+            adopted.remove(index, DrawableOrigin.READER_SESSION)
+        }
     }
 
     override fun onMessage(message: String) {

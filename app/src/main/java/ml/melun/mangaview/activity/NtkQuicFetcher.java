@@ -26,6 +26,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 @TargetApi(34)
 public final class NtkQuicFetcher {
@@ -136,6 +138,71 @@ public final class NtkQuicFetcher {
         }
     }
 
+    /**
+     * One cancellation-aware exact GET for immutable image origins whose TCP/TLS route is reset
+     * before HTTP response headers. The request keeps its original URL and never follows a
+     * redirect, so the strict reader can apply the same byte/header identity checks as an OkHttp
+     * response. Keeping android.net.http ownership here also isolates it behind the API-34 gate.
+     */
+    public static final class CancelableExactRequest {
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicReference<UrlRequest> activeRequest = new AtomicReference<>();
+
+        public Result fetch(Context context, String url, String userAgent, String cookieHeader,
+                            Map<String, String> requestHeaders, long timeoutMs) {
+            if(cancelled.get())
+                return Result.error(new InterruptedException("Exact QUIC request cancelled"));
+            if(!isAvailable())
+                return Result.error(new UnsupportedOperationException("HttpEngine requires API 34"));
+            String host;
+            try {
+                host = URI.create(url).getHost();
+            } catch (Throwable throwable) {
+                return Result.error(throwable);
+            }
+            if(host == null || host.length() == 0)
+                return Result.error(new IllegalArgumentException("Missing host: " + url));
+            Session session = newQuicSession(context, userAgent, host);
+            if(session == null)
+                return Result.error(new UnsupportedOperationException("QUIC session unavailable"));
+            RequestOwner owner = new RequestOwner() {
+                @Override
+                public boolean register(UrlRequest request) {
+                    if(cancelled.get())
+                        return false;
+                    activeRequest.set(request);
+                    if(cancelled.get() && activeRequest.compareAndSet(request, null)) {
+                        request.cancel();
+                        return false;
+                    }
+                    return true;
+                }
+
+                @Override
+                public void unregister(UrlRequest request) {
+                    activeRequest.compareAndSet(request, null);
+                }
+            };
+            try {
+                return session.fetchExactOwned(url, userAgent, cookieHeader, requestHeaders,
+                        "GET", null, timeoutMs, owner);
+            } finally {
+                session.close();
+            }
+        }
+
+        public void cancel() {
+            cancelled.set(true);
+            UrlRequest request = activeRequest.getAndSet(null);
+            if(request != null)
+                request.cancel();
+        }
+
+        public boolean isCancelled() {
+            return cancelled.get();
+        }
+    }
+
     private static Result fetchWithTransport(Context context, String url, String userAgent, String cookieHeader,
                         Map<String, String> requestHeaders, String method, byte[] body, long timeoutMs,
                         boolean enableQuic, PartialTextObserver partialTextObserver) {
@@ -197,6 +264,17 @@ public final class NtkQuicFetcher {
             try {
                 return fetchWithEngine(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                         method, body, timeoutMs);
+            } catch (Throwable throwable) {
+                return Result.error(throwable);
+            }
+        }
+
+        public Result fetchExactOwned(String url, String userAgent, String cookieHeader,
+                                      Map<String, String> requestHeaders, String method, byte[] body,
+                                      long timeoutMs, RequestOwner requestOwner) {
+            try {
+                return fetchWithEngineExactOwned(engine, executor, url, userAgent, cookieHeader,
+                        requestHeaders, method, body, timeoutMs, requestOwner);
             } catch (Throwable throwable) {
                 return Result.error(throwable);
             }

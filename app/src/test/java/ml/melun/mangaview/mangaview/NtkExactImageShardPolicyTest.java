@@ -9,11 +9,14 @@ import org.junit.Test;
 
 public final class NtkExactImageShardPolicyTest {
     @Test
-    public void everyThreeHostStripeUsesEightBalancedPools() {
+    public void everyActualHostSequenceUsesEightBalancedPools() {
         for(int hostStripe = 0; hostStripe < 3; hostStripe++) {
             int[] occupancy = new int[8];
             Set<Integer> usedShards = new HashSet<>();
-            for(int pageIndex = hostStripe; pageIndex < 122; pageIndex += 3) {
+            for(int pageIndex = 0; pageIndex < 122; pageIndex++) {
+                int actualHostStripe = pageIndex <= 1 ? 0 : pageIndex % 3;
+                if(actualHostStripe != hostStripe)
+                    continue;
                 int shard = CustomHttpClient.ntkWebtoonExactImageShardIndex(pageIndex, 8);
                 assertTrue(shard >= 0 && shard < occupancy.length);
                 occupancy[shard]++;
@@ -32,16 +35,9 @@ public final class NtkExactImageShardPolicyTest {
     }
 
     @Test
-    public void everyCompleteHostLocalBlockStillUsesEveryPoolExactlyOnce() {
-        for(int block = 0; block < 12; block++) {
-            Set<Integer> usedShards = new HashSet<>();
-            for(int localOffset = 0; localOffset < 8; localOffset++) {
-                int hostLocalOrdinal = block * 8 + localOffset;
-                int pageIndex = hostLocalOrdinal * 3;
-                usedShards.add(CustomHttpClient.ntkWebtoonExactImageShardIndex(pageIndex, 8));
-            }
-            assertEquals("block " + block, 8, usedShards.size());
-        }
+    public void openingViewportUsesDistinctPoolsOnItsSharedOrigin() {
+        assertEquals(0, CustomHttpClient.ntkWebtoonExactImageShardIndex(0, 8));
+        assertEquals(1, CustomHttpClient.ntkWebtoonExactImageShardIndex(1, 8));
     }
 
     @Test

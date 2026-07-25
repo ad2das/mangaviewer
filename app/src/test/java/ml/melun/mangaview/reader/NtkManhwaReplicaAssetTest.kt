@@ -114,4 +114,21 @@ class NtkManhwaReplicaAssetTest {
         assertTrue(candidates.any { it.contains("booktoki9.org") })
         assertTrue(candidates.any { it.contains("aws-cdn1.site") })
     }
+
+    @Test
+    fun `terminal jpg replica ring exposes bounded immutable extension fallbacks`() {
+        val candidates = ReaderImageCache.strictManhwaExtensionFallbackUrlsForTest(
+            "https://booktoki8.org/manhwa/23891/1706358/p034.jpg",
+            pageIndex = 33,
+        )
+
+        assertEquals(16, candidates.size)
+        assertTrue(candidates.take(4).all { it.endsWith("/p034.gif") })
+        assertTrue(candidates.any { it.endsWith("/p034.webp") })
+        assertTrue(candidates.any { it.endsWith("/p034.png") })
+        assertTrue(candidates.any { it.endsWith("/p034.jpeg") })
+        assertTrue(candidates.all {
+            it.contains("/manhwa/23891/1706358/p034.")
+        })
+    }
 }

@@ -45,6 +45,19 @@ public class MangaTest {
     }
 
     @Test
+    public void clickPayloadCountSupportsLargeRealWorldEpisodes() {
+        Manga episode = new Manga(5667, "대용량", "", MTitle.base_comic);
+        episode.setNtkEpisodePath("/manhwa/2640/5667");
+        episode.setNtkImageCount(270);
+        episode.setNtkViewerPayloadHint(
+                "{\"sourceWorkId\":\"2640\",\"episodeId\":\"5667\","
+                        + "\"episodePath\":\"/manhwa/2640/5667\",\"imageCount\":270,"
+                        + "\"pages\":[{\"page\":1},{\"page\":270}]}");
+
+        assertEquals(270, episode.getExactNtkClickPayloadImageCount("/manhwa/2640/5667"));
+    }
+
+    @Test
     public void episodeParserPreservesPathBoundCountWithoutApiTokenPayload() {
         String html = "<a href='/manhwa/2640/5667'><span class='subject'>13권</span></a>"
                 + "<script>{\"id\":\"5667\",\"imageCount\":88}</script>";
@@ -448,7 +461,10 @@ public class MangaTest {
         List<Manga> boardEpisodes = NtkEpisodeParser.parseForTest(boardOnly, "webtoon", "837998", MTitle.base_webtoon);
 
         assertEquals(1, boardEpisodes.size());
-        assertEquals("", boardEpisodes.get(0).getNtkViewerPayloadHint());
+        String boardHint = boardEpisodes.get(0).getNtkViewerPayloadHint();
+        assertFalse(boardHint.contains("board_uploads"));
+        assertTrue(boardHint.contains("\"episodePath\":\"/webtoon/837998/naver-837998-32\""));
+        assertTrue(boardHint.contains("\"imageCount\":75"));
     }
 
     @Test

@@ -598,9 +598,12 @@ class NtkInlineReaderController private constructor(
 
         @JvmStatic
         fun strictPreparedKey(path: String?): String {
-            val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty()).lowercase()
+            val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty())
             return if (normalized.matches(
-                    Regex("""^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$""")
+                    Regex(
+                        """^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$""",
+                        RegexOption.IGNORE_CASE,
+                    )
                 )
             ) {
                 "ntk-strict:$normalized"
@@ -608,7 +611,7 @@ class NtkInlineReaderController private constructor(
         }
 
         internal fun resolvePreparedKey(path: String?, preparedKey: String?): String {
-            val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty()).lowercase()
+            val normalized = NtkStripDigests.normalizeEpisodePath(path.orEmpty())
             return preparedKey.orEmpty().ifBlank { strictPreparedKey(normalized) }
         }
 
@@ -679,7 +682,7 @@ class NtkInlineReaderController private constructor(
         if (state == State.DESTROYED) return rejectStage(StageResult.DESTROYED)
         if (state == State.ACTIVE) return StageResult.ACTIVE
         if (state == State.EXITING) return rejectStage(StageResult.PREPARED_NOT_READY)
-        val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty()).lowercase()
+        val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty())
         val key = resolvePreparedKey(path, preparedKey)
         if (key.isEmpty() || startPage < 0 || startOffset < 0) {
             return rejectStage(StageResult.PREPARED_NOT_READY)
@@ -1377,7 +1380,7 @@ class NtkInlineReaderController private constructor(
             cleanupRuntime("replace_staged", restoreEpisode = true, destroy = false, notifyExit = false)
         }
         val strictPath =
-            NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty()).lowercase()
+            NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty())
         val strictKey = resolvePreparedKey(strictPath, preparedKey)
         if (strictPath.isEmpty() || strictKey.isEmpty()) {
             return rejectStage(StageResult.PREPARED_NOT_READY)
@@ -1456,7 +1459,12 @@ class NtkInlineReaderController private constructor(
         renderView.setFrameSchedulingSuppressed(true)
         renderView.setInlineRealPixelsOnly(true)
         renderView.setPageGapPx(0)
-        renderView.setLimitScrollToDrawablePrefix(false)
+        // A fling must never outrun the contiguous real-pixel prefix. The renderer keeps the
+        // last complete viewport moving smoothly, requests the blocked page immediately, and
+        // releases the bound as soon as that drawable is installed. This prevents a large cold
+        // manhwa from exposing transparent pages without substituting placeholders or hiding the
+        // viewer behind a loading screen.
+        renderView.setLimitScrollToDrawablePrefix(true)
 
         val controllerPort = object : NtkEpisodeStripPipeline.ControllerPort {
             override fun installSurfacePrepared(
@@ -3715,7 +3723,7 @@ class NtkInlineReaderController private constructor(
     }
 
     private fun stagedMatches(manga: Manga, preparedKey: String?): Boolean {
-        val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty()).lowercase()
+        val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty())
         val expectedKey = resolvePreparedKey(path, preparedKey)
         if (state != State.STAGED || stagedKey.isEmpty() || stagedKey != expectedKey) {
             return false
@@ -3724,7 +3732,7 @@ class NtkInlineReaderController private constructor(
     }
 
     private fun bindingMatches(manga: Manga, preparedKey: String?): Boolean {
-        val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty()).lowercase()
+        val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty())
         val expectedKey = resolvePreparedKey(path, preparedKey)
         if ((state != State.PLANNED && state != State.BINDING) ||
             stagedKey.isEmpty() || stagedKey != expectedKey
