@@ -775,6 +775,22 @@ public final class NtkStrictFreshArchitectureTest {
     }
 
     @Test
+    public void strictColdSessionKeepsThePersistedResumeAnchor() throws Exception {
+        String session = read(readerSourcePath("ReaderSession.kt"));
+        String strictStart = method(session,
+                "private fun startStrictExactColdSession()",
+                "private fun failStrictExactColdSession(");
+
+        assertTrue(strictStart.contains("requestedStartPage()"));
+        assertTrue(strictStart.contains(
+                "StrictRollingAdmission.initial(launchSeal.pageCount, installed)"));
+        assertTrue(strictStart.contains("currentViewportAnchor.set(installed)"));
+        assertTrue(strictStart.contains("anchor = sourceIndex == installed"));
+        assertFalse(strictStart.contains(
+                "installImages(launchSeal.canonicalAssets, 0"));
+    }
+
+    @Test
     public void strictDiscoveryRetirementFencesEveryResponseAndPublication() throws Exception {
         String coordinator = read(readerSourcePath("NtkStrictEpisodeDiscoveryCoordinator.kt"));
         assertTrue(coordinator.contains("fun retireViewerOwnership("));

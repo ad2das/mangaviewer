@@ -185,6 +185,46 @@ class ReaderSessionListenerGateTest {
     }
 
     @Test
+    fun strictDrawableAdoptionDoesNotSuppressRestoredInitialPage() {
+        val downstream = RecordingListener()
+        val registry = AdoptedDrawableRegistry().apply {
+            adopt(2, DrawableOrigin.READER_SESSION, AdoptedDrawableIdentity.token(Any()))
+        }
+        val gate = ReaderSessionListenerGate(
+            generation = 1,
+            isActive = { true },
+            adopted = registry,
+            installed = InstalledDrawableQuery { true },
+            downstream = downstream
+        )
+
+        gate.onInitialPage(2)
+
+        assertEquals(listOf("initial:2"), downstream.events)
+    }
+
+    @Test
+    fun legacyPreparedDrawableStillSuppressesInitialPageMutation() {
+        val downstream = RecordingListener()
+        val registry = AdoptedDrawableRegistry(
+            policy = AdoptedDrawableRegistry.Policy.LEGACY_PREPARED_BITMAP_MATCH
+        ).apply {
+            adopt(2, DrawableOrigin.PREPARED_STORE, AdoptedDrawableIdentity.token(Any()))
+        }
+        val gate = ReaderSessionListenerGate(
+            generation = 1,
+            isActive = { true },
+            adopted = registry,
+            installed = InstalledDrawableQuery { true },
+            downstream = downstream
+        )
+
+        gate.onInitialPage(2)
+
+        assertTrue(downstream.events.isEmpty())
+    }
+
+    @Test
     fun onlyInlineFullQualityTileWinnerIsAuthoritativeForDecodeSuppression() {
         val fullQuality = AdoptedDrawableIdentity.validatedFullQualityTileResources(
             pageWidth = 100,

@@ -389,7 +389,12 @@ class ReaderSessionListenerGate(
     }
 
     override fun onInitialPage(index: Int) {
-        if (active() && !adopted.hasAny()) downstream.onInitialPage(index)
+        if (active() &&
+            (adopted.policy == AdoptedDrawableRegistry.Policy.FIRST_VALID_FULL_QUALITY_TILE ||
+                !adopted.hasAny())
+        ) {
+            downstream.onInitialPage(index)
+        }
     }
 
     override fun onPageLoading(index: Int) {

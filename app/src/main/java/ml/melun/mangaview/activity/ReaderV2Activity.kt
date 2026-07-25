@@ -209,6 +209,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var cachedPreviousEpisode: Manga? = null
     private var cachedNextEpisode: Manga? = null
     private var episodeListFetchAttempted = false
+    private var episodePickerLoadTask: AppDispatchers.TaskHandle? = null
+    private var episodePickerCancellation: MangaRepository.Cancellation? = null
     @Volatile private var destroyed = false
     private var progressSaveArmed = false
     private var progressMovedInGesture = false
@@ -236,6 +238,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var firstFocusPhysicalDrawProof: FirstPhysicalDrawProof? = null
     private var pendingInitialRestorePage = -1
     private var pendingInitialRestoreOffset = 0
+    private var activeInitialRestorePage = -1
+    private var activeInitialRestoreOffset = 0
+    private var activeInitialRestoreUntilMs = 0L
     @Volatile
     private var blockingStatusForTest = ""
     private val progressHandler = Handler(Looper.getMainLooper())
@@ -1110,6 +1115,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialStatusPending = false
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
+        activeInitialRestorePage = -1
+        activeInitialRestoreOffset = 0
+        activeInitialRestoreUntilMs = 0L
         lastDisplayedPageText = ""
         ntkInitialDiscoveryPath = ntkPath
         if (ntkLaunchPreflightStarted) ntkLaunchPreflightPath = ntkPath
@@ -1458,6 +1466,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         preparedSessionBuildTask = null
         preparedSessionStartTask?.cancel()
         preparedSessionStartTask = null
+        episodePickerCancellation?.cancel()
+        episodePickerCancellation = null
+        episodePickerLoadTask?.cancel()
+        episodePickerLoadTask = null
         ntkAckPreflightGeneration.incrementAndGet()
         currentManga?.ntkEpisodePath?.let { path ->
         }
@@ -1577,6 +1589,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val effectiveCount = effectiveNtkPagesReadyCount(count)
         val oldCount = pageCount
         var appliedCount = effectiveCount
+        if (oldCount <= 0 && effectiveCount > 0) {
+            val initialPage = session?.initialStartPage()
+                ?.coerceIn(0, effectiveCount - 1)
+            if (initialPage != null) currentPage = initialPage
+        }
         val preservePreRenderedInitial = shouldPreservePreRenderedInitialDrawable(effectiveCount)
         val preservePreparedSurfaceBatch = preparedSurfaceAdoptionActive &&
             effectiveCount == preparedSurfacePageCount &&
@@ -2110,6 +2127,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             pageCount = count
             currentPage += insertedCount
             if (pendingInitialRestorePage >= 0) pendingInitialRestorePage += insertedCount
+            if (activeInitialRestorePage >= 0) activeInitialRestorePage += insertedCount
             renderView.prependPageCount(count, insertedCount, revealPrependedBoundary, holdUntilReadyCount)
             if (revealPrependedBoundary) {
                 currentPage = (insertedCount - 1).coerceIn(0, count - 1)
@@ -2155,6 +2173,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 pendingInitialRestorePage = -1
                 pendingInitialRestoreOffset = 0
             }
+            if (activeInitialRestorePage >= startIndex + effectiveRemoved) {
+                activeInitialRestorePage -= effectiveRemoved
+            } else if (activeInitialRestorePage >= startIndex) {
+                activeInitialRestorePage = -1
+                activeInitialRestoreOffset = 0
+                activeInitialRestoreUntilMs = 0L
+            }
             renderView.removePageRange(startIndex, effectiveRemoved, immediate = true)
             Log.d(
                 TAG,
@@ -2176,6 +2201,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (needsInitialRestorePosition(index, offset)) {
                 pendingInitialRestorePage = index
                 pendingInitialRestoreOffset = offset
+                activeInitialRestorePage = index
+                activeInitialRestoreOffset = offset
+                activeInitialRestoreUntilMs =
+                    SystemClock.uptimeMillis() + INITIAL_RESTORE_RETRY_WINDOW_MS
                 renderView.holdInitialRestoreRender(index)
                 renderView.lockRestoredPageOffset(index, offset)
                 updateCurrentEpisode(index, offset, saveProgress = false)
@@ -2183,13 +2212,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             } else {
                 pendingInitialRestorePage = -1
                 pendingInitialRestoreOffset = 0
+                activeInitialRestorePage = -1
+                activeInitialRestoreOffset = 0
+                activeInitialRestoreUntilMs = 0L
                 updateCurrentEpisode(index, 0, saveProgress = false)
             }
         }
     }
 
     private fun needsInitialRestorePosition(index: Int, offset: Int): Boolean {
-        return index > 0 || offset > 0
+        return needsInitialRestorePositionForBookmark(index, offset)
     }
 
     private fun restoreBookmarkManga(manga: Manga?): Manga? {
@@ -4693,6 +4725,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialStatusPending = false
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
+        activeInitialRestorePage = -1
+        activeInitialRestoreOffset = 0
+        activeInitialRestoreUntilMs = 0L
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.VISIBLE
@@ -4733,6 +4768,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialStatusPending = false
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
+        activeInitialRestorePage = -1
+        activeInitialRestoreOffset = 0
+        activeInitialRestoreUntilMs = 0L
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         status.visibility = TextView.VISIBLE
@@ -4793,6 +4831,46 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     "window_changed first=$firstPage last=$lastPage anchor=$anchorPage " +
                         "progress=$progressPage offset=$progressOffset busy=$busy current=$currentPage"
                 )
+            }
+            if (
+                activeInitialRestorePage >= 0 &&
+                !busy &&
+                now <= activeInitialRestoreUntilMs &&
+                (progressPage != activeInitialRestorePage ||
+                    kotlin.math.abs(progressOffset - activeInitialRestoreOffset) > 2)
+            ) {
+                val restorePage = activeInitialRestorePage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                val restoreOffset = activeInitialRestoreOffset
+                renderView.lockRestoredPageOffset(restorePage, restoreOffset)
+                MainThreadStallMonitor.trace("reader_request_window_async") {
+                    activeSession?.requestWindowAsync(
+                        restorePage,
+                        minOf(pageCount - 1, restorePage + 2),
+                        restorePage,
+                        false
+                    )
+                }
+                Log.d(
+                    TAG,
+                    "window_changed_initial_restore_retry progress=$progressPage," +
+                        "offset=$progressOffset,target=$restorePage,targetOffset=$restoreOffset"
+                )
+                return@trace
+            }
+            if (activeInitialRestorePage >= 0) {
+                if (busy) {
+                    activeInitialRestorePage = -1
+                    activeInitialRestoreOffset = 0
+                    activeInitialRestoreUntilMs = 0L
+                } else {
+                    Log.d(
+                        TAG,
+                        "window_changed_initial_restore_applied page=$progressPage,offset=$progressOffset"
+                    )
+                    activeInitialRestorePage = -1
+                    activeInitialRestoreOffset = 0
+                    activeInitialRestoreUntilMs = 0L
+                }
             }
             if (
                 isCurrentNtkReader() &&
@@ -5323,18 +5401,19 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     resolution
                 } else {
                     val width = readerWidthPx()
+                    val startAtFirstPage = shouldStartEpisodeAtFirstPage(target)
                     val preparedKey = ReaderWarmupCoordinator.readyKey(
                         applicationContext,
                         target,
                         resolution.title,
                         width,
-                        true
+                        startAtFirstPage
                     ) ?: ReaderWarmupCoordinator.openKey(
                         applicationContext,
                         target,
                         resolution.title,
                         width,
-                        true
+                        startAtFirstPage
                     )
                     resolution.copy(preparedKey = preparedKey)
                 }
@@ -5395,6 +5474,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         saveCurrentReadingProgress()
         target.mode = source.mode
         attachEpisodeList(title, target)
+        val startAtFirstPage = shouldStartEpisodeAtFirstPage(target)
         currentManga = target
         currentTitle = title ?: target.title ?: currentTitle
         val displayTitle = displayEpisodeTitle(target, currentTitle)
@@ -5417,7 +5497,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 target,
                 currentTitle,
                 preparedKey,
-                startAtFirstPage = true,
+                startAtFirstPage = startAtFirstPage,
                 clearViewImmediately = true
             )
             primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
@@ -5427,7 +5507,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             return
         }
         if (target.isOnline && (targetPath.startsWith("/webtoon/") || targetPath.startsWith("/manhwa/"))) {
-            startNtkHybridBrowserReader(target, currentTitle, startAtFirstPage = true)
+            startNtkHybridBrowserReader(target, currentTitle, startAtFirstPage = startAtFirstPage)
             primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
             statusHandler.postDelayed({
                 if (!destroyed && !isFinishing) updateAdjacentButtons()
@@ -5438,7 +5518,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             target,
             currentTitle,
             preparedKey,
-            startAtFirstPage = true,
+            startAtFirstPage = startAtFirstPage,
             clearViewImmediately = false
         )
         primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
@@ -5454,6 +5534,63 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         restoreTitleEpisodes(title, source)
         attachEpisodeList(title, source)
         val episodes = Utils.snapshotEpisodes(title).ifEmpty { Utils.snapshotEpisodes(source) }
+        if (title != null && shouldRefreshEpisodePickerList(source, title, episodes)) {
+            refreshEpisodePickerList(source, title, episodes)
+            return
+        }
+        showEpisodePickerDialog(source, title, episodes)
+    }
+
+    private fun refreshEpisodePickerList(
+        source: Manga,
+        title: Title,
+        existingEpisodes: List<Manga>
+    ) {
+        if (episodePickerLoadTask?.isDone == false) return
+        episodePickerCancellation?.cancel()
+        val cancellation = MangaRepository.cancellation().userVisible().prioritizeWebViewFallback()
+        episodePickerCancellation = cancellation
+        status.visibility = TextView.VISIBLE
+        status.text = "회차 목록 불러오는 중"
+        val fetchTitle = title.clone()
+        episodePickerLoadTask = AppDispatchers.submitUserAction {
+            val result = MangaRepository.fetchEpisodesForeground(fetchTitle, cancellation)
+            val fetchedEpisodes = if (result == Title.LOAD_OK) {
+                Utils.snapshotEpisodes(fetchTitle)
+            } else {
+                emptyList()
+            }
+            val merged = mergeEpisodeSnapshots(fetchedEpisodes, existingEpisodes)
+            runOnUiThread {
+                if (episodePickerCancellation !== cancellation || destroyed || isFinishing) {
+                    return@runOnUiThread
+                }
+                episodePickerCancellation = null
+                episodePickerLoadTask = null
+                status.visibility = TextView.GONE
+                if (merged.isNotEmpty()) {
+                    title.setEps(merged)
+                    title.setReadingProgress(
+                        title.bookmarkEpisodeId,
+                        title.bookmarkEpisodeIndex,
+                        maxOf(title.episodeCount, merged.size)
+                    )
+                    attachEpisodeList(title, source, merged)
+                }
+                showEpisodePickerDialog(
+                    source,
+                    title,
+                    if (merged.isNotEmpty()) merged else existingEpisodes
+                )
+            }
+        }
+    }
+
+    private fun showEpisodePickerDialog(
+        source: Manga,
+        title: Title?,
+        episodes: List<Manga>
+    ) {
         if (episodes.isEmpty()) {
             status.visibility = TextView.VISIBLE
             status.text = "회차 목록이 없습니다"
@@ -5469,18 +5606,19 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 dialog.dismiss()
                 val target = episodes.getOrNull(which) ?: return@setSingleChoiceItems
                 if (Manga.sameEpisodeIdentity(source, target)) return@setSingleChoiceItems
+                val startAtFirstPage = shouldStartEpisodeAtFirstPage(target)
                 val preparedKey = ReaderWarmupCoordinator.readyKey(
                     applicationContext,
                     target,
                     title,
                     readerWidthPx(),
-                    true
+                    startAtFirstPage
                 ) ?: ReaderWarmupCoordinator.openKey(
                     applicationContext,
                     target,
                     title,
                     readerWidthPx(),
-                    true
+                    startAtFirstPage
                 )
                 launchAdjacent(source, target, title, preparedKey)
             }
@@ -5501,6 +5639,30 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
         }
         dialog.show()
+    }
+
+    private fun shouldStartEpisodeAtFirstPage(target: Manga): Boolean {
+        if (!target.useBookmark()) return true
+        val pref = p ?: return true
+        return shouldStartAtFirstPageForBookmark(
+            pref.getViewerBookmark(target),
+            pref.getViewerBookmarkOffset(target),
+            pref.getViewerBookmarkSide(target)
+        )
+    }
+
+    private fun shouldRefreshEpisodePickerList(
+        source: Manga,
+        title: Title,
+        episodes: List<Manga>
+    ): Boolean {
+        val expectedCount = maxOf(title.episodeCount, title.ntkReleaseEpisodeCount)
+        return shouldRefreshEpisodePickerList(
+            source.isOnline,
+            episodes.size,
+            expectedCount,
+            isNtkProgressTitle(title)
+        )
     }
 
     private fun toggleAutoCut() {
@@ -6535,6 +6697,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         clearPendingBoundaryCaptchaRetry()
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
+        activeInitialRestorePage = -1
+        activeInitialRestoreOffset = 0
+        activeInitialRestoreUntilMs = 0L
         pendingProgressInfo = null
         pendingProgressOffset = 0
         progressSaveArmed = false
@@ -9436,23 +9601,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun saveCurrentReadingProgress() {
         val currentPosition = renderView.currentProgressPosition()
         val currentInfo = currentPosition?.let { position ->
-            nearestSaveablePageInfo(position.page)
+            session?.pageInfo(position.page)
+                ?.takeIf { !it.transitionCard && it.manga.useBookmark() }
         }
         val info = currentInfo ?: pendingProgressInfo ?: return
         if (!info.layoutReady) return
-        saveReadingProgressNow(info, currentPosition?.offset ?: pendingProgressOffset)
-    }
-
-    private fun nearestSaveablePageInfo(page: Int): ReaderSession.PageInfo? {
-        val readerSession = session ?: return null
-        readerSession.pageInfo(page)?.takeIf { !it.transitionCard && it.manga.useBookmark() }?.let { return it }
-        var distance = 1
-        while (distance <= 3) {
-            readerSession.pageInfo(page + distance)?.takeIf { !it.transitionCard && it.manga.useBookmark() }?.let { return it }
-            readerSession.pageInfo(page - distance)?.takeIf { !it.transitionCard && it.manga.useBookmark() }?.let { return it }
-            distance++
-        }
-        return null
+        val offset = if (currentInfo != null) currentPosition?.offset ?: 0 else pendingProgressOffset
+        saveReadingProgressNow(info, offset)
     }
 
     private fun saveReadingProgressNow(info: ReaderSession.PageInfo, offset: Int) {
@@ -9876,6 +10031,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return renderView.currentProgressPosition()
     }
 
+    fun testSessionInitialStartPage(): Int {
+        return session?.initialStartPageForTest() ?: -1
+    }
+
     fun testCurrentScrollPositionSnapshot(): ReaderSurfaceView.ScrollPositionSnapshot? {
         if (hybridNtkBrowserActive) {
             val snapshot = currentHybridNtkScrollSnapshot()
@@ -9911,6 +10070,28 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     fun testCurrentNtkEpisodePath(): String? {
         return currentManga?.ntkEpisodePath
+    }
+
+    fun testOpenEpisodePicker() {
+        showEpisodePicker()
+    }
+
+    fun testEpisodeSnapshotCount(): Int {
+        val titleCount = Utils.snapshotEpisodes(currentTitle).size
+        val mangaCount = Utils.snapshotEpisodes(currentManga).size
+        return maxOf(titleCount, mangaCount)
+    }
+
+    fun testEpisodePathForVisibleNumber(number: String): String? {
+        val titleEpisodes = Utils.snapshotEpisodes(currentTitle)
+        val episodes = if (titleEpisodes.isNotEmpty()) {
+            titleEpisodes
+        } else {
+            Utils.snapshotEpisodes(currentManga)
+        }
+        return episodes.firstOrNull {
+            Manga.visibleEpisodeNumberKey(it.name) == number
+        }?.ntkEpisodePath
     }
 
     fun testCurrentNtkImageCount(): Int {
@@ -10213,6 +10394,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val NTK_WEBVIEW_FALLBACK_QUIET_EXTEND_INTERVAL_MS = 500L
         private const val NTK_EPISODE_UPDATE_SCROLL_QUIET_MS = 120L
         private const val NTK_ACTIVE_SCROLL_LOG_QUIET_MS = 600L
+        private const val INITIAL_RESTORE_RETRY_WINDOW_MS = 4000L
         private const val ADJACENT_BUTTON_REFRESH_DELAY_MS = 350L
         private const val ADJACENT_STATUS_DELAY_MS = 180L
         private const val INITIAL_DRAW_GATE_TIMEOUT_MS = 1600L
@@ -10315,6 +10497,66 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ): Int {
             val index = progressEpisodeIndex(episodes, manga, fallbackIndex)
             return progressEpisodeForIndex(episodes, index)?.id ?: manga.id
+        }
+
+        @JvmStatic
+        fun shouldStartAtFirstPageForBookmarkForTest(
+            page: Int,
+            offset: Int,
+            side: Int
+        ): Boolean = shouldStartAtFirstPageForBookmark(page, offset, side)
+
+        @JvmStatic
+        fun needsInitialRestorePositionForTest(page: Int, offset: Int): Boolean =
+            needsInitialRestorePositionForBookmark(page, offset)
+
+        @JvmStatic
+        fun shouldRefreshEpisodePickerListForTest(
+            online: Boolean,
+            currentCount: Int,
+            expectedCount: Int,
+            ntk: Boolean
+        ): Boolean = shouldRefreshEpisodePickerList(online, currentCount, expectedCount, ntk)
+
+        @JvmStatic
+        fun mergeEpisodeSnapshotsForTest(
+            fresh: List<Manga>,
+            existing: List<Manga>
+        ): List<Manga> = mergeEpisodeSnapshots(fresh, existing)
+
+        private fun shouldStartAtFirstPageForBookmark(page: Int, offset: Int, side: Int): Boolean {
+            return page <= 0 && offset == 0 && side == 0
+        }
+
+        private fun needsInitialRestorePositionForBookmark(page: Int, offset: Int): Boolean {
+            return page > 0 || offset != 0
+        }
+
+        private fun shouldRefreshEpisodePickerList(
+            online: Boolean,
+            currentCount: Int,
+            expectedCount: Int,
+            ntk: Boolean
+        ): Boolean {
+            if (!online) return false
+            if (currentCount <= 0) return true
+            if (expectedCount > currentCount) return true
+            return ntk && (expectedCount <= 0 || currentCount == 1)
+        }
+
+        private fun mergeEpisodeSnapshots(
+            fresh: List<Manga>,
+            existing: List<Manga>
+        ): List<Manga> {
+            val merged = ArrayList<Manga>(fresh.size + existing.size)
+            fun appendUnique(candidate: Manga?) {
+                if (candidate == null) return
+                if (merged.any { Manga.sameEpisodeIdentity(it, candidate) }) return
+                merged.add(candidate)
+            }
+            fresh.forEach(::appendUnique)
+            existing.forEach(::appendUnique)
+            return Title.orderedEpisodeSnapshot(merged) ?: merged
         }
 
         private fun pageGapForBaseMode(baseMode: Int): Int {

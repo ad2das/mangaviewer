@@ -953,8 +953,9 @@ class ReaderSession(
     }
 
     /**
-     * Fail-closed exact cold entry. No prepared Store, early URL mirror, generated descriptor,
-     * repository or bookmark state is consulted on this branch.
+     * Fail-closed exact cold entry. No prepared Store, early URL mirror, generated descriptor or
+     * repository state is consulted on this branch. The local per-episode bookmark is still the
+     * user's requested viewport and must remain the initial source/decode/render anchor.
      */
     private fun startStrictExactColdSession() {
         val launchSeal = strictExactLaunchSeal ?: return
@@ -1004,16 +1005,24 @@ class ReaderSession(
             PerfTrace.begin("ViewerItemBind")
             manga.setImgs(ArrayList(launchSeal.canonicalAssets))
             manga.ntkImageCount = launchSeal.pageCount
-            installImages(launchSeal.canonicalAssets, 0, requestInitialWindow = false)
+            installImages(
+                launchSeal.canonicalAssets,
+                requestedStartPage(),
+                requestInitialWindow = false
+            )
         } finally {
             PerfTrace.end()
         }
-        if (installed != 0) {
+        if (installed < 0) {
             (sourceTransport as? Closeable)?.close()
             failStrictExactColdSession("exact_install_failed")
             return
         }
-        val initialAdmission = StrictRollingAdmission.initial(launchSeal.pageCount)
+        val installedSource = synchronized(pagesLock) {
+            pages.getOrNull(installed)?.sourceIndex
+        } ?: installed
+        currentViewportAnchor.set(installed)
+        val initialAdmission = StrictRollingAdmission.initial(launchSeal.pageCount, installed)
         strictRollingAdmission.set(initialAdmission)
         // The product contract for this sealed episode is full-episode readiness, and the epoch-0
         // admission already owns every canonical source. Make that same immutable range physically
@@ -1038,7 +1047,7 @@ class ReaderSession(
             sourceTransport.bindEpisode(
                 episode,
                 launchSeal.manifestSeal,
-                0,
+                installedSource,
                 NtkSourceEventListener(::onStrictExactSourceEvent)
             )
         } catch (failure: Throwable) {
@@ -1053,7 +1062,7 @@ class ReaderSession(
             displayIndexesForStrictSource(sourceIndex).forEachIndexed { offset, displayIndex ->
                 requestStrictExactSourcePage(
                     displayIndex,
-                    anchor = sourceIndex == 0 && offset == 0,
+                    anchor = sourceIndex == installedSource && offset == 0,
                     generation = 0
                 )
             }
@@ -1290,13 +1299,14 @@ class ReaderSession(
             listener.onStrictRollingHistoricalSceneActivated()
             return
         }
+        val initialAnchor = currentStartPage().coerceIn(0, pageCount - 1)
         synchronized(deliveredBitmaps) {
-            retainedFirstPage = 0
+            retainedFirstPage = max(0, initialAnchor - STRICT_OVERSIZED_BEHIND_PAGES)
             retainedLastPage = minOf(
                 pageCount - 1,
-                STRICT_OVERSIZED_INITIAL_FORWARD_RUNWAY_PAGES - 1,
+                initialAnchor + STRICT_OVERSIZED_INITIAL_FORWARD_RUNWAY_PAGES - 1,
             )
-            retainedAnchorPage = 0
+            retainedAnchorPage = initialAnchor
         }
         listener.onStrictRollingHistoricalSceneActivated()
         Log.d(
@@ -6985,7 +6995,10 @@ class ReaderSession(
         val startPage = displayStartPage(requestedStartPage, requestedStartSide(), refs)
         resolvedInitialStartPage.set(startPage)
         if (strictExactColdRolling) {
-            strictRollingAdmission.compareAndSet(null, StrictRollingAdmission.initial(refs.size))
+            strictRollingAdmission.compareAndSet(
+                null,
+                StrictRollingAdmission.initial(refs.size, startPage)
+            )
         }
         if (isNtkSource(target, title)) {
             ntkCoordinator = NtkEpisodeCoordinator(target.ntkEpisodePath, true, startPage)
@@ -9065,9 +9078,13 @@ class ReaderSession(
                 .filter { it.transitionTitle == null }
                 .map { it.sourceIndex }
         }
-        // The cold-open proof is specifically the first canonical asset, not an arbitrary later
-        // page reached through restored state or synthetic navigation.
-        if (0 !in visibleSources) return
+        // A resume launch proves the stored canonical source; a new episode proves source zero.
+        // Requiring source zero unconditionally makes a valid restored viewport unable to open the
+        // physical-draw gate and leaves its forward runway stuck behind the cold-start fence.
+        val initialSource = synchronized(pagesLock) {
+            pages.getOrNull(currentStartPage())?.sourceIndex
+        } ?: return
+        if (initialSource !in visibleSources) return
         if (visibleSources.isEmpty() || visibleSources.any {
                 it !in launchSeal.canonicalAssets.indices
             }
@@ -28655,6 +28672,10 @@ class ReaderSession(
         val resolved = resolvedInitialStartPage.get()
         return if (resolved >= 0) resolved else requestedStartPage()
     }
+
+    fun initialStartPage(): Int = currentStartPage()
+
+    fun initialStartPageForTest(): Int = initialStartPage()
 
     private fun requestedStartSide(): Int {
         if (!autoCut || ml.melun.mangaview.MainApplication.p == null) return PAGE_SIDE_FIRST

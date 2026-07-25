@@ -144,6 +144,22 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkEpisodePagerFindsLastPageInEscapedNextPayload() {
+        String body = "href=\\\"/manhwa/3540?epage=2\\\" "
+                + "href=\\\"/manhwa/3540?epage=3\\\" "
+                + "href=\\\"/manhwa/3540?epage=1\\\"";
+
+        assertEquals(3, Title.ntkEpisodePageCountForTest(body));
+    }
+
+    @Test
+    public void ntkEpisodePagerReplacesExistingPageWithoutDroppingOtherParameters() {
+        assertEquals(
+                "/manhwa/3540?sort=desc&epage=3",
+                Title.ntkEpisodePagePathForTest("/manhwa/3540?sort=desc&epage=1#episodes", 3));
+    }
+
+    @Test
     public void modernNumericManhwaUsesAuthoritativeTitleDocumentBeforeRemovedEpisodeApi() {
         assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "33727", true));
         assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("webtoon", "840894", false));

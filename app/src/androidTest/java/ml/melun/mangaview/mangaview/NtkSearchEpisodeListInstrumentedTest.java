@@ -24,25 +24,34 @@ public class NtkSearchEpisodeListInstrumentedTest {
     public void queryReturnsFetchableEpisodeList() throws Exception {
         String query = InstrumentationRegistry.getArguments().getString("ntkQuery", "둘째에게");
         String expectedName = InstrumentationRegistry.getArguments().getString("ntkExpectedName", query);
+        String requestedBaseMode = InstrumentationRegistry.getArguments()
+                .getString("ntkBaseMode", "webtoon");
+        int baseMode = "comic".equalsIgnoreCase(requestedBaseMode)
+                || "manhwa".equalsIgnoreCase(requestedBaseMode)
+                ? MTitle.base_comic
+                : MTitle.base_webtoon;
         boolean allowEmptyEpisodes = Boolean.parseBoolean(
                 InstrumentationRegistry.getArguments().getString("ntkAllowEmptyEpisodes", "false"));
         boolean dumpRsc = Boolean.parseBoolean(
                 InstrumentationRegistry.getArguments().getString("ntkDumpRsc", "false"));
+        boolean requireEpisodeOne = Boolean.parseBoolean(
+                InstrumentationRegistry.getArguments().getString("ntkRequireEpisodeOne", "false"));
         String siteRoot = InstrumentationRegistry.getArguments()
                 .getString("ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL);
         MainApplication.p.setNtkSitePreset(siteRoot);
-        MainApplication.p.setBaseMode(MTitle.base_webtoon);
+        MainApplication.p.setBaseMode(baseMode);
         MainApplication.getHttpClient().clearPageCache();
         Search.clearNtkResultCaches();
 
         long searchStarted = SystemClock.elapsedRealtime();
-        Search search = new Search(query, 0, MTitle.base_webtoon);
+        Search search = new Search(query, 0, baseMode);
         int searchStatus = search.fetch(MainApplication.getHttpClient());
         long searchMs = SystemClock.elapsedRealtime() - searchStarted;
         int resultCount = search.getResult() == null ? 0 : search.getResult().size();
         Log.d(TAG, "ntk_query_episode_search status=" + searchStatus
                 + ",ms=" + searchMs
                 + ",query=" + query
+                + ",baseMode=" + baseMode
                 + ",results=" + resultCount);
         assertEquals(0, searchStatus);
         assertNotNull(search.getResult());
@@ -72,12 +81,30 @@ public class NtkSearchEpisodeListInstrumentedTest {
         int epsStatus = target.fetchEps(MainApplication.getHttpClient());
         long epsMs = SystemClock.elapsedRealtime() - epsStarted;
         int epsCount = target.getEps() == null ? 0 : target.getEps().size();
+        boolean containsEpisodeOne = false;
+        String firstEpisode = "";
+        String lastEpisode = "";
+        if(target.getEps() != null && !target.getEps().isEmpty()) {
+            Manga first = target.getEps().get(0);
+            Manga last = target.getEps().get(target.getEps().size() - 1);
+            firstEpisode = first == null ? "" : first.getName() + "|" + first.getNtkEpisodePath();
+            lastEpisode = last == null ? "" : last.getName() + "|" + last.getNtkEpisodePath();
+            for(Manga episode : target.getEps()) {
+                if(episode != null && "1".equals(Manga.visibleEpisodeNumberKey(episode.getName()))) {
+                    containsEpisodeOne = true;
+                    break;
+                }
+            }
+        }
         Log.d(TAG, "ntk_query_episode_fetch status=" + epsStatus
                 + ",ms=" + epsMs
                 + ",titleId=" + target.getId()
                 + ",name=" + target.getName()
                 + ",path=" + target.getPath()
                 + ",eps=" + epsCount
+                + ",containsEpisodeOne=" + containsEpisodeOne
+                + ",first=" + firstEpisode
+                + ",last=" + lastEpisode
                 + ",confirmedEmpty=" + target.isNtkEpisodeListConfirmedEmpty());
         assertEquals(Title.LOAD_OK, epsStatus);
         assertNotNull(target.getEps());
@@ -86,6 +113,9 @@ public class NtkSearchEpisodeListInstrumentedTest {
         if(epsCount == 0)
             assertTrue("Expected empty NTK episode list to be confirmed for " + target.getName(),
                     target.isNtkEpisodeListConfirmedEmpty());
+        if(requireEpisodeOne)
+            assertTrue("Expected 1화 in fetched episodes for " + target.getName(),
+                    containsEpisodeOne);
     }
 
     private static void dumpRscPayload(Title target) {

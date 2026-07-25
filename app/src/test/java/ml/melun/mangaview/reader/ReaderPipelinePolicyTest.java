@@ -97,6 +97,17 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void rollingAdmissionUsesRestoredPageAsInitialVisibleAnchor() {
+        StrictRollingAdmission restored = StrictRollingAdmission.initial(112, 67);
+
+        assertEquals(67, restored.getVisibleFirstDisplay());
+        assertEquals(67, restored.getVisibleLastDisplay());
+        assertTrue(restored.admitsSource(0));
+        assertTrue(restored.admitsSource(67));
+        assertTrue(restored.admitsSource(111));
+    }
+
+    @Test
     public void repeatedCommittedViewportDoesNotAdvanceDemandEpoch() {
         StrictRollingAdmission initial = StrictRollingAdmission.initial(20);
         assertTrue(initial.shouldOpenPhysicalDrawGate());

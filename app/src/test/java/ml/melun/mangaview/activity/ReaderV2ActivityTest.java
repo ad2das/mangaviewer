@@ -3,6 +3,7 @@ package ml.melun.mangaview.activity;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.List;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
@@ -99,6 +100,56 @@ public class ReaderV2ActivityTest {
 
         assertEquals(102, ReaderV2Activity.progressEpisodeIdForTest(
                 Arrays.asList(first, second), selected, -1));
+    }
+
+    @Test
+    public void visitedEpisodeRestoresAnySavedPageOffsetOrSplitSide() {
+        assertTrue(ReaderV2Activity.shouldStartAtFirstPageForBookmarkForTest(0, 0, 0));
+        assertFalse(ReaderV2Activity.shouldStartAtFirstPageForBookmarkForTest(7, 0, 0));
+        assertFalse(ReaderV2Activity.shouldStartAtFirstPageForBookmarkForTest(0, -420, 0));
+        assertFalse(ReaderV2Activity.shouldStartAtFirstPageForBookmarkForTest(0, 0, 1));
+    }
+
+    @Test
+    public void initialRestoreKeepsNegativeOffsetWithinFirstPage() {
+        assertTrue(ReaderV2Activity.needsInitialRestorePositionForTest(0, -420));
+        assertFalse(ReaderV2Activity.needsInitialRestorePositionForTest(0, 0));
+    }
+
+    @Test
+    public void incompleteOnlineEpisodePickerRefreshesBeforeShowingList() {
+        assertTrue(ReaderV2Activity.shouldRefreshEpisodePickerListForTest(
+                true, 1, 42, true));
+        assertTrue(ReaderV2Activity.shouldRefreshEpisodePickerListForTest(
+                true, 12, 42, true));
+        assertTrue(ReaderV2Activity.shouldRefreshEpisodePickerListForTest(
+                true, 12, 0, true));
+        assertFalse(ReaderV2Activity.shouldRefreshEpisodePickerListForTest(
+                true, 42, 42, true));
+        assertFalse(ReaderV2Activity.shouldRefreshEpisodePickerListForTest(
+                false, 1, 42, true));
+    }
+
+    @Test
+    public void episodePickerMergeNeverDropsPreviouslyKnownEpisodes() {
+        Manga newest = new Manga(30, "30화", "", MTitle.base_comic);
+        newest.setNtkEpisodePath("/manhwa/7/300");
+        Manga middle = new Manga(20, "20화", "", MTitle.base_comic);
+        middle.setNtkEpisodePath("/manhwa/7/200");
+        Manga oldest = new Manga(10, "10화", "", MTitle.base_comic);
+        oldest.setNtkEpisodePath("/manhwa/7/100");
+
+        List<Manga> merged = ReaderV2Activity.mergeEpisodeSnapshotsForTest(
+                Arrays.asList(newest, middle),
+                Arrays.asList(middle, oldest));
+
+        assertEquals(3, merged.size());
+        assertTrue(merged.stream().anyMatch(
+                episode -> "/manhwa/7/300".equals(episode.getNtkEpisodePath())));
+        assertTrue(merged.stream().anyMatch(
+                episode -> "/manhwa/7/200".equals(episode.getNtkEpisodePath())));
+        assertTrue(merged.stream().anyMatch(
+                episode -> "/manhwa/7/100".equals(episode.getNtkEpisodePath())));
     }
 
     @Test

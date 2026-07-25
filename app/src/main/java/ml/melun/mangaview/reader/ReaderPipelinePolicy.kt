@@ -102,13 +102,15 @@ data class StrictRollingAdmission(
 
     companion object {
         @JvmStatic
-        fun initial(pageCount: Int): StrictRollingAdmission {
+        @JvmOverloads
+        fun initial(pageCount: Int, initialDisplay: Int = 0): StrictRollingAdmission {
             require(pageCount > 0)
+            val anchor = initialDisplay.coerceIn(0, pageCount - 1)
             return StrictRollingAdmission(
                 epoch = 0L,
                 physicalDrawPresented = false,
-                visibleFirstDisplay = 0,
-                visibleLastDisplay = 0,
+                visibleFirstDisplay = anchor,
+                visibleLastDisplay = anchor,
                 direction = 1,
                 allowedFirstSource = 0,
                 allowedLastSource = pageCount - 1

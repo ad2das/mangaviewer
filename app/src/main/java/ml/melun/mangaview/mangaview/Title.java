@@ -45,6 +45,7 @@ public class Title extends MTitle {
     public static final int LOAD_ERROR = 2;
     private static final long PAGE_CACHE_TTL_MS = 5 * 60 * 1000L;
     private static final int MAX_TIMEOUT_RETRIES = 2;
+    private static final int MAX_NTK_EPISODE_PAGES = 50;
     private static final String NTK_ALIAS_WEBTOON_URL = "https://newtoki1.org";
     private static final String NTK_ALIAS_COMIC_URL = NTK_ALIAS_WEBTOON_URL + "/manhwa";
 
@@ -442,6 +443,8 @@ public class Title extends MTitle {
 
             Elements episodeLinks = d.select("a[href]");
             NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(d, segment, titleKey, baseMode, this);
+            parsed = appendNtkEpisodePages(
+                    client, titlePath, page.body, segment, titleKey, baseMode, parsed, false);
             eps = parsed.episodes;
             if(eps.size() == 0) {
                 if(preferDocumentMetadata) {
@@ -667,6 +670,8 @@ public class Title extends MTitle {
                 NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(Jsoup.parse(safeHtml + "<script>" + body + "</script>"),
                         segment, titleKey, baseMode, this);
                 if(parsed.episodes.size() > 0 || parsed.definitiveEmptyEpisodeList) {
+                    parsed = appendNtkEpisodePages(
+                            client, titlePath, body, segment, titleKey, baseMode, parsed, true);
                     attachResumeNtkKpMetadataFromParsed(parsed.episodes, "title-rsc");
                     return parsed;
                 }
@@ -706,6 +711,154 @@ public class Title extends MTitle {
                 segment, titleKey, baseMode, this);
         attachResumeNtkKpMetadataFromParsed(parsed.episodes, "title-next-chunks");
         return parsed;
+    }
+
+    private NtkEpisodeParser.ParseResult appendNtkEpisodePages(
+            CustomHttpClient client,
+            String titlePath,
+            String firstPageBody,
+            String segment,
+            String titleKey,
+            int baseMode,
+            NtkEpisodeParser.ParseResult firstPage,
+            boolean preferRsc
+    ) {
+        int pageCount = ntkEpisodePageCount(firstPageBody);
+        if(pageCount <= 1 || firstPage == null || firstPage.episodes.size() == 0)
+            return firstPage;
+        NtkEpisodeParser.ParseResult merged = new NtkEpisodeParser.ParseResult();
+        Set<String> seen = new HashSet<>();
+        appendUniqueNtkEpisodes(merged.episodes, seen, firstPage.episodes);
+        merged.matchedEpisodeLinks += firstPage.matchedEpisodeLinks;
+        merged.definitiveEmptyEpisodeList = firstPage.definitiveEmptyEpisodeList;
+        int fetchedPages = 1;
+        for(int pageNumber = 2; pageNumber <= pageCount; pageNumber++) {
+            if(isNtkEpisodeRequestCancelled(client))
+                break;
+            String pagePath = ntkEpisodePagePath(titlePath, pageNumber);
+            try {
+                CustomHttpClient.PageResponse response =
+                        fetchNtkEpisodePage(client, pagePath, preferRsc);
+                if(isNtkEpisodeRequestCancelled(client))
+                    break;
+                String body = response == null || response.body == null ? "" : response.body;
+                Log.d(TAG, "ntk_episode_rsc_page path=" + pagePath
+                        + ",page=" + pageNumber
+                        + ",pageCount=" + pageCount
+                        + ",code=" + (response == null ? 0 : response.code)
+                        + ",mode=" + (preferRsc ? "rsc" : "document")
+                        + ",fromCache=" + (response != null && response.fromCache)
+                        + ",bodyLen=" + body.length());
+                if(response == null || response.code >= 400 || body.length() == 0
+                        || client.isCloudflareChallengeResponse(response.code, body))
+                    continue;
+                NtkEpisodeParser.ParseResult parsed = NtkEpisodeParser.parse(
+                        Jsoup.parse("<script>" + body + "</script>"),
+                        segment,
+                        titleKey,
+                        baseMode,
+                        this);
+                appendUniqueNtkEpisodes(merged.episodes, seen, parsed.episodes);
+                merged.matchedEpisodeLinks += parsed.matchedEpisodeLinks;
+                merged.definitiveEmptyEpisodeList =
+                        merged.definitiveEmptyEpisodeList && parsed.definitiveEmptyEpisodeList;
+                fetchedPages++;
+            } catch(Exception e) {
+                Log.d(TAG, "ntk_episode_rsc_page_failed path=" + pagePath + "," + e);
+            }
+        }
+        EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(merged.episodes);
+        Log.d(TAG, "ntk_episode_rsc_pages_merged path=" + titlePath
+                + ",expectedPages=" + pageCount
+                + ",fetchedPages=" + fetchedPages
+                + ",episodes=" + merged.episodes.size());
+        return merged;
+    }
+
+    private CustomHttpClient.PageResponse fetchNtkEpisodePage(
+            CustomHttpClient client,
+            String pagePath,
+            boolean preferRsc
+    ) throws Exception {
+        CustomHttpClient.PageResponse first = preferRsc
+                ? client.mgetNtkRscPage(pagePath, PAGE_CACHE_TTL_MS)
+                : client.mgetNtkDesktopDocumentPage(pagePath, PAGE_CACHE_TTL_MS);
+        if(isUsableNtkEpisodePage(client, first))
+            return first;
+        return preferRsc
+                ? client.mgetNtkDesktopDocumentPage(pagePath, PAGE_CACHE_TTL_MS)
+                : client.mgetNtkRscPage(pagePath, PAGE_CACHE_TTL_MS);
+    }
+
+    private static boolean isUsableNtkEpisodePage(
+            CustomHttpClient client,
+            CustomHttpClient.PageResponse page
+    ) {
+        return page != null
+                && page.code >= 200
+                && page.code < 400
+                && page.body != null
+                && page.body.length() > 0
+                && !client.isCloudflareChallengeResponse(page.code, page.body);
+    }
+
+    private static void appendUniqueNtkEpisodes(
+            List<Manga> destination,
+            Set<String> seen,
+            List<Manga> candidates
+    ) {
+        if(destination == null || seen == null || candidates == null)
+            return;
+        for(Manga episode : candidates) {
+            if(episode == null)
+                continue;
+            String path = episode.getNtkEpisodePath();
+            String key = path == null || path.length() == 0
+                    ? episode.getId() + "|" + episode.getName()
+                    : path;
+            if(seen.add(key))
+                destination.add(episode);
+        }
+    }
+
+    private static int ntkEpisodePageCount(String body) {
+        if(body == null || body.length() == 0)
+            return 1;
+        String normalized = body.replace("\\u0026", "&")
+                .replace("\\u0026amp;", "&")
+                .replace("\\/", "/")
+                .replace("\\\"", "\"")
+                .replace("&amp;", "&");
+        Matcher matcher = Pattern.compile("(?:[?&])epage=(\\d{1,4})",
+                Pattern.CASE_INSENSITIVE).matcher(normalized);
+        int maxPage = 1;
+        while(matcher.find()) {
+            try {
+                maxPage = Math.max(maxPage, Integer.parseInt(matcher.group(1)));
+            } catch(Exception ignored) {
+            }
+        }
+        return Math.min(maxPage, MAX_NTK_EPISODE_PAGES);
+    }
+
+    private static String ntkEpisodePagePath(String titlePath, int pageNumber) {
+        String value = titlePath == null ? "" : titlePath.trim();
+        int hash = value.indexOf('#');
+        if(hash >= 0)
+            value = value.substring(0, hash);
+        int query = value.indexOf('?');
+        String base = query < 0 ? value : value.substring(0, query);
+        String queryString = query < 0 ? "" : value.substring(query + 1);
+        ArrayList<String> parameters = new ArrayList<>();
+        if(queryString.length() > 0) {
+            for(String parameter : queryString.split("&")) {
+                if(parameter.length() > 0 && !parameter.toLowerCase(java.util.Locale.ROOT)
+                        .startsWith("epage="))
+                    parameters.add(parameter);
+            }
+        }
+        parameters.add("epage=" + Math.max(1, pageNumber));
+        return base + "?" + String.join("&", parameters);
     }
 
     private static boolean isNtkEpisodeRequestCancelled(CustomHttpClient client) {
@@ -865,6 +1018,14 @@ public class Title extends MTitle {
 
     static List<Manga> parseLegacyEpisodesForTest(String html, int baseMode) {
         return WfwfEpisodeParser.parseLegacyEpisodesForTest(html, baseMode);
+    }
+
+    static int ntkEpisodePageCountForTest(String body) {
+        return ntkEpisodePageCount(body);
+    }
+
+    static String ntkEpisodePagePathForTest(String titlePath, int pageNumber) {
+        return ntkEpisodePagePath(titlePath, pageNumber);
     }
 
     static String legacyInfoRootTextForTest(String html, String selector) {
