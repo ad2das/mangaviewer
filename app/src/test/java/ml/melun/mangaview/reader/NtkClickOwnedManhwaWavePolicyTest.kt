@@ -16,12 +16,20 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)
         assertEquals(4, NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES)
+        assertEquals(1, NtkClickOwnedManhwaWavePolicy.DIRECT_BODY_RACE_PAGES)
+        assertEquals(2, NtkClickOwnedManhwaWavePolicy.PREFERRED_EXTENSION_EVIDENCE)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.EXACT_PRE_FRAME_RUNWAY_PAGES)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.FORWARD_ADMISSION_RUNWAY_PAGES)
+        assertEquals(2_500L, NtkClickOwnedManhwaWavePolicy.ENTRY_HEADER_FAILOVER_MS)
+        assertEquals(1_800L, NtkClickOwnedManhwaWavePolicy.RUNWAY_HEADER_FAILOVER_MS)
         assertEquals(700L, NtkClickOwnedManhwaWavePolicy.TAIL_HEADER_FAILOVER_MS)
         assertEquals(
             2,
             NtkClickOwnedManhwaWavePolicy.MAX_CONCURRENT_TAIL_HEADER_FAILOVERS,
+        )
+        assertEquals(
+            50L,
+            NtkClickOwnedManhwaWavePolicy.HEADER_FAILOVER_PERMIT_RECHECK_MS,
         )
         assertTrue(NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS <=
             NtkClickOwnedManhwaWavePolicy.BODY_LANES)
@@ -55,6 +63,12 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertTrue(!NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(39))
         assertTrue(NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(40))
         assertTrue(NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(118))
+        assertEquals(0L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(0))
+        assertEquals(2_500L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(1))
+        assertEquals(2_500L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(3))
+        assertEquals(1_800L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(4))
+        assertEquals(1_800L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(39))
+        assertEquals(700L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(40))
     }
 
     @Test
@@ -108,6 +122,41 @@ class NtkClickOwnedManhwaWavePolicyTest {
                 jpeg.take(5) + (0 until 5).map {
                     "https://booktoki8.org/manhwa/3360/18755/p%03d.gif".format(it + 6)
                 },
+            ),
+        )
+    }
+
+    @Test
+    fun twoCompletedHeadSamplesReleaseTheVolumeHintWithoutWaitingForAStalledPeer() {
+        val jpg = "https://booktoki8.org/manhwa/23939/235313/p001.jpg"
+        val secondJpg = "https://booktoki9.org/manhwa/23939/235313/p003.jpg"
+        assertEquals(
+            "jpg",
+            NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                listOf(jpg, null, secondJpg, null),
+            ),
+        )
+        assertNull(
+            NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                listOf(jpg, null, null, null),
+            ),
+        )
+        assertEquals(
+            "jpeg",
+            NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                listOf(
+                    "https://booktoki8.org/manhwa/8129/149361/p001.jpeg",
+                    null,
+                    "https://booktoki9.org/manhwa/8129/149361/p003.jpeg",
+                    null,
+                ),
+            ),
+        )
+        assertEquals(
+            "jpg",
+            NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                listOf(jpg, null, null, null),
+                minimumEvidence = 1,
             ),
         )
     }

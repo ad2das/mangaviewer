@@ -40,9 +40,16 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // Eight bodies still cover the entry viewport; the bounded full-page wave is released after
     // authority and the first visible body, so this never drops a canonical page.
     const val SPECULATION_DEBT_LIMIT = 8
-    // Only the pages required to cover the entry viewport race a common JPG body against their
-    // own metadata probe. Every later page shares the sample result and opens one proven URL.
+    // Four metadata samples establish the volume extension without making every page repeat the
+    // five-way HEAD race.
     const val DIRECT_EXTENSION_RACE_PAGES = 4
+    // Only the anchor races an unproven JPG body. Entry peers use either their own fast sample or
+    // the two-sample volume consensus, avoiding a second request when one per-page HEAD stalls.
+    const val DIRECT_BODY_RACE_PAGES = 1
+    // A single slow HEAD must not hold every page after the entry viewport. Two independently
+    // proven sample pages are enough to select the volume hint; a genuinely mixed page still
+    // falls through the per-page exhaustive resolver after its attempted body misses.
+    const val PREFERRED_EXTENSION_EVIDENCE = 2
     // Once the complete click-owned document has proved the exact page count, fill the already
     // bounded body ring while the first physical frame is finishing. Page zero retains its
     // dedicated transfer permit/executor and the authority request has already completed, so this
@@ -55,15 +62,17 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // of immediate forward runway while preventing p047-p052 from all entering the under-filled
     // second wave. Reordering changes neither the finite request set nor physical concurrency.
     const val FORWARD_ADMISSION_RUNWAY_PAGES = EXACT_PRE_FRAME_RUNWAY_PAGES
-    // Tail-only header recovery protects the final under-filled wave without cancelling a valid
-    // entry/runway request. No response body exists before this deadline; advancing the same
-    // logical call therefore cannot duplicate a successful image download. In the 119-page JPEG
-    // replay every healthy admitted tail returned headers within 500 ms, while the sole outlier
-    // consumed the former 1.2 s deadline and finished at 1.689 s of accumulated header wait.
-    // Seven hundred milliseconds keeps measured cold-handshake headroom and returns that empty
-    // lane roughly half a second earlier. Two slots still prevent a cancellation storm.
+    // The anchor keeps its dedicated segmented transport. Entry peers get generous cold-handshake
+    // headroom, the forward runway gets a longer deadline than the offscreen tail, and the tail
+    // retains the measured fast failover. This avoids the old all-page 700 ms reset storm while
+    // preventing a single 5-20 second headerless request in a short 18-39 page book from becoming
+    // the entire episode terminal. No response body exists before these deadlines; advancing the
+    // same logical call cannot duplicate a successful image download.
+    const val ENTRY_HEADER_FAILOVER_MS = 2_500L
+    const val RUNWAY_HEADER_FAILOVER_MS = 1_800L
     const val TAIL_HEADER_FAILOVER_MS = 700L
     const val MAX_CONCURRENT_TAIL_HEADER_FAILOVERS = 2
+    const val HEADER_FAILOVER_PERMIT_RECHECK_MS = 50L
     // This is the protocol's finite production bound. Parallel metadata-only candidate races
     // start only after the committed viewer click; the fresh document cancels every page beyond
     // its exact count before any source can be published.
@@ -119,6 +128,16 @@ internal object NtkClickOwnedManhwaWavePolicy {
         return pageIndex >= FORWARD_ADMISSION_RUNWAY_PAGES
     }
 
+    fun headerFailoverMs(pageIndex: Int): Long {
+        require(pageIndex >= 0)
+        return when {
+            pageIndex == 0 -> 0L
+            pageIndex < DIRECT_EXTENSION_RACE_PAGES -> ENTRY_HEADER_FAILOVER_MS
+            pageIndex < FORWARD_ADMISSION_RUNWAY_PAGES -> RUNWAY_HEADER_FAILOVER_MS
+            else -> TAIL_HEADER_FAILOVER_MS
+        }
+    }
+
     /**
      * Click-owned bodies reserve one short-lived ownership session per page. The registry's lane
      * index is a bounded physical slot, not the canonical page number. Preserve the historical
@@ -150,20 +169,46 @@ internal object NtkClickOwnedManhwaWavePolicy {
      * never remove a mixed-format page.
      */
     fun dominantTailExtension(candidates: List<String?>): String? {
-        val observed = candidates.mapNotNull { candidate ->
-            candidate
-                ?.substringBefore('?')
-                ?.substringBefore('#')
-                ?.substringAfterLast('.', "")
-                ?.lowercase()
-                ?.takeIf(CANDIDATE_EXTENSIONS::contains)
-        }
+        val observed = candidates.mapNotNull(::candidateExtension)
         if (observed.size < MIN_DOMINANT_EXTENSION_EVIDENCE) return null
         val winner = observed.groupingBy { it }.eachCount().maxByOrNull { it.value } ?: return null
         return winner.key.takeIf {
             winner.value * 100 >= observed.size * DOMINANT_EXTENSION_PERCENT
         }
     }
+
+    /**
+     * Selects a deterministic click-time extension as soon as enough real HEAD samples agree.
+     *
+     * [candidates] is a completion snapshot, so unresolved/failed samples are represented by null.
+     * The candidate list order remains the tie-breaker and therefore cannot depend on callback
+     * scheduling. Callers use [PREFERRED_EXTENSION_EVIDENCE] while requests are still in flight,
+     * then one item as the all-samples-complete fallback to preserve the old best-observed result.
+     */
+    fun preferredSampleExtension(
+        candidates: List<String?>,
+        minimumEvidence: Int = PREFERRED_EXTENSION_EVIDENCE,
+    ): String? {
+        require(minimumEvidence > 0)
+        val counts = candidates
+            .mapNotNull(::candidateExtension)
+            .groupingBy { it }
+            .eachCount()
+        return CANDIDATE_EXTENSIONS
+            .asSequence()
+            .filter { (counts[it] ?: 0) >= minimumEvidence }
+            .maxByOrNull { extension ->
+                (counts[extension] ?: 0) * 100 - CANDIDATE_EXTENSIONS.indexOf(extension)
+            }
+    }
+
+    private fun candidateExtension(candidate: String?): String? =
+        candidate
+            ?.substringBefore('?')
+            ?.substringBefore('#')
+            ?.substringAfterLast('.', "")
+            ?.lowercase()
+            ?.takeIf(CANDIDATE_EXTENSIONS::contains)
 
     // These are exact pNNN page candidates only. GIF is a real canonical book page format (not an
     // animation/advertisement fallback) and ReaderImageCache validates its bytes and dimensions.

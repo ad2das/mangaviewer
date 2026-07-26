@@ -430,10 +430,10 @@ object ReaderImageCache {
     // late body. r72 left seven pages at 1.63-2.69 s of headers; the final page then needed another
     // 1.96 s of body work. Give every admitted cold page at least ~2.5 s for its body/decode by
     // advancing an empty attempt at 1.1 s.
-    private const val NTK_MANHWA_HEADER_FAILOVER_MS =
-        NtkClickOwnedManhwaWavePolicy.TAIL_HEADER_FAILOVER_MS
     private const val NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS =
         NtkClickOwnedManhwaWavePolicy.MAX_CONCURRENT_TAIL_HEADER_FAILOVERS
+    private const val NTK_MANHWA_HEADER_FAILOVER_PERMIT_RECHECK_MS =
+        NtkClickOwnedManhwaWavePolicy.HEADER_FAILOVER_PERMIT_RECHECK_MS
     private val ntkManhwaHeaderFailoverPermits = Semaphore(
         NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS,
         true,
@@ -1156,23 +1156,34 @@ object ReaderImageCache {
                 val headerResolved = AtomicBoolean(false)
                 val headerDeadlineMs = when {
                     webtoonReplica -> NTK_WEBTOON_HEADER_FAILOVER_MS
-                    // Entry and the full forward physical ring retain one selected origin. Only
-                    // the offscreen exact tail advances a headerless attempt, with two session-
-                    // global permits preventing the former four-call cancellation storm.
-                    manhwaReplica && strictPageIndex >= 0 &&
-                        NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(
-                            strictPageIndex
-                        ) -> NTK_MANHWA_HEADER_FAILOVER_MS
+                    // The anchor retains its dedicated segmented transport. Every other exact page
+                    // has a position-sensitive deadline, while two session-global permits prevent
+                    // the former all-page cancellation storm.
+                    manhwaReplica && strictPageIndex >= 0 ->
+                        NtkClickOwnedManhwaWavePolicy.headerFailoverMs(strictPageIndex)
                     else -> 0L
                 }
                 val headerDeadline = if (headerDeadlineMs > 0L) {
-                    strictReplicaHeaderDeadlineScheduler.schedule({
-                        val permitAcquired = manhwaReplica &&
-                            !manhwaHeaderRecoveryPermitHeld.get() &&
-                            ntkManhwaHeaderFailoverPermits.tryAcquire()
-                        val admitted = !manhwaReplica ||
-                            manhwaHeaderRecoveryPermitHeld.get() || permitAcquired
-                        if (admitted) {
+                    val deadlineTask = object : Runnable {
+                        override fun run() {
+                            if (headerResolved.get() || cancelled.get()) return
+                            val permitAcquired = manhwaReplica &&
+                                !manhwaHeaderRecoveryPermitHeld.get() &&
+                                ntkManhwaHeaderFailoverPermits.tryAcquire()
+                            val admitted = !manhwaReplica ||
+                                manhwaHeaderRecoveryPermitHeld.get() || permitAcquired
+                            if (!admitted) {
+                                // A one-shot tryAcquire let an unlucky headerless page wait for
+                                // the socket timeout whenever both bounded recovery slots happened
+                                // to be occupied at its deadline. Recheck on the timer pool without
+                                // blocking its workers or opening another physical request.
+                                strictReplicaHeaderDeadlineScheduler.schedule(
+                                    this,
+                                    NTK_MANHWA_HEADER_FAILOVER_PERMIT_RECHECK_MS,
+                                    TimeUnit.MILLISECONDS,
+                                )
+                                return
+                            }
                             if (headerResolved.compareAndSet(false, true)) {
                                 if (permitAcquired) manhwaHeaderRecoveryPermitHeld.set(true)
                                 val identity = originalRequest.tag(
@@ -1193,7 +1204,12 @@ object ReaderImageCache {
                                 ntkManhwaHeaderFailoverPermits.release()
                             }
                         }
-                    }, headerDeadlineMs, TimeUnit.MILLISECONDS)
+                    }
+                    strictReplicaHeaderDeadlineScheduler.schedule(
+                        deadlineTask,
+                        headerDeadlineMs,
+                        TimeUnit.MILLISECONDS,
+                    )
                 } else {
                     null
                 }

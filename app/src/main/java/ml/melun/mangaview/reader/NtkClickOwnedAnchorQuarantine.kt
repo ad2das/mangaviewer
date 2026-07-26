@@ -235,18 +235,39 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                     SETUP_EXECUTOR,
                 ).thenCompose { it }
             }
-            val preferredExtension = CompletableFuture.allOf(
-                *sampleFutures.values.toTypedArray()
-            ).handle { _, _ ->
-                val counts = sampleFutures.values
-                    .mapNotNull { future -> runCatching { future.getNow(null) }.getOrNull() }
-                    .map { candidate -> candidate.substringAfterLast('.').lowercase(Locale.ROOT) }
-                    .groupingBy { it }
-                    .eachCount()
-                NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS.maxByOrNull { extension ->
-                    (counts[extension] ?: 0) * 100 -
-                        NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS.indexOf(extension)
-                } ?: "jpg"
+            val preferredExtension = CompletableFuture<String>()
+            val remainingSamples = AtomicInteger(sampleFutures.size)
+            fun sampleSnapshot(): List<String?> = sampleFutures.values.map { future ->
+                runCatching { future.getNow(null) }.getOrNull()
+            }
+            sampleFutures.values.forEach { sample ->
+                sample.whenComplete { _, _ ->
+                    val snapshot = sampleSnapshot()
+                    val consensus =
+                        NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(snapshot)
+                    if (consensus != null && preferredExtension.complete(consensus)) {
+                        Log.d(
+                            TAG,
+                            "click_manhwa_probe_extension_ready path=$normalizedEpisodePath," +
+                                "extension=$consensus,evidence=early_consensus," +
+                                "resolved=${snapshot.count { it != null }}",
+                        )
+                    }
+                    if (remainingSamples.decrementAndGet() == 0 && !preferredExtension.isDone) {
+                        val fallback = NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                            snapshot,
+                            minimumEvidence = 1,
+                        ) ?: "jpg"
+                        if (preferredExtension.complete(fallback)) {
+                            Log.d(
+                                TAG,
+                                "click_manhwa_probe_extension_ready path=$normalizedEpisodePath," +
+                                    "extension=$fallback,evidence=all_samples_complete," +
+                                    "resolved=${snapshot.count { it != null }}",
+                            )
+                        }
+                    }
+                }
             }
             val sourceRoutePreparationReady = preferredExtension.thenApply { extension ->
                 if (extension != "jpg") {
@@ -261,8 +282,31 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
             }
             val futures = (0 until NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES)
                 .associateWith { pageIndex ->
-                    sampleFutures[pageIndex] ?: preferredExtension.thenApply { extension ->
-                        candidateAsset(workId, episodeId, pageIndex, extension)
+                    val sampled = sampleFutures[pageIndex]
+                    if (sampled == null || pageIndex == 0) {
+                        sampled ?: preferredExtension.thenApply { extension ->
+                            candidateAsset(workId, episodeId, pageIndex, extension)
+                        }
+                    } else {
+                        // Page zero alone retains a speculative JPG body. For the other entry
+                        // pages, take their exact sample when it wins, otherwise route from the
+                        // already-proven two-page consensus. A stalled p002 HEAD can therefore
+                        // never leave a zero-byte JPG body alive for nine seconds before JPEG
+                        // fallback, while a genuinely mixed page still uses its own faster proof.
+                        val routed = CompletableFuture<String?>()
+                        sampled.whenComplete { candidate, failure ->
+                            if (failure == null && candidate != null) routed.complete(candidate)
+                        }
+                        preferredExtension.whenComplete { extension, failure ->
+                            if (failure == null && extension != null) {
+                                routed.complete(
+                                    candidateAsset(workId, episodeId, pageIndex, extension)
+                                )
+                            } else if (!routed.isDone) {
+                                routed.complete(null)
+                            }
+                        }
+                        routed
                     }
                 }
             Log.d(
@@ -885,7 +929,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 if (pageIndex >= NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES) {
                     startPreferredTailCandidate(pageIndex, candidateFuture)
                 } else if (
-                    pageIndex >= NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES
+                    pageIndex >= NtkClickOwnedManhwaWavePolicy.DIRECT_BODY_RACE_PAGES
                 ) {
                     startVerifiedFrontierCandidate(pageIndex, candidateFuture)
                 } else {
