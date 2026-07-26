@@ -8051,10 +8051,20 @@ object ReaderImageCache {
         val strictEpisode = path.matches(
             Regex("^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$", RegexOption.IGNORE_CASE)
         )
-        if (strictEpisode && !strictExactOwner) return false
-        if (NtkSourceSpoolRegistry.isDiscoveryActive(path)) return false
+        val boundedAdjacentPublication =
+            strictEpisode && isAuthorizedAdjacentForegroundViewerPath(path)
+        if (strictEpisode && !strictExactOwner && !boundedAdjacentPublication) return false
+        // The next document publishes its exact direct URL list while its discovery spool is
+        // still active. That publication is the hand-off required to prepare the first drawable
+        // runway; reject every discovery publication except the exact bounded neighbor grant.
+        if (
+            NtkSourceSpoolRegistry.isDiscoveryActive(path) &&
+            !boundedAdjacentPublication
+        ) {
+            return false
+        }
         val authority = NtkSourceSpoolRegistry.currentAuthoritativeManifest(path)
-            ?: return !strictEpisode
+            ?: return boundedAdjacentPublication || !strictEpisode
         val incoming = urls.map(NtkStripDigests::canonicalAsset)
         return incoming == authority.seal.normalizedCanonicalAssets
     }
@@ -16463,10 +16473,12 @@ object ReaderImageCache {
         val key = earlyNtkPathKey(path)
         if (key.isBlank() || !isNtkEpisodePathKey(key)) return false
         // The global foreground marker has a launch-oriented TTL and can legitimately expire
-        // before a long chapter reaches its tail. The append grant below is issued at the tail,
-        // so use that fresh authority and still reject any path already owned by discovery/strict
-        // transport. This cannot reopen the launch episode's legacy route.
-        if (!legacySourceOperationAllowed(key)) return false
+        // before a long chapter reaches its tail. The append grant below is issued at the tail.
+        // Its exact-neighbor document discovery and joined first-image body intentionally overlap,
+        // so discovery activity must not invalidate the grant that authorized that same work.
+        // Once the neighbor has a reserved/strict owner, however, every image must use that
+        // owner's tagged route and this untagged bridge closes immediately.
+        if (NtkStrictSourceOwnershipRegistry.owner(key) != null) return false
         val allowedUntil = adjacentForegroundViewerPaths[key] ?: return false
         val now = SystemClock.elapsedRealtime()
         if (allowedUntil > now) return true

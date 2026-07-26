@@ -11413,41 +11413,92 @@ class ReaderSession(
             ) ?: continue
             if (hasEpisode(candidate)) continue
             inheritNtkAppendGeneratedHints(candidate, source, currentTitle)
-            val appendLoad = loadAuthoritativeAdjacentUrlsForPrefetch(
-                candidate,
-                source,
-                currentTitle,
-                direction
+            val candidatePath = candidate.ntkEpisodePath?.trim().orEmpty()
+            // Tokenized `u-*` documents publish their canonical URL list and immediately start
+            // the first real body from the same fetch. The previous grant lived inside
+            // prepareInitialTailAdjacentRunway, after that fetch had already returned, producing
+            // a cycle: metadata waited for its first body while the body waited for the grant.
+            // Current-episode completion is already proved before this method is entered, so open
+            // the bounded exact-neighbor path before fetching its document and revoke it on every
+            // unsuccessful exit. No other episode or launch-time request receives this grant.
+            ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
+                candidatePath,
+                NTK_INITIAL_ADJACENT_PREFETCH_PATH_TTL_MS,
+                "initial_tail_metadata_prefetch"
             )
-            if (cancelled.get()) return false
-            if (appendLoad.result != Title.LOAD_OK || appendLoad.urls.isEmpty()) continue
-            if (shouldSkipLoadedNtkAdjacentCandidate(source, candidate, direction)) continue
-            val publishUrls = completeKnownGeneratedAppendUrls(candidate, appendLoad.urls)
-            if (
-                publishUrls.isEmpty() ||
-                publishUrls.none {
-                    isNtkGeneratedImageUrl(it) ||
-                        isNaverWebtoonPageImageUrl(it) ||
-                        ReaderImageCache.isTrustedInitialNtkApiImageForEarlyStream(it)
+            var keepAdjacentGrant = false
+            try {
+                var appendLoad = loadAuthoritativeAdjacentUrlsForPrefetch(
+                    candidate,
+                    source,
+                    currentTitle,
+                    direction
+                )
+                if (
+                    !cancelled.get() &&
+                    (appendLoad.result != Title.LOAD_OK || appendLoad.urls.isEmpty())
+                ) {
+                    val cachedDocument = MainApplication.getHttpClient().cachedNtkViewerPayloadBody(
+                        candidatePath,
+                        NTK_ADJACENT_AUTHORITATIVE_DOCUMENT_MAX_AGE_MS
+                    )
+                    val cachedDocumentCount = Manga.ntkViewerPayloadPageCount(cachedDocument)
+                    if (cachedDocumentCount > 0) {
+                        // A document race can expose the authoritative page count before its
+                        // complete direct-image manifest wins publication. Retrying once while
+                        // the exact bounded path grant is still held is materially faster and
+                        // safer than abandoning the runway until the user hits the boundary.
+                        candidate.setImgs(null)
+                        Log.d(
+                            TAG,
+                            "append_adjacent_authoritative_prefetch_retry source=${source.ntkEpisodePath} " +
+                                "target=$candidatePath documentCount=$cachedDocumentCount"
+                        )
+                        appendLoad = loadAuthoritativeAdjacentUrlsForPrefetch(
+                            candidate,
+                            source,
+                            currentTitle,
+                            direction
+                        )
+                    }
                 }
-            ) {
-                continue
+                if (cancelled.get()) return false
+                if (appendLoad.result != Title.LOAD_OK || appendLoad.urls.isEmpty()) continue
+                if (shouldSkipLoadedNtkAdjacentCandidate(source, candidate, direction)) continue
+                val publishUrls = completeKnownGeneratedAppendUrls(candidate, appendLoad.urls)
+                if (
+                    publishUrls.isEmpty() ||
+                    publishUrls.none {
+                        isNtkGeneratedImageUrl(it) ||
+                            isNaverWebtoonPageImageUrl(it) ||
+                            ReaderImageCache.isTrustedInitialNtkApiImageForEarlyStream(it)
+                    }
+                ) {
+                    continue
+                }
+                candidatePath.takeIf { it.isNotEmpty() }?.let {
+                    initialTailAdjacentPreappendTargetPaths.add(it)
+                }
+                // prepareInitialTailAdjacentRunway owns the first four physical requests. The
+                // grant above also lets the document's single joined first-body stream complete;
+                // cached-file joining prevents a duplicate winning download.
+                if (!prepareInitialTailAdjacentRunway(candidate, publishUrls)) return false
+                keepAdjacentGrant = true
+                Log.d(
+                    TAG,
+                    "append_adjacent_initial_prefetch_metadata source=${source.ntkEpisodePath} " +
+                        "target=${candidate.ntkEpisodePath} images=${publishUrls.size}"
+                )
+                appendResolvedEpisode(candidate, publishUrls, direction)
+                return true
+            } finally {
+                if (!keepAdjacentGrant) {
+                    ReaderImageCache.releaseAdjacentNtkForegroundViewerPath(
+                        candidatePath,
+                        "initial_tail_metadata_prefetch_failed"
+                    )
+                }
             }
-            candidate.ntkEpisodePath?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                initialTailAdjacentPreappendTargetPaths.add(it)
-            }
-            // prepareInitialTailAdjacentRunway owns the first four physical requests and installs
-            // the adjacent-path permit before issuing them. Launching a second foreground stream
-            // here races that permit, gets fenced by strict ownership and can duplicate the same
-            // URL requests.
-            if (!prepareInitialTailAdjacentRunway(candidate, publishUrls)) return false
-            Log.d(
-                TAG,
-                "append_adjacent_initial_prefetch_metadata source=${source.ntkEpisodePath} " +
-                    "target=${candidate.ntkEpisodePath} images=${publishUrls.size}"
-            )
-            appendResolvedEpisode(candidate, publishUrls, direction)
-            return true
         }
         return false
     }
@@ -11833,7 +11884,10 @@ class ReaderSession(
             val sourceRefs = pages.withIndex().filter { (_, page) ->
                 page.transitionTitle == null && looseSameEpisodeForAppend(page.manga, source)
             }
-            val authoritativeCount = source.ntkImageCount.coerceAtLeast(0)
+            val authoritativeCount = canonicalEpisodeImageCount(
+                source,
+                sourceRefs.map { it.value },
+            )
             val completeCurrentStructure =
                 sourceRefs.isNotEmpty() &&
                     authoritativeCount > 0 &&
@@ -12656,12 +12710,28 @@ class ReaderSession(
 
     private fun fetchGeneratedNtkAppendUrls(target: Manga, currentTitle: Title, direction: Int): Int {
         val startedAt = SystemClock.elapsedRealtime()
+        val adjacentGrantPath = target.ntkEpisodePath?.trim().orEmpty()
+        val adjacentGrantOpened =
+            direction > 0 &&
+                isNtkSource(target, currentTitle) &&
+                isNtkManhwaOrWebtoonEpisodePath(adjacentGrantPath)
+        if (adjacentGrantOpened) {
+            // Boundary-driven fetches have the same document/first-body join as the idle
+            // prefetch path. Open only the exact neighbor selected by the episode resolver before
+            // its fetch begins; otherwise a user who reaches the boundary before idle preparation
+            // can hit the same circular wait.
+            ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
+                adjacentGrantPath,
+                NTK_ADJACENT_APPEND_FOREGROUND_PATH_TTL_MS,
+                "adjacent_verified_fetch"
+            )
+        }
         Log.d(
             TAG,
             "append_adjacent_verified_fetch_start direction=$direction targetId=${target.id} " +
                 "titleId=${currentTitle.id} path=${target.ntkEpisodePath}"
         )
-        return try {
+        val result = try {
             val preferApiFirst = shouldPreferVerifiedApiAppend(target, currentTitle)
             val syntheticNtkPath = isNtkSyntheticEpisodePath(target.ntkEpisodePath)
             Log.d(
@@ -12739,6 +12809,16 @@ class ReaderSession(
             recordIfUnexpected(e)
             Title.LOAD_ERROR
         }
+        if (
+            adjacentGrantOpened &&
+            (result != Title.LOAD_OK || imageRepository.imageUrls(target, appContext).isEmpty())
+        ) {
+            ReaderImageCache.releaseAdjacentNtkForegroundViewerPath(
+                adjacentGrantPath,
+                "adjacent_verified_fetch_failed"
+            )
+        }
+        return result
     }
 
     private fun fetchGeneratedNtkAppendUrlsWithEarlyHandoff(target: Manga, mode: String? = null): Int {
@@ -19579,7 +19659,15 @@ class ReaderSession(
         if (!isNtkSource(source, title)) return
         if (!isNtkManhwaOrWebtoonEpisodePath(source.ntkEpisodePath)) return
         if (count <= 0) return
-        val authoritativeCount = source.ntkImageCount.coerceAtLeast(0)
+        val authoritativeCount = synchronized(pagesLock) {
+            canonicalEpisodeImageCount(
+                source,
+                pages.filter { page ->
+                    page.transitionTitle == null &&
+                        looseSameEpisodeForAppend(page.manga, source)
+                },
+            )
+        }
         if (authoritativeCount > count) {
             Log.d(
                 TAG,
@@ -25676,7 +25764,7 @@ class ReaderSession(
         // expanded. Moving their prefix while that expansion still holds old global indexes makes
         // later callbacks normalize against the launch episode and can strand the next boundary.
         // Bitmap readiness is not required here, but the complete source-page table is.
-        val authoritativeSourceCount = activePage.manga.ntkImageCount.coerceAtLeast(0)
+        val authoritativeSourceCount = canonicalEpisodeImageCount(activePage.manga, listOf(activePage))
         if (
             requireCompleteSourceStructure &&
             authoritativeSourceCount > 0 &&
@@ -25817,7 +25905,10 @@ class ReaderSession(
                     looseSameEpisodeForAppend(ref.manga, page.manga)
             }
             if (refs.isEmpty()) return@synchronized null
-            val authoritativeCount = page.manga.ntkImageCount.coerceAtLeast(0)
+            val authoritativeCount = canonicalEpisodeImageCount(
+                page.manga,
+                refs.map { it.value },
+            )
             if (authoritativeCount > refs.size) return@synchronized null
             Triple(page.manga, refs, refs.last().index)
         } ?: return
@@ -25850,6 +25941,19 @@ class ReaderSession(
             {
                 if (!hasForwardNtkEpisodeAfterSource(snapshot.first)) {
                     completedEpisodeWarmupKeys.remove(key)
+                    val retryAnchor = currentViewportAnchor.get()
+                        .takeIf { it >= 0 }
+                        ?: currentStartPage()
+                    if (
+                        retryAnchor >= 0 &&
+                        isViewportInsideEpisode(snapshot.first)
+                    ) {
+                        // A transient document/manifest race must not permanently strand a fully
+                        // read episode. Re-entering through the same completion gate keeps the
+                        // retry bounded to the current foreground episode and stops immediately
+                        // once a real forward runway exists or the viewport leaves this episode.
+                        maybeWarmCompletedForwardEpisode(retryAnchor, snapshot.first)
+                    }
                 }
             },
             NTK_COMPLETED_EPISODE_WARMUP_RETRY_MS,
@@ -25883,12 +25987,10 @@ class ReaderSession(
                     page.transitionTitle == null &&
                         looseSameEpisodeForAppend(page.manga, target)
                 }
-            val authoritativeCount = refs.firstOrNull()
-                ?.value
-                ?.manga
-                ?.ntkImageCount
-                ?.coerceAtLeast(0)
-                ?: target.ntkImageCount.coerceAtLeast(0)
+            val authoritativeCount = canonicalEpisodeImageCount(
+                refs.firstOrNull()?.value?.manga ?: target,
+                refs.map { it.value },
+            )
             Pair(refs, authoritativeCount)
         }
         if (snapshot.second <= 0 || snapshot.first.size < snapshot.second) return false
@@ -26075,6 +26177,23 @@ class ReaderSession(
                 return true
             }
         }
+    }
+
+    /**
+     * Adjacent episodes can be published from two concurrent metadata paths. One path may still
+     * carry `ntkImageCount == 0` even though every PageRef was built from a complete, sealed
+     * manifest. The immutable manifest count is therefore the structural authority for deciding
+     * whether the foreground episode is complete. Treating the initially attached four-page
+     * runway as a complete episode starts the following episode too early and can also prune page
+     * indexes while the current remainder is still being committed.
+     */
+    private fun canonicalEpisodeImageCount(source: Manga, refs: Iterable<PageRef>): Int {
+        var count = source.ntkImageCount.coerceAtLeast(0)
+        for (ref in refs) {
+            if (ref.transitionTitle != null || !looseSameEpisodeForAppend(ref.manga, source)) continue
+            count = maxOf(count, ref.manifestPageCount.coerceAtLeast(0))
+        }
+        return count
     }
 
     fun pageIdentity(index: Int): PageIdentity? {

@@ -20,16 +20,21 @@ import androidx.test.uiautomator.By;
 import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
+import androidx.recyclerview.widget.RecyclerView;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.lang.reflect.Field;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
+import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ReaderV2Activity;
@@ -86,6 +91,104 @@ public class NtkOnePiecePreviousScrollReproTest {
                         + progress[0] + ",count=" + progress[1] + ",elapsedMs="
                         + (SystemClock.elapsedRealtime() - scrollStartedAt),
                 progress[0] >= 4 && progress[1] > 4);
+    }
+
+    @Test
+    public void onePieceLatestForwardRunwayIsPreattached() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        // Select by chapter identity rather than UiAutomator child order. The provider mixes
+        // recycled rows in accessibility traversal order, so the fourth observed node is not
+        // necessarily the fourth visible/latest chapter.
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1185화", 90000L);
+        assertNotNull("Expected current One Piece 1185 episode row", episodeRow);
+        episodeRow.click();
+
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L);
+        assertNotNull("Expected NTK One Piece reader surface", strip);
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga current = reader.testEpisode("1185화");
+        assertNotNull("Expected current One Piece 1185 metadata", current);
+        assertEquals(current.getNtkEpisodePath(), reader.testCurrentNtkEpisodePath());
+
+        for (int chapter = 1185; chapter < 1188; chapter++) {
+            Manga next = reader.testEpisode((chapter + 1) + "화");
+            assertNotNull("Expected next One Piece " + (chapter + 1) + " metadata", next);
+
+            long currentReadyStartedAt = SystemClock.elapsedRealtime();
+            while (SystemClock.elapsedRealtime() - currentReadyStartedAt < 30000L &&
+                    !reader.testHasFullyReadyEpisode(current)) {
+                SystemClock.sleep(16L);
+            }
+            assertTrue(
+                    "Current One Piece chapter must become fully drawable before adjacent work; "
+                            + "chapter=" + chapter
+                            + ",path=" + current.getNtkEpisodePath()
+                            + ",elapsedMs="
+                            + (SystemClock.elapsedRealtime() - currentReadyStartedAt),
+                    reader.testHasFullyReadyEpisode(current));
+            assertTrue(
+                    "Current One Piece chapter must retain canonical source order before adjacent "
+                            + "work; chapter=" + chapter
+                            + ",path=" + current.getNtkEpisodePath(),
+                    reader.testHasCanonicalEpisodeOrder(current));
+
+            long preattachStartedAt = SystemClock.elapsedRealtime();
+            while (SystemClock.elapsedRealtime() - preattachStartedAt < 12000L &&
+                    !reader.testHasReadyEpisodeRunway(next, 4)) {
+                SystemClock.sleep(16L);
+            }
+            long preattachElapsedMs = SystemClock.elapsedRealtime() - preattachStartedAt;
+            Log.i(
+                    TAG,
+                    "onePieceNextRunwayPreattached chapter=" + chapter
+                            + ",source=" + current.getNtkEpisodePath()
+                            + ",target=" + next.getNtkEpisodePath()
+                            + ",readyImages=4,elapsedMs=" + preattachElapsedMs);
+            assertTrue(
+                    "One Piece " + (chapter + 1)
+                            + " must have four real drawables attached before the "
+                            + chapter + " boundary; source=" + current.getNtkEpisodePath()
+                            + ",target=" + next.getNtkEpisodePath()
+                            + ",elapsedMs=" + preattachElapsedMs,
+                    reader.testHasReadyEpisodeRunway(next, 4));
+
+            long boundaryStartedAt = SystemClock.elapsedRealtime();
+            String transitioned = forceForwardEpisodeTransition(
+                    reader,
+                    current.getNtkEpisodePath(),
+                    30000L);
+            long boundaryElapsedMs = SystemClock.elapsedRealtime() - boundaryStartedAt;
+            Log.i(
+                    TAG,
+                    "onePieceForwardBoundary chapter=" + chapter
+                            + ",target=" + transitioned
+                            + ",elapsedMs=" + boundaryElapsedMs);
+            assertEquals(next.getNtkEpisodePath(), transitioned);
+            assertTrue(
+                    "A physically preattached One Piece chapter must cross without network wait; "
+                            + "chapter=" + chapter
+                            + ",elapsedMs=" + boundaryElapsedMs,
+                    boundaryElapsedMs <= 250L);
+            current = next;
+        }
+
+        long latestReadyStartedAt = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - latestReadyStartedAt < 30000L &&
+                !reader.testHasFullyReadyEpisode(current)) {
+            SystemClock.sleep(16L);
+        }
+        assertTrue(
+                "Latest One Piece 1188 must remain fully drawable after chained transitions; "
+                        + "elapsedMs=" + (SystemClock.elapsedRealtime() - latestReadyStartedAt),
+                reader.testHasFullyReadyEpisode(current));
+        assertTrue(
+                "Latest One Piece 1188 must retain canonical source order after chained "
+                        + "transitions; path=" + current.getNtkEpisodePath(),
+                reader.testHasCanonicalEpisodeOrder(current));
     }
 
     @Test
@@ -323,6 +426,63 @@ public class NtkOnePiecePreviousScrollReproTest {
                     18);
         }
         return null;
+    }
+
+    private UiObject2 findEpisodeRowByDescription(
+            UiDevice device,
+            String descriptionFragment,
+            long timeoutMs
+    ) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            for (UiObject2 row : device.findObjects(By.res(PACKAGE_NAME, "episode"))) {
+                CharSequence description = row.getContentDescription();
+                if (description == null ||
+                        !description.toString().contains(descriptionFragment)) {
+                    continue;
+                }
+                Log.i(TAG, "selectedEpisodeDescription=" + description);
+                return row;
+            }
+            positionEpisodeListAtDescription(descriptionFragment);
+            SystemClock.sleep(32L);
+        }
+        return null;
+    }
+
+    private boolean positionEpisodeListAtDescription(String descriptionFragment) {
+        AtomicBoolean positioned = new AtomicBoolean(false);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            for (Activity activity : ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED)) {
+                if (!(activity instanceof EpisodeActivity)) continue;
+                try {
+                    Field episodesField = EpisodeActivity.class.getDeclaredField("episodes");
+                    episodesField.setAccessible(true);
+                    Object value = episodesField.get(activity);
+                    if (!(value instanceof List)) return;
+                    List<?> episodes = (List<?>) value;
+                    for (int index = 0; index < episodes.size(); index++) {
+                        Object item = episodes.get(index);
+                        if (!(item instanceof Manga)) continue;
+                        Manga episode = (Manga) item;
+                        if (episode.getName() == null ||
+                                !episode.getName().contains(descriptionFragment)) {
+                            continue;
+                        }
+                        RecyclerView list = activity.findViewById(R.id.EpisodeList);
+                        if (list == null) return;
+                        // Adapter position zero is the title header.
+                        list.scrollToPosition(index + 1);
+                        positioned.set(true);
+                        return;
+                    }
+                } catch (ReflectiveOperationException e) {
+                    throw new AssertionError("Unable to position One Piece episode list", e);
+                }
+            }
+        });
+        return positioned.get();
     }
 
     private String forceForwardEpisodeTransition(
