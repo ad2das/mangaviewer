@@ -136,7 +136,8 @@ class ViewerScrollTraceMetric : TraceMetric() {
                 FROM presented
             ),
             intervals AS (
-                SELECT gap_ns
+                SELECT gap_ns,
+                       ROW_NUMBER() OVER (ORDER BY gap_ns DESC) AS gap_rank
                 FROM ordered
                 WHERE gap_ns > 0
             ),
@@ -170,6 +171,10 @@ class ViewerScrollTraceMetric : TraceMetric() {
                    COUNT(*) AS interval_count,
                    COALESCE(SUM(gap_ns), 0) AS interval_sum_ns,
                    COALESCE(MAX(gap_ns), 0) AS max_gap_ns,
+                   COALESCE(MAX(CASE WHEN gap_rank = 2 THEN gap_ns ELSE 0 END), 0)
+                       AS second_gap_ns,
+                   COALESCE(MAX(CASE WHEN gap_rank = 3 THEN gap_ns ELSE 0 END), 0)
+                       AS third_gap_ns,
                    COALESCE(SUM(CASE WHEN gap_ns > refresh.period_ns * 1.5
                                      THEN 1 ELSE 0 END), 0) AS slow_count,
                    refresh.period_ns AS refresh_period_ns,
@@ -189,6 +194,8 @@ class ViewerScrollTraceMetric : TraceMetric() {
             val intervalCount = presentation.long("interval_count")
             val intervalSumNs = presentation.long("interval_sum_ns")
             val maxGapNs = presentation.long("max_gap_ns")
+            val secondGapNs = presentation.long("second_gap_ns")
+            val thirdGapNs = presentation.long("third_gap_ns")
             val slowCount = presentation.long("slow_count")
             val refreshPeriodNs = presentation.long("refresh_period_ns")
             val activeDurationNs = presentation.long("active_duration_ns")
@@ -219,6 +226,18 @@ class ViewerScrollTraceMetric : TraceMetric() {
                     maxGapNs / 1_000_000.0
                 )
                 measurements += Metric.Measurement(
+                    "viewerActivePresentationGapSecondMs",
+                    secondGapNs / 1_000_000.0
+                )
+                measurements += Metric.Measurement(
+                    "viewerActivePresentationGapThirdMs",
+                    thirdGapNs / 1_000_000.0
+                )
+                measurements += Metric.Measurement(
+                    "viewerActivePresentationJankCount",
+                    slowCount.toDouble()
+                )
+                measurements += Metric.Measurement(
                     "viewerActiveRefreshPeriodMs",
                     refreshPeriodNs / 1_000_000.0
                 )
@@ -229,6 +248,14 @@ class ViewerScrollTraceMetric : TraceMetric() {
                 measurements += Metric.Measurement(
                     "viewerActiveMainThreadRunningMaxMs",
                     activeMainRunNs / 1_000_000.0
+                )
+                // One means these cadence samples came from SurfaceFlinger's
+                // PresentFenceSignaled rows for the reader BLAST child layer. Keep the evidence
+                // kind explicit so qualification never mistakes queueBuffer completion for a
+                // display presentation.
+                measurements += Metric.Measurement(
+                    "viewerActivePresentationSystemFence",
+                    1.0
                 )
                 emittedActivePresentation = true
             }
@@ -359,6 +386,12 @@ class ViewerScrollTraceMetric : TraceMetric() {
                     )
                     measurements += Metric.Measurement(
                         "viewerActiveMainThreadRunningMaxMs", activeMainRunNs / 1_000_000.0
+                    )
+                    // Zero identifies the app-side successful-buffer-submission fallback used
+                    // only when an emulator image omits child-layer system-fence rows.
+                    measurements += Metric.Measurement(
+                        "viewerActivePresentationSystemFence",
+                        0.0
                     )
                 }
             }

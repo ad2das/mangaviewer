@@ -50,6 +50,13 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkCellularFreshCacheTrustsOnlyDohAnswers() {
+        assertTrue(CustomHttpClient.isCellularTrustedNtkDnsSourceForTest("doh"));
+        assertFalse(CustomHttpClient.isCellularTrustedNtkDnsSourceForTest("system"));
+        assertFalse(CustomHttpClient.isCellularTrustedNtkDnsSourceForTest(null));
+    }
+
+    @Test
     public void ntkStrictHttpEngineIsSkippedForCellularWithOrWithoutVpn() {
         assertFalse(CustomHttpClient.shouldUseSharedHttpEngineForStrictNetworkForTest(
                 "document", true, false));
@@ -59,6 +66,18 @@ public class CustomHttpClientTest {
                 "document", false, false));
         assertFalse(CustomHttpClient.shouldUseSharedHttpEngineForStrictNetworkForTest(
                 "document", true, true));
+    }
+
+    @Test
+    public void ntkExactImagesSkipHttpEngineForCellularWithOrWithoutVpn() {
+        assertFalse(CustomHttpClient.shouldUseNtkExactImageHttpEngineForNetworkForTest(
+                false, true, false));
+        assertFalse(CustomHttpClient.shouldUseNtkExactImageHttpEngineForNetworkForTest(
+                false, true, true));
+        assertTrue(CustomHttpClient.shouldUseNtkExactImageHttpEngineForNetworkForTest(
+                false, false, false));
+        assertFalse(CustomHttpClient.shouldUseNtkExactImageHttpEngineForNetworkForTest(
+                true, false, false));
     }
 
     @Test
@@ -241,6 +260,14 @@ public class CustomHttpClientTest {
                 "unsigned_webtoon_image_api"));
         assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
                 "trusted_challenge"));
+    }
+
+    @Test
+    public void strictControlPlanePercentEncodesUnicodeEpisodePathHeaders() {
+        assertEquals(
+                "/webtoon/%EA%BB%8D%EB%8D%B0%EA%B8%B0-%EB%84%A4%EC%9D%B4%EB%B2%84/1040593",
+                CustomHttpClient.ntkNativeAckScopePathForTest(
+                        "/webtoon/껍데기-네이버/1040593"));
     }
 
     @Test

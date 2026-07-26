@@ -354,6 +354,31 @@ internal object NtkManhwaRangeResumePolicy {
     }
 }
 
+/** Production bound for one continuously-progressing, but deadline-dominating webtoon body. */
+internal object NtkWebtoonBodyWallPolicy {
+    // The ordinary no-progress deadline cannot detect a CDN stream that drips a small chunk often
+    // enough to remain alive. A repeated 66-page cold episode had 65 complete bodies while one
+    // ~300 KiB body held the scene open for 3.28 s. At 1.8 s, retain its exact delivered prefix
+    // and move only a useful untouched suffix to the next immutable replica.
+    const val INITIAL_SEGMENT_WALL_MS = 1_800L
+    const val TAIL_GRACE_BYTES = 64L * 1024L
+
+    fun shouldResume(
+        elapsedMs: Long,
+        deliveredBytes: Long,
+        expectedLength: Long,
+    ): Boolean {
+        require(elapsedMs >= 0L)
+        require(deliveredBytes >= 0L)
+        require(expectedLength >= 0L)
+        if (elapsedMs < INITIAL_SEGMENT_WALL_MS ||
+            deliveredBytes <= 0L ||
+            deliveredBytes >= expectedLength
+        ) return false
+        return expectedLength - deliveredBytes > TAIL_GRACE_BYTES
+    }
+}
+
 object ReaderImageCache {
     private const val TAG = "ViewerPerf"
     private const val DIR_NAME = "reader_image_cache_v1"
@@ -405,8 +430,10 @@ object ReaderImageCache {
     // late body. r72 left seven pages at 1.63-2.69 s of headers; the final page then needed another
     // 1.96 s of body work. Give every admitted cold page at least ~2.5 s for its body/decode by
     // advancing an empty attempt at 1.1 s.
-    private const val NTK_MANHWA_HEADER_FAILOVER_MS = 800L
-    private const val NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS = 4
+    private const val NTK_MANHWA_HEADER_FAILOVER_MS =
+        NtkClickOwnedManhwaWavePolicy.TAIL_HEADER_FAILOVER_MS
+    private const val NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS =
+        NtkClickOwnedManhwaWavePolicy.MAX_CONCURRENT_TAIL_HEADER_FAILOVERS
     private val ntkManhwaHeaderFailoverPermits = Semaphore(
         NTK_MANHWA_MAX_CONCURRENT_HEADER_FAILOVERS,
         true,
@@ -416,7 +443,6 @@ object ReaderImageCache {
     // exact delivered offset, so responsive bytes are retained rather than downloaded twice.
     private const val NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS = 1_200L
     private const val NTK_WEBTOON_BODY_PROGRESS_DEADLINE_MS = 1_600L
-    private const val NTK_WEBTOON_BODY_TAIL_GRACE_BYTES = 64L * 1024L
     private const val NTK_WEBTOON_MAX_RANGE_CONTINUATIONS = 3
     // Numeric manhwa uses the same immutable, validator-stable bytes on the three
     // Cloudflare mirrors.  In a 112-page/30 MiB cold wave the ordinary streams normally
@@ -1130,10 +1156,13 @@ object ReaderImageCache {
                 val headerResolved = AtomicBoolean(false)
                 val headerDeadlineMs = when {
                     webtoonReplica -> NTK_WEBTOON_HEADER_FAILOVER_MS
-                    // r109 proved that even a four-call permit can cycle those logical calls over
-                    // multiple cold origins and create fifteen cancellations. Keep r75's one
-                    // selected origin until headers or a real transport failure.
-                    manhwaReplica -> 0L
+                    // Entry and the full forward physical ring retain one selected origin. Only
+                    // the offscreen exact tail advances a headerless attempt, with two session-
+                    // global permits preventing the former four-call cancellation storm.
+                    manhwaReplica && strictPageIndex >= 0 &&
+                        NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(
+                            strictPageIndex
+                        ) -> NTK_MANHWA_HEADER_FAILOVER_MS
                     else -> 0L
                 }
                 val headerDeadline = if (headerDeadlineMs > 0L) {
@@ -1381,7 +1410,7 @@ object ReaderImageCache {
 
             var physicalCall: Call? = null
             try {
-                val transport = getHttpClient().externalViewerImageFastClient()
+                val transport = getHttpClient().ntkExternalViewerImageFastClient()
                     .newBuilder()
                     .proxy(
                         Proxy(
@@ -1904,10 +1933,10 @@ object ReaderImageCache {
                 // (observed: p001.png was admitted at +0.76 s but the projected tail joined
                 // 24.8 s later). Keep its original stream continuous; the independent first-byte
                 // and no-progress deadlines below still recover a genuinely stalled socket.
-                absoluteInitialSegmentWallMs = if (manhwaBody && pageIndex != 0) {
-                    NTK_MANHWA_BODY_WALL_MS
-                } else {
-                    0L
+                absoluteInitialSegmentWallMs = when {
+                    manhwaBody && pageIndex != 0 -> NTK_MANHWA_BODY_WALL_MS
+                    webtoonReplica -> NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS
+                    else -> 0L
                 },
                 bodyIdleResumeMs = if (manhwaBody) {
                     NTK_MANHWA_BODY_IDLE_RESUME_MS
@@ -2174,61 +2203,85 @@ object ReaderImageCache {
                             SystemClock.elapsedRealtimeNanos() >= nextProjectedBodyCheckAtNanos
                         ) {
                             val projectedCheckAtNanos = SystemClock.elapsedRealtimeNanos()
-                            nextProjectedBodyCheckAtNanos = projectedCheckAtNanos +
-                                TimeUnit.MILLISECONDS.toNanos(
-                                    NTK_MANHWA_PROJECTED_BODY_RECHECK_MS,
-                                )
                             val elapsedMs = TimeUnit.NANOSECONDS.toMillis(
                                 projectedCheckAtNanos - segmentStartedAtNanos,
                             ).coerceAtLeast(1L)
-                            val sessionElapsedMs = sessionStartedAtNanos?.get()?.let { started ->
-                                TimeUnit.NANOSECONDS.toMillis(projectedCheckAtNanos - started)
-                            }?.coerceAtLeast(elapsedMs) ?: elapsedMs
-                            if (NtkManhwaProjectedBodyHedgePolicy.shouldResume(
-                                    sessionElapsedMs = sessionElapsedMs,
-                                    bodyElapsedMs = elapsedMs,
-                                    deliveredBytes = deliveredBytes,
-                                    expectedLength = expectedLength,
-                                )
-                            ) {
-                                val projectedSessionCompletionMs =
-                                    NtkManhwaProjectedBodyHedgePolicy.projectedSessionCompletionMs(
-                                        sessionElapsedMs,
-                                        elapsedMs,
-                                        deliveredBytes,
-                                        expectedLength,
-                                    )
-                                val projectedSessionMs =
-                                    projectedSessionCompletionMs?.toLong() ?: Long.MAX_VALUE
-                                // This is a soft rate hedge, not a terminal read failure. Reserve
-                                // its suffix lane before abandoning the still-readable original;
-                                // the previous code threw first and then parked on the semaphore,
-                                // allowing soft hedges to occupy workers while the one genuinely
-                                // idle source waited behind them. A real Okio timeout below still
-                                // waits for a bounded lane because that source is already terminal.
-                                if (launchProjectedTail(
-                                        sessionElapsedMs,
-                                        elapsedMs,
-                                        deliveredBytes,
+                            if (projectedTailFetcher == null) {
+                                absoluteInitialDeadlineConsumed = true
+                                if (NtkWebtoonBodyWallPolicy.shouldResume(
+                                        elapsedMs = elapsedMs,
+                                        deliveredBytes = deliveredBytes,
+                                        expectedLength = expectedLength,
                                     )
                                 ) {
-                                    absoluteInitialDeadlineConsumed = true
-                                } else if (!projectedContinuationDeferredLogged) {
-                                    // A rate projection is not a transport failure. Abandoning a
-                                    // still-readable prefix here caused six small canonical bodies
-                                    // to restart during a congested 112-page wave; the final retry
-                                    // arrived 20 seconds after the original cohort. Keep reading
-                                    // the primary when the bounded disjoint-tail permits are busy.
-                                    // Real no-progress/EOF failures below still resume exactly
-                                    // from the next byte through the serial Range path.
-                                    projectedContinuationDeferredLogged = true
-                                    Log.d(
-                                        TAG,
-                                            "reader_strict_source_projected_resume_deferred " +
-                                            "page=$pageIndex,projectedSessionMs=$projectedSessionMs," +
-                                            "sessionElapsedMs=$sessionElapsedMs," +
-                                            "offset=$deliveredBytes,total=$expectedLength",
+                                    throw java.net.SocketTimeoutException(
+                                        "Webtoon body wall exceeded " +
+                                            "${NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS}ms"
                                     )
+                                }
+                                Log.d(
+                                    TAG,
+                                    "reader_strict_source_body_wall_tail_grace " +
+                                        "page=$pageIndex,elapsedMs=$elapsedMs," +
+                                        "offset=$deliveredBytes," +
+                                        "remaining=${expectedLength - deliveredBytes}," +
+                                        "total=$expectedLength",
+                                )
+                            } else {
+                                nextProjectedBodyCheckAtNanos = projectedCheckAtNanos +
+                                    TimeUnit.MILLISECONDS.toNanos(
+                                        NTK_MANHWA_PROJECTED_BODY_RECHECK_MS,
+                                    )
+                                val sessionElapsedMs =
+                                    sessionStartedAtNanos?.get()?.let { started ->
+                                        TimeUnit.NANOSECONDS.toMillis(
+                                            projectedCheckAtNanos - started
+                                        )
+                                    }?.coerceAtLeast(elapsedMs) ?: elapsedMs
+                                if (NtkManhwaProjectedBodyHedgePolicy.shouldResume(
+                                        sessionElapsedMs = sessionElapsedMs,
+                                        bodyElapsedMs = elapsedMs,
+                                        deliveredBytes = deliveredBytes,
+                                        expectedLength = expectedLength,
+                                    )
+                                ) {
+                                    val projectedSessionCompletionMs =
+                                        NtkManhwaProjectedBodyHedgePolicy
+                                            .projectedSessionCompletionMs(
+                                                sessionElapsedMs,
+                                                elapsedMs,
+                                                deliveredBytes,
+                                                expectedLength,
+                                            )
+                                    val projectedSessionMs =
+                                        projectedSessionCompletionMs?.toLong() ?: Long.MAX_VALUE
+                                    // This is a soft rate hedge, not a terminal read failure.
+                                    // Reserve its suffix lane before abandoning the still-readable
+                                    // original; the previous code threw first and then parked on
+                                    // the semaphore, allowing soft hedges to occupy workers while
+                                    // the one genuinely idle source waited behind them. A real
+                                    // no-progress/EOF failure below still waits for a bounded lane.
+                                    if (launchProjectedTail(
+                                            sessionElapsedMs,
+                                            elapsedMs,
+                                            deliveredBytes,
+                                        )
+                                    ) {
+                                        absoluteInitialDeadlineConsumed = true
+                                    } else if (!projectedContinuationDeferredLogged) {
+                                        // Keep reading the primary when bounded disjoint-tail
+                                        // permits are busy. Real failures still resume exactly
+                                        // from the next byte through the serial Range path.
+                                        projectedContinuationDeferredLogged = true
+                                        Log.d(
+                                            TAG,
+                                            "reader_strict_source_projected_resume_deferred " +
+                                                "page=$pageIndex," +
+                                                "projectedSessionMs=$projectedSessionMs," +
+                                                "sessionElapsedMs=$sessionElapsedMs," +
+                                                "offset=$deliveredBytes,total=$expectedLength",
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2518,7 +2571,7 @@ object ReaderImageCache {
                 releaseManhwaRangeContinuationPermit()
                 return false
             }
-            if (absoluteInitialSegmentWallMs > 0L &&
+            if (projectedTailFetcher != null &&
                 manhwaRangeContinuationPermitsHeld == 0
             ) {
                 // The timed-out Okio stream cannot safely be polled again: doing so returns the
@@ -2560,10 +2613,15 @@ object ReaderImageCache {
                 active.set(resumeCall)
                 val startedAtNs = SystemClock.elapsedRealtimeNanos()
                 val headerResolved = AtomicBoolean(false)
-                val headerDeadline = if (absoluteInitialSegmentWallMs > 0L) {
+                val rangeHeaderDeadlineMs = if (projectedTailFetcher != null) {
+                    NTK_MANHWA_RANGE_HEADER_DEADLINE_MS
+                } else {
+                    NTK_WEBTOON_HEADER_FAILOVER_MS
+                }
+                val headerDeadline = if (rangeHeaderDeadlineMs > 0L) {
                     strictReplicaHeaderDeadlineScheduler.schedule({
                         if (headerResolved.compareAndSet(false, true)) resumeCall.cancel()
-                    }, NTK_MANHWA_RANGE_HEADER_DEADLINE_MS, TimeUnit.MILLISECONDS)
+                    }, rangeHeaderDeadlineMs, TimeUnit.MILLISECONDS)
                 } else {
                     null
                 }
@@ -2676,7 +2734,7 @@ object ReaderImageCache {
             ) return false
             val remaining = expectedLength - deliveredBytes
             if (deliveredBytes <= 0L || remaining <= 0L ||
-                remaining > NTK_WEBTOON_BODY_TAIL_GRACE_BYTES
+                remaining > NtkWebtoonBodyWallPolicy.TAIL_GRACE_BYTES
             ) return false
             val timeout = currentSource.timeout()
             if (!timeout.hasDeadline() || System.nanoTime() < timeout.deadlineNanoTime()) {
@@ -16806,7 +16864,7 @@ object ReaderImageCache {
         vararg urls: String
     ): OkHttpClient {
         return if (urls.any { isFastOkHttpGeneratedImageUrl(it) }) {
-            httpClient.externalViewerImageFastClient()
+            httpClient.ntkExternalViewerImageFastClient()
         } else {
             httpClient.imageClient
         }
@@ -21286,7 +21344,7 @@ object ReaderImageCache {
                     .build()
                 ForegroundRaceAttempt(
                     "api-page-slot-${index + 1}",
-                    httpClient.externalViewerImageFastClient(),
+                    httpClient.ntkExternalViewerImageFastClient(),
                     request
                 )
             }
@@ -21301,7 +21359,7 @@ object ReaderImageCache {
             return listOf(
                 ForegroundRaceAttempt(
                     "authoritative-direct",
-                    httpClient.externalViewerImageFastClient(),
+                    httpClient.ntkExternalViewerImageFastClient(),
                     directRequest
                 )
             )
@@ -21317,7 +21375,7 @@ object ReaderImageCache {
             return listOf(
                 ForegroundRaceAttempt(
                     "trusted-direct-fast",
-                    httpClient.externalViewerImageFastClient(),
+                    httpClient.ntkExternalViewerImageFastClient(),
                     directRequest
                 ),
                 ForegroundRaceAttempt(
@@ -21350,7 +21408,7 @@ object ReaderImageCache {
             return listOf(
                 ForegroundRaceAttempt(
                     "upload-fast",
-                    httpClient.externalViewerImageFastClient(),
+                    httpClient.ntkExternalViewerImageFastClient(),
                     directRequest
                 ),
                 ForegroundRaceAttempt("upload-full", httpClient.imageClient, directRequest)

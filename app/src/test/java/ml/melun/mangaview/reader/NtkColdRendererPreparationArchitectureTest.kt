@@ -55,6 +55,24 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun strictProducerQueuePreparationDoesNotDelayTheReaderPipelineOrPublishPixels() {
+        val setContent = activitySource.indexOf("setContentView(root)")
+        val prepare = activitySource.indexOf(
+            "renderView.prepareDeferredSurfaceProducerAfterRootFrame()"
+        )
+        val pipeline = activitySource.indexOf("startReaderPipeline.run()")
+        val preparation = functionBody("fun prepareDeferredSurfaceProducerAfterRootFrame()")
+
+        assertTrue(setContent >= 0)
+        assertTrue(prepare > setContent)
+        assertTrue(pipeline > prepare)
+        assertTrue(preparation.contains("registerFrameCommitCallback"))
+        assertFalse(preparation.contains("nativeSubmit("))
+        assertFalse(preparation.contains("ImageRequest"))
+        assertFalse(preparation.contains("Bitmap"))
+    }
+
+    @Test
     fun physicalAdjacentCommitDoesNotRaceTheDelayedToolbarEpisodeLabel() {
         val completedDraw = functionBody(
             "private fun handleStrictRollingCompletedDraw(",
@@ -145,6 +163,26 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun earlyTransparentProducerStillRequiresExactIdentityAndActualPixelsBeforeRendering() {
+        val activation = functionBody("fun activateDeferredSurfaceProducer()")
+        val stage = functionBody("private fun postSurfaceRevealLocked()")
+        val commit = functionBody("private fun onFrameCommitted(")
+
+        assertFalse(activation.contains("nativeSurfaceView.visibility = View.VISIBLE"))
+        assertFalse(stage.contains("nativeSurfaceView.visibility = View.VISIBLE"))
+        assertTrue(activation.contains("deferredSurfaceIdentityActivated = true"))
+        assertTrue(stage.contains("!deferredSurfaceIdentityActivated"))
+        assertTrue(stage.contains("nativeSurfaceView.visibility != View.VISIBLE"))
+        assertTrue(commit.contains("cleanCommittedHwuiActualPixels"))
+        assertTrue(commit.contains("listener?.onCompletedDraw(proof)"))
+        assertTrue(commit.contains("revealNativeSurfaceAfterFirstHwuiCommit("))
+        assertTrue(
+            commit.indexOf("listener?.onCompletedDraw(proof)") <
+                commit.indexOf("revealNativeSurfaceAfterFirstHwuiCommit(")
+        )
+    }
+
+    @Test
     fun preparationCreatesNoSurfaceAndSubmitsNoFrame() {
         val preparation = functionBody("private fun prepareRollingNativeRendererLocked()")
 
@@ -221,8 +259,8 @@ class NtkColdRendererPreparationArchitectureTest {
             "private fun shouldSkipActiveAdjacentPreStartForegroundStreams(",
             sessionSource
         )
-        val currentTailGate = functionBody(
-            "private fun isCurrentTailReadyForImmediateAdjacentStream(",
+        val currentEpisodeGate = functionBody(
+            "private fun isCurrentEpisodeCompleteForImmediateAdjacentStream(",
             sessionSource
         )
         val boundedForegroundStream = functionBody(
@@ -240,11 +278,14 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(currentManifestGate.contains("installed >= known"))
         assertTrue(currentManifestGate.contains("isCurrentGeneratedTailReadyForAdjacent"))
         assertTrue(currentManifestGate.contains("append_adjacent_current_exact_tail_ready"))
-        assertTrue(adjacentStreams.contains("isCurrentTailReadyForImmediateAdjacentStream(direction)"))
-        assertTrue(adjacentStreams.contains("currentTailReadyForImmediateAdjacent"))
-        assertTrue(adjacentPreStartGate.contains("isCurrentTailReadyForImmediateAdjacentStream(direction)"))
-        assertTrue(currentTailGate.contains("anchor < tail"))
-        assertTrue(currentTailGate.contains("isCurrentGeneratedTailReadyForAdjacent"))
+        assertTrue(adjacentStreams.contains("isCurrentEpisodeCompleteForImmediateAdjacentStream(target, direction)"))
+        assertTrue(adjacentStreams.contains("currentEpisodeCompleteForImmediateAdjacent"))
+        assertTrue(adjacentPreStartGate.contains("isCurrentEpisodeCompleteForImmediateAdjacentStream(target, direction)"))
+        assertTrue(currentEpisodeGate.contains("hasForwardAdjacentBoundaryDemand(target, direction)"))
+        assertTrue(currentEpisodeGate.contains("completeCurrentStructure"))
+        assertTrue(currentEpisodeGate.contains("allCurrentDrawablesReady"))
+        assertTrue(currentEpisodeGate.contains("currentTailDemandReady"))
+        assertTrue(currentEpisodeGate.contains("shouldBypassAdjacentInputQuiet"))
         assertTrue(
             boundedForegroundStream.contains(
                 "strictExactColdRolling && Manga.sameEpisodeIdentity(target, manga)"
@@ -254,6 +295,36 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(requestPage.contains("isStrictExactLaunchPage(initialPage)"))
         assertTrue(nearBoundary.contains("session?.prepareAdjacentEpisode(prepareAnchor, direction)"))
         assertFalse(nearBoundary.contains("near_boundary_prepare_defer_active_ntk_scroll"))
+    }
+
+    @Test
+    fun chainedLookaheadCannotTruncateOrCompeteWithTheCurrentEpisode() {
+        val append = functionBody("fun appendAdjacentEpisode(", sessionSource)
+        val generatedSeed = functionBody(
+            "private fun seedNtkAppendGeneratedUrlsFromNeighbor(",
+            sessionSource
+        )
+
+        assertFalse(sessionSource.contains("scheduleNtkForwardLookahead("))
+        assertFalse(sessionSource.contains("appendNtkForwardLookahead("))
+        assertFalse(sessionSource.contains("loadLookaheadAppendUrls("))
+        assertTrue(append.contains("val useAuthoritativeManifest ="))
+        assertTrue(append.contains("isolatedAdjacentPrefetchCandidate("))
+        assertTrue(append.contains("loadAuthoritativeAdjacentUrlsForPrefetch("))
+        assertTrue(append.contains("if (!useAuthoritativeManifest)"))
+        assertTrue(generatedSeed.contains("allowSpeculativeExtension ->"))
+        assertTrue(
+            generatedSeed.contains(
+                "append_adjacent_seed_generated_strict_extension_unresolved"
+            )
+        )
+        assertTrue(
+            sessionSource.contains(
+                "NtkAdjacentRunwayPreparationPolicy.CURRENT_EPISODE_COMPLETE_IDLE_REASON"
+            )
+        )
+        assertTrue(sessionSource.contains("snapshot.second.any"))
+        assertTrue(sessionSource.contains("hasForwardNtkEpisodeAfterSource(snapshot.first)"))
     }
 
     @Test
@@ -373,6 +444,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(attach.contains("setSharedBufferMode(command.window, false)"))
         assertTrue(attach.contains("setAutoRefresh(command.window, false)"))
         assertTrue(attach.contains("setBufferCount(command.window, 4)"))
+        assertTrue(attach.contains("tryAllocateBuffers(command.window)"))
         assertTrue(attach.contains("EGL_BUFFER_DESTROYED"))
         assertFalse(attach.contains("setNativeWindowAsyncSwap(command.window, 1)"))
         assertFalse(attach.contains("setSharedBufferMode(command.window, true)"))
@@ -451,6 +523,22 @@ class NtkColdRendererPreparationArchitectureTest {
             watchdog.contains(
                 "!shouldKeepDirectCadenceArmedLocked() || rollingTextureSurface?.isValid != true"
             )
+        )
+    }
+
+    @Test
+    fun recurringProducerVsyncRegistrationCannotWaitBehindImageMessages() {
+        val render = functionBody("private fun renderDirectSurfaceFrame(")
+        val register = functionBody("private fun postReservedDirectFrameCallback(")
+
+        assertTrue(render.contains("nextFrameChoreographer"))
+        assertTrue(render.contains("nextFrameChoreographer?.let(::postReservedDirectFrameCallback)"))
+        assertTrue(register.contains("choreographer.postFrameCallback(directFrameCallback)"))
+        assertTrue(register.contains("val stillCurrent = synchronized(stateLock)"))
+        assertFalse(
+            register.substringAfter("try {")
+                .substringBefore("} catch")
+                .contains("synchronized(stateLock)")
         )
     }
 

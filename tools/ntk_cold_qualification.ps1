@@ -15,6 +15,7 @@ param(
     [string]$OutDir = "build\outputs\ntk-cold",
     [long]$Seed = 0,
     [string]$ReplaySelectionPath = "",
+    [string]$ReplayTargetKeys = "",
     [ValidateRange(1, 100)]
     [int]$CountPerType = 10,
     [ValidateRange(250, 30000)]
@@ -31,11 +32,17 @@ param(
     [switch]$RestartHostGpuProcessPerCase,
     [string]$HostGpuEmulatorPath = "",
     [string]$HostGpuAvdName = "",
+    [switch]$FastFunctionalTriage,
     [bool]$IncludeWarmReopen = $true
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+if($FastFunctionalTriage) {
+    # A warm reopen is a separate diagnostic and doubles neither cold coverage nor triage value.
+    # The canonical path keeps its caller-selected setting unchanged.
+    $IncludeWarmReopen = $false
+}
 
 function Get-SeedQualificationState([long]$RequestedSeed) {
     if($RequestedSeed -lt 0L) {
@@ -91,6 +98,12 @@ function Invoke-HostProcess {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    # adb emits device-side logcat/instrumentation text as UTF-8. ProcessStartInfo otherwise uses
+    # the Windows active code page for redirected streams, corrupting Korean slug JSON and making
+    # a valid NtkColdMacro record appear missing to the host report parser.
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $start.StandardOutputEncoding = $utf8
+    $start.StandardErrorEncoding = $utf8
     foreach($argument in $Arguments) {
         [void]$start.ArgumentList.Add([string]$argument)
     }
@@ -1220,19 +1233,34 @@ function Get-AndroidxBenchmarkSummary([IO.FileInfo[]]$ArtifactFiles) {
 
     $singleValues = [ordered]@{}
     $sampleValues = [ordered]@{}
-    $requiredSingle = @(
-        'timeToInitialDisplayMs',
-        'memoryHeapSizeMaxKb', 'memoryRssAnonMaxKb',
-        'memoryHeapSizeLastKb', 'memoryRssAnonLastKb',
-        'ViewerOpenFirstMs', 'ViewerAllImagesReadyFirstMs',
-        'ImageRequestCount', 'ImageDecodeMaxMs',
-        'viewerScrollDurationMs', 'viewerScrollCpuTimeMs',
-        'viewerScrollCpuPercent', 'viewerScrollMainThreadRunningMaxMs',
-        'viewerActivePresentedFrameCount', 'viewerActivePresentationIntervalCount',
-        'viewerActivePresentationFps', 'viewerActivePresentationJankPercent',
-        'viewerActivePresentationGapMaxMs', 'viewerActiveRefreshPeriodMs',
-        'viewerActiveCpuPercent', 'viewerActiveMainThreadRunningMaxMs'
-    )
+    $requiredSingle = if($script:FastFunctionalTriage) {
+        @(
+            'ViewerOpenFirstMs', 'ViewerAllImagesReadyFirstMs',
+            'ImageRequestCount', 'ImageDecodeMaxMs',
+            'viewerScrollDurationMs', 'viewerScrollCpuTimeMs',
+            'viewerScrollCpuPercent', 'viewerScrollMainThreadRunningMaxMs',
+            'viewerActivePresentedFrameCount', 'viewerActivePresentationIntervalCount',
+            'viewerActivePresentationFps', 'viewerActivePresentationJankPercent',
+            'viewerActivePresentationGapMaxMs', 'viewerActiveRefreshPeriodMs',
+            'viewerActiveCpuPercent', 'viewerActiveMainThreadRunningMaxMs',
+            'viewerActivePresentationSystemFence'
+        )
+    } else {
+        @(
+            'timeToInitialDisplayMs',
+            'memoryHeapSizeMaxKb', 'memoryRssAnonMaxKb',
+            'memoryHeapSizeLastKb', 'memoryRssAnonLastKb',
+            'ViewerOpenFirstMs', 'ViewerAllImagesReadyFirstMs',
+            'ImageRequestCount', 'ImageDecodeMaxMs',
+            'viewerScrollDurationMs', 'viewerScrollCpuTimeMs',
+            'viewerScrollCpuPercent', 'viewerScrollMainThreadRunningMaxMs',
+            'viewerActivePresentedFrameCount', 'viewerActivePresentationIntervalCount',
+            'viewerActivePresentationFps', 'viewerActivePresentationJankPercent',
+            'viewerActivePresentationGapMaxMs', 'viewerActiveRefreshPeriodMs',
+            'viewerActiveCpuPercent', 'viewerActiveMainThreadRunningMaxMs',
+            'viewerActivePresentationSystemFence'
+        )
+    }
     # The reader pixels are produced by their own Surface/BufferQueue. AndroidX
     # FrameTimingMetric observes only the parent Activity's HWUI timeline and aborts when that
     # timeline has no expect/actual rows, so it is intentionally not registered by the benchmark.
@@ -1273,7 +1301,7 @@ function Get-AndroidxBenchmarkSummary([IO.FileInfo[]]$ArtifactFiles) {
                 $commitMetricCount++
             }
         }
-        if($commitMetricCount -eq 0) {
+        if(-not $script:FastFunctionalTriage -and $commitMetricCount -eq 0) {
             $problems.Add('no renderer-specific AndroidX frame-commit metric was observed')
         }
         foreach($name in $optionalSingle) {
@@ -1405,6 +1433,7 @@ function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAd
         "-e", "ntkAllImagesSlaMs", [string]$caseImageSlaMs,
         "-e", "ntkRequireBaselineProfile", $script:RequireBaselineProfile.IsPresent.ToString().ToLowerInvariant(),
         "-e", "ntkSameProcessWarmReopen", $script:IncludeWarmReopen.ToString().ToLowerInvariant(),
+        "-e", "ntkFastFunctionalTriage", $script:FastFunctionalTriage.IsPresent.ToString().ToLowerInvariant(),
         "-e", "androidx.benchmark.output.enable", "true",
         "-e", "additionalTestOutputDir", $RemoteAdditional
     )
@@ -1541,10 +1570,15 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     Write-Utf8 (Join-Path $caseDir "activity-processes-after.txt") $processesAfter.Text
     Write-Utf8 (Join-Path $caseDir "activity-services-after.txt") $servicesAfter.Text
     Write-Utf8 (Join-Path $caseDir "jobscheduler-after.txt") $jobsAfter.Text
-    $benchmarkPull = Invoke-Adb @("pull", $remoteAdditional, (Join-Path $caseDir "benchmark")) `
+    $benchmarkArtifactRoot = Join-Path $caseDir "benchmark"
+    # Windows adb can create a non-existent destination using the remote directory's basename and
+    # then treat that same path as a file when the directory contains multiple artifacts. Create
+    # the destination explicitly and pull the directory contents so Perfetto and benchmarkData are
+    # retained as siblings on every case.
+    [void](New-Item -ItemType Directory -Path $benchmarkArtifactRoot -Force)
+    $benchmarkPull = Invoke-Adb @("pull", "$remoteAdditional/.", $benchmarkArtifactRoot) `
         -TimeoutSeconds 180 -AllowFailure
     Write-Utf8 (Join-Path $caseDir "benchmark-pull.txt") $benchmarkPull.Text
-    $benchmarkArtifactRoot = Join-Path $caseDir "benchmark"
     $benchmarkArtifactFiles = @(if(Test-Path -LiteralPath $benchmarkArtifactRoot) {
         Get-ChildItem -LiteralPath $benchmarkArtifactRoot -Recurse -File -ErrorAction SilentlyContinue
     })
@@ -2233,6 +2267,7 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     $androidxActiveFpsTarget = $null
     $androidxActiveCpuPercent = $null
     $androidxActiveMainRunMaxMs = $null
+    $androidxActivePresentationSystemFence = $null
     $androidxAllImagesReadyMs = $null
     $androidxFrameCommitTraceKind = $null
     $androidxFrameCommitMaxMs = $null
@@ -2281,6 +2316,8 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
             $androidxBenchmark.single "viewerActiveCpuPercent"
         $androidxActiveMainRunMaxMs = Get-OptionalProperty `
             $androidxBenchmark.single "viewerActiveMainThreadRunningMaxMs"
+        $androidxActivePresentationSystemFence = Get-OptionalProperty `
+            $androidxBenchmark.single "viewerActivePresentationSystemFence"
         $androidxActiveRefreshHz = if($null -ne $androidxActiveRefreshPeriodMs -and
                 [double]$androidxActiveRefreshPeriodMs -gt 0.0) {
             [Math]::Round(1000.0 / [double]$androidxActiveRefreshPeriodMs, 2)
@@ -2316,6 +2353,18 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
                 [double]$androidxActiveMainRunMaxMs -ge 100.0) {
             $violations.Add("active-scroll main-thread running slice reached 100ms")
         }
+        if($script:FastFunctionalTriage) {
+            if($null -eq $androidxActivePresentationSystemFence -or
+                    [double]$androidxActivePresentationSystemFence -ne 1.0) {
+                $violations.Add(
+                    "fast jank gate did not obtain authoritative SurfaceFlinger fence evidence"
+                )
+            }
+        } elseif($null -eq $androidxActivePresentationSystemFence -or
+                ([double]$androidxActivePresentationSystemFence -ne 0.0 -and
+                    [double]$androidxActivePresentationSystemFence -ne 1.0)) {
+            $violations.Add("active-scroll presentation evidence kind was missing or invalid")
+        }
         if($null -eq $androidxViewerOpenMs -or
                 [double]$androidxViewerOpenMs -gt $caseImageSlaMs) {
             $violations.Add("AndroidX ViewerOpen trace exceeded the first-image SLA")
@@ -2324,16 +2373,21 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
                 [double]$androidxAllImagesReadyMs -gt $caseImageSlaMs) {
             $violations.Add("AndroidX ViewerAllImagesReady trace exceeded the ${caseImageSlaMs}ms type SLA")
         }
-        if($null -eq $androidxFrameCommitMaxMs -or
-                [double]$androidxFrameCommitMaxMs -ge 100.0) {
+        if(-not $script:FastFunctionalTriage -and
+                ($null -eq $androidxFrameCommitMaxMs -or
+                    [double]$androidxFrameCommitMaxMs -ge 100.0)) {
             $violations.Add("AndroidX renderer frame-commit trace reached 100ms or was unmeasured")
         }
         if($null -eq $androidxImageRequestCount -or [double]$androidxImageRequestCount -le 0.0) {
             $violations.Add("AndroidX ImageRequest trace count was zero")
         }
-        if($null -eq $androidxScrollDurationMs -or [double]$androidxScrollDurationMs -le 0.0 -or
-                $null -eq $androidxScrollCpuMs -or [double]$androidxScrollCpuMs -lt 0.0 -or
-                $null -eq $androidxScrollCpuPercent -or [double]$androidxScrollCpuPercent -lt 0.0) {
+        if(-not $script:FastFunctionalTriage -and
+                ($null -eq $androidxScrollDurationMs -or
+                    [double]$androidxScrollDurationMs -le 0.0 -or
+                    $null -eq $androidxScrollCpuMs -or
+                    [double]$androidxScrollCpuMs -lt 0.0 -or
+                    $null -eq $androidxScrollCpuPercent -or
+                    [double]$androidxScrollCpuPercent -lt 0.0)) {
             $violations.Add("scroll-session CPU metrics were missing or invalid")
         }
         # Whole-scenario FrameTiming and ViewerScrollSession values remain in the artifact as
@@ -2395,37 +2449,47 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     if($null -eq $responseToCommitMs -or $responseToCommitMs -lt 0.0) {
         $violations.Add("response-to-committed-draw was negative or unmeasured")
     }
-    # Reader pixels are produced by a dedicated SurfaceControl buffer, so a perfectly stationary
-    # ViewRoot can legitimately give JankStats zero frames while the native surface presents every
-    # scrolling viewport. Fail only when neither observer exists; the authoritative native checks
-    # below retain the same FPS, <1% slow-interval, <100 ms, and consecutive-frame thresholds.
-    $nativeSurfaceFrameObserverPresent = $null -ne $nativeFrameSummary -and
-        $null -ne $scrollIntervals -and $scrollIntervals -gt 0
-    if($null -eq $frameSummary -and -not $nativeSurfaceFrameObserverPresent) {
-        $violations.Add("frame_summary and native surface frame telemetry missing")
-    }
-    if(($null -eq $totalFrames -or $totalFrames -le 0) -and
-        -not $nativeSurfaceFrameObserverPresent) {
-        $violations.Add("no JankStats or native surface viewer frames observed")
-    }
-    if($null -eq $nativeFrameSummary) {
-        $violations.Add("native_frame_summary telemetry missing")
-    } else {
-        if($null -eq $scrollIntervals -or $scrollIntervals -le 0) {
-            $violations.Add("HWUI frame-commit scroll intervals missing")
+    # Reader pixels are produced by a dedicated Surface/BufferQueue, so a perfectly stationary
+    # ViewRoot can legitimately give JankStats zero frames while the child layer presents every
+    # scrolling viewport. SurfaceFlinger's PresentFenceSignaled rows are authoritative when the
+    # platform exposes them. A synchronous eglSwapBuffers completion proves that an immutable
+    # buffer was queued, but callback scheduling can alternate a late sample with an early one
+    # while display presents remain evenly paced; qualify that fallback cadence only when
+    # system-fence evidence is unavailable.
+    if(-not $script:FastFunctionalTriage) {
+        $nativeSurfaceFrameObserverPresent = $null -ne $nativeFrameSummary -and
+            $null -ne $scrollIntervals -and $scrollIntervals -gt 0
+        $systemFenceCadencePresent = $null -ne $androidxActivePresentationSystemFence -and
+            [double]$androidxActivePresentationSystemFence -eq 1.0
+        if($null -eq $frameSummary -and -not $nativeSurfaceFrameObserverPresent) {
+            $violations.Add("frame_summary and native surface frame telemetry missing")
         }
-        if($null -eq $scrollFps -or $null -eq $scrollFpsTarget -or
-                $scrollFps -lt $scrollFpsTarget) {
-            $violations.Add("HWUI frame-commit scroll FPS was below the refresh-rate target or unmeasured")
+        if(($null -eq $totalFrames -or $totalFrames -le 0) -and
+            -not $nativeSurfaceFrameObserverPresent) {
+            $violations.Add("no JankStats or native surface viewer frames observed")
         }
-        if($null -eq $slowIntervalPercent -or $slowIntervalPercent -ge 1.0) {
-            $violations.Add("native slow-interval ratio is not below 1 percent or was unmeasured")
-        }
-        if($null -eq $worstIntervalMs -or $worstIntervalMs -ge 100.0) {
-            $violations.Add("native worst interval is at least 100ms or unmeasured")
-        }
-        if($null -eq $maxConsecutiveSlowIntervals -or $maxConsecutiveSlowIntervals -gt 1) {
-            $violations.Add("native consecutive slow intervals exceeded one or were unmeasured")
+        if($null -eq $nativeFrameSummary) {
+            $violations.Add("native_frame_summary telemetry missing")
+        } else {
+            if($null -eq $scrollIntervals -or $scrollIntervals -le 0) {
+                $violations.Add("native buffer-submission scroll intervals missing")
+            }
+            if(-not $systemFenceCadencePresent) {
+                if($null -eq $scrollFps -or $null -eq $scrollFpsTarget -or
+                        $scrollFps -lt $scrollFpsTarget) {
+                    $violations.Add("native buffer-submission FPS was below the refresh-rate target or unmeasured")
+                }
+                if($null -eq $slowIntervalPercent -or $slowIntervalPercent -ge 1.0) {
+                    $violations.Add("fallback native slow-interval ratio is not below 1 percent or was unmeasured")
+                }
+                if($null -eq $worstIntervalMs -or $worstIntervalMs -ge 100.0) {
+                    $violations.Add("fallback native worst interval is at least 100ms or unmeasured")
+                }
+                if($null -eq $maxConsecutiveSlowIntervals -or
+                        $maxConsecutiveSlowIntervals -gt 1) {
+                    $violations.Add("fallback native consecutive slow intervals exceeded one or were unmeasured")
+                }
+            }
         }
     }
     if($null -eq $coverageSummary) { $violations.Add("coverage_summary telemetry missing") }
@@ -2562,6 +2626,7 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         refreshHz = $script:deviceInfo.refreshHz
         randomSeed = $script:Seed
         passed = ($violations.Count -eq 0)
+        fastFunctionalTriage = $script:FastFunctionalTriage.IsPresent
         violations = @($violations)
         imageSlaMs = $caseImageSlaMs
         firstActualMs = $firstActualMs
@@ -2623,6 +2688,7 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         activeRefreshHz = $androidxActiveRefreshHz
         activeCpuPercent = $androidxActiveCpuPercent
         activeMainThreadRunningMaxMs = $androidxActiveMainRunMaxMs
+        activePresentationSystemFence = $androidxActivePresentationSystemFence
         nativeScrollIntervals = $scrollIntervals
         nativeScrollFps = $scrollFps
         nativeScrollFpsTarget = if($null -ne $scrollFpsTarget) {
@@ -2844,6 +2910,11 @@ Write-Json (Join-Path $runDir "host-gpu-performance-policy.json") `
     $hostGpuPerformancePolicy
 Write-Host "NTK cold seed=$Seed mode=$($seedQualification.selectionMode) device=$($deviceInfo.model) qemu=$($deviceInfo.qemu) qualificationDeviceMode=$QualificationDeviceMode deviceGate=$deviceRequirementSatisfied"
 $replayPath = $ReplaySelectionPath.Trim()
+$replayTargetFilter = $ReplayTargetKeys.Trim()
+if(-not [string]::IsNullOrWhiteSpace($replayTargetFilter) -and
+        [string]::IsNullOrWhiteSpace($replayPath)) {
+    throw "ReplayTargetKeys is diagnostic-only and requires ReplaySelectionPath"
+}
 if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
     if($seedQualification.freshRandomSeedRequirementSatisfied) {
         throw "ReplaySelectionPath is diagnostic-only and requires the original positive seed"
@@ -2860,6 +2931,43 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
         throw "Replay selection siteRoot mismatch: requested=$siteRoot recorded=$($replay.siteRoot)"
     }
     $replayTargets = @($replay.targets)
+    if(-not [string]::IsNullOrWhiteSpace($replayTargetFilter)) {
+        $requestedTargetKeys = @($replayTargetFilter.Split(
+            ',',
+            [StringSplitOptions]::RemoveEmptyEntries -bor
+                [StringSplitOptions]::TrimEntries
+        ))
+        if($requestedTargetKeys.Count -eq 0 -or
+                $requestedTargetKeys.Count -ne @($requestedTargetKeys |
+                    Select-Object -Unique).Count) {
+            throw "ReplayTargetKeys must contain unique comma-separated type:workId keys"
+        }
+        foreach($requestedKey in $requestedTargetKeys) {
+            if($requestedKey -cnotmatch '^(webtoon|manhwa):[A-Za-z0-9_-]+$') {
+                throw "Invalid ReplayTargetKeys entry: $requestedKey"
+            }
+        }
+        $requestedTargetKeySet = [Collections.Generic.HashSet[string]]::new(
+            [StringComparer]::Ordinal
+        )
+        $requestedTargetKeys.ForEach({
+            [void]$requestedTargetKeySet.Add([string]$_)
+        })
+        $replayTargets = @($replayTargets | Where-Object {
+            $requestedTargetKeySet.Contains(
+                "$([string]$_.workType):$([string]$_.workId)"
+            )
+        })
+        $foundTargetKeys = @($replayTargets | ForEach-Object {
+            "$([string]$_.workType):$([string]$_.workId)"
+        })
+        $missingTargetKeys = @($requestedTargetKeys | Where-Object {
+            $_ -cnotin $foundTargetKeys
+        })
+        if($missingTargetKeys.Count -gt 0) {
+            throw "ReplayTargetKeys not found in the original selection: $($missingTargetKeys -join ',')"
+        }
+    }
     foreach($workType in @("webtoon", "manhwa")) {
         $typeCount = @($replayTargets | Where-Object {
             ([string]$_.workType) -ceq $workType
@@ -2875,7 +2983,7 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
         }
     }
     $targets = @($replayTargets)
-    Write-Host "Replaying the exact logged random selection for diagnostic comparison; no catalog, page, or image URL is requested."
+    Write-Host "Replaying logged random targets for diagnostic comparison; no catalog, page, or image URL is requested."
     $selection = [pscustomobject][ordered]@{
         schema = 1
         generatedAt = [DateTimeOffset]::Now.ToString("o")
@@ -2886,6 +2994,7 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
         completeCatalogCounts = $replay.completeCatalogCounts
         replaySelectionSha256 = Get-FileSha256 $resolvedReplayPath
         replaySelectionPath = $resolvedReplayPath
+        replayTargetKeys = $replayTargetFilter
         targets = @($targets)
     }
 } else {
@@ -3063,6 +3172,7 @@ $diagnosticOnly = -not ($qualificationTargetSatisfied -and
     $warmReopenRequirementSatisfied -and $firstImageSlaRequirementSatisfied -and
     $allImagesSlaRequirementSatisfied -and
     $freshRandomSeedRequirementSatisfied)
+if($FastFunctionalTriage) { $diagnosticOnly = $true }
 $rerunParts = [Collections.Generic.List[string]]::new()
 [void]$rerunParts.Add("pwsh -NoProfile -File .\tools\ntk_cold_qualification.ps1")
 [void]$rerunParts.Add("-AppApkPath $(ConvertTo-PowerShellLiteral $AppApkPath)")
@@ -3082,6 +3192,13 @@ if($RestartHostGpuProcessPerCase) {
 [void]$rerunParts.Add("-IncludeWarmReopen:$(if($IncludeWarmReopen) { '$true' } else { '$false' })")
 if($RequireBaselineProfile) { [void]$rerunParts.Add("-RequireBaselineProfile") }
 if($StandalonePerfetto) { [void]$rerunParts.Add("-StandalonePerfetto") }
+if($FastFunctionalTriage) { [void]$rerunParts.Add("-FastFunctionalTriage") }
+if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
+    [void]$rerunParts.Add("-ReplaySelectionPath $(ConvertTo-PowerShellLiteral $replayPath)")
+}
+if(-not [string]::IsNullOrWhiteSpace($replayTargetFilter)) {
+    [void]$rerunParts.Add("-ReplayTargetKeys $(ConvertTo-PowerShellLiteral $replayTargetFilter)")
+}
 $rerunCommand = $rerunParts -join ' '
 $macroReproTarget = $targets[0]
 $macroReproCaseId = "repro-$($macroReproTarget.workType)-$($macroReproTarget.workId)"
@@ -3098,6 +3215,7 @@ $macroReproParts = @(
     "-e ntkFirstImageSlaMs $macroReproImageSlaMs",
     "-e ntkAllImagesSlaMs $macroReproImageSlaMs",
     "-e ntkSameProcessWarmReopen true",
+    "-e ntkFastFunctionalTriage $($FastFunctionalTriage.IsPresent.ToString().ToLowerInvariant())",
     "-e androidx.benchmark.output.enable true",
     "-e additionalTestOutputDir $(ConvertTo-PowerShellLiteral "/sdcard/Download/ntk-cold-repro/$macroReproCaseId")",
     (ConvertTo-PowerShellLiteral $Runner)
@@ -3116,12 +3234,14 @@ $summary = [pscustomobject][ordered]@{
     passedCases = $passedCount
     smokePassed = ($caseResults.Count -eq ($CountPerType * 2) -and
         $passedCount -eq ($CountPerType * 2))
-    provisionalPassed = ($caseResults.Count -eq ($CountPerType * 2) -and
+    provisionalPassed = (-not $FastFunctionalTriage -and
+        $caseResults.Count -eq ($CountPerType * 2) -and
         $passedCount -eq ($CountPerType * 2) -and $qualificationTargetSatisfied -and
         $warmReopenRequirementSatisfied -and $firstImageSlaRequirementSatisfied -and
         $allImagesSlaRequirementSatisfied -and
         $freshRandomSeedRequirementSatisfied)
-    passed = ($caseResults.Count -eq ($CountPerType * 2) -and
+    passed = (-not $FastFunctionalTriage -and
+        $caseResults.Count -eq ($CountPerType * 2) -and
         $passedCount -eq ($CountPerType * 2) -and
         $qualificationTargetSatisfied -and $warmReopenRequirementSatisfied -and
         $firstImageSlaRequirementSatisfied -and
@@ -3151,12 +3271,13 @@ $summary = [pscustomobject][ordered]@{
     firstImageSlaMs = $FirstImageSlaMs
     webtoonImageSlaMs = $FirstImageSlaMs
     manhwaImageSlaMs = $ManhwaImageSlaMs
-    compilation = if($RequireBaselineProfile) {
-        "Partial.Require.warmupIterations=0"
+    compilation = if($FastFunctionalTriage) {
+        "Existing.AOT.fastFunctionalTriage.contentWarmup=0"
     } else {
-        "Partial.UseIfAvailable.warmupIterations=0"
+        "Full.AOT.contentWarmup=0"
     }
     standalonePerfetto = $StandalonePerfetto.IsPresent
+    fastFunctionalTriage = $FastFunctionalTriage.IsPresent
     includeWarmReopen = $IncludeWarmReopen
     hostGpuPerformancePolicy = $hostGpuPerformancePolicy
     device = $deviceInfo
@@ -3184,13 +3305,19 @@ $summary = [pscustomobject][ordered]@{
 }
 Write-Json (Join-Path $runDir "summary.json") $summary 30
 
-if(Test-Path -LiteralPath $reportScript -PathType Leaf) {
+if(-not $FastFunctionalTriage -and
+        (Test-Path -LiteralPath $reportScript -PathType Leaf)) {
     & $reportScript -SummaryPath (Join-Path $runDir "summary.json") `
         -OutputPath (Join-Path $runDir "report.md")
 }
 
 Write-Host "NTK cold results: $runDir"
-Write-Host "passed=$($summary.passed) diagnosticOnly=$($summary.diagnosticOnly) cases=$passedCount/$($caseResults.Count) device=$($summary.finalDeviceStatus)"
-if(-not $summary.passed -or -not $summary.deviceRequirementSatisfied) {
+Write-Host "passed=$($summary.passed) diagnosticOnly=$($summary.diagnosticOnly) fastFunctionalTriage=$($summary.fastFunctionalTriage) cases=$passedCount/$($caseResults.Count) device=$($summary.finalDeviceStatus)"
+$executionPassed = if($FastFunctionalTriage) {
+    $summary.smokePassed -and $summary.deviceRequirementSatisfied
+} else {
+    $summary.passed -and $summary.deviceRequirementSatisfied
+}
+if(-not $executionPassed) {
     exit 1
 }

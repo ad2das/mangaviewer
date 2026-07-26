@@ -37,19 +37,44 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
-    fun webtoonColdLeadersCoverSixBalancedPoolsPerOrigin() {
+    fun webtoonColdLeadersCoverEightBalancedPoolsPerOrigin() {
         val leaders = NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             episodePath = "/webtoon/work/episode",
             admittedPageIndexes = (0 until 114).toSet(),
             routeBucketForPage = { page -> "cdn-${if (page <= 1) 0 else page % 3}" },
         )
 
-        assertEquals(18, leaders.size)
-        assertEquals(18, leaders.map { page ->
+        assertEquals(24, leaders.size)
+        assertEquals(24, leaders.map { page ->
             "cdn-${if (page <= 1) 0 else page % 3}#" +
-                NtkStrictInitialWavePolicy.webtoonHostLocalShardIndex(page, 6)
+                NtkStrictInitialWavePolicy.webtoonHostLocalShardIndex(page, 8)
         }.toSet().size)
         assertEquals(listOf(0, 1, 2), leaders.take(3))
+    }
+
+    @Test
+    fun cellularWebtoonOpensOneLeaderForEveryFiniteColdCohort() {
+        assertEquals(
+            24,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 24,
+                cellularResilientTransport = true,
+            ),
+        )
+        assertEquals(
+            3,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 24,
+                cellularResilientTransport = false,
+            ),
+        )
+        assertEquals(
+            2,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 2,
+                cellularResilientTransport = true,
+            ),
+        )
     }
 
     @Test
@@ -67,7 +92,7 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
-    fun multiHostManhwaCannotReserveMoreColdLeadersThanPhysicalTransferLanes() {
+    fun multiHostManhwaColdLeadersRemainBoundedByActiveTransfers() {
         val leaders = NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             episodePath = "/manhwa/work/episode",
             admittedPageIndexes = (0 until 35).toSet(),
@@ -75,7 +100,23 @@ class NtkStrictInitialWavePolicyTest {
             routeBucketForPage = { page -> "cdn-${page % 3}" },
         )
 
-        assertEquals(NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS, leaders.size)
+        val uniqueCohorts = (0 until 35).map { page ->
+            NtkStrictInitialWavePolicy.coldConnectionCohortKey(
+                "/manhwa/work/episode",
+                page,
+                "cdn-${page % 3}",
+            )
+        }.distinct()
+        assertEquals(
+            minOf(
+                uniqueCohorts.size,
+                NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS,
+            ),
+            leaders.size,
+        )
+        assertTrue(
+            leaders.size <= NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS
+        )
         assertEquals(0, leaders.first())
         assertEquals(leaders.sorted(), leaders)
     }
@@ -113,7 +154,7 @@ class NtkStrictInitialWavePolicyTest {
     @Test
     fun webtoonAdmissionReservesTheAnchorPoolUntilItsBodyIsSafe() {
         assertEquals(
-            31,
+            43,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 120,
@@ -121,7 +162,7 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
-            36,
+            48,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 120,
@@ -129,7 +170,7 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
-            31,
+            43,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 48,
@@ -206,7 +247,7 @@ class NtkStrictInitialWavePolicyTest {
             )
         }.toSet()
 
-        assertEquals(18, webtoonKeys.size)
+        assertEquals(24, webtoonKeys.size)
         assertEquals(24, manhwaKeys.size)
     }
 

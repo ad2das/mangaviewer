@@ -8,13 +8,21 @@ import org.junit.Test
 class NtkClickOwnedManhwaWavePolicyTest {
 
     @Test
-    fun completeOwnershipRingHasExecutorHeadroomWithoutTransportOversubscription() {
-        assertEquals(32, NtkClickOwnedManhwaWavePolicy.BODY_LANES)
+    fun completeOwnershipRingHasBoundedH2MultiplexingHeadroom() {
+        assertEquals(40, NtkClickOwnedManhwaWavePolicy.BODY_LANES)
         assertEquals(120, NtkClickOwnedManhwaWavePolicy.PROBE_LANES)
         assertEquals(24, NtkClickOwnedManhwaWavePolicy.CONNECTION_SHARDS)
         assertEquals(3, NtkClickOwnedManhwaWavePolicy.REPLICA_STRIPE_SIZE)
-        assertEquals(24, NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS)
+        assertEquals(40, NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)
+        assertEquals(4, NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES)
+        assertEquals(40, NtkClickOwnedManhwaWavePolicy.EXACT_PRE_FRAME_RUNWAY_PAGES)
+        assertEquals(40, NtkClickOwnedManhwaWavePolicy.FORWARD_ADMISSION_RUNWAY_PAGES)
+        assertEquals(700L, NtkClickOwnedManhwaWavePolicy.TAIL_HEADER_FAILOVER_MS)
+        assertEquals(
+            2,
+            NtkClickOwnedManhwaWavePolicy.MAX_CONCURRENT_TAIL_HEADER_FAILOVERS,
+        )
         assertTrue(NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS <=
             NtkClickOwnedManhwaWavePolicy.BODY_LANES)
         assertTrue(NtkSourceLanePolicy.MAX_EPISODE_PAGES >= 270)
@@ -22,6 +30,31 @@ class NtkClickOwnedManhwaWavePolicyTest {
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
         assertTrue(NtkClickOwnedManhwaWavePolicy.BODY_LANES <=
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
+    }
+
+    @Test
+    fun exactAdmissionPreservesOneForwardRingThenPullsFiniteTailForward() {
+        assertEquals(
+            (40 until 52).reversed().toList(),
+            NtkClickOwnedManhwaWavePolicy.exactBodyAdmissionOrder(52),
+        )
+        assertEquals(
+            emptyList<Int>(),
+            NtkClickOwnedManhwaWavePolicy.exactBodyAdmissionOrder(24),
+        )
+        val heavy = NtkClickOwnedManhwaWavePolicy.exactBodyAdmissionOrder(119)
+        assertEquals(
+            (95 until 119).reversed().toList(),
+            heavy.take(24),
+        )
+        assertEquals(94, heavy[24])
+        assertEquals(93, heavy[25])
+        assertEquals(40, heavy.last())
+        assertEquals((40 until 119).toSet(), heavy.toSet())
+        assertEquals(79, heavy.size)
+        assertTrue(!NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(39))
+        assertTrue(NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(40))
+        assertTrue(NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(118))
     }
 
     @Test

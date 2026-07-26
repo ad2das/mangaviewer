@@ -35,8 +35,8 @@ object NtkSourceLanePolicy {
     const val MAX_NETWORK_OPERATIONS_PER_ROUTE = 40
 
     /**
-     * Manhwa uses six click-owned H2 sessions to one signed route. A normal 20-30 page book still
-     * remains one bounded wave.
+     * Numeric manhwa is physically striped over a finite 24-pool click-owned topology after the
+     * immutable table is proven. Keep route admission bounded above the 32-body production ring.
      */
     const val MAX_MANHWA_NETWORK_OPERATIONS_PER_ROUTE = 40
 }

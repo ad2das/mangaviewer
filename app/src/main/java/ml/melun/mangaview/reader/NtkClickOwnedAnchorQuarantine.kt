@@ -202,7 +202,8 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
 
     companion object {
         private const val TAG = "ViewerPerf"
-        private const val FORMAT_SAMPLE_PAGES = 4
+        private const val FORMAT_SAMPLE_PAGES =
+            NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES
 
         private val SETUP_EXECUTOR = Executors.newFixedThreadPool(8) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-probe-setup")
@@ -407,16 +408,41 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 speculationDebtHolders.add(pageIndex)
                 numericAdmissionFutures.getValue(pageIndex).complete(Unit)
             }
+            documentValidated.whenComplete { _, documentFailure ->
+                if (documentFailure != null || closed.get()) return@whenComplete
+                val exactCount = effectivePageCount.get()
+                val preFrameEnd = minOf(
+                    NtkClickOwnedManhwaWavePolicy.EXACT_PRE_FRAME_RUNWAY_PAGES,
+                    exactCount,
+                )
+                (seed until preFrameEnd).forEach { pageIndex ->
+                    numericAdmissionFutures.getValue(pageIndex).complete(Unit)
+                }
+                Log.d(
+                    TAG,
+                    "click_exact_pre_frame_runway path=${plan.normalizedEpisodePath}," +
+                        "pages=$seed-${preFrameEnd - 1},exactPages=$exactCount",
+                )
+            }
             documentValidated.thenCombine(networkRelease) { _, _ -> Unit }
                 .whenComplete { _, admissionFailure ->
                     val exactCount = effectivePageCount.get()
+                    if (admissionFailure == null && !closed.get()) {
+                        NtkClickOwnedManhwaWavePolicy
+                            .exactBodyAdmissionOrder(exactCount)
+                            .forEach { pageIndex ->
+                                numericAdmissionFutures.getValue(pageIndex).complete(Unit)
+                            }
+                    }
                     numericAdmissionFutures.forEach { (pageIndex, admission) ->
-                        if (admissionFailure == null && !closed.get() && pageIndex < exactCount) {
-                            admission.complete(Unit)
-                        } else if (!admission.isDone) {
+                        if (!admission.isDone) {
                             admission.completeExceptionally(
                                 admissionFailure ?: InterruptedException(
-                                    "Numeric page $pageIndex is outside the exact admitted table"
+                                    if (closed.get()) {
+                                        "Numeric page $pageIndex admission closed"
+                                    } else {
+                                        "Numeric page $pageIndex is outside the exact admitted table"
+                                    }
                                 )
                             )
                         }
@@ -537,49 +563,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }
 
     /**
-     * Restore the measured r120 cold-start wave. The first 32 pages retain entry priority, then
-     * the rest of the finite 120-page transport frontier is admitted tail-first in three short
-     * batches. Tail-first avoids putting every late page behind the same already-busy H2 stream,
-     * while the 150 ms spacing avoids the handshake saturation seen with one 120-request burst.
-     * This is normal post-click production work; exact document authority still rejects pages
-     * beyond the canonical count before publication.
-     */
-    private fun scheduleTailFirstNumericRamp(seed: Int) {
-        val frontier = minOf(
-            plan.pageCount,
-            NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES,
-        )
-        if (seed >= frontier) return
-        val batches = ArrayList<IntRange>()
-        var endExclusive = frontier
-        while (endExclusive > seed) {
-            val start = maxOf(seed, endExclusive - NUMERIC_RAMP_BATCH_PAGES)
-            batches += start until endExclusive
-            endExclusive = start
-        }
-        batches.forEachIndexed { batchIndex, range ->
-            NUMERIC_RAMP_EXECUTOR.schedule({
-                if (closed.get()) return@schedule
-                var admitted = 0
-                range.forEach { pageIndex ->
-                    if (pageIndex < effectivePageCount.get() &&
-                        speculationDebtHolders.add(pageIndex)
-                    ) {
-                        numericAdmissionFutures[pageIndex]?.complete(Unit)
-                        admitted++
-                    }
-                }
-                Log.d(
-                    TAG,
-                    "click_numeric_body_ramp path=${plan.normalizedEpisodePath}," +
-                        "batch=${batchIndex + 1},pages=${range.first}-${range.last}," +
-                        "admitted=$admitted,debt=${speculationDebtHolders.size}",
-                )
-            }, batchIndex * NUMERIC_RAMP_INTERVAL_MS, TimeUnit.MILLISECONDS)
-        }
-    }
-
-    /**
      * Resolves the exact mixed-extension table when every page in the complete document has a
      * valid replica image response. Image EOF/digest publication remains per-page in the stream.
      */
@@ -631,18 +614,21 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         Log.d(
             TAG,
             "click_forward_quarantine_release_pending path=${plan.normalizedEpisodePath}," +
-                "reason=$reason,gate=first_actual_frame_presented",
+                "reason=$reason,gate=anchor_body_resident",
         )
         // The initial viewport is already a real post-click network request and page zero owns a
         // dedicated transfer permit. Do not let the exact-document callback release the entire
         // finite volume while that tiny anchor body is still in flight: on a cold 112-page run,
         // 104 newly admitted H2 streams starved a 99 KiB page-zero response for 11 seconds.
         //
-        // This is not a timer or a hidden preload. The user-visible page starts at the committed
-        // click. A successful anchor holds the tail until its identity-valid frame is actually
-        // committed by HWUI; merely reaching EOF or decoding a Bitmap is not a user-visible
-        // milestone. A failed anchor cannot deadlock the episode: it releases the tail so the
-        // strict source fallback can recover page zero.
+        // Once the exact anchor body is resident, however, later click-owned pages perform only
+        // bounded network spooling. Their authoritative decode path remains independently gated by
+        // firstActualFramePresented through bulkSourcePhysicalAdmissionReady below. Waiting for
+        // HWUI after anchor EOF therefore left every 100+ page volume idle for another 400-500 ms
+        // without protecting either the anchor transfer or its display-priority decode. Release
+        // only the network wave at this exact body milestone; no timer, speculative decode, or
+        // pre-entry request is introduced. A failed anchor still releases the tail so the strict
+        // source fallback can recover page zero.
         waveFuture.whenComplete { wave, waveFailure ->
             val anchor = if (waveFailure == null) wave?.futures?.get(0) else null
             if (anchor == null) {
@@ -652,16 +638,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     if (anchorFailure != null || held == null) {
                         completeNetworkRelease(reason, "anchor_failed")
                     } else {
-                        firstActualFramePresented.whenComplete { _, frameFailure ->
-                            completeNetworkRelease(
-                                reason,
-                                if (frameFailure == null) {
-                                    "first_actual_frame_presented"
-                                } else {
-                                    "first_actual_frame_aborted"
-                                },
-                            )
-                        }
+                        completeNetworkRelease(reason, "anchor_body_resident")
                     }
                 }
             }
@@ -907,6 +884,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 // extension can still win on the separate fallback executor and cancel it.
                 if (pageIndex >= NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES) {
                     startPreferredTailCandidate(pageIndex, candidateFuture)
+                } else if (
+                    pageIndex >= NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES
+                ) {
+                    startVerifiedFrontierCandidate(pageIndex, candidateFuture)
                 } else {
                     startClickPrimaryCandidateRace(pageIndex, candidateFuture)
                 }
@@ -1029,6 +1010,53 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         retained.remove(held.body.pageIndex, held)
         held.predecodedOriginal?.close()
         held.fileLease.close()
+    }
+
+    /**
+     * Opens one body URL after the click-time sample has proved the volume's preferred extension.
+     *
+     * The entry viewport still uses [startClickPrimaryCandidateRace], so a common JPG volume never
+     * delays its first image behind HEAD. Pages outside that four-page viewport already wait for
+     * their exact per-page admission; racing an unproven JPG there only created cancelled bodies,
+     * reset H2 streams, and delayed the verified JPEG/PNG/GIF request on the same cold transport.
+     */
+    private fun startVerifiedFrontierCandidate(
+        pageIndex: Int,
+        candidateFuture: CompletableFuture<String?>,
+    ): CompletableFuture<HeldBody?> {
+        val primaryCancellation = checkNotNull(pageCancellations[pageIndex])
+        val verified = candidateFuture
+            .handle { candidate, failure ->
+                if (failure == null) candidate else null
+            }
+            .thenCombine(primaryAdmissionFuture(pageIndex, primaryCancellation)) {
+                    candidate, admitted ->
+                if (admitted) candidate else null
+            }
+            .thenCompose { candidate ->
+                if (candidate == null || closed.get()) {
+                    CompletableFuture.completedFuture(null)
+                } else {
+                    CompletableFuture.supplyAsync(
+                        {
+                            fetchOwnedCandidate(
+                                pageIndex,
+                                candidate,
+                                primaryCancellation,
+                                telemetryAfterImageHeaders = true,
+                            )
+                        },
+                        BODY_EXECUTOR,
+                    )
+                }
+            }
+        return verified.thenCompose { held ->
+            if (held != null || closed.get() || pageIndex >= effectivePageCount.get()) {
+                CompletableFuture.completedFuture(held)
+            } else {
+                startCompletedHeadMissCandidate(pageIndex)
+            }
+        }
     }
 
     /**
@@ -1704,8 +1732,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         private const val FORMAT_VERIFIED_SPECULATIVE_PAGES = SPECULATIVE_CLICK_PAGES
         private const val PRIVATE_PREDECODE_RUNWAY_PAGES = SPECULATIVE_CLICK_PAGES
         private const val DOMINANT_EXTENSION_SAMPLE_PAGES = 12
-        private const val NUMERIC_RAMP_BATCH_PAGES = 32
-        private const val NUMERIC_RAMP_INTERVAL_MS = 150L
         private val SESSION_IDS = AtomicLong(Long.MAX_VALUE / 2L)
         // Only uncommon non-JPG misses use these lanes for bounded extension discovery.
         private val PROBE_EXECUTOR = Executors.newFixedThreadPool(
@@ -1739,9 +1765,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         }
         private val COORDINATOR_EXECUTOR = Executors.newFixedThreadPool(2) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-forward-coordinator")
-        }
-        private val NUMERIC_RAMP_EXECUTOR = Executors.newSingleThreadScheduledExecutor { runnable ->
-            ntkClickWorkerThread(runnable, "ntk-click-numeric-ramp")
         }
         private val ANCHOR_PREDECODE_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
             ntkClickWorkerThread(

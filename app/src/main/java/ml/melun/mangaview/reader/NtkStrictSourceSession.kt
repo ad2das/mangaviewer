@@ -370,19 +370,41 @@ internal object NtkStrictInitialWavePolicy {
     // Must match CustomHttpClient.NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS. A stale value here
     // leaves two physical pools without a cohort leader and serializes their first real bodies
     // into the post-anchor wave.
-    private const val WEBTOON_CONNECTION_SHARDS = 6
+    private const val WEBTOON_CONNECTION_SHARDS = 8
     private const val MANHWA_CONNECTION_SHARDS = 24
+    private const val WEBTOON_WIFI_ANCHOR_GATE_OPERATIONS = 3
+    private const val WEBTOON_CELLULAR_ANCHOR_GATE_OPERATIONS =
+        WEBTOON_CONNECTION_SHARDS * 3
     /**
      * Every unusable manifest replica currently converges on the same healthy webtoon origin.
      * A header-success ramp used to grow a webtoon to 64 simultaneous bodies before any image had
      * reached EOF. Large episodes then spent nearly all bandwidth resetting and resuming streams.
-     * Six streams over six host-local pools keep thirty-six bodies continuously productive. The
-     * former twenty-four-body ring needed four serial refills for a 96-page/3.5 MiB episode and
-     * missed the whole-scene deadline despite idle host-GPU/network capacity. Thirty-six remains
-     * well below the reset-prone historical sixty-four-body layout, while the fixed executor stays
-     * wide for numeric manhwa, whose transport has different origins.
+     * Six streams over eight host-local pools keep forty-eight bodies continuously productive. The
+     * former six-pool layout left four or five serial bodies behind a slow pool even for a 66-page
+     * episode. Increasing only the physical stripe while retaining the fixed forty-eight-body ring
+     * avoids the reset-prone historical sixty-four-body layout and shortens the final pool tail.
+     * The fixed executor stays wide for numeric manhwa, whose transport has different origins.
      */
     private const val WEBTOON_STREAMS_PER_CONNECTION_SHARD = 6
+
+    /**
+     * Carrier transport needs one actual demanded body to establish each finite host/pool cohort.
+     * Opening only one body per origin left fifteen of eighteen pools idle until page zero EOF,
+     * then made leaders and followers compete for brand-new connections. Wi-Fi retains its
+     * measured three-origin first-frame gate.
+     */
+    fun webtoonPreAnchorGateOperations(
+        cohortCount: Int,
+        cellularResilientTransport: Boolean,
+    ): Int {
+        require(cohortCount >= 0)
+        val limit = if (cellularResilientTransport) {
+            WEBTOON_CELLULAR_ANCHOR_GATE_OPERATIONS
+        } else {
+            WEBTOON_WIFI_ANCHOR_GATE_OPERATIONS
+        }
+        return minOf(cohortCount, limit)
+    }
 
     fun usefulPhysicalLaneCount(
         episodePath: String,
@@ -395,7 +417,7 @@ internal object NtkStrictInitialWavePolicy {
         require(manhwaTransferLimit in 1..NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
         return if (episodePath.startsWith("/webtoon/")) {
             // Until the entry body reaches EOF its pool is deliberately single-stream. Counting
-            // it as a full eight-stream pool pushed the other seven pools to nine streams each.
+            // it as a full six-stream pool pushes an avoidable extra body onto the other pools.
             // Once the entry body is safe, every finite pool can carry its measured useful share.
             val usefulWebtoonLanes = if (anchorBodyPublished) {
                 WEBTOON_CONNECTION_SHARDS * WEBTOON_STREAMS_PER_CONNECTION_SHARD
@@ -416,9 +438,10 @@ internal object NtkStrictInitialWavePolicy {
             // could reach pages 11-21 while their bodies were still stalled behind later pages.
             //
             // Keep the complete episode admitted and refill immediately at EOF, but cap physical
-            // transfers to the same measured pool count. No page is dropped or delayed by a
-            // viewport event; this only turns the full workset into a forward 24-body rolling
-            // ring, preserving both all-image completion and a usable downward runway.
+            // transfers to the finite production transfer limit over those same connection
+            // pools. No page is dropped or delayed by a viewport event; this only turns the full
+            // workset into a bounded forward rolling ring, preserving both all-image completion
+            // and a usable downward runway.
             minOf(
                 physicalLaneCount,
                 manhwaTransferLimit,
@@ -662,6 +685,7 @@ internal class NtkStrictSourceSession(
     private val initialExactBodies: Map<Int, ReaderImageCache.NtkStrictPublishedBody> = emptyMap(),
     private val streamedExactBodies: NtkClickOwnedExactBodyStream? = null,
     private val viewerImageApiBacked: Boolean = false,
+    private val cellularResilientTransport: Boolean = false,
 ) : Closeable {
     private enum class WorkMode { QUARANTINE, EXACT }
 
@@ -914,6 +938,11 @@ internal class NtkStrictSourceSession(
             ),
         ) { pageIndex -> pages[pageIndex].routeBucketHint }
     private val coldConnectionCohortLeaderSet = coldConnectionCohortLeaders.toHashSet()
+    private val webtoonPreAnchorGateOperations =
+        NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+            coldConnectionCohortLeaders.size,
+            cellularResilientTransport,
+        )
     private val settledColdConnectionCohortLeaders = ConcurrentHashMap.newKeySet<Int>()
     private val coldConnectionCohortByPage = Array(pages.size) { pageIndex ->
         NtkStrictInitialWavePolicy.coldConnectionCohortKey(
@@ -958,7 +987,7 @@ internal class NtkStrictSourceSession(
         // that draw. Start with a zero-call source proof and open exact publication immediately.
         streamedExactBodyFutures.isNotEmpty() -> 0
         planBinding.episodePath.startsWith("/webtoon/") ->
-            minOf(coldConnectionCohortLeaders.size, WEBTOON_ANCHOR_GATE_OPERATIONS)
+            webtoonPreAnchorGateOperations
         else -> coldConnectionCohortLeaders.size
     }
     private var geometryDigest = ""
@@ -1672,14 +1701,14 @@ internal class NtkStrictSourceSession(
             },
             anchorBodyPublished,
         )
-        // Header arrival is not body success. On a reset-prone CDN, expanding from the cohort
-        // leaders before page zero reached EOF delayed the first real frame by 6-13 seconds. Keep
-        // one body per replica origin during this very short anchor gate, then release the full
-        // bounded 24-body webtoon wave immediately after the entry body is publishable.
+        // Header arrival is not body success. Wi-Fi keeps one body per replica origin before page
+        // zero EOF. Carrier mode opens one demanded leader per finite host/pool cohort instead:
+        // otherwise fifteen pools remain idle for about one second, then their leaders and
+        // followers stampede those cold connections together.
         val usableLaneCount = if (
             planBinding.episodePath.startsWith("/webtoon/") && !anchorBodyPublished
         ) {
-            minOf(progressiveLaneCount, WEBTOON_ANCHOR_GATE_OPERATIONS)
+            minOf(progressiveLaneCount, webtoonPreAnchorGateOperations)
         } else {
             progressiveLaneCount
         }
@@ -3457,8 +3486,6 @@ internal class NtkStrictSourceSession(
     private companion object {
         /** A streamed transfer failure retains a bounded production fallback without 88 idle workers. */
         const val STREAMED_EXACT_FALLBACK_LANES = 12
-        /** One demanded body per immutable webtoon replica until the first image reaches EOF. */
-        const val WEBTOON_ANCHOR_GATE_OPERATIONS = 3
         /**
          * A signed image table has already paid the ACK/API control-plane cost and contains exact
          * physical assets, so it has no speculative generated-body competition. Its finite tail

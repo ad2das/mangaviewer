@@ -156,6 +156,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     @Volatile private var strictRollingHistoricalScene = false
     private val strictAuthoritativeInstallLock = Any()
     private val pendingStrictAuthoritativeInstalls = LinkedHashMap<Int, PendingStrictTileInstall>()
+    /**
+     * First valid immutable original accepted for each strict display slot.
+     *
+     * The pending queue is drained before its pixels are installed on Surface. Without a stable
+     * accepted ledger, a late duplicate decode can enter that empty interval, replace an already
+     * published bitmap, and recycle the identity captured by the all-texture runway.
+     */
+    private val acceptedStrictAuthoritativeIdentities =
+        LinkedHashMap<Int, AdoptedDrawableIdentity>()
     private var strictAuthoritativeInstallFlushScheduled = false
     private var strictTelemetryOwned = false
     private var strictTelemetryClosed = false
@@ -928,6 +937,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
         }
         setContentView(root)
+        if (strictNtkEpisode) {
+            // The first ordinary root frame proves the window is live. Settle only the transparent
+            // native producer after that point while the exact-session gate still forbids any
+            // pixel submission; current-episode network discovery below remains immediate.
+            renderView.prepareDeferredSurfaceProducerAfterRootFrame()
+        }
         if (
             !useHybridNtkBrowser &&
             ReaderWarmupCoordinator.ownsKnownUrlsDecode(preparedKey)
@@ -1388,6 +1403,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            ReaderChromeStyler.applyReaderSystemUi(this)
+        }
         if (hasFocus && ::renderView.isInitialized) {
             if (firstResumeArmedUptimeNanos > 0L && firstFocusArmedUptimeNanos == 0L) {
                 firstFocusArmedUptimeNanos = SystemClock.elapsedRealtimeNanos()
@@ -1647,6 +1665,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 }
             }
         }
+        syncRenderPageIdentities(appliedCount)
         val runFollowups = {
             if (!preservePreparedSurfaceBatch) {
                 clampNtkPartialTailCurrentPageForContinuousWindow(appliedCount, "pages_ready")
@@ -1704,6 +1723,35 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             "reader_pages_ready_known_count_promoted reported=$reportedCount,known=$known,path=$path"
         )
         return known
+    }
+
+    private fun syncRenderPageIdentities(count: Int) {
+        syncRenderPageIdentities(0, count)
+    }
+
+    private fun syncRenderPageIdentity(index: Int) {
+        syncRenderPageIdentities(index, 1)
+    }
+
+    private fun syncRenderPageIdentities(startIndex: Int, count: Int) {
+        if (!::renderView.isInitialized || startIndex < 0 || count <= 0) return
+        val identities = session?.pageIdentities(startIndex, count).orEmpty()
+        if (identities.isEmpty()) return
+        renderView.setCommittedPageIdentities(
+            startIndex,
+            identities.mapIndexed { offset, identity ->
+                identity?.let {
+                    ReaderSurfaceView.CommittedPageIdentity(
+                        displayPageIndex = startIndex + offset,
+                        normalizedEpisodePath = it.normalizedEpisodePath,
+                        sourcePageIndex = it.sourcePageIndex,
+                        canonicalAsset = it.canonicalAsset,
+                        manifestDigest = it.manifestDigest,
+                        manifestPageCount = it.manifestPageCount,
+                    )
+                }
+            }
+        )
     }
 
     private fun clampNtkPartialTailCurrentPageForContinuousWindow(count: Int, reason: String) {
@@ -1775,6 +1823,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPagesAppended(count: Int) {
         MainThreadStallMonitor.trace("reader_on_pages_appended") {
             if (pagesReady) {
+                if (isCurrentNtkReader()) {
+                    val structuralCount = session?.structuralPageCount() ?: count
+                    if (count > structuralCount) {
+                        Log.d(
+                            TAG,
+                            "pages_appended_ignore_stale_grow total=$count structural=$structuralCount " +
+                                "current=$pageCount currentPage=$currentPage"
+                        )
+                        return@trace
+                    }
+                }
                 if (isCurrentNtkReader() && count < pageCount) {
                     Log.d(
                         TAG,
@@ -1793,6 +1852,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     val oldCount = pageCount
                     pageCount = count
                     renderView.appendPageCount(count, revealAppendedBoundary = false)
+                    syncRenderPageIdentities(count)
                     flushPendingPageCallbacks()
                     updateCurrentEpisode(currentPage)
                     Log.d(
@@ -1878,6 +1938,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 pendingBoundaryStartInteractionMs = 0L
                 pageCount = publishCount
                 renderView.appendPageCount(publishCount, revealAppendedBoundary)
+                syncRenderPageIdentities(publishCount)
                 if (revealAppendedBoundary) renderView.finishBoundaryDispatch()
                 flushPendingPageCallbacks()
                 if (logAppendHotPath) {
@@ -2160,6 +2221,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
             val effectiveRemoved = minOf(removedCount, previousCount - startIndex)
             val effectiveTotal = minOf(totalCount, previousCount - effectiveRemoved)
+            // A ready-runway callback scheduled before the structural trim still carries the old
+            // global page count. Letting it run after the trim regrows the Surface to that stale
+            // count and makes the real adjacent insertion look like an invalid shrink. Cancel the
+            // old count publication and move only still-relevant pending drawables with the same
+            // prefix delta as ReaderSession/ReaderSurfaceView.
+            clearDeferredAppendPublishCallbacks()
+            remapPendingPageCallbacksAfterRemoval(startIndex, effectiveRemoved)
+            clearPreRenderedInitialDrawable()
+            synchronized(strictAuthoritativeInstallLock) {
+                pendingStrictAuthoritativeInstalls.clear()
+                acceptedStrictAuthoritativeIdentities.clear()
+            }
             hideBoundaryStatus()
             pageCount = effectiveTotal
             currentPage = when {
@@ -2244,6 +2317,32 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
     }
 
+    private fun remapPendingPageCallbacksAfterRemoval(startIndex: Int, removedCount: Int) {
+        if (removedCount <= 0) return
+        remapPendingIndexMapAfterRemoval(pendingPageBitmaps, startIndex, removedCount)
+        remapPendingIndexMapAfterRemoval(pendingPageTiles, startIndex, removedCount)
+        remapPendingIndexMapAfterRemoval(pendingPageCards, startIndex, removedCount)
+        remapPendingIndexMapAfterRemoval(pendingPageErrors, startIndex, removedCount)
+    }
+
+    private fun <T> remapPendingIndexMapAfterRemoval(
+        values: LinkedHashMap<Int, T>,
+        startIndex: Int,
+        removedCount: Int,
+    ) {
+        if (values.isEmpty()) return
+        val removedEnd = startIndex + removedCount
+        val remapped = LinkedHashMap<Int, T>(values.size)
+        for ((index, value) in values) {
+            when {
+                index < startIndex -> remapped[index] = value
+                index >= removedEnd -> remapped[index - removedCount] = value
+            }
+        }
+        values.clear()
+        values.putAll(remapped)
+    }
+
     override fun onPageReady(index: Int, bitmap: Bitmap) {
         MainThreadStallMonitor.trace("reader_on_page_ready") {
             if (isPreRenderedInitialBitmap(index, bitmap) && renderView.hasPageDrawable(index)) {
@@ -2272,6 +2371,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 return@trace
             }
             if (pagesReady && index < pageCount) {
+                syncRenderPageIdentity(index)
                 if (isStrictContinuousAppendedPage(index)) {
                     // An appended episode has no launch-seal authoritative replacement. Keeping
                     // the learned placeholder height here would stretch its real bitmap for the
@@ -2298,6 +2398,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 return@trace
             }
             if (pagesReady && index < pageCount) {
+                syncRenderPageIdentity(index)
                 if (isStrictContinuousAppendedPage(index)) {
                     // See the bitmap path above: no later launch-seal write will repair geometry
                     // for a continuously appended episode, so install its encoded aspect now.
@@ -2419,6 +2520,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         // instead of 114 complete layout rebuilds while preserving exact bitmap identity.
         val currentAnchor = renderView.currentProgressPosition()?.page ?: currentPage
         if (index == currentAnchor) {
+            syncRenderPageIdentity(index)
             val installed = renderView.setPageAuthoritativeOriginalTiles(
                 index,
                 pageWidth,
@@ -2445,25 +2547,33 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
 
         val accepted = synchronized(strictAuthoritativeInstallLock) {
+            val acceptedIdentity = acceptedStrictAuthoritativeIdentities[index]
             val existing = pendingStrictAuthoritativeInstalls[index]
-            if (existing != null && !existing.identity.sameAs(identity)) {
-                false
-            } else {
-                pendingStrictAuthoritativeInstalls[index] = PendingStrictTileInstall(
-                    generation,
-                    index,
-                    sourceIndex,
-                    pageWidth,
-                    pageHeight,
-                    tiles,
-                    proof,
-                    identity
-                )
-                true
+            when {
+                acceptedIdentity != null -> acceptedIdentity.sameAs(identity)
+                existing != null && !existing.identity.sameAs(identity) -> false
+                else -> {
+                    acceptedStrictAuthoritativeIdentities[index] = identity
+                    pendingStrictAuthoritativeInstalls[index] = PendingStrictTileInstall(
+                        generation,
+                        index,
+                        sourceIndex,
+                        pageWidth,
+                        pageHeight,
+                        tiles,
+                        proof,
+                        identity
+                    )
+                    true
+                }
             }
         }
         if (!accepted) {
-            Log.e(TAG, "authoritative_tiles_reject page=$index source=$sourceIndex reason=pending_identity_conflict")
+            Log.d(
+                TAG,
+                "authoritative_tiles_reject page=$index source=$sourceIndex " +
+                    "reason=late_duplicate_identity"
+            )
             return false
         }
         scheduleStrictAuthoritativeInstallFlush()
@@ -2523,6 +2633,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 it.proof
             )
         }
+        val firstBatchPage = batch.minOf { it.pageIndex }
+        val lastBatchPage = batch.maxOf { it.pageIndex }
+        syncRenderPageIdentities(firstBatchPage, lastBatchPage - firstBatchPage + 1)
         val result = renderView.installAuthoritativeTileBatch(commands)
         var physicallyInstalled = 0
         for (install in batch) {
@@ -2561,6 +2674,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     "authoritative_tiles_reject page=$index source=${install.sourceIndex} " +
                         "reason=batch_surface_ack"
                 )
+                synchronized(strictAuthoritativeInstallLock) {
+                    val acceptedIdentity = acceptedStrictAuthoritativeIdentities[index]
+                    if (acceptedIdentity?.sameAs(install.identity) == true) {
+                        acceptedStrictAuthoritativeIdentities.remove(index)
+                    }
+                }
+                if (!renderView.hasAuthoritativeOriginalTiles(
+                        index,
+                        install.pageWidth,
+                        install.pageHeight,
+                        install.tiles
+                    )
+                ) {
+                    install.tiles.forEach { tile ->
+                        if (!tile.bitmap.isRecycled) tile.bitmap.recycle()
+                    }
+                }
             }
         }
         val rejected = batch.size - physicallyInstalled
@@ -2584,12 +2714,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     ): Boolean {
         val generation = activeReaderSessionGeneration.get()
         return synchronized(strictAuthoritativeInstallLock) {
-            val pending = pendingStrictAuthoritativeInstalls[index] ?: return@synchronized false
-            if (pending.generation != generation) return@synchronized false
+            val pending = pendingStrictAuthoritativeInstalls[index]
+            if (pending != null && pending.generation != generation) return@synchronized false
+            val accepted = acceptedStrictAuthoritativeIdentities[index]
+                ?: pending?.identity
+                ?: return@synchronized false
             if (pageWidth == null || pageHeight == null || tiles == null) return@synchronized true
             val candidate = AdoptedDrawableIdentity.fullQualityTiles(pageWidth, pageHeight, tiles)
                 ?: return@synchronized false
-            pending.identity.sameAs(candidate)
+            accepted.sameAs(candidate)
         }
     }
 
@@ -2598,6 +2731,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val abandoned = synchronized(strictAuthoritativeInstallLock) {
             val values = pendingStrictAuthoritativeInstalls.values.toList()
             pendingStrictAuthoritativeInstalls.clear()
+            acceptedStrictAuthoritativeIdentities.clear()
             strictAuthoritativeInstallFlushScheduled = false
             values
         }
@@ -2669,6 +2803,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     "page=$lastInstalledPage,nativeRunwayQueued=true"
             )
             ViewerTelemetry.allImagesRenderReady(readerRoot ?: renderView, seal.pageCount)
+            session?.noteForwardReadingPosition(
+                renderView.currentProgressPosition()?.page ?: currentPage
+            )
         }
         val queued = if (strictRollingHistoricalScene) {
             renderView.queueResidentAuthoritativeTextureRunway(publishReady)
@@ -2905,6 +3042,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         return try {
             if (countToSet > 0) renderView.setPageCount(countToSet)
+            syncRenderPageIdentity(index)
             renderView.setPageBitmap(index, bitmap)
             if (!pagesReady && !initialStartAtFirstPage) {
                 renderView.scrollToPage(index, 0)
@@ -2961,6 +3099,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         return try {
             if (countToSet > 0) renderView.setPageCount(countToSet)
+            syncRenderPageIdentity(index)
             renderView.setPageTiles(index, pageWidth, pageHeight, tiles)
             if (!pagesReady && !initialStartAtFirstPage) {
                 renderView.scrollToPage(index, 0)
@@ -3005,6 +3144,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         return try {
             if (countToSet > 0) renderView.setPageCount(countToSet)
+            syncRenderPageIdentity(index)
             if (shouldUseProofGeometryForInitialContinuousPrerender(index)) {
                 renderView.setInitialContinuousPageBitmap(index, bitmap)
             } else {
@@ -3049,6 +3189,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         return try {
             if (countToSet > 0) renderView.setPageCount(countToSet)
+            syncRenderPageIdentity(index)
             if (shouldUseProofGeometryForInitialContinuousPrerender(index)) {
                 renderView.setInitialContinuousPageTiles(index, pageWidth, pageHeight, tiles)
             } else {
@@ -3497,6 +3638,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     ) {
         hideBoundaryStatus()
         ensureRenderViewAttached()
+        syncRenderPageIdentity(index)
         renderView.setPageBitmap(index, bitmap, forceImmediateGeometry)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         val coversInitialViewport = visibleInitialDrawable &&
@@ -3534,6 +3676,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     ) {
         hideBoundaryStatus()
         ensureRenderViewAttached()
+        syncRenderPageIdentity(index)
         renderView.setPageTiles(index, pageWidth, pageHeight, tiles, forceImmediateGeometry)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
         val coversInitialViewport = visibleInitialDrawable &&
@@ -4927,6 +5070,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val requestAnchorPage = if (adjustedWindow) adjustedProgressPage else anchorPage
             val pageChanged = adjustedProgressPage != currentPage
             currentPage = adjustedProgressPage
+            // Episode-label/progress writes are deliberately deferred during a fling, but native
+            // pixel retirement must follow the real viewport. Feeding the coalesced session lane
+            // here lets consumed episodes release their pixels at the third image of the new
+            // episode instead of retaining them until scrolling becomes quiet.
+            activeSession?.noteForwardReadingPosition(adjustedProgressPage)
             MainThreadStallMonitor.trace("reader_request_window_async") {
                 activeSession?.requestWindowAsync(requestFirstPage, requestLastPage, requestAnchorPage, busy)
             }
@@ -5856,7 +6004,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictTelemetryInvalidCommittedFrames++
             return
         }
-        val identities = visible.mapNotNull { index ->
+        val capturedIdentities = proof.visiblePageIdentities
+            .takeIf { captured ->
+                captured.size == visible.size &&
+                    captured.map { it.displayPageIndex } == visible
+            }
+        val identities = capturedIdentities?.map { identity ->
+            identity.displayPageIndex to ReaderSession.PageIdentity(
+                normalizedEpisodePath = identity.normalizedEpisodePath,
+                sourcePageIndex = identity.sourcePageIndex,
+                canonicalAsset = identity.canonicalAsset,
+                manifestDigest = identity.manifestDigest,
+                manifestPageCount = identity.manifestPageCount,
+            )
+        } ?: visible.mapNotNull { index ->
             activeSession.pageIdentity(index)?.let { index to it }
         }
         val physicalIdentity = identities.firstOrNull()?.second
@@ -5887,6 +6048,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     "reader_ntk_strict_identity_rejected visible=${visible.joinToString("|")}," +
                         "resolved=${identities.size},path=$physicalEpisodePath," +
                         "manifest=$physicalManifestDigest,pages=$physicalManifestPageCount," +
+                        "captured=${capturedIdentities != null}," +
                         "identities=${identities.joinToString("|") { (_, identity) ->
                             "${identity.normalizedEpisodePath}#${identity.sourcePageIndex}/" +
                                 "${identity.manifestPageCount}:${identity.manifestDigest.take(8)}"
@@ -9577,6 +9739,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     scheduleSaveReadingProgress(info, anchorOffset)
                 }
             }
+            session?.noteForwardReadingPosition(anchorPage)
             return
         }
         updatePageLabel()
@@ -9936,6 +10099,14 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     fun testEpisode(episodeName: String): Manga? {
         return findTestEpisode { episode ->
             episode.name?.contains(episodeName) == true
+        }
+    }
+
+    fun testEpisodeByPath(path: String): Manga? {
+        val normalized = NtkStripDigests.normalizeEpisodePath(path)
+        return findTestEpisode { episode ->
+            NtkStripDigests.normalizeEpisodePath(episode.ntkEpisodePath.orEmpty())
+                .equals(normalized, ignoreCase = true)
         }
     }
 
@@ -10336,6 +10507,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         return episode != null && session?.containsEpisodeForTest(episode) == true
     }
+
+    fun testHasReadyEpisodeRunway(episode: Manga?, minimumReadyImages: Int): Boolean {
+        if (episode == null || minimumReadyImages <= 0 || hybridNtkBrowserActive) return false
+        return session?.hasReadyEpisodeRunwayForTest(episode, minimumReadyImages) == true
+    }
+
+    fun testHasFullyReadyEpisode(episode: Manga?): Boolean {
+        if (episode == null || hybridNtkBrowserActive) return false
+        return session?.hasFullyReadyEpisodeForTest(episode) == true
+    }
+
+    fun testHasCanonicalEpisodeOrder(episode: Manga?): Boolean {
+        if (episode == null || hybridNtkBrowserActive) return false
+        return session?.hasCanonicalEpisodeOrderForTest(episode) == true
+    }
+
+    fun testStrictIdentityInvalidFrames(): Long = strictTelemetryIdentityInvalidFrames
 
     private fun findTestEpisode(predicate: (Manga) -> Boolean): Manga? {
         testEpisodeLists().forEach { episodes ->

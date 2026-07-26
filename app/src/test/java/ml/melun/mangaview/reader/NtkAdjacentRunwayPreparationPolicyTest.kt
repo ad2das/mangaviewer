@@ -62,6 +62,12 @@ class NtkAdjacentRunwayPreparationPolicyTest {
                 reason = NtkAdjacentRunwayPreparationPolicy.FORWARD_TAIL_REASON,
             )
         )
+        assertTrue(
+            NtkAdjacentRunwayPreparationPolicy.shouldStartAdjacentPrefetch(
+                strictExactColdRolling = true,
+                reason = NtkAdjacentRunwayPreparationPolicy.CURRENT_EPISODE_COMPLETE_IDLE_REASON,
+            )
+        )
     }
 
     @Test
@@ -91,6 +97,55 @@ class NtkAdjacentRunwayPreparationPolicyTest {
                 activeReadyPages = 2,
                 activeForegroundPages = 2,
             ) == 2
+        )
+    }
+
+    @Test
+    fun completedCurrentEpisodeBypassesInputQuietOnlyForForwardDifferentEpisode() {
+        assertTrue(
+            NtkAdjacentRunwayPreparationPolicy.shouldBypassAdjacentInputQuiet(
+                direction = 1,
+                differentEpisode = true,
+                completeCurrentStructure = true,
+                allCurrentDrawablesReady = true,
+                currentTailDemandReady = false,
+            )
+        )
+        assertTrue(
+            NtkAdjacentRunwayPreparationPolicy.shouldBypassAdjacentInputQuiet(
+                direction = 1,
+                differentEpisode = true,
+                completeCurrentStructure = true,
+                allCurrentDrawablesReady = false,
+                currentTailDemandReady = true,
+            )
+        )
+        assertFalse(
+            NtkAdjacentRunwayPreparationPolicy.shouldBypassAdjacentInputQuiet(
+                direction = 1,
+                differentEpisode = true,
+                completeCurrentStructure = false,
+                allCurrentDrawablesReady = true,
+                currentTailDemandReady = true,
+            )
+        )
+        assertFalse(
+            NtkAdjacentRunwayPreparationPolicy.shouldBypassAdjacentInputQuiet(
+                direction = 1,
+                differentEpisode = true,
+                completeCurrentStructure = true,
+                allCurrentDrawablesReady = false,
+                currentTailDemandReady = false,
+            )
+        )
+        assertFalse(
+            NtkAdjacentRunwayPreparationPolicy.shouldBypassAdjacentInputQuiet(
+                direction = -1,
+                differentEpisode = true,
+                completeCurrentStructure = true,
+                allCurrentDrawablesReady = true,
+                currentTailDemandReady = true,
+            )
         )
     }
 

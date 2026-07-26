@@ -202,7 +202,7 @@ public class TitleTest {
     @Test
     public void modernNumericManhwaUsesAuthoritativeTitleDocumentBeforeRemovedEpisodeApi() {
         assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "33727", true));
-        assertTrue(Title.shouldPreferNtkDocumentMetadataForTest("webtoon", "840894", false));
+        assertFalse(Title.shouldPreferNtkDocumentMetadataForTest("webtoon", "840894", false));
         assertFalse(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "33727", false));
         assertFalse(Title.shouldPreferNtkDocumentMetadataForTest("manhwa", "slug", true));
     }

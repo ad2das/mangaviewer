@@ -23,16 +23,47 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // authority releases bodies, these H2/TLS sessions are normally already established.
     const val PROBE_LANES = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
     // Admission now happens before Call creation, not after all page GETs have already opened
-    // their response headers. One transfer per measured connection shard therefore bounds real
-    // server/H2 pressure, and eight executor slots keep the ring full while completed bodies are
-    // committed. The next canonical page starts immediately when a permit is returned.
-    const val BODY_LANES = 32
-    const val ACTIVE_BODY_TRANSFERS = CONNECTION_SHARDS
+    // their response headers. One transfer per measured connection shard bounds real server/H2
+    // pressure, while eight executor slots keep the ring full as completed bodies are committed.
+    // A 119-page/30 MiB cold trace originally rejected 40 lanes because image-completion messages
+    // could delay recurring producer-vsync registration and increased real SurfaceFlinger jank.
+    // That renderer lifecycle bug is now removed: the successor Choreographer callback is reserved
+    // directly on the producer thread before completion work can queue. With 32 lanes the measured
+    // active CPU was only 28.9%, while a tail page did not start until the second transfer wave and
+    // became the 4.60 s episode terminal. Forty cut that to 4.03 s with 0/279 presentation jank.
+    // A 44-lane follow-up remained 4.03 s while increasing scroll CPU and main-thread time, so keep
+    // the smaller measured ring and remove the anchor-release serialization instead.
+    const val BODY_LANES = 40
+    const val ACTIVE_BODY_TRANSFERS = BODY_LANES
     // Keep the authority document's cold QUIC request alive: starting 32 bodies before exact-count
     // proof saturated the emulator and made that independent request time out at 3.5 seconds.
     // Eight bodies still cover the entry viewport; the bounded full-page wave is released after
     // authority and the first visible body, so this never drops a canonical page.
     const val SPECULATION_DEBT_LIMIT = 8
+    // Only the pages required to cover the entry viewport race a common JPG body against their
+    // own metadata probe. Every later page shares the sample result and opens one proven URL.
+    const val DIRECT_EXTENSION_RACE_PAGES = 4
+    // Once the complete click-owned document has proved the exact page count, fill the already
+    // bounded body ring while the first physical frame is finishing. Page zero retains its
+    // dedicated transfer permit/executor and the authority request has already completed, so this
+    // cannot recreate the old 104-stream pre-document burst that starved both. Starting only four
+    // additional bodies left twenty healthy connection shards idle for ~0.8 s on a 119-page cold
+    // volume and made the final current-episode body miss the four-second target.
+    const val EXACT_PRE_FRAME_RUNWAY_PAGES = 40
+    // The initial eight pages are already in flight. Fill the remaining physical body ring by
+    // alternating the next forward page with the finite tail. This retains roughly twenty pages
+    // of immediate forward runway while preventing p047-p052 from all entering the under-filled
+    // second wave. Reordering changes neither the finite request set nor physical concurrency.
+    const val FORWARD_ADMISSION_RUNWAY_PAGES = EXACT_PRE_FRAME_RUNWAY_PAGES
+    // Tail-only header recovery protects the final under-filled wave without cancelling a valid
+    // entry/runway request. No response body exists before this deadline; advancing the same
+    // logical call therefore cannot duplicate a successful image download. In the 119-page JPEG
+    // replay every healthy admitted tail returned headers within 500 ms, while the sole outlier
+    // consumed the former 1.2 s deadline and finished at 1.689 s of accumulated header wait.
+    // Seven hundred milliseconds keeps measured cold-handshake headroom and returns that empty
+    // lane roughly half a second earlier. Two slots still prevent a cancellation storm.
+    const val TAIL_HEADER_FAILOVER_MS = 700L
+    const val MAX_CONCURRENT_TAIL_HEADER_FAILOVERS = 2
     // This is the protocol's finite production bound. Parallel metadata-only candidate races
     // start only after the committed viewer click; the fresh document cancels every page beyond
     // its exact count before any source can be published.
@@ -58,6 +89,35 @@ internal object NtkClickOwnedManhwaWavePolicy {
 
     fun connectionShard(pageIndex: Int): Int =
         replicaLocalPageIndex(pageIndex) % CONNECTION_SHARDS
+
+    /**
+     * Deterministic exact-count release order for the post-document body wave.
+     *
+     * The first eight pages already own the entry viewport. Subsequent forward pages and the
+     * immutable exact tail alternate until the fixed forward ring is exhausted, then the remaining
+     * tail stays reverse ordered. This overlaps CDN outliers at both ends while preserving a long
+     * normal-reading runway, without opening another request or increasing [ACTIVE_BODY_TRANSFERS].
+     */
+    fun exactBodyAdmissionOrder(pageCount: Int): List<Int> {
+        require(pageCount in 1..NtkSourceLanePolicy.MAX_EPISODE_PAGES)
+        val alreadyAdmitted = minOf(EXACT_PRE_FRAME_RUNWAY_PAGES, pageCount)
+        val forwardEnd = minOf(FORWARD_ADMISSION_RUNWAY_PAGES, pageCount)
+        return buildList(pageCount - alreadyAdmitted) {
+            var forwardPage = alreadyAdmitted
+            var tailPage = pageCount - 1
+            while (forwardPage < forwardEnd && tailPage >= forwardEnd) {
+                add(forwardPage++)
+                add(tailPage--)
+            }
+            while (forwardPage < forwardEnd) add(forwardPage++)
+            while (tailPage >= forwardEnd) add(tailPage--)
+        }
+    }
+
+    fun shouldFailoverTailHeaders(pageIndex: Int): Boolean {
+        require(pageIndex >= 0)
+        return pageIndex >= FORWARD_ADMISSION_RUNWAY_PAGES
+    }
 
     /**
      * Click-owned bodies reserve one short-lived ownership session per page. The registry's lane

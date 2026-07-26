@@ -1465,9 +1465,19 @@ private:
         const int autoRefreshOffResult = bufferControls.setAutoRefresh != nullptr
             ? bufferControls.setAutoRefresh(command.window, false)
             : -3;
+        // Keep finite compositor headroom without allowing the producer to run several frames
+        // ahead. A six-buffer queue hid host swap pressure from the producer but converted it into
+        // irregular SurfaceFlinger presents and 20-25 ms release callbacks during page-by-page
+        // manga scrolling. Four still absorb a short host-GPU stall while applying
+        // cadence-preserving backpressure before the queue can accumulate visible latency.
         const int bufferCountResult = bufferControls.setBufferCount != nullptr
             ? bufferControls.setBufferCount(command.window, 4)
             : -3;
+        // Allocate the finite queue before physical scrolling begins. Leaving this lazy made
+        // host-GPU eglSwapBuffers repeatedly spend 55-70 ms growing/acquiring the queue during
+        // motion (roughly 12 presented fps). ReaderSurfaceView now admits this attachment only
+        // after a clean real-image HWUI frame has committed and released current-episode work, so
+        // this one-time producer setup can no longer block or delay the first actual image proof.
         if (bufferCountResult == 0 &&
             bufferControls.tryAllocateBuffers != nullptr) {
             bufferControls.tryAllocateBuffers(command.window);

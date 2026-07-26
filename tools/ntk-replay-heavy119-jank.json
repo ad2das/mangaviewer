@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-07-26T20:41:00+09:00",
+  "seed": 119119,
+  "seedSelectionMode": "FIXED_REGRESSION",
+  "algorithm": "fixed heavy regression pair; never used for random qualification",
+  "siteRoot": "https://sbxh9.com",
+  "completeCatalogCounts": {
+    "webtoon": 7530,
+    "manhwa": 9075
+  },
+  "targets": [
+    {
+      "workType": "webtoon",
+      "workId": "16722",
+      "title": "S급 자영업자",
+      "latestEpisodeNumber": 60,
+      "catalogPage": 29,
+      "episodeId": "1536593",
+      "episodeTitle": "60화(최종화)",
+      "episodePath": "/webtoon/16722/1536593",
+      "metadataSource": "episode-api",
+      "metadataError": null,
+      "originallySelectedEpisodePath": "/webtoon/16722/1536593",
+      "originallySelectedEpisodeId": "1536593",
+      "originallySelectedEpisodeTitle": "60화(최종화)",
+      "accessReplacementReason": null
+    },
+    {
+      "workType": "manhwa",
+      "workId": "2778",
+      "title": "사랑의 증명",
+      "latestEpisodeNumber": 6,
+      "catalogPage": 0,
+      "episodeId": "10972",
+      "episodeTitle": "06권",
+      "episodePath": "/manhwa/2778/10972",
+      "metadataSource": "fixed-regression",
+      "metadataError": null,
+      "originallySelectedEpisodePath": "/manhwa/2778/10972",
+      "originallySelectedEpisodeId": "10972",
+      "originallySelectedEpisodeTitle": "06권",
+      "accessReplacementReason": null
+    }
+  ]
+}

@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import ml.melun.mangaview.MainApplication
 import ml.melun.mangaview.Preference
 import ml.melun.mangaview.mangaview.Manga
 import java.io.Closeable
@@ -689,6 +690,9 @@ object NtkSourceSpoolRegistry {
                 initialExactBodies = initialExactBodies,
                 streamedExactBodies = streamedExactBodies,
                 viewerImageApiBacked = spec.viewerImageApiBacked,
+                cellularResilientTransport = runCatching {
+                    MainApplication.getHttpClient().isNtkCellularResilientTransportActive()
+                }.getOrDefault(false),
             )
         } catch (failure: Throwable) {
             bootstrap.abortConstructionFailure()

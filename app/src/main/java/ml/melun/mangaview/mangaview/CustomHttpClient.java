@@ -100,6 +100,10 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
+import okio.Buffer;
+import okio.BufferedSource;
+import okio.ForwardingSource;
+import okio.Okio;
 import okio.Timeout;
 
 import ml.melun.mangaview.glide.ViewerWarmupManager;
@@ -567,17 +571,18 @@ public class CustomHttpClient {
     /**
      * Webtoon assets are striped over three hosts. A 114-page/10 MiB cold trace showed all
      * response headers in ~600 ms but the multiplexed body tail remained ~2.6 s on three H2
-     * sessions per host. The earlier eight-session layout could still expand to 64 simultaneous
-     * bodies after headers arrived; on a 30+ MiB episode that caused hundreds of H2 resets and was
-     * slower than a smaller continuously productive wave. Six host-local pools match the strict
-     * source's six-stream share and keep retry traffic from displacing useful body bytes while
-     * retaining enough aggregate bandwidth for a 100+ page episode.
+     * sessions per host. The earlier eight-session layout could expand to 64 simultaneous bodies
+     * after headers arrived; on a 30+ MiB episode that caused hundreds of H2 resets and was slower
+     * than a smaller continuously productive wave. The strict source now keeps the productive ring
+     * fixed at 48 while spreading it over eight host-local pools (six logical bodies per pool).
+     * That preserves the reset-safe transfer bound but prevents 60-130 page episodes from leaving
+     * four or five serial bodies behind each of only six physical pools.
      * Manga uses its own bounded post-click topology for its fewer, larger pages.
      */
     private static final int NTK_EXACT_IMAGE_CONNECTION_SHARDS = 24;
     // Large 200+ page strips otherwise place enough data behind each H2 flow to make one CDN tail
     // dominate the whole-scene deadline. This is a production, host-local stripe for every work.
-    private static final int NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 6;
+    private static final int NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 8;
     private static final int NTK_MANHWA_EXACT_IMAGE_CONNECTION_SHARDS = 24;
     /**
      * A failed pass over all three immutable webtoon replicas is no longer a useful H2 retry.
@@ -677,6 +682,9 @@ public class CustomHttpClient {
     private static final String NTK_DNS_CACHE_PREFIX = "ntkDnsCacheV1_";
     private static final String CLOUDFLARE_DOH_HOST = "cloudflare-dns.com";
     private static final String GOOGLE_DOH_HOST = "dns.google";
+    private static final String NTK_DNS_SOURCE_SYSTEM = "system";
+    private static final String NTK_DNS_SOURCE_DOH = "doh";
+    private static final String NTK_DNS_SOURCE_UNKNOWN = "unknown";
     private static final Gson GSON = new Gson();
     private static final ConnectionPool SHARED_CONNECTION_POOL = new ConnectionPool(12, 5, TimeUnit.MINUTES);
     private static final javax.net.SocketFactory SNI_FRAGMENTING_SOCKET_FACTORY =
@@ -733,10 +741,12 @@ public class CustomHttpClient {
     private static class CachedDns {
         final List<InetAddress> addresses;
         final long expiresAt;
+        final String source;
 
-        CachedDns(List<InetAddress> addresses, long expiresAt) {
+        CachedDns(List<InetAddress> addresses, long expiresAt, String source) {
             this.addresses = addresses;
             this.expiresAt = expiresAt;
+            this.source = normalizeNtkDnsSource(source);
         }
     }
 
@@ -753,10 +763,12 @@ public class CustomHttpClient {
     private static class DnsCacheEntry {
         final List<InetAddress> addresses;
         final boolean stale;
+        final String source;
 
-        DnsCacheEntry(List<InetAddress> addresses, boolean stale) {
+        DnsCacheEntry(List<InetAddress> addresses, boolean stale, String source) {
             this.addresses = addresses;
             this.stale = stale;
+            this.source = normalizeNtkDnsSource(source);
         }
     }
 
@@ -764,6 +776,7 @@ public class CustomHttpClient {
         ArrayList<String> addresses;
         long savedAt;
         long expiresAt;
+        String source;
     }
 
     private static void addAddressIfMissing(List<InetAddress> addresses, InetAddress candidate) {
@@ -778,7 +791,8 @@ public class CustomHttpClient {
             if(!systemAddresses.isEmpty()) {
                 List<InetAddress> currentAddresses = ipv4OnlyOrThrow(hostname,
                         mergeIpv4First(hostname, systemAddresses, null, null));
-                writeCachedNtkDns(hostname, currentAddresses, NTK_DNS_CACHE_DEFAULT_TTL_MS);
+                writeCachedNtkDns(hostname, currentAddresses,
+                        NTK_DNS_CACHE_DEFAULT_TTL_MS, NTK_DNS_SOURCE_SYSTEM);
                 return currentAddresses;
             }
             List<InetAddress> protectedAddresses = ipv4OnlyOrEmpty(lookupCachedNtkDns(hostname, false));
@@ -799,9 +813,12 @@ public class CustomHttpClient {
             throws UnknownHostException {
         if(!isNtkDnsProtectedHost(hostname))
             return selectNetworkResilientAddresses(hostname, lookupSystemDns(hostname, true));
-        // A fresh app-owned answer was already validated by a previous real connection or DoH
-        // lookup, so reuse it without adding another resolver round trip to the same click.
-        List<InetAddress> cached = ipv4OnlyOrEmpty(lookupCachedNtkDns(hostname, false));
+        // Only a DoH-sourced fresh answer is carrier-safe. A system answer can be a syntactically
+        // valid block-page IP left in the app cache before a Wi-Fi -> cellular transition.
+        DnsCacheEntry fresh = readFreshCachedNtkDns(hostname);
+        List<InetAddress> cached = fresh != null && isCellularTrustedNtkDnsSource(fresh.source)
+                ? ipv4OnlyOrEmpty(fresh.addresses)
+                : new ArrayList<>();
         if(!cached.isEmpty())
             return cached;
         // A carrier can return a syntactically valid block-page IP. DoH must therefore be tried
@@ -979,7 +996,8 @@ public class CustomHttpClient {
                 return new ArrayList<>();
             DnsAnswer answer = parseDohAnswer(hostname, response.body().string());
             if(!answer.addresses.isEmpty())
-                writeCachedNtkDns(hostname, answer.addresses, answer.ttlMs);
+                writeCachedNtkDns(hostname, answer.addresses, answer.ttlMs,
+                        NTK_DNS_SOURCE_DOH);
             return answer.addresses;
         } catch (Exception e) {
             return new ArrayList<>();
@@ -1041,26 +1059,30 @@ public class CustomHttpClient {
         synchronized (NTK_DNS_CACHE_LOCK) {
             CachedDns cached = NTK_DNS_CACHE.get(normalizeDnsHost(hostname));
             if(cached != null && cached.expiresAt > now)
-                return new DnsCacheEntry(new ArrayList<>(cached.addresses), false);
+                return new DnsCacheEntry(
+                        new ArrayList<>(cached.addresses), false, cached.source);
         }
         return readDiskCachedNtkDns(hostname, false);
     }
 
-    private static void writeCachedNtkDns(String hostname, List<InetAddress> addresses, long ttlMs) {
+    private static void writeCachedNtkDns(String hostname, List<InetAddress> addresses,
+                                          long ttlMs, String source) {
         if(addresses == null || addresses.isEmpty())
             return;
         long now = System.currentTimeMillis();
         long expiresAt = now + Math.max(30_000L, ttlMs);
-        writeMemoryCachedNtkDns(hostname, addresses, expiresAt);
-        writeDiskCachedNtkDns(hostname, addresses, now, expiresAt);
+        String normalizedSource = normalizeNtkDnsSource(source);
+        writeMemoryCachedNtkDns(hostname, addresses, expiresAt, normalizedSource);
+        writeDiskCachedNtkDns(hostname, addresses, now, expiresAt, normalizedSource);
     }
 
-    private static void writeMemoryCachedNtkDns(String hostname, List<InetAddress> addresses, long expiresAt) {
+    private static void writeMemoryCachedNtkDns(String hostname, List<InetAddress> addresses,
+                                                long expiresAt, String source) {
         if(addresses == null || addresses.isEmpty())
             return;
         synchronized (NTK_DNS_CACHE_LOCK) {
             NTK_DNS_CACHE.put(normalizeDnsHost(hostname),
-                    new CachedDns(new ArrayList<>(addresses), expiresAt));
+                    new CachedDns(new ArrayList<>(addresses), expiresAt, source));
         }
     }
 
@@ -1092,21 +1114,24 @@ public class CustomHttpClient {
                 return null;
             }
             if(fresh)
-                writeMemoryCachedNtkDns(hostname, addresses, persisted.expiresAt);
-            return new DnsCacheEntry(addresses, stale);
+                writeMemoryCachedNtkDns(hostname, addresses, persisted.expiresAt,
+                        persisted.source);
+            return new DnsCacheEntry(addresses, stale, persisted.source);
         } catch (Exception e) {
             CacheFileStore.delete(cacheRoot, key);
             return null;
         }
     }
 
-    private static void writeDiskCachedNtkDns(String hostname, List<InetAddress> addresses, long savedAt, long expiresAt) {
+    private static void writeDiskCachedNtkDns(String hostname, List<InetAddress> addresses,
+                                              long savedAt, long expiresAt, String source) {
         File cacheRoot = dnsCacheRoot;
         if(cacheRoot == null || addresses == null || addresses.isEmpty())
             return;
         PersistedDns persisted = new PersistedDns();
         persisted.savedAt = savedAt;
         persisted.expiresAt = expiresAt;
+        persisted.source = normalizeNtkDnsSource(source);
         persisted.addresses = new ArrayList<>();
         for(InetAddress address : addresses)
             if(address instanceof Inet4Address)
@@ -1114,6 +1139,18 @@ public class CustomHttpClient {
         if(persisted.addresses.isEmpty())
             return;
         CacheFileStore.write(cacheRoot, ntkDnsCacheKey(hostname), GSON.toJson(persisted));
+    }
+
+    private static String normalizeNtkDnsSource(String source) {
+        if(NTK_DNS_SOURCE_DOH.equalsIgnoreCase(source))
+            return NTK_DNS_SOURCE_DOH;
+        if(NTK_DNS_SOURCE_SYSTEM.equalsIgnoreCase(source))
+            return NTK_DNS_SOURCE_SYSTEM;
+        return NTK_DNS_SOURCE_UNKNOWN;
+    }
+
+    private static boolean isCellularTrustedNtkDnsSource(String source) {
+        return NTK_DNS_SOURCE_DOH.equals(normalizeNtkDnsSource(source));
     }
 
     private static ArrayList<InetAddress> parsePersistedDnsAddresses(String hostname, List<String> persistedAddresses) {
@@ -1640,9 +1677,13 @@ public class CustomHttpClient {
     private OkHttpClient unsafeNtkApiFastClient;
     private OkHttpClient externalViewerPageFastClient;
     private OkHttpClient externalViewerImageFastClient;
+    private OkHttpClient externalViewerCellularImageFastClient;
     private OkHttpClient ntkDemandBoundExactImageFallbackClient;
+    private OkHttpClient ntkCellularDemandBoundExactImageFallbackClient;
     private OkHttpClient[] ntkDemandBoundExactImageFallbackShards;
+    private OkHttpClient[] ntkCellularDemandBoundExactImageFallbackShards;
     private OkHttpClient[] ntkDemandBoundExactImageHttp1RecoveryShards;
+    private OkHttpClient[] ntkCellularDemandBoundExactImageHttp1RecoveryShards;
     private Call.Factory ntkDemandBoundExactImageFactory;
     private volatile String lastReachableNtkRedirectRoot = "";
     private OkHttpClient wolfPageFastClient;
@@ -1702,6 +1743,7 @@ public class CustomHttpClient {
     private final AtomicLong ntkForegroundImageHedgesSuppressed = new AtomicLong();
     private final AtomicInteger activeNtkForegroundImageRaces = new AtomicInteger();
     private final AtomicBoolean ntkCellularResilientTransportLogged = new AtomicBoolean();
+    private final AtomicBoolean ntkCellularExactImageTransportLogged = new AtomicBoolean();
     private final Map<String, Long> ntkWasmWarmCache = new HashMap<>();
     private final Object ntkViewerImageUrlCacheLock = new Object();
     private final Map<String, CachedViewerImages> ntkViewerImageUrlCache = new HashMap<>();
@@ -1819,6 +1861,11 @@ public class CustomHttpClient {
         this.externalViewerImageFastClient = fastExternalViewerImageClient(new OkHttpClient.Builder())
                 .dns(activeNetworkDns)
                 .build();
+        this.externalViewerCellularImageFastClient = fastExternalViewerImageClient(
+                new OkHttpClient.Builder()
+                        .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
+                .dns(CELLULAR_RESILIENT_DNS)
+                .build();
         this.ntkDemandBoundExactImageFallbackShards = new OkHttpClient[NTK_EXACT_IMAGE_CONNECTION_SHARDS];
         for(int shard = 0; shard < NTK_EXACT_IMAGE_CONNECTION_SHARDS; shard++) {
             this.ntkDemandBoundExactImageFallbackShards[shard] =
@@ -1831,6 +1878,17 @@ public class CustomHttpClient {
                             // than a three-second total timer. The total timer aborted responsive
                             // 300+ KiB bodies and forced their remaining bytes through recovery.
                             .callTimeout(0L, TimeUnit.MILLISECONDS)
+                            .build();
+        }
+        this.ntkCellularDemandBoundExactImageFallbackShards =
+                new OkHttpClient[NTK_EXACT_IMAGE_CONNECTION_SHARDS];
+        for(int shard = 0; shard < NTK_EXACT_IMAGE_CONNECTION_SHARDS; shard++) {
+            // Share the shard's bounded pool and dispatcher, but keep a distinct OkHttp Address
+            // whose socket factory fragments only the SNI bytes on carrier networks.
+            this.ntkCellularDemandBoundExactImageFallbackShards[shard] =
+                    this.ntkDemandBoundExactImageFallbackShards[shard].newBuilder()
+                            .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY)
+                            .dns(CELLULAR_RESILIENT_DNS)
                             .build();
         }
         this.ntkDemandBoundExactImageHttp1RecoveryShards =
@@ -1849,8 +1907,19 @@ public class CustomHttpClient {
                             .callTimeout(0L, TimeUnit.MILLISECONDS)
                             .build();
         }
+        this.ntkCellularDemandBoundExactImageHttp1RecoveryShards =
+                new OkHttpClient[NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS];
+        for(int shard = 0; shard < NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS; shard++) {
+            this.ntkCellularDemandBoundExactImageHttp1RecoveryShards[shard] =
+                    this.ntkDemandBoundExactImageHttp1RecoveryShards[shard].newBuilder()
+                            .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY)
+                            .dns(CELLULAR_RESILIENT_DNS)
+                            .build();
+        }
         this.ntkDemandBoundExactImageFallbackClient =
                 this.ntkDemandBoundExactImageFallbackShards[0];
+        this.ntkCellularDemandBoundExactImageFallbackClient =
+                this.ntkCellularDemandBoundExactImageFallbackShards[0];
         this.ntkDemandBoundExactImageFactory = NtkDemandBoundExactImageCall::new;
         this.wolfPageFastClient = fastWolfPageClient(new OkHttpClient.Builder()).build();
         this.unsafeWolfPageFastClient = fastWolfPageClient(getUnsafeOkHttpClient())
@@ -1894,6 +1963,10 @@ public class CustomHttpClient {
         } catch(Exception e) {
             return false;
         }
+    }
+
+    public boolean isNtkCellularResilientTransportActive() {
+        return shouldUseNtkCellularResilientTransport();
     }
 
     private static boolean isCellularBackedNetwork(ConnectivityManager manager,
@@ -1946,6 +2019,10 @@ public class CustomHttpClient {
                 && isNtkDnsProtectedHost(hostname);
     }
 
+    static boolean isCellularTrustedNtkDnsSourceForTest(String source) {
+        return isCellularTrustedNtkDnsSource(source);
+    }
+
     private OkHttpClient ntkPageFastClientForActiveNetwork() {
         if(shouldUseNtkCellularResilientTransport() && ntkCellularPageFastClient != null)
             return ntkCellularPageFastClient;
@@ -1989,6 +2066,19 @@ public class CustomHttpClient {
         return externalViewerImageFastClient == null ? imageClient : externalViewerImageFastClient;
     }
 
+    /**
+     * Applies the carrier-only DNS/SNI route only to image requests that have already been
+     * authenticated as part of an NTK viewer flow. Keeping the generic external client unchanged
+     * avoids altering Naver and other non-NTK image transports on cellular networks.
+     */
+    public OkHttpClient ntkExternalViewerImageFastClient() {
+        if(shouldUseNtkCellularResilientTransport()
+                && externalViewerCellularImageFastClient != null) {
+            return externalViewerCellularImageFastClient;
+        }
+        return externalViewerImageFastClient();
+    }
+
     private static boolean isNtkWebtoonImageOriginHost(String host) {
         return NTK_WEBTOON_PRIMARY_IMAGE_HOST.equalsIgnoreCase(host)
                 || "f1spard.site".equalsIgnoreCase(host)
@@ -2010,7 +2100,7 @@ public class CustomHttpClient {
      */
     public Call.Factory ntkDemandBoundExactImageFactory() {
         return ntkDemandBoundExactImageFactory == null
-                ? externalViewerImageFastClient()
+                ? ntkExternalViewerImageFastClient()
                 : ntkDemandBoundExactImageFactory;
     }
 
@@ -2021,6 +2111,8 @@ public class CustomHttpClient {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicReference<UrlRequest> engineRequest = new AtomicReference<>();
         private final AtomicReference<Call> fallbackCall = new AtomicReference<>();
+        private final AtomicReference<ResponseBody> fallbackResponseBody =
+                new AtomicReference<>();
 
         NtkDemandBoundExactImageCall(Request request) {
             if(request == null)
@@ -2047,10 +2139,19 @@ public class CustomHttpClient {
             if(!executed.compareAndSet(false, true))
                 throw new IllegalStateException("Already Executed");
             Thread worker = new Thread(() -> {
+                Response response;
                 try {
-                    responseCallback.onResponse(this, executeInternal());
+                    response = executeInternal();
                 } catch(IOException failure) {
                     responseCallback.onFailure(this, failure);
+                    return;
+                }
+                try {
+                    responseCallback.onResponse(this, response);
+                } catch(IOException callbackFailure) {
+                    response.close();
+                    Log.e(TAG, "ntk_demand_exact_image_callback_failed",
+                            callbackFailure);
                 }
             }, "ntk-demand-exact-image");
             worker.setDaemon(true);
@@ -2070,16 +2171,29 @@ public class CustomHttpClient {
             boolean forceHttp2 = "1".equals(originalRequest.header(NTK_NO_QUIC_HEADER));
             String baseUrl = rootFromHttpUrl(wireRequest.url());
             long startedAt = System.currentTimeMillis();
-            HttpEngine engine = forceHttp2 ? null : getOrCreateNtkQuicEngine(baseUrl);
+            boolean cellularResilientTransport = shouldUseNtkCellularResilientTransport();
+            if(cellularResilientTransport
+                    && ntkCellularExactImageTransportLogged.compareAndSet(false, true)) {
+                Log.d(TAG, "ntk_cellular_exact_image_transport_selected"
+                        + " transport=okhttp"
+                        + ",dns=network_resilient"
+                        + ",tls=fragmented");
+            }
+            HttpEngine engine = shouldUseNtkExactImageHttpEngine(
+                    forceHttp2, cellularResilientTransport)
+                    ? getOrCreateNtkQuicEngine(baseUrl)
+                    : null;
             ExecutorService executor = engine == null ? null : getOrCreateNtkQuicExecutor(baseUrl);
             if(engine == null || executor == null) {
                 // Engine construction has no network side effect. This fallback is selected before
                 // a UrlRequest exists, so there is still exactly one physical source request.
-                OkHttpClient fallbackTransport = exactImageFallbackTransport(wireRequest);
+                OkHttpClient fallbackTransport = exactImageFallbackTransport(
+                        wireRequest, cellularResilientTransport);
                 Call physical = fallbackTransport.newCall(wireRequest);
                 if(!fallbackCall.compareAndSet(null, physical))
                     throw new IOException("Exact image fallback owner conflict");
                 if(cancelled.get()) physical.cancel();
+                boolean responseOwnsPhysicalCall = false;
                 try {
                     Response response = physical.execute();
                     if(!wireRequest.url().equals(response.request().url())) {
@@ -2092,9 +2206,22 @@ public class CustomHttpClient {
                                 + ",ms=" + (System.currentTimeMillis() - startedAt)
                                 + ",url=" + safeLogUrl(wireRequest.url().toString()));
                     }
-                    return response;
+                    if(cancelled.get()) {
+                        response.close();
+                        throw new InterruptedIOException("Exact image call canceled");
+                    }
+                    if(response.body() == null)
+                        return response;
+                    Response ownedResponse = retainFallbackCallUntilBodyComplete(
+                            response, physical);
+                    responseOwnsPhysicalCall = true;
+                    return ownedResponse;
                 } finally {
-                    fallbackCall.compareAndSet(physical, null);
+                    // execute() returns after response headers, not after the image body. The
+                    // outer Call must retain the physical request so cancel() remains effective
+                    // while a strict lane is reading a large or stalled cellular response.
+                    if(!responseOwnsPhysicalCall)
+                        fallbackCall.compareAndSet(physical, null);
                 }
             }
 
@@ -2142,6 +2269,85 @@ public class CustomHttpClient {
             return responseFromNtkQuic(wireRequest, result, "Exact HttpEngine image");
         }
 
+        private Response retainFallbackCallUntilBodyComplete(Response response, Call physical)
+                throws IOException {
+            ResponseBody delegate = response.body();
+            if(delegate == null)
+                return response;
+            if(!fallbackResponseBody.compareAndSet(null, delegate)) {
+                response.close();
+                throw new IllegalStateException("Exact image response body owner conflict");
+            }
+            try {
+                BufferedSource source = Okio.buffer(new ForwardingSource(delegate.source()) {
+                    private final AtomicBoolean released = new AtomicBoolean(false);
+
+                    private void releasePhysicalCall() {
+                        if(released.compareAndSet(false, true)) {
+                            fallbackResponseBody.compareAndSet(delegate, null);
+                            fallbackCall.compareAndSet(physical, null);
+                        }
+                    }
+
+                    @Override
+                    public long read(Buffer sink, long byteCount) throws IOException {
+                        try {
+                            long read = super.read(sink, byteCount);
+                            if(read == -1L)
+                                releasePhysicalCall();
+                            return read;
+                        } catch(IOException failure) {
+                            try {
+                                super.close();
+                            } catch(IOException closeFailure) {
+                                failure.addSuppressed(closeFailure);
+                            }
+                            releasePhysicalCall();
+                            throw failure;
+                        }
+                    }
+
+                    @Override
+                    public void close() throws IOException {
+                        try {
+                            super.close();
+                        } finally {
+                            releasePhysicalCall();
+                        }
+                    }
+                });
+                ResponseBody ownedBody = new ResponseBody() {
+                    @Override
+                    public MediaType contentType() {
+                        return delegate.contentType();
+                    }
+
+                    @Override
+                    public long contentLength() {
+                        return delegate.contentLength();
+                    }
+
+                    @Override
+                    public BufferedSource source() {
+                        return source;
+                    }
+                };
+                Response ownedResponse = response.newBuilder().body(ownedBody).build();
+                if(cancelled.get()) {
+                    physical.cancel();
+                    ownedResponse.close();
+                    throw new InterruptedIOException(
+                            "Exact image call canceled during body handoff");
+                }
+                return ownedResponse;
+            } catch(IOException | RuntimeException failure) {
+                delegate.close();
+                fallbackResponseBody.compareAndSet(delegate, null);
+                fallbackCall.compareAndSet(physical, null);
+                throw failure;
+            }
+        }
+
         private boolean shouldLogNtkExactImageSuccess(Request request, int code) {
             if(code < 200 || code >= 300)
                 return true;
@@ -2153,7 +2359,8 @@ public class CustomHttpClient {
             return quarantineTag == null || quarantineTag.getPageIndex() == 0;
         }
 
-        private OkHttpClient exactImageFallbackTransport(Request request) {
+        private OkHttpClient exactImageFallbackTransport(Request request,
+                                                         boolean cellularResilientTransport) {
             int pageIndex = 0;
             NtkStrictSourceCallTag strictTag = request.tag(NtkStrictSourceCallTag.class);
             NtkQuarantineSourceCallIdentity quarantineTag =
@@ -2162,9 +2369,13 @@ public class CustomHttpClient {
                 pageIndex = strictTag.getPageIndex();
             else if(quarantineTag != null)
                 pageIndex = quarantineTag.getPageIndex();
-            OkHttpClient[] shards = ntkDemandBoundExactImageFallbackShards;
+            OkHttpClient[] shards = cellularResilientTransport
+                    ? ntkCellularDemandBoundExactImageFallbackShards
+                    : ntkDemandBoundExactImageFallbackShards;
             if(shards == null || shards.length == 0)
-                return ntkDemandBoundExactImageFallbackClient;
+                return cellularResilientTransport
+                        ? ntkCellularDemandBoundExactImageFallbackClient
+                        : ntkDemandBoundExactImageFallbackClient;
             final int shardCount;
             if(isNtkManhwaImageOriginHost(request.url().host())) {
                 shardCount = Math.min(NTK_MANHWA_EXACT_IMAGE_CONNECTION_SHARDS, shards.length);
@@ -2176,7 +2387,9 @@ public class CustomHttpClient {
                 int shardIndex = ntkWebtoonExactImageShardIndex(
                         pageIndex, shardCount, attemptOrdinal);
                 if(shouldUseNtkExactImageHttp1Recovery(request, attemptOrdinal)) {
-                    OkHttpClient[] recoveryShards = ntkDemandBoundExactImageHttp1RecoveryShards;
+                    OkHttpClient[] recoveryShards = cellularResilientTransport
+                            ? ntkCellularDemandBoundExactImageHttp1RecoveryShards
+                            : ntkDemandBoundExactImageHttp1RecoveryShards;
                     if(recoveryShards != null && recoveryShards.length > 0)
                         return recoveryShards[Math.floorMod(shardIndex, recoveryShards.length)];
                 }
@@ -2194,7 +2407,9 @@ public class CustomHttpClient {
                         pageIndex + logicalOrdinal + physicalOrdinal, shards.length);
                 if(physicalOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT
                         || logicalOrdinal >= 3) {
-                    OkHttpClient[] recoveryShards = ntkDemandBoundExactImageHttp1RecoveryShards;
+                    OkHttpClient[] recoveryShards = cellularResilientTransport
+                            ? ntkCellularDemandBoundExactImageHttp1RecoveryShards
+                            : ntkDemandBoundExactImageHttp1RecoveryShards;
                     if(recoveryShards != null && recoveryShards.length > 0)
                         return recoveryShards[Math.floorMod(shardIndex, recoveryShards.length)];
                 }
@@ -2221,6 +2436,8 @@ public class CustomHttpClient {
             if(request != null) request.cancel();
             Call call = fallbackCall.get();
             if(call != null) call.cancel();
+            ResponseBody body = fallbackResponseBody.getAndSet(null);
+            if(body != null) body.close();
         }
 
         @Override
@@ -2271,6 +2488,18 @@ public class CustomHttpClient {
         mixed *= 0x846ca68b;
         mixed ^= mixed >>> 16;
         return Math.floorMod(mixed, shardCount);
+    }
+
+    private static boolean shouldUseNtkExactImageHttpEngine(boolean forceHttp2,
+                                                             boolean cellularResilientTransport) {
+        return !forceHttp2 && !cellularResilientTransport;
+    }
+
+    static boolean shouldUseNtkExactImageHttpEngineForNetworkForTest(boolean forceHttp2,
+                                                                     boolean cellular,
+                                                                     boolean vpn) {
+        return shouldUseNtkExactImageHttpEngine(forceHttp2,
+                shouldUseNtkCellularResilientTransport(cellular, vpn));
     }
 
     /**
@@ -2343,7 +2572,8 @@ public class CustomHttpClient {
                 ntkPageFastClient, ntkCellularPageFastClient, unsafeNtkPageFastClient,
                 ntkApiFastClient, ntkApiDirectClient, ntkCellularApiDirectClient,
                 unsafeNtkApiFastClient, externalViewerPageFastClient,
-                externalViewerImageFastClient, wolfPageFastClient, unsafeWolfPageFastClient,
+                externalViewerImageFastClient, externalViewerCellularImageFastClient,
+                wolfPageFastClient, unsafeWolfPageFastClient,
                 wolfSearchFastClient, unsafeWolfSearchFastClient
         };
         for(OkHttpClient lowerPriority : lowerPriorityClients) {
@@ -10005,7 +10235,7 @@ public class CustomHttpClient {
             if(cookieHeader != null && cookieHeader.length() > 0)
                 builder.header("Cookie", cookieHeader);
             OkHttpClient client = isFastOkHttpGeneratedImageUrl(url)
-                    ? externalViewerImageFastClient()
+                    ? ntkExternalViewerImageFastClient()
                     : ntkPageFastClientForActiveNetwork();
             response = client.newCall(builder.build()).execute();
             byte[] bytes = response.body() == null ? new byte[0] : response.body().bytes();
@@ -10047,7 +10277,7 @@ public class CustomHttpClient {
             if(cookieHeader != null && cookieHeader.length() > 0)
                 builder.header("Cookie", cookieHeader);
             OkHttpClient client = isFastOkHttpGeneratedImageUrl(url)
-                    ? externalViewerImageFastClient()
+                    ? ntkExternalViewerImageFastClient()
                     : ntkPageFastClientForActiveNetwork();
             response = client.newCall(builder.build()).execute();
             byte[] bytes = response.body() == null ? new byte[0] : response.body().bytes();
@@ -10126,7 +10356,7 @@ public class CustomHttpClient {
                 builder.header(key, value);
         }
         OkHttpClient rangeClient = isFastOkHttpGeneratedImageUrl(url)
-                ? externalViewerImageFastClient()
+                ? ntkExternalViewerImageFastClient()
                 : imageClient;
         return rangeClient.newCall(builder.build()).execute();
     }
@@ -12617,7 +12847,7 @@ public class CustomHttpClient {
         Map<String, String> requestHeaders = new LinkedHashMap<>();
         requestHeaders.put("User-Agent", bootstrap.userAgent);
         requestHeaders.put("Origin", origin);
-        requestHeaders.put("Referer", origin + normalized);
+        requestHeaders.put("Referer", origin + ntkNativeAckScopePath(normalized));
         requestHeaders.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
         requestHeaders.put("Content-Type", "application/json");
         requestHeaders.put("Accept", "application/json");
@@ -12644,7 +12874,14 @@ public class CustomHttpClient {
             try {
                 root = new JSONObject(new String(responseBytes, StandardCharsets.UTF_8));
             } catch(Exception malformed) {
-                throw new IllegalStateException("Strict trusted challenge body is not JSON", malformed);
+                // A WAF/full-challenge response is HTML rather than the small JSON decision used
+                // by the direct route. It is not terminal source failure: hand ownership to the
+                // already fenced isolated ACK route, which is the production compatibility path
+                // for exactly this server-selected branch.
+                Log.w(TAG, "ntk_strict_trusted_challenge_non_json_fallback path=" + normalized
+                        + ",code=" + exchange.status
+                        + ",bytes=" + responseBytes.length);
+                throw new NtkStrictFullChallengeRequiredException(normalized);
             }
             if(exchange.status == 200 && root.optBoolean("ok", false)
                     && root.optJSONObject("challenge") != null) {
@@ -20808,6 +21045,10 @@ public class CustomHttpClient {
             encoded.append(ntkEncodePathSegment(parts[i]));
         }
         return encoded.append(suffix).toString();
+    }
+
+    static String ntkNativeAckScopePathForTest(String path) {
+        return ntkNativeAckScopePath(path);
     }
 
     private static boolean isNtkWorkSupersededByForeground(String requestedPath) {

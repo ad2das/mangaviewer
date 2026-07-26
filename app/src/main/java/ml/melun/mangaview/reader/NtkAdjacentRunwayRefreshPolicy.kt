@@ -44,6 +44,47 @@ internal object NtkAdjacentRunwayRefreshPolicy {
             }
     }
 
+    /**
+     * Applies a partial cache snapshot without turning that snapshot into the complete remaining
+     * manifest. Unmentioned source slots retain their original canonical URL and ordering.
+     */
+    fun reconcile(
+        existing: List<Assignment>,
+        latestImages: List<String>
+    ): List<Assignment> {
+        if (existing.isEmpty() || latestImages.isEmpty()) return existing
+        val replacements = assignments(
+            existing.map { it.sourceIndex },
+            latestImages
+        ).associateBy { it.sourceIndex }
+        if (replacements.isEmpty()) return existing
+        return existing.map { original ->
+            replacements[original.sourceIndex] ?: original
+        }
+    }
+
+    /**
+     * Returns the candidate prefix that can be appended without creating a hole in immutable
+     * source-page order. A callback may carry a late ready suffix (for example 177, 178) while
+     * page 4 is still pending; publishing that suffix would permanently put later images before
+     * earlier ones. Repeated indexes are allowed for the two display sides of one source image.
+     */
+    fun contiguousPrefixLength(
+        maxInstalledSourceIndex: Int,
+        orderedCandidateSourceIndexes: List<Int>
+    ): Int {
+        if (orderedCandidateSourceIndexes.isEmpty()) return 0
+        var lastSourceIndex = maxInstalledSourceIndex
+        var count = 0
+        for (sourceIndex in orderedCandidateSourceIndexes) {
+            if (sourceIndex < 0 || sourceIndex < lastSourceIndex) break
+            if (sourceIndex > lastSourceIndex + 1) break
+            if (sourceIndex > lastSourceIndex) lastSourceIndex = sourceIndex
+            count++
+        }
+        return count
+    }
+
     private fun sourceIndex(image: String): Int? {
         return pageAsset.find(image)
             ?.groupValues

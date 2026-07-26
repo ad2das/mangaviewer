@@ -51,7 +51,7 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
-    fun finiteTailReleaseWaitsForTheActualCommittedFrameWithoutATimer() {
+    fun finiteTailNetworkReleaseUsesResidentAnchorWhileDecodeStillWaitsForActualFrame() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val releaseStart = quarantine.indexOf("private fun releaseWave(reason: String)")
         val releaseEnd = quarantine.indexOf(
@@ -62,9 +62,14 @@ class NtkClickOwnedExactBodyStreamTest {
 
         assertTrue(release.contains("wave?.futures?.get(0)"))
         assertTrue(release.contains("anchor.whenComplete"))
-        assertTrue(release.contains("firstActualFramePresented.whenComplete"))
-        assertTrue(release.contains("\"first_actual_frame_presented\""))
+        assertTrue(release.contains("\"anchor_body_resident\""))
+        assertFalse(release.contains("firstActualFramePresented.whenComplete"))
         assertTrue(release.contains("completeNetworkRelease(reason, \"anchor_failed\")"))
+        assertTrue(
+            quarantine.contains(
+                "val bulkRouteReady = extensionRouteReady.thenCombine(firstActualFramePresented)"
+            )
+        )
         assertFalse(release.contains("sleep("))
         assertFalse(release.contains("delay("))
         assertFalse(release.contains("schedule("))

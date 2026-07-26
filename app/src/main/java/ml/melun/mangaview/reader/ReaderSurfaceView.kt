@@ -128,6 +128,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val committedRunwayDefectFrames: Long
     )
 
+    data class CommittedPageIdentity(
+        val displayPageIndex: Int,
+        val normalizedEpisodePath: String,
+        val sourcePageIndex: Int,
+        val canonicalAsset: String,
+        val manifestDigest: String,
+        val manifestPageCount: Int
+    )
+
     data class CompletedDrawProof @JvmOverloads constructor(
         val sequence: Long,
         val completedUptimeNanos: Long,
@@ -142,6 +151,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val structureEpoch: Long = 0L,
         /** Display indexes physically intersecting the viewport in this committed draw. */
         val visiblePageIndexes: IntArray = IntArray(0),
+        /** Page identities captured with the exact submitted pixels, before any index mutation. */
+        val visiblePageIdentities: List<CommittedPageIdentity> = emptyList(),
         /** Immutable forward-runway verdict captured by this exact submitted draw state. */
         val runwayDefect: Boolean = false,
         /** True only when this draw completed through a registered HWUI frame-commit callback. */
@@ -376,7 +387,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var stripAuthority: Long = 0L,
         var stripEpisode: Long = 0L,
         var stripAsset: String? = null,
-        var stripSlots: List<ReaderTile?> = emptyList()
+        var stripSlots: List<ReaderTile?> = emptyList(),
+        var committedIdentity: CommittedPageIdentity? = null
     )
 
     private data class DrawItem(
@@ -388,6 +400,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val originalProof: ReaderPreparedStore.PreparedOriginalProof?,
         val stripAuthoritative: Boolean,
         val stripAsset: String?,
+        val committedIdentity: CommittedPageIdentity?,
         val loading: Boolean,
         val cardText: String?,
         val errorText: String?,
@@ -544,6 +557,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val traversal: FrameTraversalProof?,
         val structureEpoch: Long,
         val visiblePageIndexes: IntArray,
+        val visiblePageIdentities: List<CommittedPageIdentity>,
         val scrollOffsetPx: Float
     )
 
@@ -576,6 +590,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private data class FrameTraversalProof(
         val structureEpoch: Long,
         val visiblePageIndexes: IntArray,
+        val visiblePageIdentities: List<CommittedPageIdentity>,
         val viewportDefect: Boolean,
         val runwayDefect: Boolean
     )
@@ -666,6 +681,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var directRenderHandler: Handler? = null
     private var directChoreographer: Choreographer? = null
     private var directFrameCallbackPosted = false
+    private var directLateInputCatchupPosted = false
+    private var dragTargetRevision = 0L
+    private var directCallbackObservedDragTargetRevision = 0L
+    private var directCallbackObservedAtNanos = 0L
+    private var directCallbackHadAdmission = false
     private var noStateRetryPosted = false
     private var desiredVersion = 0L
     private var drawnVersion = 0L
@@ -811,6 +831,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
      */
     private var surfaceAttachmentDeferredUntilActualPixels = false
     private var surfaceRevealPosted = false
+    private var nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+    private var deferredSurfaceIdentityActivated = false
+    private var deferredSurfacePreparationPosted = false
+    private var deferredSurfacePreparationGeneration = 0L
     private var lastSurfaceRevealProbeMs = 0L
 
     init {
@@ -1003,6 +1027,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         synchronized(stateLock) {
             surfaceAttachmentDeferredUntilActualPixels = enabled
             surfaceRevealPosted = false
+            nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+            deferredSurfaceIdentityActivated = !enabled
+            deferredSurfacePreparationPosted = false
+            deferredSurfacePreparationGeneration += 1L
             if (enabled) clearFramePipeLocked(preserveDirty = true)
         }
         // An alpha-zero TextureView still creates a HWUI layer/BufferQueue. On a cold host-GPU
@@ -1017,20 +1045,102 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     /**
-     * Activates the reader drawing node only after the Activity's first window frame has completed
-     * and the exact click-owned session exists. The real-pixel gate still rejects empty draws.
+     * Creates and settles the transparent native producer after the ordinary Activity root has
+     * committed one frame, but while the actual-pixel/identity gate still blocks every render.
+     * This overlaps only post-click GPU queue setup with network work; no image, placeholder or
+     * frame can be submitted until [activateDeferredSurfaceProducer] binds the exact session.
      */
-    fun activateDeferredSurfaceProducer() {
+    fun prepareDeferredSurfaceProducerAfterRootFrame() {
         check(Looper.myLooper() == Looper.getMainLooper())
-        val deferred = synchronized(stateLock) { surfaceAttachmentDeferredUntilActualPixels }
-        if (!deferred) return
+        val generation = synchronized(stateLock) {
+            if (!surfaceAttachmentDeferredUntilActualPixels ||
+                deferredSurfacePreparationPosted
+            ) {
+                return
+            }
+            deferredSurfacePreparationPosted = true
+            deferredSurfacePreparationGeneration
+        }
+        post {
+            val observer = viewTreeObserver
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                isAttachedToWindow && isHardwareAccelerated && observer.isAlive
+            ) {
+                observer.registerFrameCommitCallback {
+                    mainHandler.post {
+                        revealDeferredSurfaceProducerAfterRootCommit(generation)
+                    }
+                }
+                invalidate()
+                (parent as? View)?.invalidate()
+                postInvalidateOnAnimation()
+            } else {
+                postOnAnimation {
+                    revealDeferredSurfaceProducerAfterRootCommit(generation)
+                }
+            }
+        }
+    }
+
+    private fun revealDeferredSurfaceProducerAfterRootCommit(generation: Long) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        val reveal = synchronized(stateLock) {
+            if (generation != deferredSurfacePreparationGeneration) {
+                false
+            } else {
+                deferredSurfacePreparationPosted = false
+                // If actual pixels beat the root-frame callback, retain the two-stage HWUI
+                // fallback below instead of racing cold EGL work with that first image commit.
+                surfaceAttachmentDeferredUntilActualPixels &&
+                    nativeSurfaceView.visibility != View.VISIBLE &&
+                    renderRunning && isAttachedToWindow
+            }
+        }
+        if (!reveal) return
         nativeSurfaceView.alpha = 1f
         nativeSurfaceView.visibility = View.VISIBLE
         nativeSurfaceView.requestLayout()
         invalidate()
         (parent as? View)?.invalidate()
         postInvalidateOnAnimation()
-        Log.d(TAG, "reader_deferred_surface_producer_activated")
+        Log.d(
+            TAG,
+            "reader_deferred_surface_producer_prepared_after_root_commit " +
+                "generation=$generation,size=${width}x$height"
+        )
+    }
+
+    /**
+     * Activates the reader drawing node only after the Activity's first window frame has completed
+     * and the exact click-owned session exists. The real-pixel gate still rejects empty draws.
+     */
+    fun activateDeferredSurfaceProducer() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        val deferred = synchronized(stateLock) {
+            if (!surfaceAttachmentDeferredUntilActualPixels) {
+                false
+            } else {
+                deferredSurfaceIdentityActivated = true
+                if (renderRunning && pages.isNotEmpty()) {
+                    renderRequested = true
+                    if (hasContinuousActualViewportPixelsLocked()) {
+                        postSurfaceRevealLocked()
+                    }
+                    stateLock.notifyAll()
+                }
+                true
+            }
+        }
+        if (!deferred) return
+        // Do not make the SurfaceView producer visible here. Repeated host-GPU sessions have
+        // shown that cold BufferQueue/EGL attachment can occasionally stop the entire HWUI lane
+        // for tens of seconds. Keep the real-image fallback as the only producer until its first
+        // registered HWUI frame-commit proof has been delivered.
+        nativeSurfaceView.alpha = 1f
+        invalidate()
+        (parent as? View)?.invalidate()
+        postInvalidateOnAnimation()
+        Log.d(TAG, "reader_deferred_surface_producer_armed")
     }
 
     fun setPageGapPx(gapPx: Int) {
@@ -1310,7 +1420,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 scrollOffset >= maxScrollLocked() - BOUNDARY_EPSILON_PX
             rebuildLayoutLocked()
             val viewportAnchor = progressPositionLocked()
-            repeat(endExclusive - startIndex) { pages.removeAt(startIndex) }
+            pages.subList(startIndex, endExclusive).clear()
             pageTopDeltas.clear()
             layoutDirty = true
             rebuildLayoutLocked()
@@ -2282,6 +2392,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                             originalProof = page.originalProof,
                             stripAuthoritative = true,
                             stripAsset = page.stripAsset,
+                            committedIdentity = page.committedIdentity,
                             loading = false,
                             cardText = null,
                             errorText = null,
@@ -3280,6 +3391,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 Log.e(TAG, "reader_authoritative_tiles_reject page=$index reason=page_missing,count=${pages.size}")
                 return false
             }
+            if (usableAuthoritativeOriginalTilePage(
+                    page.width,
+                    page.height,
+                    page.tiles,
+                    page.originalProof
+                ) && !hasSameTilesIdentity(page, tiles)
+            ) {
+                Log.d(
+                    TAG,
+                    "reader_authoritative_tiles_reject page=$index reason=late_duplicate_original"
+                )
+                return false
+            }
             if (!usableAuthoritativeOriginalTilePage(pageWidth, pageHeight, tiles, proof)) {
                 return@synchronized null
             }
@@ -3377,6 +3501,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 val page = pages.getOrNull(command.index)
                 if (page == null) {
+                    rejected.add(command.index)
+                    continue
+                }
+                if (usableAuthoritativeOriginalTilePage(
+                        page.width,
+                        page.height,
+                        page.tiles,
+                        page.originalProof
+                    ) && !hasSameTilesIdentity(page, command.tiles)
+                ) {
+                    Log.d(
+                        TAG,
+                        "reader_authoritative_tiles_reject page=${command.index} " +
+                            "reason=late_duplicate_original_batch"
+                    )
                     rejected.add(command.index)
                     continue
                 }
@@ -3723,6 +3862,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
             layoutDirty = true
             stopRenderThreadLocked()
             stateLock.notifyAll()
+        }
+    }
+
+    fun setCommittedPageIdentities(
+        startIndex: Int,
+        identities: List<CommittedPageIdentity?>
+    ) {
+        if (startIndex < 0 || identities.isEmpty()) return
+        synchronized(stateLock) {
+            identities.forEachIndexed { offset, identity ->
+                val index = startIndex + offset
+                val page = pages.getOrNull(index) ?: return@forEachIndexed
+                page.committedIdentity = identity?.copy(displayPageIndex = index)
+            }
         }
     }
 
@@ -4460,6 +4613,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var nativeHandleToDestroy = 0L
         var nativeDestroyPosted = false
         val retiringThread = synchronized(stateLock) {
+            deferredSurfacePreparationGeneration += 1L
+            deferredSurfacePreparationPosted = false
+            deferredSurfaceIdentityActivated = false
+            nativeSurfaceRevealAfterFirstHwuiCommitPending = false
             noStateRetryPosted = false
             clearRetainedPageNodesStateLocked()
             clearPreparedStartAnchorLocked()
@@ -4808,11 +4965,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     if (targetChanged) {
                         // The already-armed display callback advances real pixels toward this
                         // target. Do not admit an unchanged buffer merely because a MOVE arrived.
-                        postDirectFrameCallbackLocked()
+                        val postedFreshCallback = postDirectFrameCallbackLocked()
                         // The HWUI View path has no producer-thread Choreographer. Admit its
                         // display-list frame from the same physical MOVE instead.
                         renderRequested = true
                         scheduleFrameLocked()
+                        if (!postedFreshCallback) {
+                            // If the producer already consumed this display callback before MOVE
+                            // reached the main thread, its outstanding callback belongs to the next
+                            // vsync. Replace only that narrow stale reservation with an immediate
+                            // producer submission; the policy rejects ordinary queued callbacks.
+                            postLateDirectInputCatchupLocked()
+                        }
                         stateLock.notifyAll()
                         sampleVelocity = true
                         windowRequestLocked(true)
@@ -5221,6 +5385,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             .sorted()
             .toList()
             .toIntArray()
+        // Identity belongs to the exact submitted pixels even when the generic traversal counter
+        // is not armed for this frame. Keeping it only inside FrameTraversalProof made a valid
+        // old-structure buffer fall back to live session indexes while a prefix removal was
+        // crossing from the session control lane to the Surface main-thread callback.
+        val rollingVisiblePageIdentities = state.items.asSequence()
+            .filter { item -> item.top < state.height.toFloat() && item.top + item.pageHeight > 0f }
+            .mapNotNull { item ->
+                item.committedIdentity?.copy(displayPageIndex = item.index)
+            }
+            .distinctBy { it.displayPageIndex }
+            .sortedBy { it.displayPageIndex }
+            .toList()
         if (traversalProof != null &&
             (traversalProof.viewportDefect || traversalProof.runwayDefect)
         ) {
@@ -5260,6 +5436,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     traversalProof,
                     state.traversalEpoch,
                     rollingVisiblePageIndexes,
+                    rollingVisiblePageIdentities,
                     state.scrollOffset
                 )
                 if (callback == null) {
@@ -6336,6 +6513,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     stripAuthoritative = stripAuthorityToken != 0L &&
                         page.stripAuthority == stripAuthorityToken,
                     stripAsset = page.stripAsset,
+                    committedIdentity = page.committedIdentity,
                     loading = page.loading,
                     cardText = page.cardText,
                     errorText = page.errorText,
@@ -6784,9 +6962,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         } else {
             visibleItems.map { it.index }.distinct().sorted().toIntArray()
         }
+        val visibleIdentities = if (viewportDefect) {
+            emptyList()
+        } else {
+            visibleItems.mapNotNull { item ->
+                item.committedIdentity?.copy(displayPageIndex = item.index)
+            }
+        }
         return FrameTraversalProof(
             structureEpoch = state.traversalEpoch,
             visiblePageIndexes = visibleIndexes,
+            visiblePageIdentities = visibleIdentities,
             viewportDefect = viewportDefect,
             runwayDefect = runwayDefect
         )
@@ -7222,7 +7408,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     /** Must be called with [stateLock] held. */
     private fun postSurfaceRevealLocked() {
-        if (!surfaceAttachmentDeferredUntilActualPixels || surfaceRevealPosted) return
+        if (!surfaceAttachmentDeferredUntilActualPixels ||
+            !deferredSurfaceIdentityActivated ||
+            surfaceRevealPosted
+        ) return
         surfaceRevealPosted = true
         mainHandler.post {
             val reveal = synchronized(stateLock) {
@@ -7233,20 +7422,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     false
                 } else {
                     surfaceAttachmentDeferredUntilActualPixels = false
+                    // The normal cold path has already settled the transparent SurfaceView after
+                    // the Activity root frame. Only the ultra-fast fallback, where actual pixels
+                    // beat that root callback, needs an HWUI proof before making the child visible.
+                    nativeSurfaceRevealAfterFirstHwuiCommitPending =
+                        nativeSurfaceView.visibility != View.VISIBLE
                     renderRequested = true
                     true
                 }
             }
             if (!reveal) return@post
-            // Visibility, rather than alpha, is the cold SurfaceTexture creation boundary. This
-            // transition is admitted only by hasContinuousActualViewportPixelsLocked(), so the
-            // first TextureView layer is born with real, identity-checked page pixels available.
-            nativeSurfaceView.visibility = View.VISIBLE
-            nativeSurfaceView.alpha = 1f
-            // A TextureView that was INVISIBLE when attached has no HWUI layer yet. Explicitly
-            // dirty both this node and its parent so ViewRoot performs the first real-pixel draw
-            // even when no later layout mutation happens (all page geometry may already match).
-            nativeSurfaceView.requestLayout()
+            // If the transparent native queue is already prepared, scheduling can submit the
+            // first real frame directly. Otherwise this publishes the already-resident pixels
+            // through HWUI and the commit callback performs the fallback child reveal.
             invalidate()
             (parent as? View)?.invalidate()
             postInvalidateOnAnimation()
@@ -7259,10 +7447,38 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             Log.d(
                 TAG,
-                "reader_surface_revealed_for_actual_viewport hwui=true," +
+                "reader_surface_actual_viewport_admitted producerPrepared=" +
+                    "${nativeSurfaceView.visibility == View.VISIBLE}," +
                     "attached=$isAttachedToWindow,size=${width}x$height"
             )
         }
+    }
+
+    /**
+     * Stage two of the cold producer transition. The listener receives the clean HWUI proof first,
+     * allowing current-episode bodies to proceed before any host EGL/BufferQueue work begins.
+     */
+    private fun revealNativeSurfaceAfterFirstHwuiCommit(expectedLifecycleEpoch: Long) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        val reveal = synchronized(stateLock) {
+            renderRunning &&
+                lifecycleEpoch == expectedLifecycleEpoch &&
+                !surfaceAttachmentDeferredUntilActualPixels &&
+                isAttachedToWindow &&
+                nativeSurfaceView.visibility != View.VISIBLE
+        }
+        if (!reveal) return
+        nativeSurfaceView.alpha = 1f
+        nativeSurfaceView.visibility = View.VISIBLE
+        nativeSurfaceView.requestLayout()
+        invalidate()
+        (parent as? View)?.invalidate()
+        postInvalidateOnAnimation()
+        Log.d(
+            TAG,
+            "reader_native_surface_revealed_after_hwui_commit " +
+                "epoch=$expectedLifecycleEpoch,size=${width}x$height"
+        )
     }
 
     /** Commits the already-clamped physical position even when no newer model mutation exists. */
@@ -7300,6 +7516,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return
         }
         var completed: CompletedDrawProof? = null
+        var revealNativeSurfaceAfterCompletedHwui = false
         synchronized(stateLock) {
             if (epoch != lifecycleEpoch) return
             val submission = pendingFrameCommits.remove(token)
@@ -7359,6 +7576,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         committedVersion = committedVersion,
                         structureEpoch = pending.structureEpoch,
                         visiblePageIndexes = pending.visiblePageIndexes.copyOf(),
+                        visiblePageIdentities = pending.visiblePageIdentities,
                         runwayDefect = pending.traversal?.runwayDefect == true,
                         registeredHwuiFrameCommitCallbackObserved =
                             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
@@ -7374,6 +7592,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         } ?: 0L,
                         scrollOffsetPx = pending.scrollOffsetPx
                     )
+                    val cleanCommittedHwuiActualPixels =
+                        nativeSurfaceRevealAfterFirstHwuiCommitPending &&
+                            !submission.surfaceQueueSubmission &&
+                            !submission.surfaceControlSubmission &&
+                            pending.hardwareAccelerated &&
+                            submission.callbackRegistered &&
+                            pending.coverage.drawableItems > 0 &&
+                            pending.coverage.missingPx == 0 &&
+                            pending.coverage.placeholderPx == 0 &&
+                            pending.coverage.visibleLoading == 0 &&
+                            pending.coverage.visibleErrors == 0 &&
+                            pending.coverage.visibleCards == 0 &&
+                            pending.coverage.lowResolutionItems == 0
+                    if (cleanCommittedHwuiActualPixels) {
+                        nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+                        revealNativeSurfaceAfterCompletedHwui = true
+                    }
                 } finally {
                     Trace.endSection()
                 }
@@ -7423,7 +7658,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         lifecycleEpoch
                     )
                 }
-                if (lifecycleStillCurrent) listener?.onCompletedDraw(proof)
+                if (lifecycleStillCurrent) {
+                    listener?.onCompletedDraw(proof)
+                    if (revealNativeSurfaceAfterCompletedHwui) {
+                        revealNativeSurfaceAfterFirstHwuiCommit(
+                            proof.surfaceLifecycleEpoch
+                        )
+                    }
+                }
             }
         }
     }
@@ -7697,12 +7939,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun stopRenderThreadLocked(): HandlerThread? {
         val thread = directRenderThread ?: return null
+        directRenderHandler?.removeCallbacks(directFramePostRunnable)
         directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+        directRenderHandler?.removeCallbacks(directLateInputCatchup)
         val choreographer = directChoreographer
         if (choreographer != null && directFrameCallbackPosted) {
             choreographer.removeFrameCallback(directFrameCallback)
         }
         directFrameCallbackPosted = false
+        directLateInputCatchupPosted = false
+        directCallbackObservedDragTargetRevision = 0L
+        directCallbackObservedAtNanos = 0L
+        directCallbackHadAdmission = false
         directChoreographer = null
         directRenderHandler = null
         directRenderThread = null
@@ -7713,6 +7961,35 @@ class ReaderSurfaceView @JvmOverloads constructor(
         Choreographer.FrameCallback { frameTimeNanos ->
         directRenderHandler?.removeCallbacks(directCadenceWatchdog)
         renderDirectSurfaceFrame(frameTimeNanos)
+    }
+
+    /**
+     * A MOVE can reach the main thread just after the producer callback observed the prior target
+     * and re-armed itself for the next vsync. Execute at most one producer-loop catch-up for that
+     * exact revision race. If a due Choreographer callback observes the MOVE first, the revision
+     * check turns this runnable into a no-op.
+     */
+    private val directLateInputCatchup: Runnable = Runnable {
+        val shouldRender = synchronized(stateLock) {
+            directLateInputCatchupPosted = false
+            val targetStillUnobserved =
+                dragTargetRevision != directCallbackObservedDragTargetRevision
+            val canReplaceCallback = renderRunning && directSurfaceReady &&
+                directFrameCallbackPosted && pointerDown && dragging &&
+                !directCallbackHadAdmission && targetStillUnobserved &&
+                rollingNativeHandle != 0L &&
+                rollingNativeAttachEpoch > 0L &&
+                rollingTextureSurface?.isValid == true
+            if (canReplaceCallback) {
+                directChoreographer?.removeFrameCallback(directFrameCallback)
+                directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+                directFrameCallbackPosted = false
+            }
+            canReplaceCallback
+        }
+        if (shouldRender) {
+            renderDirectSurfaceFrame(System.nanoTime())
+        }
     }
 
     /**
@@ -7751,6 +8028,65 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Choreographer may enter DisplayEventReceiver/Binder while registering the next producer
+     * vsync. Running that call while holding [stateLock] makes a real MOVE wait behind an emulator
+     * display-service stall. Reserve the unique callback under the lock, then perform the platform
+     * registration as the next producer-loop message with no reader state lock held.
+     */
+    private val directFramePostRunnable: Runnable = Runnable {
+        val choreographer = synchronized(stateLock) {
+            if (!directFrameCallbackPosted || !renderRunning || !directSurfaceReady) {
+                null
+            } else {
+                directChoreographer
+            }
+        }
+        if (choreographer == null) {
+            synchronized(stateLock) {
+                directFrameCallbackPosted = false
+            }
+            return@Runnable
+        }
+        postReservedDirectFrameCallback(choreographer)
+    }
+
+    /**
+     * Registers an already-reserved callback without holding [stateLock].
+     *
+     * The generic path reaches this method through [directFramePostRunnable], because callers can
+     * be on the main/session thread. The recurring producer callback invokes it directly after
+     * releasing [stateLock], so decoded-image/prewarm messages already queued on the same Looper
+     * cannot postpone the next display-vsync registration.
+     */
+    private fun postReservedDirectFrameCallback(choreographer: Choreographer) {
+        val stillCurrent = synchronized(stateLock) {
+            directFrameCallbackPosted && renderRunning && directSurfaceReady &&
+                choreographer === directChoreographer
+        }
+        if (!stillCurrent) {
+            synchronized(stateLock) {
+                if (choreographer !== directChoreographer || !renderRunning || !directSurfaceReady) {
+                    directFrameCallbackPosted = false
+                }
+            }
+            return
+        }
+        try {
+            choreographer.postFrameCallback(directFrameCallback)
+            directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+            directRenderHandler?.postDelayed(
+                directCadenceWatchdog,
+                DIRECT_CADENCE_WATCHDOG_DELAY_MS
+            )
+        } catch (failure: Throwable) {
+            synchronized(stateLock) {
+                directFrameCallbackPosted = false
+            }
+            Log.e(TAG, "reader_direct_frame_callback_post_failed", failure)
+        }
+    }
+
     private fun postDirectFrameCallbackLocked(): Boolean {
         if (!renderRunning || !directSurfaceReady || directFrameCallbackPosted ||
             rollingNativeHandle == 0L || rollingNativeAttachEpoch == 0L
@@ -7758,13 +8094,43 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val hasAdmittedFrame = framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
         if (!hasAdmittedFrame && !shouldKeepDirectCadenceArmedLocked()) return false
         val choreographer = directChoreographer ?: return false
+        val handler = directRenderHandler ?: return false
         directFrameCallbackPosted = true
-        choreographer.postFrameCallback(directFrameCallback)
-        directRenderHandler?.removeCallbacks(directCadenceWatchdog)
-        directRenderHandler?.postDelayed(
-            directCadenceWatchdog,
-            DIRECT_CADENCE_WATCHDOG_DELAY_MS
-        )
+        // Validate the Choreographer here so teardown cannot reserve an impossible callback, but
+        // make the platform call in directFramePostRunnable after stateLock has been released.
+        if (choreographer !== directChoreographer || !handler.post(directFramePostRunnable)) {
+            directFrameCallbackPosted = false
+            return false
+        }
+        return true
+    }
+
+    private fun postLateDirectInputCatchupLocked(): Boolean {
+        val refreshPeriodNanos =
+            (frameBudgetMs() * NANOS_PER_MILLISECOND.toFloat()).toLong().coerceAtLeast(1L)
+        if (!NtkLateInputCatchupPolicy.shouldPost(
+                renderRunning = renderRunning,
+                directSurfaceReady = directSurfaceReady,
+                callbackPosted = directFrameCallbackPosted,
+                callbackHadAdmission = directCallbackHadAdmission,
+                catchupPosted = directLateInputCatchupPosted,
+                pointerDown = pointerDown,
+                dragging = dragging,
+                targetRevision = dragTargetRevision,
+                callbackObservedTargetRevision = directCallbackObservedDragTargetRevision,
+                callbackObservedAtNanos = directCallbackObservedAtNanos,
+                nowNanos = System.nanoTime(),
+                refreshPeriodNanos = refreshPeriodNanos
+            )
+        ) {
+            return false
+        }
+        val handler = directRenderHandler ?: return false
+        directLateInputCatchupPosted = true
+        if (!handler.postAtFrontOfQueue(directLateInputCatchup)) {
+            directLateInputCatchupPosted = false
+            return false
+        }
         return true
     }
 
@@ -7773,8 +8139,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun renderDirectSurfaceFrame(frameTimeNanos: Long) {
+        var nextFrameChoreographer: Choreographer? = null
         val admission = synchronized(stateLock) {
             directFrameCallbackPosted = false
+            directCallbackHadAdmission = false
             if (!renderRunning || !directSurfaceReady || frameSchedulingSuppressed ||
                 rollingTextureSurface?.isValid != true
             ) {
@@ -7784,17 +8152,36 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 // Advance toward the latest real finger position before frame admission so this
                 // callback submits a genuinely different viewport, never a duplicate buffer.
                 applyDragResamplingAtFrameLocked(frameTimeNanos)
+                directCallbackObservedDragTargetRevision = dragTargetRevision
+                directCallbackObservedAtNanos = System.nanoTime()
                 // Request the next display callback before doing any draw/submission work. This is
                 // important on the host-GPU emulator: requesting it near the end of this callback
                 // frequently misses the next vsync even though native submission itself is <2ms.
-                if (shouldKeepDirectCadenceArmedLocked()) postDirectFrameCallbackLocked()
-                if (framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L) {
+                if (shouldKeepDirectCadenceArmedLocked() &&
+                    !directFrameCallbackPosted &&
+                    rollingNativeHandle != 0L &&
+                    rollingNativeAttachEpoch > 0L
+                ) {
+                    directChoreographer?.let { choreographer ->
+                        directFrameCallbackPosted = true
+                        nextFrameChoreographer = choreographer
+                    }
+                }
+                val admittedFrame = if (
+                    framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
+                ) {
                     inFlightEpoch to inFlightToken
                 } else {
                     null
                 }
+                directCallbackHadAdmission = admittedFrame != null
+                admittedFrame
             }
         }
+        // This callback already runs on ReaderSurfaceProducer. Register the successor now, with no
+        // reader lock held, rather than placing it behind image-install/prewarm messages in this
+        // Looper's queue.
+        nextFrameChoreographer?.let(::postReservedDirectFrameCallback)
         if (admission == null) {
             synchronized(stateLock) {
                 // A sparse host/device MOVE can be fully interpolated and physically committed
@@ -9423,6 +9810,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         lastScrollInteractionMs = (eventTimeNs / NANOS_PER_MILLISECOND)
             .coerceAtLeast(SystemClock.uptimeMillis() - 1L)
         dragTargetScrollOffset = nextTarget
+        if (dragTargetRevision == Long.MAX_VALUE) {
+            dragTargetRevision = 1L
+            directCallbackObservedDragTargetRevision = 0L
+        } else {
+            dragTargetRevision++
+        }
         // Preserve the previous display-frame phase while an older target is still converging.
         // Resetting it on every sparse MOVE creates one isolated interpolation segment per event
         // and restores the every-other-vsync cadence this follower is meant to remove.

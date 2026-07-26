@@ -579,6 +579,23 @@ public class Title extends MTitle {
                 empty.episodes.add(manga);
             }
             EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(empty.episodes);
+            int authoritativeTotal = 0;
+            if(root.has("total")) {
+                try {
+                    authoritativeTotal = Math.max(0, root.get("total").getAsInt());
+                } catch(Exception ignored) {
+                }
+            }
+            // The API is the fastest complete source for numeric webtoon episode lists, but a
+            // partially replicated response must never replace the paginated title document.
+            // Accept it only when its explicit total agrees with the unique parsed rows; otherwise
+            // return an unproven result and let the existing document/RSC path recover the list.
+            if(authoritativeTotal > 0 && empty.episodes.size() != authoritativeTotal) {
+                Log.w(TAG, "ntk_episode_api_incomplete path=" + apiPath
+                        + ",expected=" + authoritativeTotal
+                        + ",parsed=" + empty.episodes.size());
+                return new NtkEpisodeParser.ParseResult();
+            }
             if(empty.episodes.size() == 0 && root.has("ok") && root.has("total")) {
                 try {
                     empty.definitiveEmptyEpisodeList = root.get("ok").getAsBoolean()
@@ -1056,7 +1073,11 @@ public class Title extends MTitle {
                                                            boolean modernGuardRoot) {
         if(titleKey == null || !titleKey.matches("\\d{1,12}"))
             return false;
-        return "webtoon".equals(segment) || modernGuardRoot;
+        // Numeric webtoon APIs expose an authoritative `total` and include special/latest rows
+        // that can be absent from the paginated title document. parseNtkEpisodesFromApi verifies
+        // that total before the result is accepted, so prefer it and retain the document as the
+        // fallback. Modern guarded manhwa roots still require their document metadata.
+        return modernGuardRoot && "manhwa".equals(segment);
     }
 
     private static boolean shouldOpenNtkCaptchaForLoadFailure(CustomHttpClient client) {
