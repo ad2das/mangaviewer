@@ -112,7 +112,9 @@ std::int64_t nowNanos() noexcept {
     return static_cast<std::int64_t>(value.tv_sec) * 1'000'000'000LL + value.tv_nsec;
 }
 
-int setNativeWindowAsyncSwap(ANativeWindow* window) noexcept {
+int setNativeWindowSwapInterval(
+        ANativeWindow* window,
+        int interval) noexcept {
     if (window == nullptr) return -1;
     using SetSwapInterval = int (*)(ANativeWindow*, int);
     static SetSwapInterval setSwapInterval = []() noexcept {
@@ -124,7 +126,7 @@ int setNativeWindowAsyncSwap(ANativeWindow* window) noexcept {
                 ? dlsym(library, "ANativeWindow_setSwapInterval")
                 : nullptr);
     }();
-    return setSwapInterval != nullptr ? setSwapInterval(window, 0) : -3;
+    return setSwapInterval != nullptr ? setSwapInterval(window, interval) : -3;
 }
 
 struct NativeWindowBufferControls {
@@ -1441,8 +1443,14 @@ private:
             display_, config_, EGL_MIN_SWAP_INTERVAL, &minimumSwapInterval);
         (void)eglGetConfigAttrib(
             display_, config_, EGL_MAX_SWAP_INTERVAL, &maximumSwapInterval);
-        const EGLBoolean asynchronous = eglSwapInterval(display_, 0);
-        const int nativeAsyncResult = setNativeWindowAsyncSwap(command.window);
+        // The EGL owner is a dedicated thread and the Java side keeps only the newest pending
+        // viewport. Let BufferQueue pace this owner at the physical refresh instead of bursting
+        // several interval-0 buffers and then blocking on a full compositor queue. The
+        // mailbox continues accepting touch frames while this thread waits, so this removes queue
+        // phase jitter without blocking input or adding stale-frame latency.
+        const EGLBoolean displayPaced = eglSwapInterval(display_, 1);
+        const int nativeDisplayPacedResult =
+            setNativeWindowSwapInterval(command.window, 1);
         const auto& bufferControls = nativeWindowBufferControls();
         const float requestedFrameRate = command.refreshPeriodNanos > 0
             ? static_cast<float>(1'000'000'000.0 /
@@ -1465,13 +1473,13 @@ private:
         const int autoRefreshOffResult = bufferControls.setAutoRefresh != nullptr
             ? bufferControls.setAutoRefresh(command.window, false)
             : -3;
-        // Keep finite compositor headroom without allowing the producer to run several frames
-        // ahead. A six-buffer queue hid host swap pressure from the producer but converted it into
-        // irregular SurfaceFlinger presents and 20-25 ms release callbacks during page-by-page
-        // manga scrolling. Four still absorb a short host-GPU stall while applying
-        // cadence-preserving backpressure before the queue can accumulate visible latency.
+        // The retirement-driven Java producer now admits one successor from each completed native
+        // swap, preventing the old free-running burst. Keep two spare compositor buffers beyond
+        // front/queued/producer so a transient host gfxstream fence does not turn into a 25-30 ms
+        // moving-frame gap. The Java/native mailbox remains depth one and never retains additional
+        // stale FrameCommands.
         const int bufferCountResult = bufferControls.setBufferCount != nullptr
-            ? bufferControls.setBufferCount(command.window, 4)
+            ? bufferControls.setBufferCount(command.window, 5)
             : -3;
         // Allocate the finite queue before physical scrolling begins. Leaving this lazy made
         // host-GPU eglSwapBuffers repeatedly spend 55-70 ms growing/acquiring the queue during
@@ -1506,12 +1514,12 @@ private:
         height_ = command.height;
         refreshPeriodNanos_ = command.refreshPeriodNanos > 0
             ? command.refreshPeriodNanos : kDefaultRefreshPeriodNanos;
-        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount4=%d intervalRange=%d..%d durationMs=%.3f",
+        RLOGI("cold display-paced SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap1=%d nativeSwap1=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount5=%d intervalRange=%d..%d durationMs=%.3f",
               static_cast<unsigned long long>(surfaceEpoch_), width_, height_,
               static_cast<long long>(refreshPeriodNanos_),
               preparedWidth_ == width_ && preparedHeight_ == height_ ? 1 : 0,
-              asynchronous == EGL_TRUE ? 1 : 0,
-              nativeAsyncResult,
+              displayPaced == EGL_TRUE ? 1 : 0,
+              nativeDisplayPacedResult,
               static_cast<double>(requestedFrameRate),
               frameRateResult,
               sharedBufferOffResult,
@@ -1581,11 +1589,11 @@ private:
         }
         const std::int64_t drawEnd = nowNanos();
         const std::int64_t presentBegin = nowNanos();
-        // The asynchronous interval is a Surface attachment property. Re-applying
+        // The display-paced interval is a Surface attachment property. Re-applying
         // ANativeWindow_setSwapInterval on every frame can itself enter BufferQueue
         // synchronization, so keep the established mode for the surface's lifetime and submit
         // only the complete buffer here.
-        constexpr int nativeSwapInterval = 0;
+        constexpr int nativeSwapInterval = 1;
         if (eglSwapBuffers(display_, windowSurface_) != EGL_TRUE) {
             if (failureStage != nullptr) *failureStage = "window-swap";
             return PresentResult::FAILED;

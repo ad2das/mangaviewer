@@ -682,8 +682,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var directChoreographer: Choreographer? = null
     private var directFrameCallbackPosted = false
     private var directLateInputCatchupPosted = false
+    private var directNativeRetirementContinuationPosted = false
     private var dragTargetRevision = 0L
     private var directCallbackObservedDragTargetRevision = 0L
+    private var physicalGestureRevision = 0L
+    private var directCallbackObservedPhysicalGestureRevision = 0L
     private var directCallbackObservedAtNanos = 0L
     private var directCallbackHadAdmission = false
     private var noStateRetryPosted = false
@@ -4915,6 +4918,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     activeInputDirection = 0
                     downX = event.x
                     downY = event.y
+                    if (physicalGestureRevision == Long.MAX_VALUE) {
+                        physicalGestureRevision = 1L
+                        directCallbackObservedPhysicalGestureRevision = 0L
+                    } else {
+                        physicalGestureRevision++
+                    }
                     resetDragResamplingLocked(event.y, event.eventTime * NANOS_PER_MILLISECOND)
                     lastVelocitySampleMs = event.eventTime
                     pointerDown = true
@@ -7517,6 +7526,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         var completed: CompletedDrawProof? = null
         var revealNativeSurfaceAfterCompletedHwui = false
+        var continueFromNativeRetirement = false
         synchronized(stateLock) {
             if (epoch != lifecycleEpoch) return
             val submission = pendingFrameCommits.remove(token)
@@ -7644,8 +7654,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 if (!scroller.isFinished) pendingPixelReasons = pendingPixelReasons or DIRTY_ANIMATION
                 scheduleFrameLocked()
+                continueFromNativeRetirement =
+                    surfaceQueueObserved &&
+                        framePipe == FramePipe.INVALIDATION_POSTED &&
+                        inFlightToken != 0L
             }
             stateLock.notifyAll()
+        }
+        if (continueFromNativeRetirement) {
+            postDirectNativeRetirementContinuation()
         }
         completed?.let { proof ->
             mainHandler.post {
@@ -7942,13 +7959,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         directRenderHandler?.removeCallbacks(directFramePostRunnable)
         directRenderHandler?.removeCallbacks(directCadenceWatchdog)
         directRenderHandler?.removeCallbacks(directLateInputCatchup)
+        directRenderHandler?.removeCallbacks(directNativeRetirementContinuation)
         val choreographer = directChoreographer
         if (choreographer != null && directFrameCallbackPosted) {
             choreographer.removeFrameCallback(directFrameCallback)
         }
         directFrameCallbackPosted = false
         directLateInputCatchupPosted = false
+        directNativeRetirementContinuationPosted = false
         directCallbackObservedDragTargetRevision = 0L
+        directCallbackObservedPhysicalGestureRevision = 0L
         directCallbackObservedAtNanos = 0L
         directCallbackHadAdmission = false
         directChoreographer = null
@@ -7959,8 +7979,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private val directFrameCallback: Choreographer.FrameCallback =
         Choreographer.FrameCallback { frameTimeNanos ->
-        directRenderHandler?.removeCallbacks(directCadenceWatchdog)
-        renderDirectSurfaceFrame(frameTimeNanos)
+        Trace.beginSection("ViewerDirectChoreographer")
+        try {
+            directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+            renderDirectSurfaceFrame(frameTimeNanos)
+        } finally {
+            Trace.endSection()
+        }
     }
 
     /**
@@ -7970,25 +7995,90 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * check turns this runnable into a no-op.
      */
     private val directLateInputCatchup: Runnable = Runnable {
-        val shouldRender = synchronized(stateLock) {
-            directLateInputCatchupPosted = false
-            val targetStillUnobserved =
-                dragTargetRevision != directCallbackObservedDragTargetRevision
-            val canReplaceCallback = renderRunning && directSurfaceReady &&
-                directFrameCallbackPosted && pointerDown && dragging &&
-                !directCallbackHadAdmission && targetStillUnobserved &&
-                rollingNativeHandle != 0L &&
-                rollingNativeAttachEpoch > 0L &&
-                rollingTextureSurface?.isValid == true
-            if (canReplaceCallback) {
-                directChoreographer?.removeFrameCallback(directFrameCallback)
-                directRenderHandler?.removeCallbacks(directCadenceWatchdog)
-                directFrameCallbackPosted = false
+        Trace.beginSection("ViewerDirectLateInputCatchup")
+        try {
+            val shouldRender = synchronized(stateLock) {
+                directLateInputCatchupPosted = false
+                val targetStillUnobserved =
+                    dragTargetRevision != directCallbackObservedDragTargetRevision
+                val newGestureTargetStillUnobserved =
+                    physicalGestureRevision != directCallbackObservedPhysicalGestureRevision
+                val canReplaceCallback = renderRunning && directSurfaceReady &&
+                    directFrameCallbackPosted && pointerDown && dragging &&
+                    (!directCallbackHadAdmission || newGestureTargetStillUnobserved) &&
+                    targetStillUnobserved &&
+                    rollingNativeHandle != 0L &&
+                    rollingNativeAttachEpoch > 0L &&
+                    rollingTextureSurface?.isValid == true
+                if (canReplaceCallback) {
+                    directChoreographer?.removeFrameCallback(directFrameCallback)
+                    directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+                    directFrameCallbackPosted = false
+                }
+                canReplaceCallback
             }
-            canReplaceCallback
+            if (shouldRender) {
+                renderDirectSurfaceFrame(System.nanoTime())
+            }
+        } finally {
+            Trace.endSection()
         }
-        if (shouldRender) {
-            renderDirectSurfaceFrame(System.nanoTime())
+    }
+
+    /**
+     * A display-paced EGL swap retires the prior token on the native owner. At that exact point
+     * [onFrameCommitted] may admit the next immutable token. The Choreographer callback reserved
+     * before the swap can already have run while the prior token still owned the pipe, leaving
+     * this new token parked until the watchdog. Continue from the retirement edge instead: EGL
+     * remains the 60 Hz pacing authority and the depth-one native mailbox still coalesces input.
+     */
+    private val directNativeRetirementContinuation: Runnable = Runnable {
+        Trace.beginSection("ViewerDirectNativeRetirement")
+        try {
+            val shouldRender = synchronized(stateLock) {
+                directNativeRetirementContinuationPosted = false
+                val hasAdmittedFrame =
+                    framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
+                val canContinue = renderRunning && directSurfaceReady &&
+                    hasAdmittedFrame &&
+                    rollingNativeHandle != 0L &&
+                    rollingNativeAttachEpoch > 0L &&
+                    rollingTextureSurface?.isValid == true
+                if (canContinue) {
+                    directChoreographer?.removeFrameCallback(directFrameCallback)
+                    directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+                    directRenderHandler?.removeCallbacks(directLateInputCatchup)
+                    directFrameCallbackPosted = false
+                    directLateInputCatchupPosted = false
+                }
+                canContinue
+            }
+            if (shouldRender) {
+                renderDirectSurfaceFrame(System.nanoTime())
+            }
+        } finally {
+            Trace.endSection()
+        }
+    }
+
+    private fun postDirectNativeRetirementContinuation() {
+        val handler = synchronized(stateLock) {
+            if (directNativeRetirementContinuationPosted || !renderRunning ||
+                !directSurfaceReady ||
+                framePipe != FramePipe.INVALIDATION_POSTED || inFlightToken == 0L
+            ) {
+                null
+            } else {
+                directNativeRetirementContinuationPosted = true
+                directRenderHandler
+            }
+        }
+        if (handler == null ||
+            !handler.postAtFrontOfQueue(directNativeRetirementContinuation)
+        ) {
+            synchronized(stateLock) {
+                directNativeRetirementContinuationPosted = false
+            }
         }
     }
 
@@ -8001,30 +8091,33 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * the emulator's vsync lane resumes.
      */
     private val directCadenceWatchdog: Runnable = Runnable {
-        val shouldRecover = synchronized(stateLock) {
-            if (!directFrameCallbackPosted) {
-                false
-            } else {
-                val hasAdmittedFrame = framePipe == FramePipe.INVALIDATION_POSTED &&
-                    inFlightToken != 0L
-                val hasCurrentDemand = hasAdmittedFrame || shouldKeepDirectCadenceArmedLocked()
-                val canRender = renderRunning && directSurfaceReady &&
-                    rollingTextureSurface?.isValid == true
+        Trace.beginSection("ViewerDirectCadenceWatchdog")
+        try {
+            val shouldRecover = synchronized(stateLock) {
+                if (!directFrameCallbackPosted) {
+                    false
+                } else {
+                    val hasAdmittedFrame = framePipe == FramePipe.INVALIDATION_POSTED &&
+                        inFlightToken != 0L
+                    val hasCurrentDemand = hasAdmittedFrame || shouldKeepDirectCadenceArmedLocked()
+                    val canRender = renderRunning && directSurfaceReady &&
+                        rollingTextureSurface?.isValid == true
 
-                // A content/install frame can arm this producer while the reader is stationary.
-                // If the producer Choreographer loses that callback on a host-GPU emulator, the
-                // previous motion-only watchdog left directFrameCallbackPosted=true forever. All
-                // later MOVE/fling requests were then rejected as duplicates, so the model could
-                // reach page 111 while SurfaceFlinger retained the page-1 buffer. Retire every
-                // overdue callback here, even when its original idle demand has since vanished;
-                // render only when an admitted pixel frame or real motion still owns demand.
-                directChoreographer?.removeFrameCallback(directFrameCallback)
-                directFrameCallbackPosted = false
-                canRender && hasCurrentDemand
+                    // A content/install frame can arm this producer while the reader is stationary.
+                    // If the producer Choreographer loses that callback on a host-GPU emulator, the
+                    // previous motion-only watchdog left directFrameCallbackPosted=true forever.
+                    // Retire every overdue callback here, even when its original idle demand has
+                    // since vanished; render only when real demand still owns the producer.
+                    directChoreographer?.removeFrameCallback(directFrameCallback)
+                    directFrameCallbackPosted = false
+                    canRender && hasCurrentDemand
+                }
             }
-        }
-        if (shouldRecover) {
-            renderDirectSurfaceFrame(System.nanoTime())
+            if (shouldRecover) {
+                renderDirectSurfaceFrame(System.nanoTime())
+            }
+        } finally {
+            Trace.endSection()
         }
     }
 
@@ -8077,7 +8170,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             directRenderHandler?.removeCallbacks(directCadenceWatchdog)
             directRenderHandler?.postDelayed(
                 directCadenceWatchdog,
-                DIRECT_CADENCE_WATCHDOG_DELAY_MS
+                directCadenceWatchdogDelayMs()
             )
         } catch (failure: Throwable) {
             synchronized(stateLock) {
@@ -8114,6 +8207,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 callbackPosted = directFrameCallbackPosted,
                 callbackHadAdmission = directCallbackHadAdmission,
                 catchupPosted = directLateInputCatchupPosted,
+                newPhysicalGesture =
+                    physicalGestureRevision != directCallbackObservedPhysicalGestureRevision,
                 pointerDown = pointerDown,
                 dragging = dragging,
                 targetRevision = dragTargetRevision,
@@ -8153,6 +8248,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 // callback submits a genuinely different viewport, never a duplicate buffer.
                 applyDragResamplingAtFrameLocked(frameTimeNanos)
                 directCallbackObservedDragTargetRevision = dragTargetRevision
+                directCallbackObservedPhysicalGestureRevision = physicalGestureRevision
                 directCallbackObservedAtNanos = System.nanoTime()
                 // Request the next display callback before doing any draw/submission work. This is
                 // important on the host-GPU emulator: requesting it near the end of this callback
@@ -10402,6 +10498,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return if (rate != null && rate > 1f) 1000f / rate else DEFAULT_FRAME_BUDGET_MS
     }
 
+    private fun directCadenceWatchdogDelayMs(): Long {
+        // Arm just after the next nominal display period. Perfetto on the host-GPU
+        // emulator shows that waiting 22 ms lets a 20 ms producer callback miss Swappy's fixed
+        // opportunity by about 2 ms, turning an otherwise sub-millisecond frame into a 26-27 ms
+        // presentation gap. Choreographer still wins whenever it arrives normally.
+        // Keep a one-millisecond grace after the nominal period so an on-time Choreographer
+        // callback wins. Recovering at 16 ms on a 60 Hz display races the normal callback and
+        // creates a short queue followed by a 26 ms BufferQueue gap; 18 ms avoids that phase split
+        // while still preceding the old 20-22 ms missed-opportunity path.
+        return (ceil(frameBudgetMs().toDouble()).toLong() + 1L).coerceAtLeast(1L)
+    }
+
     private fun fmt(value: Float): String = String.format(Locale.US, "%.2f", value)
 
     private class FloatArrayList(size: Int) {
@@ -10798,9 +10906,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             "ViewerPhysicalScrollRefreshPeriodNs"
         private const val NANOS_PER_MILLISECOND = 1_000_000L
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
-        // One normal 60 Hz callback has 16.67 ms. Recover before the 25 ms slow-frame boundary,
-        // leaving the ordinary Choreographer path more than one full display period to arrive.
-        private const val DIRECT_CADENCE_WATCHDOG_DELAY_MS = 22L
         private const val MISSED_VSYNC_FACTOR = 2.0f
         private const val MIN_FRAME_SAMPLES = 8
         private const val DEFAULT_PAGE_GAP_PX = 0

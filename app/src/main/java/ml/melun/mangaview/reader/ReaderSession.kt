@@ -364,6 +364,13 @@ class ReaderSession(
         val startedAtMs: Long
     )
 
+    private data class PreparedInitialAdjacentMetadata(
+        val sourcePath: String,
+        val target: Manga,
+        val urls: List<String>,
+        val preparedAtMs: Long,
+    )
+
     private data class InitialFetchOutcome(
         val result: Int,
         val installedEarly: Boolean
@@ -468,6 +475,16 @@ class ReaderSession(
         Executors.newFixedThreadPool(
             ADJACENT_PIPELINE_PARALLELISM,
             readerThreadFactory("ReaderAdjacentNetwork", Process.THREAD_PRIORITY_BACKGROUND)
+        )
+    }
+    // The visible adjacent runway is an atomic four-image unit. Fetching those files serially
+    // made cellular users reach the current tail 2-4 seconds before the next episode could be
+    // published. This lane exists only after real forward-tail demand and is bounded exactly to
+    // that atomic runway; decode and publication remain ordered on the caller.
+    private val initialAdjacentRunwayNetwork = LazySessionExecutor {
+        Executors.newFixedThreadPool(
+            NTK_INITIAL_ADJACENT_RUNWAY_FETCH_PARALLELISM,
+            readerThreadFactory("ReaderAdjacentRunway", Process.THREAD_PRIORITY_BACKGROUND)
         )
     }
     private val urgentNetwork = LazySessionExecutor {
@@ -718,6 +735,9 @@ class ReaderSession(
     private val scheduledInitialAdjacentRunwayRetryKeys = ConcurrentHashMap.newKeySet<String>()
     private val initialTailAdjacentPreappendKeys = ConcurrentHashMap.newKeySet<String>()
     private val initialTailAdjacentPrefetchKeys = ConcurrentHashMap.newKeySet<String>()
+    private val initialAdjacentMetadataPrefetchPaths = ConcurrentHashMap.newKeySet<String>()
+    private val preparedInitialAdjacentMetadata =
+        ConcurrentHashMap<String, PreparedInitialAdjacentMetadata>()
     private val preparingInitialAdjacentRunways =
         ConcurrentHashMap<String, InitialAdjacentRunwayPreparation>()
     private val preparedInitialAdjacentRunways = ConcurrentHashMap<String, PreparedAdjacentRunwayBatch>()
@@ -9131,9 +9151,21 @@ class ReaderSession(
         currentViewportAnchor.set(firstVisibleDisplay)
         val episode = strictExactEpisodeToken ?: return
         strictExactSourceTransport.get()?.onFirstActualFramePresented(episode)
+        // The current manifest and first compositor-proven pixels are authoritative now. Resolve
+        // only the exact next episode's document while the user reads the current chapter. The
+        // current image body wave remains untouched; adjacent image bodies and decode still wait
+        // for current-episode completion. This overlaps the multi-second tokenized-document RTT
+        // that otherwise begins only after a fast reader has already reached the tail.
+        (title ?: manga.title)?.let { currentTitle ->
+            maybeStartInitialAdjacentMetadataPrefetch(
+                manga,
+                currentTitle,
+                "first_actual_frame"
+            )
+        }
         // This is the first compositor-proven canonical pixel. Starting only the bounded
-        // two-page adjacent runway here cannot hide viewer entry and gives a continuous
-        // forward reader a real chance to cross the episode boundary without an empty frame.
+        // adjacent runway here cannot hide viewer entry and gives a continuous forward reader a
+        // real chance to cross the episode boundary without an empty frame.
         maybeStartInitialTailAdjacentPreappend(
             manga,
             currentStartPage(),
@@ -10254,6 +10286,14 @@ class ReaderSession(
             recycleAdjacentRunwayDrawableBatch(prepared.batch)
         }
         preparedInitialAdjacentRunways.clear()
+        preparedInitialAdjacentMetadata.values.forEach { prepared ->
+            ReaderImageCache.releaseAdjacentNtkForegroundViewerPath(
+                prepared.target.ntkEpisodePath,
+                "reader_cancel"
+            )
+        }
+        preparedInitialAdjacentMetadata.clear()
+        initialAdjacentMetadataPrefetchPaths.clear()
         preparedEntry?.removeListener(preparedListener)
         releaseDeliveredBitmaps()
         network.shutdownNow()
@@ -10263,6 +10303,7 @@ class ReaderSession(
         initialAnchorDecode.shutdownNow()
         anchorPoll.shutdownNow()
         adjacentNetwork.shutdownNow()
+        initialAdjacentRunwayNetwork.shutdownNow()
         urgentNetwork.shutdownNow()
         urgentDecode.shutdownNow()
         strictExactOverlapDecode.shutdownNow()
@@ -11398,10 +11439,53 @@ class ReaderSession(
     private fun prefetchResolvedMetadataAdjacent(
         source: Manga,
         currentTitle: Title,
-        direction: Int
+        direction: Int,
+        metadataOnly: Boolean = false,
     ): Boolean {
         val titleEpisodes = Utils.snapshotEpisodes(currentTitle)
         val episodes = if (titleEpisodes.isNotEmpty()) titleEpisodes else Utils.snapshotEpisodes(source)
+        val sourcePath = source.ntkEpisodePath?.trim().orEmpty()
+        if (!metadataOnly && sourcePath.isNotEmpty()) {
+            val prepared = preparedInitialAdjacentMetadata[sourcePath]
+            val expected = adjacentEpisodeCandidates(source, episodes, direction).firstOrNull()
+            val expectedPath = expected?.ntkEpisodePath?.trim().orEmpty()
+            val preparedPath = prepared?.target?.ntkEpisodePath?.trim().orEmpty()
+            if (
+                prepared != null &&
+                expectedPath.isNotEmpty() &&
+                expectedPath == preparedPath &&
+                preparedInitialAdjacentMetadata.remove(sourcePath, prepared)
+            ) {
+                var consumed = false
+                try {
+                    preparedPath.takeIf { it.isNotEmpty() }?.let {
+                        initialTailAdjacentPreappendTargetPaths.add(it)
+                    }
+                    if (!prepareInitialTailAdjacentRunway(prepared.target, prepared.urls)) {
+                        if (!cancelled.get()) {
+                            preparedInitialAdjacentMetadata.putIfAbsent(sourcePath, prepared)
+                        }
+                        return false
+                    }
+                    Log.d(
+                        TAG,
+                        "append_adjacent_initial_metadata_take source=$sourcePath " +
+                            "target=$preparedPath images=${prepared.urls.size} " +
+                            "ageMs=${SystemClock.elapsedRealtime() - prepared.preparedAtMs}"
+                    )
+                    appendResolvedEpisode(prepared.target, prepared.urls, direction)
+                    consumed = true
+                    return true
+                } finally {
+                    if (!consumed && preparedInitialAdjacentMetadata[sourcePath] !== prepared) {
+                        ReaderImageCache.releaseAdjacentNtkForegroundViewerPath(
+                            preparedPath,
+                            "initial_metadata_consume_failed"
+                        )
+                    }
+                }
+            }
+        }
         // The immediate real neighbor is the only valid continuous-reader target. If its server
         // metadata is unavailable, stopping is safer than silently skipping a volume.
         for (sharedCandidate in adjacentEpisodeCandidates(source, episodes, direction).take(1)) {
@@ -11418,9 +11502,9 @@ class ReaderSession(
             // the first real body from the same fetch. The previous grant lived inside
             // prepareInitialTailAdjacentRunway, after that fetch had already returned, producing
             // a cycle: metadata waited for its first body while the body waited for the grant.
-            // Current-episode completion is already proved before this method is entered, so open
-            // the bounded exact-neighbor path before fetching its document and revoke it on every
-            // unsuccessful exit. No other episode or launch-time request receives this grant.
+            // Open only the exact neighbor before fetching its tokenized document and revoke it on
+            // every unsuccessful exit. In metadata-only mode this may admit the document's single
+            // joined first-body stream, but never the four-body atomic runway or its decode.
             ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
                 candidatePath,
                 NTK_INITIAL_ADJACENT_PREFETCH_PATH_TTL_MS,
@@ -11478,6 +11562,29 @@ class ReaderSession(
                 }
                 candidatePath.takeIf { it.isNotEmpty() }?.let {
                     initialTailAdjacentPreappendTargetPaths.add(it)
+                }
+                if (metadataOnly) {
+                    val prepared = PreparedInitialAdjacentMetadata(
+                        sourcePath = sourcePath,
+                        target = candidate,
+                        urls = publishUrls,
+                        preparedAtMs = SystemClock.elapsedRealtime(),
+                    )
+                    preparedInitialAdjacentMetadata.put(sourcePath, prepared)?.let { previous ->
+                        if (previous.target.ntkEpisodePath != candidate.ntkEpisodePath) {
+                            ReaderImageCache.releaseAdjacentNtkForegroundViewerPath(
+                                previous.target.ntkEpisodePath,
+                                "initial_metadata_replaced"
+                            )
+                        }
+                    }
+                    keepAdjacentGrant = true
+                    Log.d(
+                        TAG,
+                        "append_adjacent_initial_metadata_ready source=$sourcePath " +
+                            "target=$candidatePath images=${publishUrls.size}"
+                    )
+                    return true
                 }
                 // prepareInitialTailAdjacentRunway owns the first four physical requests. The
                 // grant above also lets the document's single joined first-body stream complete;
@@ -11645,6 +11752,56 @@ class ReaderSession(
         return AppendUrlLoad(Title.LOAD_OK, completeKnownGeneratedAppendUrls(target, urls))
     }
 
+    private fun fetchInitialAdjacentRunwayFile(
+        target: Manga,
+        page: PageRef,
+        path: String,
+        startedAt: Long,
+    ): File {
+        val image = page.image.orEmpty()
+        if (image.isBlank()) throw java.io.IOException("Adjacent runway page has no image")
+        var file = ReaderImageCache.cachedFile(appContext, target, image)
+        var fetchAttempts = 0
+        var fetchFailure: Exception? = null
+        while (
+            file == null &&
+            NtkAdjacentRunwayPreparationPolicy.mayRetryFileFetch(
+                fetchAttempts,
+                startedAt,
+                SystemClock.elapsedRealtime()
+            )
+        ) {
+            fetchAttempts++
+            try {
+                file = withProtectedNumericNetworkPermit(target) {
+                    ReaderImageCache.getOrFetchFileForeground(
+                        appContext,
+                        target,
+                        image,
+                        imageCancellation,
+                        visiblePriority = true
+                    )
+                }
+            } catch (e: Exception) {
+                if (cancelled.get() || Thread.currentThread().isInterrupted) throw e
+                fetchFailure = e
+                file = ReaderImageCache.cachedFile(appContext, target, image)
+                if (file == null) {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_initial_prefetch_retry path=$path " +
+                            "page=${page.sourceIndex + 1} attempt=$fetchAttempts " +
+                            "error=${e.javaClass.simpleName}:${e.message}"
+                    )
+                }
+            }
+        }
+        return file ?: throw java.io.IOException(
+            "Adjacent runway page fetch exhausted: page=${page.sourceIndex + 1}",
+            fetchFailure
+        )
+    }
+
     private fun prepareInitialTailAdjacentRunway(target: Manga, urls: List<String>): Boolean {
         val path = target.ntkEpisodePath?.trim().orEmpty()
         if (path.isEmpty() || urls.isEmpty()) return false
@@ -11671,58 +11828,21 @@ class ReaderSession(
         val predictedStart = synchronized(pagesLock) { pages.size }
         val deliveries = ArrayList<Delivery>(refs.size)
         val startedAt = SystemClock.elapsedRealtime()
+        val fetchTasks = refs.map { page ->
+            FutureTask<File> {
+                fetchInitialAdjacentRunwayFile(target, page, path, startedAt)
+            }
+        }
         try {
+            fetchTasks.forEach(initialAdjacentRunwayNetwork::execute)
             refs.forEachIndexed { offset, page ->
                 if (cancelled.get()) throw java.io.IOException("Reader session cancelled")
-                val image = page.image.orEmpty()
-                if (image.isBlank()) throw java.io.IOException("Adjacent runway page has no image")
-                var file = ReaderImageCache.cachedFile(appContext, target, image)
-                var fetchAttempts = 0
-                var fetchFailure: Exception? = null
-                while (
-                    file == null &&
-                    NtkAdjacentRunwayPreparationPolicy.mayRetryFileFetch(
-                        fetchAttempts,
-                        startedAt,
-                        SystemClock.elapsedRealtime()
-                    )
-                ) {
-                    fetchAttempts++
-                    try {
-                        file = withProtectedNumericNetworkPermit(target) {
-                            // The decoded runway owns the first visible request for the next
-                            // episode. A background owner can defer behind a foreground stream
-                            // while that stream joins the same flight, leaving both sides waiting.
-                            ReaderImageCache.getOrFetchFileForeground(
-                                appContext,
-                                target,
-                                image,
-                                imageCancellation,
-                                visiblePriority = true
-                            )
-                        }
-                    } catch (e: Exception) {
-                        // OkHttp reports both a real reader cancellation and a transport
-                        // timeout/HTTP2 CANCEL as InterruptedIOException. Only the former
-                        // should stop the bounded adjacent-runway retry loop.
-                        if (cancelled.get() || Thread.currentThread().isInterrupted) throw e
-                        fetchFailure = e
-                        file = ReaderImageCache.cachedFile(appContext, target, image)
-                        if (file == null) {
-                            Log.d(
-                                TAG,
-                                "append_adjacent_initial_prefetch_retry path=$path " +
-                                    "page=${page.sourceIndex + 1} attempt=$fetchAttempts " +
-                                    "error=${e.javaClass.simpleName}:${e.message}"
-                            )
-                        }
-                    }
-                }
-                if (file == null) {
-                    throw java.io.IOException(
-                        "Adjacent runway page fetch exhausted: page=${page.sourceIndex + 1}",
-                        fetchFailure
-                    )
+                val file = try {
+                    fetchTasks[offset].get()
+                } catch (e: ExecutionException) {
+                    val cause = e.cause
+                    if (cause is Exception) throw cause
+                    throw e
                 }
                 val requestedWidth = ntkProofTargetWidth()
                 val result = decodePage(
@@ -11773,6 +11893,7 @@ class ReaderSession(
             )
             return true
         } catch (e: Exception) {
+            if (e is InterruptedException) Thread.currentThread().interrupt()
             deliveries.forEach { recycleDecodeResult(it.result) }
             if (!cancelled.get()) {
                 Log.d(
@@ -11784,6 +11905,9 @@ class ReaderSession(
             }
             return false
         } finally {
+            fetchTasks.forEach { task ->
+                if (!task.isDone) task.cancel(true)
+            }
             preparingInitialAdjacentRunways.remove(path, preparation)
         }
     }
@@ -13979,9 +14103,13 @@ class ReaderSession(
     }
 
     private fun shouldDeferAdjacentRunwayBehindActiveRemaining(target: Manga): Boolean {
-        if (!isActiveGeneratedTouchOrQuiet() && !viewportBusy.get()) return false
         val targetPath = activeRemainingAdjacentRunwayTargetPath(target)
         if (targetPath.isEmpty()) return false
+        // Episode structure must stay canonical even while input is idle. If A's first four
+        // images are visible and A still owns a remaining suffix, inserting B's runway first
+        // interleaves A/B/A. The viewport then sits inside B and A's suffix is classified as
+        // offscreen forever. Metadata for B may still be resolved independently, but no B page is
+        // published until A's complete suffix has been appended.
         for (path in activeRemainingAdjacentRunwayTargetPaths) {
             if (path.isNotEmpty() && path != targetPath) return true
         }
@@ -19834,6 +19962,78 @@ class ReaderSession(
         }
     }
 
+    private fun maybeStartInitialAdjacentMetadataPrefetch(
+        source: Manga,
+        currentTitle: Title,
+        reason: String,
+    ) {
+        if (cancelled.get() || !strictExactColdRolling) return
+        if (!isImmediateNtkGeneratedUx() || reverse) return
+        if (!isNtkSource(source, currentTitle)) return
+        if (!isNtkManhwaOrWebtoonEpisodePath(source.ntkEpisodePath)) return
+        val sourcePath = source.ntkEpisodePath?.trim().orEmpty()
+        if (sourcePath.isEmpty()) return
+        if (hasForwardNtkEpisodeAfterSource(source)) return
+        if (preparedInitialAdjacentMetadata.containsKey(sourcePath)) return
+        if (preparedInitialAdjacentRunways.keys.any { it.isNotEmpty() }) return
+        val fullRunwayKey =
+            "${ReaderSurfaceView.DIRECTION_NEXT}:$sourcePath:initial_tail_prefetch"
+        if (initialTailAdjacentPrefetchKeys.contains(fullRunwayKey)) return
+        if (!hasNtkResolvedAdjacentMetadataCandidate(
+                source,
+                currentTitle,
+                ReaderSurfaceView.DIRECTION_NEXT,
+            )
+        ) return
+        if (!initialAdjacentMetadataPrefetchPaths.add(sourcePath)) return
+        Log.d(
+            TAG,
+            "append_adjacent_initial_metadata_start reason=$reason source=$sourcePath"
+        )
+        try {
+            adjacentNetwork.execute {
+                var success = false
+                try {
+                    if (!cancelled.get()) {
+                        source.title = currentTitle
+                        source.titleId = currentTitle.id
+                        success = prefetchResolvedMetadataAdjacent(
+                            source,
+                            currentTitle,
+                            ReaderSurfaceView.DIRECTION_NEXT,
+                            metadataOnly = true,
+                        )
+                    }
+                } catch (e: Exception) {
+                    if (!isExpectedCancellation(e)) recordIfUnexpected(e)
+                } finally {
+                    initialAdjacentMetadataPrefetchPaths.remove(sourcePath)
+                    Log.d(
+                        TAG,
+                        "append_adjacent_initial_metadata_done reason=$reason success=$success " +
+                            "source=$sourcePath"
+                    )
+                    if (success && !cancelled.get()) {
+                        main.post {
+                            if (!cancelled.get()) {
+                                val activeAnchor = currentViewportAnchor.get()
+                                    .takeIf { it >= 0 }
+                                    ?: currentStartPage()
+                                maybeStartInitialTailAdjacentPreappendForAnchor(
+                                    activeAnchor,
+                                    NtkAdjacentRunwayPreparationPolicy
+                                        .CURRENT_EPISODE_COMPLETE_IDLE_REASON,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            initialAdjacentMetadataPrefetchPaths.remove(sourcePath)
+        }
+    }
+
     private fun maybeStartInitialTailAdjacentPrefetch(
         source: Manga,
         currentTitle: Title,
@@ -19878,6 +20078,13 @@ class ReaderSession(
         }
         val sourcePath = source.ntkEpisodePath?.trim().orEmpty()
         if (sourcePath.isEmpty()) return
+        if (initialAdjacentMetadataPrefetchPaths.contains(sourcePath)) {
+            Log.d(
+                TAG,
+                "append_adjacent_initial_prefetch_wait_metadata reason=$reason source=$sourcePath"
+            )
+            return
+        }
         val key = "${ReaderSurfaceView.DIRECTION_NEXT}:$sourcePath:initial_tail_prefetch"
         if (preparedInitialAdjacentRunways.keys.any { it.isNotEmpty() }) return
         if (!initialTailAdjacentPrefetchKeys.add(key)) return
@@ -25624,6 +25831,13 @@ class ReaderSession(
                 } ?: continue
                 val activeEpisode = activePage.manga
                 val adjustedAnchor = trimConsumedForwardHistory(requestedAnchor, activePage)
+                (title ?: activeEpisode.title)?.let { currentTitle ->
+                    maybeStartInitialAdjacentMetadataPrefetch(
+                        activeEpisode,
+                        currentTitle,
+                        "forward_episode_active",
+                    )
+                }
                 maybeWarmCompletedForwardEpisode(adjustedAnchor, activeEpisode)
             }
         } finally {
@@ -29912,6 +30126,8 @@ class ReaderSession(
         // forward swipe without allowing the adjacent episode's full body wave to contend with
         // the currently scrolling episode.
         private const val NTK_APPEND_INITIAL_RUNWAY_PAGES = 4
+        private const val NTK_INITIAL_ADJACENT_RUNWAY_FETCH_PARALLELISM =
+            NTK_APPEND_INITIAL_RUNWAY_PAGES
         private const val NTK_APPEND_INITIAL_RUNWAY_READY_PAGES = 3
         private const val NTK_APPEND_INITIAL_ACTIVE_RUNWAY_READY_PAGES = 2
         private const val NTK_APPEND_REMAINING_RUNWAY_ACTIVE_QUIET_MS = 3200L

@@ -43,6 +43,19 @@ class NtkLateInputCatchupPolicyTest {
     }
 
     @Test
+    fun firstMoveOfNewGestureCanReplaceAdmittedPriorFrameSuccessor() {
+        assertTrue(
+            shouldPost(
+                targetRevision = 8L,
+                callbackObservedTargetRevision = 7L,
+                nowNanos = observedAtNanos + refreshPeriodNanos * 3L / 4L,
+                callbackHadAdmission = true,
+                newPhysicalGesture = true
+            )
+        )
+    }
+
+    @Test
     fun oldInputDoesNotReplaceNormalNextVsyncCallback() {
         assertFalse(
             shouldPost(
@@ -79,6 +92,7 @@ class NtkLateInputCatchupPolicyTest {
         nowNanos: Long,
         catchupPosted: Boolean = false,
         callbackHadAdmission: Boolean = false,
+        newPhysicalGesture: Boolean = false,
         dragging: Boolean = true
     ): Boolean {
         return NtkLateInputCatchupPolicy.shouldPost(
@@ -87,6 +101,7 @@ class NtkLateInputCatchupPolicyTest {
             callbackPosted = true,
             callbackHadAdmission = callbackHadAdmission,
             catchupPosted = catchupPosted,
+            newPhysicalGesture = newPhysicalGesture,
             pointerDown = true,
             dragging = dragging,
             targetRevision = targetRevision,

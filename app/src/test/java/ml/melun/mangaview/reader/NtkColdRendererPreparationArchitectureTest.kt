@@ -424,6 +424,42 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun adjacentEpisodePreparationIsParallelMetadataFirstAndStructurallyOrdered() {
+        val prepareInitial = functionBody(
+            "private fun prepareInitialTailAdjacentRunway(",
+            sessionSource
+        )
+        val metadataFirst = functionBody(
+            "private fun maybeStartInitialAdjacentMetadataPrefetch(",
+            sessionSource
+        )
+        val suffixGate = functionBody(
+            "private fun shouldDeferAdjacentRunwayBehindActiveRemaining(",
+            sessionSource
+        )
+
+        assertTrue(
+            sessionSource.contains(
+                "Executors.newFixedThreadPool(\n" +
+                    "            NTK_INITIAL_ADJACENT_RUNWAY_FETCH_PARALLELISM"
+            )
+        )
+        assertTrue(prepareInitial.contains("fetchTasks.forEach(initialAdjacentRunwayNetwork::execute)"))
+        assertTrue(prepareInitial.contains("refs.forEachIndexed { offset, page ->"))
+        assertTrue(
+            sessionSource.contains(
+                "NTK_INITIAL_ADJACENT_RUNWAY_FETCH_PARALLELISM =\n" +
+                    "            NTK_APPEND_INITIAL_RUNWAY_PAGES"
+            )
+        )
+        assertTrue(metadataFirst.contains("metadataOnly = true"))
+        assertTrue(metadataFirst.contains("initialTailAdjacentPrefetchKeys.contains(fullRunwayKey)"))
+        assertTrue(suffixGate.contains("path != targetPath"))
+        assertFalse(suffixGate.contains("isActiveGeneratedTouchOrQuiet"))
+        assertFalse(suffixGate.contains("viewportBusy"))
+    }
+
+    @Test
     fun exactSealAndOwnershipClaimUseTheSameSuspendAwareClockDomain() {
         val ownershipClock = functionBody(
             "private fun monotonicMs()",
@@ -438,18 +474,31 @@ class NtkColdRendererPreparationArchitectureTest {
     fun visibleNativeFramesUseAtomicMultiBufferPublication() {
         val attach = functionBody("bool attachBackend(", rollingRendererSource)
 
-        assertTrue(attach.contains("eglSwapInterval(display_, 0)"))
-        assertTrue(attach.contains("setNativeWindowAsyncSwap(command.window)"))
+        assertTrue(attach.contains("eglSwapInterval(display_, 1)"))
+        assertTrue(attach.contains("setNativeWindowSwapInterval(command.window, 1)"))
         assertTrue(attach.contains("setFrameRate(command.window, requestedFrameRate, 0)"))
         assertTrue(attach.contains("setSharedBufferMode(command.window, false)"))
         assertTrue(attach.contains("setAutoRefresh(command.window, false)"))
-        assertTrue(attach.contains("setBufferCount(command.window, 4)"))
+        assertTrue(attach.contains("setBufferCount(command.window, 5)"))
         assertTrue(attach.contains("tryAllocateBuffers(command.window)"))
         assertTrue(attach.contains("EGL_BUFFER_DESTROYED"))
-        assertFalse(attach.contains("setNativeWindowAsyncSwap(command.window, 1)"))
+        assertFalse(attach.contains("setNativeWindowSwapInterval(command.window, 0)"))
         assertFalse(attach.contains("setSharedBufferMode(command.window, true)"))
         assertFalse(attach.contains("setAutoRefresh(command.window, true)"))
         assertFalse(attach.contains("EGL_BUFFER_PRESERVED"))
+    }
+
+    @Test
+    fun nativeRetirementImmediatelyContinuesAnAlreadyAdmittedMovingFrame() {
+        val commit = functionBody("private fun onFrameCommitted(", source)
+        val continuation = functionBody(
+            "private fun postDirectNativeRetirementContinuation()",
+            source
+        )
+
+        assertTrue(commit.contains("postDirectNativeRetirementContinuation()"))
+        assertTrue(continuation.contains("postAtFrontOfQueue(directNativeRetirementContinuation)"))
+        assertTrue(source.contains("ViewerDirectNativeRetirement"))
     }
 
     @Test

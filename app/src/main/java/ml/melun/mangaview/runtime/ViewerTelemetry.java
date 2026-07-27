@@ -51,6 +51,103 @@ public final class ViewerTelemetry {
     private ViewerTelemetry() {
     }
 
+    /**
+     * Immutable presentation-cadence evidence for the active native viewer session.
+     *
+     * <p>The counters come from committed native frames, not Java UI callbacks. Keeping this
+     * snapshot read-only lets instrumentation calculate exact before/after deltas without
+     * resetting or otherwise changing production telemetry.</p>
+     */
+    public static final class NativeFrameStatsSnapshot {
+        private final long generation;
+        private final long scrollIntervals;
+        private final long scrollIntervalNanos;
+        private final long slowIntervals;
+        private final long worstIntervalNanos;
+        private final long maxConsecutiveSlowIntervals;
+        private final long refreshPeriodNanos;
+        private final String slowIntervalDetails;
+        private final long recordedSlowIntervalFirstOrdinal;
+        private final long[] recordedSlowIntervalDurationsNanos;
+
+        private NativeFrameStatsSnapshot(
+                long generation,
+                long scrollIntervals,
+                long scrollIntervalNanos,
+                long slowIntervals,
+                long worstIntervalNanos,
+                long maxConsecutiveSlowIntervals,
+                long refreshPeriodNanos,
+                String slowIntervalDetails,
+                long recordedSlowIntervalFirstOrdinal,
+                long[] recordedSlowIntervalDurationsNanos) {
+            this.generation = generation;
+            this.scrollIntervals = scrollIntervals;
+            this.scrollIntervalNanos = scrollIntervalNanos;
+            this.slowIntervals = slowIntervals;
+            this.worstIntervalNanos = worstIntervalNanos;
+            this.maxConsecutiveSlowIntervals = maxConsecutiveSlowIntervals;
+            this.refreshPeriodNanos = refreshPeriodNanos;
+            this.slowIntervalDetails = slowIntervalDetails;
+            this.recordedSlowIntervalFirstOrdinal = recordedSlowIntervalFirstOrdinal;
+            this.recordedSlowIntervalDurationsNanos =
+                    recordedSlowIntervalDurationsNanos.clone();
+        }
+
+        public long getGeneration() {
+            return generation;
+        }
+
+        public long getScrollIntervals() {
+            return scrollIntervals;
+        }
+
+        public long getScrollIntervalNanos() {
+            return scrollIntervalNanos;
+        }
+
+        public long getSlowIntervals() {
+            return slowIntervals;
+        }
+
+        public long getWorstIntervalNanos() {
+            return worstIntervalNanos;
+        }
+
+        public long getMaxConsecutiveSlowIntervals() {
+            return maxConsecutiveSlowIntervals;
+        }
+
+        public long getRefreshPeriodNanos() {
+            return refreshPeriodNanos;
+        }
+
+        public String getSlowIntervalDetails() {
+            return slowIntervalDetails;
+        }
+
+        /**
+         * Returns the worst recorded slow interval added after a prior cumulative count.
+         * A negative result means the requested boundary predates the bounded diagnostic ring.
+         */
+        public long getMaxRecordedSlowIntervalDurationSince(long priorSlowIntervalCount) {
+            if(priorSlowIntervalCount < recordedSlowIntervalFirstOrdinal)
+                return -1L;
+            long firstOrdinal = Math.max(
+                    priorSlowIntervalCount,
+                    recordedSlowIntervalFirstOrdinal);
+            long maxDuration = 0L;
+            for(long ordinal = firstOrdinal; ordinal < slowIntervals; ordinal++) {
+                int index = (int) (ordinal - recordedSlowIntervalFirstOrdinal);
+                if(index >= 0 && index < recordedSlowIntervalDurationsNanos.length)
+                    maxDuration = Math.max(
+                            maxDuration,
+                            recordedSlowIntervalDurationsNanos[index]);
+            }
+            return maxDuration;
+        }
+    }
+
     public static synchronized long viewerOpen(String workId, String episodeId, String mode) {
         Session previous = SESSION.getAndSet(null);
         if(previous != null) {
@@ -697,6 +794,11 @@ public final class ViewerTelemetry {
         return SESSION.get() != null;
     }
 
+    public static NativeFrameStatsSnapshot nativeFrameStatsSnapshot() {
+        Session session = SESSION.get();
+        return session == null ? null : session.nativeFrameStatsSnapshot();
+    }
+
     public static boolean isActiveEpisode(String episodeId) {
         Session session = SESSION.get();
         return session != null && episodeId != null && episodeId.equals(session.episodeId);
@@ -1149,6 +1251,11 @@ public final class ViewerTelemetry {
         long nativeConsecutiveSlowIntervals;
         long nativeMaxConsecutiveSlowIntervals;
         long nativeRefreshPeriodNanos;
+        static final int MAX_RECORDED_SLOW_INTERVALS = 32;
+        final long[] nativeSlowIntervalEndNanos =
+                new long[MAX_RECORDED_SLOW_INTERVALS];
+        final long[] nativeSlowIntervalDurationsNanos =
+                new long[MAX_RECORDED_SLOW_INTERVALS];
 
         Session(long generation, String workId, String episodeId, String mode,
                 long openedAtNanos, int openCookie, int scrollCookie, int allImagesReadyCookie) {
@@ -1187,6 +1294,10 @@ public final class ViewerTelemetry {
             nativeWorstIntervalNanos = Math.max(nativeWorstIntervalNanos, interval);
             if(interval > refreshPeriod + refreshPeriod / 2L) {
                 nativeSlowIntervals++;
+                int slot = (int) ((nativeSlowIntervals - 1L) %
+                        MAX_RECORDED_SLOW_INTERVALS);
+                nativeSlowIntervalEndNanos[slot] = actualFrameNanos;
+                nativeSlowIntervalDurationsNanos[slot] = interval;
                 nativeConsecutiveSlowIntervals++;
                 nativeMaxConsecutiveSlowIntervals = Math.max(
                         nativeMaxConsecutiveSlowIntervals,
@@ -1224,6 +1335,33 @@ public final class ViewerTelemetry {
                     + ",maxConsecutiveSlowIntervals=" + nativeMaxConsecutiveSlowIntervals
                     + ",refreshPeriodMs="
                     + String.format(Locale.US, "%.4f", nativeRefreshPeriodNanos / 1_000_000.0d);
+        }
+
+        synchronized NativeFrameStatsSnapshot nativeFrameStatsSnapshot() {
+            StringBuilder slowDetails = new StringBuilder();
+            long first = Math.max(0L,
+                    nativeSlowIntervals - MAX_RECORDED_SLOW_INTERVALS);
+            long[] recordedDurations = new long[(int) (nativeSlowIntervals - first)];
+            for (long ordinal = first; ordinal < nativeSlowIntervals; ordinal++) {
+                int slot = (int) (ordinal % MAX_RECORDED_SLOW_INTERVALS);
+                recordedDurations[(int) (ordinal - first)] =
+                        nativeSlowIntervalDurationsNanos[slot];
+                if (slowDetails.length() > 0) slowDetails.append(';');
+                slowDetails.append(nativeSlowIntervalEndNanos[slot])
+                        .append(':')
+                        .append(nativeSlowIntervalDurationsNanos[slot]);
+            }
+            return new NativeFrameStatsSnapshot(
+                    generation,
+                    nativeScrollIntervalCount,
+                    nativeScrollIntervalNanos,
+                    nativeSlowIntervals,
+                    nativeWorstIntervalNanos,
+                    nativeMaxConsecutiveSlowIntervals,
+                    nativeRefreshPeriodNanos,
+                    slowDetails.toString(),
+                    first,
+                    recordedDurations);
         }
 
         synchronized void publishNativeFrameTraceCounters() {

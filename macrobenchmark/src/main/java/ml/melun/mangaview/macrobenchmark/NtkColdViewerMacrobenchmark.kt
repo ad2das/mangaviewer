@@ -898,7 +898,11 @@ class NtkColdViewerMacrobenchmark {
         const val EPISODE_END_CONFIRM_GESTURES = 3
         const val EPISODE_SEARCH_SWIPE_STEPS = 36
         const val EPISODE_SCROLL_EVENT_TIMEOUT_MS = 1_000L
-        const val EPISODE_SEARCH_SWIPE_INSET_FRACTION = 0.18f
+        // Keep a large overlap between consecutive real RecyclerView viewports. A 64%-height
+        // gesture could move from chapters 123..121 directly to 114.. and permanently skip an
+        // exact row such as chapter 120 even though the app had all 123 episodes. This smaller
+        // physical gesture still exercises the real list and never opens or warms the viewer.
+        const val EPISODE_SEARCH_SWIPE_INSET_FRACTION = 0.40f
         const val MEDIUM_SWIPE_STEPS = 90
         const val FAST_SWIPE_STEPS = 4
         const val INITIAL_MODERATE_FORWARD_GESTURES = 3

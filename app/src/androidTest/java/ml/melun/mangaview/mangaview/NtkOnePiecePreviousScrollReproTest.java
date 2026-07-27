@@ -39,6 +39,7 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ReaderV2Activity;
 import ml.melun.mangaview.reader.ReaderSurfaceView;
+import ml.melun.mangaview.runtime.ViewerTelemetry;
 
 @RunWith(AndroidJUnit4.class)
 public class NtkOnePiecePreviousScrollReproTest {
@@ -189,6 +190,305 @@ public class NtkOnePiecePreviousScrollReproTest {
                 "Latest One Piece 1188 must retain canonical source order after chained "
                         + "transitions; path=" + current.getNtkEpisodePath(),
                 reader.testHasCanonicalEpisodeOrder(current));
+    }
+
+    @Test
+    public void onePieceImmediateFastForwardHasRunwayBeforeCurrentTail() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1185화", 90000L);
+        assertNotNull("Expected current One Piece 1185 episode row", episodeRow);
+        episodeRow.click();
+
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L);
+        assertNotNull("Expected NTK One Piece reader surface", strip);
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga current = reader.testEpisode("1185화");
+        Manga next = reader.testEpisode("1186화");
+        assertNotNull("Expected current One Piece 1185 metadata", current);
+        assertNotNull("Expected next One Piece 1186 metadata", next);
+
+        long currentReadyStartedAt = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - currentReadyStartedAt < 30000L &&
+                !reader.testHasFullyReadyEpisode(current)) {
+            SystemClock.sleep(16L);
+        }
+        assertTrue(
+                "Current One Piece chapter must become fully drawable",
+                reader.testHasFullyReadyEpisode(current));
+
+        // Do not wait for or poll the adjacent runway before the gesture. This reproduces a user
+        // immediately flinging after the current chapter finishes and proves that preparation runs
+        // concurrently with normal traversal instead of beginning only after the boundary callback.
+        int initialCurrentPageCount = reader.testPageCount();
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        int x = width / 2;
+        int fromY = Math.min(height - 160, height * 3 / 4);
+        int toY = Math.max(120, height / 4);
+        boolean runwayReadyBeforeTail = reader.testHasReadyEpisodeRunway(next, 4);
+        long tailReachedAt = -1L;
+        long deadline = SystemClock.elapsedRealtime() + 30000L;
+        String transitioned = current.getNtkEpisodePath();
+        while (SystemClock.elapsedRealtime() < deadline) {
+            device.swipe(x, fromY, x, toY, 8);
+            if (reader.testHasReadyEpisodeRunway(next, 4) &&
+                    reader.testCurrentPage() < initialCurrentPageCount - 1) {
+                runwayReadyBeforeTail = true;
+            }
+            if (tailReachedAt < 0L &&
+                    reader.testCurrentPage() >= initialCurrentPageCount - 1) {
+                tailReachedAt = SystemClock.elapsedRealtime();
+            }
+            transitioned = reader.testCurrentNtkEpisodePath();
+            if (transitioned != null &&
+                    !transitioned.equals(current.getNtkEpisodePath())) {
+                break;
+            }
+        }
+        long tailWaitMs = tailReachedAt < 0L
+                ? 0L
+                : SystemClock.elapsedRealtime() - tailReachedAt;
+        Log.i(
+                TAG,
+                "onePieceImmediateFastForwardBoundary source=" + current.getNtkEpisodePath()
+                        + ",target=" + transitioned
+                        + ",runwayReadyBeforeTail=" + runwayReadyBeforeTail
+                        + ",tailWaitMs=" + tailWaitMs
+                        + ",initialCount=" + initialCurrentPageCount);
+        assertTrue(
+                "The next One Piece runway must be physically attached before the current tail",
+                runwayReadyBeforeTail);
+        assertEquals(next.getNtkEpisodePath(), transitioned);
+    }
+
+    @Test
+    public void onePieceIdleThenPhysicalForwardScrollKeepsNextRunway() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1185화", 90000L);
+        assertNotNull("Expected current One Piece 1185 episode row", episodeRow);
+        episodeRow.click();
+
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L);
+        assertNotNull("Expected NTK One Piece reader surface", strip);
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga current = reader.testEpisode("1185화");
+        Manga next = reader.testEpisode("1186화");
+        assertNotNull("Expected current One Piece 1185 metadata", current);
+        assertNotNull("Expected next One Piece 1186 metadata", next);
+
+        long currentReadyStartedAt = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - currentReadyStartedAt < 30000L &&
+                !reader.testHasFullyReadyEpisode(current)) {
+            SystemClock.sleep(16L);
+        }
+        assertTrue(
+                "Current One Piece chapter must finish before idle adjacent preparation",
+                reader.testHasFullyReadyEpisode(current));
+
+        long preattachStartedAt = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - preattachStartedAt < 12000L &&
+                !reader.testHasReadyEpisodeRunway(next, 4)) {
+            SystemClock.sleep(16L);
+        }
+        assertTrue(
+                "Idle One Piece reader must preattach four next-episode drawables",
+                reader.testHasReadyEpisodeRunway(next, 4));
+
+        // Reproduce the real UX: no test hook or boundary callback runs while the reader is left
+        // untouched. The first physical gesture must not discard the already attached runway.
+        SystemClock.sleep(1800L);
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        device.swipe(
+                width / 2,
+                Math.min(height - 160, height * 3 / 4),
+                width / 2,
+                Math.max(120, height / 4),
+                8);
+        assertTrue(
+                "The first physical forward gesture must retain the idle-prepared runway",
+                reader.testHasReadyEpisodeRunway(next, 4));
+
+        long physicalScrollStartedAt = SystemClock.elapsedRealtime();
+        String transitioned = scrollPhysicallyForwardUntilEpisodeChanges(
+                device,
+                reader,
+                current.getNtkEpisodePath(),
+                30000L);
+        long physicalScrollElapsedMs =
+                SystemClock.elapsedRealtime() - physicalScrollStartedAt;
+        Log.i(
+                TAG,
+                "onePieceIdlePhysicalForwardBoundary source=" + current.getNtkEpisodePath()
+                        + ",target=" + transitioned
+                        + ",elapsedMs=" + physicalScrollElapsedMs);
+        assertEquals(
+                "Physical forward scrolling after an idle period must enter the prepared chapter",
+                next.getNtkEpisodePath(),
+                transitioned);
+        assertTrue(
+                "The physically entered One Piece chapter must retain canonical source order",
+                reader.testHasCanonicalEpisodeOrder(next));
+    }
+
+    @Test
+    public void onePieceLatestPhysicalForwardScrollStaysBelowOnePercentJank() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1185화", 90000L);
+        assertNotNull("Expected current One Piece 1185 episode row", episodeRow);
+        episodeRow.click();
+
+        UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L);
+        assertNotNull("Expected NTK One Piece reader surface", strip);
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga current = reader.testEpisode("1185화");
+        assertNotNull("Expected current One Piece 1185 metadata", current);
+
+        LinkedHashSet<String> visitedPaths = new LinkedHashSet<>();
+        visitedPaths.add(current.getNtkEpisodePath());
+        long totalNativeIntervals = 0L;
+        long totalNativeSlowIntervals = 0L;
+        logMultiEpisodeSnapshot(reader, 1185, "initial");
+
+        for (int chapter = 1185; chapter < 1188; chapter++) {
+            Manga next = reader.testEpisode((chapter + 1) + "화");
+            assertNotNull("Expected next One Piece " + (chapter + 1) + " metadata", next);
+
+            long currentReadyStartedAt = SystemClock.elapsedRealtime();
+            while (SystemClock.elapsedRealtime() - currentReadyStartedAt < 30000L &&
+                    !reader.testHasFullyReadyEpisode(current)) {
+                SystemClock.sleep(16L);
+            }
+            assertTrue(
+                    "Current One Piece chapter must be fully drawable before physical scrolling; "
+                            + "chapter=" + chapter,
+                    reader.testHasFullyReadyEpisode(current));
+
+            long runwayStartedAt = SystemClock.elapsedRealtime();
+            while (SystemClock.elapsedRealtime() - runwayStartedAt < 12000L &&
+                    !reader.testHasReadyEpisodeRunway(next, 4)) {
+                SystemClock.sleep(16L);
+            }
+            assertTrue(
+                    "Idle reader must attach four next-chapter drawables before scrolling; "
+                            + "chapter=" + chapter
+                            + ",target=" + next.getNtkEpisodePath(),
+                    reader.testHasReadyEpisodeRunway(next, 4));
+
+            // The reported problem occurs after leaving the completed chapter untouched. Keep the
+            // reader idle long enough for the normal production idle-preparation path, then measure
+            // only real touch-driven forward frames through the next boundary.
+            SystemClock.sleep(1800L);
+            runOnMain(reader::testResetFrameStatsSnapshot);
+            ViewerTelemetry.NativeFrameStatsSnapshot nativeBefore =
+                    ViewerTelemetry.nativeFrameStatsSnapshot();
+            assertNotNull("Expected active native frame telemetry before chapter " + chapter,
+                    nativeBefore);
+            long physicalScrollStartedAt = SystemClock.elapsedRealtime();
+            String transitioned = scrollPhysicallyForwardUntilEpisodeChanges(
+                    device,
+                    reader,
+                    current.getNtkEpisodePath(),
+                    30000L);
+            long physicalScrollElapsedMs =
+                    SystemClock.elapsedRealtime() - physicalScrollStartedAt;
+            assertEquals(
+                    "Physical forward scrolling must enter the exact prepared One Piece chapter",
+                    next.getNtkEpisodePath(),
+                    transitioned);
+            assertTrue(
+                    "Physical forward reading must not revisit an already consumed chapter; path="
+                            + transitioned,
+                    visitedPaths.add(transitioned));
+
+            ReaderSurfaceView.FrameStatsSnapshot frames =
+                    requireCompletedPhysicalFrameStats(reader, chapter);
+            ViewerTelemetry.NativeFrameStatsSnapshot nativeAfter =
+                    ViewerTelemetry.nativeFrameStatsSnapshot();
+            assertNotNull("Expected active native frame telemetry after chapter " + chapter,
+                    nativeAfter);
+            assertEquals(
+                    "The native telemetry generation must remain stable across an adjacent chapter",
+                    nativeBefore.getGeneration(),
+                    nativeAfter.getGeneration());
+            long nativeIntervals =
+                    nativeAfter.getScrollIntervals() - nativeBefore.getScrollIntervals();
+            long nativeSlowIntervals =
+                    nativeAfter.getSlowIntervals() - nativeBefore.getSlowIntervals();
+            long segmentWorstSlowIntervalNanos =
+                    nativeAfter.getMaxRecordedSlowIntervalDurationSince(
+                            nativeBefore.getSlowIntervals());
+            totalNativeIntervals += nativeIntervals;
+            totalNativeSlowIntervals += nativeSlowIntervals;
+            double missedPercent =
+                    nativeSlowIntervals * 100.0 / Math.max(1L, nativeIntervals);
+            Log.i(
+                    TAG,
+                    "onePiecePhysicalForwardJank chapter=" + chapter
+                            + ",target=" + transitioned
+                            + ",elapsedMs=" + physicalScrollElapsedMs
+                            + ",nativeIntervals=" + nativeIntervals
+                            + ",nativeSlowIntervals=" + nativeSlowIntervals
+                            + ",segmentWorstSlowMs="
+                            + (segmentWorstSlowIntervalNanos / 1_000_000.0)
+                            + ",missedPercent=" + missedPercent
+                            + ",slowDetails=" + nativeAfter.getSlowIntervalDetails()
+                            + ",callbackSamples=" + frames.getSamples()
+                            + ",callbackMissedIntervals=" + frames.getMissedIntervals()
+                            + ",totalP95=" + frames.getTotalP95()
+                            + ",totalMax=" + frames.getTotalMax()
+                            + ",missingPx=" + frames.getMaxMissingPx());
+            assertEquals(
+                    "One Piece physical forward scrolling must not drop native frames; chapter="
+                            + chapter,
+                    0,
+                    frames.getDroppedFrames());
+            assertEquals(
+                    "One Piece physical forward scrolling must not expose missing pixels; chapter="
+                            + chapter,
+                    0,
+                    frames.getMaxMissingPx());
+            assertTrue(
+                    "One Piece physical forward segment must not contain a 100ms frame; chapter="
+                            + chapter + ",worstMs="
+                            + (segmentWorstSlowIntervalNanos / 1_000_000.0),
+                    segmentWorstSlowIntervalNanos >= 0L &&
+                            segmentWorstSlowIntervalNanos < 100_000_000L);
+            // The current-episode-only strict telemetry counter intentionally rejects a viewport
+            // that straddles two episodes. That is the expected continuous-reader boundary here,
+            // so bind correctness is qualified by zero missing pixels plus each episode's exact
+            // canonical path/order below instead of treating the attached next episode as stale.
+            assertTrue(
+                    "The entered One Piece chapter must retain canonical source order; chapter="
+                            + (chapter + 1),
+                    reader.testHasCanonicalEpisodeOrder(next));
+            logMultiEpisodeSnapshot(reader, chapter + 1, "physical-forward");
+            current = next;
+        }
+        double aggregateMissedPercent =
+                totalNativeSlowIntervals * 100.0 / Math.max(1L, totalNativeIntervals);
+        assertTrue(
+                "Expected at least 150 committed native intervals across the physical One Piece "
+                        + "1185..1188 traversal; intervals=" + totalNativeIntervals,
+                totalNativeIntervals >= 150L);
+        assertTrue(
+                "One Piece latest physical forward jank must remain below 1% across the complete "
+                        + "1185..1188 traversal; slow=" + totalNativeSlowIntervals
+                        + ",intervals=" + totalNativeIntervals
+                        + ",percent=" + aggregateMissedPercent,
+                aggregateMissedPercent < 1.0);
     }
 
     @Test
@@ -510,6 +810,31 @@ public class NtkOnePiecePreviousScrollReproTest {
                         + ",count=" + reader.testPageCount());
     }
 
+    private String scrollPhysicallyForwardUntilEpisodeChanges(
+            UiDevice device,
+            ReaderV2Activity reader,
+            String previousPath,
+            long timeoutMs
+    ) {
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        int x = width / 2;
+        int fromY = Math.min(height - 160, height * 3 / 4);
+        int toY = Math.max(120, height / 4);
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        String currentPath = previousPath;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            device.swipe(x, fromY, x, toY, 8);
+            currentPath = reader.testCurrentNtkEpisodePath();
+            if (currentPath != null && !currentPath.equals(previousPath)) return currentPath;
+        }
+        throw new AssertionError(
+                "Expected physical forward scroll to leave " + previousPath
+                        + "; current=" + currentPath
+                        + ",page=" + reader.testCurrentPage()
+                        + ",count=" + reader.testPageCount());
+    }
+
     private void exerciseForwardFrames(UiDevice device, int swipeCount) {
         int width = device.getDisplayWidth();
         int height = device.getDisplayHeight();
@@ -556,6 +881,21 @@ public class NtkOnePiecePreviousScrollReproTest {
                 "Forward episode must not expose missing pixels; episode=" + episode,
                 0,
                 frames.getMaxMissingPx());
+        return frames;
+    }
+
+    private ReaderSurfaceView.FrameStatsSnapshot requireCompletedPhysicalFrameStats(
+            ReaderV2Activity reader,
+            int chapter
+    ) {
+        // Asking for the snapshot atomically finalizes the active physical segment. Do not inject
+        // fallback swipes here: they would measure the newly entered chapter instead of the
+        // chapter whose boundary traversal is being qualified.
+        SystemClock.sleep(80L);
+        ReaderSurfaceView.FrameStatsSnapshot frames = reader.testFrameStatsSnapshot();
+        assertNotNull(
+                "Expected native frame samples for physical One Piece chapter " + chapter,
+                frames);
         return frames;
     }
 
