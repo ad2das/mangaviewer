@@ -5968,6 +5968,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             .filter { it >= 0 }
             .distinct()
             .sorted()
+        val transitionCardDefectCount = ReaderPipelinePolicy.strictTransitionCardDefectCount(
+            coverage.visibleCards,
+            strictTelemetryActualInLifecycle
+        )
         val viewportDefectReasons = ReaderPipelinePolicy.strictViewportDefectReasons(
             coverage.physicalViewportPx,
             coverage.viewportPx,
@@ -5976,7 +5980,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             coverage.placeholderPx,
             coverage.visibleLoading,
             coverage.visibleErrors,
-            coverage.visibleCards,
+            transitionCardDefectCount,
             coverage.widthFillFailures,
             coverage.lowResolutionItems
         )
@@ -10521,6 +10525,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     fun testHasCanonicalEpisodeOrder(episode: Manga?): Boolean {
         if (episode == null || hybridNtkBrowserActive) return false
         return session?.hasCanonicalEpisodeOrderForTest(episode) == true
+    }
+
+    fun testEpisodeTransitionTitle(episode: Manga?): String? {
+        if (episode == null || hybridNtkBrowserActive) return null
+        return session?.transitionCardTitleForTest(episode)
     }
 
     fun testStrictIdentityInvalidFrames(): Long = strictTelemetryIdentityInvalidFrames

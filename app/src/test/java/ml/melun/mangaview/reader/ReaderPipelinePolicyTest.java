@@ -149,6 +149,13 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void transitionCardIsAColdDefectButValidAfterActualImageCommit() {
+        assertEquals(1, ReaderPipelinePolicy.strictTransitionCardDefectCount(1, false));
+        assertEquals(0, ReaderPipelinePolicy.strictTransitionCardDefectCount(1, true));
+        assertEquals(0, ReaderPipelinePolicy.strictTransitionCardDefectCount(0, false));
+    }
+
+    @Test
     public void autoCutDisplayIndexesNeverReplaceCanonicalSourceIndexes() {
         StrictRollingAdmission initial = StrictRollingAdmission.initial(20);
         StrictRollingAdmission splitDisplay = StrictRollingAdmission.update(

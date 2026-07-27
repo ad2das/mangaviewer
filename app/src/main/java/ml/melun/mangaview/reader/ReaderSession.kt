@@ -13225,14 +13225,15 @@ class ReaderSession(
     private fun pageRefsForEpisode(target: Manga, urls: List<String>, direction: Int): List<PageRef> {
         val episodeName = target.name ?: title?.name ?: "회차"
         val transitionTitle = if (direction < 0) "이전 회차: $episodeName" else "다음 회차: $episodeName"
-        var pageRefs = pageRefsForImages(target, urls)
-        val ntkGeneratedAppend = isNtkSource(target, title) &&
+        val pageRefs = pageRefsForImages(target, urls)
+        val ntkGeneratedPrepend = direction < 0 &&
+            isNtkSource(target, title) &&
             pageRefs.isNotEmpty() &&
             pageRefs.all { isNtkGeneratedImageUrl(it.image.orEmpty()) }
-        if (ntkGeneratedAppend) {
+        if (ntkGeneratedPrepend) {
             Log.d(
                 TAG,
-                "reader_repository_stage stage=generated_append_skip_transition_card," +
+                "reader_repository_stage stage=generated_prepend_skip_transition_card," +
                     "path=${target.ntkEpisodePath},count=${pageRefs.size},direction=$direction"
             )
             return pageRefs
@@ -14499,7 +14500,10 @@ class ReaderSession(
         return synchronized(pagesLock) {
             val page = pages.getOrNull(anchor.coerceIn(0, pages.lastIndex.coerceAtLeast(0)))
                 ?: return@synchronized false
-            page.transitionTitle == null && looseSameEpisodeForAppend(page.manga, target)
+            // The forward transition card belongs to the incoming episode. Once its boundary
+            // label is the viewport anchor, the old episode is already behind the reader and the
+            // incoming suffix may be promoted without competing with foreground content.
+            looseSameEpisodeForAppend(page.manga, target)
         }
     }
 
@@ -26225,6 +26229,13 @@ class ReaderSession(
             next.sourceIndex > previous.sourceIndex ||
                 (next.sourceIndex == previous.sourceIndex && next.side >= previous.side)
         }
+    }
+
+    fun transitionCardTitleForTest(target: Manga): String? = synchronized(pagesLock) {
+        pages.firstOrNull { page ->
+            page.transitionTitle != null &&
+                looseSameEpisodeForAppend(page.manga, target)
+        }?.transitionTitle
     }
 
     private fun sourcePageIndex(page: PageRef): Int {

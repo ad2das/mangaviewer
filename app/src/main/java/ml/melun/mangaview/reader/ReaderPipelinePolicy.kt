@@ -404,6 +404,17 @@ object ReaderPipelinePolicy {
         return reasons.joinToString("|")
     }
 
+    /**
+     * A transition card is invalid before the first real image, but becomes intentional reader
+     * content after image ownership has been established. This keeps cold first-image proof strict
+     * while allowing the lightweight between-episode label in continuous forward reading.
+     */
+    @JvmStatic
+    fun strictTransitionCardDefectCount(
+        visibleCards: Int,
+        actualImagePreviouslyCommitted: Boolean
+    ): Int = if (actualImagePreviouslyCommitted) 0 else visibleCards.coerceAtLeast(0)
+
     @JvmStatic
     fun isStrictBottomEdgeEligible(
         pageCount: Int,

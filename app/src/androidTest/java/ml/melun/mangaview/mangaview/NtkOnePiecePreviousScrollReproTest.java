@@ -156,6 +156,18 @@ public class NtkOnePiecePreviousScrollReproTest {
                             + ",target=" + next.getNtkEpisodePath()
                             + ",elapsedMs=" + preattachElapsedMs,
                     reader.testHasReadyEpisodeRunway(next, 4));
+            assertEquals(
+                    "The preattached One Piece runway must expose a visible episode separator",
+                    "다음 회차: " + (chapter + 1) + "화",
+                    reader.testEpisodeTransitionTitle(next));
+            long separatorPublishedAt = SystemClock.elapsedRealtime();
+            while (SystemClock.elapsedRealtime() - separatorPublishedAt < 2000L &&
+                    reader.testPageReadinessSnapshot().getCardPages() == 0) {
+                SystemClock.sleep(16L);
+            }
+            assertTrue(
+                    "The episode separator must be installed in the physical reader page table",
+                    reader.testPageReadinessSnapshot().getCardPages() > 0);
 
             long boundaryStartedAt = SystemClock.elapsedRealtime();
             String transitioned = forceForwardEpisodeTransition(

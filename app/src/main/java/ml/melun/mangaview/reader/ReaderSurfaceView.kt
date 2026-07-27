@@ -6947,20 +6947,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
             item.top < state.height.toFloat() && item.top + item.pageHeight > 0f
         }
         val authoritativeVisible = visibleItems.isNotEmpty() && visibleItems.all { item ->
-            if (item.stripAuthoritative) authoritativeStripSourceWidth(item) > 0 else
+            if (item.cardText != null) true else if (item.stripAuthoritative) {
+                authoritativeStripSourceWidth(item) > 0
+            } else {
                 usableAuthoritativeOriginalTilePage(
                     item.sourceWidth,
                     item.sourceHeight,
                     item.tiles,
                     item.originalProof
                 )
+            }
         }
         val viewportDefect = physicalViewport <= 0 ||
             coverage.viewportPx < physicalViewport ||
             coverage.drawablePx < physicalViewport ||
             coverage.missingPx != 0 || coverage.placeholderPx != 0 ||
             coverage.visibleLoading != 0 || coverage.visibleErrors != 0 ||
-            coverage.visibleCards != 0 || coverage.widthFillFailures != 0 ||
+            coverage.widthFillFailures != 0 ||
             coverage.lowResolutionItems != 0 || !authoritativeVisible
         val runway = state.forwardRunway
         val runwayDefect = runway == null || runway.missingAheadPx != 0 ||
@@ -6969,7 +6972,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleIndexes = if (viewportDefect) {
             IntArray(0)
         } else {
-            visibleItems.map { it.index }.distinct().sorted().toIntArray()
+            visibleItems
+                .filter { it.cardText == null }
+                .map { it.index }
+                .distinct()
+                .sorted()
+                .toIntArray()
         }
         val visibleIdentities = if (viewportDefect) {
             emptyList()
