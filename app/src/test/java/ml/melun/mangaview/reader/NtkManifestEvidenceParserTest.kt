@@ -155,9 +155,47 @@ class NtkManifestEvidenceParserTest {
             envelope.orderedAssets
         )
         assertEquals(
-            "ntk-viewer-assets-balanced-replica-v2",
+            "ntk-viewer-assets-renderable-balanced-replica-v3",
             envelope.orderedAssetSelectionPolicyVersion
         )
+    }
+
+    @Test
+    fun signedApiExcludesExplicitSvgSlotsButPreservesOriginalSourcePageProof() {
+        val draft = parseDraft(component(3))
+        val request = apiRequest(draft)
+        val response = response(
+            request,
+            200,
+            """{"ok":true,"images":[
+                {"page":1,"src":"https://img.example/cv/1.jpg"},
+                {"page":2,"src":"https://dead.example/legacy/non-comic.svg"},
+                {"page":3,"src":"https://img.example/cv/3.webp"}
+            ]}"""
+        )
+
+        val envelope = NtkViewerImageApiAuthorityParser.parse(draft, request, response)
+        val evidence = NtkQuarantineAssetEvidence.createWithSourcePages(
+            path,
+            draft.discoveryGeneration,
+            draft.requestIdentity.identityDigestSha256,
+            envelope.orderedAssets,
+            envelope.orderedSourcePages,
+            response.bodyBytes,
+        )
+        val plan = draft.bind(evidence)
+
+        assertEquals(3, envelope.sourceSlotCount)
+        assertEquals(listOf(1, 3), envelope.orderedSourcePages)
+        assertEquals(
+            listOf(
+                "https://img.example/cv/1.jpg",
+                "https://img.example/cv/3.webp",
+            ),
+            envelope.orderedAssets,
+        )
+        assertEquals(2, plan.pageCount)
+        assertEquals(plan.proof.proofDigestSha256, envelope.documentPlanProofDigestSha256)
     }
 
     @Test

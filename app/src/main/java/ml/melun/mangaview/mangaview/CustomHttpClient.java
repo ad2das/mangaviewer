@@ -12548,7 +12548,8 @@ public class CustomHttpClient {
      * the sole physical transport. This policy is independent of work/test identity and cache state.
      */
     private static boolean shouldUseSharedHttpEngineForStrictStage(String stage) {
-        return "trusted_challenge".equals(stage)
+        return "nv_issue".equals(stage)
+                || "trusted_challenge".equals(stage)
                 || "document".equals(stage)
                 || "unsigned_webtoon_image_api".equals(stage)
                 || "signed_image_api".equals(stage);
@@ -12834,6 +12835,21 @@ public class CustomHttpClient {
                 .put("path", normalized)
                 .toString()
                 .getBytes(StandardCharsets.UTF_8);
+        OkHttpClient exactClient = ntkStrictDocumentClientForActiveNetwork();
+        ArrayList<NtkAckCookie> nvGrants = new ArrayList<>();
+        boolean hasNvSeed = bootstrap.seedCookies.stream().anyMatch(
+                cookie -> cookie != null
+                        && "nv".equals(cookie.getName())
+                        && isNtkNvValid(cookie.getValue()));
+        if(!hasNvSeed) {
+            nvGrants.addAll(fetchExactNtkNvGrants(
+                    bootstrap,
+                    callRegistry,
+                    exactClient,
+                    normalized,
+                    origin
+            ));
+        }
         StringBuilder cookieHeader = new StringBuilder();
         for(NtkAckCookie seed : bootstrap.seedCookies) {
             if(seed == null || seed.getName().length() == 0 || seed.getValue().length() == 0)
@@ -12841,6 +12857,11 @@ public class CustomHttpClient {
             if(cookieHeader.length() > 0)
                 cookieHeader.append("; ");
             cookieHeader.append(seed.getName()).append('=').append(seed.getValue());
+        }
+        for(NtkAckCookie grant : nvGrants) {
+            if(cookieHeader.length() > 0)
+                cookieHeader.append("; ");
+            cookieHeader.append(grant.getName()).append('=').append(grant.getValue());
         }
         if(cookieHeader.length() == 0)
             throw new IllegalStateException("Strict trusted challenge seed boundary is empty");
@@ -12854,7 +12875,6 @@ public class CustomHttpClient {
         requestHeaders.put("Cookie", cookieHeader.toString());
         NtkBoundHttpRequest boundRequest = new NtkBoundHttpRequest(
                 "POST", endpoint, requestHeaders, bodyBytes);
-        OkHttpClient exactClient = ntkStrictDocumentClientForActiveNetwork();
         ntkStrictTrustedChallengeLogicalRequestCount.incrementAndGet();
         long startedAt = System.currentTimeMillis();
         Log.d(TAG, "ntk_strict_trusted_challenge_start path=" + normalized);
@@ -12929,8 +12949,10 @@ public class CustomHttpClient {
                                     responseGrants
                             )
                     );
+            ArrayList<NtkAckCookie> combinedGrants = new ArrayList<>(nvGrants);
+            combinedGrants.addAll(responseGrants);
             List<NtkAckCookie> validated = NtkAckCookieBoundary.INSTANCE.validateGrants(
-                    origin, normalized, responseGrants);
+                    origin, normalized, combinedGrants);
             Log.d(TAG, "ntk_strict_trusted_challenge_done path=" + normalized
                     + ",code=" + exchange.status
                     + ",headerDigest=" + evidence.getResponseHeaderDigestSha256()
@@ -12945,6 +12967,127 @@ public class CustomHttpClient {
                     evidence.getExpiresAtEpochMs()
             );
         }
+    }
+
+    /**
+     * Establishes the post-click nv session needed by both strict image endpoints.
+     *
+     * <p>Manhwa still obtains its one-shot request key from the isolated ACK owner. Starting this
+     * bounded same-origin exchange beside that ACK prevents a cold install from serializing an
+     * otherwise independent nv round trip after browser proof. No image or page-list request is
+     * performed here.</p>
+     */
+    public void ensureExactNtkNvSeed(
+            NtkStrictAckBootstrap bootstrap,
+            NtkStrictCallRegistry callRegistry
+    ) throws Exception {
+        if(bootstrap == null)
+            throw new IllegalArgumentException("Strict nv bootstrap is null");
+        String normalized = normalizeComparableNtkPath(bootstrap.episodePath);
+        requireStrictCallRegistry(callRegistry, normalized);
+        String origin = bootstrap.origin == null ? "" : bootstrap.origin.trim();
+        URI originUri = URI.create(origin);
+        if(!"https".equalsIgnoreCase(originUri.getScheme()) || originUri.getHost() == null
+                || originUri.getPort() >= 0 || originUri.getRawQuery() != null
+                || originUri.getRawFragment() != null
+                || (originUri.getRawPath() != null && originUri.getRawPath().length() > 0)) {
+            throw new IllegalArgumentException("Strict nv origin is invalid");
+        }
+        if(isNtkNvValid(getCookie("nv")))
+            return;
+        List<NtkAckCookie> grants = fetchExactNtkNvGrants(
+                bootstrap,
+                callRegistry,
+                ntkStrictDocumentClientForActiveNetwork(),
+                normalized,
+                origin
+        );
+        importVerifiedNtkAckCookieGrants(origin, normalized, grants);
+        if(!isNtkNvValid(getCookie("nv")))
+            throw new IllegalStateException("Strict nv issue grant was not committed");
+    }
+
+    private ArrayList<NtkAckCookie> fetchExactNtkNvGrants(
+            NtkStrictAckBootstrap bootstrap,
+            NtkStrictCallRegistry callRegistry,
+            OkHttpClient exactClient,
+            String normalized,
+            String origin
+    ) throws Exception {
+        String nvEndpoint = origin + "/api/nv-issue";
+        Map<String, String> nvHeaders = new LinkedHashMap<>();
+        nvHeaders.put("User-Agent", bootstrap.userAgent);
+        nvHeaders.put("Origin", origin);
+        nvHeaders.put("Referer", origin + ntkNativeAckScopePath(normalized));
+        nvHeaders.put("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7");
+        nvHeaders.put("Content-Type", "application/json");
+        nvHeaders.put("Accept", "application/json");
+        String nvSeedHeader = strictNtkCookieHeader(bootstrap.seedCookies);
+        if(nvSeedHeader.length() == 0)
+            throw new IllegalStateException("Strict nv issue seed boundary is empty");
+        nvHeaders.put("Cookie", nvSeedHeader);
+        NtkBoundHttpResponse nvExchange = executeStrictExactSameOriginRequest(
+                new NtkBoundHttpRequest("POST", nvEndpoint, nvHeaders, new byte[0]),
+                callRegistry,
+                exactClient,
+                NTK_ACK_CHALLENGE_TIMEOUT_MS,
+                "nv_issue"
+        );
+        if(!nvEndpoint.equals(nvExchange.finalUrl)
+                || nvExchange.status < 200 || nvExchange.status >= 300) {
+            throw new IllegalStateException(
+                    "Strict nv issue failed with status " + nvExchange.status);
+        }
+        HttpUrl nvFinalUrl = HttpUrl.parse(nvExchange.finalUrl);
+        if(nvFinalUrl == null)
+            throw new IllegalStateException("Strict nv issue final URL is invalid");
+        ArrayList<NtkAckCookie> grants = new ArrayList<>();
+        for(Map.Entry<String, List<String>> header : nvExchange.responseHeaders.entrySet()) {
+            if(header.getKey() == null || !"set-cookie".equalsIgnoreCase(header.getKey())
+                    || header.getValue() == null) {
+                continue;
+            }
+            for(String raw : header.getValue()) {
+                Cookie parsed = Cookie.parse(nvFinalUrl, raw);
+                if(parsed == null || !"nv".equals(parsed.name())
+                        || !isNtkNvValid(parsed.value())) {
+                    continue;
+                }
+                grants.add(new NtkAckCookie(
+                        parsed.name(),
+                        parsed.value(),
+                        nvExchange.finalUrl,
+                        parsed.domain(),
+                        parsed.path(),
+                        parsed.secure(),
+                        parsed.expiresAt(),
+                        NtkAckProofCodec.INSTANCE.sha256Utf8(raw)
+                ));
+            }
+        }
+        grants = new ArrayList<>(NtkAckCookieBoundary.INSTANCE.validateGrants(
+                origin, normalized, grants));
+        if(grants.size() != 1)
+            throw new IllegalStateException("Strict nv issue returned no unique nv grant");
+        Log.d(TAG, "ntk_strict_nv_issue_done path=" + normalized
+                + ",grants=" + grants.size());
+        return grants;
+    }
+
+    private static String strictNtkCookieHeader(List<NtkAckCookie> cookies) {
+        StringBuilder header = new StringBuilder();
+        if(cookies == null)
+            return "";
+        for(NtkAckCookie cookie : cookies) {
+            if(cookie == null || cookie.getName().length() == 0
+                    || cookie.getValue().length() == 0) {
+                continue;
+            }
+            if(header.length() > 0)
+                header.append("; ");
+            header.append(cookie.getName()).append('=').append(cookie.getValue());
+        }
+        return header.toString();
     }
 
     /**

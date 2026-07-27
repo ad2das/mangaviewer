@@ -32,7 +32,6 @@ import androidx.annotation.Keep
 import ml.melun.mangaview.runtime.MainThreadStallMonitor
 import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -703,9 +702,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var downY = 0f
     private var dragOriginY = 0f
     private var dragOriginScrollOffset = 0f
-    private var dragTargetScrollOffset = 0f
-    private var dragLastResampleFrameNs = 0L
-    private var dragTargetPending = false
     private var lastVelocitySampleMs = 0L
     private var lastScrollInteractionMs = 0L
     private var pointerDown = false
@@ -4675,13 +4671,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             surface.setFrameRate(
                 refreshRate,
-                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
-                Surface.CHANGE_FRAME_RATE_ALWAYS
+                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS
             )
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             surface.setFrameRate(
                 refreshRate,
-                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
+                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
             )
         }
         attachRollingNativeSurface(surface, surfaceWidth, surfaceHeight)
@@ -4924,7 +4920,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     } else {
                         physicalGestureRevision++
                     }
-                    resetDragResamplingLocked(event.y, event.eventTime * NANOS_PER_MILLISECOND)
+                    resetDragTrackingLocked(event.y)
                     lastVelocitySampleMs = event.eventTime
                     pointerDown = true
                     dragging = false
@@ -4967,23 +4963,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         sampleVelocity = true
                     }
                     noteInputLocked(event)
-                    val targetChanged = updateDragTargetLocked(
+                    val moved = applyPhysicalDragPositionLocked(
                         event.y,
                         event.eventTime * NANOS_PER_MILLISECOND
                     )
-                    if (targetChanged) {
-                        // The already-armed display callback advances real pixels toward this
-                        // target. Do not admit an unchanged buffer merely because a MOVE arrived.
+                    if (moved) {
+                        // The physical MOVE has already updated the viewport one-to-one. Admit only
+                        // that real position; do not manufacture intermediate scroll positions.
                         val postedFreshCallback = postDirectFrameCallbackLocked()
                         // The HWUI View path has no producer-thread Choreographer. Admit its
                         // display-list frame from the same physical MOVE instead.
                         renderRequested = true
                         scheduleFrameLocked()
                         if (!postedFreshCallback) {
-                            // If the producer already consumed this display callback before MOVE
-                            // reached the main thread, its outstanding callback belongs to the next
-                            // vsync. Replace only that narrow stale reservation with an immediate
-                            // producer submission; the policy rejects ordinary queued callbacks.
+                            // A callback that already observed the prior exact target may be
+                            // replaced only inside the bounded same-vsync race policy below.
                             postLateDirectInputCatchupLocked()
                         }
                         stateLock.notifyAll()
@@ -5008,7 +5002,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         pointerDown = false
                         dragging = false
                         activeInputDirection = 0
-                        clearDragResamplingLocked()
                         endPhysicalScrollTraceLocked()
                         val busyRequest = setBusyLocked(false)
                         // Releasing the pointer changes interaction state, not manga pixels. Any
@@ -5033,11 +5026,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 velocityTracker = null
                 val result = synchronized(stateLock) {
                     noteInputLocked(event)
-                    val targetChanged = updateDragTargetLocked(
+                    val upMoved = applyPhysicalDragPositionLocked(
                         event.y,
                         event.eventTime * NANOS_PER_MILLISECOND
                     )
-                    val upMoved = settleDragTargetLocked()
                     val wasReleased = event.actionMasked == MotionEvent.ACTION_UP
                     val wasTap = isTapGesture(
                         wasReleased,
@@ -5060,7 +5052,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     tap = wasTap
                     pointerDown = false
                     dragging = false
-                    clearDragResamplingLocked()
                     val dragDistance = abs(event.y - downY)
                     val cancelledBoundaryDrag = event.actionMasked == MotionEvent.ACTION_CANCEL &&
                         shouldDispatchCancelledBoundaryLocked(dragDistance)
@@ -5122,7 +5113,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         (busyRequest ?: windowRequestLocked(true)) to boundaryRequestLocked()
                         }
                     } else {
-                        if (!targetChanged && !upMoved && !canFling) {
+                        if (!upMoved && !canFling) {
                             suppressEdgeNoMovementScrollStatsLocked(SystemClock.uptimeMillis())
                         }
                         val request = setBusyLocked(false)
@@ -5174,11 +5165,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val admittedEpoch = inFlightEpoch
             var request: WindowRequest? = null
             var boundary: BoundaryRequest? = null
-            if (!directSurface && applyDragResamplingAtFrameLocked(frameTimeNanos)) {
-                renderRequested = true
-                request = windowRequestLocked(true)
-                boundary = boundaryRequestLocked(clearDirection = false)
-            }
             var scrolling = try {
                 scroller.computeScrollOffset()
             } catch (_: ArrayIndexOutOfBoundsException) {
@@ -5308,10 +5294,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (state != null) {
                 renderRequested = false
                 drawnVersion = version
-                if (!directSurface && pointerDown && dragging && dragTargetPending) {
-                    // Continue the vsync follower until it reaches the newest real MOVE target.
-                    renderRequested = true
-                }
             } else {
                 if (renderRequested && pages.isNotEmpty()) scheduleNoStateRetryLocked()
                 // No reader draw was recorded, so there is no reader HWUI submission to prove.
@@ -5388,7 +5370,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val completedCoverage = updateVisibleCoverageSnapshot(state, coverage)
         val traversalProof = frameTraversalProof(state, completedCoverage)
         val rollingVisiblePageIndexes = state.items.asSequence()
-            .filter { item -> item.top < state.height.toFloat() && item.top + item.pageHeight > 0f }
+            .filter { item ->
+                item.cardText == null &&
+                    item.top < state.height.toFloat() &&
+                    item.top + item.pageHeight > 0f
+            }
             .map { it.index }
             .distinct()
             .sorted()
@@ -7163,7 +7149,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         velocityTracker = null
         pointerDown = false
         dragging = false
-        clearDragResamplingLocked()
         scroller.forceFinished(true)
         endPhysicalScrollTraceLocked()
         setNativeTexturePrewarmPausedLocked(false)
@@ -7644,7 +7629,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (shouldClosePhysicalMotionInterval(
                     traceActive = physicalScrollTraceCookie != 0,
                     scrollerFinished = scroller.isFinished,
-                    dragTargetPending = dragTargetPending,
                     desiredVersion = desiredVersion,
                     committedVersion = committedVersion
                 )
@@ -8105,17 +8089,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 if (!directFrameCallbackPosted) {
                     false
                 } else {
-                    val hasAdmittedFrame = framePipe == FramePipe.INVALIDATION_POSTED &&
-                        inFlightToken != 0L
+                    val hasAdmittedFrame =
+                        framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
                     val hasCurrentDemand = hasAdmittedFrame || shouldKeepDirectCadenceArmedLocked()
                     val canRender = renderRunning && directSurfaceReady &&
                         rollingTextureSurface?.isValid == true
 
-                    // A content/install frame can arm this producer while the reader is stationary.
-                    // If the producer Choreographer loses that callback on a host-GPU emulator, the
-                    // previous motion-only watchdog left directFrameCallbackPosted=true forever.
-                    // Retire every overdue callback here, even when its original idle demand has
-                    // since vanished; render only when real demand still owns the producer.
                     directChoreographer?.removeFrameCallback(directFrameCallback)
                     directFrameCallbackPosted = false
                     canRender && hasCurrentDemand
@@ -8251,10 +8230,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             ) {
                 null
             } else {
-                // MotionEvent delivery on host-GPU emulators can be slower than display vsync.
-                // Advance toward the latest real finger position before frame admission so this
-                // callback submits a genuinely different viewport, never a duplicate buffer.
-                applyDragResamplingAtFrameLocked(frameTimeNanos)
+                // MotionEvent has already applied the exact physical finger position. This
+                // callback may submit that position, but never invent an in-between viewport.
                 directCallbackObservedDragTargetRevision = dragTargetRevision
                 directCallbackObservedPhysicalGestureRevision = physicalGestureRevision
                 directCallbackObservedAtNanos = System.nanoTime()
@@ -8288,15 +8265,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         nextFrameChoreographer?.let(::postReservedDirectFrameCallback)
         if (admission == null) {
             synchronized(stateLock) {
-                // A sparse host/device MOVE can be fully interpolated and physically committed
-                // before the next MOVE arrives. There is then no frame to submit, so the
-                // post-submission close below is unreachable. Close only after the same strict
-                // settled proof used by a committed frame; an outstanding viewport version or
-                // drag target keeps the interval open and remains measurable.
+                // A sparse host/device MOVE can be physically committed before the next MOVE
+                // arrives. There is then no frame to submit, so close only after every requested
+                // viewport version has committed.
                 if (shouldClosePhysicalMotionInterval(
                         traceActive = physicalScrollTraceCookie != 0,
                         scrollerFinished = scroller.isFinished,
-                        dragTargetPending = dragTargetPending,
                         desiredVersion = desiredVersion,
                         committedVersion = committedVersion
                     )
@@ -8332,7 +8306,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (shouldClosePhysicalMotionInterval(
                     traceActive = physicalScrollTraceCookie != 0,
                     scrollerFinished = scroller.isFinished,
-                    dragTargetPending = dragTargetPending,
                     desiredVersion = desiredVersion,
                     committedVersion = committedVersion
                 )
@@ -9875,37 +9848,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
-    private fun resetDragResamplingLocked(y: Float, eventTimeNs: Long) {
+    private fun resetDragTrackingLocked(y: Float) {
         dragOriginY = y
         dragOriginScrollOffset = scrollOffset
-        dragTargetScrollOffset = scrollOffset
-        dragLastResampleFrameNs = eventTimeNs
-        dragTargetPending = false
-    }
-
-    private fun clearDragResamplingLocked() {
-        dragTargetScrollOffset = scrollOffset
-        dragLastResampleFrameNs = 0L
-        dragTargetPending = false
     }
 
     /**
-     * Records the latest authoritative finger position without immediately jumping the viewport.
-     * The dedicated display callback consumes this target over a short bounded interval, filling
-     * the real vsyncs between sparse emulator MOVE deliveries with distinct pixel positions.
+     * Applies the authoritative physical finger position directly. Rendering may coalesce multiple
+     * MOVE events into the newest position, but it must never synthesize motion between them.
      */
-    private fun updateDragTargetLocked(y: Float, eventTimeNs: Long): Boolean {
-        val nextTarget = dragOriginScrollOffset +
+    private fun applyPhysicalDragPositionLocked(y: Float, eventTimeNs: Long): Boolean {
+        val requestedOffset = dragOriginScrollOffset +
             (dragOriginY - y) * DRAG_SCROLL_MULTIPLIER
-        val targetChanged = abs(nextTarget - dragTargetScrollOffset) > SCROLL_OFFSET_EPSILON_PX
-        if (!targetChanged) return false
-
-        val direction = directionForDelta(nextTarget - scrollOffset)
-        if (direction == 0 || isAtInputEdgeLocked(direction)) {
-            dragTargetScrollOffset = scrollOffset
-            dragTargetPending = false
-            return false
-        }
+        val direction = directionForDelta(requestedOffset - scrollOffset)
+        if (direction == 0 || isAtInputEdgeLocked(direction)) return false
         clearLockedRestorePositionLocked()
         if (!dragging) dragging = true
         setBusyLocked(true)
@@ -9913,21 +9869,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         activeInputDirection = direction
         lastScrollInteractionMs = (eventTimeNs / NANOS_PER_MILLISECOND)
             .coerceAtLeast(SystemClock.uptimeMillis() - 1L)
-        dragTargetScrollOffset = nextTarget
         if (dragTargetRevision == Long.MAX_VALUE) {
             dragTargetRevision = 1L
             directCallbackObservedDragTargetRevision = 0L
         } else {
             dragTargetRevision++
         }
-        // Preserve the previous display-frame phase while an older target is still converging.
-        // Resetting it on every sparse MOVE creates one isolated interpolation segment per event
-        // and restores the every-other-vsync cadence this follower is meant to remove.
-        if (!dragTargetPending) {
-            dragLastResampleFrameNs = eventTimeNs.takeIf { it > 0L } ?: System.nanoTime()
-        }
-        dragTargetPending = true
-        return true
+        return applyDragOffsetLocked(requestedOffset)
     }
 
     private fun applyDragOffsetLocked(requestedOffset: Float): Boolean {
@@ -9946,40 +9894,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (moved) {
             edgeNoMovementStatsSuppressedUntilMs = 0L
             beginPhysicalScrollTraceLocked()
-        } else if (isAtInputEdgeLocked(direction)) {
-            dragTargetScrollOffset = scrollOffset
-            dragTargetPending = false
         }
-        return moved
-    }
-
-    private fun applyDragResamplingAtFrameLocked(frameTimeNanos: Long): Boolean {
-        if (!pointerDown || !dragging || !dragTargetPending) return false
-        val elapsedNs = (frameTimeNanos - dragLastResampleFrameNs)
-            .coerceIn(DRAG_RESAMPLE_MIN_ADVANCE_NS, DRAG_RESAMPLE_MAX_ADVANCE_NS)
-        val nextOffset = nextDragResampleOffset(
-            scrollOffset,
-            dragTargetScrollOffset,
-            elapsedNs
-        )
-        dragLastResampleFrameNs = frameTimeNanos
-        val moved = applyDragOffsetLocked(nextOffset)
-        if (abs(dragTargetScrollOffset - scrollOffset) <= SCROLL_OFFSET_EPSILON_PX ||
-            (!moved && isAtInputEdgeLocked(activeInputDirection))
-        ) {
-            dragTargetScrollOffset = scrollOffset
-            dragTargetPending = false
-        }
-        return moved
-    }
-
-    private fun settleDragTargetLocked(): Boolean {
-        if (!dragTargetPending) return false
-        val target = dragTargetScrollOffset
-        val moved = applyDragOffsetLocked(target)
-        dragTargetScrollOffset = scrollOffset
-        dragLastResampleFrameNs = 0L
-        dragTargetPending = false
         return moved
     }
 
@@ -10507,14 +10422,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun directCadenceWatchdogDelayMs(): Long {
-        // Arm just after the next nominal display period. Perfetto on the host-GPU
-        // emulator shows that waiting 22 ms lets a 20 ms producer callback miss Swappy's fixed
-        // opportunity by about 2 ms, turning an otherwise sub-millisecond frame into a 26-27 ms
-        // presentation gap. Choreographer still wins whenever it arrives normally.
         // Keep a one-millisecond grace after the nominal period so an on-time Choreographer
-        // callback wins. Recovering at 16 ms on a 60 Hz display races the normal callback and
-        // creates a short queue followed by a 26 ms BufferQueue gap; 18 ms avoids that phase split
-        // while still preceding the old 20-22 ms missed-opportunity path.
+        // callback wins. Recovering at 16 ms races the normal callback; 18 ms avoids that phase
+        // split while still preceding the host-GPU missed-opportunity path.
         return (ceil(frameBudgetMs().toDouble()).toLong() + 1L).coerceAtLeast(1L)
     }
 
@@ -10677,12 +10587,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private fun shouldClosePhysicalMotionInterval(
             traceActive: Boolean,
             scrollerFinished: Boolean,
-            dragTargetPending: Boolean,
             desiredVersion: Long,
             committedVersion: Long
         ): Boolean {
-            return traceActive && scrollerFinished && !dragTargetPending &&
-                desiredVersion <= committedVersion
+            return traceActive && scrollerFinished && desiredVersion <= committedVersion
         }
 
         private fun mergeOldestPixelMutationNs(existingNs: Long, mutationNs: Long): Long {
@@ -10729,24 +10637,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val nativeCallbackDelayNanos = nativeCallbackObservedNanos - nativeLatchNanos
             if (nativeCallbackDelayNanos >= callbackReceivedUptimeNanos) return 0L
             return callbackReceivedUptimeNanos - nativeCallbackDelayNanos
-        }
-
-        private fun nextDragResampleOffset(
-            currentOffset: Float,
-            targetOffset: Float,
-            elapsedNanos: Long
-        ): Float {
-            val remaining = targetOffset - currentOffset
-            if (abs(remaining) <= SCROLL_OFFSET_EPSILON_PX) return targetOffset
-            val boundedElapsed = elapsedNanos.coerceIn(
-                DRAG_RESAMPLE_MIN_ADVANCE_NS,
-                DRAG_RESAMPLE_MAX_ADVANCE_NS
-            )
-            val followFraction = (1.0 - exp(
-                -boundedElapsed.toDouble() / DRAG_RESAMPLE_TIME_CONSTANT_NS.toDouble()
-            )).toFloat()
-            val next = currentOffset + remaining * followFraction
-            return if (remaining > 0f) min(next, targetOffset) else max(next, targetOffset)
         }
 
         private fun shouldApplyContentMaxShrinkCorrection(
@@ -10812,14 +10702,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         fun shouldClosePhysicalMotionIntervalForTest(
             traceActive: Boolean,
             scrollerFinished: Boolean,
-            dragTargetPending: Boolean,
             desiredVersion: Long,
             committedVersion: Long
         ): Boolean {
             return shouldClosePhysicalMotionInterval(
                 traceActive,
                 scrollerFinished,
-                dragTargetPending,
                 desiredVersion,
                 committedVersion
             )
@@ -10872,13 +10760,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             nativeLatchNanos,
             nativeCallbackObservedNanos
         )
-
-        @JvmStatic
-        fun nextDragResampleOffsetForTest(
-            currentOffset: Float,
-            targetOffset: Float,
-            elapsedNanos: Long
-        ): Float = nextDragResampleOffset(currentOffset, targetOffset, elapsedNanos)
 
         @JvmStatic
         fun canAdmitPendingFrameCommitForTest(pendingCommitCount: Int): Boolean =
@@ -10996,12 +10877,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val BOUNDARY_CANCEL_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 4f
         private const val PROGRESS_PAGE_PROBE_SCREEN_RATIO = 0.35f
         private const val DRAG_SCROLL_MULTIPLIER = 1.0f
-        // A causal low-pass follower bridges sparse host-emulator MOVE delivery with a distinct
-        // viewport on every display callback. It never extrapolates beyond the latest real finger
-        // coordinate and converges inside the 100ms input-latency bound after the final MOVE.
-        private const val DRAG_RESAMPLE_TIME_CONSTANT_NS = 18_000_000L
-        private const val DRAG_RESAMPLE_MIN_ADVANCE_NS = 8_000_000L
-        private const val DRAG_RESAMPLE_MAX_ADVANCE_NS = 25_000_000L
         private const val FLING_SCROLL_MULTIPLIER = 1.0f
         private const val DRAWABLE_PREFIX_FORWARD_RUNWAY_SCREENFULS = 1.0f
         private const val FLING_MIN_DRAG_TOUCH_SLOP_MULTIPLIER = 1.0f

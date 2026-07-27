@@ -121,24 +121,6 @@ public class ReaderSurfaceViewTest {
     }
 
     @Test
-    public void dragFollowerAdvancesEveryVsyncWithoutOvershootingRealTarget() {
-        float offset = 0f;
-        for (int frame = 0; frame < 6; frame++) {
-            float next = ReaderSurfaceView.nextDragResampleOffsetForTest(
-                    offset, 100f, 16_666_667L);
-            assertTrue(next > offset);
-            assertTrue(next <= 100f);
-            offset = next;
-        }
-        assertTrue(100f - offset <= 0.5f);
-
-        float reverse = ReaderSurfaceView.nextDragResampleOffsetForTest(
-                100f, 0f, 16_666_667L);
-        assertTrue(reverse < 100f);
-        assertTrue(reverse >= 0f);
-    }
-
-    @Test
     public void gpuCommitBacklogUsesABoundedMultiFlightWindow() {
         int capacity = ReaderSurfaceView.maxPendingFrameCommitsForTest();
         assertTrue(capacity >= 3);
@@ -151,18 +133,16 @@ public class ReaderSurfaceViewTest {
     @Test
     public void physicalMotionIntervalClosesOnlyAfterRequestedPixelsAreCommitted() {
         assertTrue(ReaderSurfaceView.shouldClosePhysicalMotionIntervalForTest(
-                true, true, false, 12L, 12L));
+                true, true, 12L, 12L));
         assertTrue(ReaderSurfaceView.shouldClosePhysicalMotionIntervalForTest(
-                true, true, false, 11L, 12L));
+                true, true, 11L, 12L));
 
         assertFalse(ReaderSurfaceView.shouldClosePhysicalMotionIntervalForTest(
-                false, true, false, 12L, 12L));
+                false, true, 12L, 12L));
         assertFalse(ReaderSurfaceView.shouldClosePhysicalMotionIntervalForTest(
-                true, false, false, 12L, 12L));
+                true, false, 12L, 12L));
         assertFalse(ReaderSurfaceView.shouldClosePhysicalMotionIntervalForTest(
-                true, true, true, 12L, 12L));
-        assertFalse(ReaderSurfaceView.shouldClosePhysicalMotionIntervalForTest(
-                true, true, false, 13L, 12L));
+                true, true, 13L, 12L));
     }
 
     @Test

@@ -1456,12 +1456,11 @@ private:
             ? static_cast<float>(1'000'000'000.0 /
                 static_cast<double>(command.refreshPeriodNanos))
             : 60.0F;
-        // This renderer is Choreographer-paced UI, not fixed-rate video. DEFAULT compatibility
-        // tells SurfaceFlinger the intended cadence without forcing a display-mode transition.
-        // The dynamically resolved API remains safe below API 30.
-        const int frameRateResult = bufferControls.setFrameRate != nullptr
-            ? bufferControls.setFrameRate(command.window, requestedFrameRate, 0)
-            : -3;
+        // The Java Surface owns the one frame-rate vote. A second native vote on the same
+        // BufferQueue creates an unnecessary SurfaceFlinger transaction and can leave the host
+        // emulator's mode-selection state one producer cycle behind the Surface lifecycle.
+        // The renderer still logs the requested cadence, but never competes with that owner.
+        constexpr int frameRateResult = -4;
         // Shared-buffer + auto-refresh exposes the same producer buffer while GLES is updating
         // it. Several physical Samsung compositors scan that buffer out concurrently, which
         // presents old/new image rows as a cascade of horizontal tears during a fling. Keep the
@@ -1479,7 +1478,7 @@ private:
         // moving-frame gap. The Java/native mailbox remains depth one and never retains additional
         // stale FrameCommands.
         const int bufferCountResult = bufferControls.setBufferCount != nullptr
-            ? bufferControls.setBufferCount(command.window, 5)
+            ? bufferControls.setBufferCount(command.window, 6)
             : -3;
         // Allocate the finite queue before physical scrolling begins. Leaving this lazy made
         // host-GPU eglSwapBuffers repeatedly spend 55-70 ms growing/acquiring the queue during
@@ -1514,7 +1513,7 @@ private:
         height_ = command.height;
         refreshPeriodNanos_ = command.refreshPeriodNanos > 0
             ? command.refreshPeriodNanos : kDefaultRefreshPeriodNanos;
-        RLOGI("cold display-paced SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap1=%d nativeSwap1=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount5=%d intervalRange=%d..%d durationMs=%.3f",
+        RLOGI("cold display-paced SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap1=%d nativeSwap1=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount6=%d intervalRange=%d..%d durationMs=%.3f",
               static_cast<unsigned long long>(surfaceEpoch_), width_, height_,
               static_cast<long long>(refreshPeriodNanos_),
               preparedWidth_ == width_ && preparedHeight_ == height_ ? 1 : 0,

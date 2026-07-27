@@ -323,7 +323,7 @@ data class NtkEpisodeDocumentPlanProof(
     }
 
     companion object {
-        const val PARSER_SCHEMA = "ntk-document-plan-v1"
+        const val PARSER_SCHEMA = "ntk-document-plan-v2"
 
         @JvmStatic
         fun create(
@@ -340,7 +340,11 @@ data class NtkEpisodeDocumentPlanProof(
         ): NtkEpisodeDocumentPlanProof {
             val normalizedPath = NtkStripDigests.normalizeEpisodePath(episodePath)
             require(discoveryGeneration > 0L)
-            require(orderedPages.size in 1..1_000 && orderedPages == (1..orderedPages.size).toList())
+            require(
+                orderedPages.size in 1..1_000 &&
+                    orderedPages.all { it in 1..1_000 } &&
+                    orderedPages.zipWithNext().all { (first, second) -> first < second }
+            )
             val assets = orderedCanonicalAssets.map(NtkStripDigests::canonicalAsset)
             require(assets.size == orderedPages.size && assets.none(String::isBlank))
             require(assets.toSet().size == assets.size)
@@ -438,7 +442,7 @@ data class NtkEpisodeDocumentPlanProof(
             requestIdentityDigestSha256
         )
 
-        const val SOURCE_REQUEST_POLICY_VERSION = "ntk-quarantine-source-request-v1"
+        const val SOURCE_REQUEST_POLICY_VERSION = "ntk-quarantine-source-request-v2"
     }
 }
 
@@ -475,7 +479,7 @@ data class NtkEpisodeDocumentPlanDraft(
         require(evidence.normalizedEpisodePath == normalizedEpisodePath)
         require(evidence.discoveryGeneration == discoveryGeneration)
         require(evidence.viewerRequestIdentityDigest == requestIdentity.identityDigestSha256)
-        require(evidence.normalizedOrderedCanonicalAssets.size == pageCount)
+        require(evidence.orderedSourcePages.all { it in orderedPages })
         val proof = NtkEpisodeDocumentPlanProof.create(
             normalizedEpisodePath,
             discoveryGeneration,
@@ -484,7 +488,7 @@ data class NtkEpisodeDocumentPlanDraft(
             selectedHeadersDigestSha256,
             responseBody,
             componentPayload,
-            orderedPages,
+            evidence.orderedSourcePages,
             evidence.normalizedOrderedCanonicalAssets,
             requestIdentity
         )
@@ -658,6 +662,7 @@ data class NtkQuarantineAssetEvidence(
     val discoveryGeneration: Long,
     val viewerRequestIdentityDigest: String,
     val orderedCanonicalAssets: List<String>,
+    val orderedSourcePages: List<Int>,
     val orderedAssetsDigest: String,
     val sourceRequestPolicyVersion: String,
     val responseConsumedToEof: Boolean,
@@ -675,6 +680,11 @@ data class NtkQuarantineAssetEvidence(
         require(normalizedOrderedCanonicalAssets.isNotEmpty())
         require(normalizedOrderedCanonicalAssets.none(String::isBlank))
         require(normalizedOrderedCanonicalAssets.toSet().size == normalizedOrderedCanonicalAssets.size)
+        require(orderedSourcePages.size == normalizedOrderedCanonicalAssets.size)
+        require(
+            orderedSourcePages.all { it in 1..1_000 } &&
+                orderedSourcePages.zipWithNext().all { (first, second) -> first < second }
+        )
         require(
             orderedAssetsDigest == NtkEpisodeManifestSeal.computeDigestSha256(
                 normalizedEpisodePath,
@@ -689,6 +699,7 @@ data class NtkQuarantineAssetEvidence(
             normalizedEpisodePath,
             discoveryGeneration,
             viewerRequestIdentityDigest,
+            orderedSourcePages,
             orderedAssetsDigest,
             sourceRequestPolicyVersion,
             responseBodySha256
@@ -702,6 +713,23 @@ data class NtkQuarantineAssetEvidence(
             discoveryGeneration: Long,
             viewerRequestIdentityDigest: String,
             orderedCanonicalAssets: List<String>,
+            responseBody: ByteArray
+        ): NtkQuarantineAssetEvidence = createWithSourcePages(
+            episodePath,
+            discoveryGeneration,
+            viewerRequestIdentityDigest,
+            orderedCanonicalAssets,
+            (1..orderedCanonicalAssets.size).toList(),
+            responseBody,
+        )
+
+        @JvmStatic
+        fun createWithSourcePages(
+            episodePath: String,
+            discoveryGeneration: Long,
+            viewerRequestIdentityDigest: String,
+            orderedCanonicalAssets: List<String>,
+            orderedSourcePages: List<Int>,
             responseBody: ByteArray
         ): NtkQuarantineAssetEvidence {
             val path = NtkStripDigests.normalizeEpisodePath(episodePath)
@@ -718,6 +746,7 @@ data class NtkQuarantineAssetEvidence(
                 discoveryGeneration,
                 viewerRequestIdentityDigest,
                 assets,
+                orderedSourcePages,
                 assetsDigest,
                 policy,
                 true,
@@ -726,6 +755,7 @@ data class NtkQuarantineAssetEvidence(
                     path,
                     discoveryGeneration,
                     viewerRequestIdentityDigest,
+                    orderedSourcePages,
                     assetsDigest,
                     policy,
                     bodyDigest
@@ -737,14 +767,19 @@ data class NtkQuarantineAssetEvidence(
             episodePath: String,
             discoveryGeneration: Long,
             viewerRequestIdentityDigest: String,
+            orderedSourcePages: List<Int>,
             orderedAssetsDigest: String,
             sourceRequestPolicyVersion: String,
             responseBodySha256: String
         ): String = NtkStripDigests.sha256Tokens(
-            "ntk-quarantine-asset-evidence-v1",
+            "ntk-quarantine-asset-evidence-v2",
             episodePath,
             discoveryGeneration.toString(),
             viewerRequestIdentityDigest,
+            NtkStripDigests.sha256Tokens(
+                listOf("ntk-quarantine-source-pages-v1") +
+                    orderedSourcePages.map(Int::toString)
+            ),
             orderedAssetsDigest,
             sourceRequestPolicyVersion,
             responseBodySha256
@@ -1440,7 +1475,7 @@ data class NtkViewerImageApiManifestProof(
 
     companion object {
         const val ORDERED_ASSET_SELECTION_POLICY_VERSION =
-            "ntk-viewer-assets-balanced-replica-v2"
+            "ntk-viewer-assets-renderable-balanced-replica-v3"
 
         @JvmStatic
         fun create(

@@ -44,6 +44,13 @@ public final class NtkStrictFreshArchitectureTest {
                 "val ackHandle = ensureIsolatedAck(client, flight, ackRoute)");
         String direct = runFlight.substring(directBranch, isolatedBranch);
         String isolated = runFlight.substring(isolatedBranch);
+        String client = read(sourcePath("CustomHttpClient.java"));
+        String trustedChallenge = method(client,
+                "public NtkDirectTrustedGrant fetchExactNtkTrustedChallengeGrant(",
+                "/**\n     * Converts the authoritative HTTP Date");
+        String nvGrantExchange = method(client,
+                "private ArrayList<NtkAckCookie> fetchExactNtkNvGrants(",
+                "private static String strictNtkCookieHeader(");
 
         int directCookies = direct.indexOf("importVerifiedNtkAckCookieGrants(");
         int directUnsigned = direct.indexOf("buildUnsignedExactNtkViewerImageApiRequest(");
@@ -52,16 +59,28 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(directCookies >= 0);
         assertTrue(directUnsigned > directCookies);
         assertTrue(directExecute > directUnsigned);
+        int nvIssueRequest = trustedChallenge.indexOf("fetchExactNtkNvGrants(");
+        int trustedChallengeRequest = trustedChallenge.indexOf(
+                "NtkBoundHttpResponse exchange = executeStrictExactSameOriginRequest(");
+        assertTrue(nvIssueRequest >= 0);
+        assertTrue(trustedChallengeRequest > nvIssueRequest);
+        assertTrue(nvGrantExchange.contains("\"/api/nv-issue\""));
+        assertTrue(nvGrantExchange.contains("\"nv_issue\""));
+        assertTrue(nvGrantExchange.contains("callRegistry"));
+        assertTrue(nvGrantExchange.contains("NtkAckCookieBoundary.INSTANCE.validateGrants("));
 
+        int nvStart = isolated.indexOf("ensureExactNvSeed(client, flight, ackRoute)");
         int proof = isolated.indexOf("ackHandle.joinProof()");
         int cookies = isolated.indexOf("importVerifiedNtkAckCookieGrants(");
+        int nvWait = isolated.indexOf("awaitFuture(nvSeedTask)");
         int unsigned = isolated.indexOf("buildUnsignedExactNtkViewerImageApiRequest(");
         int quiesce = isolated.indexOf("ackHandle.quiesce()");
         int execute = isolated.indexOf("ackHandle.executeExact(");
         int bind = isolated.indexOf("bindIsolatedExactNtkViewerImageApiResponse(");
-        assertTrue(proof >= 0);
+        assertTrue(nvStart >= 0 && nvStart < proof);
         assertTrue(cookies > proof);
-        assertTrue(unsigned > cookies);
+        assertTrue(nvWait > cookies);
+        assertTrue(unsigned > nvWait);
         assertTrue(quiesce > unsigned);
         assertTrue(execute > quiesce);
         assertTrue(bind > execute);

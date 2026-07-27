@@ -253,6 +253,8 @@ public class CustomHttpClientTest {
     @Test
     public void strictControlPlaneReusesExistingSameOriginHttpEngineSession() {
         assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
+                "nv_issue"));
+        assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
                 "signed_image_api"));
         assertTrue(CustomHttpClient.shouldUseSharedHttpEngineForStrictStageForTest(
                 "document"));

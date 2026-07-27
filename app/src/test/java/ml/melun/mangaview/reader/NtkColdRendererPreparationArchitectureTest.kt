@@ -12,6 +12,21 @@ class NtkColdRendererPreparationArchitectureTest {
     private val activitySource = File(
         "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt"
     ).readText()
+
+    @Test
+    fun committedPixelIdentityProofExcludesStructuralTransitionCards() {
+        val rollingProofStart = source.indexOf("val rollingVisiblePageIndexes")
+        val rollingProofEnd = source.indexOf(
+            "val rollingVisiblePageIdentities",
+            startIndex = rollingProofStart
+        )
+        assertTrue(rollingProofStart >= 0)
+        assertTrue(rollingProofEnd > rollingProofStart)
+
+        val rollingProof = source.substring(rollingProofStart, rollingProofEnd)
+        assertTrue(rollingProof.contains("item.cardText == null"))
+        assertTrue(rollingProof.contains("item.top < state.height.toFloat()"))
+    }
     private val sessionSource = File(
         "src/main/java/ml/melun/mangaview/reader/ReaderSession.kt"
     ).readText()
@@ -476,10 +491,12 @@ class NtkColdRendererPreparationArchitectureTest {
 
         assertTrue(attach.contains("eglSwapInterval(display_, 1)"))
         assertTrue(attach.contains("setNativeWindowSwapInterval(command.window, 1)"))
-        assertTrue(attach.contains("setFrameRate(command.window, requestedFrameRate, 0)"))
+        assertFalse(attach.contains("setFrameRate(command.window, requestedFrameRate, 0)"))
+        assertTrue(source.contains("Surface.FRAME_RATE_COMPATIBILITY_DEFAULT"))
+        assertTrue(source.contains("Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS"))
         assertTrue(attach.contains("setSharedBufferMode(command.window, false)"))
         assertTrue(attach.contains("setAutoRefresh(command.window, false)"))
-        assertTrue(attach.contains("setBufferCount(command.window, 5)"))
+        assertTrue(attach.contains("setBufferCount(command.window, 6)"))
         assertTrue(attach.contains("tryAllocateBuffers(command.window)"))
         assertTrue(attach.contains("EGL_BUFFER_DESTROYED"))
         assertFalse(attach.contains("setNativeWindowSwapInterval(command.window, 0)"))
@@ -722,6 +739,58 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(fragmentedRecovery.contains(".removeHeader(\"Cookie\")"))
         assertTrue(fragmentedRecovery.contains("looksLikeImage(bodyBytes)"))
         assertFalse(fragmentedRecovery.contains("workId"))
+    }
+
+    @Test
+    fun physicalDragUsesOnlyRealMotionEventPositions() {
+        val move = functionBody("private fun applyPhysicalDragPositionLocked(")
+        val directFrame = functionBody("private fun renderDirectSurfaceFrame(")
+
+        assertTrue(move.contains("return applyDragOffsetLocked(requestedOffset)"))
+        assertFalse(source.contains("applyDragResamplingAtFrameLocked"))
+        assertFalse(source.contains("nextDragResampleOffset"))
+        assertFalse(source.contains("DRAG_RESAMPLE_"))
+        assertFalse(directFrame.contains("applyDragOffsetLocked("))
+    }
+
+    @Test
+    fun physicalInputCancelsOnlyRedundantAdjacentMetadataWork() {
+        val touch = functionBody("fun notePhysicalTouch(", sessionSource)
+        val cancel = functionBody(
+            "private fun cancelRedundantInitialAdjacentMetadataForPhysicalInput(",
+            sessionSource
+        )
+        val fetch = functionBody(
+            "private fun loadAuthoritativeAdjacentUrlsForPrefetch(",
+            sessionSource
+        )
+
+        assertTrue(touch.contains("if (active) cancelRedundantInitialAdjacentMetadataForPhysicalInput()"))
+        assertTrue(cancel.contains("hasForwardNtkEpisodeAfterSource(activeFetch.source)"))
+        assertTrue(cancel.contains("activeFetch.cancellation.cancel()"))
+        assertFalse(cancel.contains("repositoryCancellations"))
+        assertTrue(fetch.contains("activeInitialAdjacentMetadataFetches.put"))
+        assertTrue(fetch.contains("shouldYieldInitialAdjacentMetadata(metadataSource)"))
+        assertTrue(fetch.contains("activeInitialAdjacentMetadataFetches.remove"))
+    }
+
+    @Test
+    fun adjacentRemainderPromotesAfterTheRealAnchorCrossesItsPublishedBoundary() {
+        val inside = functionBody("private fun isViewportInsideEpisode(", sessionSource)
+        val defer = functionBody(
+            "private fun shouldDeferRemainingAdjacentRunwayForActiveInput(",
+            sessionSource
+        )
+
+        assertTrue(inside.contains("val boundedAnchor ="))
+        assertTrue(inside.contains("val firstIncomingIndex = pages.indexOfFirst"))
+        assertTrue(inside.contains("firstIncomingIndex >= 0 && boundedAnchor >= firstIncomingIndex"))
+        assertFalse(inside.contains("currentViewportAnchor.incrementAndGet"))
+        assertFalse(inside.contains("currentViewportAnchor.set("))
+        assertTrue(
+            defer.indexOf("if (isViewportInsideEpisode(target)) return false") <
+                defer.indexOf("if (viewportBusy.get()) return true")
+        )
     }
 
     private fun functionBody(signature: String, text: String = source): String {

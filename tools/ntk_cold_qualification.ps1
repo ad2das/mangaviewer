@@ -261,9 +261,12 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     foreach($argument in @(
         "-avd", $avdName, "-port", [string]$port,
         # Keep the explicitly provisioned qualification resources across every hard process
-        # restart. Falling back to the AVD defaults after case one made SurfaceFlinger present
-        # waits grow from one refresh period to 80-190ms even though app CPU/GPU work stayed flat.
-        "-cores", "8", "-memory", "8192", "-gpu", "host",
+        # restart. Six guest vCPUs leave two physical host cores for QEMU's gfxstream/HWC and
+        # Windows scheduling on the eight-core qualification host. Giving the guest all eight
+        # physical cores repeatedly made ranchu rcCompose encode block for 60-80ms even though
+        # app draw/queue work stayed below 1ms. More guest vCPUs therefore reduced, rather than
+        # improved, compositor throughput. Memory remains deliberately generous.
+        "-cores", "6", "-memory", "8192", "-gpu", "host",
         # The windowed QEMU backend can remain alive before opening its adb port after a prior
         # host-GPU process is retired. The headless backend retains the same host GLES translator
         # and booted this AVD immediately in the reproduced failure.

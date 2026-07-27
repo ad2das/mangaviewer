@@ -33,6 +33,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val directTrustedThread: Thread?,
     ) {
         @Volatile
+        var nvSeedTask: FutureTask<Boolean>? = null
+            private set
+
+        @Volatile
+        private var nvSeedThread: Thread? = null
+
+        @Volatile
         var isolatedHandle: NtkAckBrowserClient.FlightHandle? = null
             private set
 
@@ -49,9 +56,18 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             isolatedHandle = handle
         }
 
+        @Synchronized
+        fun attachNvSeedTask(task: FutureTask<Boolean>, thread: Thread) {
+            check(nvSeedTask == null) { "Strict nv seed owner already attached" }
+            nvSeedTask = task
+            nvSeedThread = thread
+        }
+
         fun cancel() {
             directTrustedTask?.takeUnless { it.isDone }?.cancel(true)
             directTrustedThread?.takeIf { it.isAlive }?.interrupt()
+            nvSeedTask?.takeUnless { it.isDone }?.cancel(true)
+            nvSeedThread?.takeIf { it.isAlive }?.interrupt()
             isolatedHandle?.takeUnless { it.isDone }?.cancel()
         }
     }
@@ -296,6 +312,29 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             flight,
             ackRoute.bootstrap,
         ).also { handle -> ackRoute.attachIsolatedHandle(flight, handle) }
+    }
+
+    private fun ensureExactNvSeed(
+        client: CustomHttpClient,
+        flight: Flight,
+        ackRoute: AckRoute,
+    ): FutureTask<Boolean> = synchronized(ackRoute) {
+        ackRoute.nvSeedTask ?: FutureTask {
+            traceStage("NtkExactNvSeed") {
+                client.ensureExactNtkNvSeed(
+                    ackRoute.bootstrap,
+                    flight.physicalCalls,
+                )
+            }
+            true
+        }.also { task ->
+            val thread = Thread(task, "ntk-strict-nv-seed").apply {
+                isDaemon = true
+                priority = (Thread.NORM_PRIORITY + 1).coerceAtMost(Thread.MAX_PRIORITY)
+            }
+            ackRoute.attachNvSeedTask(task, thread)
+            thread.start()
+        }
     }
 
     /**
@@ -593,7 +632,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 ?.takeIf { evidence ->
                     evidence.viewerRequestIdentityDigest ==
                         draft.requestIdentity.identityDigestSha256 &&
-                        evidence.normalizedOrderedCanonicalAssets.size == draft.pageCount
+                        evidence.orderedSourcePages.isNotEmpty() &&
+                        evidence.orderedSourcePages.all { it in draft.orderedPages }
                 }
                 ?.let(draft::bind)
             var tokenBoundBodies: Map<Int, ReaderImageCache.NtkStrictPublishedBody> = emptyMap()
@@ -850,6 +890,10 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 }
             } else {
                 val ackHandle = ensureIsolatedAck(client, flight, ackRoute)
+                // nv and browser ACK are independent post-click prerequisites. Join both only
+                // immediately before serializing the exact image request so neither adds a
+                // separate cold round trip to the critical path.
+                val nvSeedTask = ensureExactNvSeed(client, flight, ackRoute)
                 val ackProof = traceStage("NtkAckProofWait") { ackHandle.joinProof() }
                 requireDiscoveryOwnership(flight, "ack_proof_response")
                 logStage(flight, "ack_proof_ready")
@@ -860,6 +904,9 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         ackProof.cookieGrants,
                     )
                 }
+                traceStage("NtkExactNvSeedWait") { awaitFuture(nvSeedTask) }
+                requireDiscoveryOwnership(flight, "nv_seed_response")
+                logStage(flight, "nv_seed_ready")
                 val unsignedRequest = traceStage("NtkExactRequestBuild") {
                     withDiscoveryOwnership(flight, "exact_request_build") {
                         client.buildUnsignedExactNtkViewerImageApiRequest(
@@ -904,11 +951,12 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 // physical image URLs. Its generated /manhwa/.../pNNN.jpg names can be virtual
                 // placeholders (and return 404) while the signed API supplies the actual CDN
                 // assets. Never start or promote body work until that authoritative table exists.
-                val exactEvidence = NtkQuarantineAssetEvidence.create(
+                val exactEvidence = NtkQuarantineAssetEvidence.createWithSourcePages(
                     path,
                     flight.lease.generation.value,
                     draft.requestIdentity.identityDigestSha256,
                     envelope.orderedAssets,
+                    envelope.orderedSourcePages,
                     apiResponse.bodyBytes
                 )
                 withDiscoveryOwnership(flight, "quarantine_evidence_observe") {

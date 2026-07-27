@@ -66,11 +66,6 @@ class NtkColdViewerMacrobenchmark {
             ?.toIntOrNull()
             ?.coerceAtLeast(0)
             ?: 0
-        require(
-            expectedAdjacentEpisodePath.isBlank() || expectedAdjacentPageCount > 0
-        ) {
-            "ntkExpectedAdjacentPageCount must be positive when an adjacent episode is required"
-        }
         val caseId = args.getString("ntkCaseId")?.trim().orEmpty().ifBlank {
             "$workType-$workId"
         }
@@ -205,20 +200,33 @@ class NtkColdViewerMacrobenchmark {
                     // the launch episode and the explicitly expected next episode in one bounded
                     // forward pass, stopping as soon as that episode's final canonical page is
                     // physically committed.
-                    val adjacent = driveThroughExpectedAdjacentEpisode(
-                        device,
-                        expectedAdjacentEpisodePath,
-                        expectedAdjacentPageCount
-                    )
+                    val adjacent = if (expectedAdjacentPageCount > 0) {
+                        driveThroughExpectedAdjacentEpisode(
+                            device,
+                            expectedAdjacentEpisodePath,
+                            expectedAdjacentPageCount
+                        )
+                    } else {
+                        driveIntoExpectedAdjacentEpisode(
+                            device,
+                            episodePath,
+                            expectedAdjacentEpisodePath,
+                        )
+                    }
                     adjacentTraversalGestureCount = adjacent.gestures
                     forwardTraversalGestureCount += adjacent.gestures
                     adjacentLastActualDescription = adjacent.actualDescription
                     adjacentLastSourceIndex = adjacent.sourceIndex
                 } else {
-                    forwardTraversalGestureCount += driveToEdge(
+                    val adjacent = driveIntoExpectedAdjacentEpisode(
                         device,
-                        edge = "bottom"
+                        episodePath,
+                        expectedEpisodePath = "",
                     )
+                    adjacentTraversalGestureCount = adjacent.gestures
+                    forwardTraversalGestureCount += adjacent.gestures
+                    adjacentLastActualDescription = adjacent.actualDescription
+                    adjacentLastSourceIndex = adjacent.sourceIndex
                 }
                 forwardTraversalEndElapsedNanos = SystemClock.elapsedRealtimeNanos()
                 capture(device, outputDirectory, "bottom")
@@ -604,6 +612,94 @@ class NtkColdViewerMacrobenchmark {
     )
 
     /**
+     * Qualifies exactly one selected episode plus its real forward boundary. The reader may keep
+     * appending later episodes, so a global `bottom` is not a stable target. Seeing a committed
+     * adjacent image proves that the selected episode was traversed and that its prepared runway
+     * was attached. Explicit diagnostic calls may additionally pin the exact adjacent path. The
+     * all-images assertion immediately after this function still requires every canonical image
+     * of the selected episode to be render-ready.
+     */
+    private fun driveIntoExpectedAdjacentEpisode(
+        device: UiDevice,
+        launchEpisodePath: String,
+        expectedEpisodePath: String,
+    ): AdjacentTraversalObservation {
+        require(launchEpisodePath.isNotBlank())
+        val deadline = SystemClock.elapsedRealtime() + EDGE_TIMEOUT_MS
+        var gestures = 0
+        var launchReadyPageCount = 0
+        var maxLaunchSource = -1
+        var lastDescription = ""
+        while (
+            SystemClock.elapsedRealtime() < deadline &&
+            gestures < MAX_EDGE_GESTURES
+        ) {
+            device.throwIfTerminalImageFailure("the exact adjacent episode entry")
+            device.findObject(ALL_IMAGES_READY_SELECTOR)?.let { node ->
+                val description = runCatching { node.contentDescription.orEmpty() }
+                    .getOrNull()
+                    .orEmpty()
+                ALL_IMAGES_READY_PATTERN.matchEntire(description)?.let { identity ->
+                    launchReadyPageCount = maxOf(
+                        launchReadyPageCount,
+                        identity.groupValues[1].toIntOrNull() ?: 0,
+                    )
+                }
+            }
+            for (node in device.findObjects(ACTUAL_IMAGE_SELECTOR)) {
+                val description = runCatching { node.contentDescription.orEmpty() }
+                    .getOrNull()
+                    .orEmpty()
+                val identity = ACTUAL_IDENTITY_PATTERN.matchEntire(description) ?: continue
+                val path = identity.groupValues[1]
+                val source = identity.groupValues[2].toIntOrNull() ?: continue
+                when {
+                    path == launchEpisodePath -> {
+                        maxLaunchSource = maxOf(maxLaunchSource, source)
+                    }
+                    expectedEpisodePath.isBlank() || path == expectedEpisodePath -> {
+                        return AdjacentTraversalObservation(
+                            gestures = gestures,
+                            actualDescription = description,
+                            sourceIndex = source,
+                        )
+                    }
+                    else -> error(
+                        "Reader crossed into the wrong adjacent episode: " +
+                            "launch=$launchEpisodePath expected=$expectedEpisodePath " +
+                            "actual=$path source=$source gestures=$gestures"
+                    )
+                }
+                lastDescription = description
+            }
+            if (launchReadyPageCount > 0 &&
+                maxLaunchSource >= launchReadyPageCount - 1 &&
+                device.hasObject(edgeSelector("bottom"))
+            ) {
+                return AdjacentTraversalObservation(
+                    gestures = gestures,
+                    actualDescription = lastDescription,
+                    sourceIndex = maxLaunchSource,
+                )
+            }
+            if (launchReadyPageCount > 0 &&
+                maxLaunchSource >= launchReadyPageCount - ADJACENT_FINE_SWIPE_RUNWAY_PAGES
+            ) {
+                adjacentEpisodeForwardSwipe(device)
+            } else {
+                verticalSwipe(device, FAST_SWIPE_STEPS)
+            }
+            gestures++
+        }
+        error(
+            "Neither an adjacent episode nor the selected episode's final edge was committed: " +
+                "launch=$launchEpisodePath expected=$expectedEpisodePath " +
+                "readyPages=$launchReadyPageCount maxLaunchSource=$maxLaunchSource " +
+                "gestures=$gestures actual=$lastDescription"
+        )
+    }
+
+    /**
      * A temporarily installed adjacent runway must not be mistaken for the work's final edge.
      * Keep performing the same forward fling a reader uses until the exact adjacent episode's
      * canonical final page is physically represented by committed `actual:` semantics.
@@ -906,6 +1002,7 @@ class NtkColdViewerMacrobenchmark {
         const val MEDIUM_SWIPE_STEPS = 90
         const val FAST_SWIPE_STEPS = 4
         const val INITIAL_MODERATE_FORWARD_GESTURES = 3
+        const val ADJACENT_FINE_SWIPE_RUNWAY_PAGES = 4
         // One accessibility observation costs ~2.5 s on the continuously rendering SurfaceView,
         // whereas sixteen 20 ms shell flings cost only ~0.3 s and cover the measured 119-page
         // manga. Long webtoons repeat the same bounded batch until their real edge is observed.

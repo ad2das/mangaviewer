@@ -359,6 +359,19 @@ class ReaderSession(
         val preparedAtMs: Long
     )
 
+    private data class PreparedAdjacentRemainderDrawable(
+        val pageKey: String,
+        val result: PageDecodeResult,
+        val preparedAtMs: Long,
+    )
+
+    private data class ParkedAdjacentRemainderAppend(
+        val target: Manga,
+        val refs: List<PageRef>,
+        val publishKey: String,
+        val warm: Boolean,
+    )
+
     private data class InitialAdjacentRunwayPreparation(
         val token: Any,
         val startedAtMs: Long
@@ -369,6 +382,11 @@ class ReaderSession(
         val target: Manga,
         val urls: List<String>,
         val preparedAtMs: Long,
+    )
+
+    private data class ActiveInitialAdjacentMetadataFetch(
+        val source: Manga,
+        val cancellation: MangaRepository.Cancellation,
     )
 
     private data class InitialFetchOutcome(
@@ -676,6 +694,14 @@ class ReaderSession(
     private val initialAnchorAssetDecodeListenerKeys = ConcurrentHashMap.newKeySet<String>()
     private val deliveryResumeAtMs = AtomicLong(0L)
     private val lastUserInteractionMs = AtomicLong(0L)
+    /**
+     * Unlike [lastUserInteractionMs], this is updated only by real pointer DOWN/UP events. The
+     * initial busy window and first-frame publication also update the general interaction clock,
+     * so using that clock to schedule the already-safe adjacent remainder left it dormant until
+     * the viewport crossed the chapter boundary. That moved its decode and structure publication
+     * into the measured scroll itself.
+     */
+    private val lastPhysicalTouchMs = AtomicLong(0L)
     private val ntkFirstBitmapAtMs = AtomicLong(0L)
     private val ntkLastActiveInputFallbackCancelAtMs = AtomicLong(0L)
     private val ntkFirstDrawableDrawHeightPx = AtomicInteger(0)
@@ -736,11 +762,17 @@ class ReaderSession(
     private val initialTailAdjacentPreappendKeys = ConcurrentHashMap.newKeySet<String>()
     private val initialTailAdjacentPrefetchKeys = ConcurrentHashMap.newKeySet<String>()
     private val initialAdjacentMetadataPrefetchPaths = ConcurrentHashMap.newKeySet<String>()
+    private val activeInitialAdjacentMetadataFetches =
+        ConcurrentHashMap<String, ActiveInitialAdjacentMetadataFetch>()
     private val preparedInitialAdjacentMetadata =
         ConcurrentHashMap<String, PreparedInitialAdjacentMetadata>()
     private val preparingInitialAdjacentRunways =
         ConcurrentHashMap<String, InitialAdjacentRunwayPreparation>()
     private val preparedInitialAdjacentRunways = ConcurrentHashMap<String, PreparedAdjacentRunwayBatch>()
+    private val preparedAdjacentRemainderDrawables =
+        ConcurrentHashMap<String, PreparedAdjacentRemainderDrawable>()
+    private val parkedAdjacentRemainderAppends =
+        ConcurrentHashMap<String, ParkedAdjacentRemainderAppend>()
     private val initialTailAdjacentPreappendTargetPaths = ConcurrentHashMap.newKeySet<String>()
     private val initialTailAdjacentPreappendFailedAtMs = ConcurrentHashMap<String, Long>()
     private val activeAdjacentAppendStartKeys = ConcurrentHashMap.newKeySet<String>()
@@ -9255,7 +9287,9 @@ class ReaderSession(
     }
 
     fun notePhysicalTouch(active: Boolean) {
+        lastPhysicalTouchMs.set(SystemClock.uptimeMillis())
         noteUserInteraction()
+        if (active) cancelRedundantInitialAdjacentMetadataForPhysicalInput()
         if (!active) {
             // A release may expose pages prepared during the gesture. Drain them immediately;
             // scrolling itself remains unconstrained and decoded pixels are never held for an
@@ -9326,6 +9360,7 @@ class ReaderSession(
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: manga.ntkEpisodePath
+        activeViewportPath?.let(::resumeParkedAdjacentRemainder)
         if (
             anchorPage != null &&
             !Manga.sameEpisodeIdentity(anchorPage.manga, manga) &&
@@ -10253,6 +10288,7 @@ class ReaderSession(
         viewportBusy.set(false)
         deliveryResumeAtMs.set(0L)
         lastUserInteractionMs.set(0L)
+        lastPhysicalTouchMs.set(0L)
         urgentLoading.clear()
         visibleGeneratedByteHedges.clear()
         visibleGeneratedDecodeHedges.clear()
@@ -10286,6 +10322,11 @@ class ReaderSession(
             recycleAdjacentRunwayDrawableBatch(prepared.batch)
         }
         preparedInitialAdjacentRunways.clear()
+        preparedAdjacentRemainderDrawables.values.forEach { prepared ->
+            recycleDecodeResult(prepared.result)
+        }
+        preparedAdjacentRemainderDrawables.clear()
+        parkedAdjacentRemainderAppends.clear()
         preparedInitialAdjacentMetadata.values.forEach { prepared ->
             ReaderImageCache.releaseAdjacentNtkForegroundViewerPath(
                 prepared.target.ntkEpisodePath,
@@ -10294,6 +10335,7 @@ class ReaderSession(
         }
         preparedInitialAdjacentMetadata.clear()
         initialAdjacentMetadataPrefetchPaths.clear()
+        activeInitialAdjacentMetadataFetches.clear()
         preparedEntry?.removeListener(preparedListener)
         releaseDeliveredBitmaps()
         network.shutdownNow()
@@ -11512,14 +11554,17 @@ class ReaderSession(
             )
             var keepAdjacentGrant = false
             try {
+                if (metadataOnly && shouldYieldInitialAdjacentMetadata(source)) return false
                 var appendLoad = loadAuthoritativeAdjacentUrlsForPrefetch(
                     candidate,
                     source,
                     currentTitle,
-                    direction
+                    direction,
+                    metadataSource = source.takeIf { metadataOnly },
                 )
                 if (
                     !cancelled.get() &&
+                    !(metadataOnly && shouldYieldInitialAdjacentMetadata(source)) &&
                     (appendLoad.result != Title.LOAD_OK || appendLoad.urls.isEmpty())
                 ) {
                     val cachedDocument = MainApplication.getHttpClient().cachedNtkViewerPayloadBody(
@@ -11542,11 +11587,13 @@ class ReaderSession(
                             candidate,
                             source,
                             currentTitle,
-                            direction
+                            direction,
+                            metadataSource = source.takeIf { metadataOnly },
                         )
                     }
                 }
                 if (cancelled.get()) return false
+                if (metadataOnly && shouldYieldInitialAdjacentMetadata(source)) return false
                 if (appendLoad.result != Title.LOAD_OK || appendLoad.urls.isEmpty()) continue
                 if (shouldSkipLoadedNtkAdjacentCandidate(source, candidate, direction)) continue
                 val publishUrls = completeKnownGeneratedAppendUrls(candidate, appendLoad.urls)
@@ -11650,7 +11697,8 @@ class ReaderSession(
         target: Manga,
         source: Manga,
         currentTitle: Title,
-        direction: Int
+        direction: Int,
+        metadataSource: Manga? = null,
     ): AppendUrlLoad {
         // A real episode-list neighbor must not inherit the speculative generated
         // manifest used only for numeric discovery. Waiting for the episode metadata request is
@@ -11662,17 +11710,42 @@ class ReaderSession(
         if (expectedPath.isEmpty()) return AppendUrlLoad(Title.LOAD_ERROR, emptyList())
         target.ntkEpisodePath = expectedPath
         target.setImgs(null)
+        if (metadataSource != null && shouldYieldInitialAdjacentMetadata(metadataSource)) {
+            return AppendUrlLoad(Title.LOAD_ERROR, emptyList())
+        }
+        val metadataSourcePath = metadataSource?.ntkEpisodePath?.trim().orEmpty()
+        val cancellation = repositoryCancellation(userVisible = true)
+        val activeFetch = metadataSource?.let {
+            ActiveInitialAdjacentMetadataFetch(it, cancellation)
+        }
+        if (activeFetch != null && metadataSourcePath.isNotEmpty()) {
+            activeInitialAdjacentMetadataFetches.put(metadataSourcePath, activeFetch)?.let { previous ->
+                if (previous !== activeFetch) previous.cancellation.cancel()
+            }
+            // DOWN can race the registration above. Recheck after publication so a fetch that
+            // became redundant in that window never survives into a physical moving frame.
+            if (shouldYieldInitialAdjacentMetadata(metadataSource)) cancellation.cancel()
+        }
         val result = try {
-            withRepositoryCancellation(userVisible = true) { cancellation ->
-                if (shouldPreferVerifiedApiAppend(target, currentTitle)) {
-                    imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
-                } else {
-                    imageRepository.fetchViewerInitial(target, cancellation)
-                }
+            if (cancellation.isCancelled) {
+                Title.LOAD_ERROR
+            } else if (shouldPreferVerifiedApiAppend(target, currentTitle)) {
+                imageRepository.fetchViewerInitialWithMode(target, cancellation, "api-strict")
+            } else {
+                imageRepository.fetchViewerInitial(target, cancellation)
             }
         } catch (e: Exception) {
-            recordIfUnexpected(e)
+            if (!cancellation.isCancelled && !isExpectedCancellation(e)) recordIfUnexpected(e)
             Title.LOAD_ERROR
+        } finally {
+            if (activeFetch != null && metadataSourcePath.isNotEmpty()) {
+                activeInitialAdjacentMetadataFetches.remove(metadataSourcePath, activeFetch)
+            }
+            releaseRepositoryCancellation(cancellation)
+        }
+        if (metadataSource != null && shouldYieldInitialAdjacentMetadata(metadataSource)) {
+            target.setImgs(null)
+            return AppendUrlLoad(Title.LOAD_ERROR, emptyList())
         }
         val path = NtkStripDigests.normalizeEpisodePath(
             target.ntkEpisodePath?.trim().orEmpty()
@@ -14136,8 +14209,21 @@ class ReaderSession(
             isImmediateNtkGeneratedUx() &&
             isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)
         ) {
-            if (isActiveGeneratedTouchOrQuiet() || viewportBusy.get()) {
-                return NTK_APPEND_REMAINING_RUNWAY_ACTIVE_RETRY_MS
+            if (isViewportInsideEpisode(target) &&
+                !viewportBusy.get() &&
+                physicalTouchQuietRemainingMs(
+                    NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS
+                ) <= 0L
+            ) {
+                return 0L
+            }
+            val physicalQuietMs =
+                physicalTouchQuietRemainingMs(NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS)
+            if (viewportBusy.get() || physicalQuietMs > 0L) {
+                return maxOf(
+                    NTK_APPEND_REMAINING_RUNWAY_ACTIVE_RETRY_MS,
+                    physicalQuietMs
+                )
             }
             NTK_ADJACENT_FOREGROUND_STREAM_RECHECK_MS
         } else {
@@ -14186,11 +14272,20 @@ class ReaderSession(
             return
         }
         if (shouldDeferRemainingAdjacentRunwayForActiveInput(target)) {
-            scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
+            val preparedAndParked = prepareAndParkOffscreenAdjacentRemainderIfIdle(
+                target,
+                activeRefs,
+                publishKey,
+                warm,
+            )
+            if (!preparedAndParked) {
+                scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
+            }
             Log.d(
                 TAG,
                 "append_adjacent_runway_remaining_defer_offscreen_active targetId=${target.id} " +
-                    "path=${target.ntkEpisodePath} anchor=${currentViewportAnchor.get()} refs=${activeRefs.size}"
+                    "path=${target.ntkEpisodePath} anchor=${currentViewportAnchor.get()} " +
+                    "refs=${activeRefs.size} preparedAndParked=$preparedAndParked"
             )
             return
         }
@@ -14486,24 +14581,199 @@ class ReaderSession(
     private fun shouldDeferRemainingAdjacentRunwayForActiveInput(target: Manga): Boolean {
         if (!isImmediateNtkGeneratedUx()) return false
         if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
-        // The current episode owns all network, decode, memory-bandwidth and GPU-upload priority.
-        // Four physically drawable pages are already attached as the boundary runway; quiet time
-        // alone must never promote the rest of the next episode. It becomes foreground work only
-        // after the viewport actually crosses into it.
+        // The incoming chapter becomes foreground content the instant the real viewport reaches
+        // its published boundary. Its canonical suffix must then outrank the still-retiring fling;
+        // otherwise a long/continuous gesture can strand the current chapter at four images.
         if (isViewportInsideEpisode(target)) return false
+        // Never extend the physical list underneath a real gesture/fling. Four decoded pages are
+        // already attached at the boundary; waiting for the input retirement prevents one fling
+        // from skipping an episode that the viewport has not reached yet.
+        if (viewportBusy.get()) return true
+        if (physicalTouchQuietRemainingMs(NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS) > 0L) {
+            return true
+        }
+        // Offscreen structure remains bounded to the atomic four-page runway. Its remaining pixels
+        // may be prepared separately during idle, but pages must not become scrollable until the
+        // user has actually entered this episode.
         return true
+    }
+
+    /**
+     * Prepares only immutable pixels, never list structure. The active chapter must already be
+     * complete and real input must be retired. This moves file validation/decode/prepareToDraw out
+     * of the next scroll without increasing the scrollable distance or allowing a fling to skip a
+     * chapter.
+     */
+    private fun prepareAndParkOffscreenAdjacentRemainderIfIdle(
+        target: Manga,
+        refs: List<PageRef>,
+        publishKey: String,
+        warm: Boolean,
+    ): Boolean {
+        if (viewportBusy.get()) return false
+        if (physicalTouchQuietRemainingMs(NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS) > 0L) {
+            return false
+        }
+        if (!isCurrentEpisodeCompleteForImmediateAdjacentStream(
+                target,
+                ReaderSurfaceView.DIRECTION_NEXT,
+            )
+        ) {
+            return false
+        }
+        val path = activeRemainingAdjacentRunwayTargetPath(target)
+        if (path.isEmpty()) return false
+        val candidates = synchronized(pagesLock) {
+            appendableRemainingAdjacentRunwayRefsLocked(target, refs).refs
+        }
+        if (candidates.isEmpty()) return false
+        val predictedStart = synchronized(pagesLock) { pages.size }
+        var preparedNow = 0
+        var firstMissing = -1
+        for ((offset, page) in candidates.withIndex()) {
+            // Idle preparation may overlap the first DOWN by a few milliseconds. Yield between
+            // immutable pages so an offscreen decode wave cannot occupy the host CPUs throughout
+            // a real moving-frame interval. Already staged pages remain reusable on the retry.
+            if (viewportBusy.get() ||
+                physicalTouchQuietRemainingMs(
+                    NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS
+                ) > 0L
+            ) {
+                return false
+            }
+            if (page.transitionTitle != null) continue
+            val pageKey = preparedAdjacentRemainderDrawableKey(page) ?: continue
+            if (preparedAdjacentRemainderDrawables.containsKey(pageKey)) continue
+            val image = page.image.orEmpty()
+            val cached = if (image.isNotEmpty()) {
+                ReaderImageCache.cachedFile(appContext, page.manga, image)
+            } else {
+                null
+            }
+            if (cached == null) {
+                firstMissing = offset
+                break
+            }
+            val requestedWidth = ntkProofTargetWidth()
+            val result = try {
+                decodePage(
+                    predictedStart + offset,
+                    page,
+                    cached,
+                    requestedWidth,
+                    proofDrawable = true,
+                ).also(::prepareDecodeResultForDraw)
+            } catch (e: Exception) {
+                if (!isExpectedCancellation(e)) recordIfUnexpected(e)
+                firstMissing = offset
+                break
+            }
+            val prepared = PreparedAdjacentRemainderDrawable(
+                pageKey = pageKey,
+                result = result,
+                preparedAtMs = SystemClock.elapsedRealtime(),
+            )
+            val previous = preparedAdjacentRemainderDrawables.putIfAbsent(pageKey, prepared)
+            if (previous != null) {
+                recycleDecodeResult(result)
+            } else {
+                preparedNow++
+            }
+        }
+        val allPrepared = candidates
+            .asSequence()
+            .filter { it.transitionTitle == null }
+            .all { page ->
+                preparedAdjacentRemainderDrawableKey(page)?.let(
+                    preparedAdjacentRemainderDrawables::containsKey
+                ) == true
+            }
+        if (allPrepared) {
+            parkedAdjacentRemainderAppends[path] = ParkedAdjacentRemainderAppend(
+                target = target,
+                refs = refs,
+                publishKey = publishKey,
+                warm = warm,
+            )
+            Log.d(
+                TAG,
+                "append_adjacent_runway_remaining_pixels_parked targetId=${target.id} " +
+                    "path=$path pages=${candidates.size} preparedNow=$preparedNow"
+            )
+            return true
+        }
+        if (firstMissing >= 0) {
+            startRemainingAdjacentRunwayFileFetches(
+                target,
+                candidates.drop(firstMissing),
+                refs,
+                publishKey,
+                warm,
+            )
+        }
+        if (preparedNow > 0) {
+            Log.d(
+                TAG,
+                "append_adjacent_runway_remaining_pixels_progress targetId=${target.id} " +
+                    "path=$path pages=${candidates.size} preparedNow=$preparedNow " +
+                    "preparedTotal=${candidates.count { page ->
+                        preparedAdjacentRemainderDrawableKey(page)?.let(
+                            preparedAdjacentRemainderDrawables::containsKey
+                        ) == true
+                    }}"
+            )
+        }
+        return false
+    }
+
+    private fun preparedAdjacentRemainderDrawableKey(page: PageRef): String? {
+        if (page.transitionTitle != null) return null
+        val path = activeRemainingAdjacentRunwayTargetPath(page.manga)
+        if (path.isEmpty()) return null
+        val asset = ReaderPreparedStore.canonicalOriginalAssetIdentity(page.image)
+        if (asset.isEmpty()) return null
+        return "$path|${page.sourceIndex}|${page.side}|$asset"
+    }
+
+    private fun resumeParkedAdjacentRemainder(activeViewportPath: String) {
+        if (activeViewportPath.isEmpty()) return
+        val parked = parkedAdjacentRemainderAppends.remove(activeViewportPath) ?: return
+        Log.d(
+            TAG,
+            "append_adjacent_runway_remaining_pixels_resume targetId=${parked.target.id} " +
+                "path=$activeViewportPath refs=${parked.refs.size}"
+        )
+        scheduleRemainingAdjacentRunwayAppend(
+            parked.target,
+            parked.refs,
+            parked.publishKey,
+            parked.warm,
+        )
     }
 
     private fun isViewportInsideEpisode(target: Manga): Boolean {
         val anchor = currentViewportAnchor.get()
         if (anchor < 0) return false
         return synchronized(pagesLock) {
-            val page = pages.getOrNull(anchor.coerceIn(0, pages.lastIndex.coerceAtLeast(0)))
+            val boundedAnchor = anchor.coerceIn(0, pages.lastIndex.coerceAtLeast(0))
+            val page = pages.getOrNull(boundedAnchor)
                 ?: return@synchronized false
             // The forward transition card belongs to the incoming episode. Once its boundary
             // label is the viewport anchor, the old episode is already behind the reader and the
             // incoming suffix may be promoted without competing with foreground content.
-            looseSameEpisodeForAppend(page.manga, target)
+            if (looseSameEpisodeForAppend(page.manga, target)) return@synchronized true
+
+            // Page-table publication and the depth-one viewport mailbox are intentionally
+            // independent. At an adjacent boundary the physical model can move to the incoming
+            // runway before the queued anchor is re-resolved against the newly extended table.
+            // Treat an anchor at or beyond the first canonical incoming page as entered even when
+            // that one stale PageRef still carries the retiring Manga instance. This does not
+            // promote an offscreen chapter: its first real/card index must already exist in the
+            // scrollable table and the user's real anchor must have reached it.
+            val firstIncomingIndex = pages.indexOfFirst { candidate ->
+                looseSameEpisodeForAppend(candidate.manga, target)
+            }
+            firstIncomingIndex >= 0 && boundedAnchor >= firstIncomingIndex
         }
     }
 
@@ -14765,18 +15035,25 @@ class ReaderSession(
                 if (page.transitionTitle != null) return@forEachIndexed
                 val image = page.image.orEmpty()
                 if (image.isBlank()) throw java.io.IOException("Adjacent runway page has no image")
-                val cached = ReaderImageCache.cachedFile(appContext, page.manga, image)
-                    ?: throw java.io.IOException("Adjacent runway image file is not cached")
                 val index = startIndex + offset
                 val requestedWidth = ntkProofTargetWidth()
-                val result = decodePage(
-                    index,
-                    page,
-                    cached,
-                    requestedWidth,
-                    proofDrawable = true
-                )
-                prepareDecodeResultForDraw(result)
+                val pageKey = preparedAdjacentRemainderDrawableKey(page)
+                val prepared = pageKey?.let { key ->
+                    preparedAdjacentRemainderDrawables.remove(key)
+                }
+                val result = if (prepared != null && prepared.pageKey == pageKey) {
+                    prepared.result
+                } else {
+                    val cached = ReaderImageCache.cachedFile(appContext, page.manga, image)
+                        ?: throw java.io.IOException("Adjacent runway image file is not cached")
+                    decodePage(
+                        index,
+                        page,
+                        cached,
+                        requestedWidth,
+                        proofDrawable = true
+                    ).also(::prepareDecodeResultForDraw)
+                }
                 deliveries.add(
                     Delivery(
                         index,
@@ -14793,7 +15070,8 @@ class ReaderSession(
                 TAG,
                 "append_adjacent_runway_drawable_batch_ready reason=$reason start=$startIndex " +
                     "refs=${refs.size} drawables=${deliveries.size} " +
-                    "decodeMs=${SystemClock.elapsedRealtime() - startedAt}"
+                    "decodeMs=${SystemClock.elapsedRealtime() - startedAt} " +
+                    "stagedRemaining=${preparedAdjacentRemainderDrawables.size}"
             )
             return AdjacentRunwayDrawableBatch(deliveries)
         } catch (e: Exception) {
@@ -20056,6 +20334,10 @@ class ReaderSession(
             )
             return
         }
+        // A bounded drawable runway already present after this source is authoritative. Window
+        // callbacks from the final physical swipe can race the append commit and otherwise launch
+        // the exact same document/fetch/decode wave again while those pixels are being scrolled.
+        if (hasForwardNtkEpisodeAfterSource(source)) return
         val forwardMissingKey =
             "${Manga.episodeIdentityKey(source)}:${ReaderSurfaceView.DIRECTION_NEXT}"
         if (adjacentMissingTargets.contains(forwardMissingKey)) return
@@ -20101,14 +20383,20 @@ class ReaderSession(
                 var success = false
                 try {
                     if (!cancelled.get()) {
-                        source.title = currentTitle
-                        source.titleId = currentTitle.id
-                        success = appendImmediateGeneratedNumericAdjacentIfAvailable(
-                            source,
-                            currentTitle,
-                            ReaderSurfaceView.DIRECTION_NEXT,
-                            prefetchOnly = true
-                        )
+                        if (hasForwardNtkEpisodeAfterSource(source)) {
+                            // The queued task lost its race to the normal append path. Treat the
+                            // desired runway as satisfied without touching its network or pixels.
+                            success = true
+                        } else {
+                            source.title = currentTitle
+                            source.titleId = currentTitle.id
+                            success = appendImmediateGeneratedNumericAdjacentIfAvailable(
+                                source,
+                                currentTitle,
+                                ReaderSurfaceView.DIRECTION_NEXT,
+                                prefetchOnly = true
+                            )
+                        }
                     }
                 } catch (e: Exception) {
                     if (!isExpectedCancellation(e)) recordIfUnexpected(e)
@@ -20152,6 +20440,24 @@ class ReaderSession(
                 }
             }
             false
+        }
+    }
+
+    private fun shouldYieldInitialAdjacentMetadata(source: Manga): Boolean {
+        if (!hasForwardNtkEpisodeAfterSource(source)) return false
+        return viewportBusy.get() ||
+            physicalTouchQuietRemainingMs(NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS) > 0L
+    }
+
+    private fun cancelRedundantInitialAdjacentMetadataForPhysicalInput() {
+        for ((sourcePath, activeFetch) in activeInitialAdjacentMetadataFetches.entries) {
+            if (!hasForwardNtkEpisodeAfterSource(activeFetch.source)) continue
+            if (!activeInitialAdjacentMetadataFetches.remove(sourcePath, activeFetch)) continue
+            activeFetch.cancellation.cancel()
+            Log.d(
+                TAG,
+                "append_adjacent_initial_metadata_cancel_physical_input source=$sourcePath"
+            )
         }
     }
 
@@ -25835,14 +26141,26 @@ class ReaderSession(
                 } ?: continue
                 val activeEpisode = activePage.manga
                 val adjustedAnchor = trimConsumedForwardHistory(requestedAnchor, activePage)
-                (title ?: activeEpisode.title)?.let { currentTitle ->
-                    maybeStartInitialAdjacentMetadataPrefetch(
-                        activeEpisode,
-                        currentTitle,
-                        "forward_episode_active",
-                    )
+                val physicalInputActive =
+                    viewportBusy.get() ||
+                        physicalTouchQuietRemainingMs(
+                            NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS
+                        ) > 0L
+                if (physicalInputActive) {
+                    // Entering B at the end of an A→B swipe must not immediately resolve C while
+                    // the final A/B frames are still being presented. The bounded B runway is
+                    // already drawable; retry from the retained viewport after input retirement.
+                    scheduleForwardReadingRetry()
+                } else {
+                    (title ?: activeEpisode.title)?.let { currentTitle ->
+                        maybeStartInitialAdjacentMetadataPrefetch(
+                            activeEpisode,
+                            currentTitle,
+                            "forward_episode_active",
+                        )
+                    }
+                    maybeWarmCompletedForwardEpisode(adjustedAnchor, activeEpisode)
                 }
-                maybeWarmCompletedForwardEpisode(adjustedAnchor, activeEpisode)
             }
         } finally {
             forwardReadingDrainPosted.set(false)
@@ -29061,6 +29379,13 @@ class ReaderSession(
         return (requiredQuietMs - quietFor).coerceAtLeast(0L)
     }
 
+    private fun physicalTouchQuietRemainingMs(requiredQuietMs: Long): Long {
+        val lastTouch = lastPhysicalTouchMs.get()
+        if (lastTouch <= 0L) return 0L
+        val quietFor = SystemClock.uptimeMillis() - lastTouch
+        return (requiredQuietMs - quietFor).coerceAtLeast(0L)
+    }
+
     private fun recycleQueuedDeliveries() {
         while (true) {
             val delivery = deliveryQueue.poll() ?: break
@@ -30148,6 +30473,10 @@ class ReaderSession(
         private const val NTK_APPEND_REMAINING_RUNWAY_ACTIVE_FILE_FETCH_PAGES = 4
         private const val NTK_APPEND_REMAINING_RUNWAY_FOREGROUND_FILE_FETCH_PAGES = 16
         private const val NTK_APPEND_REMAINING_RUNWAY_ACTIVE_RETRY_MS = 180L
+        // Real DOWN/UP input is the boundary for adjacent remainder work. Bootstrap busy state is
+        // deliberately excluded so a completed current episode can use the user's actual idle
+        // time, while rapid chained swipes and their flings keep all CPU/GPU priority.
+        private const val NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS = 48L
         private const val NTK_APPEND_REMAINING_ACTIVE_PREFETCH_BOUNDARY_PAGES = 12
         private const val NTK_APPEND_REMAINING_ACTIVE_CATCHUP_BOUNDARY_PAGES = 10
         private const val NTK_APPEND_REMAINING_ACTIVE_PROOF_AHEAD_PAGES = 3

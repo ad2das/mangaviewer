@@ -291,13 +291,13 @@ class NtkStripSurfaceView private constructor(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             holder.surface.setFrameRate(
                 displayRefreshRate,
-                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
-                Surface.CHANGE_FRAME_RATE_ALWAYS
+                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS
             )
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             holder.surface.setFrameRate(
                 displayRefreshRate,
-                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
+                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
             )
         }
         val refreshPeriodNanos = (1_000_000_000.0 / displayRefreshRate).toLong()

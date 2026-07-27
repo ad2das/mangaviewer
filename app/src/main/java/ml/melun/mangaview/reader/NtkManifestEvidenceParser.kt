@@ -20,6 +20,8 @@ data class NtkExactViewerImageApiEnvelope(
     val request: CustomHttpClient.NtkBoundHttpRequest,
     val response: CustomHttpClient.NtkBoundHttpResponse,
     val orderedAssets: List<String>,
+    val orderedSourcePages: List<Int>,
+    val sourceSlotCount: Int,
     val selectedHeadersDigestSha256: String,
     val orderedAssetsDigestSha256: String,
     val documentPlanProofDigestSha256: String,
@@ -30,6 +32,12 @@ data class NtkExactViewerImageApiEnvelope(
         require(orderedAssets.isNotEmpty())
         require(orderedAssets.none(String::isBlank))
         require(orderedAssets.toSet().size == orderedAssets.size)
+        require(sourceSlotCount in orderedAssets.size..1_000)
+        require(orderedSourcePages.size == orderedAssets.size)
+        require(
+            orderedSourcePages.all { it in 1..sourceSlotCount } &&
+                orderedSourcePages.zipWithNext().all { (first, second) -> first < second }
+        )
         require(NtkStripDigests.isSha256(selectedHeadersDigestSha256))
         require(NtkStripDigests.isSha256(orderedAssetsDigestSha256))
         require(NtkStripDigests.isSha256(documentPlanProofDigestSha256))
@@ -619,17 +627,11 @@ object NtkViewerImageApiAuthorityParser {
         ) fail("Image API response did not grant exact assets")
         val images = root.optJSONArray("images") ?: fail("Image API response lacks images")
         if (images.length() != plan.pageCount) fail("Image API page count mismatch")
-        logReplicaTopology(images)
-        val assets = ArrayList<String>(images.length())
-        for (index in 0 until images.length()) {
-            val image = images.optJSONObject(index) ?: fail("images[$index] is not an object")
-            if (!image.has("page") || image.optInt("page", Int.MIN_VALUE) != index + 1) {
-                fail("Image API page slots are not exact 1..N")
-            }
-            val selected = selectCanonicalAsset(image, index)
-                ?: fail("Image API page ${index + 1} lacks a canonical asset")
-            assets += NtkStripDigests.canonicalAsset(selected)
-        }
+        val selectedSlots = selectRenderableSlots(
+            images,
+            allowExplicitNonRenderableSlots = false,
+        )
+        val assets = selectedSlots.orderedAssets
         if (assets.toSet().size != assets.size) fail("Image API canonical assets are not unique")
         val orderedDigest = NtkEpisodeManifestSeal.computeDigestSha256(
             plan.proof.normalizedEpisodePath,
@@ -640,6 +642,8 @@ object NtkViewerImageApiAuthorityParser {
             request = request,
             response = response,
             orderedAssets = assets,
+            orderedSourcePages = selectedSlots.orderedSourcePages,
+            sourceSlotCount = images.length(),
             selectedHeadersDigestSha256 = selectedHeadersDigest(response.responseHeaders),
             orderedAssetsDigestSha256 = orderedDigest,
             documentPlanProofDigestSha256 = plan.proof.proofDigestSha256,
@@ -686,17 +690,11 @@ object NtkViewerImageApiAuthorityParser {
         ) fail("Image API response did not grant exact assets")
         val images = root.optJSONArray("images") ?: fail("Image API response lacks images")
         if (images.length() != draft.pageCount) fail("Image API page count mismatch")
-        logReplicaTopology(images)
-        val assets = ArrayList<String>(images.length())
-        for (index in 0 until images.length()) {
-            val image = images.optJSONObject(index) ?: fail("images[$index] is not an object")
-            if (!image.has("page") || image.optInt("page", Int.MIN_VALUE) != index + 1) {
-                fail("Image API page slots are not exact 1..N")
-            }
-            val selected = selectCanonicalAsset(image, index)
-                ?: fail("Image API page ${index + 1} lacks a canonical asset")
-            assets += NtkStripDigests.canonicalAsset(selected)
-        }
+        val selectedSlots = selectRenderableSlots(
+            images,
+            allowExplicitNonRenderableSlots = true,
+        )
+        val assets = selectedSlots.orderedAssets
         if (assets.toSet().size != assets.size) fail("Image API canonical assets are not unique")
         val orderedDigest = NtkEpisodeManifestSeal.computeDigestSha256(
             draft.normalizedEpisodePath,
@@ -711,7 +709,7 @@ object NtkViewerImageApiAuthorityParser {
             draft.selectedHeadersDigestSha256,
             draft.responseBody,
             draft.componentPayload,
-            draft.orderedPages,
+            selectedSlots.orderedSourcePages,
             assets,
             draft.requestIdentity
         ).proofDigestSha256
@@ -719,6 +717,8 @@ object NtkViewerImageApiAuthorityParser {
             request = request,
             response = response,
             orderedAssets = assets,
+            orderedSourcePages = selectedSlots.orderedSourcePages,
+            sourceSlotCount = images.length(),
             selectedHeadersDigestSha256 = selectedHeadersDigest(response.responseHeaders),
             orderedAssetsDigestSha256 = orderedDigest,
             documentPlanProofDigestSha256 = provisionalProofDigest,
@@ -734,6 +734,52 @@ object NtkViewerImageApiAuthorityParser {
     @JvmStatic
     fun resetInvocationCountForTest() {
         invocationCount.set(0L)
+    }
+
+    private data class SelectedRenderableSlots(
+        val orderedAssets: List<String>,
+        val orderedSourcePages: List<Int>,
+    )
+
+    private fun selectRenderableSlots(
+        images: JSONArray,
+        allowExplicitNonRenderableSlots: Boolean,
+    ): SelectedRenderableSlots {
+        logReplicaTopology(images)
+        val assets = ArrayList<String>(images.length())
+        val sourcePages = ArrayList<Int>(images.length())
+        val excludedPages = ArrayList<Int>()
+        for (index in 0 until images.length()) {
+            val image = images.optJSONObject(index) ?: fail("images[$index] is not an object")
+            val sourcePage = index + 1
+            if (!image.has("page") || image.optInt("page", Int.MIN_VALUE) != sourcePage) {
+                fail("Image API page slots are not exact 1..N")
+            }
+            val selected = selectCanonicalAsset(image, index)
+            if (selected == null) {
+                if (allowExplicitNonRenderableSlots &&
+                    hasOnlyExplicitNonRenderableTrustedAssets(image)
+                ) {
+                    excludedPages += sourcePage
+                    continue
+                }
+                fail("Image API page $sourcePage lacks a canonical renderable asset")
+            }
+            assets += NtkStripDigests.canonicalAsset(selected)
+            sourcePages += sourcePage
+        }
+        if (assets.isEmpty()) fail("Image API contains no canonical renderable assets")
+        if (excludedPages.isNotEmpty()) {
+            runCatching {
+                Log.w(
+                    "ViewerPerf",
+                    "reader_image_api_excluded_nonrenderable_slots " +
+                        "sourceSlots=${images.length()},renderable=${assets.size}," +
+                        "sourcePages=${excludedPages.joinToString("|")}"
+                )
+            }
+        }
+        return SelectedRenderableSlots(assets, sourcePages)
     }
 
     private fun selectCanonicalAsset(image: JSONObject, pageIndex: Int): String? {
@@ -805,7 +851,31 @@ object NtkViewerImageApiAuthorityParser {
         }
     }
 
-    private fun isTrustedCanonicalAsset(value: String): Boolean {
+    private fun isTrustedCanonicalAsset(value: String): Boolean =
+        isTrustedApiAsset(value) && !isExplicitlyNonRenderableAsset(value)
+
+    private fun hasOnlyExplicitNonRenderableTrustedAssets(image: JSONObject): Boolean {
+        val trusted = linkedSetOf<String>()
+        image.optString("src", "").trim()
+            .takeIf(::isTrustedApiAsset)
+            ?.let(trusted::add)
+        image.optJSONArray("srcCandidates")?.let { candidates ->
+            for (index in 0 until candidates.length()) {
+                candidates.optString(index, "").trim()
+                    .takeIf(::isTrustedApiAsset)
+                    ?.let(trusted::add)
+            }
+        }
+        return trusted.isNotEmpty() && trusted.all(::isExplicitlyNonRenderableAsset)
+    }
+
+    private fun isExplicitlyNonRenderableAsset(value: String): Boolean {
+        val path = runCatching { URI(value).rawPath.orEmpty().lowercase() }
+            .getOrDefault("")
+        return path.endsWith(".svg") || path.endsWith(".svgz")
+    }
+
+    private fun isTrustedApiAsset(value: String): Boolean {
         val uri = runCatching { URI(value) }.getOrNull() ?: return false
         val path = uri.rawPath.orEmpty()
         // This parser only sees assets from the identity-bound, fully consumed 200 response of
