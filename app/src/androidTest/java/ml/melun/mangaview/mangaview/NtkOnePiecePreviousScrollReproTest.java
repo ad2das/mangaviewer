@@ -38,6 +38,7 @@ import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.activity.EpisodeActivity;
 import ml.melun.mangaview.activity.ReaderV2Activity;
+import ml.melun.mangaview.reader.ReaderImageCache;
 import ml.melun.mangaview.reader.ReaderSurfaceView;
 import ml.melun.mangaview.runtime.ViewerTelemetry;
 
@@ -708,6 +709,143 @@ public class NtkOnePiecePreviousScrollReproTest {
                 "The following runway must retain /238731 instead of reusing /238729; elapsedMs="
                         + (SystemClock.elapsedRealtime() - followingStartedAt),
                 reader.testHasReadyEpisodeRunway(following, 4));
+    }
+
+    @Test
+    public void manhwaTailContinuePreattachesNextRunwayBeforeBoundary() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchManhwaEpisodes("창천의 권");
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(
+                Until.findObject(By.res(PACKAGE_NAME, "episode")),
+                90000L);
+        assertNotNull("Expected representative manhwa episode", episodeRow);
+        episodeRow.click();
+        assertNotNull(
+                "Expected initial NTK manhwa reader surface",
+                device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L));
+
+        ReaderV2Activity firstReader = resumedReader();
+        assertNotNull("Expected initial manhwa reader", firstReader);
+        Manga current = firstReader.testEpisodeByPath("/manhwa/10073/238729");
+        Manga expectedNext = firstReader.testEpisodeByPath("/manhwa/10073/238730");
+        assertNotNull("Expected current volume metadata", current);
+        assertNotNull("Expected next volume metadata", expectedNext);
+        long structureDeadline = SystemClock.elapsedRealtime() + 90000L;
+        while (SystemClock.elapsedRealtime() < structureDeadline &&
+                firstReader.testCurrentNtkImageCount() <= 12) {
+            SystemClock.sleep(16L);
+        }
+        int currentCount = firstReader.testCurrentNtkImageCount();
+        assertTrue("Expected a long current volume", currentCount > 12);
+        int resumePage = currentCount - 8;
+        MainApplication.p.setViewerBookmark(current, resumePage, 0, 0);
+
+        runOnMain(firstReader::testPrepareForNextLaunch);
+        runOnMain(firstReader::finish);
+        long closeDeadline = SystemClock.elapsedRealtime() + 10000L;
+        while (SystemClock.elapsedRealtime() < closeDeadline && resumedReader() != null) {
+            SystemClock.sleep(16L);
+        }
+        ReaderImageCache.clearVolatileStateForTest();
+        ReaderImageCache.clearPersistentReaderImageFilesForTest(
+                ApplicationProvider.getApplicationContext());
+        ReaderImageCache.clearPersistentNtkAuthoritativeManifestForTest(
+                current.getNtkEpisodePath());
+        MainApplication.getHttpClient().clearPageCache();
+        current.setImgs(null);
+        expectedNext.setImgs(null);
+
+        Context context = ApplicationProvider.getApplicationContext();
+        runOnMain(() -> Utils.openContinueViewer(context, current, -1));
+        ReaderV2Activity resumed = null;
+        long resumeDeadline = SystemClock.elapsedRealtime() + 90000L;
+        while (SystemClock.elapsedRealtime() < resumeDeadline) {
+            ReaderV2Activity candidate = resumedReader();
+            if (candidate != null && candidate != firstReader) {
+                resumed = candidate;
+                break;
+            }
+            SystemClock.sleep(16L);
+        }
+        assertNotNull("Expected cold tail continue reader", resumed);
+        final ReaderV2Activity resumedReader = resumed;
+        long startPageDeadline = SystemClock.elapsedRealtime() + 30000L;
+        while (SystemClock.elapsedRealtime() < startPageDeadline &&
+                resumedReader.testSessionInitialStartPage() != resumePage) {
+            SystemClock.sleep(16L);
+        }
+        assertEquals(
+                "Continue must restore the saved near-tail page",
+                resumePage,
+                resumedReader.testSessionInitialStartPage());
+
+        Manga resumedNext = resumedReader.testEpisodeByPath("/manhwa/10073/238730");
+        assertNotNull("Expected next volume metadata after continue", resumedNext);
+        // Model the reported "leave it open, then scroll" flow without a fixed delay: wait on the
+        // actual four-drawable runway state and bound how long the app is allowed to prepare it.
+        // The subsequent swipes still start from the restored page and must cross the boundary
+        // without doing any network work there.
+        long runwayPreparationStartedAt = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - runwayPreparationStartedAt < 7000L &&
+                !resumedReader.testHasReadyEpisodeRunway(resumedNext, 4)) {
+            SystemClock.sleep(16L);
+        }
+        long runwayPreparationMs =
+                SystemClock.elapsedRealtime() - runwayPreparationStartedAt;
+        assertTrue(
+                "Tail continue must prepare four next-volume drawables while the restored page "
+                        + "is being viewed; elapsedMs=" + runwayPreparationMs,
+                resumedReader.testHasReadyEpisodeRunway(resumedNext, 4));
+        int width = device.getDisplayWidth();
+        int height = device.getDisplayHeight();
+        int x = width / 2;
+        int fromY = Math.min(height - 160, height * 3 / 4);
+        int toY = Math.max(120, height / 4);
+        boolean runwayReadyBeforeTail =
+                resumedReader.testHasReadyEpisodeRunway(resumedNext, 4) &&
+                        resumedReader.testCurrentPage() < currentCount - 1;
+        long tailReachedAt = -1L;
+        String transitioned = resumedReader.testCurrentNtkEpisodePath();
+        long boundaryDeadline = SystemClock.elapsedRealtime() + 45000L;
+        while (SystemClock.elapsedRealtime() < boundaryDeadline &&
+                current.getNtkEpisodePath().equals(transitioned)) {
+            if (resumedReader.testHasReadyEpisodeRunway(resumedNext, 4) &&
+                    resumedReader.testCurrentPage() < currentCount - 1) {
+                runwayReadyBeforeTail = true;
+            }
+            if (tailReachedAt < 0L && resumedReader.testCurrentPage() >= currentCount - 1) {
+                tailReachedAt = SystemClock.elapsedRealtime();
+            }
+            device.swipe(x, fromY, x, toY, 8);
+            transitioned = resumedReader.testCurrentNtkEpisodePath();
+        }
+        long tailWaitMs = tailReachedAt < 0L
+                ? 0L
+                : SystemClock.elapsedRealtime() - tailReachedAt;
+        Log.i(
+                TAG,
+                "manhwaTailContinueBoundary source=" + current.getNtkEpisodePath()
+                        + ",target=" + transitioned
+                        + ",resumePage=" + resumePage
+                        + ",runwayReadyBeforeTail=" + runwayReadyBeforeTail
+                        + ",runwayPreparationMs=" + runwayPreparationMs
+                        + ",tailWaitMs=" + tailWaitMs);
+        assertTrue(
+                "Tail continue must attach four next-volume drawables before the boundary",
+                runwayReadyBeforeTail);
+        assertEquals(
+                "Tail continue must cross directly into the exact next volume",
+                resumedNext.getNtkEpisodePath(),
+                transitioned);
+        // UiDevice.swipe(..., 8) itself occupies multiple input frames. Allow one complete
+        // physical gesture plus a frame commit, while still rejecting the 0.9s+ image fetch
+        // and multi-second document fetch that this preattached runway is meant to hide.
+        assertTrue(
+                "A preattached tail-continue boundary must complete within one gesture and "
+                        + "must not wait for network; elapsedMs=" + tailWaitMs,
+                tailWaitMs <= 500L);
     }
 
     private UiObject2 findEpisodeRowByListOrdinal(

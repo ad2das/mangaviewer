@@ -53,9 +53,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
 import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -433,6 +435,20 @@ class ReaderSession(
             executor().execute(command)
         }
 
+        fun setCorePoolSize(size: Int): Boolean {
+            require(size > 0)
+            val pool = try {
+                executor() as? ThreadPoolExecutor
+            } catch (_: RejectedExecutionException) {
+                null
+            } ?: return false
+            if (size > pool.maximumPoolSize || pool.isShutdown) return false
+            return runCatching {
+                pool.corePoolSize = size
+                true
+            }.getOrDefault(false)
+        }
+
         fun shutdown() {
             val current = synchronized(lock) {
                 shutdown = true
@@ -525,12 +541,16 @@ class ReaderSession(
     // Strict exact bodies are memory-published after EOF/SHA/header verification. Decode each one
     // as it arrives so the finite CPU work overlaps the remaining network responses.
     private val strictExactBulkDecode = LazySessionExecutor {
-        Executors.newFixedThreadPool(
+        ThreadPoolExecutor(
             STRICT_EXACT_BULK_DECODE_PARALLELISM,
+            STRICT_EXACT_TERMINAL_DECODE_PARALLELISM,
+            0L,
+            TimeUnit.MILLISECONDS,
+            LinkedBlockingQueue(),
             // Source bodies and decodes overlap, but the finite tail after the final EOF is part
             // of the same four-second user-visible contract. The initial anchor has its own
             // display-priority lane and offscreen publication is held through its first commit,
-            // so the bulk workers can run at normal priority without delaying first pixels.
+            // so the terminal workers can run at normal priority without delaying first pixels.
             readerThreadFactory("ReaderStrictExactBulkDecode", Process.THREAD_PRIORITY_BACKGROUND)
         )
     }
@@ -812,6 +832,7 @@ class ReaderSession(
     private val strictExactDecodeInFlight = ConcurrentHashMap.newKeySet<Int>()
     private val strictExactAuthoritativeHandoffPages = ConcurrentHashMap.newKeySet<Int>()
     private val strictExactBulkDecodeReleased = AtomicBoolean(false)
+    private val strictExactTerminalDecodeExpanded = AtomicBoolean(false)
     private val strictExactOverlapDecodeAdmissions = AtomicInteger(0)
     private val strictExactDecodeAdmissions = AtomicInteger(0)
     private val strictExactDecodeTerminals = AtomicInteger(0)
@@ -1338,6 +1359,21 @@ class ReaderSession(
             }
         }
         if (residentPageCount == launchSeal.pageCount) {
+            val terminalDecodeBacklog = strictExactDecodeInFlight.size
+            val terminalDecodeExpanded =
+                !strictExactRollingPixelResidency.get() &&
+                    terminalDecodeBacklog >= STRICT_EXACT_TERMINAL_DECODE_EXPAND_MIN_BACKLOG &&
+                    strictExactTerminalDecodeExpanded.compareAndSet(false, true) &&
+                    strictExactBulkDecode.setCorePoolSize(
+                        STRICT_EXACT_TERMINAL_DECODE_PARALLELISM
+                    )
+            if (terminalDecodeExpanded) {
+                Log.d(
+                    TAG,
+                    "reader_ntk_terminal_decode_expanded backlog=$terminalDecodeBacklog," +
+                        "parallelism=$STRICT_EXACT_TERMINAL_DECODE_PARALLELISM",
+                )
+            }
             // A terminal sweep makes the invariant explicit: every resident, admitted source has
             // either been installed or owns exactly one decode task before all-resident is logged.
             // This is normal viewer work after each post-click body, never a test-only preload.
@@ -10322,6 +10358,7 @@ class ReaderSession(
         strictExactDecodeInFlight.clear()
         strictExactAuthoritativeHandoffPages.clear()
         strictExactBulkDecodeReleased.set(false)
+        strictExactTerminalDecodeExpanded.set(false)
         strictExactOverlapDecodeAdmissions.set(0)
         strictExactDecodeAdmissions.set(0)
         strictExactDecodeTerminals.set(0)
@@ -20382,6 +20419,28 @@ class ReaderSession(
         } else {
             drawableReadyKeys.putIfAbsent(key, 1)
         }
+        // A tail bookmark can restore directly into the last few pages without producing another
+        // viewport-window callback after those pages finish decoding. Re-evaluate the adjacent
+        // gate on each genuine drawable completion; it opens only when every still-unread page is
+        // ready, so current-episode work keeps priority while the next runway gains the otherwise
+        // missing head start before the user's first fast swipe reaches the boundary.
+        if (strictExactColdRolling && firstBitmapLogged.get()) {
+            val restoredStart = currentStartPage()
+            val last = pagesLastIndex()
+            if (restoredStart > 0 &&
+                last - restoredStart <= NTK_INITIAL_TAIL_ADJACENT_PREAPPEND_PAGES &&
+                index >= restoredStart
+            ) {
+                main.post {
+                    if (!cancelled.get()) {
+                        maybeStartInitialTailAdjacentPreappendForAnchor(
+                            index,
+                            NtkAdjacentRunwayPreparationPolicy.RESUMED_TAIL_DRAWABLE_READY_REASON,
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private fun markImmediateGeneratedDecodedReady(delivery: Delivery, index: Int = delivery.index): Boolean {
@@ -20487,16 +20546,47 @@ class ReaderSession(
                 page.transitionTitle == null && Manga.sameEpisodeIdentity(page.manga, source)
             }
         }
-        val currentEpisodeReady = currentRefs.isNotEmpty() &&
-            (authoritativeCount <= 0 || currentRefs.size >= authoritativeCount) &&
+        val completeCurrentStructure = currentRefs.isNotEmpty() &&
+            (authoritativeCount <= 0 || currentRefs.size >= authoritativeCount)
+        val allCurrentDrawablesReady = completeCurrentStructure &&
             currentRefs.all { (index, page) ->
                 hasListenerDrawableDelivery(index, page) || hasDeliveredBitmap(index)
             }
+        val restoredStart = currentStartPage()
+        val resumedFromTail = strictExactColdRolling &&
+            Manga.sameEpisodeIdentity(source, manga) &&
+            restoredStart in 1 until currentRefs.size &&
+            currentRefs.lastIndex - restoredStart <= NTK_INITIAL_TAIL_ADJACENT_PREAPPEND_PAGES
+        val resumedForwardDrawablesReady = resumedFromTail &&
+            currentRefs.drop(restoredStart).all { (index, page) ->
+                hasListenerDrawableDelivery(index, page) || hasDeliveredBitmap(index)
+            }
+        if (resumedFromTail) {
+            // Resolve only the adjacent document while the restored unread pages retain all image,
+            // decode, and GPU priority. Starting this metadata request as soon as the complete
+            // current structure is known hides its multi-second RTT without spending adjacent
+            // bitmap resources before the current tail is actually drawable.
+            maybeStartInitialAdjacentMetadataPrefetch(
+                source,
+                currentTitle,
+                NtkAdjacentRunwayPreparationPolicy.RESUMED_TAIL_DRAWABLE_READY_REASON,
+            )
+        }
+        val currentEpisodeReady =
+            NtkAdjacentRunwayPreparationPolicy.isCurrentEpisodeReadyForAdjacent(
+                completeCurrentStructure = completeCurrentStructure,
+                allCurrentDrawablesReady = allCurrentDrawablesReady,
+                strictExactColdRolling = strictExactColdRolling,
+                resumedFromTail = resumedFromTail,
+                resumedForwardDrawablesReady = resumedForwardDrawablesReady,
+            )
         if (!currentEpisodeReady) {
             Log.d(
                 TAG,
                 "append_adjacent_initial_tail_preappend_skip_current_not_ready reason=$reason " +
-                "count=$count authoritativeCount=$authoritativeCount"
+                    "count=$count authoritativeCount=$authoritativeCount," +
+                    "allReady=$allCurrentDrawablesReady,resumedTail=$resumedFromTail," +
+                    "resumedForwardReady=$resumedForwardDrawablesReady"
             )
             return
         }
@@ -20716,6 +20806,7 @@ class ReaderSession(
                 reason == "first_bitmap" ||
                 reason == "first_bitmap_prepared" ||
                 reason == "first_actual_frame" ||
+                reason == NtkAdjacentRunwayPreparationPolicy.RESUMED_TAIL_DRAWABLE_READY_REASON ||
                 reason == NtkAdjacentRunwayPreparationPolicy.CURRENT_EPISODE_COMPLETE_IDLE_REASON
         if (
             !demandedByForwardReading &&
@@ -30643,10 +30734,14 @@ class ReaderSession(
         private const val FOREGROUND_PRIME_WARM_GENERATION = Int.MIN_VALUE + 1
         private const val URGENT_VISIBLE_NETWORK_PARALLELISM = 8
         private const val URGENT_VISIBLE_DECODE_PARALLELISM = 8
-        // The anchor owns its own display-priority lane. Three finite workers kept the measured
-        // 30 MiB/119-page wave substantially faster and smoother than two workers, while avoiding
-        // the wider allocation/GC pressure produced by the older eight-worker pool.
+        // The anchor owns its own display-priority lane. Keep the measured three-worker pool while
+        // HTTP bodies are arriving so decode cannot steal network/render CPU. Once every canonical
+        // body is verified, a sizeable finite queue may expand to five workers: this removes the
+        // post-network pixel tail without reintroducing the old always-eight-wide allocation/GC
+        // pressure, and every result still enters the same bounded native install queue.
         private const val STRICT_EXACT_BULK_DECODE_PARALLELISM = 3
+        private const val STRICT_EXACT_TERMINAL_DECODE_PARALLELISM = 5
+        private const val STRICT_EXACT_TERMINAL_DECODE_EXPAND_MIN_BACKLOG = 12
         private const val STRICT_EXACT_ROLLING_DECODE_PARALLELISM = 6
         private const val STRICT_EXACT_OVERLAP_DECODE_PARALLELISM = 3
         private const val STRICT_EXACT_OVERLAP_DECODE_LIMIT = 40

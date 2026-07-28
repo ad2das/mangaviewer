@@ -2,6 +2,7 @@ package ml.melun.mangaview.reader
 
 import android.content.Context
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import ml.melun.mangaview.mangaview.Manga
 import java.io.Closeable
@@ -42,6 +43,7 @@ class NtkClickOwnedExactBodyStream(
     val sampledAnchorCandidate: CompletableFuture<String?>? = null,
     val bulkSourcePhysicalAdmissionReady: CompletableFuture<Unit> =
         sourceRoutePreparationReady,
+    val manhwaWaveRecoveryState: NtkManhwaWaveRecoveryState? = null,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
 
@@ -381,6 +383,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
 
     private val closed = AtomicBoolean(false)
     private val effectivePageCount = AtomicInteger(plan.pageCount)
+    private val manhwaWaveRecoveryState = NtkManhwaWaveRecoveryState(
+        plan.pageCount,
+        SystemClock.elapsedRealtimeNanos(),
+    )
     private val completeDocumentPageCountHint = AtomicInteger(0)
     private val documentValidated = CompletableFuture<Unit>()
     private val pageCancellations = (0 until plan.pageCount)
@@ -786,6 +792,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             // real frame. This protects page zero from bulk socket/decode contention without
             // delaying source-session promotion or route preparation.
             bulkSourcePhysicalAdmissionReady = bulkRouteReady,
+            manhwaWaveRecoveryState = manhwaWaveRecoveryState,
         )
         CompletableFuture.allOf(*exactFutures.values.toTypedArray()).whenComplete { _, _ ->
             val published = exactFutures.values.mapNotNull { it.getNow(null) }
@@ -1669,6 +1676,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 ReaderImageCache.NtkQuarantineCallContext(identity, operationLease),
                 opened,
                 callCancellation,
+                waveRecoveryState = manhwaWaveRecoveryState,
                 telemetryAfterImageHeaders = telemetryAfterImageHeaders,
                 validImageHeadersSink = {
                     onValidImageHeaders()

@@ -11,6 +11,7 @@ internal object NtkAdjacentRunwayPreparationPolicy {
     const val MAX_FILE_FETCH_ATTEMPTS = 3
     const val FORWARD_TAIL_REASON = "window_tail"
     const val CURRENT_EPISODE_COMPLETE_IDLE_REASON = "current_episode_complete_idle"
+    const val RESUMED_TAIL_DRAWABLE_READY_REASON = "resumed_tail_drawable_ready"
 
     fun shouldJoin(startedAtMs: Long, nowMs: Long): Boolean {
         if (startedAtMs < 0L || nowMs < startedAtMs) return false
@@ -33,7 +34,24 @@ internal object NtkAdjacentRunwayPreparationPolicy {
         reason: String,
     ): Boolean = !strictExactColdRolling ||
         reason == FORWARD_TAIL_REASON ||
-        reason == CURRENT_EPISODE_COMPLETE_IDLE_REASON
+        reason == CURRENT_EPISODE_COMPLETE_IDLE_REASON ||
+        reason == RESUMED_TAIL_DRAWABLE_READY_REASON
+
+    /**
+     * A resumed tail launch does not need to wait for already-read pages before its restored
+     * position to be decoded again. It may yield the bounded adjacent runway only after the full
+     * canonical structure and every still-unread page from the restored position are ready.
+     */
+    fun isCurrentEpisodeReadyForAdjacent(
+        completeCurrentStructure: Boolean,
+        allCurrentDrawablesReady: Boolean,
+        strictExactColdRolling: Boolean,
+        resumedFromTail: Boolean,
+        resumedForwardDrawablesReady: Boolean,
+    ): Boolean = completeCurrentStructure && (
+        allCurrentDrawablesReady ||
+            (strictExactColdRolling && resumedFromTail && resumedForwardDrawablesReady)
+        )
 
     /**
      * An initial adjacent runway is published atomically. Active input may lower background

@@ -21,10 +21,15 @@ class NtkStrictSourceRouteOwnershipTest {
         assertTrue(session.contains("private fun beginExactOperationActor("))
         assertTrue(session.contains("manifest: NtkAuthoritativeManifest"))
         assertTrue(session.contains("phase = SessionPhase.ExactOpen("))
+        assertTrue(session.contains("val resolvedRoute: ReaderImageCache.NtkResolvedSourceRoute?"))
+        assertTrue(session.contains("val route = checkNotNull(work.resolvedRoute)"))
+        val launchStart = session.indexOf("private fun launchPrimaryFullBodyActor(")
+        val launchEnd = session.indexOf("private fun createQuarantineWorkActor(", launchStart)
+        val launch = session.substring(launchStart, launchEnd)
+        assertFalse(launch.contains("PRODUCTION_NTK_STRICT_SOURCE_ROUTE_RESOLVER.resolve("))
         assertTrue(
             compactSession.contains(
-                "PRODUCTION_NTK_STRICT_SOURCE_ROUTE_RESOLVER.resolve( " +
-                    "manga, manifest.seal, pageIndex, canonicalAsset"
+                "work.exactContext = beginExactOperationActor(work, manifest, route)"
             )
         )
         assertTrue(session.contains("ReaderImageCache.resolveStrictSourceRoute("))

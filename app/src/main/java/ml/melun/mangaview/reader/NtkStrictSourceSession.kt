@@ -807,7 +807,7 @@ internal class NtkStrictSourceSession(
         val attemptOrdinal: Int,
         val quarantineLease: NtkQuarantineSourceOwnershipRegistry.OperationLease? = null,
         var exactContext: ReaderImageCache.NtkStrictCallContext? = null,
-        val quarantineRoute: ReaderImageCache.NtkResolvedSourceRoute? = null,
+        val resolvedRoute: ReaderImageCache.NtkResolvedSourceRoute? = null,
         @Volatile var physicalStartedAtNanos: Long = 0L,
         @Volatile var physicalCompletedAtNanos: Long = 0L,
         @Volatile var physicalHost: String = "",
@@ -904,6 +904,16 @@ internal class NtkStrictSourceSession(
             )
         }
         .toTypedArray()
+    private val manhwaWaveRecoveryState =
+        if (planBinding.episodePath.startsWith("/manhwa/")) {
+            streamedExactBodies?.manhwaWaveRecoveryState
+                ?: NtkManhwaWaveRecoveryState(
+                    pages.size,
+                    SystemClock.elapsedRealtimeNanos(),
+                )
+        } else {
+            null
+        }
     private val activeWorks = arrayOfNulls<PrimaryWork>(physicalLanes.size)
     private val manhwaPhysicalTransferLimit = if (viewerImageApiBacked) {
         VIEWER_IMAGE_API_MANHWA_BODY_TRANSFERS
@@ -1386,6 +1396,7 @@ internal class NtkStrictSourceSession(
         check(validity.get() && !closeRequested.get())
         phase = SessionPhase.ExactOpen(installed.manifest, installed.owner)
         residentAdoptionManifest.set(installed.manifest)
+        manhwaWaveRecoveryState?.armExactAuthority(pages.size)
         acceptSeededExactBodiesActor()
         adoptAllSealedBodiesActor()
         refillLanesActor()
@@ -1656,6 +1667,7 @@ internal class NtkStrictSourceSession(
             return
         }
         phase = SessionPhase.Closing(currentExactIdentityActor(), cause)
+        manhwaWaveRecoveryState?.close()
         streamedExactBodies?.close()
         NtkQuarantineSourceOwnershipRegistry.closeAdmissions(
             planBinding.episodePath,
@@ -1961,12 +1973,13 @@ internal class NtkStrictSourceSession(
         val canonicalAsset = page.canonicalAsset
         val operation: () -> PhysicalResult = if (open != null) {
             val manifest = open.manifest
-            val route = PRODUCTION_NTK_STRICT_SOURCE_ROUTE_RESOLVER.resolve(
-                manga,
-                manifest.seal,
-                pageIndex,
-                canonicalAsset
-            )
+            // Exact admission and the physical Call must share one immutable route. Resolving it
+            // again here rebuilt the complete route after the actor had already admitted its
+            // ownership lease, delaying lane submission and allowing mutable routing inputs to
+            // describe a different route from the one actually used by the Call.
+            val route = checkNotNull(work.resolvedRoute) {
+                "Exact work lost its admitted immutable source route"
+            }
             val context = checkNotNull(work.exactContext)
             ({
                 PhysicalResult.Exact(
@@ -1978,15 +1991,17 @@ internal class NtkStrictSourceSession(
                         pageIndex,
                         route,
                         context,
-                        work.cancellation
-                    ) { }
+                        work.cancellation,
+                        onMetadata = { },
+                        waveRecoveryState = manhwaWaveRecoveryState,
+                    )
                 )
             })
         } else {
             // The actor already resolved and authenticated this immutable route when it created
             // the operation identity. Re-resolving it here rebuilt the complete episode seal for
             // every page a second time before the first physical wave could run.
-            val route = checkNotNull(work.quarantineRoute) {
+            val route = checkNotNull(work.resolvedRoute) {
                 "Quarantine work lost its authenticated source route"
             }
             ({
@@ -2020,6 +2035,7 @@ internal class NtkStrictSourceSession(
                         ),
                         openedLease,
                         work.cancellation,
+                        waveRecoveryState = manhwaWaveRecoveryState,
                         responseHeadersSink = {
                             settleColdConnectionCohortLeader(pageIndex)
                         },
@@ -2143,7 +2159,7 @@ internal class NtkStrictSourceSession(
             ReaderImageCache.Cancellation(),
             page.physicalAttemptOrdinal,
             lease,
-            quarantineRoute = route,
+            resolvedRoute = route,
         )
     }
 
@@ -2153,6 +2169,15 @@ internal class NtkStrictSourceSession(
         manifest: NtkAuthoritativeManifest
     ): PrimaryWork {
         assertActorThread()
+        check(isRoutePreparationReadyWithoutActorWait(page.pageIndex)) {
+            "Source actor attempted to wait for a non-leader exact route preparation"
+        }
+        val preparation = try {
+            quarantineRoutePreparations[page.pageIndex].get()
+        } catch (wrapped: java.util.concurrent.ExecutionException) {
+            throw wrapped.cause ?: wrapped
+        }
+        val route = preparation.route
         val work = PrimaryWork(
             workSequence.getAndIncrement(),
             NtkStrictSourceOwnershipRegistry.nextOperationId(),
@@ -2163,24 +2188,29 @@ internal class NtkStrictSourceSession(
             !isGeometrySealed(),
             WorkMode.EXACT,
             ReaderImageCache.Cancellation(),
-            page.physicalAttemptOrdinal
+            page.physicalAttemptOrdinal,
+            resolvedRoute = route,
         )
-        work.exactContext = beginExactOperationActor(work, manifest)
+        work.exactContext = beginExactOperationActor(work, manifest, route)
         postPromotionStarted++
         return work
     }
 
     private fun beginExactOperationActor(
         work: PrimaryWork,
-        manifest: NtkAuthoritativeManifest
+        manifest: NtkAuthoritativeManifest,
+        admittedRoute: ReaderImageCache.NtkResolvedSourceRoute? = work.resolvedRoute,
     ): ReaderImageCache.NtkStrictCallContext {
         assertActorThread()
         val seal = manifest.seal
-        val route = PRODUCTION_NTK_STRICT_SOURCE_ROUTE_RESOLVER.resolve(
+        // Synthetic adoption of an already-finished quarantine body has no prepared work object
+        // and may still resolve once for bookkeeping. Every network-backed exact work supplies
+        // the preparation route here and reuses it unchanged for its physical Call.
+        val route = admittedRoute ?: PRODUCTION_NTK_STRICT_SOURCE_ROUTE_RESOLVER.resolve(
             manga,
             seal,
             work.pageIndex,
-            pages[work.pageIndex].canonicalAsset
+            pages[work.pageIndex].canonicalAsset,
         )
         work.quarantineLease?.identity?.let { quarantine ->
             check(route.routeKeyHash == quarantine.routeKeyHash)
@@ -2365,7 +2395,7 @@ internal class NtkStrictSourceSession(
         page.physicalStartedAtNanos = work.physicalStartedAtNanos
         page.physicalCompletedAtNanos = work.physicalCompletedAtNanos
         page.physicalHost = work.physicalHost.ifBlank {
-            work.quarantineRoute?.requestTemplate?.url?.host?.lowercase().orEmpty()
+            work.resolvedRoute?.requestTemplate?.url?.host?.lowercase().orEmpty()
         }
         val failure = result.exceptionOrNull()
         if (failure != null) {
@@ -2829,6 +2859,7 @@ internal class NtkStrictSourceSession(
             if (!pinRetained) cachePin.close()
         }
         page.publishedBody = published
+        manhwaWaveRecoveryState?.markValidatedBody(page.pageIndex)
         bodyPublishedCount++
         check(bodyPublishedCount in 1..pages.size)
         check(publishedBodyPins.retainedCount() == bodyPublishedCount)
@@ -3051,6 +3082,7 @@ internal class NtkStrictSourceSession(
             }
         }
         phase = SessionPhase.Closing(currentExactIdentityActor(), failure)
+        manhwaWaveRecoveryState?.close()
         NtkQuarantineSourceOwnershipRegistry.closeAdmissions(
             planBinding.episodePath,
             planBinding.discoveryGeneration,

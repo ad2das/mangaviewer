@@ -78,6 +78,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicIntegerArray
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -330,6 +331,103 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
     fun disjointTailSegments(start: Long, expectedLength: Long): List<LongRange> {
         if (start < 0L || expectedLength <= start) return emptyList()
         return listOf(start until expectedLength)
+    }
+
+    fun projectedFirstCandidateIndex(physicalAttempt: Int, candidateCount: Int): Int {
+        require(physicalAttempt > 0)
+        require(candidateCount > 0)
+        // The list is already page-balanced by its caller. Rotate only by retry ordinal so the
+        // first recovery uses the first alternate and the stalled original remains last.
+        return Math.floorMod(physicalAttempt - 1, candidateCount)
+    }
+
+    const val FINAL_BODY_MIN_SESSION_MS = 2_000L
+    const val FINAL_BODY_PROJECTED_COMPLETION_MS = 4_250L
+    const val FINAL_BODY_MIN_SUFFIX_BYTES = 32L * 1024L
+
+    fun shouldStartFinalBodyTail(
+        wave: NtkManhwaWaveRecoveryState,
+        pageIndex: Int,
+        sessionElapsedMs: Long,
+        bodyElapsedMs: Long,
+        deliveredBytes: Long,
+        expectedLength: Long,
+    ): Boolean {
+        if (!wave.isOnlyCanonicalBodyRemaining(pageIndex)) return false
+        if (sessionElapsedMs < FINAL_BODY_MIN_SESSION_MS) return false
+        if (deliveredBytes <= 0L || deliveredBytes >= expectedLength) return false
+        if (expectedLength - deliveredBytes < FINAL_BODY_MIN_SUFFIX_BYTES) return false
+        val projected = projectedSessionCompletionMs(
+            sessionElapsedMs,
+            bodyElapsedMs,
+            deliveredBytes,
+            expectedLength,
+        ) ?: return false
+        return projected > FINAL_BODY_PROJECTED_COMPLETION_MS.toDouble()
+    }
+}
+
+/**
+ * Bounded, session-owned completion gate for one numeric-manhwa network wave. It carries no
+ * bytes and is attached to requests only as a local OkHttp tag.
+ */
+class NtkManhwaWaveRecoveryState(
+    maximumPageCount: Int,
+    val viewerClickAtNanos: Long,
+) {
+    internal val ordinaryStarts = NtkManhwaProjectedBodyHedgePolicy.SessionStarts()
+    private val completed = AtomicIntegerArray(maximumPageCount)
+    private val completedCount = AtomicInteger(0)
+    private val exactPageCount = AtomicInteger(0)
+    private val exactArmed = AtomicBoolean(false)
+    private val closed = AtomicBoolean(false)
+    private val finalTailClaimed = AtomicBoolean(false)
+
+    init {
+        require(maximumPageCount > 0)
+        require(viewerClickAtNanos > 0L)
+    }
+
+    fun armExactAuthority(pageCount: Int) {
+        require(pageCount in 1..completed.length())
+        if (closed.get()) return
+        val previous = exactPageCount.get()
+        check(previous == 0 || previous == pageCount)
+        exactPageCount.set(pageCount)
+        exactArmed.set(true)
+    }
+
+    fun markValidatedBody(pageIndex: Int) {
+        val pageCount = exactPageCount.get()
+        if (!exactArmed.get() || closed.get() || pageIndex !in 0 until pageCount) return
+        if (completed.compareAndSet(pageIndex, 0, 1)) completedCount.incrementAndGet()
+    }
+
+    fun isOnlyCanonicalBodyRemaining(pageIndex: Int): Boolean {
+        val pageCount = exactPageCount.get()
+        return exactArmed.get() &&
+            !closed.get() &&
+            pageIndex in 1 until pageCount &&
+            completed.get(pageIndex) == 0 &&
+            completedCount.get() == pageCount - 1
+    }
+
+    fun tryClaimFinalTail(pageIndex: Int): Boolean {
+        if (!isOnlyCanonicalBodyRemaining(pageIndex)) return false
+        if (!finalTailClaimed.compareAndSet(false, true)) return false
+        if (!isOnlyCanonicalBodyRemaining(pageIndex)) {
+            finalTailClaimed.compareAndSet(true, false)
+            return false
+        }
+        return true
+    }
+
+    fun releaseUnstartedFinalTailClaim() {
+        finalTailClaimed.compareAndSet(true, false)
+    }
+
+    fun close() {
+        closed.set(true)
     }
 }
 
@@ -1085,20 +1183,24 @@ object ReaderImageCache {
             } else {
                 null
             }
-            val manhwaSessionStartedAtNanos = manhwaWaveKey?.let { waveKey ->
+            val waveRecoveryState =
+                originalRequest.tag(NtkManhwaWaveRecoveryState::class.java)
+            val manhwaSessionStartedAtNanos = waveRecoveryState?.viewerClickAtNanos
+                ?: manhwaWaveKey?.let { waveKey ->
                     ntkManhwaSessionFirstCallAtNanos
                         .computeIfAbsent(waveKey) { AtomicLong(logicalCallStartedAtNanos) }
                         .also { first ->
                             first.getAndUpdate { previous ->
                                 minOf(previous, logicalCallStartedAtNanos)
                             }
-                        }
-            }
-            val manhwaSessionProjectedStartCount = manhwaWaveKey?.let { waveKey ->
-                ntkManhwaSessionProjectedStarts.computeIfAbsent(waveKey) {
-                    NtkManhwaProjectedBodyHedgePolicy.SessionStarts()
+                        }.get()
                 }
-            }
+            val manhwaSessionProjectedStartCount = waveRecoveryState?.ordinaryStarts
+                ?: manhwaWaveKey?.let { waveKey ->
+                    ntkManhwaSessionProjectedStarts.computeIfAbsent(waveKey) {
+                        NtkManhwaProjectedBodyHedgePolicy.SessionStarts()
+                    }
+                }
             val strictPageIndex = originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
                 ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
                 ?: -1
@@ -1263,6 +1365,7 @@ object ReaderImageCache {
                             canonicalIndex,
                             manhwaSessionStartedAtNanos,
                             manhwaSessionProjectedStartCount,
+                            waveRecoveryState,
                         )
                     }
                     response.close()
@@ -1869,9 +1972,10 @@ object ReaderImageCache {
             response: Response,
             candidates: List<Request>,
             candidateIndex: Int,
-            manhwaSessionStartedAtNanos: AtomicLong?,
+            manhwaSessionStartedAtNanos: Long?,
             manhwaSessionProjectedStartCount:
                 NtkManhwaProjectedBodyHedgePolicy.SessionStarts?,
+            waveRecoveryState: NtkManhwaWaveRecoveryState?,
         ): Response {
             val body = response.body ?: return response
             val contentLength = body.contentLength()
@@ -1975,14 +2079,19 @@ object ReaderImageCache {
                 active = active,
                 sessionStartedAtNanos = manhwaSessionStartedAtNanos,
                 sessionProjectedStartCount = manhwaSessionProjectedStartCount,
+                waveRecoveryState = waveRecoveryState,
                 projectedTailFetcher = if (manhwaBody && resumableCandidates.isNotEmpty()) {
                     { start, end, physicalAttempt, segmentActive ->
                         executeManhwaRangeSegment(
                             candidates = resumableCandidates,
-                            firstCandidateIndex = Math.floorMod(
-                                pageIndex + physicalAttempt,
-                                resumableCandidates.size,
-                            ),
+                            // resumableCandidates is already page-rotated above. Including the
+                            // page index again could rotate attempt one back onto the original
+                            // stalled host and waste the complete idle deadline there.
+                            firstCandidateIndex =
+                                NtkManhwaProjectedBodyHedgePolicy.projectedFirstCandidateIndex(
+                                    physicalAttempt,
+                                    resumableCandidates.size,
+                                ),
                             start = start,
                             end = end,
                             total = contentLength,
@@ -2164,8 +2273,9 @@ object ReaderImageCache {
         private val pageIndex: Int,
         private val cancelled: AtomicBoolean,
         private val active: AtomicReference<Call?>,
-        private val sessionStartedAtNanos: AtomicLong?,
+        private val sessionStartedAtNanos: Long?,
         private val sessionProjectedStartCount: NtkManhwaProjectedBodyHedgePolicy.SessionStarts?,
+        private val waveRecoveryState: NtkManhwaWaveRecoveryState?,
         private val projectedTailFetcher: ((Long, Long, Int, AtomicReference<Call?>) -> ByteArray)?,
     ) : ResponseBody() {
         private val contentType = initialResponse.body?.contentType()
@@ -2188,6 +2298,9 @@ object ReaderImageCache {
         private var tailDeadlineGraceUsed = false
         private var closed = false
 
+        private class ProjectedTailFailure(cause: IOException) :
+            IOException("Projected manhwa tail failed", cause)
+
         private val joinedSource = object : okio.Source {
             override fun read(sink: Buffer, byteCount: Long): Long {
                 check(!closed) { "closed" }
@@ -2200,8 +2313,12 @@ object ReaderImageCache {
                     if (cancelled.get()) throw InterruptedIOException(
                         "Replica image Call cancelled"
                     )
-                    readProjectedBytesIfAvailable(sink, byteCount)?.let { return it }
                     try {
+                        try {
+                            readProjectedBytesIfAvailable(sink, byteCount)?.let { return it }
+                        } catch (failure: IOException) {
+                            throw ProjectedTailFailure(failure)
+                        }
                         if (!segmentDeadlineArmed) {
                             // A response body can sit behind another decode/spool task after its
                             // headers arrive. Start the wall clock only when this segment is
@@ -2249,18 +2366,31 @@ object ReaderImageCache {
                                         NTK_MANHWA_PROJECTED_BODY_RECHECK_MS,
                                     )
                                 val sessionElapsedMs =
-                                    sessionStartedAtNanos?.get()?.let { started ->
+                                    sessionStartedAtNanos?.let { started ->
                                         TimeUnit.NANOSECONDS.toMillis(
                                             projectedCheckAtNanos - started
                                         )
                                     }?.coerceAtLeast(elapsedMs) ?: elapsedMs
-                                if (NtkManhwaProjectedBodyHedgePolicy.shouldResume(
+                                val finalBodyTail =
+                                    waveRecoveryState?.let { wave ->
+                                        NtkManhwaProjectedBodyHedgePolicy
+                                            .shouldStartFinalBodyTail(
+                                                wave = wave,
+                                                pageIndex = pageIndex,
+                                                sessionElapsedMs = sessionElapsedMs,
+                                                bodyElapsedMs = elapsedMs,
+                                                deliveredBytes = deliveredBytes,
+                                                expectedLength = expectedLength,
+                                            )
+                                    } == true
+                                val ordinaryTail =
+                                    NtkManhwaProjectedBodyHedgePolicy.shouldResume(
                                         sessionElapsedMs = sessionElapsedMs,
                                         bodyElapsedMs = elapsedMs,
                                         deliveredBytes = deliveredBytes,
                                         expectedLength = expectedLength,
                                     )
-                                ) {
+                                if (finalBodyTail || ordinaryTail) {
                                     val projectedSessionCompletionMs =
                                         NtkManhwaProjectedBodyHedgePolicy
                                             .projectedSessionCompletionMs(
@@ -2281,6 +2411,7 @@ object ReaderImageCache {
                                             sessionElapsedMs,
                                             elapsedMs,
                                             deliveredBytes,
+                                            finalBodyTail,
                                         )
                                     ) {
                                         absoluteInitialDeadlineConsumed = true
@@ -2322,6 +2453,19 @@ object ReaderImageCache {
                             TimeUnit.MILLISECONDS,
                         )
                         return count
+                    } catch (failure: ProjectedTailFailure) {
+                        if (cancelled.get()) throw failure
+                        // A speculative suffix is never required for correctness. The untouched
+                        // primary remains open until a complete suffix is proved, so retire the
+                        // failed Future, rearm that source, and continue it from the same byte.
+                        abandonProjectedTailForSerialFallback(failure)
+                        currentSource.timeout().clearDeadline()
+                        currentSource.timeout().deadline(
+                            bodyProgressDeadlineMs,
+                            TimeUnit.MILLISECONDS,
+                        )
+                        absoluteInitialDeadlineConsumed = true
+                        continue
                     } catch (failure: IOException) {
                         if (grantSmallTailDeadlineGrace(failure)) continue
                         if (fetchProjectedGapAfterPrefixFailure(failure)) continue
@@ -2365,16 +2509,21 @@ object ReaderImageCache {
             sessionElapsedMs: Long,
             elapsedMs: Long,
             observedBytes: Long,
+            finalBodyTail: Boolean,
         ): Boolean {
             val fetcher = projectedTailFetcher ?: return false
             if (projectedTail != null || observedBytes <= 0L || observedBytes >= expectedLength) {
                 return false
             }
-            val split = NtkManhwaProjectedBodyHedgePolicy.disjointTailStart(
-                elapsedMs,
-                observedBytes,
-                expectedLength,
-            ) ?: return false
+            val split = if (finalBodyTail) {
+                observedBytes
+            } else {
+                NtkManhwaProjectedBodyHedgePolicy.disjointTailStart(
+                    elapsedMs,
+                    observedBytes,
+                    expectedLength,
+                ) ?: return false
+            }
             val ranges = NtkManhwaProjectedBodyHedgePolicy.disjointTailSegments(
                 split,
                 expectedLength,
@@ -2386,7 +2535,7 @@ object ReaderImageCache {
                 sessionElapsedMs,
                 elapsedMs,
             )
-            if (!lateAdmission) {
+            if (!finalBodyTail && !lateAdmission) {
                 if (!ntkManhwaEarlyProjectedContinuationPermits.tryAcquire()) return false
                 manhwaEarlyProjectedContinuationPermitHeld = true
             }
@@ -2404,14 +2553,18 @@ object ReaderImageCache {
                 return false
             }
             manhwaRangeContinuationPermitsHeld = ranges.size
-            val projectedStarts = sessionProjectedStartCount
-            if (projectedStarts == null ||
-                !NtkManhwaProjectedBodyHedgePolicy.tryAcquireSessionStart(
-                    projectedStarts,
-                    expectedLength,
-                    lateAdmission,
-                )
-            ) {
+            val admitted = if (finalBodyTail) {
+                waveRecoveryState?.tryClaimFinalTail(pageIndex) == true
+            } else {
+                val projectedStarts = sessionProjectedStartCount
+                projectedStarts != null &&
+                    NtkManhwaProjectedBodyHedgePolicy.tryAcquireSessionStart(
+                        projectedStarts,
+                        expectedLength,
+                        lateAdmission,
+                    )
+            }
+            if (!admitted) {
                 releaseManhwaRangeContinuationPermit()
                 return false
             }
@@ -2440,11 +2593,13 @@ object ReaderImageCache {
                     TAG,
                     "reader_strict_source_projected_tail_start page=$pageIndex," +
                         "offset=$observedBytes,split=$split,total=$expectedLength," +
-                        "segments=${segments.size},attempt=$firstPhysicalAttempt",
+                        "segments=${segments.size},attempt=$firstPhysicalAttempt," +
+                        "finalBody=$finalBodyTail",
                 )
                 true
             } catch (failure: RejectedExecutionException) {
                 projectedTail = null
+                if (finalBodyTail) waveRecoveryState?.releaseUnstartedFinalTailClaim()
                 segments.forEach { segment ->
                     segment.active.getAndSet(null)?.cancel()
                     segment.task.cancel(true)
@@ -5718,6 +5873,7 @@ object ReaderImageCache {
         callContext: NtkQuarantineCallContext,
         tempLease: NtkQuarantineFileLease,
         cancellation: Cancellation,
+        waveRecoveryState: NtkManhwaWaveRecoveryState? = null,
         telemetryAfterImageHeaders: Boolean = false,
         responseHeadersSink: () -> Unit = {},
         validImageHeadersSink: (() -> Unit)? = null,
@@ -5760,6 +5916,7 @@ object ReaderImageCache {
             .removeHeader("If-Range")
             .header("Accept-Encoding", "identity")
             .tag(NtkQuarantineSourceCallIdentity::class.java, identity)
+            .tag(NtkManhwaWaveRecoveryState::class.java, waveRecoveryState)
             .build()
         val call = try {
             newTrackedNtkEpisodeCall(
@@ -6326,7 +6483,8 @@ object ReaderImageCache {
         route: NtkResolvedSourceRoute,
         callContext: NtkStrictCallContext,
         cancellation: Cancellation,
-        onMetadata: (NtkSourceMetadata) -> Unit
+        onMetadata: (NtkSourceMetadata) -> Unit,
+        waveRecoveryState: NtkManhwaWaveRecoveryState? = null,
     ): NtkStrictPublishedBody {
         require(manifestSeal.isStructurallyComplete)
         require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
@@ -6405,6 +6563,7 @@ object ReaderImageCache {
             .removeHeader("If-Range")
             .header("Accept-Encoding", "identity")
             .tag(NtkStrictSourceCallTag::class.java, callContext.tag)
+            .tag(NtkManhwaWaveRecoveryState::class.java, waveRecoveryState)
             .build()
         val call = try {
             newTrackedNtkEpisodeCall(

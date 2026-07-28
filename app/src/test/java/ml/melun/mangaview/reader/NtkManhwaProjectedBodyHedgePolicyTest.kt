@@ -152,6 +152,85 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     }
 
     @Test
+    fun projectedRecoveryDoesNotRotateAnAlreadyPageBalancedCandidateListAgain() {
+        assertEquals(
+            0,
+            NtkManhwaProjectedBodyHedgePolicy.projectedFirstCandidateIndex(
+                physicalAttempt = 1,
+                candidateCount = 3,
+            ),
+        )
+        assertEquals(
+            1,
+            NtkManhwaProjectedBodyHedgePolicy.projectedFirstCandidateIndex(
+                physicalAttempt = 2,
+                candidateCount = 3,
+            ),
+        )
+        assertEquals(
+            2,
+            NtkManhwaProjectedBodyHedgePolicy.projectedFirstCandidateIndex(
+                physicalAttempt = 3,
+                candidateCount = 3,
+            ),
+        )
+    }
+
+    @Test
+    fun onlyTheSingleValidatedWaveRemainderCanUseTheFinalBodyTail() {
+        val wave = NtkManhwaWaveRecoveryState(
+            maximumPageCount = 3,
+            viewerClickAtNanos = 1L,
+        )
+        wave.armExactAuthority(3)
+        wave.markValidatedBody(0)
+        assertFalse(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartFinalBodyTail(
+                wave,
+                pageIndex = 2,
+                sessionElapsedMs = 2_500L,
+                bodyElapsedMs = 2_000L,
+                deliveredBytes = 100_000L,
+                expectedLength = 300_000L,
+            ),
+        )
+        wave.markValidatedBody(1)
+        assertTrue(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartFinalBodyTail(
+                wave,
+                pageIndex = 2,
+                sessionElapsedMs = 2_500L,
+                bodyElapsedMs = 2_000L,
+                deliveredBytes = 100_000L,
+                expectedLength = 300_000L,
+            ),
+        )
+        assertTrue(wave.tryClaimFinalTail(2))
+        assertFalse(wave.tryClaimFinalTail(2))
+        assertFalse(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartFinalBodyTail(
+                wave,
+                pageIndex = 0,
+                sessionElapsedMs = 10_000L,
+                bodyElapsedMs = 9_000L,
+                deliveredBytes = 100_000L,
+                expectedLength = 300_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun closedWaveCannotLaunchOrAccumulateDuplicateCompletions() {
+        val wave = NtkManhwaWaveRecoveryState(2, 1L)
+        wave.armExactAuthority(2)
+        wave.markValidatedBody(0)
+        wave.markValidatedBody(0)
+        wave.close()
+        assertFalse(wave.isOnlyCanonicalBodyRemaining(1))
+        assertFalse(wave.tryClaimFinalTail(1))
+    }
+
+    @Test
     fun stalledSuffixContinuesAtTheFirstUnacceptedByte() {
         val next = NtkManhwaRangeResumePolicy.nextStart(
             segmentStart = 134_603L,

@@ -68,6 +68,12 @@ class NtkAdjacentRunwayPreparationPolicyTest {
                 reason = NtkAdjacentRunwayPreparationPolicy.CURRENT_EPISODE_COMPLETE_IDLE_REASON,
             )
         )
+        assertTrue(
+            NtkAdjacentRunwayPreparationPolicy.shouldStartAdjacentPrefetch(
+                strictExactColdRolling = true,
+                reason = NtkAdjacentRunwayPreparationPolicy.RESUMED_TAIL_DRAWABLE_READY_REASON,
+            )
+        )
     }
 
     @Test
@@ -76,6 +82,37 @@ class NtkAdjacentRunwayPreparationPolicyTest {
             NtkAdjacentRunwayPreparationPolicy.shouldStartAdjacentPrefetch(
                 strictExactColdRolling = false,
                 reason = "first_bitmap",
+            )
+        )
+    }
+
+    @Test
+    fun resumedTailYieldsOnlyAfterItsUnreadRemainderIsReady() {
+        assertTrue(
+            NtkAdjacentRunwayPreparationPolicy.isCurrentEpisodeReadyForAdjacent(
+                completeCurrentStructure = true,
+                allCurrentDrawablesReady = false,
+                strictExactColdRolling = true,
+                resumedFromTail = true,
+                resumedForwardDrawablesReady = true,
+            )
+        )
+        assertFalse(
+            NtkAdjacentRunwayPreparationPolicy.isCurrentEpisodeReadyForAdjacent(
+                completeCurrentStructure = true,
+                allCurrentDrawablesReady = false,
+                strictExactColdRolling = true,
+                resumedFromTail = true,
+                resumedForwardDrawablesReady = false,
+            )
+        )
+        assertFalse(
+            NtkAdjacentRunwayPreparationPolicy.isCurrentEpisodeReadyForAdjacent(
+                completeCurrentStructure = false,
+                allCurrentDrawablesReady = false,
+                strictExactColdRolling = true,
+                resumedFromTail = true,
+                resumedForwardDrawablesReady = true,
             )
         )
     }
