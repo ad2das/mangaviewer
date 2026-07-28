@@ -205,7 +205,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             client.cancelNtkWebViewFallbacks()
             // Bootstrap is local-only: it creates identity seeds but performs no network request.
             val bootstrap = client.prepareNtkStrictAckBootstrap(path)
-            if (isDirectTrustedWebtoon(path)) {
+            val route = if (isDirectTrustedWebtoon(path)) {
                 val task = FutureTask {
                     traceStage("NtkTrustedChallenge") {
                         client.fetchExactNtkTrustedChallengeGrant(
@@ -226,6 +226,21 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 // demand-driven: it is a compatibility fallback only if that observed path fails.
                 AckRoute(bootstrap, null, null)
             }
+            if (requiresClickOwnedIsolatedAck(path)) {
+                // Slug manhwa cannot bind the document's virtual numeric replica names directly;
+                // its exact source table is issued by the signed image API. Start that mandatory
+                // proof at the committed viewer click, alongside the fresh document GET, instead
+                // of serializing a cold service/WebView launch after the document has completed.
+                // This starts no image body and grants no pixels before the document/API identity
+                // checks below. Numeric manhwa retains the demand-driven observation path.
+                ensureIsolatedAck(client, flight, route)
+                Log.d(
+                    "ViewerPerf",
+                    "ntk_strict_click_owned_isolated_ack_start path=$path," +
+                        "generation=${flight.lease.generation.value}",
+                )
+            }
+            route
         } catch (failure: Throwable) {
             synchronized(flightLifecycleLock(path)) {
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
@@ -1430,6 +1445,14 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     private fun isDirectTrustedWebtoon(path: String): Boolean =
         path.startsWith("/webtoon/", ignoreCase = true)
+
+    internal fun requiresClickOwnedIsolatedAck(path: String?): Boolean {
+        val normalized = normalizedPath(path) ?: return false
+        val segments = normalized.trim('/').split('/')
+        return segments.size == 3 &&
+            segments[0].equals("manhwa", ignoreCase = true) &&
+            (segments[1].any { !it.isDigit() } || segments[2].any { !it.isDigit() })
+    }
 
     private fun flightLifecycleLock(path: String): Any =
         flightLifecycleLocks.computeIfAbsent(path) { Any() }

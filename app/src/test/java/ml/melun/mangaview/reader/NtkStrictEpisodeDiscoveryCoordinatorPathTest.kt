@@ -72,4 +72,23 @@ class NtkStrictEpisodeDiscoveryCoordinatorPathTest {
         )
     }
 
+    @Test
+    fun slugManhwaStartsItsMandatoryAckAtTheCommittedClick() {
+        assertTrue(
+            NtkStrictEpisodeDiscoveryCoordinator.requiresClickOwnedIsolatedAck(
+                "/manhwa/u-mokdrojr-um67/u-mqh185th-1ww5",
+            ),
+        )
+        assertFalse(
+            NtkStrictEpisodeDiscoveryCoordinator.requiresClickOwnedIsolatedAck(
+                "/manhwa/12345/67890",
+            ),
+        )
+        assertFalse(
+            NtkStrictEpisodeDiscoveryCoordinator.requiresClickOwnedIsolatedAck(
+                "/webtoon/u-work/u-episode",
+            ),
+        )
+    }
+
 }
