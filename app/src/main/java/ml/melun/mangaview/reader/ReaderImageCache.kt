@@ -1229,6 +1229,7 @@ object ReaderImageCache {
             var lastFailure: IOException? = null
             var index = 0
             var manhwaExtensionFallbackAdded = false
+            var carrierManhwaQuicRecoveryAttempted = false
             var exactQuicRecoveryAttempted = false
             var exactFragmentedRecoveryAttempted = false
             val manhwaHeaderRecoveryPermitHeld = AtomicBoolean(false)
@@ -1377,6 +1378,14 @@ object ReaderImageCache {
                             "to=${attemptCandidates[index + 1].url.host}"
                     )
                 } catch (failure: IOException) {
+                    if (!carrierManhwaQuicRecoveryAttempted &&
+                        shouldTryCarrierManhwaQuicRecovery(physicalCandidate, failure)
+                    ) {
+                        carrierManhwaQuicRecoveryAttempted = true
+                        executeCarrierManhwaQuicRecovery(physicalCandidate, failure)?.let {
+                            return it
+                        }
+                    }
                     if (!exactQuicRecoveryAttempted &&
                         shouldTryExactQuicLegacyImageRecovery(physicalCandidate)
                     ) {
@@ -1413,6 +1422,83 @@ object ReaderImageCache {
                 if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
                     ntkManhwaHeaderFailoverPermits.release()
                 }
+            }
+        }
+
+        private fun shouldTryCarrierManhwaQuicRecovery(
+            request: Request,
+            failure: IOException,
+        ): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                !NtkQuicFetcher.isAvailable()
+            ) return false
+            val cellularTransport = getHttpClient().isNtkCellularResilientTransportActive()
+            return NtkCarrierManhwaImageRecoveryPolicy.shouldRecover(
+                cellularTransport,
+                request.url.host,
+                failure,
+            )
+        }
+
+        /**
+         * Keeps the immutable URL and all strict-source headers while changing only the failed
+         * carrier transport from TCP/TLS to QUIC. CustomHttpClient shares one HttpEngine and a
+         * bounded callback pool per CDN host, so an episode never creates an engine per page.
+         */
+        private fun executeCarrierManhwaQuicRecovery(
+            request: Request,
+            tcpFailure: IOException,
+        ): Response? {
+            if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+            val startedAtMs = SystemClock.elapsedRealtime()
+            val recovery = getHttpClient().ntkCarrierExactImageQuicRecoveryCall(request)
+            active.set(recovery)
+            if (cancelled.get()) recovery.cancel()
+            return try {
+                val response = recovery.execute()
+                if (cancelled.get()) {
+                    response.close()
+                    throw InterruptedIOException("Replica image Call cancelled")
+                }
+                val nonEmptySuccess = response.code in 200..299 &&
+                    (response.body?.contentLength() ?: 0L) > 0L
+                if (!nonEmptySuccess || response.request.url != request.url) {
+                    Log.w(
+                        TAG,
+                        "reader_strict_carrier_manhwa_quic_recovery_failed " +
+                            "host=${request.url.host},code=${response.code}," +
+                            "protocol=${response.protocol}," +
+                            "tcpError=${tcpFailure.javaClass.simpleName}," +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                    )
+                    response.close()
+                    null
+                } else {
+                    Log.d(
+                        TAG,
+                        "reader_strict_carrier_manhwa_quic_recovered " +
+                            "host=${request.url.host},code=${response.code}," +
+                            "protocol=${response.protocol}," +
+                            "bytes=${response.body?.contentLength() ?: -1L}," +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                    )
+                    response
+                }
+            } catch (failure: IOException) {
+                if (cancelled.get()) {
+                    throw InterruptedIOException("Replica image Call cancelled").also {
+                        it.initCause(failure)
+                    }
+                }
+                Log.w(
+                    TAG,
+                    "reader_strict_carrier_manhwa_quic_recovery_error " +
+                        "host=${request.url.host}," +
+                        "tcpError=${tcpFailure.javaClass.simpleName}," +
+                        "quicError=${failure.javaClass.simpleName}," +
+                        "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
+                )
+                null
             }
         }
 

@@ -151,6 +151,19 @@ public class CustomHttpClient {
         }
     }
 
+    /**
+     * Internal, request-local marker for a carrier image route that already failed during
+     * DNS/connect/TLS establishment. It is never serialized as a header and cannot be selected by
+     * work id, account, build variant or test state.
+     */
+    private static final class NtkCarrierExactImageQuicRecovery {
+        private static final NtkCarrierExactImageQuicRecovery INSTANCE =
+                new NtkCarrierExactImageQuicRecovery();
+
+        private NtkCarrierExactImageQuicRecovery() {
+        }
+    }
+
     private static final String NTK_SIGNED_DESCRIPTOR_EXTENSIONS =
             "(?:txt|xml|json|css|js|woff|woff2)";
     private static final Pattern NTK_SIGNED_DESCRIPTOR_FILE_PATTERN = Pattern.compile(
@@ -547,6 +560,7 @@ public class CustomHttpClient {
     private static final long EXTERNAL_VIEWER_IMAGE_FAST_TIMEOUT_MS = 3_000L;
     private static final long NTK_QUIC_GET_TIMEOUT_MS = 4_500L;
     private static final long NTK_QUIC_IMAGE_TIMEOUT_MS = 3_000L;
+    private static final long NTK_CARRIER_IMAGE_QUIC_PREFERENCE_TTL_MS = 2 * 60 * 1000L;
     private static final long NTK_FOREGROUND_IMAGE_RACE_TIMEOUT_MS = 4_000L;
     private static final long NTK_FOREGROUND_IMAGE_BACKUP_DELAY_MS = 180L;
     private static final long NTK_FOREGROUND_INITIAL_GENERATED_HEDGE_DELAY_MS = 80L;
@@ -1735,6 +1749,13 @@ public class CustomHttpClient {
     private final Map<String, ExecutorService> ntkQuicExecutors = new HashMap<>();
     /** A navigation-visible transport failure must not be inherited by the viewer deadline. */
     private final Map<String, Long> ntkQuicStrictUnhealthyUntil = new HashMap<>();
+    /**
+     * Transport-only memory: a successful failure-path QUIC image proves that the carrier can
+     * reach this exact CDN while its TCP ClientHello route is blocked. No image bytes, URL path,
+     * episode identity or test state are retained.
+     */
+    private final Map<String, Long> ntkCarrierImageQuicPreferredUntil =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, FutureTask<NtkQuicFetcher.Result>> ntkQuicImageFlights = new java.util.concurrent.ConcurrentHashMap<>();
     private final AtomicLong ntkImageFlightStarts = new AtomicLong();
     private final AtomicLong ntkImageFlightJoins = new AtomicLong();
@@ -2088,7 +2109,8 @@ public class CustomHttpClient {
     private static boolean isNtkManhwaImageOriginHost(String host) {
         return NTK_MANHWA_PRIMARY_IMAGE_HOST.equalsIgnoreCase(host)
                 || "booktoki8.org".equalsIgnoreCase(host)
-                || "mana.apihost93.com".equalsIgnoreCase(host);
+                || "mana.apihost93.com".equalsIgnoreCase(host)
+                || "aws-cdn1.site".equalsIgnoreCase(host);
     }
 
     /**
@@ -2102,6 +2124,21 @@ public class CustomHttpClient {
         return ntkDemandBoundExactImageFactory == null
                 ? ntkExternalViewerImageFastClient()
                 : ntkDemandBoundExactImageFactory;
+    }
+
+    /**
+     * Creates one exact, cancellation-aware QUIC recovery call after the ordinary cellular image
+     * route has failed before response headers. The normal demand-bound factory remains TCP-first
+     * on cellular until such a failure is observed and this recovery succeeds.
+     */
+    public Call ntkCarrierExactImageQuicRecoveryCall(Request request) {
+        if(request == null)
+            throw new IllegalArgumentException("Exact image recovery request is null");
+        return new NtkDemandBoundExactImageCall(
+                request.newBuilder()
+                        .tag(NtkCarrierExactImageQuicRecovery.class,
+                                NtkCarrierExactImageQuicRecovery.INSTANCE)
+                        .build());
     }
 
     private final class NtkDemandBoundExactImageCall
@@ -2172,18 +2209,31 @@ public class CustomHttpClient {
             String baseUrl = rootFromHttpUrl(wireRequest.url());
             long startedAt = System.currentTimeMillis();
             boolean cellularResilientTransport = shouldUseNtkCellularResilientTransport();
+            boolean explicitCarrierQuicRecovery =
+                    originalRequest.tag(NtkCarrierExactImageQuicRecovery.class) != null;
+            boolean learnedCarrierQuicRoute = cellularResilientTransport
+                    && isNtkCarrierImageQuicPreferred(wireRequest.url().host());
             if(cellularResilientTransport
                     && ntkCellularExactImageTransportLogged.compareAndSet(false, true)) {
                 Log.d(TAG, "ntk_cellular_exact_image_transport_selected"
-                        + " transport=okhttp"
+                        + " transport="
+                        + (explicitCarrierQuicRecovery || learnedCarrierQuicRoute
+                        ? "httpengine-quic" : "okhttp")
                         + ",dns=network_resilient"
                         + ",tls=fragmented");
             }
-            HttpEngine engine = shouldUseNtkExactImageHttpEngine(
-                    forceHttp2, cellularResilientTransport)
+            boolean useHttpEngine = explicitCarrierQuicRecovery
+                    || learnedCarrierQuicRoute
+                    || shouldUseNtkExactImageHttpEngine(forceHttp2, cellularResilientTransport);
+            HttpEngine engine = useHttpEngine
                     ? getOrCreateNtkQuicEngine(baseUrl)
                     : null;
             ExecutorService executor = engine == null ? null : getOrCreateNtkQuicExecutor(baseUrl);
+            if(engine == null && (explicitCarrierQuicRecovery || learnedCarrierQuicRoute)) {
+                clearNtkCarrierImageQuicPreference(wireRequest.url().host());
+                if(explicitCarrierQuicRecovery)
+                    throw new IOException("Exact carrier QUIC image transport unavailable");
+            }
             if(engine == null || executor == null) {
                 // Engine construction has no network side effect. This fallback is selected before
                 // a UrlRequest exists, so there is still exactly one physical source request.
@@ -2253,10 +2303,18 @@ public class CustomHttpClient {
             if(cancelled.get())
                 throw new IOException("Canceled");
             if(result == null || result.error != null || result.code <= 0) {
+                if(explicitCarrierQuicRecovery || learnedCarrierQuicRoute)
+                    clearNtkCarrierImageQuicPreference(wireRequest.url().host());
                 Throwable cause = result == null
                         ? new IOException("HttpEngine returned no result")
                         : result.error;
                 throw new IOException("Exact HttpEngine image request failed", cause);
+            }
+            if(cellularResilientTransport
+                    && (explicitCarrierQuicRecovery || learnedCarrierQuicRoute)
+                    && result.code >= 200 && result.code < 300
+                    && result.bodyBytes.length > 0) {
+                markNtkCarrierImageQuicPreference(wireRequest.url().host());
             }
             if(shouldLogNtkExactImageSuccess(wireRequest, result.code)) {
                 Log.d(TAG, "ntk_demand_exact_image transport=httpengine"
@@ -2267,6 +2325,34 @@ public class CustomHttpClient {
                         + ",url=" + safeLogUrl(wireRequest.url().toString()));
             }
             return responseFromNtkQuic(wireRequest, result, "Exact HttpEngine image");
+        }
+
+        private boolean isNtkCarrierImageQuicPreferred(String host) {
+            if(host == null || host.length() == 0)
+                return false;
+            String normalized = host.toLowerCase(Locale.ROOT);
+            Long until = ntkCarrierImageQuicPreferredUntil.get(normalized);
+            if(until == null)
+                return false;
+            if(until <= SystemClock.elapsedRealtime()) {
+                ntkCarrierImageQuicPreferredUntil.remove(normalized, until);
+                return false;
+            }
+            return true;
+        }
+
+        private void markNtkCarrierImageQuicPreference(String host) {
+            if(host == null || host.length() == 0)
+                return;
+            ntkCarrierImageQuicPreferredUntil.put(
+                    host.toLowerCase(Locale.ROOT),
+                    SystemClock.elapsedRealtime() + NTK_CARRIER_IMAGE_QUIC_PREFERENCE_TTL_MS);
+        }
+
+        private void clearNtkCarrierImageQuicPreference(String host) {
+            if(host == null || host.length() == 0)
+                return;
+            ntkCarrierImageQuicPreferredUntil.remove(host.toLowerCase(Locale.ROOT));
         }
 
         private Response retainFallbackCallUntilBodyComplete(Response response, Call physical)
