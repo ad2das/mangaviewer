@@ -153,6 +153,22 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
+    public void continuousStrictDiscoveryKeepsLaunchTelemetryOwnerAcrossMultipleEpisodes() {
+        String launch = "/manhwa/work/episode-10";
+        String current = "/manhwa/work/episode-11";
+        String target = "/manhwa/work/episode-12";
+
+        assertEquals(
+                launch,
+                ReaderV2Activity.resolveStrictDiscoveryOwnerPathForTest(
+                        target, launch, current, true));
+        assertEquals(
+                current,
+                ReaderV2Activity.resolveStrictDiscoveryOwnerPathForTest(
+                        target, launch, current, false));
+    }
+
+    @Test
     public void transitionCardHeightIsOnlySlightlyLargerThanText() {
         assertEquals(168f, ReaderSurfaceView.transitionCardPageHeightForTest(), 0.001f);
     }

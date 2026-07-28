@@ -412,6 +412,8 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(keyStore.contains("check(activeIdentity == identity)"));
         assertTrue(keyStore.contains("check(activeIdentity == proofIdentity)"));
         assertTrue(keyStore.contains("fun invalidateFlight(identity: NtkAckFlightIdentity)"));
+        assertTrue(keyStore.contains("SystemClock::elapsedRealtimeNanos"));
+        assertFalse(keyStore.contains("System.nanoTime()"));
     }
 
     @Test
@@ -482,7 +484,7 @@ public final class NtkStrictFreshArchitectureTest {
         String startInternal = method(coordinator,
                 "private fun startInternal(",
                 "private fun startIsolatedAck(");
-        int committedDemandGuard = startInternal.indexOf("ViewerTelemetry.isActiveEpisode(path)");
+        int committedDemandGuard = startInternal.indexOf("ViewerTelemetry.isActiveEpisode(ownerPath)");
         int networkGate = startInternal.indexOf(
                 "client.enterNtkStrictForegroundNetwork(path, viewerGeneration)");
         int compatibilityCancel = startInternal.indexOf("client.cancelNtkWebViewFallbacks()", networkGate);
@@ -594,6 +596,55 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(occurrences(macro, "startActivityAndWait()") == 1);
         assertFalse(macro.contains("resumeExistingTaskFromLauncher("));
         assertFalse(macro.contains("FLAG_ACTIVITY_CLEAR_TASK"));
+    }
+
+    @Test
+    public void adjacentRunwayPublishesSurfaceStructureBeforeDrawableCallbacks()
+            throws Exception {
+        String session = read(readerSourcePath("ReaderSession.kt"));
+        String initial = method(session,
+                "private fun appendResolvedEpisodeInitialRunway(",
+                "private fun scheduleInitialAdjacentRunwayAppendRetry(");
+        String remaining = method(session,
+                "private fun appendRemainingAdjacentRunwayRefs(",
+                "private fun refreshRemainingAdjacentRunwayRefs(");
+
+        assertTrue(initial.indexOf("finishStructurePublish()") <
+                initial.indexOf("listener.onPagesAppended(total)"));
+        assertTrue(initial.indexOf("listener.onPagesAppended(total)") <
+                initial.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
+        assertTrue(remaining.indexOf("finishStructurePublish()") <
+                remaining.indexOf("listener.onPagesAppended(total)"));
+        assertTrue(remaining.indexOf("listener.onPagesAppended(total)") <
+                remaining.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
+    }
+
+    @Test
+    public void adjacentDrawablePublicationFencesForwardHistoryCompaction()
+            throws Exception {
+        String session = read(readerSourcePath("ReaderSession.kt"));
+        String initial = method(session,
+                "private fun appendResolvedEpisodeInitialRunway(",
+                "private fun scheduleInitialAdjacentRunwayAppendRetry(");
+        String remaining = method(session,
+                "private fun appendRemainingAdjacentRunwayRefs(",
+                "private fun refreshRemainingAdjacentRunwayRefs(");
+        String trim = method(session,
+                "private fun trimConsumedForwardHistory(",
+                "private data class ForwardHistoryTrimCandidate(");
+
+        assertTrue(initial.indexOf("beginAdjacentDrawableBatchPublication()") <
+                initial.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
+        assertTrue(initial.lastIndexOf("finishAdjacentDrawableBatchPublication()") >
+                initial.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
+        assertTrue(remaining.indexOf("beginAdjacentDrawableBatchPublication()") <
+                remaining.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
+        assertTrue(remaining.lastIndexOf("finishAdjacentDrawableBatchPublication()") >
+                remaining.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
+        assertTrue(trim.contains("if (isAdjacentDrawableBatchPublicationPending())"));
+        assertTrue(occurrences(trim, "if (isAdjacentDrawableBatchPublicationPending())") >= 2);
+        assertTrue(trim.indexOf("if (isAdjacentDrawableBatchPublicationPending())") <
+                trim.indexOf("pages.subList(0, candidate.removeCount).clear()"));
     }
 
     @Test
@@ -831,7 +882,7 @@ public final class NtkStrictFreshArchitectureTest {
                 "fun retireViewerOwnership(",
                 "private fun runFlight(");
         int detachLease = retirement.indexOf("retireDiscoveryForReplacement(");
-        int removeFlight = retirement.indexOf("flights.remove(key, owned)");
+        int removeFlight = retirement.indexOf("flights.remove(ownedPath, owned)");
         assertTrue(detachLease >= 0 && removeFlight > detachLease);
 
         String fence = read(readerSourcePath("NtkStrictDiscoveryRetirementFence.kt"));

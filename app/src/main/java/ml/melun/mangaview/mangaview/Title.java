@@ -86,6 +86,15 @@ public class Title extends MTitle {
         bookmark = title.getBookmarkEpisodeId();
     }
 
+    @Override
+    public void setResumeNtkEpisodePath(String resumeNtkEpisodePath) {
+        super.setResumeNtkEpisodePath(resumeNtkEpisodePath);
+        // A tokenized NTK episode path carries a more authoritative work identity than an old
+        // locally generated numeric title id. Keep the title route in lockstep so episode-list
+        // refresh and continuous-reader adjacency never fall back to /manhwa/<local-id>.
+        applyNtkTitlePathFromEpisodePath(getResumeNtkEpisodePath());
+    }
+
     @NonNull
     @Override
     public String toString() {
@@ -226,7 +235,8 @@ public class Title extends MTitle {
             String titleKey = ntkTitleKey(segment);
             boolean preferDocumentMetadata = shouldPreferNtkDocumentMetadata(
                     segment, titleKey, client.isModernNtkGuardRootForPath(titlePath));
-            NtkEpisodeParser.ParseResult apiEpisodes = preferDocumentMetadata
+            boolean preferSlugRscMetadata = shouldPreferNtkSlugRscMetadata(titlePath, titleKey);
+            NtkEpisodeParser.ParseResult apiEpisodes = preferDocumentMetadata || preferSlugRscMetadata
                     ? new NtkEpisodeParser.ParseResult()
                     : parseNtkEpisodesFromApi(client, segment, titleKey, baseMode);
             if(isNtkEpisodeRequestCancelled(client))
@@ -1034,7 +1044,11 @@ public class Title extends MTitle {
     private static boolean shouldRefreshNtkTitlePath(CustomHttpClient client, String titlePath) {
         if(titlePath == null || titlePath.length() == 0)
             return true;
-        if(isNumericNtkTitleFallbackPath(titlePath))
+        // A canonical title route is already sufficient to request its RSC metadata. Re-resolving
+        // a tokenized route through /search before that request can sit on a guarded browser
+        // timeout for several seconds even though the title RSC is immediately available. Keep
+        // refresh as a recovery path after the known route actually fails.
+        if(isNumericNtkTitleFallbackPath(titlePath) || isNonNumericNtkTitlePath(titlePath))
             return false;
         return client == null || (!client.hasNtkAccessProof() && !client.hasRecentNtkAccessVerification());
     }
@@ -1720,6 +1734,20 @@ public class Title extends MTitle {
 
     static boolean shouldPreferNtkRscTitlePayloadForTest(String titlePath) {
         return shouldPreferNtkRscTitlePayload(titlePath);
+    }
+
+    static boolean shouldPreferNtkSlugRscMetadataForTest(String titlePath, String titleKey) {
+        return shouldPreferNtkSlugRscMetadata(titlePath, titleKey);
+    }
+
+    private static boolean shouldPreferNtkSlugRscMetadata(String titlePath, String titleKey) {
+        // Tokenized works are served by the title RSC document. Their similarly-shaped
+        // /api/{segment}/{slug}/episodes endpoint is not an episode-list route and returns 404,
+        // so waiting for it before the RSC request only adds a cold network round trip. Numeric
+        // works keep the authoritative API-first path and its explicit total validation.
+        return isNonNumericNtkTitlePath(titlePath)
+                && titleKey != null
+                && !titleKey.matches("\\d{1,12}");
     }
 
     static boolean shouldRefreshNtkTitlePathForTest(String titlePath) {

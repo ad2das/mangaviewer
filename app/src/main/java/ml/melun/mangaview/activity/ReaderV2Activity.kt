@@ -2806,6 +2806,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             session?.noteForwardReadingPosition(
                 renderView.currentProgressPosition()?.page ?: currentPage
             )
+            primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
         }
         val queued = if (strictRollingHistoricalScene) {
             renderView.queueResidentAuthoritativeTextureRunway(publishReady)
@@ -6418,7 +6419,37 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun startStrictNtkDiscovery(manga: Manga, reason: String): Boolean {
         val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty())
         if (!isStrictNtkEpisodePath(path)) return false
-        val started = NtkStrictEpisodeDiscoveryCoordinator.startColdRolling(getHttpClient(), manga)
+        val telemetryOwnerPath = NtkStripDigests.normalizeEpisodePath(
+            strictTelemetryEpisodePath
+        )
+        val currentPath = NtkStripDigests.normalizeEpisodePath(
+            currentManga?.ntkEpisodePath.orEmpty()
+        )
+        // A continuously appended reader keeps one telemetry generation for its launch episode.
+        // currentManga advances as the viewport enters each appended episode, but that must not
+        // become the discovery owner: ViewerTelemetry still authorizes the launch path. Using the
+        // moving current path lets the first neighbor load, then suppresses the second neighbor as
+        // an apparent pre-click request. Keep every same-work append rooted in the active launch
+        // owner until this Activity explicitly rotates/ends that generation.
+        val ownerPath = resolveStrictDiscoveryOwnerPath(
+            targetPath = path,
+            telemetryOwnerPath = telemetryOwnerPath,
+            currentPath = currentPath,
+            telemetryOwnerActive = telemetryOwnerPath.isNotBlank() &&
+                ViewerTelemetry.isActiveEpisode(telemetryOwnerPath),
+        )
+        val adjacentOwned = ownerPath.isNotBlank() &&
+            !ownerPath.equals(path, ignoreCase = true) &&
+            NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(ownerPath, path)
+        val started = if (adjacentOwned) {
+            NtkStrictEpisodeDiscoveryCoordinator.startAdjacentColdRolling(
+                getHttpClient(),
+                manga,
+                ownerPath,
+            )
+        } else {
+            NtkStrictEpisodeDiscoveryCoordinator.startColdRolling(getHttpClient(), manga)
+        }
         val joined = started ||
             NtkStrictEpisodeDiscoveryCoordinator.isInFlight(path) ||
             NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null
@@ -6428,6 +6459,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 "started=$started,joined=$joined"
         )
         return joined
+    }
+
+    override fun onAdjacentExactManifestRequired(manga: Manga) {
+        statusHandler.post {
+            if (destroyed || isFinishing) return@post
+            startStrictNtkDiscovery(manga, "continuous_adjacent_exact_manifest")
+        }
     }
 
     private fun isCurrentNtkReader(): Boolean {
@@ -9931,7 +9969,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun shouldPrimeAdjacentNow(): Boolean {
-        return !isCurrentNtkReader() || firstDrawableMetricLogged || toolbarAttached
+        return !isCurrentNtkReader() || strictAllImagesReadyPublished
     }
 
     private fun attachToolbarIfNeeded() {
@@ -10720,6 +10758,31 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             fresh: List<Manga>,
             existing: List<Manga>
         ): List<Manga> = mergeEpisodeSnapshots(fresh, existing)
+
+        @JvmStatic
+        fun resolveStrictDiscoveryOwnerPathForTest(
+            targetPath: String,
+            telemetryOwnerPath: String,
+            currentPath: String,
+            telemetryOwnerActive: Boolean,
+        ): String = resolveStrictDiscoveryOwnerPath(
+            targetPath,
+            telemetryOwnerPath,
+            currentPath,
+            telemetryOwnerActive,
+        )
+
+        private fun resolveStrictDiscoveryOwnerPath(
+            targetPath: String,
+            telemetryOwnerPath: String,
+            currentPath: String,
+            telemetryOwnerActive: Boolean,
+        ): String {
+            if (telemetryOwnerActive && telemetryOwnerPath.isNotBlank()) {
+                return telemetryOwnerPath
+            }
+            return currentPath.ifBlank { targetPath }
+        }
 
         private fun shouldStartAtFirstPageForBookmark(page: Int, offset: Int, side: Int): Boolean {
             return page <= 0 && offset == 0 && side == 0

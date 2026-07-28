@@ -1,6 +1,7 @@
 package ml.melun.mangaview.reader
 
 import android.graphics.Bitmap
+import ml.melun.mangaview.mangaview.MTitle
 import ml.melun.mangaview.mangaview.Manga
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -363,6 +364,28 @@ class ReaderSessionListenerGateTest {
         assertNull(registry.origin(5))
     }
 
+    @Test
+    fun adjacentExactManifestRequestReachesOnlyTheActiveSessionListener() {
+        val downstream = RecordingListener()
+        var activeGeneration = 4
+        val gate = ReaderSessionListenerGate(
+            generation = 4,
+            isActive = { it == activeGeneration },
+            adopted = AdoptedDrawableRegistry(),
+            installed = InstalledDrawableQuery { false },
+            downstream = downstream
+        )
+        val adjacent = Manga(11, "11화", "", MTitle.base_comic).apply {
+            ntkEpisodePath = "/manhwa/work/episode-11"
+        }
+
+        gate.onAdjacentExactManifestRequired(adjacent)
+        activeGeneration = 5
+        gate.onAdjacentExactManifestRequired(adjacent)
+
+        assertEquals(listOf("adjacent-exact:/manhwa/work/episode-11"), downstream.events)
+    }
+
     private open class RecordingListener : ReaderSession.Listener {
         val events = ArrayList<String>()
 
@@ -433,6 +456,10 @@ class ReaderSessionListenerGateTest {
 
         override fun onCaptchaRequired(manga: Manga) {
             events += "captcha"
+        }
+
+        override fun onAdjacentExactManifestRequired(manga: Manga) {
+            events += "adjacent-exact:${manga.ntkEpisodePath}"
         }
 
         override fun onBoundaryAppendFinished(

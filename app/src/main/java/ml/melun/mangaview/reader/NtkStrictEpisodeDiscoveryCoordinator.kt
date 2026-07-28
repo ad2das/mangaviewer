@@ -78,6 +78,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val startedAtMs: Long,
         val viewerGeneration: Long,
         val episodePath: String,
+        val viewerOwnerEpisodePath: String,
         val rollingAdmission: Boolean,
         val completedRouteRecoveryAttempts: Int,
     ) {
@@ -112,6 +113,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             manga,
             rollingAdmission = false,
             completedRouteRecoveryAttempts = 0,
+            viewerOwnerEpisodePath = null,
         )
     }
 
@@ -123,6 +125,27 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             manga,
             rollingAdmission = true,
             completedRouteRecoveryAttempts = 0,
+            viewerOwnerEpisodePath = null,
+        )
+    }
+
+    /**
+     * Starts the one exact manifest flight for the immediate continuous-reader neighbor while the
+     * original click-owned viewer remains active. The target must stay inside the same work path;
+     * this does not authorize arbitrary background/pre-click discovery.
+     */
+    @JvmStatic
+    fun startAdjacentColdRolling(
+        client: CustomHttpClient?,
+        manga: Manga?,
+        viewerOwnerEpisodePath: String?,
+    ): Boolean {
+        return startInternal(
+            client,
+            manga,
+            rollingAdmission = true,
+            completedRouteRecoveryAttempts = 0,
+            viewerOwnerEpisodePath = viewerOwnerEpisodePath,
         )
     }
 
@@ -131,10 +154,17 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         manga: Manga?,
         rollingAdmission: Boolean,
         completedRouteRecoveryAttempts: Int,
+        viewerOwnerEpisodePath: String?,
     ): Boolean {
         if (client == null || manga == null) return false
         val path = normalizedPath(manga.ntkEpisodePath) ?: return false
-        if (!ViewerTelemetry.hasActiveSession() || !ViewerTelemetry.isActiveEpisode(path)) {
+        val ownerPath = normalizedPath(viewerOwnerEpisodePath) ?: path
+        val adjacentOwned = ownerPath != path &&
+            ntkAdjacentOwnerAllowsTarget(ownerPath, path)
+        if (!ViewerTelemetry.hasActiveSession() ||
+            !ViewerTelemetry.isActiveEpisode(ownerPath) ||
+            (ownerPath != path && !adjacentOwned)
+        ) {
             Log.d("ViewerPerf", "ntk_strict_exact_discovery_preclick_suppressed path=$path")
             return false
         }
@@ -155,6 +185,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 SystemClock.elapsedRealtime(),
                 viewerGeneration,
                 path,
+                ownerPath,
                 rollingAdmission,
                 completedRouteRecoveryAttempts,
             ).also {
@@ -264,29 +295,44 @@ object NtkStrictEpisodeDiscoveryCoordinator {
     ): Boolean {
         val key = normalizedPath(path) ?: return false
         if (viewerGeneration <= 0L) return false
-        val flight = synchronized(flightLifecycleLock(key)) {
-            val owned = flights[key] ?: return false
-            if (!owned.retirement.retire(key, viewerGeneration)) return false
+        val ownedPaths = flights.values
+            .filter {
+                it.viewerGeneration == viewerGeneration &&
+                    it.viewerOwnerEpisodePath.equals(key, ignoreCase = true)
+            }
+            .map(Flight::episodePath)
+            .distinct()
+            .sortedBy { if (it.equals(key, ignoreCase = true)) 0 else 1 }
+        var retiredAny = false
+        for (ownedPath in ownedPaths) {
+            val flight = synchronized(flightLifecycleLock(ownedPath)) {
+                val owned = flights[ownedPath] ?: return@synchronized null
+                if (owned.viewerGeneration != viewerGeneration ||
+                    !owned.viewerOwnerEpisodePath.equals(key, ignoreCase = true) ||
+                    !owned.retirement.retire(ownedPath, viewerGeneration)
+                ) return@synchronized null
             // Detach the terminal lease before releasing this path's flight slot. Its asynchronous
             // close barrier is generation-routed through a tombstone and cannot mutate a replacement.
-            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
-                owned.lease,
-                "strict_exact_owner_retired_${safeReason(reason)}"
+                NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                    owned.lease,
+                    "strict_exact_owner_retired_${safeReason(reason)}"
+                )
+                // Removing by identity lets a newer same-path viewer create its own generation now;
+                // the retired worker's finally block cannot remove that newer entry.
+                flights.remove(ownedPath, owned)
+                owned
+            } ?: continue
+            Log.d(
+                "ViewerPerf",
+                "ntk_strict_exact_owner_retired path=$ownedPath," +
+                    "viewerOwnerPath=$key,viewerGeneration=$viewerGeneration," +
+                    "discoveryGeneration=${flight.lease.generation.value}," +
+                    "reason=${safeReason(reason)}"
             )
-            // Removing by identity lets a newer same-path viewer create its own generation now;
-            // the retired worker's finally block cannot remove that newer entry.
-            flights.remove(key, owned)
-            owned
+            flight.client.leaveNtkStrictForegroundNetwork(ownedPath, flight.viewerGeneration)
+            retiredAny = true
         }
-        Log.d(
-            "ViewerPerf",
-            "ntk_strict_exact_owner_retired path=$key," +
-                "viewerGeneration=$viewerGeneration," +
-                "discoveryGeneration=${flight.lease.generation.value}," +
-                "reason=${safeReason(reason)}"
-        )
-        flight.client.leaveNtkStrictForegroundNetwork(key, flight.viewerGeneration)
-        return true
+        return retiredAny
     }
 
     private fun startIsolatedAck(
@@ -1035,9 +1081,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     failure,
                     flight.completedRouteRecoveryAttempts,
                 ) &&
-                ViewerTelemetry.hasActiveSession() &&
-                ViewerTelemetry.activeGeneration() == flight.viewerGeneration &&
-                ViewerTelemetry.isActiveEpisode(path)
+                isViewerOwnerActive(flight)
             if (routeRecoveryRequested) {
                 // Keep the old lease/flight as a path reservation until domain recovery finishes.
                 // This prevents UI watchdogs from starting a competing flight in the gap.
@@ -1108,9 +1152,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val originBefore = client.getUrl(path)
         val changed = client.resolveNtkDomainAfterRouteFailure()
         val originAfter = client.getUrl(path)
-        val stillOwned = ViewerTelemetry.hasActiveSession() &&
-            ViewerTelemetry.activeGeneration() == failedFlight.viewerGeneration &&
-            ViewerTelemetry.isActiveEpisode(path)
+        val stillOwned = isViewerOwnerActive(failedFlight)
         var releasedForReplacement = false
         synchronized(flightLifecycleLock(path)) {
             if (flights[path] === failedFlight) {
@@ -1136,6 +1178,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             manga,
             failedFlight.rollingAdmission,
             failedFlight.completedRouteRecoveryAttempts + 1,
+            failedFlight.viewerOwnerEpisodePath,
         )
         val joined = restarted ||
             isInFlight(path) ||
@@ -1187,9 +1230,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     private fun requireFlightIdentity(flight: Flight, boundary: String) {
         if (flights[flight.episodePath] !== flight ||
-            !ViewerTelemetry.hasActiveSession() ||
-            ViewerTelemetry.activeGeneration() != flight.viewerGeneration ||
-            !ViewerTelemetry.isActiveEpisode(flight.episodePath)
+            !isViewerOwnerActive(flight)
         ) {
             throw InterruptedIOException(
                 "Viewer ownership retired before $boundary path=${flight.episodePath}," +
@@ -1197,6 +1238,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             )
         }
     }
+
+    private fun isViewerOwnerActive(flight: Flight): Boolean =
+        ViewerTelemetry.hasActiveSession() &&
+            ViewerTelemetry.activeGeneration() == flight.viewerGeneration &&
+            ViewerTelemetry.isActiveEpisode(flight.viewerOwnerEpisodePath)
 
     private fun <T> withOwnedAuthority(
         flight: Flight,
@@ -1368,6 +1414,18 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 ),
             )
         }
+    }
+
+    internal fun ntkAdjacentOwnerAllowsTarget(ownerPath: String?, targetPath: String?): Boolean {
+        val owner = normalizedPath(ownerPath) ?: return false
+        val target = normalizedPath(targetPath) ?: return false
+        if (owner.equals(target, ignoreCase = true)) return false
+        val ownerSegments = owner.trim('/').split('/')
+        val targetSegments = target.trim('/').split('/')
+        return ownerSegments.size == 3 &&
+            targetSegments.size == 3 &&
+            ownerSegments[0].equals(targetSegments[0], ignoreCase = true) &&
+            ownerSegments[1].equals(targetSegments[1], ignoreCase = true)
     }
 
     private fun isDirectTrustedWebtoon(path: String): Boolean =

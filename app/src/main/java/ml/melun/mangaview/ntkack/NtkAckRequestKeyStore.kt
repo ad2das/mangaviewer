@@ -1,5 +1,6 @@
 package ml.melun.mangaview.ntkack
 
+import android.os.SystemClock
 import java.nio.charset.StandardCharsets
 import java.math.BigInteger
 import java.security.KeyPair
@@ -15,6 +16,7 @@ import java.util.Base64
 /** Service-process-only server request key and one-shot exact-sign capability. */
 class NtkAckRequestKeyStore(
     private val keyPair: KeyPair = generateKeyPair(),
+    private val elapsedRealtimeNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
 ) {
     private data class Capability(
         val proofId: String,
@@ -176,7 +178,7 @@ class NtkAckRequestKeyStore(
             "p1363",
             signed.signatureValue,
             current.quiescenceDigestSha256,
-            System.nanoTime(),
+            elapsedRealtimeNanos(),
         )
     }
 

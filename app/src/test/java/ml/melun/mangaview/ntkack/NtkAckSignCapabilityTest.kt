@@ -7,6 +7,7 @@ import java.util.Base64
 
 class NtkAckSignCapabilityTest {
     private val f = NtkAckTestFixtures
+    private val elapsedRealtimeNanos = 9_876_543_210L
 
     @Test
     fun proofAndQuiescenceAreBothRequired() {
@@ -34,6 +35,7 @@ class NtkAckSignCapabilityTest {
         assertEquals("key-1", signature.requestKeyId)
         assertEquals("p1363", signature.signatureFormat)
         assertEquals(64, Base64.getUrlDecoder().decode(signature.signatureValue).size)
+        assertEquals(elapsedRealtimeNanos, signature.signedAtElapsedNanos)
         assertThrows(IllegalStateException::class.java) { store.signExact(signRequest(proof)) }
     }
 
@@ -89,7 +91,9 @@ class NtkAckSignCapabilityTest {
 
     private val proofKey = NtkAckRequestKeyStore.generateKeyPair()
 
-    private fun store(proof: NtkAckProof) = NtkAckRequestKeyStore().apply {
+    private fun store(proof: NtkAckProof) = NtkAckRequestKeyStore(
+        elapsedRealtimeNanos = { elapsedRealtimeNanos },
+    ).apply {
         val identity = identity(proof)
         beginFlight(identity)
         bindRegisteredKey(identity, "key-1", serverTimeOffsetMs = 0L, expiresAtEpochMs = Long.MAX_VALUE)

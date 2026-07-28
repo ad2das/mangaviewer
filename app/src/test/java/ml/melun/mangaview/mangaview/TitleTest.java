@@ -144,6 +144,18 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkTokenizedTitleSkipsUnsupportedEpisodeApiBeforeRsc() {
+        assertTrue(Title.shouldPreferNtkSlugRscMetadataForTest(
+                "/manhwa/u-mokdrojr-um67", "u-mokdrojr-um67"));
+        assertTrue(Title.shouldPreferNtkSlugRscMetadataForTest(
+                "/webtoon/u-mp9vqiuy-y68e", "u-mp9vqiuy-y68e"));
+        assertFalse(Title.shouldPreferNtkSlugRscMetadataForTest(
+                "/manhwa/33727", "33727"));
+        assertFalse(Title.shouldPreferNtkSlugRscMetadataForTest(
+                "/webtoon/840894", "840894"));
+    }
+
+    @Test
     public void ntkEpisodePagerFindsLastPageInEscapedNextPayload() {
         String body = "href=\\\"/manhwa/3540?epage=2\\\" "
                 + "href=\\\"/manhwa/3540?epage=3\\\" "
@@ -208,10 +220,10 @@ public class TitleTest {
     }
 
     @Test
-    public void ntkNumericTitlePathDoesNotForceSearchRefreshWithoutAccessProof() {
+    public void ntkCanonicalTitlePathDoesNotForceSearchRefreshBeforeFirstRequest() {
         assertFalse(Title.shouldRefreshNtkTitlePathForTest("/webtoon/840894"));
         assertFalse(Title.shouldRefreshNtkTitlePathAfterMissingForTest("/webtoon/840894"));
-        assertTrue(Title.shouldRefreshNtkTitlePathForTest("/webtoon/u-mp9vqiuy-y68e"));
+        assertFalse(Title.shouldRefreshNtkTitlePathForTest("/webtoon/u-mp9vqiuy-y68e"));
         assertTrue(Title.shouldRefreshNtkTitlePathAfterMissingForTest("/webtoon/u-mp9vqiuy-y68e"));
     }
 
@@ -288,6 +300,17 @@ public class TitleTest {
 
         assertEquals("/webtoon/u-mp9vqiuy-y68e", title.getPath());
         assertEquals("/webtoon/u-mp9vqiuy-y68e", title.getUrl());
+    }
+
+    @Test
+    public void resumeEpisodePathReplacesStaleLocalNtkTitleId() {
+        Title title = new Title("좀먹는 공주", "", "", null, "", 1571477483, MTitle.base_comic);
+        title.setSourceSite("ntk");
+
+        title.setResumeNtkEpisodePath("/manhwa/u-mokdrojr-um67/u-mqqehf8u-34w2");
+
+        assertEquals("/manhwa/u-mokdrojr-um67", title.getPath());
+        assertEquals("/manhwa/u-mokdrojr-um67", title.getUrl());
     }
 
     @Test

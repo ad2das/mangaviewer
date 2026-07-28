@@ -1,7 +1,9 @@
 package ml.melun.mangaview.reader
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkStrictEpisodeDiscoveryCoordinatorPathTest {
@@ -42,4 +44,32 @@ class NtkStrictEpisodeDiscoveryCoordinatorPathTest {
             NtkSourceSpoolRegistry.normalizedPath("HTTPS://SBXH9.COM$path?from=test"),
         )
     }
+
+    @Test
+    fun adjacentAuthorityIsLimitedToAnotherEpisodeOfTheSameWork() {
+        val owner = "/manhwa/u-mokdrojr-um67/u-mqh17v8s-wmyq"
+
+        assertTrue(
+            NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(
+                owner,
+                "/manhwa/u-mokdrojr-um67/u-mqqehf8u-34w2",
+            ),
+        )
+        assertFalse(
+            NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(owner, owner),
+        )
+        assertFalse(
+            NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(
+                owner,
+                "/manhwa/another-work/u-mqqehf8u-34w2",
+            ),
+        )
+        assertFalse(
+            NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(
+                owner,
+                "/webtoon/u-mokdrojr-um67/u-mqqehf8u-34w2",
+            ),
+        )
+    }
+
 }

@@ -655,6 +655,10 @@ class ReaderSessionListenerGate(
         if (active()) downstream.onCaptchaRequired(manga)
     }
 
+    override fun onAdjacentExactManifestRequired(manga: Manga) {
+        if (active()) downstream.onAdjacentExactManifestRequired(manga)
+    }
+
     override fun onBoundaryAppendFinished(
         anchor: Int,
         direction: Int,
