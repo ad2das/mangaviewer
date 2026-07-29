@@ -377,15 +377,21 @@ internal object NtkStrictInitialWavePolicy {
         WEBTOON_CONNECTION_SHARDS * 3
     /**
      * Every unusable manifest replica currently converges on the same healthy webtoon origin.
-     * A header-success ramp used to grow a webtoon to 64 simultaneous bodies before any image had
-     * reached EOF. Large episodes then spent nearly all bandwidth resetting and resuming streams.
-     * Six streams over eight host-local pools keep forty-eight bodies continuously productive. The
-     * former six-pool layout left four or five serial bodies behind a slow pool even for a 66-page
-     * episode. Increasing only the physical stripe while retaining the fixed forty-eight-body ring
-     * avoids the reset-prone historical sixty-four-body layout and shortens the final pool tail.
-     * The fixed executor stays wide for numeric manhwa, whose transport has different origins.
+     * The old header-success ramp could grow to 64 bodies before any image reached EOF, starving
+     * the entry stream. Six streams over eight host-local pools are merely the pre-anchor capacity;
+     * the separate three-call Wi-Fi gate below protects the initial image. A wider ring is allowed
+     * only after that image publishes. The fixed executor stays wide for numeric manhwa, whose
+     * transport has different origins.
      */
-    private const val WEBTOON_STREAMS_PER_CONNECTION_SHARD = 6
+    private const val WEBTOON_PRE_ANCHOR_STREAMS_PER_CONNECTION_SHARD = 6
+    // Page zero is already immutable and published before this ring expands. The renderer now
+    // reserves its next producer-vsync callback before body completions can queue, removing the
+    // lifecycle defect behind the historical 64-stream jank. On the current eight-pool transport,
+    // 80 is the measured saturation point: 120 created seven header-deadline recoveries, added
+    // roughly 30 MiB PSS and finished slower. Decoder concurrency and retained pixels remain
+    // independently bounded. The initial frame retains the three-call gate and exclusive anchor
+    // pool, so whole-scene throughput cannot steal its connection before publication.
+    private const val WEBTOON_POST_ANCHOR_BODY_TRANSFERS = 80
 
     /**
      * Carrier transport needs one actual demanded body to establish each finite host/pool cohort.
@@ -420,10 +426,10 @@ internal object NtkStrictInitialWavePolicy {
             // it as a full six-stream pool pushes an avoidable extra body onto the other pools.
             // Once the entry body is safe, every finite pool can carry its measured useful share.
             val usefulWebtoonLanes = if (anchorBodyPublished) {
-                WEBTOON_CONNECTION_SHARDS * WEBTOON_STREAMS_PER_CONNECTION_SHARD
+                WEBTOON_POST_ANCHOR_BODY_TRANSFERS
             } else {
                 1 + (WEBTOON_CONNECTION_SHARDS - 1) *
-                    WEBTOON_STREAMS_PER_CONNECTION_SHARD
+                    WEBTOON_PRE_ANCHOR_STREAMS_PER_CONNECTION_SHARD
             }
             minOf(
                 physicalLaneCount,

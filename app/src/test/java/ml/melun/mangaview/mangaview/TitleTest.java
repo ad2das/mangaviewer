@@ -156,6 +156,18 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkSlugRetriesEpisodeApiOnlyAfterItsRscMisses() {
+        assertTrue(Title.shouldTryNtkEpisodeApiAfterSlugRscMissForTest(
+                "/webtoon/로열패밀리-네이버", "로열패밀리-네이버"));
+        assertTrue(Title.shouldTryNtkEpisodeApiAfterSlugRscMissForTest(
+                "/manhwa/u-mokdrojr-um67", "u-mokdrojr-um67"));
+        assertFalse(Title.shouldTryNtkEpisodeApiAfterSlugRscMissForTest(
+                "/webtoon/840894", "840894"));
+        assertFalse(Title.shouldTryNtkEpisodeApiAfterSlugRscMissForTest(
+                "/webtoon/로열패밀리-네이버/1071695", "로열패밀리-네이버"));
+    }
+
+    @Test
     public void ntkEpisodePagerFindsLastPageInEscapedNextPayload() {
         String body = "href=\\\"/manhwa/3540?epage=2\\\" "
                 + "href=\\\"/manhwa/3540?epage=3\\\" "

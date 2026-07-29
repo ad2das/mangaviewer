@@ -161,7 +161,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
      *
      * The pending queue is drained before its pixels are installed on Surface. Without a stable
      * accepted ledger, a late duplicate decode can enter that empty interval, replace an already
-     * published bitmap, and recycle the identity captured by the all-texture runway.
+     * published bitmap, and recycle the identity captured by the all-texture runway. A bounded
+     * rolling eviction explicitly retires just that page's transient Bitmap identity before the
+     * Surface is cleared, so a later exact re-decode can become the new physical winner.
      */
     private val acceptedStrictAuthoritativeIdentities =
         LinkedHashMap<Int, AdoptedDrawableIdentity>()
@@ -604,6 +606,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
         )
         super.onCreate(savedInstanceState)
+        ml.melun.mangaview.glide.ViewerWarmupManager
+            .suppressVisibleContinueWarmupsWhileViewerActive(true)
         PerformanceMonitor.attach(this)
         PerformanceMonitor.screen("viewer")
 
@@ -895,7 +899,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             it.setWindowListener(this)
             it.setSurfaceAttachmentDeferredUntilActualPixels(strictNtkEpisode)
             it.setSourceNativeWebtoonCompositingEnabled(
-                manga.baseMode == MTitle.base_webtoon || ntkPath.startsWith("/webtoon/")
+                strictNtkEpisode && (
+                    manga.baseMode == MTitle.base_webtoon ||
+                        ntkPath.startsWith("/webtoon/") ||
+                        ntkPath.startsWith("/manhwa/")
+                    )
             )
             // The direct strict session is the production cold path. Keep its established tile
             // identity rules, but make every decoded current/forward tile GPU-resident before it
@@ -1065,7 +1073,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             it.setPageGapPx(pageGapForBaseMode(manga.baseMode))
             it.setSourceNativeWebtoonCompositingEnabled(
                 manga.baseMode == MTitle.base_webtoon ||
-                    manga.ntkEpisodePath?.startsWith("/webtoon/") == true
+                    manga.ntkEpisodePath?.startsWith("/webtoon/") == true ||
+                    manga.ntkEpisodePath?.startsWith("/manhwa/") == true
             )
         }
         val adopted = candidateRender.adoptPreparedDrawableBatch(
@@ -1554,6 +1563,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             )
         }
         PerformanceMonitor.detach()
+        ml.melun.mangaview.glide.ViewerWarmupManager
+            .suppressVisibleContinueWarmupsWhileViewerActive(false)
         super.onDestroy()
     }
 
@@ -3014,6 +3025,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPageRollingEvicted(index: Int) {
+        // The accepted ledger protects the short queue-drain-to-Surface-install gap, not the
+        // lifetime of a canonical asset. Oversized episodes deliberately retire far-offscreen
+        // pixels while retaining their immutable source proof. If the old Bitmap identity remains
+        // here, every exact re-decode is rejected as a late duplicate and the renderer can never
+        // repopulate that page (a 195-page qualification case stopped permanently at page 139).
+        //
+        // Retire the identity before clearing Surface. This callback runs on main, so a worker that
+        // publishes the replacement can only enqueue a main flush after this clear has completed;
+        // the replacement therefore cannot be erased by the eviction that admitted it.
+        synchronized(strictAuthoritativeInstallLock) {
+            acceptedStrictAuthoritativeIdentities.remove(index)
+        }
         if (pagesReady) renderView.clearRollingAuthoritativePage(index)
     }
 

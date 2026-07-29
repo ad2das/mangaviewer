@@ -17,12 +17,14 @@ public class ContinueReadinessCoordinatorTest {
     }
 
     @Test
-    public void ntkColdStartSkipsAmbiguousSource() {
-        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("", true));
-        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest(null, true));
-        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("ntk", true));
+    public void continueWarmupKeepsOnlyCardsForTheActiveSite() {
+        assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("", true));
+        assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest(null, true));
+        assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("ntk", true));
         assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("ntk", false));
         assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("", false));
+        assertEquals(true, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("wfwf", true));
+        assertEquals(false, ContinueReadinessCoordinator.shouldSkipNtkContinuePrefetchForTest("wfwf", false));
     }
 
     @Test

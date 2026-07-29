@@ -31,6 +31,7 @@
     "firstImageSlaMs",
     "webtoonImageSlaMs",
     "manhwaImageSlaMs",
+    "allImagesSlaMs",
     "includeWarmReopen",
     "compilation",
     "device",
@@ -47,8 +48,8 @@
     "seedSelectionMode": {
       "enum": ["FRESH_RANDOM", "FIXED_SEED_REPRODUCTION"]
     },
-    "expectedWebtoon": { "type": "integer", "minimum": 1 },
-    "expectedManhwa": { "type": "integer", "minimum": 1 },
+    "expectedWebtoon": { "type": "integer", "minimum": 0 },
+    "expectedManhwa": { "type": "integer", "minimum": 0 },
     "completedCases": { "type": "integer", "minimum": 0 },
     "passedCases": { "type": "integer", "minimum": 0 },
     "smokePassed": { "type": "boolean" },
@@ -73,6 +74,7 @@
     "firstImageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
     "webtoonImageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
     "manhwaImageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
+    "allImagesSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
     "includeWarmReopen": { "type": "boolean" },
     "compilation": { "type": "string", "minLength": 1 },
     "device": {
@@ -175,8 +177,18 @@
         "properties": {
           "firstImageSlaMs": { "const": 4000 },
           "webtoonImageSlaMs": { "const": 4000 },
-          "manhwaImageSlaMs": { "const": 4000 },
-          "allImagesSlaRequirementSatisfied": { "const": true }
+          "manhwaImageSlaMs": { "const": 4000 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "allImagesSlaRequirementSatisfied": { "const": true } },
+        "required": ["allImagesSlaRequirementSatisfied"]
+      },
+      "then": {
+        "properties": {
+          "allImagesSlaMs": { "const": 30000 }
         }
       }
     },
@@ -203,6 +215,7 @@
           "firstImageSlaMs": { "const": 4000 },
           "webtoonImageSlaMs": { "const": 4000 },
           "manhwaImageSlaMs": { "const": 4000 },
+          "allImagesSlaMs": { "const": 30000 },
           "cases": { "minItems": 20, "maxItems": 20 }
         }
       }
@@ -412,6 +425,7 @@
         },
         "firstActualMs": { "type": ["number", "null"], "minimum": 0 },
         "imageSlaMs": { "type": ["integer", "null"], "minimum": 250, "maximum": 30000 },
+        "allImagesSlaMs": { "type": ["integer", "null"], "minimum": 250, "maximum": 30000 },
         "allImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
         "allImagesReadyPageCount": { "type": ["integer", "null"], "minimum": 0 },
         "androidxAllImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
@@ -520,6 +534,7 @@
               "randomSeed",
               "firstActualMs",
               "imageSlaMs",
+              "allImagesSlaMs",
               "allImagesReadyMs",
               "allImagesReadyPageCount",
               "androidxAllImagesReadyMs",

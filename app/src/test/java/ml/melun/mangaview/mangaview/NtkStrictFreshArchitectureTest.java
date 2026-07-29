@@ -853,9 +853,9 @@ public final class NtkStrictFreshArchitectureTest {
 
         assertTrue(strictStart.contains("requestedStartPage()"));
         assertTrue(strictStart.contains(
-                "StrictRollingAdmission.initial(launchSeal.pageCount, installed)"));
+                "StrictRollingAdmission.initial(launchSeal.pageCount, installedSource)"));
         assertTrue(strictStart.contains("currentViewportAnchor.set(installed)"));
-        assertTrue(strictStart.contains("anchor = sourceIndex == installed"));
+        assertTrue(strictStart.contains("anchor = sourceIndex == installedSource"));
         assertFalse(strictStart.contains(
                 "installImages(launchSeal.canonicalAssets, 0"));
     }
@@ -937,7 +937,7 @@ public final class NtkStrictFreshArchitectureTest {
     }
 
     @Test
-    public void ntkLibraryRowsAndEpisodeNavigationAreMetadataOnlyBeforeClick() throws Exception {
+    public void ntkLibraryRowsWarmOnlyVisibleContinueAndOneForwardEpisodeBeforeClick() throws Exception {
         String adapter = read(projectPath("src", "main", "java", "ml", "melun", "mangaview",
                 "adapter", "TitleAdapter.java"));
         String ntkRow = method(adapter, "if(ntk) {", "int page = p.getViewerBookmark(manga);");
@@ -951,12 +951,20 @@ public final class NtkStrictFreshArchitectureTest {
         String readinessPrime = method(readiness,
                 "private static void prime(Context context, Manga manga, Title title, boolean visible, boolean force)",
                 "private static Manga resumeManga(");
-        int ntkReturn = readinessPrime.indexOf("if(isNtkContinue(");
-        int returnStatement = readinessPrime.indexOf("return;", ntkReturn);
-        int nonNtkWarmup = readinessPrime.indexOf("ReaderWarmupCoordinator.primeVisible(");
-        assertTrue(ntkReturn >= 0);
-        assertTrue(returnStatement > ntkReturn);
-        assertTrue(nonNtkWarmup > returnStatement);
+        assertTrue(readinessPrime.contains("ReaderWarmupCoordinator.primeVisible("));
+        assertTrue(readinessPrime.contains("if(!isNtkContinue("));
+
+        String warmup = read(readerSourcePath("ReaderWarmupCoordinator.kt"));
+        String visibleForward = method(warmup,
+                "private fun scheduleVisibleContinueWithForward(",
+                "private fun forwardNextEpisode(");
+        assertTrue(visibleForward.contains("prepareEntry(appContext, entry"));
+        assertTrue(visibleForward.contains("forwardNextEpisode(entry.manga, entry.title)"));
+        String forwardSelection = method(warmup,
+                "private fun forwardNextEpisode(",
+                "    fun primeImmediate(");
+        assertTrue(forwardSelection.contains("current.nextEp()"));
+        assertFalse(forwardSelection.contains("prevEp()"));
 
         String title = read(sourcePath("Title.java"));
         String parsedMetadata = method(title,

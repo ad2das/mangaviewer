@@ -68,8 +68,9 @@ Assert-HostSourceContains 'if($Seed -ne 0L)'
 Assert-HostSourceContains 'CountPerType = 10'
 Assert-HostSourceContains 'FirstImageSlaMs = 4000'
 Assert-HostSourceContains 'ManhwaImageSlaMs = 4000'
+Assert-HostSourceContains 'AllImagesSlaMs = 30000'
 Assert-HostSourceContains 'QualificationDeviceMode = "HOST_GPU_EMULATOR"'
-Assert-HostSourceContains 'IncludeWarmReopen = $true'
+Assert-HostSourceContains 'IncludeWarmReopen = $false'
 
 foreach($formalGatePattern in @(
         '(?s)\$diagnosticOnly\s*=.*?\$freshRandomSeedRequirementSatisfied\)',
@@ -342,13 +343,19 @@ if(-not $inactiveTimerState.measured -or $inactiveTimerState.count -ne 0 -or
     throw "Inactive TopAppTimer or indented registered-job section was counted as running"
 }
 
-function New-RequestEvent([int]$Ordinal, [string]$Phase, [string]$Operation) {
+function New-RequestEvent(
+    [int]$Ordinal,
+    [string]$Phase,
+    [string]$Operation,
+    [int64]$TimestampNanos = 0L
+) {
     [pscustomobject]@{
         ordinal = $Ordinal
         value = [pscustomobject]@{
             event = "image_request"
             phase = $Phase
             operation = $Operation
+            timestampNanos = $TimestampNanos
         }
     }
 }
@@ -362,5 +369,18 @@ if(-not $queue.measured -or $queue.peakActive -ne 2 -or $queue.terminalBalance -
 }
 $unbalanced = Get-RequestQueueMetrics @((New-RequestEvent 1 "start" "1"))
 if($unbalanced.measured) { throw "Unbalanced request telemetry did not fail closed" }
+
+$teardownBalanced = Get-RequestQueueMetrics @(
+    (New-RequestEvent 1 "start" "visible" 10L),
+    (New-RequestEvent 2 "cancel" "visible" 30L),
+    (New-RequestEvent 3 "cancel" "sampled-tail-without-start" 31L),
+    (New-RequestEvent 4 "start" "next-episode-after-traversal" 32L),
+    (New-RequestEvent 5 "cancel" "next-episode-after-traversal" 33L)
+) 20L
+if(-not $teardownBalanced.measured -or $teardownBalanced.peakActive -ne 1 -or
+        $teardownBalanced.terminalBalance -ne 0 -or
+        $teardownBalanced.problems.Count -ne 0) {
+    throw "Post-traversal lifecycle cancellation corrupted active-reading queue accounting"
+}
 
 Write-Host "NTK cold qualification contract: PASS"

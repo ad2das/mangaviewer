@@ -830,6 +830,7 @@ class ReaderSession(
     private val strictExactBoundsDrainPosted = AtomicBoolean(false)
     private val strictExactBoundsDrainRunnable = Runnable { drainStrictExactBoundsOnMain() }
     private val strictExactDecodeInFlight = ConcurrentHashMap.newKeySet<Int>()
+    private val strictExactSplitSourceDecodeInFlight = ConcurrentHashMap.newKeySet<String>()
     private val strictExactAuthoritativeHandoffPages = ConcurrentHashMap.newKeySet<Int>()
     private val strictExactBulkDecodeReleased = AtomicBoolean(false)
     private val strictExactTerminalDecodeExpanded = AtomicBoolean(false)
@@ -1128,14 +1129,14 @@ class ReaderSession(
             pages.getOrNull(installed)?.sourceIndex
         } ?: installed
         currentViewportAnchor.set(installed)
-        val initialAdmission = StrictRollingAdmission.initial(launchSeal.pageCount, installed)
+        val initialAdmission = StrictRollingAdmission.initial(launchSeal.pageCount, installedSource)
         strictRollingAdmission.set(initialAdmission)
         // The product contract for this sealed episode is full-episode readiness, and the epoch-0
         // admission already owns every canonical source. Make that same immutable range physically
         // installable before the first body can finish; otherwise early offscreen originals are
         // parked in a primed backlog and decoded again only when scrolling reaches them.
         physicalDeliveryFirstPage = 0
-        physicalDeliveryLastPage = launchSeal.pageCount - 1
+        physicalDeliveryLastPage = synchronized(pagesLock) { pages.lastIndex }
 
         val residentBinding = try {
             sourceTransport.bindResidentBodies(
@@ -1447,14 +1448,21 @@ class ReaderSession(
         height: Int
     ) {
         if (width <= 0 || height <= 0) return
+        ReaderImageCache.rememberStrictSourceBounds(
+            page.manga.ntkEpisodePath,
+            page.sourceIndex,
+            width,
+            height,
+        )
         val currentIndex = currentPageIndex(page, index)
         if (currentIndex < 0) return
         sourceWidths[currentIndex] = width
+        val display = displayBounds(width, height, page.side, page.allowAutoSplit)
         pendingStrictExactBounds[currentIndex] = StrictExactBoundsDelivery(
             currentIndex,
             page,
-            width,
-            height
+            display.width(),
+            display.height()
         )
         if (strictExactBoundsDrainPosted.compareAndSet(false, true)) {
             main.post(strictExactBoundsDrainRunnable)
@@ -10356,6 +10364,7 @@ class ReaderSession(
         strictExactBoundsDrainPosted.set(false)
         main.removeCallbacks(strictExactBoundsDrainRunnable)
         strictExactDecodeInFlight.clear()
+        strictExactSplitSourceDecodeInFlight.clear()
         strictExactAuthoritativeHandoffPages.clear()
         strictExactBulkDecodeReleased.set(false)
         strictExactTerminalDecodeExpanded.set(false)
@@ -13640,7 +13649,7 @@ class ReaderSession(
         } else {
             ""
         }
-        if (!autoCut || shouldSkipInitialNtkGeneratedAutoSplitRefs(target, urls)) {
+        if (!autoCut) {
             val totalPages = urls.size
             return urls.mapIndexed { index, url ->
                 PageRef(
@@ -13655,7 +13664,7 @@ class ReaderSession(
                 )
             }
         }
-        val splitPages = urls.map { url -> shouldAutoSplitImage(target, url) }
+        val splitPages = urls.mapIndexed { index, url -> shouldAutoSplitImage(target, url, index) }
         val totalPages: Int = splitPages.fold(0) { total, split -> total + if (split) 2 else 1 }
         val refs = ArrayList<PageRef>(totalPages)
         var localPage = 1
@@ -13692,12 +13701,6 @@ class ReaderSession(
             }
         }
         return refs
-    }
-
-    private fun shouldSkipInitialNtkGeneratedAutoSplitRefs(target: Manga, urls: List<String>): Boolean {
-        if (!isNtkSource(target, title) || urls.isEmpty()) return false
-        if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
-        return urls.all { isNtkGeneratedImageUrl(it) }
     }
 
     private fun displayStartPage(sourcePage: Int, sourceSide: Int, refs: List<PageRef>): Int {
@@ -17169,9 +17172,20 @@ class ReaderSession(
                 index,
                 page,
                 "strict_exact_request"
-            ) ||
-            !strictExactDecodeInFlight.add(index)
+            )
         ) return
+        val splitSourceSingleFlight = shouldSplitPreparedBitmapForPage(
+            autoCut,
+            page.allowAutoSplit,
+            descriptor.metadata.sourceWidth,
+            descriptor.metadata.sourceHeight
+        )
+        val decodeClaimed = if (splitSourceSingleFlight) {
+            strictExactSplitSourceDecodeInFlight.add(strictExactSplitSourceDecodeKey(page))
+        } else {
+            strictExactDecodeInFlight.add(index)
+        }
+        if (!decodeClaimed) return
         strictExactDecodeAdmissions.incrementAndGet()
         val admittedEpoch = admission.epoch
         val targetWidth = max(1, viewerWidth)
@@ -17183,6 +17197,7 @@ class ReaderSession(
         }
         try {
             executor.execute {
+                var decodeClaimActive = true
                 // Source EOF/hash work and JPEG decode share the six host cores. Stay background
                 // while any canonical body is missing, then restore normal priority per task so
                 // the finite decode tail does not remain artificially throttled after the network
@@ -17204,7 +17219,8 @@ class ReaderSession(
                 // overlap work must join the full bulk stage; otherwise a 40-page FIFO tail
                 // would remain pinned to the smaller pool and dominate all-images-ready time.
                 if (overlap && strictExactBulkDecodeReleased.get()) {
-                    strictExactDecodeInFlight.remove(index)
+                    releaseStrictExactDecodeClaim(index, page, splitSourceSingleFlight)
+                    decodeClaimActive = false
                     requestStrictExactSourcePage(
                         index,
                         anchor = anchor,
@@ -17239,7 +17255,9 @@ class ReaderSession(
                     val result = opened.predecodedOriginal
                         ?.takeIfReadyOrAbandon(opened.sourceWidth, opened.sourceHeight)
                         ?.let { bitmap ->
-                            adoptPrivateStrictExactBitmap(
+                            adoptPrivateStrictExactBitmapForPage(
+                                index,
+                                page,
                                 bitmap,
                                 opened.sourceWidth,
                                 opened.sourceHeight,
@@ -17323,14 +17341,34 @@ class ReaderSession(
                     postPageError(index, page, failure)
                 } finally {
                     lease?.release?.invoke()
-                    strictExactDecodeInFlight.remove(index)
+                    if (decodeClaimActive) {
+                        releaseStrictExactDecodeClaim(index, page, splitSourceSingleFlight)
+                    }
                     strictExactDecodeTerminals.incrementAndGet()
                 }
             }
         } catch (_: RejectedExecutionException) {
-            strictExactDecodeInFlight.remove(index)
+            releaseStrictExactDecodeClaim(index, page, splitSourceSingleFlight)
             strictExactDecodeTerminals.incrementAndGet()
         }
+    }
+
+    private fun releaseStrictExactDecodeClaim(
+        index: Int,
+        page: PageRef,
+        splitSourceSingleFlight: Boolean
+    ) {
+        if (splitSourceSingleFlight) {
+            strictExactSplitSourceDecodeInFlight.remove(strictExactSplitSourceDecodeKey(page))
+        } else {
+            strictExactDecodeInFlight.remove(index)
+        }
+    }
+
+    private fun strictExactSplitSourceDecodeKey(page: PageRef): String {
+        val episode = page.manga.ntkEpisodePath.orEmpty().trim()
+        val source = page.image.orEmpty().trim()
+        return "$episode#$source#${page.sourceIndex}"
     }
 
     private fun isInsideStrictExactRollingPixelWindow(index: Int): Boolean =
@@ -26087,9 +26125,12 @@ class ReaderSession(
         return width / height.toFloat() >= SPREAD_ASPECT_RATIO
     }
 
-    private fun shouldAutoSplitImage(target: Manga, image: String): Boolean {
+    private fun shouldAutoSplitImage(target: Manga, image: String, sourceIndex: Int): Boolean {
         if (!autoCut) return false
         return try {
+            ReaderImageCache.strictSourceBounds(target.ntkEpisodePath, sourceIndex)?.let { bounds ->
+                if (bounds.size >= 2) return shouldAutoSplit(bounds[0], bounds[1])
+            }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             if (target.isOnline) {
                 val file = ReaderImageCache.cachedFile(appContext, target, image) ?: return false
@@ -26358,6 +26399,32 @@ class ReaderSession(
         }
     }
 
+    /**
+     * Auto-cut is a user-requested display transform, so it cannot be published as an immutable
+     * original tile proof. Keep the source bitmap exact until both display halves have been copied,
+     * then hand the transformed pages to the ordinary drawable path.
+     */
+    private fun adoptPrivateStrictExactBitmapForPage(
+        index: Int,
+        page: PageRef,
+        bitmap: Bitmap,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        canonicalAsset: String,
+    ): PageDecodeResult {
+        if (!shouldSplitPreparedBitmapForPage(autoCut, page.allowAutoSplit, sourceWidth, sourceHeight)) {
+            return adoptPrivateStrictExactBitmap(bitmap, sourceWidth, sourceHeight, canonicalAsset)
+        }
+        check(
+            !bitmap.isRecycled && bitmap.width == sourceWidth && bitmap.height == sourceHeight &&
+                bitmap.config == Bitmap.Config.ARGB_8888 && !bitmap.isMutable
+        ) { "Private exact bitmap identity changed before auto-cut" }
+        deliverAutoSplitSiblingFromDecoded(index, page, bitmap)
+        val displayBitmap = applyAutoSplit(bitmap, page.side, page.allowAutoSplit)
+        postPageBounds(index, page, displayBitmap.width, displayBitmap.height)
+        return PageDecodeResult.Full(displayBitmap)
+    }
+
     /** Exact memory-body counterpart of [decodePageTiles], with no bounds/file round trip. */
     private fun decodeStrictExactPageBytes(
         index: Int,
@@ -26380,6 +26447,20 @@ class ReaderSession(
                 check(pageBitmap.width == sourceWidth && pageBitmap.height == sourceHeight &&
                     pageBitmap.config == Bitmap.Config.ARGB_8888 && !pageBitmap.isMutable
                 ) { "Resident original bitmap storage changed during decode" }
+                if (shouldSplitPreparedBitmapForPage(
+                        autoCut,
+                        page.allowAutoSplit,
+                        sourceWidth,
+                        sourceHeight
+                    )
+                ) {
+                    deliverAutoSplitSiblingFromDecoded(index, page, pageBitmap)
+                    val displayBitmap = applyAutoSplit(pageBitmap, page.side, page.allowAutoSplit)
+                    decoded = displayBitmap
+                    postPageBounds(index, page, displayBitmap.width, displayBitmap.height)
+                    success = true
+                    return@withStrictDecodeTelemetry PageDecodeResult.Full(displayBitmap)
+                }
                 val sourceTileHeight = decodeTileSourceHeight(forceOriginal = true)
                 val tiles = ArrayList<ReaderTile>(
                     (sourceHeight + sourceTileHeight - 1) / sourceTileHeight

@@ -162,7 +162,7 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
-            48,
+            80,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 120,

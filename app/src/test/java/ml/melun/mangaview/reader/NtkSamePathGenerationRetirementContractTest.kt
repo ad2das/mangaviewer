@@ -169,7 +169,7 @@ class NtkSamePathGenerationRetirementContractTest {
 
         assertTrue(retireOwner.contains("retirement.retire("))
         assertTrue(retireOwner.contains("retireDiscoveryForReplacement("))
-        assertTrue(retireOwner.contains("flights.remove(key, owned)"))
+        assertTrue(retireOwner.contains("flights.remove(ownedPath, owned)"))
     }
 
     @Test

@@ -278,7 +278,32 @@ public class Title extends MTitle {
                             + ",path=" + titlePath);
                     return LOAD_OK;
                 }
-                if(isNonNumericNtkTitlePath(titlePath)) {
+                if(shouldTryNtkEpisodeApiAfterSlugRscMiss(titlePath, titleKey)) {
+                    // Slug episode APIs used to be uniformly absent, so the cold path correctly
+                    // avoids probing them before a healthy RSC title payload. The production
+                    // catalog now contains migrated slug works whose title RSC is empty while
+                    // /api/{segment}/{slug}/episodes is authoritative and complete. Recover that
+                    // source only after the zero-row RSC result, before the much slower guarded
+                    // search/category path refresh. This adds no request to the common successful
+                    // RSC path and prevents an accessible work from exposing an empty episode UI.
+                    NtkEpisodeParser.ParseResult apiFallback =
+                            parseNtkEpisodesFromApi(client, segment, titleKey, baseMode);
+                    if(apiFallback.episodes.size() > 0) {
+                        eps = apiFallback.episodes;
+                        Log.d(TAG, "ntk_episode_parse reason=episode_api_after_slug_rsc_empty,id=" + id
+                                + ",segment=" + segment
+                                + ",path=" + titlePath
+                                + ",episodes=" + eps.size());
+                        return LOAD_OK;
+                    }
+                    if(apiFallback.definitiveEmptyEpisodeList) {
+                        ntkEpisodeListConfirmedEmpty = true;
+                        eps = apiFallback.episodes;
+                        Log.d(TAG, "ntk_episode_parse reason=episode_api_empty_confirmed_after_slug_rsc,id=" + id
+                                + ",segment=" + segment
+                                + ",path=" + titlePath);
+                        return LOAD_OK;
+                    }
                     boolean shouldRefresh = shouldRefreshNtkTitlePathAfterMissing(client, titlePath);
                     Log.d(TAG, "ntk_episode_slug_refresh_check id=" + id
                             + ",segment=" + segment
@@ -1738,6 +1763,19 @@ public class Title extends MTitle {
 
     static boolean shouldPreferNtkSlugRscMetadataForTest(String titlePath, String titleKey) {
         return shouldPreferNtkSlugRscMetadata(titlePath, titleKey);
+    }
+
+    static boolean shouldTryNtkEpisodeApiAfterSlugRscMissForTest(
+            String titlePath, String titleKey) {
+        return shouldTryNtkEpisodeApiAfterSlugRscMiss(titlePath, titleKey);
+    }
+
+    private static boolean shouldTryNtkEpisodeApiAfterSlugRscMiss(
+            String titlePath, String titleKey) {
+        return isNonNumericNtkTitlePath(titlePath)
+                && titleKey != null
+                && titleKey.length() > 0
+                && !titleKey.matches("\\d{1,12}");
     }
 
     private static boolean shouldPreferNtkSlugRscMetadata(String titlePath, String titleKey) {

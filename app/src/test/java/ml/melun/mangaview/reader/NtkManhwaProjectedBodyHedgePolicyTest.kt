@@ -9,6 +9,11 @@ import org.junit.Test
 
 class NtkManhwaProjectedBodyHedgePolicyTest {
     @Test
+    fun stalledAcceptedBodyResumesBeforeItCanReachTheForwardViewport() {
+        assertEquals(2_500L, ReaderImageCache.manhwaBodyProgressDeadlineMsForTest())
+    }
+
+    @Test
     fun onTimeBodyKeepsItsOriginalStream() {
         assertFalse(
             NtkManhwaProjectedBodyHedgePolicy.shouldResume(
@@ -28,6 +33,50 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
                 bodyElapsedMs = 1_000L,
                 deliveredBytes = 74_407L,
                 expectedLength = 301_162L,
+            )
+        )
+    }
+
+    @Test
+    fun slowSecondPageMovesOnlyItsSuffixBeforeItCanBlockTheFirstViewport() {
+        assertTrue(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartEntryViewportTail(
+                pageIndex = 1,
+                sessionElapsedMs = 2_000L,
+                bodyElapsedMs = 1_000L,
+                deliveredBytes = 50_000L,
+                expectedLength = 180_000L,
+            )
+        )
+        assertFalse(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartEntryViewportTail(
+                pageIndex = 1,
+                sessionElapsedMs = 2_000L,
+                bodyElapsedMs = 1_000L,
+                deliveredBytes = 100_000L,
+                expectedLength = 180_000L,
+            )
+        )
+    }
+
+    @Test
+    fun entryViewportRecoveryNeverExpandsIntoTheBulkWave() {
+        assertFalse(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartEntryViewportTail(
+                pageIndex = 0,
+                sessionElapsedMs = 2_000L,
+                bodyElapsedMs = 1_000L,
+                deliveredBytes = 50_000L,
+                expectedLength = 180_000L,
+            )
+        )
+        assertFalse(
+            NtkManhwaProjectedBodyHedgePolicy.shouldStartEntryViewportTail(
+                pageIndex = 2,
+                sessionElapsedMs = 2_000L,
+                bodyElapsedMs = 1_000L,
+                deliveredBytes = 50_000L,
+                expectedLength = 180_000L,
             )
         )
     }
@@ -259,6 +308,15 @@ class NtkManhwaProjectedBodyHedgePolicyTest {
     @Test
     fun suffixNoProgressBudgetDoesNotResetAHealthyCongestedStream() {
         assertEquals(3_000L, NtkManhwaRangeResumePolicy.BODY_IDLE_MS)
+    }
+
+    @Test
+    fun projectedEntryViewportSuffixUsesShortExactResumeBound() {
+        assertEquals(900L, NtkManhwaRangeResumePolicy.projectedBodyIdleMs(0))
+        assertEquals(900L, NtkManhwaRangeResumePolicy.projectedBodyIdleMs(1))
+        assertEquals(900L, NtkManhwaRangeResumePolicy.projectedBodyIdleMs(2))
+        assertEquals(3_000L, NtkManhwaRangeResumePolicy.projectedBodyIdleMs(3))
+        assertEquals(3_000L, NtkManhwaRangeResumePolicy.projectedBodyIdleMs(194))
     }
 
     @Test

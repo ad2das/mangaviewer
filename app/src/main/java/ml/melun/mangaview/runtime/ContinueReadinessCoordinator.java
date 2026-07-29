@@ -54,7 +54,8 @@ public final class ContinueReadinessCoordinator {
         long startedAt = SystemClock.elapsedRealtime();
         for(MTitle item : recent) {
             Title title = item instanceof Title ? (Title) item : new Title(item);
-            if(shouldSkipNtkContinuePrefetchForTest(title.getSourceSite(), p.isNtkSite()))
+            p.ensureSourceSiteForTitle(title);
+            if(!sourceMatchesCurrentSite(title))
                 continue;
             Manga manga = resumeManga(title);
             if(manga == null)
@@ -96,13 +97,13 @@ public final class ContinueReadinessCoordinator {
     private static void prime(Context context, Manga manga, Title title, boolean visible, boolean force) {
         if(context == null || manga == null || !manga.isOnline())
             return;
+        if(title != null && p != null)
+            p.ensureSourceSiteForTitle(title);
         String sourceSite = title != null ? title.getSourceSite()
                 : manga.getTitle() == null ? null : manga.getTitle().getSourceSite();
-        if(shouldSkipNtkContinuePrefetchForTest(sourceSite, p != null && p.isNtkSite()))
+        if(!sourceMatchesCurrentSite(sourceSite, p != null && p.isNtkSite()))
             return;
         if(title != null) {
-            if(p != null)
-                p.ensureSourceSiteForTitle(title);
             manga.setTitle(title);
             manga.setTitleId(title.getId());
             List<Manga> episodes = Utils.snapshotEpisodes(title);
@@ -111,11 +112,6 @@ public final class ContinueReadinessCoordinator {
             manga.ensureNtkEpisodePathFromIdentity();
         } else {
             title = manga.getTitle();
-        }
-        if(isNtkContinue(sourceSite, p != null && p.isNtkSite())) {
-            manga.ensureNtkEpisodePathFromIdentity();
-            ViewerWarmupManager.logMetric("continue_ntk_metadata_only", manga.getId());
-            return;
         }
         State current = state(context, manga, title);
         if(current == State.FIRST_FRAME_READY) {
@@ -140,7 +136,10 @@ public final class ContinueReadinessCoordinator {
             markSubmitted(key, SystemClock.uptimeMillis());
         if(visible) {
             ReaderWarmupCoordinator.primeVisible(context, manga, title);
-            ViewerWarmupManager.warmupVisibleContinue(context, manga, title);
+            // The native NTK warmup writes the exact ReaderImageCache source bytes used by the
+            // strict reader. Running Glide beside it would duplicate the same network work.
+            if(!isNtkContinue(sourceSite, p != null && p.isNtkSite()))
+                ViewerWarmupManager.warmupVisibleContinue(context, manga, title);
         } else if(force) {
             ReaderWarmupCoordinator.primeImmediate(context, manga, title);
             ViewerWarmupManager.warmupUserSelectedContinue(context, manga, title);
@@ -200,7 +199,14 @@ public final class ContinueReadinessCoordinator {
     }
 
     public static boolean shouldSkipNtkContinuePrefetchForTest(String sourceSite, boolean ntkPreference) {
-        return isNtkContinue(sourceSite, ntkPreference);
+        return !sourceMatchesCurrentSite(sourceSite, ntkPreference);
+    }
+
+    private static boolean sourceMatchesCurrentSite(String sourceSite, boolean ntkPreference) {
+        String normalized = sourceSite == null ? "" : sourceSite.trim().toLowerCase(Locale.ROOT);
+        if(normalized.length() == 0)
+            return true;
+        return ntkPreference == "ntk".equals(normalized);
     }
 
     private static boolean isNtkContinue(String sourceSite, boolean ntkPreference) {

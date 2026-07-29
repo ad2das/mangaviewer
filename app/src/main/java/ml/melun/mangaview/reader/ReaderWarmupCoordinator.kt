@@ -347,7 +347,50 @@ object ReaderWarmupCoordinator {
     fun primeVisible(context: Context?, manga: Manga?, title: Title?) {
         val profile = visibleContinueProfile(title ?: manga?.title)
         val entry = createEntry(context, manga, title, 0, false, profile) ?: return
-        schedule(context!!.applicationContext, entry, false, profile)
+        scheduleVisibleContinueWithForward(context!!.applicationContext, entry, profile)
+    }
+
+    /**
+     * A visible continue card is strong UX intent, but it is not a license to warm the title in
+     * both directions. Finish the saved episode first, then prepare exactly one newer episode.
+     * User navigation suppresses the second stage, so speculative work never competes with the
+     * reader the user actually opened.
+     */
+    private fun scheduleVisibleContinueWithForward(
+        appContext: Context,
+        entry: ReaderPreparedStore.Entry,
+        profile: WarmupProfile
+    ) {
+        val immediateFlag = AtomicBoolean(false)
+        if (inFlight.putIfAbsent(entry.key, immediateFlag) != null) return
+        AppDispatchers.submitImageWarmup {
+            try {
+                prepareEntry(appContext, entry, false, profile, immediateFlag)
+                if (BackgroundPrefetchBudget.isNonCriticalPrefetchSuppressed()) return@submitImageWarmup
+                val next = forwardNextEpisode(entry.manga, entry.title) ?: return@submitImageWarmup
+                val nextProfile = forwardVisibleProfile()
+                val nextEntry = createEntry(appContext, next, entry.title, 0, true, nextProfile)
+                    ?: return@submitImageWarmup
+                val nextFlag = AtomicBoolean(false)
+                if (inFlight.putIfAbsent(nextEntry.key, nextFlag) == null) {
+                    try {
+                        prepareEntry(appContext, nextEntry, true, nextProfile, nextFlag)
+                        ViewerWarmupManager.logMetric("continue_forward_next_warmup_ready", next.id.toLong())
+                    } finally {
+                        inFlight.remove(nextEntry.key, nextFlag)
+                    }
+                }
+            } finally {
+                inFlight.remove(entry.key, immediateFlag)
+            }
+        }
+    }
+
+    private fun forwardNextEpisode(current: Manga, title: Title?): Manga? {
+        attachTitle(current, title)
+        val next = current.nextEp() ?: return null
+        attachTitle(next, title)
+        return next
     }
 
     @JvmStatic
@@ -1786,8 +1829,19 @@ object ReaderWarmupCoordinator {
 
     private fun visibleContinueProfile(title: Title?): WarmupProfile {
         if (p != null && p.getDataSave()) return WarmupProfile.URL_ONLY
-        return sourceProfile(title).visibleProfile
+        return WarmupProfile.FIRST_BYTE
     }
+
+    private fun forwardVisibleProfile(): WarmupProfile =
+        if (p != null && p.getDataSave()) WarmupProfile.URL_ONLY else WarmupProfile.FIRST_BYTE
+
+    @JvmStatic
+    fun visibleContinueProfileForTest(dataSave: Boolean): WarmupProfile =
+        if (dataSave) WarmupProfile.URL_ONLY else WarmupProfile.FIRST_BYTE
+
+    @JvmStatic
+    fun forwardNextEpisodeIdForTest(current: Manga, title: Title?): Int =
+        forwardNextEpisode(current, title)?.id ?: 0
 
     private fun exactVisibleProfile(title: Title?): WarmupProfile {
         if (p != null && p.getDataSave()) return WarmupProfile.URL_ONLY

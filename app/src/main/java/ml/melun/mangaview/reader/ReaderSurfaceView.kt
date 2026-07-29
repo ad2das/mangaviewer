@@ -681,6 +681,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var directChoreographer: Choreographer? = null
     private var directFrameCallbackPosted = false
     private var directLateInputCatchupPosted = false
+    private var directReleaseInputCatchupPosted = false
     private var directNativeRetirementContinuationPosted = false
     private var dragTargetRevision = 0L
     private var directCallbackObservedDragTargetRevision = 0L
@@ -5127,6 +5128,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         endPhysicalScrollTraceLocked()
                         setNativeTexturePrewarmPausedLocked(false)
                     }
+                    if (wasReleased && !wasTap && (upMoved || !scroller.isFinished)) {
+                        // The producer callback can run immediately before ACTION_UP starts the
+                        // fling, leaving its already-reserved successor one missed host vsync
+                        // behind the real release position. Replace only that observed callback;
+                        // the admitted token contains the exact release/scroller state.
+                        postReleaseDirectInputCatchupLocked(
+                            releaseMoved = upMoved,
+                            scrollerFinished = scroller.isFinished,
+                        )
+                    }
                     dispatch
                 }
                 dispatchWindowRequest(result.first, fromInput = true)
@@ -7951,6 +7962,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         directRenderHandler?.removeCallbacks(directFramePostRunnable)
         directRenderHandler?.removeCallbacks(directCadenceWatchdog)
         directRenderHandler?.removeCallbacks(directLateInputCatchup)
+        directRenderHandler?.removeCallbacks(directReleaseInputCatchup)
         directRenderHandler?.removeCallbacks(directNativeRetirementContinuation)
         val choreographer = directChoreographer
         if (choreographer != null && directFrameCallbackPosted) {
@@ -7958,6 +7970,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         directFrameCallbackPosted = false
         directLateInputCatchupPosted = false
+        directReleaseInputCatchupPosted = false
         directNativeRetirementContinuationPosted = false
         directCallbackObservedDragTargetRevision = 0L
         directCallbackObservedPhysicalGestureRevision = 0L
@@ -8018,6 +8031,41 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     /**
+     * ACTION_UP can install the exact release coordinate/start a fling just after the producer
+     * callback observed the prior drag target. Waiting for that callback's successor exposed a
+     * 38.55 ms physical presentation gap when the host missed its next producer vsync. This is a
+     * one-shot replacement for the already-admitted real token, never a synthetic scroll frame.
+     */
+    private val directReleaseInputCatchup: Runnable = Runnable {
+        Trace.beginSection("ViewerDirectReleaseInputCatchup")
+        try {
+            val shouldRender = synchronized(stateLock) {
+                directReleaseInputCatchupPosted = false
+                val hasAdmittedFrame =
+                    framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
+                val canReplaceCallback = renderRunning && directSurfaceReady &&
+                    directFrameCallbackPosted && !pointerDown && hasAdmittedFrame &&
+                    rollingNativeHandle != 0L &&
+                    rollingNativeAttachEpoch > 0L &&
+                    rollingTextureSurface?.isValid == true
+                if (canReplaceCallback) {
+                    directChoreographer?.removeFrameCallback(directFrameCallback)
+                    directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+                    directRenderHandler?.removeCallbacks(directLateInputCatchup)
+                    directFrameCallbackPosted = false
+                    directLateInputCatchupPosted = false
+                }
+                canReplaceCallback
+            }
+            if (shouldRender) {
+                renderDirectSurfaceFrame(System.nanoTime())
+            }
+        } finally {
+            Trace.endSection()
+        }
+    }
+
+    /**
      * A display-paced EGL swap retires the prior token on the native owner. At that exact point
      * [onFrameCommitted] may admit the next immutable token. The Choreographer callback reserved
      * before the swap can already have run while the prior token still owned the pipe, leaving
@@ -8040,8 +8088,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     directChoreographer?.removeFrameCallback(directFrameCallback)
                     directRenderHandler?.removeCallbacks(directCadenceWatchdog)
                     directRenderHandler?.removeCallbacks(directLateInputCatchup)
+                    directRenderHandler?.removeCallbacks(directReleaseInputCatchup)
                     directFrameCallbackPosted = false
                     directLateInputCatchupPosted = false
+                    directReleaseInputCatchupPosted = false
                 }
                 canContinue
             }
@@ -8211,6 +8261,40 @@ class ReaderSurfaceView @JvmOverloads constructor(
         directLateInputCatchupPosted = true
         if (!handler.postAtFrontOfQueue(directLateInputCatchup)) {
             directLateInputCatchupPosted = false
+            return false
+        }
+        return true
+    }
+
+    /** Must be called with [stateLock] held after the release mutation has been scheduled. */
+    private fun postReleaseDirectInputCatchupLocked(
+        releaseMoved: Boolean,
+        scrollerFinished: Boolean,
+    ): Boolean {
+        val refreshPeriodNanos =
+            (frameBudgetMs() * NANOS_PER_MILLISECOND.toFloat()).toLong().coerceAtLeast(1L)
+        val hasAdmittedFrame =
+            framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
+        if (!NtkReleaseInputCatchupPolicy.shouldPost(
+                renderRunning = renderRunning,
+                directSurfaceReady = directSurfaceReady,
+                callbackPosted = directFrameCallbackPosted,
+                catchupPosted = directReleaseInputCatchupPosted,
+                pointerDown = pointerDown,
+                hasAdmittedFrame = hasAdmittedFrame,
+                releaseMoved = releaseMoved,
+                scrollerFinished = scrollerFinished,
+                callbackObservedAtNanos = directCallbackObservedAtNanos,
+                nowNanos = System.nanoTime(),
+                refreshPeriodNanos = refreshPeriodNanos,
+            )
+        ) {
+            return false
+        }
+        val handler = directRenderHandler ?: return false
+        directReleaseInputCatchupPosted = true
+        if (!handler.postAtFrontOfQueue(directReleaseInputCatchup)) {
+            directReleaseInputCatchupPosted = false
             return false
         }
         return true

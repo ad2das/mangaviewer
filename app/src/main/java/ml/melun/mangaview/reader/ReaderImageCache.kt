@@ -237,6 +237,14 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
     // reserved for a small tail that remains slow after the primary wave has had time to settle.
     const val MIN_PROJECTED_HEDGE_SESSION_MS = 5_000L
     const val PROJECTED_SESSION_HEDGE_MS = 12_000L
+    // A portrait comic page does not cover the whole reader viewport by itself. Page one is part
+    // of the first clean frame, so a slowly dripping p002 body must not share the bulk tail's
+    // five-second recovery threshold. This remains one bounded, disjoint suffix: the original
+    // prefix is retained, no byte is downloaded twice, and pages outside the entry viewport keep
+    // the conservative production threshold above.
+    const val ENTRY_VIEWPORT_LAST_PAGE = 1
+    const val ENTRY_VIEWPORT_MIN_SESSION_MS = 1_500L
+    const val ENTRY_VIEWPORT_PROJECTED_COMPLETION_MS = 3_200L
     private const val TAIL_HEAD_START_MS = 300L
     private const val MIN_TAIL_LEAD_BYTES = 24L * 1024L
     // The best hard-112 cold run (r75) used one 24 KiB disjoint lead. Increasing this to 64 KiB
@@ -308,6 +316,27 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
             expectedLength,
         ) ?: return false
         return projection > PROJECTED_SESSION_HEDGE_MS.toDouble()
+    }
+
+    fun shouldStartEntryViewportTail(
+        pageIndex: Int,
+        sessionElapsedMs: Long,
+        bodyElapsedMs: Long,
+        deliveredBytes: Long,
+        expectedLength: Long,
+    ): Boolean {
+        if (pageIndex !in 1..ENTRY_VIEWPORT_LAST_PAGE ||
+            sessionElapsedMs < ENTRY_VIEWPORT_MIN_SESSION_MS
+        ) {
+            return false
+        }
+        val projection = projectedSessionCompletionMs(
+            sessionElapsedMs,
+            bodyElapsedMs,
+            deliveredBytes,
+            expectedLength,
+        ) ?: return false
+        return projection > ENTRY_VIEWPORT_PROJECTED_COMPLETION_MS.toDouble()
     }
 
     fun disjointTailStart(
@@ -437,6 +466,20 @@ internal object NtkManhwaRangeResumePolicy {
     // valid H2 streams before their next data frame; three seconds remains a finite no-progress
     // bound while avoiding a reset loop.
     const val BODY_IDLE_MS = 3_000L
+    // A projected suffix is opened only after the original body is already predicted to miss the
+    // entry viewport. Letting that SLA-critical replacement itself sit at zero bytes for the full
+    // bulk timeout held page one (and therefore the clean first reveal) for another three seconds.
+    // Preserve the exact accepted prefix and move only the untouched suffix to the next immutable
+    // replica after this shorter no-progress bound. Offscreen bulk ranges keep BODY_IDLE_MS.
+    const val ENTRY_VIEWPORT_BODY_IDLE_MS = 900L
+    const val ENTRY_VIEWPORT_LAST_PAGE = 2
+
+    fun projectedBodyIdleMs(pageIndex: Int): Long =
+        if (pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE) {
+            ENTRY_VIEWPORT_BODY_IDLE_MS
+        } else {
+            BODY_IDLE_MS
+        }
 
     fun nextStart(segmentStart: Long, receivedBytes: Long, segmentEnd: Long): Long? {
         require(segmentStart >= 0L)
@@ -459,17 +502,35 @@ internal object NtkWebtoonBodyWallPolicy {
     // ~300 KiB body held the scene open for 3.28 s. At 1.8 s, retain its exact delivered prefix
     // and move only a useful untouched suffix to the next immutable replica.
     const val INITIAL_SEGMENT_WALL_MS = 1_800L
+    // The first three vertical pages are the only bodies that can hold the real-pixel reveal gate
+    // closed on a 2340 px entry viewport. A 107-page cold trace delivered page zero at +1.51 s,
+    // but page one dripped behind an otherwise-complete wave until its ordinary 1.8 s body wall;
+    // the exact viewport consequently appeared at +4.69 s. These pages have three immutable,
+    // validator-identical manifest replicas, so move only their still-untouched suffix after
+    // 900 ms. Later pages retain the conservative wall and cannot turn this bounded entry repair
+    // into a 100-request continuation herd.
+    const val ENTRY_VIEWPORT_SEGMENT_WALL_MS = 900L
+    const val ENTRY_VIEWPORT_LAST_PAGE = 2
     const val TAIL_GRACE_BYTES = 64L * 1024L
+
+    fun segmentWallMs(pageIndex: Int): Long =
+        if (pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE) {
+            ENTRY_VIEWPORT_SEGMENT_WALL_MS
+        } else {
+            INITIAL_SEGMENT_WALL_MS
+        }
 
     fun shouldResume(
         elapsedMs: Long,
         deliveredBytes: Long,
         expectedLength: Long,
+        segmentWallMs: Long = INITIAL_SEGMENT_WALL_MS,
     ): Boolean {
         require(elapsedMs >= 0L)
         require(deliveredBytes >= 0L)
         require(expectedLength >= 0L)
-        if (elapsedMs < INITIAL_SEGMENT_WALL_MS ||
+        require(segmentWallMs > 0L)
+        if (elapsedMs < segmentWallMs ||
             deliveredBytes <= 0L ||
             deliveredBytes >= expectedLength
         ) return false
@@ -554,7 +615,15 @@ object ReaderImageCache {
     // separate progress deadline below can safely identify a genuinely stalled body.
     private const val NTK_MANHWA_BODY_IDLE_RESUME_MS = 3_500L
     private const val NTK_MANHWA_BODY_FIRST_BYTE_DEADLINE_MS = 3_500L
-    private const val NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS = 3_500L
+    // A response that has already delivered bytes but then makes no progress is safe to resume
+    // from its exact accepted offset. Keep this below the time a cold forward reader needs to
+    // reach the next viewport: the former 3.5 s guard let one 202 KiB page sit idle for 4.4 s,
+    // forcing the drawable-prefix clamp to hold a physical fling for 117 ms. This does not restart
+    // responsive bodies or duplicate accepted bytes; only the untouched suffix moves to a bounded
+    // Range lane after 2.5 seconds with zero progress.
+    private const val NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS = 2_500L
+    internal fun manhwaBodyProgressDeadlineMsForTest(): Long =
+        NTK_MANHWA_BODY_PROGRESS_DEADLINE_MS
     // Bunny's AWS mirror occasionally drips one otherwise valid 200 body for 3.8-4.5 seconds.
     // After this much active body time, preserve every delivered byte and continue only the
     // untouched suffix from a Range-capable Cloudflare mirror.
@@ -673,6 +742,8 @@ object ReaderImageCache {
     private const val NTK_GENERATED_INITIAL_DIRECT_HEDGE_MANHWA_DELAY_MS = 0L
     private const val EARLY_NTK_IMAGE_URL_TTL_MS = 120000L
     private const val EARLY_NTK_APPEND_IMAGE_URL_TTL_MS = 30000L
+    private const val STRICT_SOURCE_BOUNDS_HINT_TTL_MS = 10L * 60L * 1000L
+    private const val STRICT_SOURCE_BOUNDS_HINT_LIMIT = 4096
     private const val NTK_TRUSTED_GENERATED_COUNT_EXPANSION_MAX = 512
     private const val EARLY_NTK_IMAGE_URL_STARTED_SKEW_MS = 1200L
     private const val EARLY_NTK_IMAGE_TRANSPORT_SYNC_LIMIT = 4
@@ -762,6 +833,12 @@ object ReaderImageCache {
         ConcurrentHashMap<String, ResidentStrictPublishedBody>()
     private val pendingStrictProofPublications =
         ConcurrentHashMap<String, ResidentStrictPublishedBody>()
+    private data class StrictSourceBoundsHint(
+        val width: Int,
+        val height: Int,
+        val createdAtMs: Long,
+    )
+    private val strictSourceBoundsHints = ConcurrentHashMap<String, StrictSourceBoundsHint>()
     private val strictProofPersistenceScheduled = AtomicBoolean(false)
     private val metadataTelemetryPublished = ConcurrentHashMap.newKeySet<String>()
     private val unpublishedInitialGeneratedRunwayStreams =
@@ -1923,8 +2000,10 @@ object ReaderImageCache {
             contentType: MediaType?,
             physicalAttempt: Int,
             segmentActive: AtomicReference<Call?>? = null,
+            bodyIdleMs: Long = NtkManhwaRangeResumePolicy.BODY_IDLE_MS,
         ): ByteArray {
             if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+            require(bodyIdleMs > 0L)
             var lastFailure: IOException? = null
             val expectedSegmentLength = end - start + 1L
             if (expectedSegmentLength <= 0L || expectedSegmentLength > Int.MAX_VALUE) {
@@ -1992,7 +2071,7 @@ object ReaderImageCache {
                         }
                         val source = body.source().also { rangeSource ->
                             rangeSource.timeout().timeout(
-                                NtkManhwaRangeResumePolicy.BODY_IDLE_MS,
+                                bodyIdleMs,
                                 TimeUnit.MILLISECONDS,
                             )
                         }
@@ -2026,7 +2105,7 @@ object ReaderImageCache {
                                     "host=${candidate.url.host}," +
                                     "attemptBytes=${output.size() - beforeAttempt}," +
                                     "received=${output.size()},next=$next,end=$end," +
-                                    "idleMs=${NtkManhwaRangeResumePolicy.BODY_IDLE_MS}," +
+                                    "idleMs=$bodyIdleMs," +
                                     "reason=${failure.javaClass.simpleName}",
                             )
                             return@use
@@ -2141,7 +2220,7 @@ object ReaderImageCache {
                 // and no-progress deadlines below still recover a genuinely stalled socket.
                 absoluteInitialSegmentWallMs = when {
                     manhwaBody && pageIndex != 0 -> NTK_MANHWA_BODY_WALL_MS
-                    webtoonReplica -> NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS
+                    webtoonReplica -> NtkWebtoonBodyWallPolicy.segmentWallMs(pageIndex)
                     else -> 0L
                 },
                 bodyIdleResumeMs = if (manhwaBody) {
@@ -2186,6 +2265,8 @@ object ReaderImageCache {
                             contentType = body.contentType(),
                             physicalAttempt = physicalAttempt,
                             segmentActive = segmentActive,
+                            bodyIdleMs =
+                                NtkManhwaRangeResumePolicy.projectedBodyIdleMs(pageIndex),
                         )
                     }
                 } else {
@@ -2431,11 +2512,12 @@ object ReaderImageCache {
                                         elapsedMs = elapsedMs,
                                         deliveredBytes = deliveredBytes,
                                         expectedLength = expectedLength,
+                                        segmentWallMs = absoluteInitialSegmentWallMs,
                                     )
                                 ) {
                                     throw java.net.SocketTimeoutException(
                                         "Webtoon body wall exceeded " +
-                                            "${NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS}ms"
+                                            "${absoluteInitialSegmentWallMs}ms"
                                     )
                                 }
                                 Log.d(
@@ -2476,7 +2558,16 @@ object ReaderImageCache {
                                         deliveredBytes = deliveredBytes,
                                         expectedLength = expectedLength,
                                     )
-                                if (finalBodyTail || ordinaryTail) {
+                                val entryViewportTail =
+                                    NtkManhwaProjectedBodyHedgePolicy
+                                        .shouldStartEntryViewportTail(
+                                            pageIndex = pageIndex,
+                                            sessionElapsedMs = sessionElapsedMs,
+                                            bodyElapsedMs = elapsedMs,
+                                            deliveredBytes = deliveredBytes,
+                                            expectedLength = expectedLength,
+                                        )
+                                if (entryViewportTail || finalBodyTail || ordinaryTail) {
                                     val projectedSessionCompletionMs =
                                         NtkManhwaProjectedBodyHedgePolicy
                                             .projectedSessionCompletionMs(
@@ -2498,6 +2589,7 @@ object ReaderImageCache {
                                             elapsedMs,
                                             deliveredBytes,
                                             finalBodyTail,
+                                            entryViewportTail,
                                         )
                                     ) {
                                         absoluteInitialDeadlineConsumed = true
@@ -2596,6 +2688,7 @@ object ReaderImageCache {
             elapsedMs: Long,
             observedBytes: Long,
             finalBodyTail: Boolean,
+            entryViewportTail: Boolean,
         ): Boolean {
             val fetcher = projectedTailFetcher ?: return false
             if (projectedTail != null || observedBytes <= 0L || observedBytes >= expectedLength) {
@@ -2680,7 +2773,7 @@ object ReaderImageCache {
                     "reader_strict_source_projected_tail_start page=$pageIndex," +
                         "offset=$observedBytes,split=$split,total=$expectedLength," +
                         "segments=${segments.size},attempt=$firstPhysicalAttempt," +
-                        "finalBody=$finalBodyTail",
+                        "finalBody=$finalBodyTail,entryViewport=$entryViewportTail",
                 )
                 true
             } catch (failure: RejectedExecutionException) {
@@ -3366,6 +3459,38 @@ object ReaderImageCache {
     @JvmStatic
     fun clearVolatileState(reason: String) = clearVolatileStateInternal(reason.ifBlank { "unspecified" })
 
+    @JvmStatic
+    fun rememberStrictSourceBounds(path: String?, sourceIndex: Int, width: Int, height: Int) {
+        val episode = earlyNtkPathKey(path)
+        if (episode.isEmpty() || sourceIndex < 0 || width <= 0 || height <= 0) return
+        val key = "$episode#$sourceIndex"
+        if (strictSourceBoundsHints.size >= STRICT_SOURCE_BOUNDS_HINT_LIMIT &&
+            !strictSourceBoundsHints.containsKey(key)
+        ) {
+            strictSourceBoundsHints.entries.minByOrNull { it.value.createdAtMs }?.let { oldest ->
+                strictSourceBoundsHints.remove(oldest.key, oldest.value)
+            }
+        }
+        strictSourceBoundsHints[key] = StrictSourceBoundsHint(
+            width,
+            height,
+            SystemClock.elapsedRealtime(),
+        )
+    }
+
+    @JvmStatic
+    fun strictSourceBounds(path: String?, sourceIndex: Int): IntArray? {
+        val episode = earlyNtkPathKey(path)
+        if (episode.isEmpty() || sourceIndex < 0) return null
+        val key = "$episode#$sourceIndex"
+        val hint = strictSourceBoundsHints[key] ?: return null
+        if (SystemClock.elapsedRealtime() - hint.createdAtMs > STRICT_SOURCE_BOUNDS_HINT_TTL_MS) {
+            strictSourceBoundsHints.remove(key, hint)
+            return null
+        }
+        return intArrayOf(hint.width, hint.height)
+    }
+
     private fun clearVolatileStateInternal(reason: String) {
         cachePublicationLock.writeLock().lock()
         try {
@@ -3388,6 +3513,7 @@ object ReaderImageCache {
             strictForegroundByteFlightsByStream.clear()
             encodedOriginalByteProofs.clear()
             residentStrictPublishedBodies.clear()
+            strictSourceBoundsHints.clear()
             pendingStrictProofPublications.clear()
             metadataTelemetryPublished.clear()
             cancelAndClearFutureTasks(unpublishedInitialGeneratedRunwayStreams)

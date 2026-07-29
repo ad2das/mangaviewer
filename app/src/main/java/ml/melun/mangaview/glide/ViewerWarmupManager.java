@@ -290,8 +290,7 @@ public class ViewerWarmupManager {
     }
 
     public static void warmupVisibleContinue(Context context, Manga manga, Title title) {
-        if(manga != null)
-            logMetric("viewer_resume_visible_warmup_skipped", manga.getId());
+        warmupContinue(context, manga, title, false, true);
     }
 
     public static void suppressVisibleContinueWarmups(long durationMs) {
@@ -301,6 +300,8 @@ public class ViewerWarmupManager {
 
     public static void suppressVisibleContinueWarmupsWhileViewerActive(boolean active) {
         suppressVisibleContinueWarmupsWhileViewerActive = active;
+        if(active)
+            cancelVisibleContinueWarmups();
     }
 
     public static void prioritizeUserSelectedContinue() {
