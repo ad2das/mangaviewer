@@ -7,6 +7,7 @@ import java.util.List;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.reader.NtkSourceState;
 import ml.melun.mangaview.reader.ReaderSurfaceView;
 
 import static org.junit.Assert.assertEquals;
@@ -54,6 +55,23 @@ public class ReaderV2ActivityTest {
                 ReaderSurfaceView.DIRECTION_PREVIOUS));
         assertTrue(ReaderV2Activity.shouldPrepareNearBoundaryForTest(
                 ReaderSurfaceView.DIRECTION_NEXT));
+    }
+
+    @Test
+    public void newReaderReusesOnlyUnclaimedClickGeneration() {
+        assertTrue(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
+                true, true, null));
+        assertTrue(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
+                true, true, NtkSourceState.DISCOVERING));
+        assertTrue(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
+                true, true, NtkSourceState.OWNED_PRECLAIM));
+
+        assertFalse(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
+                true, true, NtkSourceState.OWNED_BINDING));
+        assertFalse(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
+                true, true, NtkSourceState.OWNED_ACTIVE));
+        assertFalse(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
+                false, false, NtkSourceState.OWNED_BINDING));
     }
 
     @Test

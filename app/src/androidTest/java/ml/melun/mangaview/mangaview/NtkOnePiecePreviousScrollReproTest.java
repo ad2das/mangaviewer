@@ -534,6 +534,53 @@ public class NtkOnePiecePreviousScrollReproTest {
     }
 
     @Test
+    public void webtoonHomeContinueReplacesAlreadyClaimedReaderSource() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchNeighborEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = device.wait(
+                Until.findObject(By.res(PACKAGE_NAME, "episode")),
+                90000L);
+        assertNotNull("Expected NTK webtoon latest episode row", episodeRow);
+        episodeRow.click();
+
+        assertNotNull(
+                "Expected first NTK reader surface",
+                device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L));
+        assertNotNull(
+                "The first reader must claim and draw its exact source before home continue",
+                device.wait(Until.findObject(By.descStartsWith("actual:")), 90000L));
+        ReaderV2Activity firstReader = resumedReader();
+        assertNotNull("Expected first resumed reader", firstReader);
+        String episodePath = firstReader.testCurrentNtkEpisodePath();
+        Manga resume = firstReader.testEpisodeByPath(episodePath);
+        assertNotNull("Expected current episode metadata for home continue", resume);
+
+        runOnMain(() -> Utils.openContinueViewer(firstReader, resume, -1));
+        ReaderV2Activity replacement = null;
+        long replacementDeadline = SystemClock.elapsedRealtime() + 90000L;
+        while (SystemClock.elapsedRealtime() < replacementDeadline) {
+            ReaderV2Activity candidate = resumedReader();
+            if (candidate != null && candidate != firstReader) {
+                replacement = candidate;
+                break;
+            }
+            SystemClock.sleep(16L);
+        }
+        assertNotNull("Home continue must open a replacement reader", replacement);
+        assertNotNull(
+                "Replacement reader must draw the exact source instead of failing its claim",
+                device.wait(Until.findObject(By.descStartsWith("actual:")), 90000L));
+        assertTrue(
+                "Replacement reader must retain the requested episode identity",
+                episodePath.equals(replacement.testCurrentNtkEpisodePath()));
+        assertTrue(
+                "Replacement reader showed a permanent original-verification failure",
+                device.findObject(By.textContains("이미지 원본 확인에 실패했습니다")) == null);
+    }
+
+    @Test
     public void webtoonForwardEpisodeMemoryAndFrameProbe() throws Exception {
         LiveNetworkAssume.assumeEnabled();
         launchNeighborEpisodes();

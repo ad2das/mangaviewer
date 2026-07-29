@@ -54,6 +54,7 @@ import ml.melun.mangaview.reader.AdoptedDrawableIdentity
 import ml.melun.mangaview.reader.InstalledDrawableQuery
 import ml.melun.mangaview.reader.NtkAuthoritativeManifest
 import ml.melun.mangaview.reader.NtkAuthoritativeManifestListener
+import ml.melun.mangaview.reader.NtkSourceState
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry
 import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator
 import ml.melun.mangaview.reader.NtkStripDigests
@@ -645,10 +646,30 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val startAtFirstPage = intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
         if (strictNtkEpisode) {
             strictTelemetryEpisodePath = NtkStripDigests.normalizeEpisodePath(ntkPath)
-            strictTelemetryGeneration = if (ViewerTelemetry.hasActiveSession() &&
+            val hasActiveTelemetry = ViewerTelemetry.hasActiveSession()
+            val activeEpisodeMatches = hasActiveTelemetry &&
                 (ViewerTelemetry.isActiveEpisode(ntkPath) ||
                     ViewerTelemetry.isActiveEpisode(strictTelemetryEpisodePath))
-            ) {
+            val existingSourceState =
+                NtkSourceSpoolRegistry.currentSnapshot(strictTelemetryEpisodePath)?.state
+            val reuseClickGeneration = shouldReuseStrictTelemetryForActivityCreate(
+                hasActiveTelemetry,
+                activeEpisodeMatches,
+                existingSourceState
+            )
+            if (activeEpisodeMatches && !reuseClickGeneration) {
+                // Home continue can open a second ReaderActivity while the previous reader still
+                // owns this exact source port. Reusing its telemetry generation also reuses its
+                // already-claimed manifest, so the replacement ReaderSession deterministically
+                // fails with source_claim_failed. Opening a fresh generation retires the old
+                // coordinator/source synchronously before this Activity starts discovery.
+                Log.d(
+                    "ViewerPerf",
+                    "reader_ntk_reentry_replace_claimed_source path=$strictTelemetryEpisodePath," +
+                        "state=$existingSourceState,generation=${ViewerTelemetry.activeGeneration()}"
+                )
+            }
+            strictTelemetryGeneration = if (reuseClickGeneration) {
                 PerformanceMonitor.viewerStarted(
                     strictTelemetryWorkId(manga),
                     strictTelemetryEpisodePath,
@@ -10739,6 +10760,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
 
         @JvmStatic
+        fun shouldReuseStrictTelemetryForActivityCreateForTest(
+            hasActiveTelemetry: Boolean,
+            activeEpisodeMatches: Boolean,
+            sourceState: NtkSourceState?
+        ): Boolean = shouldReuseStrictTelemetryForActivityCreate(
+            hasActiveTelemetry,
+            activeEpisodeMatches,
+            sourceState
+        )
+
+        @JvmStatic
         fun progressEpisodeIndexForTest(
             episodes: List<Manga>,
             manga: Manga,
@@ -10848,6 +10880,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
         private fun shouldEnableAdjacentButton(hasAdjacent: Boolean, canFetchMissingAdjacent: Boolean): Boolean {
             return ReaderDisplayPolicy.shouldEnableAdjacentButton(hasAdjacent, canFetchMissingAdjacent)
+        }
+
+        private fun shouldReuseStrictTelemetryForActivityCreate(
+            hasActiveTelemetry: Boolean,
+            activeEpisodeMatches: Boolean,
+            sourceState: NtkSourceState?
+        ): Boolean {
+            if (!hasActiveTelemetry || !activeEpisodeMatches) return false
+            if (sourceState == null) return true
+            return sourceState.ordinal < NtkSourceState.OWNED_BINDING.ordinal
         }
 
         private fun shouldRevealPrependedBoundary(

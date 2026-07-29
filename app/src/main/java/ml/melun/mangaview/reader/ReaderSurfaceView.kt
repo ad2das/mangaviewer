@@ -370,6 +370,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private data class Page(
         var bitmap: Bitmap? = null,
+        /** Renderer-only pixels for a structural card; never a work-image/provenance bitmap. */
+        var cardBitmap: Bitmap? = null,
         var tiles: List<ReaderTile> = emptyList(),
         var width: Int = 0,
         var height: Int = 0,
@@ -393,6 +395,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private data class DrawItem(
         val index: Int,
         val bitmap: Bitmap?,
+        val cardBitmap: Bitmap?,
         val tiles: List<ReaderTile>,
         val sourceWidth: Int,
         val sourceHeight: Int,
@@ -1350,8 +1353,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             repeat(insertedCount) { pages.add(0, newPageLocked(insertedPlaceholderRatio)) }
             if (revealPrependedBoundary) {
                 pages.getOrNull(insertedCount - 1)?.let { page ->
-                    page.width = width
-                    page.height = max(1, (height * 0.38f).toInt())
+                    val cardWidth = max(1, width)
+                    val cardHeight = TRANSITION_CARD_PAGE_HEIGHT_PX.roundToInt()
+                    page.bitmap = null
+                    page.cardBitmap = createTransitionCardBitmap(cardWidth, "")
+                    page.tiles = emptyList()
+                    page.originalProof = null
+                    page.width = cardWidth
+                    page.height = cardHeight
                     page.loading = false
                     page.cardText = ""
                     page.errorText = null
@@ -2386,6 +2395,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         DrawItem(
                             index = pageIndex,
                             bitmap = null,
+                            cardBitmap = null,
                             tiles = page.tiles,
                             sourceWidth = page.width,
                             sourceHeight = page.height,
@@ -3959,10 +3969,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val oldHeight = pageDrawHeightLocked(page)
             val oldTop = pageTopOrElseLocked(index, 0f)
             val viewportAnchor = progressPositionLocked()
+            val cardWidth = max(1, width)
+            val cardHeight = TRANSITION_CARD_PAGE_HEIGHT_PX.roundToInt()
+            // The rolling native Surface renderer submits only Bitmap-backed items. Keep that
+            // renderer backing separate from the real image slot: lifecycle/provenance checks
+            // must never mistake a UI card for an original work image.
             page.bitmap = null
+            page.cardBitmap = createTransitionCardBitmap(cardWidth, title)
             page.tiles = emptyList()
-            page.width = width
-            page.height = max(1, (height * 0.38f).toInt())
+            page.originalProof = null
+            page.width = cardWidth
+            page.height = cardHeight
             page.loading = false
             page.cardText = title
             page.errorText = null
@@ -3980,6 +3997,52 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         dispatchWindowRequest(request)
     }
+
+    private fun createTransitionCardBitmap(cardWidth: Int, title: String): Bitmap {
+        val safeWidth = max(1, cardWidth)
+        val safeHeight = TRANSITION_CARD_PAGE_HEIGHT_PX.roundToInt()
+        return Bitmap.createBitmap(safeWidth, safeHeight, Bitmap.Config.ARGB_8888).also { bitmap ->
+            val canvas = Canvas(bitmap)
+            canvas.drawColor(Color.BLACK)
+            drawTransitionCardText(
+                canvas = canvas,
+                width = safeWidth,
+                centerY = safeHeight / 2f,
+                title = title,
+                labelPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+            )
+        }
+    }
+
+    private fun drawTransitionCardText(
+        canvas: Canvas,
+        width: Int,
+        centerY: Float,
+        title: String,
+        labelPaint: Paint
+    ) {
+        labelPaint.textAlign = Paint.Align.CENTER
+        labelPaint.textSize = 38f
+        labelPaint.color = Color.rgb(190, 190, 190)
+        canvas.drawText("회차 전환", width / 2f, centerY - 28f, labelPaint)
+        if (title.isNotEmpty()) {
+            labelPaint.textSize = 54f
+            labelPaint.color = Color.WHITE
+            canvas.drawText(title, width / 2f, centerY + 40f, labelPaint)
+        }
+        labelPaint.textSize = 34f
+        labelPaint.color = Color.rgb(190, 190, 190)
+    }
+
+    internal fun pageCardBackingBitmapForTest(index: Int): Bitmap? =
+        synchronized(stateLock) {
+            pages.getOrNull(index)?.takeIf { it.cardText != null }?.cardBitmap
+        }
+
+    internal fun pageImageBitmapPresentForTest(index: Int): Boolean =
+        synchronized(stateLock) {
+            pages.getOrNull(index)?.bitmap != null
+        }
 
     fun setPageError(index: Int, message: String) {
         val request = synchronized(stateLock) {
@@ -5570,7 +5633,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (cleanPixels) {
             for (item in state.items) {
                 if (item.top >= state.height || item.top + item.pageHeight <= 0f) continue
-                val pageBitmap = item.bitmap
+                val pageBitmap = if (item.cardText != null) item.cardBitmap else item.bitmap
                 if (pageBitmap != null && !pageBitmap.isRecycled) {
                     bitmaps += pageBitmap
                     integers += item.index
@@ -5805,28 +5868,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val visibleBottom = min(state.height.toFloat(), item.top + item.pageHeight)
             if (visibleBottom <= visibleTop) return
             val centerY = item.top + item.pageHeight / 2f
-            val cardHeight = min(item.pageHeight, TRANSITION_CARD_BODY_HEIGHT_PX)
-            val top = centerY - cardHeight / 2f
-            val bottom = top + cardHeight
             val save = canvas.save()
             canvas.clipRect(0f, visibleTop, state.width.toFloat(), visibleBottom)
-            dst.set(
-                0f,
-                top,
-                state.width.toFloat(),
-                bottom
-            )
+            // Fill the complete structural slot. The old 12 px transparent margins retained
+            // pixels from a previous Surface buffer at the exact episode boundary.
             paint.style = Paint.Style.FILL
             paint.color = Color.BLACK
-            canvas.drawRect(dst, paint)
-            textPaint.textSize = 38f
-            textPaint.color = Color.rgb(190, 190, 190)
-            canvas.drawText("회차 전환", state.width / 2f, dst.centerY() - 28f, textPaint)
-            textPaint.textSize = 54f
-            textPaint.color = Color.WHITE
-            canvas.drawText(cardText, state.width / 2f, dst.centerY() + 40f, textPaint)
-            textPaint.textSize = 34f
-            textPaint.color = Color.rgb(190, 190, 190)
+            canvas.drawRect(
+                0f,
+                item.top,
+                state.width.toFloat(),
+                item.top + item.pageHeight,
+                paint
+            )
+            drawTransitionCardText(
+                canvas = canvas,
+                width = state.width,
+                centerY = centerY,
+                title = cardText,
+                labelPaint = textPaint
+            )
             canvas.restoreToCount(save)
             return
         }
@@ -6512,6 +6573,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val item = DrawItem(
                     index = index,
                     bitmap = page.bitmap,
+                    cardBitmap = page.cardBitmap,
                     tiles = page.tiles,
                     sourceWidth = page.width,
                     sourceHeight = page.height,
@@ -10899,7 +10961,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val TILE_SEAM_OVERLAP_PX = 1f
         private const val TRANSITION_CARD_WIDTH_RATIO = 0.82f
         private const val TRANSITION_CARD_PAGE_HEIGHT_PX = 168f
-        private const val TRANSITION_CARD_BODY_HEIGHT_PX = 144f
         private const val DEFAULT_PLACEHOLDER_PAGE_HEIGHT_RATIO = 1.45f
         private const val MIN_PLACEHOLDER_PAGE_HEIGHT_RATIO = 0.85f
         private const val MAX_PLACEHOLDER_PAGE_HEIGHT_RATIO = 3.8f
