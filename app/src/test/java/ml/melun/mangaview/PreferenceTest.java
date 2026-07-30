@@ -124,6 +124,23 @@ public class PreferenceTest {
     }
 
     @Test
+    public void recentMergeKeepsRealTitleWhenIncomingNameIsNtkSiteHeading() {
+        MTitle incoming = new MTitle(
+                "뉴토끼 - 웹툰 미리보기", 23632, "", "", null, "225화", MTitle.base_comic);
+        incoming.setSourceSite("ntk");
+        incoming.setReadingProgress(225, 225, 225);
+
+        MTitle existing = new MTitle(
+                "양아치 여고생 쿠즈하나 짱", 23632, "", "", null, "225화", MTitle.base_comic);
+        existing.setSourceSite("ntk");
+        existing.setReadingProgress(224, 224, 225);
+
+        MTitle merged = Preference.preserveMoreCompleteProgressForTest(incoming, existing);
+
+        assertEquals("양아치 여고생 쿠즈하나 짱", merged.getName());
+    }
+
+    @Test
     public void progressMergeKeepsResumeImageIdentityForSameEpisodePath() {
         MTitle incoming = new MTitle("target", 25694, "", "", null, "", MTitle.base_comic);
         incoming.setSourceSite("ntk");

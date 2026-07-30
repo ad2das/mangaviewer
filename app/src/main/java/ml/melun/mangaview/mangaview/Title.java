@@ -459,12 +459,9 @@ public class Title extends MTitle {
             }
             Document d = Jsoup.parse(page.body);
 
-            Element h1 = d.selectFirst("h1");
-            if(h1 != null)
-                name = h1.ownText().trim();
-            Element authorElement = d.selectFirst("h1 + *");
-            if(authorElement != null)
-                author = authorElement.ownText().trim();
+            String documentTitle = extractNtkWorkTitle(d);
+            if(documentTitle.length() > 0)
+                setName(documentTitle);
 
             tags = new ArrayList<>();
             for(Element tag : d.select("a[href*=genre], a[href*=tag], a:matchesOwn(^#)")) {
@@ -1848,6 +1845,43 @@ public class Title extends MTitle {
         return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT)
                 .replace("\u2026", "")
                 .replaceAll("[\\s.]+", "");
+    }
+
+    private static String extractNtkWorkTitle(Document document) {
+        if(document == null)
+            return "";
+        String[] selectors = {
+                ".page-title h2 span",
+                ".page-title h2",
+                ".theme-detail-title-line",
+                "meta[property=og:title]",
+                "meta[name=twitter:title]"
+        };
+        for(String selector : selectors) {
+            Element element = document.selectFirst(selector);
+            if(element == null)
+                continue;
+            String candidate = element.tagName().equals("meta")
+                    ? element.attr("content")
+                    : element.text();
+            candidate = cleanNtkWorkTitle(candidate);
+            if(candidate.length() > 0 && !MTitle.isGenericNtkSiteTitle(candidate))
+                return candidate;
+        }
+        return "";
+    }
+
+    private static String cleanNtkWorkTitle(String value) {
+        String title = value == null ? "" : value.trim();
+        if(title.length() == 0 || MTitle.isGenericNtkSiteTitle(title))
+            return "";
+        return title.replaceFirst(
+                "(?i)\\s*[-|]\\s*(?:뉴토끼|마나토끼|newtoki|manatoki)(?:\\s*(?:웹툰|만화|webtoon|comic))?\\s*$",
+                "").trim();
+    }
+
+    static String extractNtkWorkTitleForTest(String html) {
+        return extractNtkWorkTitle(Jsoup.parse(html == null ? "" : html));
     }
 
     private static boolean isNtkTitleNameMatch(String expectedTitle, String candidateTitle) {

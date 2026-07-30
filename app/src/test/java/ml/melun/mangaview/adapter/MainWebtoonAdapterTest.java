@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 
+import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Title;
 
 import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
@@ -110,5 +111,32 @@ public class MainWebtoonAdapterTest {
 
         assertTrue(HomeTitleKeyPolicy.titleKey(ntk, null).startsWith("ntk:"));
         assertTrue(HomeTitleKeyPolicy.titleKey(wfwf, null).startsWith("wfwf:"));
+    }
+
+    @Test
+    public void homeContinueRepairsGenericNtkHeadingFromMatchingCatalogTitle() {
+        Title recent = new Title(
+                "뉴토끼 - 웹툰 미리보기", "/old.webp", "", Collections.emptyList(), "225화", 23632, MTitle.base_comic);
+        recent.setSourceSite("ntk");
+        Title catalog = new Title(
+                "양아치 여고생 쿠즈하나 짱", "/cover.webp", "", Collections.emptyList(), "225화", 23632, MTitle.base_comic);
+        catalog.setSourceSite("ntk");
+
+        assertTrue(HomeRecentTitlePolicy.applyAuthoritativeMetadata(recent, catalog));
+        assertEquals("양아치 여고생 쿠즈하나 짱", recent.getName());
+        assertEquals("/old.webp", recent.getThumb());
+    }
+
+    @Test
+    public void homeContinueDoesNotReplaceGenericTitleFromDifferentSource() {
+        Title recent = new Title(
+                "뉴토끼 - 웹툰 미리보기", "", "", Collections.emptyList(), "", 23632, MTitle.base_comic);
+        recent.setSourceSite("ntk");
+        Title catalog = new Title(
+                "다른 사이트 작품", "", "", Collections.emptyList(), "", 23632, MTitle.base_comic);
+        catalog.setSourceSite("wfwf");
+
+        assertFalse(HomeRecentTitlePolicy.applyAuthoritativeMetadata(recent, catalog));
+        assertEquals("뉴토끼 - 웹툰 미리보기", recent.getName());
     }
 }

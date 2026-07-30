@@ -27,6 +27,32 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkWorkTitleUsesVisibleDetailHeadingInsteadOfHiddenSiteHeading() {
+        String html = "<html><head>"
+                + "<meta property='og:title' content='양아치 여고생 쿠즈하나 짱 - 마나토끼 만화'>"
+                + "</head><body>"
+                + "<h1 style='position:absolute;font-size:0'>뉴토끼 - 웹툰 미리보기</h1>"
+                + "<div class='page-title'><h2><span>양아치 여고생 쿠즈하나 짱</span></h2></div>"
+                + "</body></html>";
+
+        assertEquals("양아치 여고생 쿠즈하나 짱", Title.extractNtkWorkTitleForTest(html));
+    }
+
+    @Test
+    public void ntkWorkTitleCleansKnownSiteSuffixFromMetadataFallback() {
+        String html = "<meta property='og:title' content='양아치 여고생 쿠즈하나 짱 - 마나토끼 만화'>";
+
+        assertEquals("양아치 여고생 쿠즈하나 짱", Title.extractNtkWorkTitleForTest(html));
+    }
+
+    @Test
+    public void ntkWorkTitleRejectsGenericSiteDocumentTitle() {
+        assertEquals("", Title.extractNtkWorkTitleForTest(
+                "<h1>뉴토끼 - 웹툰 미리보기</h1>"
+                        + "<meta property='og:title' content='뉴토끼 - 웹툰 미리보기'>"));
+    }
+
+    @Test
     public void cleanNtkEpisodeTitleRemovesReadFromFirstEpisodeAction() {
         String title = Title.cleanNtkEpisodeTitleForTest(
                 "<a href=\"/webtoon/10/1\"><span class=\"subject\">1화</span><span>첫화부터 정주행</span></a>");

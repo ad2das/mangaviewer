@@ -532,6 +532,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Object> contentRows = new ArrayList<>();
         List<Title> seedTitles = collectTitles(sections, 24);
         List<Title> recentTitles = recentTitles();
+        repairGenericRecentTitles(recentTitles, sections);
         boolean hasServerTitles = seedTitles.size() > 0;
         List<Title> heroTitles = titlesWithThumbnails(seedTitles, 5);
         if(HOME_HERO_ENABLED && heroTitles.size() > 0)
@@ -1012,6 +1013,41 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                 title.setBookmark(bookmark);
         }
         return titles;
+    }
+
+    private void repairGenericRecentTitles(List<Title> recents, List<Ranking<?>> sections) {
+        if(recents == null || recents.size() == 0)
+            return;
+        for(Title recent : recents) {
+            if(recent == null || !MTitle.isGenericNtkSiteTitle(recent.getName()))
+                continue;
+            MTitle authoritative = matchingTitle(sections, recent);
+            if(authoritative == null && p != null)
+                authoritative = p.findFavoriteTitle(recent);
+            if(!HomeRecentTitlePolicy.applyAuthoritativeMetadata(recent, authoritative))
+                continue;
+            if(p != null)
+                p.updateRecentData(recent);
+        }
+    }
+
+    private MTitle matchingTitle(List<Ranking<?>> sections, MTitle target) {
+        if(sections == null || target == null)
+            return null;
+        for(Ranking<?> section : sections) {
+            if(section == null)
+                continue;
+            for(Object item : section) {
+                if(!(item instanceof MTitle))
+                    continue;
+                MTitle candidate = (MTitle) item;
+                if(candidate.getId() == target.getId()
+                        && candidate.getBaseMode() == target.getBaseMode()
+                        && HomeRecentTitlePolicy.sameSource(candidate, target))
+                    return candidate;
+            }
+        }
+        return null;
     }
 
     private void appendRecentTitlesForCurrentMode(List<Title> target, int limit) {
@@ -2935,5 +2971,30 @@ class HomeTitleKeyPolicy {
                 || source.contains("v12st") || source.contains("ao9cloud"))
             return "wfwf";
         return "";
+    }
+}
+
+class HomeRecentTitlePolicy {
+    static boolean applyAuthoritativeMetadata(MTitle recent, MTitle authoritative) {
+        if(recent == null || authoritative == null
+                || recent.getId() != authoritative.getId()
+                || recent.getBaseMode() != authoritative.getBaseMode()
+                || !sameSource(recent, authoritative)
+                || !MTitle.isGenericNtkSiteTitle(recent.getName())
+                || authoritative.getName().trim().length() == 0
+                || MTitle.isGenericNtkSiteTitle(authoritative.getName()))
+            return false;
+        recent.setName(authoritative.getName());
+        if(recent.getThumb().trim().length() == 0)
+            recent.setThumb(authoritative.getThumb());
+        return true;
+    }
+
+    static boolean sameSource(MTitle first, MTitle second) {
+        String firstSource = first == null ? "" : first.getSourceSite();
+        String secondSource = second == null ? "" : second.getSourceSite();
+        if(firstSource.length() == 0 || secondSource.length() == 0)
+            return true;
+        return firstSource.equals(secondSource);
     }
 }

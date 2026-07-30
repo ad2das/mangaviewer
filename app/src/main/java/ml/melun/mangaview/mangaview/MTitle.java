@@ -138,6 +138,22 @@ public class MTitle{
         return cleanNullable(name);
     }
 
+    public static boolean isGenericNtkSiteTitle(String value) {
+        if(value == null)
+            return false;
+        String normalized = value.trim().toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", " ");
+        if(normalized.length() == 0)
+            return false;
+        boolean ntkBrand = normalized.contains("뉴토끼")
+                || normalized.contains("newtoki");
+        boolean sitePreview = normalized.contains("웹툰 미리보기")
+                || normalized.contains("만화 미리보기")
+                || normalized.contains("webtoon preview")
+                || normalized.contains("comic preview");
+        return ntkBrand && sitePreview;
+    }
+
     public int getId() {
         return id;
     }

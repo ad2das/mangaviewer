@@ -1098,6 +1098,10 @@ public class Preference {
     private static void preserveMoreCompleteProgress(MTitle target, MTitle existing) {
         if(target == null || existing == null)
             return;
+        if(MTitle.isGenericNtkSiteTitle(target.getName())
+                && !MTitle.isGenericNtkSiteTitle(existing.getName())
+                && existing.getName().trim().length() > 0)
+            target.setName(existing.getName());
         target.inheritMissingResumeNtkImageIdentity(existing);
         int existingCount = existing.getEpisodeCount();
         int targetCount = target.getEpisodeCount();
