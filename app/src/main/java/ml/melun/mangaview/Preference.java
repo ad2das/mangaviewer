@@ -1102,6 +1102,13 @@ public class Preference {
                 && !MTitle.isGenericNtkSiteTitle(existing.getName())
                 && existing.getName().trim().length() > 0)
             target.setName(existing.getName());
+        boolean ntkMetadata = "ntk".equals(target.getSourceSite())
+                || "ntk".equals(existing.getSourceSite());
+        if(ntkMetadata
+                && MTitle.isSuspiciousNtkThumbnail(target.getThumb())
+                && existing.getThumb().trim().length() > 0
+                && !MTitle.isSuspiciousNtkThumbnail(existing.getThumb()))
+            target.setThumb(existing.getThumb());
         target.inheritMissingResumeNtkImageIdentity(existing);
         int existingCount = existing.getEpisodeCount();
         int targetCount = target.getEpisodeCount();

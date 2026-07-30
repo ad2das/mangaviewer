@@ -471,9 +471,9 @@ public class Title extends MTitle {
             }
             MainPageWebtoon.applyInferredSearchTags(this);
 
-            Element img = NtkEpisodeParser.firstTitleImage(d, titleKey, name);
-            if(img != null)
-                thumb = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
+            String titleImage = NtkEpisodeParser.firstTitleImageUrl(d, titleKey, name);
+            if(titleImage.length() > 0)
+                thumb = titleImage;
 
             Elements episodeLinks = d.select("a[href]");
             NtkEpisodeParser.ParseResult parsed = parseNtkEpisodeRowsWithFallback(

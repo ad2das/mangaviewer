@@ -25,9 +25,13 @@ import ml.melun.mangaview.mangaview.MTitle;
 
 public class NtkHomeContinueTitleInstrumentedTest {
     private static final String PACKAGE_NAME = "ml.melun.mangaview";
+    private static final String AD_THUMB =
+            "https://aws-cdn1.site/board_uploads/2026/06/24/065250_fdaad08ea68b.png";
+    private static final String EXPECTED_THUMB =
+            "https://i1.imgcloud18.com/10001/2266a3ee.jpg";
 
     @Test
-    public void homeContinueRepairsPreviouslyStoredSiteHeading() {
+    public void homeContinueRepairsStoredAdThumbnail() {
         Context context = ApplicationProvider.getApplicationContext();
         context.getSharedPreferences("mangaView", Context.MODE_PRIVATE).edit().clear().commit();
         MainApplication.p.init(context);
@@ -35,9 +39,9 @@ public class NtkHomeContinueTitleInstrumentedTest {
         MainApplication.p.setBaseMode(MTitle.base_comic);
 
         MTitle recent = new MTitle(
-                "뉴토끼 - 웹툰 미리보기",
+                "마왕의 딸은 너무 착해!!",
                 10001,
-                "https://i1.imgcloud18.com/10001/2266a3ee.jpg",
+                AD_THUMB,
                 "",
                 Collections.emptyList(),
                 "32화",
@@ -49,8 +53,8 @@ public class NtkHomeContinueTitleInstrumentedTest {
         try(ActivityScenario<MainActivity> ignored = ActivityScenario.launch(MainActivity.class)) {
             UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
             assertTrue(device.wait(Until.hasObject(By.res(PACKAGE_NAME, "bottom_nav")), 10000L));
-            assertTrue("Expected repaired title to be persisted",
-                    waitForStoredTitle(recent, "마왕의 딸은 너무 착해!!", 10000L));
+            assertTrue("Expected repaired thumbnail to be persisted",
+                    waitForStoredMetadata(recent, "마왕의 딸은 너무 착해!!", EXPECTED_THUMB, 10000L));
             device.swipe(540, 1850, 540, 1100, 24);
             assertTrue("Expected repaired continue title on the home screen",
                     device.wait(Until.hasObject(By.text("마왕의 딸은 너무 착해!!")), 10000L));
@@ -59,14 +63,18 @@ public class NtkHomeContinueTitleInstrumentedTest {
             MTitle stored = MainApplication.p.findRecentTitle(recent);
             assertNotNull(stored);
             assertEquals("마왕의 딸은 너무 착해!!", stored.getName());
+            assertEquals(EXPECTED_THUMB, stored.getThumb());
         }
     }
 
-    private boolean waitForStoredTitle(MTitle recent, String expected, long timeoutMs) {
+    private boolean waitForStoredMetadata(
+            MTitle recent, String expectedTitle, String expectedThumb, long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         while(SystemClock.elapsedRealtime() < deadline) {
             MTitle stored = MainApplication.p.findRecentTitle(recent);
-            if(stored != null && expected.equals(stored.getName()))
+            if(stored != null
+                    && expectedTitle.equals(stored.getName())
+                    && expectedThumb.equals(stored.getThumb()))
                 return true;
             SystemClock.sleep(100L);
         }

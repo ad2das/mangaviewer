@@ -141,6 +141,20 @@ public class PreferenceTest {
     }
 
     @Test
+    public void recentMergeDoesNotReplaceCoverWithObviousNtkBanner() {
+        MTitle incoming = new MTitle(
+                "작품", 23632, "https://cdn.example/main-banner.webp", "", null, "", MTitle.base_comic);
+        incoming.setSourceSite("ntk");
+        MTitle existing = new MTitle(
+                "작품", 23632, "https://cdn.example/cover.webp", "", null, "", MTitle.base_comic);
+        existing.setSourceSite("ntk");
+
+        MTitle merged = Preference.preserveMoreCompleteProgressForTest(incoming, existing);
+
+        assertEquals("https://cdn.example/cover.webp", merged.getThumb());
+    }
+
+    @Test
     public void progressMergeKeepsResumeImageIdentityForSameEpisodePath() {
         MTitle incoming = new MTitle("target", 25694, "", "", null, "", MTitle.base_comic);
         incoming.setSourceSite("ntk");

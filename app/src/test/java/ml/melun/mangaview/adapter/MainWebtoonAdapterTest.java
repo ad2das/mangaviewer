@@ -124,7 +124,45 @@ public class MainWebtoonAdapterTest {
 
         assertTrue(HomeRecentTitlePolicy.applyAuthoritativeMetadata(recent, catalog));
         assertEquals("양아치 여고생 쿠즈하나 짱", recent.getName());
-        assertEquals("/old.webp", recent.getThumb());
+        assertEquals("/cover.webp", recent.getThumb());
+    }
+
+    @Test
+    public void homeContinueReplacesStoredAdThumbnailFromMatchingNtkCatalog() {
+        Title recent = new Title(
+                "양아치 여고생 쿠즈하나 짱",
+                "https://aws-cdn1.site/board_uploads/2026/06/24/ad-hash.png",
+                "",
+                Collections.emptyList(),
+                "225화",
+                23632,
+                MTitle.base_comic);
+        recent.setSourceSite("ntk");
+        Title catalog = new Title(
+                "양아치 여고생 쿠즈하나 짱",
+                "https://mana.example/board_uploads/cover.webp",
+                "",
+                Collections.emptyList(),
+                "225화",
+                23632,
+                MTitle.base_comic);
+        catalog.setSourceSite("ntk");
+
+        assertTrue(HomeRecentTitlePolicy.applyAuthoritativeMetadata(recent, catalog));
+        assertEquals("https://mana.example/board_uploads/cover.webp", recent.getThumb());
+    }
+
+    @Test
+    public void homeContinueDoesNotTrustCatalogBannerThumbnail() {
+        Title recent = new Title(
+                "작품", "/cover.webp", "", Collections.emptyList(), "", 23632, MTitle.base_comic);
+        recent.setSourceSite("ntk");
+        Title catalog = new Title(
+                "작품", "https://cdn.example/banner-ad.webp", "", Collections.emptyList(), "", 23632, MTitle.base_comic);
+        catalog.setSourceSite("ntk");
+
+        assertFalse(HomeRecentTitlePolicy.applyAuthoritativeMetadata(recent, catalog));
+        assertEquals("/cover.webp", recent.getThumb());
     }
 
     @Test

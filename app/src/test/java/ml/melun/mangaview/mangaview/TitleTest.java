@@ -53,6 +53,39 @@ public class TitleTest {
     }
 
     @Test
+    public void ntkTitleImageSkipsBannerBeforeRealCover() {
+        String html = "<section id='main-banner-view'>"
+                + "<a class='thema-home-banner-button' data-banner-id='12' data-banner-href='https://ad.example'>"
+                + "<img src='https://cdn.example/board_uploads/ad-hash.png' "
+                + "alt='https://ad.example' width='380' height='100'></a></section>"
+                + "<div class='view-img'><img src='https://cdn.example/board_uploads/cover.webp' "
+                + "alt='양아치 여고생 쿠즈하나 짱'></div>";
+
+        assertEquals("https://cdn.example/board_uploads/cover.webp",
+                NtkEpisodeParser.firstTitleImageUrl(
+                        org.jsoup.Jsoup.parse(html), "23632", "양아치 여고생 쿠즈하나 짱"));
+    }
+
+    @Test
+    public void ntkTitleImageUsesSafeMetadataWhenOnlyBannerImagesExist() {
+        String html = "<head><meta property='og:image' content='https://cdn.example/cover.webp'></head>"
+                + "<body><div class='banner'><img src='https://cdn.example/ad.png'></div></body>";
+
+        assertEquals("https://cdn.example/cover.webp",
+                NtkEpisodeParser.firstTitleImageUrl(
+                        org.jsoup.Jsoup.parse(html), "23632", "작품 제목"));
+    }
+
+    @Test
+    public void ntkTitleImageDoesNotUseWideAdWithMatchingWorkPath() {
+        String html = "<img src='https://cdn.example/23632/065250_fdaad08ea68b.png' "
+                + "width='375' height='100'>";
+
+        assertEquals("", NtkEpisodeParser.firstTitleImageUrl(
+                org.jsoup.Jsoup.parse(html), "23632", "작품 제목"));
+    }
+
+    @Test
     public void cleanNtkEpisodeTitleRemovesReadFromFirstEpisodeAction() {
         String title = Title.cleanNtkEpisodeTitleForTest(
                 "<a href=\"/webtoon/10/1\"><span class=\"subject\">1화</span><span>첫화부터 정주행</span></a>");

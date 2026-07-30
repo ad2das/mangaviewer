@@ -154,6 +154,22 @@ public class MTitle{
         return ntkBrand && sitePreview;
     }
 
+    public static boolean isSuspiciousNtkThumbnail(String value) {
+        if(value == null)
+            return false;
+        String lower = value.trim().toLowerCase(Locale.ROOT);
+        if(lower.length() == 0)
+            return false;
+        return lower.contains("banner")
+                || lower.contains("advert")
+                || lower.contains("sponsor")
+                || lower.contains("popup")
+                || lower.contains("/ads/")
+                || lower.contains("/ad/")
+                || lower.contains("ad_banner")
+                || lower.contains("ad-banner");
+    }
+
     public int getId() {
         return id;
     }

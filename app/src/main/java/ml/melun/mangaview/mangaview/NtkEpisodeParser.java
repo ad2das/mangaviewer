@@ -293,18 +293,80 @@ final class NtkEpisodeParser {
                 || body.contains("\uD68C\uCC28 \uC5C6\uC74C");
     }
 
-    static Element firstTitleImage(Document document, String titleKey, String titleName) {
+    static String firstTitleImageUrl(Document document, String titleKey, String titleName) {
         if(document == null)
-            return null;
-        String keyNeedle = titleKey == null || titleKey.length() == 0 ? "" : "/" + titleKey + "/";
-        for(Element img : document.select("img")) {
-            String src = img.hasAttr("data-original") ? img.attr("data-original") : img.attr("src");
-            if(keyNeedle.length() > 0 && src != null && src.contains(keyNeedle))
-                return img;
-            if(titleName != null && titleName.length() > 0 && titleName.equals(img.attr("alt")))
-                return img;
+            return "";
+        String normalizedTitle = titleName == null ? "" : titleName.trim();
+        if(normalizedTitle.length() > 0) {
+            for(Element img : document.select("img[alt]")) {
+                if(normalizedTitle.equals(img.attr("alt").trim()) && !isAdTitleImage(img))
+                    return titleImageUrl(img);
+            }
         }
-        return null;
+        for(Element candidate : document.select(
+                "meta[property=og:image], meta[name=twitter:image], meta[property=twitter:image], link[rel=image_src]")) {
+            String url = candidate.hasAttr("content")
+                    ? candidate.attr("content").trim()
+                    : candidate.attr("href").trim();
+            if(url.length() > 0 && !MTitle.isSuspiciousNtkThumbnail(url))
+                return url;
+        }
+        String keyNeedle = titleKey == null || titleKey.length() == 0 ? "" : "/" + titleKey + "/";
+        if(keyNeedle.length() > 0) {
+            for(Element img : document.select("img")) {
+                String url = titleImageUrl(img);
+                if(url.contains(keyNeedle) && !isAdTitleImage(img))
+                    return url;
+            }
+        }
+        return "";
+    }
+
+    private static String titleImageUrl(Element img) {
+        if(img == null)
+            return "";
+        String url = img.attr("data-original").trim();
+        if(url.length() == 0)
+            url = img.attr("data-src").trim();
+        if(url.length() == 0)
+            url = img.attr("src").trim();
+        return url;
+    }
+
+    private static boolean isAdTitleImage(Element img) {
+        String url = titleImageUrl(img);
+        if(url.length() == 0 || MTitle.isSuspiciousNtkThumbnail(url))
+            return true;
+        String alt = img.attr("alt").trim().toLowerCase(java.util.Locale.ROOT);
+        if(alt.startsWith("http://") || alt.startsWith("https://"))
+            return true;
+        int width = positiveDimension(img.attr("width"));
+        int height = positiveDimension(img.attr("height"));
+        if(width > 0 && height > 0 && width >= height * 2.4d)
+            return true;
+        for(Element context = img; context != null; context = context.parent()) {
+            if(context.hasAttr("data-banner-id") || context.hasAttr("data-banner-href"))
+                return true;
+            String marker = (context.id() + " " + context.className())
+                    .toLowerCase(java.util.Locale.ROOT);
+            if(marker.contains("banner") || marker.contains("advert")
+                    || marker.contains("sponsor") || marker.contains("popup"))
+                return true;
+        }
+        return false;
+    }
+
+    private static int positiveDimension(String value) {
+        if(value == null || value.length() == 0)
+            return 0;
+        Matcher matcher = Pattern.compile("(\\d{1,5})").matcher(value);
+        if(!matcher.find())
+            return 0;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch(Exception ignored) {
+            return 0;
+        }
     }
 
     private static boolean hasEpisodeListContent(String lowerBody) {

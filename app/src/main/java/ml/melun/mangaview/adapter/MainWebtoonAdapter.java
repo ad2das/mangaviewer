@@ -532,7 +532,7 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         List<Object> contentRows = new ArrayList<>();
         List<Title> seedTitles = collectTitles(sections, 24);
         List<Title> recentTitles = recentTitles();
-        repairGenericRecentTitles(recentTitles, sections);
+        repairRecentMetadata(recentTitles, sections);
         boolean hasServerTitles = seedTitles.size() > 0;
         List<Title> heroTitles = titlesWithThumbnails(seedTitles, 5);
         if(HOME_HERO_ENABLED && heroTitles.size() > 0)
@@ -1015,11 +1015,11 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return titles;
     }
 
-    private void repairGenericRecentTitles(List<Title> recents, List<Ranking<?>> sections) {
+    private void repairRecentMetadata(List<Title> recents, List<Ranking<?>> sections) {
         if(recents == null || recents.size() == 0)
             return;
         for(Title recent : recents) {
-            if(recent == null || !MTitle.isGenericNtkSiteTitle(recent.getName()))
+            if(recent == null)
                 continue;
             MTitle authoritative = matchingTitle(sections, recent);
             if(authoritative == null && p != null)
@@ -2979,15 +2979,28 @@ class HomeRecentTitlePolicy {
         if(recent == null || authoritative == null
                 || recent.getId() != authoritative.getId()
                 || recent.getBaseMode() != authoritative.getBaseMode()
-                || !sameSource(recent, authoritative)
-                || !MTitle.isGenericNtkSiteTitle(recent.getName())
-                || authoritative.getName().trim().length() == 0
-                || MTitle.isGenericNtkSiteTitle(authoritative.getName()))
+                || !sameSource(recent, authoritative))
             return false;
-        recent.setName(authoritative.getName());
-        if(recent.getThumb().trim().length() == 0)
-            recent.setThumb(authoritative.getThumb());
-        return true;
+        boolean ntkMetadata = "ntk".equals(recent.getSourceSite())
+                || "ntk".equals(authoritative.getSourceSite())
+                || MTitle.isGenericNtkSiteTitle(recent.getName());
+        if(!ntkMetadata)
+            return false;
+        boolean changed = false;
+        if(MTitle.isGenericNtkSiteTitle(recent.getName())
+                && authoritative.getName().trim().length() > 0
+                && !MTitle.isGenericNtkSiteTitle(authoritative.getName())) {
+            recent.setName(authoritative.getName());
+            changed = true;
+        }
+        String authoritativeThumb = authoritative.getThumb().trim();
+        if(authoritativeThumb.length() > 0
+                && !MTitle.isSuspiciousNtkThumbnail(authoritativeThumb)
+                && !authoritativeThumb.equals(recent.getThumb().trim())) {
+            recent.setThumb(authoritativeThumb);
+            changed = true;
+        }
+        return changed;
     }
 
     static boolean sameSource(MTitle first, MTitle second) {
