@@ -38,6 +38,7 @@ public class NtkAppHttpBypassInstrumentedTest {
         MainApplication.p.init(context);
         String siteRoot = InstrumentationRegistry.getArguments()
                 .getString("ntkSiteRoot", CustomHttpClient.NTK_WEBTOON_URL);
+        MainApplication.p.clearNtkCellularResolvedRoot();
         MainApplication.p.setNtkSitePreset(siteRoot);
         MainApplication.p.setBaseMode(MTitle.base_comic);
         CustomHttpClient client = MainApplication.getHttpClient();
@@ -88,5 +89,31 @@ public class NtkAppHttpBypassInstrumentedTest {
                         || lower.contains("newtoki")
                         || lower.contains("/manhwa")
                         || lower.contains("/webtoon"));
+
+        long steadyStarted = System.currentTimeMillis();
+        Response steadyResponse =
+                client.mget("/api/manhwa-list?page=2&pageSize=1&withTotal=1", true);
+        assertNotNull("Expected the recovered cellular root to serve a repeat request",
+                steadyResponse);
+        int steadyCode = steadyResponse.code();
+        String steadyBody =
+                steadyResponse.body() == null ? "" : steadyResponse.body().string();
+        steadyResponse.close();
+        long steadyMs = System.currentTimeMillis() - steadyStarted;
+        String steadyLower = steadyBody.toLowerCase(Locale.ROOT);
+        Log.d(TAG, "ntk_app_http_bypass_steady code=" + steadyCode
+                + ",bodyLen=" + steadyBody.length()
+                + ",ms=" + steadyMs);
+        assertTrue("Expected a non-empty repeat response, code=" + steadyCode,
+                steadyCode > 0 && steadyBody.length() > 0);
+        assertFalse("Repeat request must stay away from an HTTP legal-block route, code="
+                        + steadyCode,
+                steadyCode == 451
+                        || steadyLower.contains("법적 사유로 이용 불가")
+                        || steadyLower.contains("unavailable for legal reasons")
+                        || steadyLower.contains("\"status\":451")
+                        || steadyLower.contains("error 1026: cloudflare error"));
+        assertTrue("Recovered cellular repeat request was too slow: " + steadyMs + "ms",
+                steadyMs < 4_000L);
     }
 }

@@ -1054,6 +1054,34 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void ntkResolvedAliasIsSelectedOnlyForCellularRequests() {
+        assertEquals("https://newtoki1.org",
+                CustomHttpClient.selectedNtkCellularResolvedRootForTest(
+                        CustomHttpClient.NTK_WEBTOON_URL,
+                        "https://newtoki1.org",
+                        true,
+                        false));
+        assertEquals("",
+                CustomHttpClient.selectedNtkCellularResolvedRootForTest(
+                        CustomHttpClient.NTK_WEBTOON_URL,
+                        "https://newtoki1.org",
+                        false,
+                        false));
+        assertEquals("",
+                CustomHttpClient.selectedNtkCellularResolvedRootForTest(
+                        CustomHttpClient.NTK_WEBTOON_URL,
+                        "https://newtoki1.org",
+                        true,
+                        true));
+        assertEquals("",
+                CustomHttpClient.selectedNtkCellularResolvedRootForTest(
+                        CustomHttpClient.WEBTOON_URL,
+                        "https://newtoki1.org",
+                        true,
+                        false));
+    }
+
+    @Test
     public void ntkMissingApiResponseAfterChallengeSkipsAddressRetry() {
         assertTrue(CustomHttpClient.shouldSkipNtkResolvedDomainRetryAfterChallengeForTest(
                 CustomHttpClient.FetchMode.SEARCH_NO_WEBVIEW, true, true, "/api/manhwa-list"));

@@ -52,6 +52,12 @@ public class PreferenceTest {
         assertTrue(Preference.isLegacyNtkRedirectRootForTest("https://newtoki1.org"));
         assertTrue(Preference.isLegacyNtkRedirectRootForTest("https://newtoki1.org/manhwa"));
         assertFalse(Preference.isLegacyNtkRedirectRootForTest(NTK_WEBTOON_URL));
+        assertEquals("https://newtoki1.org",
+                Preference.migratedNtkCellularResolvedRootForTest(
+                        "",
+                        "https://newtoki1.org/manhwa",
+                        "https://newtoki1.org/manhwa",
+                        "https://newtoki1.org"));
     }
 
     @Test

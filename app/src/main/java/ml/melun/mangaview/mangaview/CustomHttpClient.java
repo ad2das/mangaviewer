@@ -541,6 +541,7 @@ public class CustomHttpClient {
     public static final String WEBTOON_URL = "https://wfwf455.com";
     public static final String NTK_COMIC_URL = "https://sbxh9.com/manhwa";
     public static final String NTK_WEBTOON_URL = "https://sbxh9.com";
+    public static final String NTK_CELLULAR_ALIAS_URL = "https://newtoki1.org";
     public static final String NTK_REACHABLE_FALLBACK_URL = "https://ntk01.com";
     private static final String NTK_HOST = "sbxh9.com";
     private static final String NTK_ALIAS_HOST = "newtoki1.org";
@@ -5082,6 +5083,10 @@ public class CustomHttpClient {
                         String root = trimTrailingSlash(reachable);
                         override.webtoonUrl = root;
                         override.comicUrl = root + "/manhwa";
+                    } else if(preferTrustedAlias
+                            && shouldUseNtkCellularResilientTransport()) {
+                        p.setNtkCellularResolvedRoot(reachable);
+                        Log.d(TAG, "ntk_cellular_resolved_root_saved root=" + reachable);
                     } else {
                         p.setResolvedNtkSitePreset(reachable);
                     }
@@ -8658,6 +8663,16 @@ public class CustomHttpClient {
             url = p.getUrl();
         if(url == null || url.length() == 0)
             url = DEFAULT_COMIC_URL;
+        String cellularRoot = "";
+        if(override == null && isNtkUrlForTest(url)) {
+            cellularRoot = selectedNtkCellularResolvedRoot(
+                    url,
+                    p == null ? "" : p.getNtkCellularResolvedRoot(),
+                    shouldUseNtkCellularResilientTransport(),
+                    false);
+        }
+        if(cellularRoot.length() > 0)
+            return cellularRoot + "/manhwa";
         return trimTrailingSlash(url);
     }
 
@@ -8668,7 +8683,37 @@ public class CustomHttpClient {
             url = p.getWebtoonUrl();
         if(url == null || url.length() == 0)
             url = WEBTOON_URL;
+        String cellularRoot = "";
+        if(override == null && isNtkUrlForTest(url)) {
+            cellularRoot = selectedNtkCellularResolvedRoot(
+                    url,
+                    p == null ? "" : p.getNtkCellularResolvedRoot(),
+                    shouldUseNtkCellularResilientTransport(),
+                    false);
+        }
+        if(cellularRoot.length() > 0)
+            return cellularRoot;
         return trimTrailingSlash(url);
+    }
+
+    private static String selectedNtkCellularResolvedRoot(String configuredUrl,
+                                                           String resolvedRoot,
+                                                           boolean cellularTransport,
+                                                           boolean explicitSiteOverride) {
+        if(!cellularTransport || explicitSiteOverride || !isNtkUrlForTest(configuredUrl))
+            return "";
+        String normalized = NtkDomainResolver.normalizeRoot(resolvedRoot);
+        if(normalized == null || normalized.length() == 0 || !isNtkUrlForTest(normalized))
+            return "";
+        return normalized;
+    }
+
+    static String selectedNtkCellularResolvedRootForTest(String configuredUrl,
+                                                          String resolvedRoot,
+                                                          boolean cellularTransport,
+                                                          boolean explicitSiteOverride) {
+        return selectedNtkCellularResolvedRoot(
+                configuredUrl, resolvedRoot, cellularTransport, explicitSiteOverride);
     }
 
     private String getBaseUrl(String path){
