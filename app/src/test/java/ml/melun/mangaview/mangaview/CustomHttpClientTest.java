@@ -1031,11 +1031,26 @@ public class CustomHttpClientTest {
         String challenge = "<!DOCTYPE html><html><head><title>Just a moment...</title></head>"
                 + "<body><script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\"></script></body></html>";
 
-        assertFalse(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(403, challenge));
+        assertFalse(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(
+                403, challenge, true));
+        assertTrue(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(
+                451,
+                "{\"title\":\"Error 1026: Cloudflare Error\",\"status\":451}",
+                true));
+        assertFalse(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(
+                451,
+                "{\"title\":\"Error 1026: Cloudflare Error\",\"status\":451}",
+                false));
         assertTrue(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(
                 403,
-                "<html><body>plain forbidden</body></html>"));
-        assertTrue(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(404, ""));
+                "<html><body>plain forbidden</body></html>",
+                false));
+        assertTrue(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(
+                404, "", false));
+        assertFalse(CustomHttpClient.shouldRetryNtkWithResolvedDomainForTest(
+                200,
+                "{\"works\":[]}",
+                false));
     }
 
     @Test

@@ -8962,13 +8962,20 @@ public class CustomHttpClient {
                 && shouldRetryWithResolvedDomain(response, url)
                 && !shouldSkipNtkResolvedDomainRetryAfterChallenge(fetchMode,
                 response == null, hasRecentCloudflareChallenge(), url)) {
+            boolean cellularLegalUnavailableRoute = response != null
+                    && shouldUseNtkCellularResilientTransport()
+                    && isNtkLegalUnavailableResponse(response.code(), "");
             boolean appliedRedirectRoot = applyNtkRedirectRoot(response, baseUrl);
             if(response != null) {
                 rememberCloudflareChallengeIfPresent(response, baseUrl, url);
                 response.close();
             }
-            if(!appliedRedirectRoot)
-                ensureNtkDomainForRetry();
+            if(!appliedRedirectRoot) {
+                if(cellularLegalUnavailableRoute)
+                    ensureNtkDomainAfterDemandRouteFailure();
+                else
+                    ensureNtkDomainForRetry();
+            }
             baseUrl = getBaseUrl(url);
             ntkBaseUrl = isNtkUrl(baseUrl);
             headers = buildHeaders(baseUrl, useDefaultCookies, customCookie);
@@ -10776,23 +10783,28 @@ public class CustomHttpClient {
             return true;
         int code = response.code();
         if(isNtk()) {
+            boolean cellularTransport = shouldUseNtkCellularResilientTransport();
             String body = "";
-            if(code == 403 || code >= 500) {
+            if(code == 403 || (cellularTransport && code == 451) || code >= 500) {
                 try {
                     body = response.peekBody(256 * 1024L).string();
                 } catch (Exception ignored) {
                 }
             }
-            return shouldRetryNtkWithResolvedDomain(code, body, path);
+            return shouldRetryNtkWithResolvedDomain(code, body, path, cellularTransport);
         }
         return code == 301 || code == 302 || code == 403 || code == 404 || code >= 500;
     }
 
-    private static boolean shouldRetryNtkWithResolvedDomain(int code, String body) {
-        return shouldRetryNtkWithResolvedDomain(code, body, null);
-    }
-
-    private static boolean shouldRetryNtkWithResolvedDomain(int code, String body, String path) {
+    private static boolean shouldRetryNtkWithResolvedDomain(int code, String body, String path,
+                                                            boolean cellularTransport) {
+        // TLS/SNI fragmentation can only get the request as far as the origin. Some carrier
+        // routes now complete TLS successfully and are rejected one layer later with Cloudflare
+        // 451/1026. Treat that response as a failed origin route so the existing one-shot domain
+        // recovery can select a reachable NTK root on cellular connections; Wi-Fi behavior,
+        // ordinary successes, and challenge handling are unchanged.
+        if(cellularTransport && isNtkLegalUnavailableResponse(code, body))
+            return true;
         if(code == 403 && isCloudflareChallenge(code, body))
             return false;
         if(code == 301 || code == 302 || code == 403 || code == 404 || code >= 500)
@@ -10800,8 +10812,9 @@ public class CustomHttpClient {
         return false;
     }
 
-    static boolean shouldRetryNtkWithResolvedDomainForTest(int code, String body) {
-        return shouldRetryNtkWithResolvedDomain(code, body);
+    static boolean shouldRetryNtkWithResolvedDomainForTest(int code, String body,
+                                                           boolean cellularTransport) {
+        return shouldRetryNtkWithResolvedDomain(code, body, null, cellularTransport);
     }
 
     static boolean shouldSkipNtkResolvedDomainRetryAfterChallengeForTest(FetchMode fetchMode,

@@ -68,6 +68,12 @@ public class NtkAppHttpBypassInstrumentedTest {
 
         assertTrue("Expected HTTP status from NTK, code=" + code, code > 0);
         assertTrue("Expected non-empty NTK response body, code=" + code, body.length() > 0);
+        assertFalse("App must recover away from an HTTP legal-block route, code=" + code,
+                code == 451
+                        || lower.contains("법적 사유로 이용 불가")
+                        || lower.contains("unavailable for legal reasons")
+                        || lower.contains("\"status\":451")
+                        || lower.contains("error 1026: cloudflare error"));
         assertFalse("App must not receive a WebView/network error document",
                 lower.contains("webpage not available")
                         || lower.contains("net::err_")
