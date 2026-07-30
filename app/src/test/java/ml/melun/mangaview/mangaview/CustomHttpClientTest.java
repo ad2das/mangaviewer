@@ -1082,6 +1082,35 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void currentBrokenDefaultTriesTrustedAliasBeforeNumberedDomainSweep() {
+        assertTrue(CustomHttpClient.shouldTryTrustedNtkAliasFirstForTest(
+                CustomHttpClient.NTK_WEBTOON_URL,
+                CustomHttpClient.NTK_CELLULAR_ALIAS_URL,
+                false));
+        assertTrue(CustomHttpClient.shouldTryTrustedNtkAliasFirstForTest(
+                "https://sbxh8.com",
+                CustomHttpClient.NTK_CELLULAR_ALIAS_URL,
+                true));
+        assertFalse(CustomHttpClient.shouldTryTrustedNtkAliasFirstForTest(
+                "https://sbxh8.com",
+                CustomHttpClient.NTK_CELLULAR_ALIAS_URL,
+                false));
+        assertFalse(CustomHttpClient.shouldTryTrustedNtkAliasFirstForTest(
+                CustomHttpClient.NTK_CELLULAR_ALIAS_URL,
+                CustomHttpClient.NTK_CELLULAR_ALIAS_URL,
+                true));
+        assertTrue(CustomHttpClient.shouldAcceptTrustedNtkAliasAfterProbeForTest(
+                CustomHttpClient.NTK_WEBTOON_URL,
+                false));
+        assertTrue(CustomHttpClient.shouldAcceptTrustedNtkAliasAfterProbeForTest(
+                "https://example.com",
+                true));
+        assertFalse(CustomHttpClient.shouldAcceptTrustedNtkAliasAfterProbeForTest(
+                "https://example.com",
+                false));
+    }
+
+    @Test
     public void ntkMissingApiResponseAfterChallengeSkipsAddressRetry() {
         assertTrue(CustomHttpClient.shouldSkipNtkResolvedDomainRetryAfterChallengeForTest(
                 CustomHttpClient.FetchMode.SEARCH_NO_WEBVIEW, true, true, "/api/manhwa-list"));

@@ -40,6 +40,14 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // Eight bodies still cover the entry viewport; the bounded full-page wave is released after
     // authority and the first visible body, so this never drops a canonical page.
     const val SPECULATION_DEBT_LIMIT = 8
+    // Wi-Fi can expose forty body streams without the cellular SNI path, but doing so before the
+    // entry viewport reaches EOF lets one visible image compete with the whole volume. Four
+    // images are the measured minimum for landscape pages whose first three total under one
+    // physical viewport. Admit p001-p004, then restore the unchanged forty-wide production ring
+    // as soon as that entry set is presented (or after the finite fallback below). Cellular
+    // deliberately retains the proven eight-page launch and all of its existing SNI behavior.
+    const val WIFI_ENTRY_SPECULATION_PAGES = 4
+    const val WIFI_ENTRY_RELEASE_TIMEOUT_MS = 12_000L
     // Four metadata samples establish the volume extension without making every page repeat the
     // five-way HEAD race.
     const val DIRECT_EXTENSION_RACE_PAGES = 4
@@ -77,6 +85,14 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // start only after the committed viewer click; the fresh document cancels every page beyond
     // its exact count before any source can be published.
     const val PROBE_FRONTIER_PAGES = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
+
+    fun initialSpeculationPages(wifiTransport: Boolean): Int =
+        if (wifiTransport) WIFI_ENTRY_SPECULATION_PAGES else SPECULATION_DEBT_LIMIT
+
+    fun shouldHoldExactPreFrameRunway(wifiTransport: Boolean, pageCount: Int): Boolean {
+        require(pageCount > 0)
+        return wifiTransport && pageCount > WIFI_ENTRY_SPECULATION_PAGES
+    }
 
     fun replicaHost(pageIndex: Int, replicaOffset: Int = 0): String {
         require(pageIndex >= 0)

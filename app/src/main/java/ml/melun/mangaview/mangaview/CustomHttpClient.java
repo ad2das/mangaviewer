@@ -453,6 +453,24 @@ public class CustomHttpClient {
         }
     }
 
+    /** Exact /api/nv-issue result; body authority is accepted only on the Wi-Fi recovery path. */
+    private static final class NtkNvIssueGrant {
+        final String session;
+        final NtkAckCookie setCookieGrant;
+        final String responseBodyDigestSha256;
+        final long expiresAtEpochMs;
+
+        NtkNvIssueGrant(String session,
+                        NtkAckCookie setCookieGrant,
+                        String responseBodyDigestSha256,
+                        long expiresAtEpochMs) {
+            this.session = session;
+            this.setCookieGrant = setCookieGrant;
+            this.responseBodyDigestSha256 = responseBodyDigestSha256;
+            this.expiresAtEpochMs = expiresAtEpochMs;
+        }
+    }
+
     /** Exact full-challenge decision; the isolated browser remains the authority for this branch. */
     public static final class NtkStrictFullChallengeRequiredException extends IOException {
         public NtkStrictFullChallengeRequiredException(String episodePath) {
@@ -1991,6 +2009,32 @@ public class CustomHttpClient {
         return shouldUseNtkCellularResilientTransport();
     }
 
+    /**
+     * Returns true only when Android's current default route is directly backed by Wi-Fi.
+     *
+     * Wi-Fi viewer tuning must not leak into cellular or VPN paths: a VPN can hide a cellular
+     * bearer, and the cellular-resilient selector below remains the sole authority for that case.
+     */
+    public boolean isNtkWifiTransportActive() {
+        if(context == null)
+            return false;
+        try {
+            ConnectivityManager manager =
+                    (ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(manager == null)
+                return false;
+            Network active = manager.getActiveNetwork();
+            NetworkCapabilities capabilities =
+                    active == null ? null : manager.getNetworkCapabilities(active);
+            return capabilities != null
+                    && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                    && !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    && !isCellularBackedNetwork(manager, capabilities);
+        } catch(Exception e) {
+            return false;
+        }
+    }
+
     private static boolean isCellularBackedNetwork(ConnectivityManager manager,
                                                     NetworkCapabilities capabilities) {
         if(capabilities == null)
@@ -2523,8 +2567,10 @@ public class CustomHttpClient {
             if(request != null) request.cancel();
             Call call = fallbackCall.get();
             if(call != null) call.cancel();
-            ResponseBody body = fallbackResponseBody.getAndSet(null);
-            if(body != null) body.close();
+            // Call.cancel() interrupts an in-flight OkHttp read. Closing the same response body
+            // here from the source-actor thread can race Okio's AsyncTimeout enter/exit on the
+            // physical reader and crash the process. The body owner closes it on that reader's
+            // terminal path (or at the outer tracked-call handoff when no read has started).
         }
 
         @Override
@@ -4230,7 +4276,7 @@ public class CustomHttpClient {
         if(root.equals(current))
             return;
         try {
-            p.setNtkSitePreset(root);
+            p.setResolvedNtkSitePreset(root);
             resetCookie();
             clearPageCache();
             Log.d(TAG, "ntk_search_resolved_root_applied old=" + current + ",new=" + root);
@@ -5064,12 +5110,21 @@ public class CustomHttpClient {
                 String trustedAlias = NtkDomainResolver.normalizeRoot(
                         "https://" + NTK_ALIAS_HOST);
                 String reachable = null;
-                if(preferTrustedAlias && trustedAlias != null
-                        && !trustedAlias.equalsIgnoreCase(currentRoot)
-                        && canReachNtkRoot(trustedAlias, headers)) {
-                    reachable = trustedAlias;
-                    Log.d(TAG, "ntk_domain_demand_failure_alias_ready current="
-                            + currentRoot + ",alias=" + trustedAlias);
+                if(shouldTryTrustedNtkAliasFirst(
+                        currentRoot, trustedAlias, preferTrustedAlias)) {
+                    boolean aliasProbePassed = canReachNtkRoot(trustedAlias, headers);
+                    // The final resolver fallback already treats this bundled compatibility
+                    // alias as authoritative when every numbered sbxh origin is unavailable.
+                    // Apply the same trust decision here so a stricter document/API probe mismatch
+                    // cannot force a 12-host sweep before reaching the exact same alias.
+                    if(shouldAcceptTrustedNtkAliasAfterProbe(
+                            currentRoot, aliasProbePassed)) {
+                        reachable = trustedAlias;
+                        Log.d(TAG, "ntk_domain_trusted_alias_ready current="
+                                + currentRoot + ",alias=" + trustedAlias
+                                + ",probePassed=" + aliasProbePassed
+                                + ",demandFailure=" + preferTrustedAlias);
+                    }
                 }
                 if(reachable == null) {
                     resolvedRoots =
@@ -5079,16 +5134,19 @@ public class CustomHttpClient {
                 }
                 if(shouldApplyResolvedNtkRoot(currentRoot, reachable, resolvedRoots)) {
                     SiteOverride override = currentSiteOverride.get();
+                    boolean cellularTransport = shouldUseNtkCellularResilientTransport();
                     if(override != null) {
                         String root = trimTrailingSlash(reachable);
                         override.webtoonUrl = root;
                         override.comicUrl = root + "/manhwa";
-                    } else if(preferTrustedAlias
-                            && shouldUseNtkCellularResilientTransport()) {
+                    }
+                    if(cellularTransport) {
                         p.setNtkCellularResolvedRoot(reachable);
                         Log.d(TAG, "ntk_cellular_resolved_root_saved root=" + reachable);
                     } else {
                         p.setResolvedNtkSitePreset(reachable);
+                        Log.d(TAG, "ntk_wifi_resolved_root_saved root=" + reachable
+                                + ",siteOverride=" + (override != null));
                     }
                     resetCookie();
                     clearPageCache();
@@ -5109,6 +5167,33 @@ public class CustomHttpClient {
             ml.melun.mangaview.report.CrashReporter.record(e);
             return false;
         }
+    }
+
+    private static boolean shouldTryTrustedNtkAliasFirst(String currentRoot,
+                                                          String trustedAlias,
+                                                          boolean demandRouteFailure) {
+        String current = NtkDomainResolver.normalizeRoot(currentRoot);
+        String alias = NtkDomainResolver.normalizeRoot(trustedAlias);
+        if(current == null || alias == null || current.equalsIgnoreCase(alias))
+            return false;
+        return demandRouteFailure || isCurrentDefaultNtkRoot(current);
+    }
+
+    static boolean shouldTryTrustedNtkAliasFirstForTest(String currentRoot,
+                                                        String trustedAlias,
+                                                        boolean demandRouteFailure) {
+        return shouldTryTrustedNtkAliasFirst(
+                currentRoot, trustedAlias, demandRouteFailure);
+    }
+
+    private static boolean shouldAcceptTrustedNtkAliasAfterProbe(String currentRoot,
+                                                                 boolean aliasProbePassed) {
+        return aliasProbePassed || isCurrentSbxhNtkRoot(currentRoot);
+    }
+
+    static boolean shouldAcceptTrustedNtkAliasAfterProbeForTest(String currentRoot,
+                                                                boolean aliasProbePassed) {
+        return shouldAcceptTrustedNtkAliasAfterProbe(currentRoot, aliasProbePassed);
     }
 
     private String reachableNtkRoot(String currentRoot, List<String> resolvedRoots, Map<String, String> headers) {
@@ -12981,18 +13066,25 @@ public class CustomHttpClient {
                 .getBytes(StandardCharsets.UTF_8);
         OkHttpClient exactClient = ntkStrictDocumentClientForActiveNetwork();
         ArrayList<NtkAckCookie> nvGrants = new ArrayList<>();
+        NtkNvIssueGrant nvIssueGrant = null;
         boolean hasNvSeed = bootstrap.seedCookies.stream().anyMatch(
                 cookie -> cookie != null
                         && "nv".equals(cookie.getName())
                         && isNtkNvValid(cookie.getValue()));
         if(!hasNvSeed) {
-            nvGrants.addAll(fetchExactNtkNvGrants(
+            nvIssueGrant = fetchExactNtkNvGrants(
                     bootstrap,
                     callRegistry,
                     exactClient,
                     normalized,
                     origin
-            ));
+            );
+            if(nvIssueGrant.setCookieGrant != null) {
+                nvGrants.add(nvIssueGrant.setCookieGrant);
+            } else {
+                publishExactNtkNvBodyGrant(
+                        nvIssueGrant, callRegistry, normalized, origin);
+            }
         }
         StringBuilder cookieHeader = new StringBuilder();
         for(NtkAckCookie seed : bootstrap.seedCookies) {
@@ -13006,6 +13098,11 @@ public class CustomHttpClient {
             if(cookieHeader.length() > 0)
                 cookieHeader.append("; ");
             cookieHeader.append(grant.getName()).append('=').append(grant.getValue());
+        }
+        if(nvIssueGrant != null && nvIssueGrant.setCookieGrant == null) {
+            if(cookieHeader.length() > 0)
+                cookieHeader.append("; ");
+            cookieHeader.append("nv=").append(nvIssueGrant.session);
         }
         if(cookieHeader.length() == 0)
             throw new IllegalStateException("Strict trusted challenge seed boundary is empty");
@@ -13139,19 +13236,26 @@ public class CustomHttpClient {
         }
         if(isNtkNvValid(getCookie("nv")))
             return;
-        List<NtkAckCookie> grants = fetchExactNtkNvGrants(
+        NtkNvIssueGrant grant = fetchExactNtkNvGrants(
                 bootstrap,
                 callRegistry,
                 ntkStrictDocumentClientForActiveNetwork(),
                 normalized,
                 origin
         );
-        importVerifiedNtkAckCookieGrants(origin, normalized, grants);
+        if(grant.setCookieGrant != null) {
+            if(!callRegistry.publishIfActive(() -> importVerifiedNtkAckCookieGrants(
+                    origin, normalized, Collections.singletonList(grant.setCookieGrant)))) {
+                throw strictCallCancelled("nv_issue_publish", normalized, callRegistry);
+            }
+        } else {
+            publishExactNtkNvBodyGrant(grant, callRegistry, normalized, origin);
+        }
         if(!isNtkNvValid(getCookie("nv")))
             throw new IllegalStateException("Strict nv issue grant was not committed");
     }
 
-    private ArrayList<NtkAckCookie> fetchExactNtkNvGrants(
+    private NtkNvIssueGrant fetchExactNtkNvGrants(
             NtkStrictAckBootstrap bootstrap,
             NtkStrictCallRegistry callRegistry,
             OkHttpClient exactClient,
@@ -13170,13 +13274,57 @@ public class CustomHttpClient {
         if(nvSeedHeader.length() == 0)
             throw new IllegalStateException("Strict nv issue seed boundary is empty");
         nvHeaders.put("Cookie", nvSeedHeader);
+        NtkBoundHttpRequest nvRequest =
+                new NtkBoundHttpRequest("POST", nvEndpoint, nvHeaders, new byte[0]);
         NtkBoundHttpResponse nvExchange = executeStrictExactSameOriginRequest(
-                new NtkBoundHttpRequest("POST", nvEndpoint, nvHeaders, new byte[0]),
+                nvRequest,
                 callRegistry,
                 exactClient,
                 NTK_ACK_CHALLENGE_TIMEOUT_MS,
                 "nv_issue"
         );
+        boolean wifiBodyAuthority = !shouldUseNtkCellularResilientTransport();
+        NtkNvIssueGrant grant = exactNtkNvGrantFromExchange(
+                nvExchange, nvEndpoint, origin, normalized, wifiBodyAuthority);
+        if(grant == null && wifiBodyAuthority) {
+            // HttpEngine occasionally completes a valid 200 /api/nv-issue response without
+            // exposing either of the endpoint's two authority representations. Recover only that
+            // failed Wi-Fi control-plane exchange through a fresh OkHttp connection. Healthy
+            // Wi-Fi requests and all carrier DNS/SNI behavior remain completely unchanged.
+            OkHttpClient recoveryClient = exactClient.newBuilder()
+                    .connectionPool(new ConnectionPool())
+                    .retryOnConnectionFailure(false)
+                    .build();
+            try {
+                Log.d(TAG, "ntk_strict_nv_issue_cookie_recovery path=" + normalized
+                        + ",firstGrant=missing");
+                nvExchange = executeStrictExactSameOriginRequest(
+                        nvRequest,
+                        callRegistry,
+                        recoveryClient,
+                        NTK_ACK_CHALLENGE_TIMEOUT_MS,
+                        "nv_issue_cookie_recovery"
+                );
+                grant = exactNtkNvGrantFromExchange(
+                        nvExchange, nvEndpoint, origin, normalized, true);
+            } finally {
+                recoveryClient.connectionPool().evictAll();
+            }
+        }
+        if(grant == null)
+            throw new IllegalStateException("Strict nv issue returned no unique nv grant");
+        Log.d(TAG, "ntk_strict_nv_issue_done path=" + normalized
+                + ",authority=" + (grant.setCookieGrant == null ? "body" : "set_cookie"));
+        return grant;
+    }
+
+    private NtkNvIssueGrant exactNtkNvGrantFromExchange(
+            NtkBoundHttpResponse nvExchange,
+            String nvEndpoint,
+            String origin,
+            String normalized,
+            boolean allowExactBodyAuthority
+    ) {
         if(!nvEndpoint.equals(nvExchange.finalUrl)
                 || nvExchange.status < 200 || nvExchange.status >= 300) {
             throw new IllegalStateException(
@@ -13209,13 +13357,93 @@ public class CustomHttpClient {
                 ));
             }
         }
-        grants = new ArrayList<>(NtkAckCookieBoundary.INSTANCE.validateGrants(
-                origin, normalized, grants));
-        if(grants.size() != 1)
-            throw new IllegalStateException("Strict nv issue returned no unique nv grant");
-        Log.d(TAG, "ntk_strict_nv_issue_done path=" + normalized
-                + ",grants=" + grants.size());
-        return grants;
+        List<NtkAckCookie> validated = NtkAckCookieBoundary.INSTANCE.validateGrants(
+                origin, normalized, new ArrayList<>(new java.util.LinkedHashSet<>(grants)));
+        if(validated.size() == 1) {
+            NtkAckCookie cookie = validated.get(0);
+            return new NtkNvIssueGrant(
+                    cookie.getValue(), cookie, "", cookie.getExpiresAtEpochMs());
+        }
+        if(!validated.isEmpty() || !allowExactBodyAuthority)
+            return null;
+        if(nvExchange.bodyBytes.length == 0 || nvExchange.bodyBytes.length > 512
+                || !responseHasSingleJsonContentType(nvExchange.responseHeaders)) {
+            return null;
+        }
+        try {
+            JSONObject body = new JSONObject(
+                    new String(nvExchange.bodyBytes, StandardCharsets.UTF_8));
+            java.util.HashSet<String> keys = new java.util.HashSet<>();
+            java.util.Iterator<String> iterator = body.keys();
+            while(iterator.hasNext())
+                keys.add(iterator.next());
+            if(!keys.equals(new java.util.HashSet<>(
+                    java.util.Arrays.asList("ok", "session", "ttl")))
+                    || !(body.get("ok") instanceof Boolean)
+                    || !body.getBoolean("ok")
+                    || !(body.get("session") instanceof String)
+                    || !(body.get("ttl") instanceof Number)) {
+                return null;
+            }
+            String session = body.getString("session");
+            long ttlSeconds = body.getLong("ttl");
+            if(!isNtkNvValid(session) || ttlSeconds < 1L || ttlSeconds > 3_600L)
+                return null;
+            long expiresAt = Math.addExact(
+                    ntkTrustedResponseObservedAt(nvExchange.responseHeaders),
+                    Math.multiplyExact(ttlSeconds, 1_000L));
+            return new NtkNvIssueGrant(
+                    session,
+                    null,
+                    NtkAckProofCodec.INSTANCE.sha256Hex(nvExchange.bodyBytes),
+                    expiresAt
+            );
+        } catch(Exception invalidBody) {
+            return null;
+        }
+    }
+
+    private static boolean responseHasSingleJsonContentType(
+            Map<String, List<String>> headers
+    ) {
+        if(headers == null)
+            return false;
+        for(Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            if(entry.getKey() == null || !"content-type".equalsIgnoreCase(entry.getKey()))
+                continue;
+            List<String> values = entry.getValue();
+            return values != null && values.size() == 1 && values.get(0) != null
+                    && values.get(0).toLowerCase(Locale.ROOT)
+                    .startsWith("application/json");
+        }
+        return false;
+    }
+
+    private void publishExactNtkNvBodyGrant(
+            NtkNvIssueGrant grant,
+            NtkStrictCallRegistry callRegistry,
+            String normalized,
+            String origin
+    ) throws InterruptedIOException {
+        if(grant == null || grant.setCookieGrant != null
+                || !isNtkNvValid(grant.session)
+                || grant.responseBodyDigestSha256 == null
+                || !grant.responseBodyDigestSha256.matches("[0-9a-f]{64}")
+                || grant.expiresAtEpochMs <= System.currentTimeMillis()
+                || !origin.equals("https://" + URI.create(origin).getHost().toLowerCase(Locale.ROOT))) {
+            throw new IllegalStateException("Strict nv body grant is invalid");
+        }
+        if(!callRegistry.publishIfActive(() -> {
+            synchronized (CustomHttpClient.this) {
+                String previous = cookies.put("nv", grant.session);
+                if(!grant.session.equals(previous)) {
+                    invalidateCookieHeaderCache();
+                    persistCookies();
+                }
+            }
+        })) {
+            throw strictCallCancelled("nv_issue_body_publish", normalized, callRegistry);
+        }
     }
 
     private static String strictNtkCookieHeader(List<NtkAckCookie> cookies) {

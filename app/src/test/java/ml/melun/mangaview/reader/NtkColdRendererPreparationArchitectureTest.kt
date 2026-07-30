@@ -178,6 +178,18 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun measuredSizeCompletesTheCreateBeforeMeasurePreparationOrdering() {
+        val sizeChanged = functionBody("override fun onSizeChanged(")
+
+        assertTrue(sizeChanged.contains("if (width > 0 && height > 0)"))
+        assertTrue(
+            sizeChanged.contains(
+                "prepareRollingNativeRenderTargetsLocked(width, height)"
+            )
+        )
+    }
+
+    @Test
     fun earlyTransparentProducerStillRequiresExactIdentityAndActualPixelsBeforeRendering() {
         val activation = functionBody("fun activateDeferredSurfaceProducer()")
         val stage = functionBody("private fun postSurfaceRevealLocked()")
@@ -706,8 +718,12 @@ class NtkColdRendererPreparationArchitectureTest {
             "override fun execute(): Response",
             imageCacheSource
         )
-        val recovery = functionBody(
+        val legacyRecovery = functionBody(
             "private fun executeExactQuicLegacyImageRecovery(",
+            imageCacheSource
+        )
+        val recovery = functionBody(
+            "private fun executeExactQuicImageRecovery(",
             imageCacheSource
         )
         val fragmentedRecovery = functionBody(
@@ -722,6 +738,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(execute.contains("shouldTryExactQuicLegacyImageRecovery(physicalCandidate)"))
         assertTrue(imageCacheSource.contains("NTK_LEGACY_BLOCKED_IMAGE_ROOT = \"webimg7.com\""))
         assertTrue(callFactory.contains("isLegacyBlockedImageRequest(request)"))
+        assertTrue(legacyRecovery.contains("executeExactQuicImageRecovery("))
         assertTrue(recovery.contains("request.url.toString()"))
         assertTrue(recovery.contains(".request(request)"))
         assertTrue(recovery.contains("result.bodyBytes"))

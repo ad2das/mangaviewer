@@ -31,6 +31,14 @@ public class UtilsTest {
     }
 
     @Test
+    public void sourceSiteSwitchKeepsAnAlreadyActiveResolvedPreset() {
+        assertTrue(Utils.sourceSiteAlreadyActiveForTest("ntk", true));
+        assertTrue(Utils.sourceSiteAlreadyActiveForTest("wfwf", false));
+        assertFalse(Utils.sourceSiteAlreadyActiveForTest("ntk", false));
+        assertFalse(Utils.sourceSiteAlreadyActiveForTest("wfwf", true));
+    }
+
+    @Test
     public void documentNamesSortWithNullsLast() {
         assertEquals(0, Utils.compareDocumentNamesForTest(null, null));
         assertEquals(1, Utils.compareDocumentNamesForTest(null, "0001.title"));

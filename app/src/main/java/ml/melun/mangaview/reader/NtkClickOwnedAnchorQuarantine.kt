@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.mangaview.Manga
 import java.io.Closeable
 import java.util.Locale
@@ -389,6 +390,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     )
     private val completeDocumentPageCountHint = AtomicInteger(0)
     private val documentValidated = CompletableFuture<Unit>()
+    private val wifiEntryPriorityMode = runCatching {
+        getHttpClient().isNtkWifiTransportActive
+    }.getOrDefault(false)
+    private val initialSpeculationPages = minOf(
+        NtkClickOwnedManhwaWavePolicy.initialSpeculationPages(wifiEntryPriorityMode),
+        plan.pageCount,
+    )
     private val pageCancellations = (0 until plan.pageCount)
         .associateWith { ReaderImageCache.Cancellation() }
     private val fallbackCancellations = (0 until plan.pageCount)
@@ -425,7 +433,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     // Otherwise an executor wake-up can spend the finite speculative budget on page 118 while
     // page 4 is still waiting, wasting transport on a candidate outside the eventual document.
     private val rollingSpeculationFrontier = AtomicInteger(
-        minOf(NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT, plan.pageCount),
+        initialSpeculationPages,
     )
     private val speculationDebtHolders = ConcurrentHashMap.newKeySet<Int>()
     private val bodyTransferPermits = Semaphore(
@@ -439,6 +447,20 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private val waveReleased = AtomicBoolean(false)
     private val networkRelease = CompletableFuture<Unit>()
     private val firstActualFramePresented = CompletableFuture<Unit>()
+    private val wifiEntryReleaseGate = CompletableFuture<Unit>().also { gate ->
+        if (!wifiEntryPriorityMode) {
+            gate.complete(Unit)
+        } else {
+            firstActualFramePresented.whenComplete { _, _ ->
+                ENTRY_RELEASE_SCHEDULER.execute { gate.complete(Unit) }
+            }
+            ENTRY_RELEASE_SCHEDULER.schedule(
+                { gate.complete(Unit) },
+                NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_RELEASE_TIMEOUT_MS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+    }
     // A body worker used to enter awaitRollingNumericAdmission() and poll every 25 ms. A
     // 112-page book therefore parked 72-88 Java threads until document authority completed, then
     // made Android schedule all of them at once; r56 spread valid GET starts out to click +1008 ms.
@@ -465,16 +487,24 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     NtkClickOwnedManhwaWavePolicy.EXACT_PRE_FRAME_RUNWAY_PAGES,
                     exactCount,
                 )
-                (seed until preFrameEnd).forEach { pageIndex ->
-                    numericAdmissionFutures.getValue(pageIndex).complete(Unit)
+                if (NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
+                        wifiEntryPriorityMode,
+                        exactCount,
+                    )
+                ) {
+                    releaseWifiExactPreFrameRunwayAfterEntry(seed, preFrameEnd, exactCount)
+                } else {
+                    releaseExactPreFrameRunway(
+                        seed,
+                        preFrameEnd,
+                        exactCount,
+                        "document_validated",
+                    )
                 }
-                Log.d(
-                    TAG,
-                    "click_exact_pre_frame_runway path=${plan.normalizedEpisodePath}," +
-                        "pages=$seed-${preFrameEnd - 1},exactPages=$exactCount",
-                )
             }
-            documentValidated.thenCombine(networkRelease) { _, _ -> Unit }
+            val completeWaveRelease =
+                if (wifiEntryPriorityMode) wifiEntryReleaseGate else networkRelease
+            documentValidated.thenCombine(completeWaveRelease) { _, _ -> Unit }
                 .whenComplete { _, admissionFailure ->
                     val exactCount = effectivePageCount.get()
                     if (admissionFailure == null && !closed.get()) {
@@ -700,6 +730,44 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         Log.d(
             TAG,
             "click_forward_quarantine_first_actual path=${plan.normalizedEpisodePath}",
+        )
+    }
+
+    /**
+     * On direct Wi-Fi, keep p001-p004 on an otherwise quiet connection ring until their first
+     * physical frame is visible. A finite timeout releases recovery work if that presentation
+     * cannot be proved; cellular never enters this method.
+     */
+    private fun releaseWifiExactPreFrameRunwayAfterEntry(
+        seed: Int,
+        preFrameEnd: Int,
+        exactCount: Int,
+    ) {
+        wifiEntryReleaseGate.whenComplete { _, _ ->
+            releaseExactPreFrameRunway(
+                seed,
+                preFrameEnd,
+                exactCount,
+                "wifi_first_actual_or_timeout",
+            )
+        }
+    }
+
+    private fun releaseExactPreFrameRunway(
+        seed: Int,
+        preFrameEnd: Int,
+        exactCount: Int,
+        reason: String,
+    ) {
+        if (closed.get()) return
+        (seed until preFrameEnd).forEach { pageIndex ->
+            numericAdmissionFutures.getValue(pageIndex).complete(Unit)
+        }
+        Log.d(
+            TAG,
+            "click_exact_pre_frame_runway path=${plan.normalizedEpisodePath}," +
+                "pages=$seed-${preFrameEnd - 1},exactPages=$exactCount," +
+                "wifiEntryPriority=$wifiEntryPriorityMode,reason=$reason",
         )
     }
 
@@ -961,10 +1029,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             "click_forward_quarantine_wave path=${plan.normalizedEpisodePath}," +
                 "pages=$pageLimit,initialScheduled=${initialBodyFutures.size}," +
                 "totalPages=${plan.pageCount}," +
-                "probeLanes=${NtkClickOwnedManhwaWavePolicy.PROBE_LANES}," +
-                "earlyJpg=${earlyJpgCandidates.size}," +
-                "immediateBodies=$SPECULATIVE_CLICK_PAGES," +
-                "formatVerifiedBodies=$FORMAT_VERIFIED_SPECULATIVE_PAGES," +
+                    "probeLanes=${NtkClickOwnedManhwaWavePolicy.PROBE_LANES}," +
+                    "earlyJpg=${earlyJpgCandidates.size}," +
+                    "immediateBodies=$initialSpeculationPages," +
+                    "formatVerifiedBodies=$FORMAT_VERIFIED_SPECULATIVE_PAGES," +
                 "pipelined=true",
         )
         val preparedInitial = attachPrivatePredecodes(initialBodyFutures)
@@ -1043,8 +1111,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private fun tailAdmissionFuture(
         pageIndex: Int,
         callCancellation: ReaderImageCache.Cancellation,
-    ): CompletableFuture<Boolean> =
-        documentValidated.thenCombine(networkRelease) { _, _ ->
+    ): CompletableFuture<Boolean> {
+        val entryRelease =
+            if (wifiEntryPriorityMode) wifiEntryReleaseGate else networkRelease
+        return documentValidated.thenCombine(entryRelease) { _, _ ->
             if (closed.get() || pageIndex >= effectivePageCount.get()) {
                 false
             } else {
@@ -1056,6 +1126,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         }.handle { admitted, failure ->
             failure == null && admitted == true
         }
+    }
 
     private fun discardHeldBody(held: HeldBody) {
         retained.remove(held.body.pageIndex, held)
@@ -1818,6 +1889,14 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         private val COORDINATOR_EXECUTOR = Executors.newFixedThreadPool(2) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-forward-coordinator")
         }
+        private val ENTRY_RELEASE_SCHEDULER =
+            Executors.newSingleThreadScheduledExecutor { runnable ->
+                ntkClickWorkerThread(
+                    runnable,
+                    "ntk-click-wifi-entry-release",
+                    Process.THREAD_PRIORITY_BACKGROUND,
+                )
+            }
         private val ANCHOR_PREDECODE_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
             ntkClickWorkerThread(
                 runnable,

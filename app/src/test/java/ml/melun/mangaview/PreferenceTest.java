@@ -61,6 +61,20 @@ public class PreferenceTest {
     }
 
     @Test
+    public void verifiedResolvedNtkAliasSurvivesRestartMigration() {
+        assertTrue(Preference.isVerifiedResolvedNtkPresetForTest(
+                "https://newtoki1.org",
+                "https://newtoki1.org/manhwa",
+                "https://newtoki1.org/manhwa",
+                "https://newtoki1.org"));
+        assertFalse(Preference.isVerifiedResolvedNtkPresetForTest(
+                "https://newtoki1.org",
+                NTK_COMIC_URL,
+                NTK_COMIC_URL,
+                NTK_WEBTOON_URL));
+    }
+
+    @Test
     public void siteUrlNormalizationRepairsWolfManhwaPath() {
         assertEquals("https://wfwf455.com/cm", Preference.normalizeComicUrlForTest("https://wfwf455.com/manhwa"));
         assertEquals("https://wfwf455.com", Preference.normalizeWebtoonUrlForTest("https://wfwf455.com/manhwa"));

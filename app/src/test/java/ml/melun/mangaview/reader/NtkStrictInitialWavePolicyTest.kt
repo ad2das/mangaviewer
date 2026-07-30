@@ -138,6 +138,10 @@ class NtkStrictInitialWavePolicyTest {
     @Test
     fun publishedAnchorReleasesTheCompleteForwardPhysicalRing() {
         assertEquals(
+            6,
+            NtkStrictInitialWavePolicy.forwardLaneTarget(6, 24, 2, true),
+        )
+        assertEquals(
             18,
             NtkStrictInitialWavePolicy.forwardLaneTarget(120, 18, 0, false),
         )
@@ -162,11 +166,20 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
+            4,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/webtoon/work/episode",
+                120,
+                true,
+            ),
+        )
+        assertEquals(
             80,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 120,
                 true,
+                cellularResilientTransport = true,
             ),
         )
         assertEquals(

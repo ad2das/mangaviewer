@@ -15,6 +15,8 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(3, NtkClickOwnedManhwaWavePolicy.REPLICA_STRIPE_SIZE)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)
+        assertEquals(4, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_SPECULATION_PAGES)
+        assertEquals(12_000L, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_RELEASE_TIMEOUT_MS)
         assertEquals(4, NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES)
         assertEquals(1, NtkClickOwnedManhwaWavePolicy.DIRECT_BODY_RACE_PAGES)
         assertEquals(2, NtkClickOwnedManhwaWavePolicy.PREFERRED_EXTENSION_EVIDENCE)
@@ -38,6 +40,48 @@ class NtkClickOwnedManhwaWavePolicyTest {
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
         assertTrue(NtkClickOwnedManhwaWavePolicy.BODY_LANES <=
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
+    }
+
+    @Test
+    fun wifiLaunchProtectsFourViewportBodiesWhileCellularPolicyIsUnchanged() {
+        assertEquals(
+            4,
+            NtkClickOwnedManhwaWavePolicy.initialSpeculationPages(wifiTransport = true),
+        )
+        assertEquals(
+            8,
+            NtkClickOwnedManhwaWavePolicy.initialSpeculationPages(wifiTransport = false),
+        )
+        assertTrue(
+            NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
+                wifiTransport = true,
+                pageCount = 176,
+            ),
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
+                wifiTransport = false,
+                pageCount = 176,
+            ),
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
+                wifiTransport = true,
+                pageCount = 2,
+            ),
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
+                wifiTransport = true,
+                pageCount = 3,
+            ),
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
+                wifiTransport = true,
+                pageCount = 4,
+            ),
+        )
     }
 
     @Test

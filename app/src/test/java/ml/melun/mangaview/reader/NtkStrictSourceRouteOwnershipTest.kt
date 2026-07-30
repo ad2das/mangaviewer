@@ -212,6 +212,43 @@ class NtkStrictSourceRouteOwnershipTest {
     }
 
     @Test
+    fun aPrematurelyClosedWebtoonBodyIsRetriedAsTransportFailure() {
+        val cache = readSource("ReaderImageCache.kt")
+        val bodyStart = cache.indexOf("private class NtkStalledReplicaResponseBody(")
+        val bodyEnd = cache.indexOf(
+            "private class NtkReplicaFailoverCallFactory(",
+            bodyStart,
+        )
+
+        assertTrue(bodyStart >= 0)
+        assertTrue(bodyEnd > bodyStart)
+        val body = cache.substring(bodyStart, bodyEnd)
+        assertTrue(body.contains("retryClosedBodyAsTransportFailure"))
+        assertTrue(body.contains("throw IOException(\"Webtoon replica response body closed\")"))
+        assertTrue(
+            body.indexOf("throw IOException(\"Webtoon replica response body closed\")") <
+                body.indexOf("check(!closed) { \"closed\" }")
+        )
+    }
+
+    @Test
+    fun aRecoveredLogicalCallDoesNotInheritItsPhysicalHeaderLoserCancellation() {
+        val cache = readSource("ReaderImageCache.kt")
+        val callStart = cache.indexOf("private class NtkReplicaFailoverCall(")
+        val callEnd = cache.indexOf(
+            "private data class NtkManhwaRangeSegment(",
+            callStart,
+        )
+
+        assertTrue(callStart >= 0)
+        assertTrue(callEnd > callStart)
+        val call = cache.substring(callStart, callEnd)
+        assertTrue(call.contains("override fun isCanceled(): Boolean = cancelled.get()"))
+        assertFalse(call.contains("active.get()?.isCanceled()"))
+        assertFalse(call.contains("activeExactQuicRecovery.get()?.isCancelled"))
+    }
+
+    @Test
     fun residentBodyRetiresExactOperationBeforeTheLaneCanRefill() {
         val session = readSource("NtkStrictSourceSession.kt")
         val retirementStart = session.indexOf("private fun completeResidentOperationActor(")

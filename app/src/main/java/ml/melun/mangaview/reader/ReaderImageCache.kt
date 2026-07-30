@@ -538,6 +538,85 @@ internal object NtkWebtoonBodyWallPolicy {
     }
 }
 
+/** Network-specific response-header and bounded recovery policy for immutable webtoon replicas. */
+internal object NtkWebtoonReplicaHeaderPolicy {
+    // Keep the ordinary ring short on both transports. A fixed 148-page Wi-Fi reproduction had
+    // one path-specific empty mirror and two reset-prone mirrors; making every page wait 2.5 s
+    // improved its first image but delayed the healthy bulk wave. Only the failure-only focused
+    // recovery below gets the longer header allowance.
+    const val WIFI_HEADER_FAILOVER_MS = 1_000L
+    const val CELLULAR_HEADER_FAILOVER_MS = 1_000L
+    const val WIFI_ENTRY_HEADER_FAILOVER_MS = 2_500L
+    const val WIFI_ENTRY_LAST_PAGE = 1
+    const val WIFI_FOCUSED_RECOVERY_HEADER_MS = 2_500L
+    const val WIFI_FOCUSED_RECOVERY_ATTEMPTS = 3
+    const val WIFI_EXHAUSTED_EXACT_QUIC_TIMEOUT_MS = 6_000L
+    const val CELLULAR_REPLICA_CYCLES = 4
+
+    fun headerFailoverMs(
+        cellularResilientTransport: Boolean,
+        pageIndex: Int = -1,
+    ): Long =
+        if (cellularResilientTransport) {
+            CELLULAR_HEADER_FAILOVER_MS
+        } else if (pageIndex in 0..WIFI_ENTRY_LAST_PAGE) {
+            // These are the only calls gating the first visible frame. The same fixed Wi-Fi
+            // reproduction returned a healthy f1spard header at 1.59 s; cancelling it at 1 s
+            // forced a failed focused ring and a second logical request, moving first draw past
+            // six seconds. Later pages retain the short bulk deadline.
+            WIFI_ENTRY_HEADER_FAILOVER_MS
+        } else {
+            WIFI_HEADER_FAILOVER_MS
+        }
+
+    fun replicaCycles(cellularResilientTransport: Boolean): Int =
+        if (cellularResilientTransport) CELLULAR_REPLICA_CYCLES else 1
+
+    fun shouldAppendFocusedRecovery(
+        cellularResilientTransport: Boolean,
+        webtoonReplica: Boolean,
+    ): Boolean = webtoonReplica && !cellularResilientTransport
+
+    fun shouldAttemptExhaustedExactQuicRecovery(
+        cellularResilientTransport: Boolean,
+        webtoonReplica: Boolean,
+    ): Boolean = webtoonReplica && !cellularResilientTransport
+}
+
+/**
+ * Learns only from usable response headers inside one active viewer generation. Two independent
+ * successes are required before a replica can lead later calls; strict body/SHA validation still
+ * decides whether any response is publishable.
+ */
+internal class NtkWebtoonReplicaPreference(
+    private val promotionSuccesses: Int = 2,
+) {
+    private val usableHeaderCounts = ConcurrentHashMap<String, AtomicInteger>()
+    private val preferred = AtomicReference<String?>(null)
+
+    init {
+        require(promotionSuccesses >= 2)
+    }
+
+    fun recordUsableHeader(host: String): Boolean {
+        val normalized = host.trim().lowercase(Locale.ROOT)
+        if (normalized.isEmpty()) return false
+        val count = usableHeaderCounts
+            .computeIfAbsent(normalized) { AtomicInteger() }
+            .incrementAndGet()
+        return count >= promotionSuccesses && preferred.compareAndSet(null, normalized)
+    }
+
+    fun preferredHost(): String? = preferred.get()
+
+    fun orderHosts(hosts: List<String>): List<String> {
+        val winner = preferred.get() ?: return hosts
+        if (hosts.none { it.equals(winner, ignoreCase = true) }) return hosts
+        return hosts.filter { it.equals(winner, ignoreCase = true) } +
+            hosts.filterNot { it.equals(winner, ignoreCase = true) }
+    }
+}
+
 object ReaderImageCache {
     private const val TAG = "ViewerPerf"
     private const val DIR_NAME = "reader_image_cache_v1"
@@ -563,6 +642,8 @@ object ReaderImageCache {
         "shaomoi.org",
         "xiaomichina.com",
     )
+    private val ntkWifiWebtoonReplicaPreferences =
+        ConcurrentHashMap<Long, NtkWebtoonReplicaPreference>()
     // Some old, single-origin webtoon assets still point at this legacy CDN family. Korean ISP
     // filtering resets its TLS/TCP route before HTTP headers while the same immutable object
     // remains available through Cloudflare QUIC. This is a transport-family fallback only: the
@@ -573,13 +654,6 @@ object ReaderImageCache {
     // between chunks. The old 600ms guard converted ordinary progress into hundreds of Range
     // continuations. Keep a real no-progress bound without repeatedly discarding useful sockets.
     private const val NTK_WEBTOON_BODY_IDLE_RESUME_MS = 1_200L
-    private const val NTK_WEBTOON_HEADER_FAILOVER_MS = 1_000L
-    // Keep a short bounded no-body recovery inside the logical operation. A 101-page/21.95 MiB
-    // reset-storm replay completed in 25.3 s with four rings, 26.3 s with six and 31.2 s with ten:
-    // retaining a dead lane longer delayed the complete scene and still did not prevent a later
-    // timeout. Four rings recover the common burst without duplicating successful bytes; a rarer
-    // sustained storm returns the page to the source actor so another queued body can use the lane.
-    private const val NTK_WEBTOON_LOGICAL_REPLICA_CYCLES = 4
     // Numeric manhwa pages are immutable across the replica ring. A headerless stream owns no
     // useful bytes, so cancel it and advance the same logical Call instead of launching a
     // concurrent duplicate body wave from the viewer coordinator.
@@ -1246,11 +1320,32 @@ object ReaderImageCache {
         override fun execute(): Response {
             check(executed.compareAndSet(false, true)) { "Already Executed" }
             val logicalCallStartedAtNanos = SystemClock.elapsedRealtimeNanos()
-            val candidates = strictReplicaRequests(originalRequest)
+            val canonicalCandidates = strictReplicaRequests(originalRequest)
             val manhwaReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
                 NTK_MANHWA_IMAGE_REPLICA_HOSTS
             val manhwaRangeReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
                 NTK_MANHWA_RANGE_REPLICA_HOSTS
+            val webtoonReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
+                NTK_WEBTOON_IMAGE_REPLICA_HOSTS
+            val cellularResilientTransport =
+                getHttpClient().isNtkCellularResilientTransportActive()
+            val viewerGeneration = ViewerTelemetry.activeGeneration()
+            val wifiWebtoonReplicaPreference =
+                if (webtoonReplica && !cellularResilientTransport && viewerGeneration > 0L) {
+                    ntkWifiWebtoonReplicaPreferences.computeIfAbsent(viewerGeneration) {
+                        NtkWebtoonReplicaPreference()
+                    }
+                } else {
+                    null
+                }
+            val preferredHost = wifiWebtoonReplicaPreference?.preferredHost()
+            val candidates = if (preferredHost == null) {
+                canonicalCandidates
+            } else {
+                canonicalCandidates.sortedBy {
+                    if (it.url.host.equals(preferredHost, ignoreCase = true)) 0 else 1
+                }
+            }
             // Quarantine discovery and the adopted strict source intentionally use different
             // internal session ids. The immutable episode directory is common to both phases and
             // every canonical pNNN asset, so it is the correct finite-wave resource key.
@@ -1286,30 +1381,71 @@ object ReaderImageCache {
             if (segmentedTransportEnabled && manhwaRangeReplica) {
                 return executeSegmentedManhwa(candidates)
             }
-            // Four bounded physical cycles stay inside one logical webtoon source operation.
-            // Longer in-call retry trains monopolized physical lanes during a sustained reset
-            // storm; the source actor's finite retry can reschedule that page after other admitted
-            // bodies make progress. No successful body is repeated and exact ownership remains
-            // preserved in either path.
+            // Carrier SNI recovery retains the measured four bounded physical cycles. Wi-Fi first
+            // performs one fast complete ring; only if that ring owns no response bytes does it
+            // focus independent HTTP/1 recovery connections on one non-miss host below.
+            // No successful body is repeated and exact ownership remains preserved in either path.
             // Numeric manhwa has four distinct immutable mirrors and an independent extension
             // resolver. Repeating a terminal 404 ring three times only delays the proven .png/gif
             // replacement and multiplies useless traffic, so one complete mirror pass is enough.
             val attemptCandidates = if (manhwaReplica) {
                 candidates.toMutableList()
+            } else if (webtoonReplica) {
+                List(
+                    NtkWebtoonReplicaHeaderPolicy.replicaCycles(
+                        cellularResilientTransport
+                    )
+                ) { candidates }
+                    .flatten()
+                    .toMutableList()
             } else {
-                List(NTK_WEBTOON_LOGICAL_REPLICA_CYCLES) { candidates }
+                List(NtkWebtoonReplicaHeaderPolicy.CELLULAR_REPLICA_CYCLES) { candidates }
                     .flatten()
                     .toMutableList()
             }
-            val webtoonReplica = originalRequest.url.host.lowercase(Locale.ROOT) in
-                NTK_WEBTOON_IMAGE_REPLICA_HOSTS
+            val webtoonHeaderFailoverMs = if (webtoonReplica) {
+                NtkWebtoonReplicaHeaderPolicy.headerFailoverMs(
+                    cellularResilientTransport,
+                    strictPageIndex,
+                )
+            } else {
+                0L
+            }
             var lastFailure: IOException? = null
             var index = 0
             var manhwaExtensionFallbackAdded = false
+            var wifiFocusedRecoveryStartIndex = Int.MAX_VALUE
+            var wifiFocusedRecoveryAdded = false
+            val explicitReplicaMissHosts = mutableSetOf<String>()
             var carrierManhwaQuicRecoveryAttempted = false
             var exactQuicRecoveryAttempted = false
+            var wifiWebtoonExactQuicRecoveryAttempted = false
             var exactFragmentedRecoveryAttempted = false
             val manhwaHeaderRecoveryPermitHeld = AtomicBoolean(false)
+            fun appendWifiFocusedRecoveryIfEligible(): Boolean {
+                if (wifiFocusedRecoveryAdded ||
+                    !NtkWebtoonReplicaHeaderPolicy.shouldAppendFocusedRecovery(
+                        cellularResilientTransport,
+                        webtoonReplica,
+                    )
+                ) return false
+                val focusedCandidate = candidates.asReversed().firstOrNull {
+                    it.url.host.lowercase(Locale.ROOT) !in explicitReplicaMissHosts
+                } ?: return false
+                wifiFocusedRecoveryAdded = true
+                wifiFocusedRecoveryStartIndex = attemptCandidates.size
+                repeat(NtkWebtoonReplicaHeaderPolicy.WIFI_FOCUSED_RECOVERY_ATTEMPTS) {
+                    attemptCandidates.add(focusedCandidate)
+                }
+                Log.w(
+                    TAG,
+                    "reader_strict_webtoon_focused_recovery " +
+                        "page=$strictPageIndex,host=${focusedCandidate.url.host}," +
+                        "attempts=${NtkWebtoonReplicaHeaderPolicy.WIFI_FOCUSED_RECOVERY_ATTEMPTS}," +
+                        "excludedMissHosts=${explicitReplicaMissHosts.sorted().joinToString("|")}",
+                )
+                return true
+            }
             try {
                 while (index < attemptCandidates.size) {
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
@@ -1335,7 +1471,9 @@ object ReaderImageCache {
                 active.set(call)
                 val headerResolved = AtomicBoolean(false)
                 val headerDeadlineMs = when {
-                    webtoonReplica -> NTK_WEBTOON_HEADER_FAILOVER_MS
+                    webtoonReplica && index >= wifiFocusedRecoveryStartIndex ->
+                        NtkWebtoonReplicaHeaderPolicy.WIFI_FOCUSED_RECOVERY_HEADER_MS
+                    webtoonReplica -> webtoonHeaderFailoverMs
                     // The anchor retains its dedicated segmented transport. Every other exact page
                     // has a position-sensitive deadline, while two session-global permits prevent
                     // the former all-page cancellation storm.
@@ -1413,6 +1551,23 @@ object ReaderImageCache {
                         response.body?.contentLength() == 0L
                     val retryableMiss = response.code == 404 || response.code == 410 ||
                         emptySuccessfulBody
+                    if (webtoonReplica && response.code in 200..299 &&
+                        !emptySuccessfulBody &&
+                        wifiWebtoonReplicaPreference?.recordUsableHeader(
+                            candidate.url.host
+                        ) == true
+                    ) {
+                        Log.d(
+                            TAG,
+                            "reader_strict_wifi_webtoon_replica_promoted " +
+                                "generation=$viewerGeneration,host=${candidate.url.host}",
+                        )
+                    }
+                    if (retryableMiss && webtoonReplica) {
+                        explicitReplicaMissHosts.add(
+                            candidate.url.host.lowercase(Locale.ROOT)
+                        )
+                    }
                     if (
                         retryableMiss &&
                         index == attemptCandidates.lastIndex &&
@@ -1432,6 +1587,9 @@ object ReaderImageCache {
                                     "candidates=${extensionFallbacks.size}",
                             )
                         }
+                    }
+                    if (retryableMiss && index == attemptCandidates.lastIndex) {
+                        appendWifiFocusedRecoveryIfEligible()
                     }
                     if (!retryableMiss || index == attemptCandidates.lastIndex) {
                         val canonicalIndex = candidates.indexOfFirst {
@@ -1479,6 +1637,19 @@ object ReaderImageCache {
                             physicalCandidate,
                             failure,
                         )?.let { return it }
+                    }
+                    if (!wifiWebtoonExactQuicRecoveryAttempted &&
+                        index == attemptCandidates.lastIndex &&
+                        shouldTryWifiWebtoonExactQuicRecovery(physicalCandidate)
+                    ) {
+                        wifiWebtoonExactQuicRecoveryAttempted = true
+                        executeExactQuicWifiWebtoonRecovery(
+                            physicalCandidate,
+                            failure,
+                        )?.let { return it }
+                    }
+                    if (index == attemptCandidates.lastIndex) {
+                        appendWifiFocusedRecoveryIfEligible()
                     }
                     if (cancelled.get() || index == attemptCandidates.lastIndex) throw failure
                     lastFailure = failure
@@ -1586,9 +1757,49 @@ object ReaderImageCache {
             return isLegacyBlockedImageRequest(request)
         }
 
+        private fun shouldTryWifiWebtoonExactQuicRecovery(request: Request): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                !NtkQuicFetcher.isAvailable()
+            ) return false
+            val cellularTransport = getHttpClient().isNtkCellularResilientTransportActive()
+            return NtkWebtoonReplicaHeaderPolicy.shouldAttemptExhaustedExactQuicRecovery(
+                cellularTransport,
+                request.url.host.lowercase(Locale.ROOT) in NTK_WEBTOON_IMAGE_REPLICA_HOSTS,
+            )
+        }
+
         private fun executeExactQuicLegacyImageRecovery(
             request: Request,
             tcpFailure: IOException,
+        ): Response? = executeExactQuicImageRecovery(
+            request,
+            tcpFailure,
+            NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS,
+            "legacy_image",
+        )
+
+        /**
+         * Every normal Wi-Fi page remains on the bounded OkHttp replica ring. Only a page that
+         * exhausts every distinct TCP replica reaches this exact-URL QUIC attempt. The three
+         * independent focused TCP connections remain the final fallback if QUIC also fails.
+         * This changes transport only; strict SHA/metadata validation still runs before the body
+         * can be published.
+         */
+        private fun executeExactQuicWifiWebtoonRecovery(
+            request: Request,
+            tcpFailure: IOException,
+        ): Response? = executeExactQuicImageRecovery(
+            request,
+            tcpFailure,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_EXHAUSTED_EXACT_QUIC_TIMEOUT_MS,
+            "wifi_webtoon",
+        )
+
+        private fun executeExactQuicImageRecovery(
+            request: Request,
+            tcpFailure: IOException,
+            timeoutMs: Long,
+            logScope: String,
         ): Response? {
             if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
             val recovery = NtkQuicFetcher.CancelableExactRequest()
@@ -1607,18 +1818,19 @@ object ReaderImageCache {
                     request.header("User-Agent") ?: getHttpClient().agent,
                     request.header("Cookie").orEmpty(),
                     forwardedHeaders,
-                    NTK_LEGACY_IMAGE_QUIC_TIMEOUT_MS,
+                    timeoutMs,
                 )
                 if (cancelled.get() || recovery.isCancelled) {
                     throw InterruptedIOException("Replica image Call cancelled")
                 }
                 if (result.error != null ||
                     result.code !in 200..299 ||
-                    result.bodyBytes.isEmpty()
+                    result.bodyBytes.isEmpty() ||
+                    !looksLikeImage(result.bodyBytes)
                 ) {
                     Log.w(
                         TAG,
-                        "reader_strict_legacy_image_quic_recovery_failed " +
+                        "reader_strict_exact_quic_recovery_failed scope=$logScope," +
                             "host=${request.url.host},code=${result.code}," +
                             "protocol=${result.negotiatedProtocol}," +
                             "tcpError=${tcpFailure.javaClass.simpleName}," +
@@ -1640,7 +1852,7 @@ object ReaderImageCache {
                     val contentType = result.contentType().toMediaTypeOrNull()
                     Log.d(
                         TAG,
-                        "reader_strict_legacy_image_quic_recovered " +
+                        "reader_strict_exact_quic_recovered scope=$logScope," +
                             "host=${request.url.host},code=${result.code}," +
                             "protocol=${result.negotiatedProtocol},bytes=${result.bodyBytes.size}," +
                             "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
@@ -2272,6 +2484,7 @@ object ReaderImageCache {
                 } else {
                     null
                 },
+                retryClosedBodyAsTransportFailure = webtoonReplica,
             )
             return response.newBuilder().body(resumable).build()
         }
@@ -2291,11 +2504,12 @@ object ReaderImageCache {
 
         override fun isExecuted(): Boolean = executed.get()
 
-        override fun isCanceled(): Boolean =
-            cancelled.get() ||
-                activeExactQuicRecovery.get()?.isCancelled == true ||
-                activeExactFragmentedRecoveryCall.get()?.isCanceled() == true ||
-                active.get()?.isCanceled() == true
+        // A header deadline deliberately cancels one physical TCP attempt before this logical
+        // Call continues on another replica or exact QUIC. Reporting that internal loser through
+        // Call.isCanceled() makes the successfully recovered body look cancelled to the outer
+        // ownership/telemetry wrapper. Only an explicit cancellation of this logical Call is
+        // observable here; cancel() already propagates it to every active physical transport.
+        override fun isCanceled(): Boolean = cancelled.get()
 
         override fun timeout(): okio.Timeout = firstCall.timeout()
 
@@ -2444,6 +2658,7 @@ object ReaderImageCache {
         private val sessionProjectedStartCount: NtkManhwaProjectedBodyHedgePolicy.SessionStarts?,
         private val waveRecoveryState: NtkManhwaWaveRecoveryState?,
         private val projectedTailFetcher: ((Long, Long, Int, AtomicReference<Call?>) -> ByteArray)?,
+        private val retryClosedBodyAsTransportFailure: Boolean,
     ) : ResponseBody() {
         private val contentType = initialResponse.body?.contentType()
         private var currentResponse: Response = initialResponse
@@ -2470,6 +2685,13 @@ object ReaderImageCache {
 
         private val joinedSource = object : okio.Source {
             override fun read(sink: Buffer, byteCount: Long): Long {
+                // OkHttp can close a timed-out wrapped response between the webtoon tail-grace
+                // decision and the next read. That is a recoverable transport interruption, not
+                // an episode-authority invariant failure. Surface it as IOException so the
+                // source actor retries only this page inside its existing finite attempt ledger.
+                if (closed && retryClosedBodyAsTransportFailure) {
+                    throw IOException("Webtoon replica response body closed")
+                }
                 check(!closed) { "closed" }
                 if (byteCount == 0L) return 0L
                 if (deliveredBytes == expectedLength) {
@@ -2966,7 +3188,9 @@ object ReaderImageCache {
                 val rangeHeaderDeadlineMs = if (projectedTailFetcher != null) {
                     NTK_MANHWA_RANGE_HEADER_DEADLINE_MS
                 } else {
-                    NTK_WEBTOON_HEADER_FAILOVER_MS
+                    NtkWebtoonReplicaHeaderPolicy.headerFailoverMs(
+                        getHttpClient().isNtkCellularResilientTransportActive()
+                    )
                 }
                 val headerDeadline = if (rangeHeaderDeadlineMs > 0L) {
                     strictReplicaHeaderDeadlineScheduler.schedule({
@@ -3805,7 +4029,7 @@ object ReaderImageCache {
         private val finished = AtomicBoolean(false)
         private val cancelRequested = AtomicBoolean(false)
         private val executeStarted = AtomicBoolean(false)
-        private val responseBody = AtomicReference<ResponseBody?>(null)
+        private val responseBody = AtomicReference<CompletionResponseBody?>(null)
         private val telemetryOperationId = AtomicLong(0L)
         private val responseCode = AtomicInteger(0)
 
@@ -3878,7 +4102,7 @@ object ReaderImageCache {
             delegate.cancel()
             val body = responseBody.get()
             if (body != null) {
-                runCatching { body.close() }
+                body.cancelWithoutConcurrentClose()
             } else if (!executeStarted.get()) {
                 finish(reachedEof = false)
             }
@@ -3937,9 +4161,54 @@ object ReaderImageCache {
             }
         }
 
-        private val completionSource: BufferedSource =
+        private val completionSourceDelegate =
             object : ForwardingSource(delegate.source()) {
+                private val readStateLock = Any()
+                private val sourceClosed = AtomicBoolean(false)
+                private var activeReads = 0
+                private var cancellationCloseRequested = false
+
+                fun requestCancellationClose() {
+                    val closeNow = synchronized(readStateLock) {
+                        cancellationCloseRequested = true
+                        activeReads == 0
+                    }
+                    if (closeNow) runCatching { closeOnce() }
+                }
+
+                private fun enterRead() {
+                    synchronized(readStateLock) {
+                        if (cancellationCloseRequested) {
+                            throw InterruptedIOException("Image response body cancelled")
+                        }
+                        activeReads++
+                    }
+                }
+
+                private fun exitRead(): Boolean =
+                    synchronized(readStateLock) {
+                        check(activeReads > 0)
+                        activeReads--
+                        cancellationCloseRequested && activeReads == 0
+                    }
+
+                private fun closeOnce(failure: Throwable? = null) {
+                    if (!sourceClosed.compareAndSet(false, true)) return
+                    try {
+                        super.close()
+                    } catch (closeFailure: Throwable) {
+                        if (failure != null) {
+                            failure.addSuppressed(closeFailure)
+                        } else {
+                            throw closeFailure
+                        }
+                    } finally {
+                        complete(failure)
+                    }
+                }
+
                 override fun read(sink: Buffer, byteCount: Long): Long {
+                    enterRead()
                     return try {
                         super.read(sink, byteCount).also { read ->
                             if (read > 0L) bytesRead.addAndGet(read)
@@ -3949,24 +4218,17 @@ object ReaderImageCache {
                             }
                         }
                     } catch (failure: Throwable) {
-                        try {
-                            super.close()
-                        } catch (closeFailure: Throwable) {
-                            failure.addSuppressed(closeFailure)
-                        }
-                        complete(failure)
+                        closeOnce(failure)
                         throw failure
+                    } finally {
+                        if (exitRead()) closeOnce()
                     }
                 }
 
-                override fun close() {
-                    try {
-                        super.close()
-                    } finally {
-                        complete()
-                    }
-                }
-            }.buffer()
+                override fun close() = closeOnce()
+            }
+
+        private val completionSource: BufferedSource = completionSourceDelegate.buffer()
 
         override fun contentType(): MediaType? = delegate.contentType()
 
@@ -3975,6 +4237,10 @@ object ReaderImageCache {
         override fun source(): BufferedSource = completionSource
 
         override fun close() = completionSource.close()
+
+        fun cancelWithoutConcurrentClose() {
+            completionSourceDelegate.requestCancellationClose()
+        }
     }
 
     private fun ntkEpisodeCallPath(manga: Manga, image: String): String? {

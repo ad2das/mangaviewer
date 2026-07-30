@@ -372,6 +372,8 @@ internal object NtkStrictInitialWavePolicy {
     // into the post-anchor wave.
     private const val WEBTOON_CONNECTION_SHARDS = 8
     private const val MANHWA_CONNECTION_SHARDS = 24
+    // Three independent Wi-Fi leaders keep the entry route resilient to a slow/dead CDN pool.
+    // A single leader was measured to stall for its full 10-second retry window.
     private const val WEBTOON_WIFI_ANCHOR_GATE_OPERATIONS = 3
     private const val WEBTOON_CELLULAR_ANCHOR_GATE_OPERATIONS =
         WEBTOON_CONNECTION_SHARDS * 3
@@ -384,14 +386,18 @@ internal object NtkStrictInitialWavePolicy {
      * transport has different origins.
      */
     private const val WEBTOON_PRE_ANCHOR_STREAMS_PER_CONNECTION_SHARD = 6
-    // Page zero is already immutable and published before this ring expands. The renderer now
-    // reserves its next producer-vsync callback before body completions can queue, removing the
-    // lifecycle defect behind the historical 64-stream jank. On the current eight-pool transport,
-    // 80 is the measured saturation point: 120 created seven header-deadline recoveries, added
-    // roughly 30 MiB PSS and finished slower. Decoder concurrency and retained pixels remain
-    // independently bounded. The initial frame retains the three-call gate and exclusive anchor
-    // pool, so whole-scene throughput cannot steal its connection before publication.
-    private const val WEBTOON_POST_ANCHOR_BODY_TRANSFERS = 80
+    // A compatibility-origin Wi-Fi session converges the manifest replicas onto a few real CDN
+    // hosts. Expanding to 80 bodies there exhausted server/HTTP2 flow control, produced "closed"
+    // page failures, retained hundreds of MiB, and caused scroll jank. Keep only four transfers
+    // active across the eight logical pools. Session-local replica health drops physical failovers
+    // from 95 to 6 on the fixed 148-page reproduction, but six simultaneous streams still raise
+    // header deadlines to 35, require fourteen QUIC recoveries, and introduce one logical image
+    // failure. Four completes the same scene with zero image failures and remains the measured
+    // stable Wi-Fi limit. Every later page stays queued in canonical order.
+    private const val WEBTOON_WIFI_POST_ANCHOR_BODY_TRANSFERS = 4
+    // Preserve the existing carrier transport wave: its independently sharded resilient route
+    // needs the wider ring and is intentionally unaffected by this Wi-Fi stabilization.
+    private const val WEBTOON_CELLULAR_POST_ANCHOR_BODY_TRANSFERS = 80
 
     /**
      * Carrier transport needs one actual demanded body to establish each finite host/pool cohort.
@@ -417,6 +423,7 @@ internal object NtkStrictInitialWavePolicy {
         physicalLaneCount: Int,
         anchorBodyPublished: Boolean,
         manhwaTransferLimit: Int = NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS,
+        cellularResilientTransport: Boolean = false,
     ): Int {
         require(episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
         require(physicalLaneCount >= 0)
@@ -426,7 +433,11 @@ internal object NtkStrictInitialWavePolicy {
             // it as a full six-stream pool pushes an avoidable extra body onto the other pools.
             // Once the entry body is safe, every finite pool can carry its measured useful share.
             val usefulWebtoonLanes = if (anchorBodyPublished) {
-                WEBTOON_POST_ANCHOR_BODY_TRANSFERS
+                if (cellularResilientTransport) {
+                    WEBTOON_CELLULAR_POST_ANCHOR_BODY_TRANSFERS
+                } else {
+                    WEBTOON_WIFI_POST_ANCHOR_BODY_TRANSFERS
+                }
             } else {
                 1 + (WEBTOON_CONNECTION_SHARDS - 1) *
                     WEBTOON_PRE_ANCHOR_STREAMS_PER_CONNECTION_SHARD
@@ -951,6 +962,7 @@ internal class NtkStrictSourceSession(
                 activeWorks.size,
                 anchorBodyPublished = false,
                 manhwaTransferLimit = manhwaPhysicalTransferLimit,
+                cellularResilientTransport = cellularResilientTransport,
             ),
         ) { pageIndex -> pages[pageIndex].routeBucketHint }
     private val coldConnectionCohortLeaderSet = coldConnectionCohortLeaders.toHashSet()
@@ -1708,6 +1720,7 @@ internal class NtkStrictSourceSession(
             activeWorks.size,
             anchorBodyPublished,
             manhwaTransferLimit = manhwaPhysicalTransferLimit,
+            cellularResilientTransport = cellularResilientTransport,
         )
         val progressiveLaneCount = NtkStrictInitialWavePolicy.forwardLaneTarget(
             usefulPhysicalLaneCount,
@@ -2086,15 +2099,22 @@ internal class NtkStrictSourceSession(
             if (firstColdConnectionCohortSettledAtMs == 0L) {
                 firstColdConnectionCohortSettledAtMs = SystemClock.elapsedRealtime()
             }
-            val laneTarget = NtkStrictInitialWavePolicy.progressiveLaneTarget(
+            // A late cold-cohort header can settle after the entry body has already published.
+            // At that point the post-anchor transfer cap may be smaller than the original cohort
+            // count (Wi-Fi: six transfers across twenty-four host/pool cohorts). Route through the
+            // anchor-aware policy so that late settlement cannot feed that valid state into the
+            // pre-anchor-only progressive ramp and terminate the complete source session.
+            val laneTarget = NtkStrictInitialWavePolicy.forwardLaneTarget(
                 NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                     planBinding.episodePath,
                     activeWorks.size,
                     anchorBodyPublishedActor(),
                     manhwaTransferLimit = manhwaPhysicalTransferLimit,
+                    cellularResilientTransport = cellularResilientTransport,
                 ),
                 coldConnectionCohortLeaders.size,
                 readyCount,
+                anchorBodyPublishedActor(),
             )
             logSourceEvent(
                 "reader_strip_cold_cohort_settled",

@@ -4660,6 +4660,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             } else {
                 clampScrollLocked()
             }
+            if (width > 0 && height > 0) {
+                // Native creation can finish before this deferred SurfaceView receives its first
+                // measured size. Queue the geometry as soon as measurement catches up so attach
+                // observes the same prepared target as the size-before-create ordering.
+                prepareRollingNativeRenderTargetsLocked(width, height)
+            }
             lastAnchor = -1
             val hasPages = pages.isNotEmpty()
             renderRequested = hasPages && !shouldBlockInitialEmptyFrameLocked()

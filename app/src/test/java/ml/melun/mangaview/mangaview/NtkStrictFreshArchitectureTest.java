@@ -49,7 +49,7 @@ public final class NtkStrictFreshArchitectureTest {
                 "public NtkDirectTrustedGrant fetchExactNtkTrustedChallengeGrant(",
                 "/**\n     * Converts the authoritative HTTP Date");
         String nvGrantExchange = method(client,
-                "private ArrayList<NtkAckCookie> fetchExactNtkNvGrants(",
+                "private NtkNvIssueGrant fetchExactNtkNvGrants(",
                 "private static String strictNtkCookieHeader(");
 
         int directCookies = direct.indexOf("importVerifiedNtkAckCookieGrants(");
@@ -68,6 +68,12 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(nvGrantExchange.contains("\"nv_issue\""));
         assertTrue(nvGrantExchange.contains("callRegistry"));
         assertTrue(nvGrantExchange.contains("NtkAckCookieBoundary.INSTANCE.validateGrants("));
+        assertTrue(nvGrantExchange.contains("!shouldUseNtkCellularResilientTransport()"));
+        assertTrue(nvGrantExchange.contains("allowExactBodyAuthority"));
+        assertTrue(nvGrantExchange.contains("responseHasSingleJsonContentType"));
+        assertTrue(nvGrantExchange.contains("\"ok\", \"session\", \"ttl\""));
+        assertTrue(nvGrantExchange.contains("new ConnectionPool()"));
+        assertTrue(nvGrantExchange.contains("\"nv_issue_cookie_recovery\""));
 
         int nvStart = isolated.indexOf("ensureExactNvSeed(client, flight, ackRoute)");
         int proof = isolated.indexOf("ackHandle.joinProof()");

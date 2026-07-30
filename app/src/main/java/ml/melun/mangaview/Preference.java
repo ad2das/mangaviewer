@@ -33,6 +33,8 @@ import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 public class Preference {
     private static final String NTK_CELLULAR_RESOLVED_ROOT_PREF =
             "ntkCellularResolvedRootV1";
+    private static final String NTK_VERIFIED_RESOLVED_ROOT_PREF =
+            "ntkVerifiedResolvedRootV1";
 
     SharedPreferences sharedPref;
     //ArrayList<Title> recent;
@@ -53,6 +55,7 @@ public class Preference {
     String wfwfResolvedRoot;
     String ntkResolvedRoot;
     String ntkCellularResolvedRoot;
+    String ntkVerifiedResolvedRoot;
     boolean stretch;
     boolean leftRight;
     String defUrl;
@@ -180,6 +183,7 @@ public class Preference {
         webtoonUrl = WEBTOON_URL;
         wfwfResolvedRoot = WEBTOON_URL;
         ntkCellularResolvedRoot = CustomHttpClient.NTK_CELLULAR_ALIAS_URL;
+        ntkVerifiedResolvedRoot = "";
         stretch = false;
         leftRight = false;
         autoUrl = false;
@@ -208,6 +212,8 @@ public class Preference {
                     : CustomHttpClient.NTK_CELLULAR_ALIAS_URL;
             ntkCellularResolvedRoot = migratedNtkCellularResolvedRoot(
                     savedCellularRoot, defUrl, url, webtoonUrl);
+            ntkVerifiedResolvedRoot = normalizeOptionalNtkRoot(
+                    sharedPref.getString(NTK_VERIFIED_RESOLVED_ROOT_PREF, ""));
             migrateStaleNtkPresetIfNeeded();
             wfwfResolvedRoot = normalizeWfwfRoot(sharedPref.getString("wfwfResolvedRoot", webtoonUrl));
             if(wfwfResolvedRoot.length() == 0)
@@ -228,6 +234,7 @@ public class Preference {
                     .putString("wfwfResolvedRoot", wfwfResolvedRoot)
                     .putString("ntkResolvedRoot", ntkResolvedRoot)
                     .putString(NTK_CELLULAR_RESOLVED_ROOT_PREF, ntkCellularResolvedRoot)
+                    .putString(NTK_VERIFIED_RESOLVED_ROOT_PREF, ntkVerifiedResolvedRoot)
                     .putBoolean("autoUrl", false)
                     .remove("login")
                     .remove("notice")
@@ -568,6 +575,18 @@ public class Preference {
         if(!staleActiveUrl) {
             if(isLegacyNtkRedirectRoot(ntkResolvedRoot))
                 ntkResolvedRoot = normalizeNtkRoot(webtoonUrl);
+            if(!isVerifiedResolvedNtkPreset(
+                    ntkVerifiedResolvedRoot, defUrl, url, webtoonUrl))
+                ntkVerifiedResolvedRoot = "";
+            return;
+        }
+        if(isVerifiedResolvedNtkPreset(
+                ntkVerifiedResolvedRoot, defUrl, url, webtoonUrl)) {
+            String verifiedRoot = normalizeOptionalNtkRoot(ntkVerifiedResolvedRoot);
+            ntkResolvedRoot = verifiedRoot;
+            defUrl = verifiedRoot + "/manhwa";
+            url = defUrl;
+            webtoonUrl = verifiedRoot;
             return;
         }
         String root = normalizeNtkRoot(NTK_WEBTOON_URL);
@@ -575,6 +594,7 @@ public class Preference {
         defUrl = root + "/manhwa";
         url = defUrl;
         webtoonUrl = root;
+        ntkVerifiedResolvedRoot = "";
     }
 
     private void writeSiteSettings() {
@@ -584,8 +604,28 @@ public class Preference {
                 .putString("wfwfResolvedRoot", wfwfResolvedRoot)
                 .putString("ntkResolvedRoot", ntkResolvedRoot)
                 .putString(NTK_CELLULAR_RESOLVED_ROOT_PREF, ntkCellularResolvedRoot)
+                .putString(NTK_VERIFIED_RESOLVED_ROOT_PREF, ntkVerifiedResolvedRoot)
                 .putBoolean("autoUrl", autoUrl)
                 .apply();
+    }
+
+    private static boolean isVerifiedResolvedNtkPreset(String verifiedRoot,
+                                                        String defUrl,
+                                                        String url,
+                                                        String webtoonUrl) {
+        String verified = normalizeOptionalNtkRoot(verifiedRoot);
+        return verified.length() > 0
+                && isNtkLikeUrl(verified)
+                && verified.equals(ntkRoot(defUrl))
+                && verified.equals(ntkRoot(url))
+                && verified.equals(ntkRoot(webtoonUrl));
+    }
+
+    static boolean isVerifiedResolvedNtkPresetForTest(String verifiedRoot,
+                                                       String defUrl,
+                                                       String url,
+                                                       String webtoonUrl) {
+        return isVerifiedResolvedNtkPreset(verifiedRoot, defUrl, url, webtoonUrl);
     }
 
     private static String migratedNtkCellularResolvedRoot(String rememberedRoot,
@@ -846,7 +886,7 @@ public class Preference {
         String defaultRoot = ntkRoot(NTK_WEBTOON_URL);
         if(isLegacyNtkRedirectRoot(root))
             root = defaultRoot;
-        setNtkSitePresetRoot(root);
+        setNtkSitePresetRoot(root, false);
     }
 
     public void setNtkSitePresetForDiagnostics(String rootUrl) {
@@ -862,11 +902,12 @@ public class Preference {
         String root = normalizeNtkRoot(rootUrl);
         if(root.length() == 0)
             root = ntkRoot(NTK_WEBTOON_URL);
-        setNtkSitePresetRoot(root);
+        setNtkSitePresetRoot(root, true);
     }
 
-    private void setNtkSitePresetRoot(String root) {
+    private void setNtkSitePresetRoot(String root, boolean verifiedResolution) {
         ntkResolvedRoot = root;
+        ntkVerifiedResolvedRoot = verifiedResolution ? root : "";
         defUrl = root + "/manhwa";
         url = defUrl;
         webtoonUrl = root;
@@ -875,6 +916,7 @@ public class Preference {
                 .putString("defUrl", defUrl)
                 .putString("url", url)
                 .putString("webtoonUrl", webtoonUrl)
+                .putString(NTK_VERIFIED_RESOLVED_ROOT_PREF, ntkVerifiedResolvedRoot)
                 .putBoolean("autoUrl", false)
                 .apply();
         MainApplication.refreshWebViewDebuggingPolicy(this);

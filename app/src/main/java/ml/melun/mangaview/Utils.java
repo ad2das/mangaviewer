@@ -831,13 +831,21 @@ public class Utils {
         if(source == null || source.length() == 0)
             return;
         boolean targetNtk = "ntk".equals(source);
+        if(sourceSiteAlreadyActiveForTest(source, p.isNtkSite()))
+            return;
         if(targetNtk) {
             p.setNtkSitePreset(p.getNtkResolvedRoot());
             return;
         }
-        if(!p.isNtkSite())
-            return;
         p.setSitePreset(CustomHttpClient.DEFAULT_COMIC_URL, CustomHttpClient.WEBTOON_URL);
+    }
+
+    static boolean sourceSiteAlreadyActiveForTest(String sourceSite, boolean activeNtk) {
+        String normalized = sourceSite == null
+                ? ""
+                : sourceSite.trim().toLowerCase(Locale.ROOT);
+        return ("ntk".equals(normalized) && activeNtk)
+                || ("wfwf".equals(normalized) && !activeNtk);
     }
 
     private static boolean hasCompleteNativeGeneratedNtkManifest(Manga manga, String path) {
