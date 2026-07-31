@@ -81,6 +81,23 @@ internal object NtkStrictDecodeReleasePolicy {
         residentPageCount >= releaseThreshold(pageCount, webtoon)
 }
 
+internal object NtkWifiAdjacentCascadePolicy {
+    // The first next episode is prepared from the initial episode. Once the reader has crossed
+    // that boundary, wait until page five of the new episode before resolving a third episode.
+    // This keeps an immediately useful A -> B runway while preventing an unseen C document/client
+    // from competing with B's visible decode and transport work.
+    const val MIN_ACTIVE_SOURCE_PAGE_INDEX = 4
+
+    fun shouldStart(
+        wifiTransportActive: Boolean,
+        initialEpisode: Boolean,
+        activeSourcePageIndex: Int,
+    ): Boolean =
+        !wifiTransportActive ||
+            initialEpisode ||
+            activeSourcePageIndex >= MIN_ACTIVE_SOURCE_PAGE_INDEX
+}
+
 class ReaderSession(
     private val context: Context,
     private val manga: Manga,
@@ -103,6 +120,7 @@ class ReaderSession(
     private val strictExactLaunchSeal: StrictExactLaunchSeal? = null
 ) {
     private val strictExactColdRolling: Boolean = strictExactLaunchSeal != null
+    private val initialNtkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
     enum class InitialPrerenderResult {
         NOT_RENDERED,
         RENDERED_ONLY,
@@ -12022,8 +12040,58 @@ class ReaderSession(
             return false
         }
         val predictedStart = synchronized(pagesLock) { pages.size }
-        val deliveries = ArrayList<Delivery>(refs.size)
         val startedAt = SystemClock.elapsedRealtime()
+        val exactAuthority = exactViewerApiAdjacentAuthority(target)
+        if (exactAuthority != null && ensureAdjacentStrictSourceClaim(target, exactAuthority)) {
+            try {
+                val deadline = startedAt + NtkAdjacentRunwayPreparationPolicy.MAX_JOIN_MS
+                var strictBodiesReady = false
+                while (!cancelled.get() && SystemClock.elapsedRealtime() < deadline) {
+                    strictBodiesReady = refs.all { page ->
+                        strictAdjacentBodyDescriptor(page) != null ||
+                            strictAdjacentPublishedBody(page) != null
+                    }
+                    if (strictBodiesReady) break
+                    SystemClock.sleep(NTK_APPEND_EARLY_GENERATED_POLL_MS)
+                }
+                if (!strictBodiesReady) {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_initial_strict_source_wait_timeout path=$path " +
+                            "pages=${refs.size} ms=${SystemClock.elapsedRealtime() - startedAt}",
+                    )
+                    return false
+                }
+                val batch = prepareAdjacentRunwayDrawableBatch(
+                    predictedStart,
+                    refs,
+                    "initial_strict_source",
+                ) ?: return false
+                return publishPreparedInitialAdjacentRunway(
+                    path,
+                    preparation,
+                    refs,
+                    batch,
+                    startedAt,
+                    "strict_source",
+                )
+            } catch (e: Exception) {
+                if (e is InterruptedException) Thread.currentThread().interrupt()
+                if (!cancelled.get()) {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_initial_strict_source_error path=$path " +
+                            "error=${e.javaClass.simpleName}:${e.message}",
+                    )
+                    if (!isExpectedCancellation(e)) recordIfUnexpected(e)
+                }
+                return false
+            } finally {
+                preparingInitialAdjacentRunways.remove(path, preparation)
+            }
+        }
+
+        val deliveries = ArrayList<Delivery>(refs.size)
         val fetchTasks = refs.map { page ->
             FutureTask<File> {
                 fetchInitialAdjacentRunwayFile(target, page, path, startedAt)
@@ -12061,33 +12129,14 @@ class ReaderSession(
                     )
                 )
             }
-            val prepared = PreparedAdjacentRunwayBatch(
-                pageKeys = refs.map(::runwayPageRefIdentity),
-                batch = AdjacentRunwayDrawableBatch(deliveries),
-                preparedAtMs = SystemClock.elapsedRealtime()
+            return publishPreparedInitialAdjacentRunway(
+                path,
+                preparation,
+                refs,
+                AdjacentRunwayDrawableBatch(deliveries),
+                startedAt,
+                "legacy_cache",
             )
-            if (cancelled.get()) {
-                recycleAdjacentRunwayDrawableBatch(prepared.batch)
-                return false
-            }
-            if (preparingInitialAdjacentRunways[path] !== preparation) {
-                recycleAdjacentRunwayDrawableBatch(prepared.batch)
-                Log.d(
-                    TAG,
-                    "append_adjacent_initial_prefetch_superseded path=$path " +
-                        "pages=${deliveries.size}"
-                )
-                return false
-            }
-            preparedInitialAdjacentRunways.put(path, prepared)?.let { previous ->
-                recycleAdjacentRunwayDrawableBatch(previous.batch)
-            }
-            Log.d(
-                TAG,
-                "append_adjacent_initial_prefetch_ready path=$path pages=${deliveries.size} " +
-                    "ms=${SystemClock.elapsedRealtime() - startedAt}"
-            )
-            return true
         } catch (e: Exception) {
             if (e is InterruptedException) Thread.currentThread().interrupt()
             deliveries.forEach { recycleDecodeResult(it.result) }
@@ -12106,6 +12155,43 @@ class ReaderSession(
             }
             preparingInitialAdjacentRunways.remove(path, preparation)
         }
+    }
+
+    private fun publishPreparedInitialAdjacentRunway(
+        path: String,
+        preparation: InitialAdjacentRunwayPreparation,
+        refs: List<PageRef>,
+        batch: AdjacentRunwayDrawableBatch,
+        startedAt: Long,
+        source: String,
+    ): Boolean {
+        val prepared = PreparedAdjacentRunwayBatch(
+            pageKeys = refs.map(::runwayPageRefIdentity),
+            batch = batch,
+            preparedAtMs = SystemClock.elapsedRealtime(),
+        )
+        if (cancelled.get()) {
+            recycleAdjacentRunwayDrawableBatch(prepared.batch)
+            return false
+        }
+        if (preparingInitialAdjacentRunways[path] !== preparation) {
+            recycleAdjacentRunwayDrawableBatch(prepared.batch)
+            Log.d(
+                TAG,
+                "append_adjacent_initial_prefetch_superseded path=$path " +
+                    "pages=${batch.deliveries.size} source=$source",
+            )
+            return false
+        }
+        preparedInitialAdjacentRunways.put(path, prepared)?.let { previous ->
+            recycleAdjacentRunwayDrawableBatch(previous.batch)
+        }
+        Log.d(
+            TAG,
+            "append_adjacent_initial_prefetch_ready path=$path pages=${batch.deliveries.size} " +
+                "ms=${SystemClock.elapsedRealtime() - startedAt} source=$source",
+        )
+        return true
     }
 
     private fun hasNtkResolvedAdjacentMetadataCandidate(
@@ -20748,6 +20834,7 @@ class ReaderSession(
         if (!isNtkManhwaOrWebtoonEpisodePath(source.ntkEpisodePath)) return
         val sourcePath = source.ntkEpisodePath?.trim().orEmpty()
         if (sourcePath.isEmpty()) return
+        if (!shouldStartWifiAdjacentCascade(source, sourcePath)) return
         if (hasForwardNtkEpisodeAfterSource(source)) return
         if (preparedInitialAdjacentMetadata.containsKey(sourcePath)) return
         if (preparedInitialAdjacentRunways.keys.any { it.isNotEmpty() }) return
@@ -20858,6 +20945,7 @@ class ReaderSession(
         }
         val sourcePath = source.ntkEpisodePath?.trim().orEmpty()
         if (sourcePath.isEmpty()) return
+        if (!shouldStartWifiAdjacentCascade(source, sourcePath)) return
         if (initialAdjacentMetadataPrefetchPaths.contains(sourcePath)) {
             Log.d(
                 TAG,
@@ -20935,6 +21023,43 @@ class ReaderSession(
             }
             false
         }
+    }
+
+    private fun shouldStartWifiAdjacentCascade(source: Manga, sourcePath: String): Boolean {
+        val wifiTransportActive = MainApplication.getHttpClient().isNtkWifiTransportActive()
+        if (!wifiTransportActive) return true
+        val initialEpisode =
+            sourcePath == initialNtkEpisodePath ||
+                Manga.sameEpisodeIdentity(source, manga)
+        if (initialEpisode) return true
+        val anchor = currentViewportAnchor.get().takeIf { it >= 0 } ?: currentStartPage()
+        val activeSourcePageIndex = synchronized(pagesLock) {
+            var localIndex = -1
+            val boundedAnchor = anchor.coerceAtMost(pages.lastIndex)
+            for (index in 0..boundedAnchor) {
+                val page = pages[index]
+                if (page.transitionTitle != null) continue
+                val path = page.manga.ntkEpisodePath?.trim().orEmpty()
+                if (path == sourcePath || Manga.sameEpisodeIdentity(page.manga, source)) {
+                    localIndex++
+                }
+            }
+            localIndex
+        }
+        val shouldStart = NtkWifiAdjacentCascadePolicy.shouldStart(
+            wifiTransportActive = true,
+            initialEpisode = false,
+            activeSourcePageIndex = activeSourcePageIndex,
+        )
+        if (!shouldStart) {
+            Log.d(
+                TAG,
+                "append_adjacent_cascade_defer_wifi path=$sourcePath " +
+                    "activeSourcePage=$activeSourcePageIndex," +
+                    "required=${NtkWifiAdjacentCascadePolicy.MIN_ACTIVE_SOURCE_PAGE_INDEX}"
+            )
+        }
+        return shouldStart
     }
 
     private fun shouldYieldInitialAdjacentMetadata(source: Manga): Boolean {

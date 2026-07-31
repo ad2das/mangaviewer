@@ -20,6 +20,18 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(4, NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES)
         assertEquals(1, NtkClickOwnedManhwaWavePolicy.DIRECT_BODY_RACE_PAGES)
         assertEquals(2, NtkClickOwnedManhwaWavePolicy.PREFERRED_EXTENSION_EVIDENCE)
+        assertEquals(3, NtkClickOwnedManhwaWavePolicy.WIFI_PREFERRED_EXTENSION_EVIDENCE)
+        assertEquals("png", NtkManhwaWifiTransportPolicy.WIFI_FIRST_UNCOMMON_EXTENSION)
+        assertEquals(
+            7_000L,
+            NtkManhwaWifiTransportPolicy.WIFI_UNCOMMON_EXACT_QUIC_TIMEOUT_MS,
+        )
+        assertEquals(
+            12,
+            NtkManhwaWifiTransportPolicy.WIFI_UNCOMMON_SESSION_STRIPES_PER_HOST,
+        )
+        assertEquals(3, NtkWifiExactQuicSessionPool.WEBTOON_SESSION_STRIPES_PER_HOST)
+        assertEquals(6, NtkWifiExactQuicSessionPool.MANHWA_SESSION_STRIPES_PER_HOST)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.EXACT_PRE_FRAME_RUNWAY_PAGES)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.FORWARD_ADMISSION_RUNWAY_PAGES)
         assertEquals(2_500L, NtkClickOwnedManhwaWavePolicy.ENTRY_HEADER_FAILOVER_MS)
@@ -171,13 +183,31 @@ class NtkClickOwnedManhwaWavePolicyTest {
     }
 
     @Test
-    fun twoCompletedHeadSamplesReleaseTheVolumeHintWithoutWaitingForAStalledPeer() {
+    fun wifiCanRequireThreeSamplesWithoutChangingTheCarrierConsensus() {
         val jpg = "https://booktoki8.org/manhwa/23939/235313/p001.jpg"
         val secondJpg = "https://booktoki9.org/manhwa/23939/235313/p003.jpg"
         assertEquals(
             "jpg",
             NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
                 listOf(jpg, null, secondJpg, null),
+            ),
+        )
+        assertNull(
+            NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                listOf(jpg, null, secondJpg, null),
+                minimumEvidence =
+                    NtkClickOwnedManhwaWavePolicy.WIFI_PREFERRED_EXTENSION_EVIDENCE,
+            ),
+        )
+        assertEquals(
+            "jpg",
+            NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                listOf(
+                    jpg,
+                    "https://booktoki8.org/manhwa/23939/235313/p002.jpg",
+                    secondJpg,
+                    null,
+                ),
             ),
         )
         assertNull(

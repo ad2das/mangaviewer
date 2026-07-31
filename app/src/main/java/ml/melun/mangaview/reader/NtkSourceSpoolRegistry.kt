@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.util.Log
 import ml.melun.mangaview.MainApplication
 import ml.melun.mangaview.Preference
+import ml.melun.mangaview.activity.NtkQuicFetcher
 import ml.melun.mangaview.mangaview.Manga
 import java.io.Closeable
 import java.util.concurrent.CompletableFuture
@@ -693,6 +694,14 @@ object NtkSourceSpoolRegistry {
                 cellularResilientTransport = runCatching {
                     MainApplication.getHttpClient().isNtkCellularResilientTransportActive()
                 }.getOrDefault(false),
+                wifiQuicBulkTransport = spec.viewerImageApiBacked && runCatching {
+                    MainApplication.getHttpClient().isNtkWifiTransportActive() &&
+                        NtkQuicFetcher.isAvailable()
+                }.getOrDefault(false),
+                adjacentPrefetch =
+                    ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(
+                        binding.episodePath,
+                    ),
             )
         } catch (failure: Throwable) {
             bootstrap.abortConstructionFailure()

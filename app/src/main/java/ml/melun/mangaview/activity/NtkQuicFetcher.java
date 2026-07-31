@@ -147,6 +147,19 @@ public final class NtkQuicFetcher {
     public static final class CancelableExactRequest {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicReference<UrlRequest> activeRequest = new AtomicReference<>();
+        private final Session sharedSession;
+
+        public CancelableExactRequest() {
+            this(null);
+        }
+
+        /**
+         * Reuses one host-scoped engine when a finite immutable image wave owns many exact GETs.
+         * Cancellation remains request-local; the pool that supplied the session owns its close.
+         */
+        public CancelableExactRequest(Session sharedSession) {
+            this.sharedSession = sharedSession;
+        }
 
         public Result fetch(Context context, String url, String userAgent, String cookieHeader,
                             Map<String, String> requestHeaders, long timeoutMs) {
@@ -162,7 +175,10 @@ public final class NtkQuicFetcher {
             }
             if(host == null || host.length() == 0)
                 return Result.error(new IllegalArgumentException("Missing host: " + url));
-            Session session = newQuicSession(context, userAgent, host);
+            boolean ownsSession = sharedSession == null;
+            Session session = ownsSession
+                    ? newQuicSession(context, userAgent, host)
+                    : sharedSession;
             if(session == null)
                 return Result.error(new UnsupportedOperationException("QUIC session unavailable"));
             RequestOwner owner = new RequestOwner() {
@@ -187,7 +203,8 @@ public final class NtkQuicFetcher {
                 return session.fetchExactOwned(url, userAgent, cookieHeader, requestHeaders,
                         "GET", null, timeoutMs, owner);
             } finally {
-                session.close();
+                if(ownsSession)
+                    session.close();
             }
         }
 

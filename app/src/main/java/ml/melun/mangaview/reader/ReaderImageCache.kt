@@ -539,17 +539,27 @@ internal object NtkWebtoonBodyWallPolicy {
 }
 
 /** Network-specific response-header and bounded recovery policy for immutable webtoon replicas. */
+internal data class NtkStrictEpisodePageCountTag(val pageCount: Int) {
+    init {
+        require(pageCount > 0)
+    }
+}
+
 internal object NtkWebtoonReplicaHeaderPolicy {
-    // Keep the ordinary ring short on both transports. A fixed 148-page Wi-Fi reproduction had
-    // one path-specific empty mirror and two reset-prone mirrors; making every page wait 2.5 s
-    // improved its first image but delayed the healthy bulk wave. Only the failure-only focused
-    // recovery below gets the longer header allowance.
-    const val WIFI_HEADER_FAILOVER_MS = 1_000L
+    // A 24-pool Wi-Fi release creates cold TLS/H2 connections together. The former one-second
+    // timer cancelled 79 otherwise viable headers in one 124-page scene and forced 38 redundant
+    // QUIC recoveries, extending the complete scene from 9.7 to 11.3 seconds. Explicit 404/410,
+    // empty 2xx, and socket resets still fail over immediately; only a live cold connection gets
+    // enough time to produce its first header.
+    const val WIFI_HEADER_FAILOVER_MS = 2_500L
     const val CELLULAR_HEADER_FAILOVER_MS = 1_000L
     const val WIFI_ENTRY_HEADER_FAILOVER_MS = 2_500L
     const val WIFI_ENTRY_LAST_PAGE = 1
     const val WIFI_FOCUSED_RECOVERY_HEADER_MS = 2_500L
     const val WIFI_FOCUSED_RECOVERY_ATTEMPTS = 3
+    const val WIFI_PRIMARY_EXACT_QUIC_TIMEOUT_MS = 3_000L
+    const val WIFI_VERY_LARGE_PRIMARY_EXACT_QUIC_TIMEOUT_MS = 8_000L
+    const val WIFI_VERY_LARGE_EPISODE_PAGES = 200
     const val WIFI_EXHAUSTED_EXACT_QUIC_TIMEOUT_MS = 6_000L
     const val CELLULAR_REPLICA_CYCLES = 4
 
@@ -581,30 +591,122 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         cellularResilientTransport: Boolean,
         webtoonReplica: Boolean,
     ): Boolean = webtoonReplica && !cellularResilientTransport
+
+    fun shouldAttemptPrimaryExactQuic(
+        wifiTransportActive: Boolean,
+        webtoonReplica: Boolean,
+        pageIndex: Int,
+    ): Boolean =
+        wifiTransportActive && webtoonReplica && pageIndex > WIFI_ENTRY_LAST_PAGE
+
+    fun primaryExactQuicTimeoutMs(episodePageCount: Int): Long {
+        require(episodePageCount >= 0)
+        return if (episodePageCount >= WIFI_VERY_LARGE_EPISODE_PAGES) {
+            WIFI_VERY_LARGE_PRIMARY_EXACT_QUIC_TIMEOUT_MS
+        } else {
+            WIFI_PRIMARY_EXACT_QUIC_TIMEOUT_MS
+        }
+    }
+}
+
+internal object NtkManhwaWifiTransportPolicy {
+    const val WIFI_PRIMARY_EXACT_QUIC_TIMEOUT_MS = 4_000L
+    const val WIFI_ALTERNATE_EXACT_QUIC_TIMEOUT_MS = 2_500L
+    const val WIFI_UNCOMMON_EXACT_QUIC_TIMEOUT_MS = 7_000L
+    const val WIFI_UNCOMMON_SESSION_STRIPES_PER_HOST = 12
+    const val WIFI_ENTRY_LAST_PAGE = 0
+    const val WIFI_FIRST_UNCOMMON_EXTENSION = "png"
+
+    fun shouldAttemptPrimaryExactQuic(
+        wifiTransportActive: Boolean,
+        manhwaReplica: Boolean,
+        pageIndex: Int,
+        encodedPath: String = "",
+    ): Boolean =
+        wifiTransportActive &&
+            manhwaReplica &&
+            pageIndex > WIFI_ENTRY_LAST_PAGE &&
+            encodedPath
+                .substringAfterLast('.', "")
+                .lowercase(Locale.ROOT)
+                .let { extension ->
+                    extension.isEmpty() || extension == "jpg" || extension == "jpeg"
+                }
+
+    fun shouldTryExtensionFirst(explicitQuicMisses: Int): Boolean {
+        require(explicitQuicMisses >= 0)
+        return explicitQuicMisses >= 2
+    }
+
+    fun <T> interleaveReplicaRings(replicaRings: List<List<T>>): List<T> =
+        buildList(replicaRings.sumOf { it.size }) {
+            val largestRing = replicaRings.maxOfOrNull { it.size } ?: 0
+            for (replicaIndex in 0 until largestRing) {
+                replicaRings.forEach { ring ->
+                    ring.getOrNull(replicaIndex)?.let(::add)
+                }
+            }
+        }
 }
 
 /**
- * Learns only from usable response headers inside one active viewer generation. Two independent
- * successes are required before a replica can lead later calls; strict body/SHA validation still
- * decides whether any response is publishable.
+ * Learns only inside one active viewer generation. Usable headers alone must not collapse a
+ * balanced three-origin manifest onto whichever host happened to answer the first two calls: at
+ * high throughput that turns twenty-four host-local pools into eight and creates its own timeout
+ * storm. A winner may lead later calls only after another replica has produced repeated explicit
+ * immutable misses (404/410/empty 2xx). Transport timeouts are deliberately excluded because they
+ * can be caused by temporary client-side load. Strict body/SHA validation still decides whether
+ * any response is publishable.
  */
 internal class NtkWebtoonReplicaPreference(
     private val promotionSuccesses: Int = 2,
+    private val promotionExplicitMisses: Int = 2,
 ) {
     private val usableHeaderCounts = ConcurrentHashMap<String, AtomicInteger>()
+    private val explicitMissCounts = ConcurrentHashMap<String, AtomicInteger>()
     private val preferred = AtomicReference<String?>(null)
 
     init {
         require(promotionSuccesses >= 2)
+        require(promotionExplicitMisses >= 2)
     }
 
     fun recordUsableHeader(host: String): Boolean {
         val normalized = host.trim().lowercase(Locale.ROOT)
         if (normalized.isEmpty()) return false
-        val count = usableHeaderCounts
+        usableHeaderCounts
             .computeIfAbsent(normalized) { AtomicInteger() }
             .incrementAndGet()
-        return count >= promotionSuccesses && preferred.compareAndSet(null, normalized)
+        return maybePromote()
+    }
+
+    fun recordExplicitMiss(host: String): Boolean {
+        val normalized = host.trim().lowercase(Locale.ROOT)
+        if (normalized.isEmpty()) return false
+        explicitMissCounts
+            .computeIfAbsent(normalized) { AtomicInteger() }
+            .incrementAndGet()
+        return maybePromote()
+    }
+
+    private fun maybePromote(): Boolean {
+        if (preferred.get() != null) return false
+        val explicitMissTotal = explicitMissCounts.values.sumOf(AtomicInteger::get)
+        if (explicitMissTotal < promotionExplicitMisses) return false
+        val winner = usableHeaderCounts.entries
+            .asSequence()
+            .filter { (host, count) ->
+                count.get() >= promotionSuccesses &&
+                    (explicitMissCounts[host]?.get() ?: 0) == 0
+            }
+            .sortedWith(
+                compareByDescending<Map.Entry<String, AtomicInteger>> { it.value.get() }
+                    .thenBy { it.key }
+            )
+            .map(Map.Entry<String, AtomicInteger>::key)
+            .firstOrNull()
+            ?: return false
+        return preferred.compareAndSet(null, winner)
     }
 
     fun preferredHost(): String? = preferred.get()
@@ -614,6 +716,59 @@ internal class NtkWebtoonReplicaPreference(
         if (hosts.none { it.equals(winner, ignoreCase = true) }) return hosts
         return hosts.filter { it.equals(winner, ignoreCase = true) } +
             hosts.filterNot { it.equals(winner, ignoreCase = true) }
+    }
+}
+
+/**
+ * One viewer generation owns a small host-keyed QUIC engine set. HttpEngine multiplexes the
+ * post-anchor immutable image wave; each logical Call still owns and cancels only its UrlRequest.
+ */
+internal class NtkWifiExactQuicSessionPool(
+    private val context: Context,
+    private val userAgent: String,
+) : Closeable {
+    companion object {
+        /**
+         * Start with three connections per signed CDN host so cold entry does not create an engine
+         * storm. Very large episodes progressively open three additional stripes after page 120.
+         * Hosts rotate every three manifest entries, so stripe their per-host ordinal rather than
+         * the raw page index.
+         */
+        const val WEBTOON_SESSION_STRIPES_PER_HOST = 3
+        const val MANHWA_SESSION_STRIPES_PER_HOST = 6
+        private const val REPLICA_HOST_COUNT = 3
+
+    }
+
+    private val closed = AtomicBoolean(false)
+    private val sessions = ConcurrentHashMap<String, NtkQuicFetcher.Session>()
+
+    @Synchronized
+    fun session(
+        host: String,
+        pageIndex: Int,
+        sessionStripesPerHost: Int = WEBTOON_SESSION_STRIPES_PER_HOST,
+        replicaHostCount: Int = REPLICA_HOST_COUNT,
+    ): NtkQuicFetcher.Session? {
+        require(sessionStripesPerHost > 0)
+        require(replicaHostCount > 0)
+        if (closed.get()) return null
+        val normalizedHost = host.lowercase(Locale.ROOT)
+        val stripe = Math.floorMod(pageIndex / replicaHostCount, sessionStripesPerHost)
+        val sessionKey = "$normalizedHost#$stripe"
+        sessions[sessionKey]?.let { return it }
+        val created = NtkQuicFetcher.newQuicSession(context, userAgent, normalizedHost)
+            ?: return null
+        val existing = sessions.putIfAbsent(sessionKey, created)
+        if (existing != null) created.close()
+        return existing ?: created
+    }
+
+    @Synchronized
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        sessions.values.forEach { session -> runCatching { session.close() } }
+        sessions.clear()
     }
 }
 
@@ -644,6 +799,8 @@ object ReaderImageCache {
     )
     private val ntkWifiWebtoonReplicaPreferences =
         ConcurrentHashMap<Long, NtkWebtoonReplicaPreference>()
+    private val ntkWifiExactQuicSessionPools =
+        ConcurrentHashMap<Long, NtkWifiExactQuicSessionPool>()
     // Some old, single-origin webtoon assets still point at this legacy CDN family. Korean ISP
     // filtering resets its TLS/TCP route before HTTP headers while the same immutable object
     // remains available through Cloudflare QUIC. This is a transport-family fallback only: the
@@ -737,6 +894,23 @@ object ReaderImageCache {
         "booktoki8.org",
         "mana.apihost93.com",
         "aws-cdn1.site",
+    )
+    // Cold Android HttpEngine traces negotiate h3 on the first three mirrors and stable h2 on
+    // AWS. Keep all four page counts exactly balanced: concentrating forty or more bodies on one
+    // host exceeded its stream window, while AWS's independent origin adds useful Wi-Fi bandwidth.
+    private val NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS = listOf(
+        "booktoki9.org",
+        "booktoki8.org",
+        "mana.apihost93.com",
+        "aws-cdn1.site",
+    )
+    // Mixed numeric volumes can expose several multi-megabyte PNG pages at once. Spread those
+    // bodies over the three h3 origins and give this Wi-Fi-only full-body path enough time to
+    // finish instead of discarding already received bytes.
+    private val NTK_WIFI_MANHWA_PNG_QUIC_HOSTS = listOf(
+        "booktoki9.org",
+        "booktoki8.org",
+        "mana.apihost93.com",
     )
     // These three Cloudflare-backed immutable mirrors return byte-identical 206 responses with
     // the same ETag/Last-Modified lineage. aws-cdn1.site deliberately stays out: it answers a
@@ -1275,6 +1449,7 @@ object ReaderImageCache {
     private fun strictManhwaExtensionFallbackRequests(
         request: Request,
         pageIndexOverride: Int? = null,
+        interleaveExtensions: Boolean = false,
     ): List<Request> {
         val url = request.url
         if (url.host.lowercase(Locale.ROOT) !in NTK_MANHWA_IMAGE_REPLICA_HOSTS) {
@@ -1286,17 +1461,22 @@ object ReaderImageCache {
         ).matchEntire(url.encodedPath) ?: return emptyList()
         val stem = match.groupValues[1]
         val currentExtension = match.groupValues[2].lowercase(Locale.ROOT)
-        return NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS
+        val replicaRings = NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS
             .asSequence()
             .filterNot { it.equals(currentExtension, ignoreCase = true) }
-            .flatMap { extension ->
+            .map { extension ->
                 val extensionRequest = request.newBuilder()
                     .url(url.newBuilder().encodedPath("$stem.$extension").build())
                     .build()
-                strictReplicaRequests(extensionRequest, pageIndexOverride).asSequence()
+                strictReplicaRequests(extensionRequest, pageIndexOverride)
             }
-            .distinctBy { it.url }
             .toList()
+        val ordered = if (!interleaveExtensions) {
+            replicaRings.flatten()
+        } else {
+            NtkManhwaWifiTransportPolicy.interleaveReplicaRings(replicaRings)
+        }
+        return ordered.distinctBy { it.url }
     }
 
     /** One logical strict image Call with bounded, failure-only physical replica failover. */
@@ -1329,11 +1509,27 @@ object ReaderImageCache {
                 NTK_WEBTOON_IMAGE_REPLICA_HOSTS
             val cellularResilientTransport =
                 getHttpClient().isNtkCellularResilientTransportActive()
+            val wifiTransportActive =
+                !cellularResilientTransport && getHttpClient().isNtkWifiTransportActive()
             val viewerGeneration = ViewerTelemetry.activeGeneration()
             val wifiWebtoonReplicaPreference =
-                if (webtoonReplica && !cellularResilientTransport && viewerGeneration > 0L) {
+                if (webtoonReplica && wifiTransportActive && viewerGeneration > 0L) {
                     ntkWifiWebtoonReplicaPreferences.computeIfAbsent(viewerGeneration) {
                         NtkWebtoonReplicaPreference()
+                    }
+                } else {
+                    null
+                }
+            val wifiExactQuicSessionPool =
+                if ((webtoonReplica || manhwaReplica) &&
+                    wifiTransportActive &&
+                    viewerGeneration > 0L
+                ) {
+                    ntkWifiExactQuicSessionPools.computeIfAbsent(viewerGeneration) {
+                        NtkWifiExactQuicSessionPool(
+                            MainApplication.appContext,
+                            getHttpClient().agent,
+                        )
                     }
                 } else {
                     null
@@ -1376,6 +1572,8 @@ object ReaderImageCache {
             val strictPageIndex = originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
                 ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
                 ?: -1
+            val strictEpisodePageCount =
+                originalRequest.tag(NtkStrictEpisodePageCountTag::class.java)?.pageCount ?: 0
             val segmentedTransportEnabled = NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED ||
                 (NTK_MANHWA_PAGE_ZERO_SEGMENTED_TRANSPORT_ENABLED && strictPageIndex == 0)
             if (segmentedTransportEnabled && manhwaRangeReplica) {
@@ -1421,6 +1619,7 @@ object ReaderImageCache {
             var exactQuicRecoveryAttempted = false
             var wifiWebtoonExactQuicRecoveryAttempted = false
             var exactFragmentedRecoveryAttempted = false
+            var wifiManhwaExplicitQuicMisses = 0
             val manhwaHeaderRecoveryPermitHeld = AtomicBoolean(false)
             fun appendWifiFocusedRecoveryIfEligible(): Boolean {
                 if (wifiFocusedRecoveryAdded ||
@@ -1445,6 +1644,128 @@ object ReaderImageCache {
                         "excludedMissHosts=${explicitReplicaMissHosts.sorted().joinToString("|")}",
                 )
                 return true
+            }
+            if (shouldTryWifiWebtoonPrimaryExactQuic(strictPageIndex, webtoonReplica)) {
+                wifiWebtoonExactQuicRecoveryAttempted = true
+                executeExactQuicImageRecovery(
+                    candidates.first(),
+                    IOException("Wi-Fi webtoon HTTP/3 primary fallback marker"),
+                    NtkWebtoonReplicaHeaderPolicy.primaryExactQuicTimeoutMs(
+                        strictEpisodePageCount,
+                    ),
+                    "wifi_webtoon_primary",
+                    wifiExactQuicSessionPool?.session(
+                        candidates.first().url.host,
+                        strictPageIndex,
+                    ),
+                )?.let { return it }
+            } else if (shouldTryWifiManhwaPrimaryExactQuic(
+                    strictPageIndex,
+                    manhwaReplica,
+                )
+            ) {
+                val primaryHostIndex = Math.floorMod(
+                    strictPageIndex,
+                    NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size,
+                )
+                val exactHost = NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS[primaryHostIndex]
+                val exactCandidate = candidates.firstOrNull {
+                    it.url.host.equals(exactHost, ignoreCase = true)
+                } ?: candidates.first()
+                executeExactQuicImageRecovery(
+                    exactCandidate,
+                    IOException("Wi-Fi manhwa HTTP/3 primary fallback marker"),
+                    NtkManhwaWifiTransportPolicy.WIFI_PRIMARY_EXACT_QUIC_TIMEOUT_MS,
+                    "wifi_manhwa_primary",
+                    wifiExactQuicSessionPool?.session(
+                        exactCandidate.url.host,
+                        strictPageIndex,
+                        NtkWifiExactQuicSessionPool.MANHWA_SESSION_STRIPES_PER_HOST,
+                        NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size,
+                    ),
+                    onExplicitMiss = { wifiManhwaExplicitQuicMisses++ },
+                )?.let { return it }
+                val alternateHost = NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS[
+                    (primaryHostIndex + 1) % NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size
+                ]
+                val alternateCandidate = candidates.firstOrNull {
+                    it.url.host.equals(alternateHost, ignoreCase = true)
+                }
+                if (alternateCandidate != null) {
+                    executeExactQuicImageRecovery(
+                        alternateCandidate,
+                        IOException("Wi-Fi manhwa alternate HTTP/3 fallback marker"),
+                        NtkManhwaWifiTransportPolicy.WIFI_ALTERNATE_EXACT_QUIC_TIMEOUT_MS,
+                        "wifi_manhwa_alternate",
+                        wifiExactQuicSessionPool?.session(
+                            alternateCandidate.url.host,
+                            strictPageIndex,
+                            NtkWifiExactQuicSessionPool.MANHWA_SESSION_STRIPES_PER_HOST,
+                            NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size,
+                        ),
+                        onExplicitMiss = { wifiManhwaExplicitQuicMisses++ },
+                    )?.let { return it }
+                }
+                if (NtkManhwaWifiTransportPolicy.shouldTryExtensionFirst(
+                        wifiManhwaExplicitQuicMisses
+                    )
+                ) {
+                    val extensionFallbacks = strictManhwaExtensionFallbackRequests(
+                        originalRequest,
+                        strictPageIndex,
+                        interleaveExtensions = true,
+                    )
+                    if (extensionFallbacks.isNotEmpty()) {
+                        manhwaExtensionFallbackAdded = true
+                        attemptCandidates.clear()
+                        attemptCandidates.addAll(extensionFallbacks)
+                        // A mirror-local miss can still leave the canonical suffix available on a
+                        // third origin. Retain that finite ring after the extension-first Wi-Fi
+                        // recovery rather than removing a valid immutable candidate.
+                        attemptCandidates.addAll(candidates)
+                        Log.w(
+                            TAG,
+                            "reader_strict_wifi_manhwa_extension_first " +
+                                "page=$strictPageIndex,quicMisses=$wifiManhwaExplicitQuicMisses," +
+                                "candidates=${extensionFallbacks.size}",
+                        )
+                        // Two independent exact-JPG misses prove that no accepted body exists yet.
+                        // PNG is the dominant large-page fallback in mixed numeric volumes. Reuse
+                        // the already-warm, page-striped Wi-Fi session for that exact immutable URL
+                        // before opening another TCP extension ring; GIF/WebP/JPEG keep the existing
+                        // bounded failure path below, and cellular never enters this branch.
+                        val pngHost = NTK_WIFI_MANHWA_PNG_QUIC_HOSTS[
+                            Math.floorMod(
+                                strictPageIndex,
+                                NTK_WIFI_MANHWA_PNG_QUIC_HOSTS.size,
+                            )
+                        ]
+                        val pngCandidate = extensionFallbacks.firstOrNull {
+                            it.url.host.equals(pngHost, ignoreCase = true) &&
+                                it.url.encodedPath.substringAfterLast('.', "")
+                                    .equals(
+                                        NtkManhwaWifiTransportPolicy
+                                            .WIFI_FIRST_UNCOMMON_EXTENSION,
+                                        ignoreCase = true,
+                                    )
+                        }
+                        if (pngCandidate != null) {
+                            executeExactQuicImageRecovery(
+                                pngCandidate,
+                                IOException("Wi-Fi manhwa PNG HTTP/3 fallback marker"),
+                                NtkManhwaWifiTransportPolicy.WIFI_UNCOMMON_EXACT_QUIC_TIMEOUT_MS,
+                                "wifi_manhwa_png",
+                                wifiExactQuicSessionPool?.session(
+                                    pngCandidate.url.host,
+                                    strictPageIndex,
+                                    NtkManhwaWifiTransportPolicy
+                                        .WIFI_UNCOMMON_SESSION_STRIPES_PER_HOST,
+                                    NTK_WIFI_MANHWA_PNG_QUIC_HOSTS.size,
+                                ),
+                            )?.let { return it }
+                        }
+                    }
+                }
             }
             try {
                 while (index < attemptCandidates.size) {
@@ -1567,6 +1888,18 @@ object ReaderImageCache {
                         explicitReplicaMissHosts.add(
                             candidate.url.host.lowercase(Locale.ROOT)
                         )
+                        if (wifiWebtoonReplicaPreference?.recordExplicitMiss(
+                                candidate.url.host
+                            ) == true
+                        ) {
+                            Log.d(
+                                TAG,
+                                "reader_strict_wifi_webtoon_replica_promoted " +
+                                    "generation=$viewerGeneration," +
+                                    "host=${wifiWebtoonReplicaPreference.preferredHost()}," +
+                                    "reason=explicit_replica_misses",
+                            )
+                        }
                     }
                     if (
                         retryableMiss &&
@@ -1592,12 +1925,25 @@ object ReaderImageCache {
                         appendWifiFocusedRecoveryIfEligible()
                     }
                     if (!retryableMiss || index == attemptCandidates.lastIndex) {
-                        val canonicalIndex = candidates.indexOfFirst {
+                        // On Wi-Fi an uncommon-extension body may have been found after the signed
+                        // manifest's stale JPG suffix missed. Range recovery must preserve that
+                        // successful extension; reusing the original JPG ring makes every exact
+                        // continuation return 404 and can hold one page open for 20 seconds.
+                        val resumeCandidates = if (
+                            wifiTransportActive &&
+                            manhwaReplica &&
+                            candidate.url.encodedPath != originalRequest.url.encodedPath
+                        ) {
+                            strictReplicaRequests(candidate, strictPageIndex)
+                        } else {
+                            candidates
+                        }
+                        val canonicalIndex = resumeCandidates.indexOfFirst {
                             it.url == candidate.url
                         }.coerceAtLeast(0)
                         return maybeWrapStalledReplicaBody(
                             response,
-                            candidates,
+                            resumeCandidates,
                             canonicalIndex,
                             manhwaSessionStartedAtNanos,
                             manhwaSessionProjectedStartCount,
@@ -1768,6 +2114,35 @@ object ReaderImageCache {
             )
         }
 
+        private fun shouldTryWifiWebtoonPrimaryExactQuic(
+            pageIndex: Int,
+            webtoonReplica: Boolean,
+        ): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                !NtkQuicFetcher.isAvailable()
+            ) return false
+            return NtkWebtoonReplicaHeaderPolicy.shouldAttemptPrimaryExactQuic(
+                getHttpClient().isNtkWifiTransportActive(),
+                webtoonReplica,
+                pageIndex,
+            )
+        }
+
+        private fun shouldTryWifiManhwaPrimaryExactQuic(
+            pageIndex: Int,
+            manhwaReplica: Boolean,
+        ): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                !NtkQuicFetcher.isAvailable()
+            ) return false
+            return NtkManhwaWifiTransportPolicy.shouldAttemptPrimaryExactQuic(
+                getHttpClient().isNtkWifiTransportActive(),
+                manhwaReplica,
+                pageIndex,
+                originalRequest.url.encodedPath,
+            )
+        }
+
         private fun executeExactQuicLegacyImageRecovery(
             request: Request,
             tcpFailure: IOException,
@@ -1779,11 +2154,10 @@ object ReaderImageCache {
         )
 
         /**
-         * Every normal Wi-Fi page remains on the bounded OkHttp replica ring. Only a page that
-         * exhausts every distinct TCP replica reaches this exact-URL QUIC attempt. The three
-         * independent focused TCP connections remain the final fallback if QUIC also fails.
-         * This changes transport only; strict SHA/metadata validation still runs before the body
-         * can be published.
+         * Entry pages remain on the bounded OkHttp replica ring. Later Wi-Fi pages may use the same
+         * exact-URL HTTP/3 path as their primary transport; a failed primary falls back to the
+         * canonical TCP replica ring and its independent focused connections. This changes
+         * transport only; strict SHA/metadata validation still runs before publication.
          */
         private fun executeExactQuicWifiWebtoonRecovery(
             request: Request,
@@ -1800,9 +2174,11 @@ object ReaderImageCache {
             tcpFailure: IOException,
             timeoutMs: Long,
             logScope: String,
+            sharedSession: NtkQuicFetcher.Session? = null,
+            onExplicitMiss: (() -> Unit)? = null,
         ): Response? {
             if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
-            val recovery = NtkQuicFetcher.CancelableExactRequest()
+            val recovery = NtkQuicFetcher.CancelableExactRequest(sharedSession)
             if (!activeExactQuicRecovery.compareAndSet(null, recovery)) return null
             val startedAtMs = SystemClock.elapsedRealtime()
             return try {
@@ -1823,6 +2199,12 @@ object ReaderImageCache {
                 if (cancelled.get() || recovery.isCancelled) {
                     throw InterruptedIOException("Replica image Call cancelled")
                 }
+                val explicitMiss = result.error == null && (
+                    result.code == 404 ||
+                        result.code == 410 ||
+                        (result.code in 200..299 && result.bodyBytes.isEmpty())
+                    )
+                if (explicitMiss) onExplicitMiss?.invoke()
                 if (result.error != null ||
                     result.code !in 200..299 ||
                     result.bodyBytes.isEmpty() ||
@@ -2903,7 +3285,8 @@ object ReaderImageCache {
          * gap before it. Unlike the old projected continuation, this does not close a responsive
          * prefix and wait serially for alternate headers. At most four session-global tails exist,
          * and the original read is capped at [NtkProjectedManhwaTail.start], so successful image
-         * bytes can never overlap.
+         * bytes can never overlap. Capacity is bounded separately for the conservative carrier
+         * path and the higher-throughput Wi-Fi path.
          */
         private fun launchProjectedTail(
             sessionElapsedMs: Long,
@@ -3748,6 +4131,9 @@ object ReaderImageCache {
             initialGeneratedCompleteBytesFlights.clear()
             activeNtkEpisodeCalls.values.forEach { it.cancel() }
             activeNtkEpisodeCalls.clear()
+            ntkWifiExactQuicSessionPools.values.forEach { pool -> runCatching { pool.close() } }
+            ntkWifiExactQuicSessionPools.clear()
+            ntkWifiWebtoonReplicaPreferences.clear()
             strictConnectionUses.clear()
             strictConnectionByOperation.clear()
             protectedNativeStrictRestartAt.clear()
@@ -5214,6 +5600,10 @@ object ReaderImageCache {
             // return replica 404s and a substantially longer terminal body tail, so the exact
             // one-request-per-page path stays on its bounded, host-local H2 pools.
             .header("X-MangaViewer-No-Quic", "1")
+            .tag(
+                NtkStrictEpisodePageCountTag::class.java,
+                NtkStrictEpisodePageCountTag(manifestSeal.pageCount),
+            )
             .build()
         val httpClient = getHttpClient()
         // The strict session is created only after a typed exact manifest has been atomically
@@ -17122,6 +17512,16 @@ object ReaderImageCache {
         return requiredNtkEpisodePaths.refCount(key)
     }
 
+    internal fun hasActiveAdjacentNtkForegroundViewerGrant(path: String?): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank() || !isNtkEpisodePathKey(key)) return false
+        val allowedUntil = adjacentForegroundViewerPaths[key] ?: return false
+        val now = SystemClock.elapsedRealtime()
+        if (allowedUntil > now) return true
+        adjacentForegroundViewerPaths.remove(key, allowedUntil)
+        return false
+    }
+
     private fun isAuthorizedAdjacentForegroundViewerPath(path: String?): Boolean {
         val key = earlyNtkPathKey(path)
         if (key.isBlank() || !isNtkEpisodePathKey(key)) return false
@@ -17132,11 +17532,7 @@ object ReaderImageCache {
         // Once the neighbor has a reserved/strict owner, however, every image must use that
         // owner's tagged route and this untagged bridge closes immediately.
         if (NtkStrictSourceOwnershipRegistry.owner(key) != null) return false
-        val allowedUntil = adjacentForegroundViewerPaths[key] ?: return false
-        val now = SystemClock.elapsedRealtime()
-        if (allowedUntil > now) return true
-        adjacentForegroundViewerPaths.remove(key, allowedUntil)
-        return false
+        return hasActiveAdjacentNtkForegroundViewerGrant(key)
     }
 
     @JvmStatic

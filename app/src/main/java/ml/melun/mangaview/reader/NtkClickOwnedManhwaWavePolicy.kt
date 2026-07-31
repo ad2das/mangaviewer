@@ -52,12 +52,13 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // five-way HEAD race.
     const val DIRECT_EXTENSION_RACE_PAGES = 4
     // Only the anchor races an unproven JPG body. Entry peers use either their own fast sample or
-    // the two-sample volume consensus, avoiding a second request when one per-page HEAD stalls.
+    // the network-specific consensus below, avoiding a second request when one per-page HEAD stalls.
     const val DIRECT_BODY_RACE_PAGES = 1
-    // A single slow HEAD must not hold every page after the entry viewport. Two independently
-    // proven sample pages are enough to select the volume hint; a genuinely mixed page still
-    // falls through the per-page exhaustive resolver after its attempted body misses.
+    // Cellular retains its measured two-sample route. Direct Wi-Fi can wait for a third sample
+    // while the exact document is in flight, avoiding a two-versus-two mixed-format misroute
+    // without changing the carrier/SNI request schedule.
     const val PREFERRED_EXTENSION_EVIDENCE = 2
+    const val WIFI_PREFERRED_EXTENSION_EVIDENCE = 3
     // Once the complete click-owned document has proved the exact page count, fill the already
     // bounded body ring while the first physical frame is finishing. Page zero retains its
     // dedicated transfer permit/executor and the authority request has already completed, so this

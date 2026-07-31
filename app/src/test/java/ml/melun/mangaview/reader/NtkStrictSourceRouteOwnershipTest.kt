@@ -102,9 +102,18 @@ class NtkStrictSourceRouteOwnershipTest {
         )
         assertFalse(authorization.contains("legacySourceOperationAllowed(key)"))
         assertFalse(authorization.contains("MainApplication.isNtkForegroundViewerPathActive()"))
-        assertTrue(authorization.contains("adjacentForegroundViewerPaths[key]"))
-        assertTrue(authorization.contains("allowedUntil > now"))
-        assertTrue(authorization.contains("adjacentForegroundViewerPaths.remove(key, allowedUntil)"))
+        assertTrue(authorization.contains("hasActiveAdjacentNtkForegroundViewerGrant(key)"))
+
+        val grantStart =
+            cache.indexOf("internal fun hasActiveAdjacentNtkForegroundViewerGrant(")
+        val grantEnd =
+            cache.indexOf("private fun isAuthorizedAdjacentForegroundViewerPath(", grantStart)
+        assertTrue(grantStart >= 0)
+        assertTrue(grantEnd > grantStart)
+        val grant = cache.substring(grantStart, grantEnd)
+        assertTrue(grant.contains("adjacentForegroundViewerPaths[key]"))
+        assertTrue(grant.contains("allowedUntil > now"))
+        assertTrue(grant.contains("adjacentForegroundViewerPaths.remove(key, allowedUntil)"))
 
         val publicationStart = cache.indexOf("private fun strictManifestPublicationAllowed(")
         val publicationEnd = cache.indexOf("@JvmStatic", publicationStart)

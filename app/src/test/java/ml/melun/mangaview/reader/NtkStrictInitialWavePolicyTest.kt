@@ -78,6 +78,35 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun largeWifiWebtoonStartsHalfOfTheFiniteConnectionCohorts() {
+        assertEquals(
+            12,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 24,
+                cellularResilientTransport = false,
+                episodePageCount = 140,
+            ),
+        )
+        assertEquals(
+            3,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 24,
+                cellularResilientTransport = false,
+                episodePageCount = 139,
+            ),
+        )
+        // Carrier retains the pre-existing finite-cohort wave.
+        assertEquals(
+            8,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 8,
+                cellularResilientTransport = true,
+                episodePageCount = 140,
+            ),
+        )
+    }
+
+    @Test
     fun manhwaColdLeadersCoverTwentyFourActualConnectionShards() {
         val leaders = NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             episodePath = "/manhwa/work/episode",
@@ -213,6 +242,130 @@ class NtkStrictInitialWavePolicyTest {
                 35,
                 false,
                 manhwaTransferLimit = 32,
+            ),
+        )
+        assertEquals(
+            60,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/manhwa/work/episode",
+                120,
+                true,
+                wifiQuicBulkTransport = true,
+            ),
+        )
+        assertEquals(
+            80,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/manhwa/work/episode",
+                120,
+                true,
+                wifiQuicBulkTransport = true,
+                episodePageCount = 193,
+            ),
+        )
+        assertEquals(
+            NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/manhwa/work/episode",
+                120,
+                true,
+                cellularResilientTransport = true,
+                wifiQuicBulkTransport = true,
+                episodePageCount = 193,
+            ),
+        )
+        assertEquals(
+            5,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/manhwa/work/adjacent",
+                120,
+                true,
+                wifiQuicBulkTransport = true,
+                episodePageCount = 193,
+                adjacentPrefetch = true,
+            ),
+        )
+        assertEquals(
+            NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/manhwa/work/adjacent",
+                120,
+                true,
+                cellularResilientTransport = true,
+                wifiQuicBulkTransport = true,
+                episodePageCount = 193,
+                adjacentPrefetch = true,
+            ),
+        )
+    }
+
+    @Test
+    fun healthyWifiAnchorReleasesOneTransferPerColdCohortWithoutChangingCarrierCapacity() {
+        assertEquals(4, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(0))
+        assertEquals(
+            4,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                0,
+                wifiQuicBulkTransport = true,
+            ),
+        )
+        assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(1))
+        assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(3))
+        assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(124))
+        assertEquals(
+            60,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                1,
+                wifiQuicBulkTransport = true,
+            ),
+        )
+        assertEquals(
+            72,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                1,
+                wifiQuicBulkTransport = true,
+                episodePageCount = 143,
+            ),
+        )
+        assertEquals(
+            24,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/webtoon/work/episode",
+                120,
+                true,
+                webtoonPublishedBodyCount = 1,
+            ),
+        )
+        assertEquals(
+            60,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/webtoon/work/episode",
+                120,
+                true,
+                webtoonPublishedBodyCount = 1,
+                wifiQuicBulkTransport = true,
+            ),
+        )
+        assertEquals(
+            72,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/webtoon/work/episode",
+                120,
+                true,
+                webtoonPublishedBodyCount = 1,
+                wifiQuicBulkTransport = true,
+                episodePageCount = 307,
+            ),
+        )
+        assertEquals(
+            80,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/webtoon/work/episode",
+                120,
+                true,
+                cellularResilientTransport = true,
+                webtoonPublishedBodyCount = 124,
+                episodePageCount = 307,
             ),
         )
     }

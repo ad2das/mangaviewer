@@ -5429,6 +5429,26 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             )
             return
         }
+        if (
+            isCurrentNtkManhwaOrWebtoonPath() &&
+            direction == ReaderSurfaceView.DIRECTION_NEXT &&
+            strictExactLaunchSeal != null &&
+            !strictAllImagesReadyPublished
+        ) {
+            deferredBoundaryDirection = direction
+            deferredBoundaryAnchor = anchorPage
+            statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
+            statusHandler.postDelayed(
+                deferredBoundaryAppendRunnable,
+                NTK_ACTIVE_APPEND_CHUNK_RETRY_MS,
+            )
+            Log.d(
+                TAG,
+                "boundary_append_wait_strict_all_images_ready direction=$direction " +
+                    "anchor=$anchorPage pageCount=$pageCount",
+            )
+            return
+        }
         if (isCurrentNtkReader() && !shouldStartNtkNextBoundaryImmediately(direction, anchorPage)) {
             val quietMs = boundaryAppendQuietRemainingMs()
             if (quietMs > 0L) {
@@ -7077,7 +7097,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         // gesture.  Run it immediately: sealed sessions decline adjacent mutation synchronously,
         // while the already committed last image remains visible and interactive.
         if (strictExactLaunchSeal != null) {
-            return isCurrentNtkManhwaOrWebtoonPath()
+            return strictAllImagesReadyPublished && isCurrentNtkManhwaOrWebtoonPath()
         }
         val now = SystemClock.uptimeMillis()
         val lastActiveMs = maxOf(lastReaderInteractionMs, lastReaderBusyMs)

@@ -220,6 +220,14 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
             ) return null
             val workId = parts[1]
             val episodeId = parts[2]
+            val wifiTransportActive = runCatching {
+                getHttpClient().isNtkWifiTransportActive
+            }.getOrDefault(false)
+            val preferredEvidence = if (wifiTransportActive) {
+                NtkClickOwnedManhwaWavePolicy.WIFI_PREFERRED_EXTENSION_EVIDENCE
+            } else {
+                NtkClickOwnedManhwaWavePolicy.PREFERRED_EXTENSION_EVIDENCE
+            }
             val pageCancellations = (0 until NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES)
                 .associateWith { ReaderImageCache.Cancellation() }
             val sampleFutures = (0 until FORMAT_SAMPLE_PAGES).associateWith { pageIndex ->
@@ -247,7 +255,10 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                 sample.whenComplete { _, _ ->
                     val snapshot = sampleSnapshot()
                     val consensus =
-                        NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(snapshot)
+                        NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
+                            snapshot,
+                            minimumEvidence = preferredEvidence,
+                        )
                     if (consensus != null && preferredExtension.complete(consensus)) {
                         Log.d(
                             TAG,
@@ -266,7 +277,8 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                                 TAG,
                                 "click_manhwa_probe_extension_ready path=$normalizedEpisodePath," +
                                     "extension=$fallback,evidence=all_samples_complete," +
-                                    "resolved=${snapshot.count { it != null }}",
+                                    "resolved=${snapshot.count { it != null }}," +
+                                    "wifi=$wifiTransportActive",
                             )
                         }
                     }
@@ -293,7 +305,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                     } else {
                         // Page zero alone retains a speculative JPG body. For the other entry
                         // pages, take their exact sample when it wins, otherwise route from the
-                        // already-proven two-page consensus. A stalled p002 HEAD can therefore
+                        // already-proven three-page consensus. A stalled p002 HEAD can therefore
                         // never leave a zero-byte JPG body alive for nine seconds before JPEG
                         // fallback, while a genuinely mixed page still uses its own faster proof.
                         val routed = CompletableFuture<String?>()
@@ -502,8 +514,11 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     )
                 }
             }
-            val completeWaveRelease =
-                if (wifiEntryPriorityMode) wifiEntryReleaseGate else networkRelease
+            // Wi-Fi already protects p001 with a dedicated transfer permit. Once its exact body is
+            // resident, keeping the finite body ring behind a physical-frame callback leaves every
+            // offscreen connection idle for several seconds on host-GPU devices. Cellular keeps its
+            // existing path; this gate only removes the extra Wi-Fi presentation wait.
+            val completeWaveRelease = networkRelease
             documentValidated.thenCombine(completeWaveRelease) { _, _ -> Unit }
                 .whenComplete { _, admissionFailure ->
                     val exactCount = effectivePageCount.get()
@@ -743,12 +758,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         preFrameEnd: Int,
         exactCount: Int,
     ) {
-        wifiEntryReleaseGate.whenComplete { _, _ ->
+        networkRelease.whenComplete { _, _ ->
             releaseExactPreFrameRunway(
                 seed,
                 preFrameEnd,
                 exactCount,
-                "wifi_first_actual_or_timeout",
+                "wifi_anchor_body_resident",
             )
         }
     }
