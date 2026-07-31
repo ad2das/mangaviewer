@@ -1117,11 +1117,17 @@ object ReaderImageCache {
     private data class StrictConnectionObservation(val connectionId: String, val reused: Boolean)
     private val strictInstrumentedClients = ConcurrentHashMap<Int, OkHttpClient>()
     private val clickOwnedAnchorClients = ConcurrentHashMap<Long, OkHttpClient>()
+    private val clickOwnedMixedFormatProbeClients = ConcurrentHashMap<Int, OkHttpClient>()
+    private val clickOwnedMixedFormatBodyClients = ConcurrentHashMap<Int, OkHttpClient>()
     private val replicaFailoverFactories = ConcurrentHashMap<Int, Call.Factory>()
     private val clickOwnedDnsBySharedClient = ConcurrentHashMap<Int, Dns>()
     private val clickOwnedProbeDispatcher = Dispatcher().apply {
         maxRequests = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
         maxRequestsPerHost = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
+    }
+    private val clickOwnedMixedBodyDispatcher = Dispatcher().apply {
+        maxRequests = 40
+        maxRequestsPerHost = 40
     }
     private const val CLICK_OWNED_EXTENSION_HEDGE_MS = 650L
     private val clickOwnedExtensionScheduler = Executors.newScheduledThreadPool(8) { runnable ->
@@ -1169,6 +1175,7 @@ object ReaderImageCache {
     private val ntkAckRecoveryLaunchHoldLogAt = ConcurrentHashMap<String, Long>()
     private val ntkAckRecoveryPriorityPath = AtomicReference("")
     private val ntkGeneratedEpisodeExtensions = ConcurrentHashMap<String, String>()
+    private val ntkDirectWifiMixedManhwaEpisodes = ConcurrentHashMap.newKeySet<String>()
     private val ntkGeneratedPageExtensions = ConcurrentHashMap<String, String>()
     private val ntkGeneratedNotFoundPages = ConcurrentHashMap.newKeySet<String>()
     private val ntkGeneratedResolvedPages = ConcurrentHashMap.newKeySet<String>()
@@ -4168,6 +4175,7 @@ object ReaderImageCache {
             ntkAckRecoveryLaunchHoldLogAt.clear()
             ntkAckRecoveryPriorityPath.set("")
             ntkGeneratedEpisodeExtensions.clear()
+            ntkDirectWifiMixedManhwaEpisodes.clear()
             ntkGeneratedPageExtensions.clear()
             ntkGeneratedNotFoundPages.clear()
             ntkGeneratedResolvedPages.clear()
@@ -4222,6 +4230,7 @@ object ReaderImageCache {
         ntkAckRecoveryLaunchHoldLogAt.keys.removeAll { it.startsWith("$path|") }
         ntkAckRecoveryPriorityPath.compareAndSet(path, "")
         episodeKeys.forEach { ntkGeneratedEpisodeExtensions.remove(it) }
+        episodeKeys.forEach { ntkDirectWifiMixedManhwaEpisodes.remove(it) }
         episodeKeys.forEach { key -> ntkGeneratedPageExtensions.keys.removeAll { it.startsWith("$key|") } }
         ntkGeneratedNotFoundPages.removeAll { it.startsWith("$path|") }
         ntkGeneratedResolvedPages.removeAll { it.startsWith("$path|") }
@@ -5669,7 +5678,7 @@ object ReaderImageCache {
         return resolveStrictSourceRoute(manga, candidateSeal, pageIndex, canonicalAsset)
     }
 
-    /** A click-owned body reuses the exact TCP/H2 pool whose post-click HEAD proved its extension. */
+    /** A click-owned body uses a bounded exact transport selected after post-click proof. */
     fun resolveClickOwnedAnchorQuarantineRoute(
         manga: Manga,
         binding: NtkQuarantinePlanBinding,
@@ -5690,9 +5699,32 @@ object ReaderImageCache {
         val request = requestBuilder.build()
         val httpClient = getHttpClient()
         val shared = httpClient.client ?: httpClient.imageClient
-        val bounded = clickOwnedManhwaClient(shared, pageIndex)
+        val generatedRef = ntkGeneratedImageRef(asset)
+        val directWifiTransportActive = runCatching {
+            httpClient.isNtkWifiTransportActive &&
+                !httpClient.isNtkCellularResilientTransportActive()
+        }.getOrDefault(false)
+        val directWifiMixedEpisodePage =
+            directWifiTransportActive &&
+                generatedRef != null &&
+                generatedRef.episodeKey in ntkDirectWifiMixedManhwaEpisodes
+        val mixedUncommonExtension =
+            generatedRef != null &&
+                generatedRef.extension != "jpg" &&
+                generatedRef.extension != "jpeg"
+        val directWifiMixedUncommonPage =
+            directWifiMixedEpisodePage && mixedUncommonExtension
+        val bounded = if (directWifiMixedUncommonPage) {
+            clickOwnedMixedFormatBodyClient(shared)
+        } else {
+            clickOwnedManhwaClient(shared, pageIndex)
+        }
         val factory = replicaFailoverFactory(strictInstrumentedClient(bounded))
-        val factoryId = "ntk-click-anchor-okhttp"
+        val factoryId = if (directWifiMixedUncommonPage) {
+            "ntk-click-mixed-h2"
+        } else {
+            "ntk-click-anchor-okhttp"
+        }
         val refererHost = request.header("Referer")?.let { referer ->
             runCatching { Uri.parse(referer).host?.lowercase(Locale.ROOT).orEmpty() }
                 .getOrDefault("")
@@ -5788,6 +5820,7 @@ object ReaderImageCache {
         orderedCandidates: List<String>,
         cancellation: Cancellation,
         extensionHedgeDelayMs: Long = CLICK_OWNED_EXTENSION_HEDGE_MS,
+        isolatedMetadataTransport: Boolean = false,
     ): CompletableFuture<String?> {
         require(pageIndex >= 0)
         require(orderedCandidates.isNotEmpty())
@@ -5812,7 +5845,12 @@ object ReaderImageCache {
                     .header("Accept-Encoding", "identity")
                     .head()
                     .build()
-                val call = clickOwnedManhwaClient(shared, pageIndex).newCall(request)
+                val client = if (isolatedMetadataTransport) {
+                    clickOwnedMixedFormatProbeClient(shared)
+                } else {
+                    clickOwnedManhwaClient(shared, pageIndex)
+                }
+                val call = client.newCall(request)
                 calls += call
                 cancellation.track(call)
                 call.enqueue(object : Callback {
@@ -5884,6 +5922,54 @@ object ReaderImageCache {
             }
         }
         return result
+    }
+
+    /**
+     * A mixed-volume suffix scan multiplexes tiny HEAD responses on one isolated pool per host.
+     *
+     * Reusing the page-striped body topology for forty simultaneous two-way races opens roughly
+     * forty cold TLS connections and cancels one stream on each just before the authoritative body
+     * wave. This pool keeps the measured body shards clean and reduces that metadata scan to three
+     * multiplexed origin connections.
+     */
+    private fun clickOwnedMixedFormatProbeClient(shared: OkHttpClient): OkHttpClient {
+        val identity = System.identityHashCode(shared)
+        return clickOwnedMixedFormatProbeClients.computeIfAbsent(identity) {
+            val singleFlightDns = clickOwnedDnsBySharedClient.computeIfAbsent(identity) {
+                NtkSingleFlightDns(shared.dns)
+            }
+            shared.newBuilder()
+                .dispatcher(clickOwnedProbeDispatcher)
+                .connectionPool(ConnectionPool())
+                .dns(singleFlightDns)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .build()
+        }
+    }
+
+    /**
+     * Direct Wi-Fi mixed volumes keep their large uncommon suffixes off both the metadata pool and
+     * the forty ordinary page shards. One independent pool per origin multiplexes the finite
+     * large-body wave without opening one cold TLS connection for every PNG. Cellular/SNI never
+     * select this client.
+     */
+    private fun clickOwnedMixedFormatBodyClient(shared: OkHttpClient): OkHttpClient {
+        val identity = System.identityHashCode(shared)
+        return clickOwnedMixedFormatBodyClients.computeIfAbsent(identity) {
+            val singleFlightDns = clickOwnedDnsBySharedClient.computeIfAbsent(identity) {
+                NtkSingleFlightDns(shared.dns)
+            }
+            shared.newBuilder()
+                .dispatcher(clickOwnedMixedBodyDispatcher)
+                .connectionPool(ConnectionPool())
+                .dns(singleFlightDns)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .build()
+        }
     }
 
     private fun clickOwnedManhwaClient(shared: OkHttpClient, pageIndex: Int): OkHttpClient {
@@ -9733,6 +9819,23 @@ object ReaderImageCache {
     fun rememberNtkGeneratedEpisodeExtensionHint(image: String?) {
         val value = image?.trim()?.takeIf { it.isNotEmpty() } ?: return
         rememberNtkGeneratedEpisodeExtension(value)
+    }
+
+    /**
+     * Keeps a proven mixed-volume body on the exact H2 origin selected by its metadata race.
+     *
+     * This volatile hint is written only by direct Wi-Fi discovery. The read side additionally
+     * requires the current direct-Wi-Fi transport, so a later cellular/SNI handoff retains its
+     * existing QUIC and recovery schedule.
+     */
+    @JvmStatic
+    fun rememberNtkDirectWifiMixedManhwaEpisode(image: String?) {
+        val value = image?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val ref = ntkGeneratedImageRef(value) ?: return
+        if (!ref.episodeKey.startsWith("manhwa/", ignoreCase = true)) return
+        if (ntkDirectWifiMixedManhwaEpisodes.add(ref.episodeKey)) {
+            Log.d(TAG, "ntk_direct_wifi_mixed_manhwa_episode key=${ref.episodeKey}")
+        }
     }
 
     @JvmStatic

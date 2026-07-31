@@ -219,6 +219,18 @@ internal object NtkClickOwnedManhwaWavePolicy {
             }
     }
 
+    /**
+     * Returns the exact extension set proved by the finite entry sample.
+     *
+     * A single extension keeps the cheap volume-wide route. Two or more extensions prove that
+     * this volume cannot safely inherit one suffix, so direct Wi-Fi may resolve the remaining
+     * exact pages with metadata-only races after document count authority is available.
+     */
+    fun observedSampleExtensions(candidates: List<String?>): List<String> {
+        val observed = candidates.mapNotNull(::candidateExtension).toSet()
+        return CANDIDATE_EXTENSIONS.filter(observed::contains)
+    }
+
     private fun candidateExtension(candidate: String?): String? =
         candidate
             ?.substringBefore('?')

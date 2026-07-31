@@ -236,6 +236,31 @@ class NtkClickOwnedManhwaWavePolicyTest {
     }
 
     @Test
+    fun mixedEntrySamplePreservesOnlyObservedExactExtensionOrder() {
+        assertEquals(
+            listOf("jpg", "png"),
+            NtkClickOwnedManhwaWavePolicy.observedSampleExtensions(
+                listOf(
+                    "https://booktoki8.org/manhwa/35765/1782298/p001.jpg",
+                    "https://mana.apihost93.com/manhwa/35765/1782298/p002.jpg",
+                    "https://booktoki9.org/manhwa/35765/1782298/p003.png",
+                    "https://booktoki8.org/manhwa/35765/1782298/p004.png?token=ignored",
+                ),
+            ),
+        )
+        assertEquals(
+            listOf("gif"),
+            NtkClickOwnedManhwaWavePolicy.observedSampleExtensions(
+                listOf(
+                    "https://booktoki8.org/manhwa/8/9/p001.GIF",
+                    null,
+                    "https://booktoki9.org/manhwa/8/9/p003.gif#fragment",
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun normalReplicaHostRingUsesTheThreeRangeCompatibleR79Origins() {
         assertEquals(
             listOf("booktoki8.org", "mana.apihost93.com", "booktoki9.org"),

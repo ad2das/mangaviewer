@@ -657,7 +657,7 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
-    fun clickOwnedManhwaAnchorAndFormatRecoveryUseTheBoundedH2Shard() {
+    fun clickOwnedManhwaAnchorUsesBoundedShardAndMixedWifiUsesIndependentH2() {
         val route = functionBody(
             "fun resolveClickOwnedAnchorQuarantineRoute(",
             imageCacheSource
@@ -669,7 +669,22 @@ class NtkColdRendererPreparationArchitectureTest {
                 "clickOwnedManhwaClient(shared, pageIndex)"
             )
         )
-        assertTrue(route.contains("factoryId = \"ntk-click-anchor-okhttp\""))
+        assertTrue(
+            route.contains(
+                "clickOwnedMixedFormatBodyClient(shared)"
+            )
+        )
+        assertTrue(route.contains("directWifiMixedEpisodePage"))
+        assertTrue(route.contains("generatedRef.extension"))
+        assertTrue(route.contains("directWifiMixedUncommonPage"))
+        assertTrue(route.contains("\"ntk-click-mixed-h2\""))
+        assertFalse(
+            functionBody(
+                "private fun clickOwnedMixedFormatBodyClient(",
+                imageCacheSource
+            ).contains(".protocols(listOf(Protocol.HTTP_1_1))")
+        )
+        assertTrue(route.contains("\"ntk-click-anchor-okhttp\""))
         assertFalse(route.contains("ntkDemandBoundExactImageFactory()"))
         assertFalse(route.contains("ntk-click-anchor-http3"))
     }

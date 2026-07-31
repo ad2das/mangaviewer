@@ -114,6 +114,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
     private val pageCancellations: Map<Int, ReaderImageCache.Cancellation>,
     private val jpgCandidates: Map<Int, CompletableFuture<String?>>,
     private val preferredExtension: CompletableFuture<String>,
+    private val exactPageCountReady: CompletableFuture<Int>,
     private val sourceRoutePreparationReady: CompletableFuture<Unit>,
 ) : Closeable {
     data class Claim(
@@ -134,6 +135,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                 pageCancellations[entry.key]?.cancel()
                 entry.value.cancel(false)
             }
+        exactPageCountReady.complete(pageCount)
     }
 
     fun claim(draft: NtkEpisodeDocumentPlanDraft): Claim? = claimExactCount(
@@ -223,6 +225,9 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
             val wifiTransportActive = runCatching {
                 getHttpClient().isNtkWifiTransportActive
             }.getOrDefault(false)
+            val directWifiMixedResolutionActive = wifiTransportActive && runCatching {
+                !getHttpClient().isNtkCellularResilientTransportActive()
+            }.getOrDefault(false)
             val preferredEvidence = if (wifiTransportActive) {
                 NtkClickOwnedManhwaWavePolicy.WIFI_PREFERRED_EXTENSION_EVIDENCE
             } else {
@@ -247,6 +252,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                 ).thenCompose { it }
             }
             val preferredExtension = CompletableFuture<String>()
+            val sampledExtensions = CompletableFuture<List<String>>()
             val remainingSamples = AtomicInteger(sampleFutures.size)
             fun sampleSnapshot(): List<String?> = sampleFutures.values.map { future ->
                 runCatching { future.getNow(null) }.getOrNull()
@@ -254,6 +260,37 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
             sampleFutures.values.forEach { sample ->
                 sample.whenComplete { _, _ ->
                     val snapshot = sampleSnapshot()
+                    val observedExtensions =
+                        NtkClickOwnedManhwaWavePolicy.observedSampleExtensions(snapshot)
+                    val exactResolutionExtensions =
+                        if (directWifiMixedResolutionActive &&
+                            observedExtensions.any { it != "jpg" && it != "jpeg" }
+                        ) {
+                            NtkClickOwnedManhwaWavePolicy.observedSampleExtensions(
+                                snapshot + candidateAsset(workId, episodeId, 0, "jpg")
+                            )
+                        } else {
+                            observedExtensions
+                        }
+                    if (directWifiMixedResolutionActive &&
+                        exactResolutionExtensions.size > 1 &&
+                        sampledExtensions.complete(exactResolutionExtensions)
+                    ) {
+                        ReaderImageCache.rememberNtkDirectWifiMixedManhwaEpisode(
+                            candidateAsset(
+                                workId,
+                                episodeId,
+                                0,
+                                exactResolutionExtensions.first(),
+                            )
+                        )
+                        Log.d(
+                            TAG,
+                            "click_manhwa_probe_mixed_ready path=$normalizedEpisodePath," +
+                                "resolved=${snapshot.count { it != null }}," +
+                                "extensions=${exactResolutionExtensions.joinToString(separator = ";")}",
+                        )
+                    }
                     val consensus =
                         NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
                             snapshot,
@@ -267,7 +304,16 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                                 "resolved=${snapshot.count { it != null }}",
                         )
                     }
-                    if (remainingSamples.decrementAndGet() == 0 && !preferredExtension.isDone) {
+                    if (remainingSamples.decrementAndGet() == 0) {
+                        sampledExtensions.complete(
+                            if (directWifiMixedResolutionActive &&
+                                observedExtensions.size > 1
+                            ) {
+                                observedExtensions
+                            } else {
+                                emptyList()
+                            },
+                        )
                         val fallback = NtkClickOwnedManhwaWavePolicy.preferredSampleExtension(
                             snapshot,
                             minimumEvidence = 1,
@@ -278,12 +324,14 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                                 "click_manhwa_probe_extension_ready path=$normalizedEpisodePath," +
                                     "extension=$fallback,evidence=all_samples_complete," +
                                     "resolved=${snapshot.count { it != null }}," +
-                                    "wifi=$wifiTransportActive",
+                                    "wifi=$wifiTransportActive," +
+                                    "mixed=${observedExtensions.joinToString(separator = ";")}",
                             )
                         }
                     }
                 }
             }
+            val exactPageCountReady = CompletableFuture<Int>()
             val sourceRoutePreparationReady = preferredExtension.thenApply { extension ->
                 if (extension != "jpg") {
                     // HEAD proves the immutable filename variant, not image bytes. Publish only
@@ -298,7 +346,39 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
             val futures = (0 until NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES)
                 .associateWith { pageIndex ->
                     val sampled = sampleFutures[pageIndex]
-                    if (sampled == null || pageIndex == 0) {
+                    if (sampled == null && directWifiMixedResolutionActive) {
+                        sampledExtensions.thenCompose { mixedExtensions ->
+                            if (mixedExtensions.size < 2) {
+                                preferredExtension.thenApply { extension ->
+                                    candidateAsset(workId, episodeId, pageIndex, extension)
+                                }
+                            } else {
+                                exactPageCountReady.thenCompose { exactPageCount ->
+                                    if (pageIndex >= exactPageCount) {
+                                        CompletableFuture.completedFuture(null)
+                                    } else {
+                                        ReaderImageCache.probeClickOwnedManhwaReplicaAssetParallel(
+                                            manga,
+                                            pageIndex,
+                                            mixedExtensions.map { extension ->
+                                                candidateAsset(
+                                                    workId,
+                                                    episodeId,
+                                                    pageIndex,
+                                                    extension,
+                                                )
+                                            },
+                                            checkNotNull(pageCancellations[pageIndex]),
+                                            extensionHedgeDelayMs = 0L,
+                                            isolatedMetadataTransport = true,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else if (sampled == null || pageIndex == 0 ||
+                        directWifiMixedResolutionActive
+                    ) {
                         sampled ?: preferredExtension.thenApply { extension ->
                             candidateAsset(workId, episodeId, pageIndex, extension)
                         }
@@ -339,6 +419,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                 pageCancellations,
                 futures,
                 preferredExtension,
+                exactPageCountReady,
                 sourceRoutePreparationReady,
             )
         }
