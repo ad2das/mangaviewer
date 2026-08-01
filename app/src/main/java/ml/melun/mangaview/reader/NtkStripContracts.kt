@@ -1595,7 +1595,8 @@ data class NtkSourceOverlapProof(
     val queuedAtPromotion: Int,
     val postPromotionStarted: Int,
     val physicalCallCount: Int,
-    val duplicatePhysicalCallCount: Int
+    val duplicatePhysicalCallCount: Int,
+    val sameMillisecondSeededExactAllowed: Boolean = false,
 ) {
     init {
         require(planReservedAtMs >= 0L)
@@ -1603,7 +1604,17 @@ data class NtkSourceOverlapProof(
         require(initialQuarantineWaveSubmittedAtMs >= firstQuarantineSubmittedAtMs)
         // A fully click-owned exact body set legitimately needs no second physical source wave.
         require(initialWaveCount >= 0)
-        require(exactSealAtMs > firstQuarantineSubmittedAtMs)
+        // A direct-Wi-Fi adjacent body set can seed the source session and install its exact seal
+        // in the same elapsed-realtime millisecond without opening a second physical source wave.
+        // Every other session and real quarantine work must still prove positive pre-exact
+        // overlap; relaxing those paths would hide a discovery/source ordering regression.
+        require(
+            if (sameMillisecondSeededExactAllowed && initialWaveCount == 0) {
+                exactSealAtMs >= firstQuarantineSubmittedAtMs
+            } else {
+                exactSealAtMs > firstQuarantineSubmittedAtMs
+            }
+        )
         require(ownerClaimedAtMs >= exactSealAtMs)
         require(completedAtPromotion >= 0 && activeAtPromotion >= 0 &&
             queuedAtPromotion >= 0 && postPromotionStarted >= 0)

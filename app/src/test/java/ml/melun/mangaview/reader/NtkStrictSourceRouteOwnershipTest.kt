@@ -258,6 +258,31 @@ class NtkStrictSourceRouteOwnershipTest {
     }
 
     @Test
+    fun tinyReplicaBodyProbeRestoresThePhysicalSourcesTimeoutState() {
+        val cache = readSource("ReaderImageCache.kt")
+        val callStart = cache.indexOf("private class NtkReplicaFailoverCall(")
+        val callEnd = cache.indexOf(
+            "private data class NtkManhwaRangeSegment(",
+            callStart,
+        )
+
+        assertTrue(callStart >= 0)
+        assertTrue(callEnd > callStart)
+        val call = cache.substring(callStart, callEnd)
+        val probeStart = call.indexOf("private fun peekTinyBodyWithinWebtoonFirstByteDeadline(")
+        val probeEnd = call.indexOf("private fun shouldTryCarrierManhwaQuicRecovery(", probeStart)
+        assertTrue(probeStart >= 0)
+        assertTrue(probeEnd > probeStart)
+        val probe = call.substring(probeStart, probeEnd)
+        assertTrue(probe.contains("NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS"))
+        assertTrue(probe.contains("originalTimeoutNanos"))
+        assertTrue(probe.contains("originalDeadlineNanos"))
+        assertTrue(probe.contains("sourceTimeout.clearTimeout()"))
+        assertTrue(probe.contains("sourceTimeout.clearDeadline()"))
+        assertTrue(probe.indexOf("return response.peekBody(byteCount).bytes()") < probe.indexOf("} finally {"))
+    }
+
+    @Test
     fun residentBodyRetiresExactOperationBeforeTheLaneCanRefill() {
         val session = readSource("NtkStrictSourceSession.kt")
         val retirementStart = session.indexOf("private fun completeResidentOperationActor(")

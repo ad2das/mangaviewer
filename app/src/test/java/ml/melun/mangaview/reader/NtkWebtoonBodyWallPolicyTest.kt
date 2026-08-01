@@ -7,6 +7,89 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkWebtoonBodyWallPolicyTest {
+
+    @Test
+    fun directWifiTreatsOnlyCompleteTinyInvalidBodiesAsReplicaMisses() {
+        val staleBody = "File not found.".toByteArray()
+        assertTrue(
+            NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                directWifiTransportActive = true,
+                code = 200,
+                completed = true,
+                declaredLength = staleBody.size.toLong(),
+                bodyBytes = staleBody,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                directWifiTransportActive = false,
+                code = 200,
+                completed = true,
+                declaredLength = staleBody.size.toLong(),
+                bodyBytes = staleBody,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                directWifiTransportActive = true,
+                code = 404,
+                completed = true,
+                declaredLength = staleBody.size.toLong(),
+                bodyBytes = staleBody,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                directWifiTransportActive = true,
+                code = 200,
+                completed = false,
+                declaredLength = staleBody.size.toLong(),
+                bodyBytes = staleBody,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                directWifiTransportActive = true,
+                code = 200,
+                completed = true,
+                declaredLength = 4L,
+                bodyBytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xd9.toByte()),
+            )
+        )
+        listOf(
+            byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47),
+            byteArrayOf(0x52, 0x49, 0x46, 0x46),
+            byteArrayOf(0x47, 0x49, 0x46, 0x38),
+        ).forEach { supportedMagic ->
+            assertFalse(
+                NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                    directWifiTransportActive = true,
+                    code = 200,
+                    completed = true,
+                    declaredLength = supportedMagic.size.toLong(),
+                    bodyBytes = supportedMagic,
+                )
+            )
+        }
+        assertFalse(
+            NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                directWifiTransportActive = true,
+                code = 200,
+                completed = true,
+                declaredLength = staleBody.size.toLong() + 1L,
+                bodyBytes = staleBody,
+            )
+        )
+        assertFalse(
+            NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                directWifiTransportActive = true,
+                code = 200,
+                completed = true,
+                declaredLength = 65L,
+                bodyBytes = ByteArray(65) { 'x'.code.toByte() },
+            )
+        )
+    }
     @Test
     fun wifiColdHeadersGetConnectionSetupTimeWhileCellularKeepsItsFastRing() {
         assertEquals(

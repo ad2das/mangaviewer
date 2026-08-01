@@ -941,6 +941,40 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         }
 }
 
+internal object NtkWebtoonReplicaContentPolicy {
+    // A real renderable strip cannot fit in this envelope. Keeping the probe this small means the
+    // normal image path never waits for body bytes inside Call.execute(); only a complete tiny 2xx
+    // response is inspected before walking the next immutable mirror.
+    const val MAX_COMPLETE_INVALID_BODY_BYTES = 64L
+
+    fun isCompleteInvalidImageBody(
+        directWifiTransportActive: Boolean,
+        code: Int,
+        completed: Boolean,
+        declaredLength: Long,
+        bodyBytes: ByteArray,
+    ): Boolean {
+        if (!directWifiTransportActive || code !in 200..299 || !completed ||
+            declaredLength !in 1..MAX_COMPLETE_INVALID_BODY_BYTES ||
+            bodyBytes.size.toLong() != declaredLength
+        ) return false
+        return !hasSupportedImageMagic(bodyBytes)
+    }
+
+    private fun hasSupportedImageMagic(bytes: ByteArray): Boolean {
+        if (bytes.size < 2) return false
+        val b0 = bytes[0].toInt() and 0xff
+        val b1 = bytes[1].toInt() and 0xff
+        if (b0 == 0xff && b1 == 0xd8) return true
+        if (bytes.size < 4) return false
+        val b2 = bytes[2].toInt() and 0xff
+        val b3 = bytes[3].toInt() and 0xff
+        return (b0 == 0x89 && b1 == 0x50 && b2 == 0x4e && b3 == 0x47) ||
+            (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46) ||
+            (b0 == 0x47 && b1 == 0x49 && b2 == 0x46)
+    }
+}
+
 internal object NtkManhwaWifiTransportPolicy {
     const val WIFI_PRIMARY_EXACT_QUIC_TIMEOUT_MS = 4_000L
     const val WIFI_ALTERNATE_EXACT_QUIC_TIMEOUT_MS = 2_500L
@@ -2397,10 +2431,37 @@ data class NtkResolvedSourceRoute(
                     // retries and the resulting cancellation of unrelated in-flight pages.
                     val emptySuccessfulBody = response.code in 200..299 &&
                         response.body?.contentLength() == 0L
+                    val declaredBodyLength = response.body?.contentLength() ?: -1L
+                    val completeInvalidImageBody = if (
+                        wifiTransportActive &&
+                        webtoonReplica &&
+                        declaredBodyLength in
+                            1..NtkWebtoonReplicaContentPolicy.MAX_COMPLETE_INVALID_BODY_BYTES
+                    ) {
+                        val completeBody = try {
+                            peekTinyBodyWithinWebtoonFirstByteDeadline(
+                                response,
+                                declaredBodyLength,
+                            )
+                        } catch (failure: IOException) {
+                            response.close()
+                            throw failure
+                        }
+                        NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                            directWifiTransportActive = true,
+                            code = response.code,
+                            completed = true,
+                            declaredLength = declaredBodyLength,
+                            bodyBytes = completeBody,
+                        )
+                    } else {
+                        false
+                    }
                     val retryableMiss = response.code == 404 || response.code == 410 ||
-                        emptySuccessfulBody
+                        emptySuccessfulBody || completeInvalidImageBody
                     if (webtoonReplica && response.code in 200..299 &&
                         !emptySuccessfulBody &&
+                        !completeInvalidImageBody &&
                         wifiWebtoonReplicaPreference?.recordUsableHeader(
                             candidate.url.host
                         ) == true
@@ -2482,6 +2543,7 @@ data class NtkResolvedSourceRoute(
                         TAG,
                         "reader_strict_webtoon_replica_failover code=${response.code}," +
                             "empty=$emptySuccessfulBody," +
+                            "invalidCompleteBody=$completeInvalidImageBody," +
                             "from=${candidate.url.host}," +
                             "to=${attemptCandidates[index + 1].url.host}"
                     )
@@ -2543,6 +2605,51 @@ data class NtkResolvedSourceRoute(
                 if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
                     ntkManhwaHeaderFailoverPermits.release()
                 }
+            }
+        }
+
+        /**
+         * [Response.peekBody] may have to read the entire declared body. A stale replica normally
+         * returns its tiny error payload immediately, but a server can send the tiny Content-Length
+         * header and then stall. Preserve the response source's exact timeout state while keeping
+         * this direct-Wi-Fi-only classification inside the existing first-byte budget.
+         */
+        @Throws(IOException::class)
+        private fun peekTinyBodyWithinWebtoonFirstByteDeadline(
+            response: Response,
+            byteCount: Long,
+        ): ByteArray {
+            val sourceTimeout = checkNotNull(response.body).source().timeout()
+            val originalTimeoutNanos = sourceTimeout.timeoutNanos()
+            val hadDeadline = sourceTimeout.hasDeadline()
+            val originalDeadlineNanos = if (hadDeadline) {
+                sourceTimeout.deadlineNanoTime()
+            } else {
+                0L
+            }
+            val probeTimeoutNanos = TimeUnit.MILLISECONDS.toNanos(
+                NTK_WEBTOON_BODY_FIRST_BYTE_DEADLINE_MS,
+            )
+            val probeDeadlineNanos = System.nanoTime() + probeTimeoutNanos
+            try {
+                if (originalTimeoutNanos == 0L || originalTimeoutNanos > probeTimeoutNanos) {
+                    sourceTimeout.timeout(probeTimeoutNanos, TimeUnit.NANOSECONDS)
+                }
+                sourceTimeout.deadlineNanoTime(
+                    if (hadDeadline) {
+                        minOf(originalDeadlineNanos, probeDeadlineNanos)
+                    } else {
+                        probeDeadlineNanos
+                    },
+                )
+                return response.peekBody(byteCount).bytes()
+            } finally {
+                sourceTimeout.clearTimeout()
+                if (originalTimeoutNanos > 0L) {
+                    sourceTimeout.timeout(originalTimeoutNanos, TimeUnit.NANOSECONDS)
+                }
+                sourceTimeout.clearDeadline()
+                if (hadDeadline) sourceTimeout.deadlineNanoTime(originalDeadlineNanos)
             }
         }
 
@@ -2847,10 +2954,22 @@ data class NtkResolvedSourceRoute(
                         )?.let { return it }
                     }
                 }
+                val completeInvalidImageBody =
+                    NtkWebtoonReplicaContentPolicy.isCompleteInvalidImageBody(
+                        directWifiTransportActive =
+                            logScope == NtkExactQuicPartialResumePolicy.WIFI_WEBTOON_PRIMARY_SCOPE ||
+                                logScope == "wifi_webtoon_alternate",
+                        code = result.code,
+                        completed = result.error == null &&
+                            result.terminalKind == NtkQuicFetcher.TerminalKind.SUCCEEDED,
+                        declaredLength = result.bodyBytes.size.toLong(),
+                        bodyBytes = result.bodyBytes,
+                    )
                 val explicitMiss = result.error == null && (
                     result.code == 404 ||
                         result.code == 410 ||
-                        (result.code in 200..299 && result.bodyBytes.isEmpty())
+                        (result.code in 200..299 && result.bodyBytes.isEmpty()) ||
+                        completeInvalidImageBody
                 )
                 if (explicitMiss) onExplicitMiss?.invoke()
                 if ((!completeTimedOutBody && result.error != null) ||

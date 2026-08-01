@@ -3161,8 +3161,13 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
             [Math]::Max(0L, $pipelineRequestSucceeded - $authoritativePageCount)
         } else { $duplicates.Count }
         retryAttemptCount = if($null -ne $pipelineRequestStarted -and
-                $null -ne $pipelineRequestSucceeded) {
-            [Math]::Max(0L, $pipelineRequestStarted - $pipelineRequestSucceeded)
+                $null -ne $pipelineRequestSucceeded -and
+                $null -ne $pipelineRequestCancelled -and
+                $null -ne $pipelineRequestFailed) {
+            [Math]::Max(
+                0L,
+                $pipelineRequestStarted - $pipelineRequestSucceeded -
+                    $pipelineRequestCancelled - $pipelineRequestFailed)
         } else { $null }
         completedImageDownloadCount = if($null -ne $pipelineRequestSucceeded) {
             $pipelineRequestSucceeded

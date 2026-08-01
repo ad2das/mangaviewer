@@ -242,7 +242,8 @@ foreach($requiredToken in @(
         'image requests were cancelled during continuous forward reading',
         '[Math]::Max(0L, $pipelineRequestSucceeded - $authoritativePageCount)',
         'retryAttemptCount = if($null -ne $pipelineRequestStarted',
-        '[Math]::Max(0L, $pipelineRequestStarted - $pipelineRequestSucceeded)')) {
+        '$pipelineRequestStarted - $pipelineRequestSucceeded -',
+        '$pipelineRequestCancelled - $pipelineRequestFailed')) {
     Assert-SourceContains $requiredToken
 }
 if($source.Contains('warm reopen retained-PSS growth was unmeasured',

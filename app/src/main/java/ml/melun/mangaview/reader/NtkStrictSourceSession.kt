@@ -1712,7 +1712,11 @@ internal class NtkStrictSourceSession(
             installed.snapshot.queuedPageIndexes.size,
             postPromotionStarted,
             installed.snapshot.physicalCallCount,
-            installed.snapshot.duplicatePhysicalCallCount
+            installed.snapshot.duplicatePhysicalCallCount,
+            // The only zero-wave same-millisecond promotion we admit is the bounded direct-Wi-Fi
+            // adjacent runway. Cellular/SNI and the foreground episode retain strict positive
+            // overlap proof even when their timing happens to fall in one clock millisecond.
+            sameMillisecondSeededExactAllowed = adjacentPrefetch,
         )
         logOverlapProofActor()
     }

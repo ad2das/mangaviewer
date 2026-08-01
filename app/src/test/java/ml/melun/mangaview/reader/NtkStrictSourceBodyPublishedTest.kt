@@ -73,6 +73,68 @@ class NtkStrictSourceBodyPublishedTest {
         assertEquals(0, proof.duplicatePhysicalCallCount)
     }
 
+    @Test
+    fun fullySeededExactSourceMaySealInTheReservationMillisecond() {
+        val proof = NtkSourceOverlapProof(
+            planReservedAtMs = 100L,
+            firstQuarantineSubmittedAtMs = 100L,
+            initialQuarantineWaveSubmittedAtMs = 100L,
+            initialWaveCount = 0,
+            exactSealAtMs = 100L,
+            ownerClaimedAtMs = 100L,
+            completedAtPromotion = 0,
+            activeAtPromotion = 0,
+            queuedAtPromotion = 0,
+            postPromotionStarted = 0,
+            physicalCallCount = 0,
+            duplicatePhysicalCallCount = 0,
+            sameMillisecondSeededExactAllowed = true,
+        )
+
+        assertEquals(0L, proof.overlapBeforeExactMs)
+        assertEquals(0, proof.initialWaveCount)
+    }
+
+    @Test
+    fun physicalQuarantineWaveStillRequiresPositivePreExactOverlap() {
+        assertRejected {
+            NtkSourceOverlapProof(
+                planReservedAtMs = 100L,
+                firstQuarantineSubmittedAtMs = 104L,
+                initialQuarantineWaveSubmittedAtMs = 104L,
+                initialWaveCount = 1,
+                exactSealAtMs = 104L,
+                ownerClaimedAtMs = 104L,
+                completedAtPromotion = 0,
+                activeAtPromotion = 1,
+                queuedAtPromotion = 0,
+                postPromotionStarted = 0,
+                physicalCallCount = 1,
+                duplicatePhysicalCallCount = 0,
+            )
+        }
+    }
+
+    @Test
+    fun nonAdjacentSeededSourceStillRequiresPositivePreExactOverlap() {
+        assertRejected {
+            NtkSourceOverlapProof(
+                planReservedAtMs = 100L,
+                firstQuarantineSubmittedAtMs = 100L,
+                initialQuarantineWaveSubmittedAtMs = 100L,
+                initialWaveCount = 0,
+                exactSealAtMs = 100L,
+                ownerClaimedAtMs = 100L,
+                completedAtPromotion = 0,
+                activeAtPromotion = 0,
+                queuedAtPromotion = 0,
+                postPromotionStarted = 0,
+                physicalCallCount = 0,
+                duplicatePhysicalCallCount = 0,
+            )
+        }
+    }
+
     private data class Fixture(
         val metadata: NtkSourceMetadata,
         val proof: NtkEncodedOriginalProof
