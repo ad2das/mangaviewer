@@ -127,6 +127,50 @@ class NtkClickOwnedManhwaWavePolicyTest {
     }
 
     @Test
+    fun verifiedEntryPriorityRequiresCurrentStableDirectWifiAndExactUncommonSuffix() {
+        fun prioritize(
+            pageIndex: Int = 1,
+            extension: String = "gif",
+            currentEpisode: Boolean = true,
+            wifiEntryPriorityMode: Boolean = true,
+            liveWifiTransport: Boolean = true,
+            cellularResilientTransport: Boolean = false,
+            capturedNetworkHandle: Long? = 41L,
+            liveNetworkHandle: Long? = 41L,
+        ): Boolean = NtkClickOwnedManhwaWavePolicy
+            .shouldPrioritizeVerifiedDirectWifiEntryBody(
+                pageIndex = pageIndex,
+                candidateExtension = extension,
+                currentEpisode = currentEpisode,
+                wifiEntryPriorityMode = wifiEntryPriorityMode,
+                liveWifiTransport = liveWifiTransport,
+                cellularResilientTransport = cellularResilientTransport,
+                capturedNetworkHandle = capturedNetworkHandle,
+                liveNetworkHandle = liveNetworkHandle,
+            )
+
+        assertTrue(prioritize(pageIndex = 1, extension = "gif"))
+        assertTrue(prioritize(pageIndex = 2, extension = "webp"))
+        assertTrue(prioritize(pageIndex = 3, extension = "PNG"))
+
+        // p001, the offscreen wave, and ordinary JPEGs keep their original executor.
+        assertTrue(!prioritize(pageIndex = 0))
+        assertTrue(!prioritize(pageIndex = 4))
+        assertTrue(!prioritize(extension = "jpg"))
+        assertTrue(!prioritize(extension = "JPEG"))
+        assertTrue(!prioritize(extension = "avif"))
+
+        // Adjacent work, mobile/SNI, and every detected network transition fail closed.
+        assertTrue(!prioritize(currentEpisode = false))
+        assertTrue(!prioritize(wifiEntryPriorityMode = false))
+        assertTrue(!prioritize(liveWifiTransport = false))
+        assertTrue(!prioritize(cellularResilientTransport = true))
+        assertTrue(!prioritize(capturedNetworkHandle = null))
+        assertTrue(!prioritize(liveNetworkHandle = null))
+        assertTrue(!prioritize(liveNetworkHandle = 42L))
+    }
+
+    @Test
     fun exactAdmissionPreservesOneForwardRingThenPullsFiniteTailForward() {
         assertEquals(
             (40 until 52).reversed().toList(),

@@ -115,6 +115,38 @@ internal object NtkClickOwnedManhwaWavePolicy {
         return wifiTransport && pageIndex in 1 until WIFI_ENTRY_SPECULATION_PAGES
     }
 
+    /**
+     * Prioritizes only an already HEAD-proven uncommon body needed by the current Wi-Fi viewport.
+     *
+     * This does not authorize another candidate race or body transfer. The caller merely chooses
+     * which existing executor submits the one exact GET; the shared body permit and transport stay
+     * unchanged. Re-checking the live network keeps a Wi-Fi-to-cellular handoff on the original
+     * executor path.
+     */
+    fun shouldPrioritizeVerifiedDirectWifiEntryBody(
+        pageIndex: Int,
+        candidateExtension: String,
+        currentEpisode: Boolean,
+        wifiEntryPriorityMode: Boolean,
+        liveWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        capturedNetworkHandle: Long?,
+        liveNetworkHandle: Long?,
+    ): Boolean {
+        require(pageIndex >= 0)
+        val extension = candidateExtension.trim().lowercase()
+        return currentEpisode &&
+            wifiEntryPriorityMode &&
+            liveWifiTransport &&
+            !cellularResilientTransport &&
+            capturedNetworkHandle != null &&
+            liveNetworkHandle == capturedNetworkHandle &&
+            pageIndex in 1 until WIFI_ENTRY_SPECULATION_PAGES &&
+            extension in CANDIDATE_EXTENSIONS &&
+            extension != "jpg" &&
+            extension != "jpeg"
+    }
+
     fun shouldHoldExactPreFrameRunway(wifiTransport: Boolean, pageCount: Int): Boolean {
         require(pageCount > 0)
         return wifiTransport && pageCount > WIFI_ENTRY_SPECULATION_PAGES

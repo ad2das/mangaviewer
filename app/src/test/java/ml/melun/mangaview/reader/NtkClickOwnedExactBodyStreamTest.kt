@@ -222,6 +222,37 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
+    fun headProvenEntryBodyUsesOnlyTheGuardedExistingPriorityExecutor() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val verified = quarantine.substringAfter(
+            "private fun startVerifiedFrontierCandidate("
+        ).substringBefore("private fun attachPrivatePredecodes(")
+        val exactBody = verified.substringAfter(
+            "fun startExactBody(candidate: String)"
+        ).substringBefore("val verified =")
+        val selector = quarantine.substringAfter(
+            "private fun verifiedExactBodyExecutor("
+        ).substringBefore("private fun fallbackBodyExecutor(")
+
+        assertTrue(exactBody.contains("verifiedExactBodyExecutor(pageIndex, candidate)"))
+        assertTrue(
+            selector.contains("shouldPrioritizeVerifiedDirectWifiEntryBody(")
+        )
+        assertTrue(selector.contains("currentEpisode = !directWifiAdjacentOwned"))
+        assertTrue(selector.contains("liveWifiTransport = liveWifiTransport"))
+        assertTrue(selector.contains("cellularResilientTransport = cellularResilientTransport"))
+        assertTrue(selector.contains("capturedNetworkHandle = capturedDirectWifiNetworkHandle"))
+        assertTrue(selector.contains("liveNetworkHandle = liveNetworkHandle"))
+        assertTrue(selector.contains("if (!prioritize) return original"))
+        assertTrue(selector.contains("return WIFI_ENTRY_FALLBACK_BODY_EXECUTOR"))
+
+        // This branch changes only executor selection: request, permit, and transport stay shared.
+        assertFalse(selector.contains("fetchOwnedCandidate("))
+        assertFalse(selector.contains("acquireBodyTransferLease("))
+        assertFalse(selector.contains("newFixedThreadPool("))
+    }
+
+    @Test
     fun resolvedNonJpgBodiesCanFillTheMeasuredPhysicalConnectionRing() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val fallbackExecutor = quarantine.substringAfter(

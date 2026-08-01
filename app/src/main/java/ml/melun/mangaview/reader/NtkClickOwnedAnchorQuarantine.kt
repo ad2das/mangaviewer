@@ -1589,7 +1589,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         telemetryAfterImageHeaders = true,
                     )
                 },
-                primaryBodyExecutor(candidate),
+                verifiedExactBodyExecutor(pageIndex, candidate),
             )
 
         val verified = candidateFuture
@@ -2188,6 +2188,45 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         } else {
             BODY_EXECUTOR.execute(runnable)
         }
+    }
+
+    /**
+     * Gives one already HEAD-proven uncommon p002-p004 body the next current-viewport worker.
+     *
+     * The request, transport, ownership, cancellation, and shared body permit remain exactly the
+     * same. Only the executor used to submit that one canonical GET changes, and every live network
+     * condition is re-read here so a handoff retains the original executor path.
+     */
+    private fun verifiedExactBodyExecutor(pageIndex: Int, candidate: String): Executor {
+        val original = primaryBodyExecutor(candidate)
+        val httpClient = getHttpClient()
+        val liveWifiTransport = runCatching {
+            httpClient.isNtkWifiTransportActive
+        }.getOrDefault(false)
+        val cellularResilientTransport = runCatching {
+            httpClient.isNtkCellularResilientTransportActive
+        }.getOrDefault(true)
+        val liveNetworkHandle = runCatching {
+            httpClient.getNtkDirectWifiNetwork()?.networkHandle
+        }.getOrNull()
+        val prioritize = NtkClickOwnedManhwaWavePolicy
+            .shouldPrioritizeVerifiedDirectWifiEntryBody(
+                pageIndex = pageIndex,
+                candidateExtension = candidate.substringAfterLast('.', ""),
+                currentEpisode = !directWifiAdjacentOwned,
+                wifiEntryPriorityMode = wifiEntryPriorityMode,
+                liveWifiTransport = liveWifiTransport,
+                cellularResilientTransport = cellularResilientTransport,
+                capturedNetworkHandle = capturedDirectWifiNetworkHandle,
+                liveNetworkHandle = liveNetworkHandle,
+            )
+        if (!prioritize) return original
+        Log.d(
+            TAG,
+            "click_verified_entry_exact_priority path=${plan.normalizedEpisodePath}," +
+                "page=$pageIndex,candidate=${candidate.substringAfterLast('/')}",
+        )
+        return WIFI_ENTRY_FALLBACK_BODY_EXECUTOR
     }
 
     private fun fallbackBodyExecutor(pageIndex: Int) = when {
