@@ -667,6 +667,42 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun exactAdjacentConsensusPrecedesLegacyThenIndividualRecoveryCandidates() {
+        val candidates = functionBody(
+            "private fun adjacentEpisodeCandidates(",
+            sessionSource
+        )
+        val consensus = candidates.indexOf("addCandidate(consensusAuthority)")
+        val legacy = candidates.indexOf(
+            "addCandidate(ntkTrustedProvidedAdjacentCandidate(source, direction))"
+        )
+        val visible = candidates.indexOf("addCandidate(visibleAuthority)")
+        val canonical = candidates.indexOf("addCandidate(canonicalAuthority)")
+
+        assertTrue(consensus >= 0)
+        assertTrue(legacy > consensus)
+        assertTrue(visible > legacy)
+        assertTrue(canonical > visible)
+    }
+
+    @Test
+    fun forwardAppendOrderGuardUsesExactAuthoritiesBeforeTheLegacyNeighbor() {
+        val guard = functionBody(
+            "private fun shouldSkipForwardNtkOutOfOrderAppendLocked(",
+            sessionSource
+        )
+        val visible = guard.indexOf("val visibleAuthority = ntkVisibleNumberAdjacentCandidate(")
+        val canonical = guard.indexOf("val canonicalAuthority = ntkNumericPathAdjacentCandidate(")
+        val exactDecision = guard.indexOf("NtkAdjacentAuthorityConsensusPolicy.decideTarget(")
+        val legacy = guard.indexOf("tailSource.nextEp()")
+
+        assertTrue(visible >= 0)
+        assertTrue(canonical > visible)
+        assertTrue(exactDecision > canonical)
+        assertTrue(legacy > exactDecision)
+    }
+
+    @Test
     fun exactSealAndOwnershipClaimUseTheSameSuspendAwareClockDomain() {
         val ownershipClock = functionBody(
             "private fun monotonicMs()",

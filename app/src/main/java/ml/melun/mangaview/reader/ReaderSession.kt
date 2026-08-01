@@ -4792,8 +4792,39 @@ class ReaderSession(
             ?.manga
         if (tailSource != null) {
             if (looseSameEpisodeForAppend(tailSource, target)) return false
-            // NTK database ids are not chronological for every title. Once the server episode
-            // list resolves an immediate neighbor, that list order outranks numeric id monotonicity.
+            // A season reset can leave an older row immediately next to the current episode in
+            // the server list (for example, "0032 - 31화" beside "시즌2 32화"). That legacy row
+            // also parses like a fractional 32-31 episode, so nextEp() alone cannot disambiguate
+            // it. The exact visible +1 and closest canonical-path authorities are the same ones
+            // used by adjacent loading; prefer them only when both resolve to the same episode.
+            val titleEpisodes = Utils.snapshotEpisodes(tailSource.title ?: title)
+            val episodes = if (titleEpisodes.isNotEmpty()) {
+                titleEpisodes
+            } else {
+                Utils.snapshotEpisodes(tailSource)
+            }
+            val visibleAuthority = ntkVisibleNumberAdjacentCandidate(
+                tailSource,
+                episodes,
+                ReaderSurfaceView.DIRECTION_NEXT,
+            )
+            val canonicalAuthority = ntkNumericPathAdjacentCandidate(
+                tailSource,
+                episodes,
+                ReaderSurfaceView.DIRECTION_NEXT,
+            )
+            when (NtkAdjacentAuthorityConsensusPolicy.decideTarget(
+                visibleAuthority,
+                canonicalAuthority,
+                target,
+                ::looseSameEpisodeForAppend,
+            )) {
+                NtkAdjacentAuthorityConsensusPolicy.TargetDecision.ACCEPT -> return false
+                NtkAdjacentAuthorityConsensusPolicy.TargetDecision.REJECT -> return true
+                NtkAdjacentAuthorityConsensusPolicy.TargetDecision.DEFER_TO_LEGACY -> Unit
+            }
+            // NTK database ids are not chronological for every title. When no exact authority
+            // exists, the server episode-list neighbor still outranks numeric id monotonicity.
             val authoritativeNext = tailSource.nextEp()
             if (authoritativeNext != null) {
                 return !looseSameEpisodeForAppend(authoritativeNext, target)
@@ -16712,9 +16743,20 @@ class ReaderSession(
             if (candidates.any { looseSameEpisodeForAppend(it, candidate) }) return
             candidates.add(candidate)
         }
+        // Override legacy list order only when two independent authorities agree. If one is
+        // absent or they conflict, preserve the long-standing nextEp()/prevEp() behavior and use
+        // the individual authorities only as later recovery candidates.
+        val visibleAuthority = ntkVisibleNumberAdjacentCandidate(source, episodes, direction)
+        val canonicalAuthority = ntkNumericPathAdjacentCandidate(source, episodes, direction)
+        val consensusAuthority = NtkAdjacentAuthorityConsensusPolicy.agreedCandidate(
+            visibleAuthority,
+            canonicalAuthority,
+            ::looseSameEpisodeForAppend,
+        )
+        addCandidate(consensusAuthority)
         addCandidate(ntkTrustedProvidedAdjacentCandidate(source, direction))
-        addCandidate(ntkVisibleNumberAdjacentCandidate(source, episodes, direction))
-        addCandidate(ntkNumericPathAdjacentCandidate(source, episodes, direction))
+        addCandidate(visibleAuthority)
+        addCandidate(canonicalAuthority)
         val sourceIndex = looseEpisodeIndexForAppend(episodes, source)
         if (sourceIndex >= 0) {
             var index = if (direction < 0) sourceIndex + 1 else sourceIndex - 1
