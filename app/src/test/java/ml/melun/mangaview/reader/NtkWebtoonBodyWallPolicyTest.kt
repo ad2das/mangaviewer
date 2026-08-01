@@ -128,14 +128,52 @@ class NtkWebtoonBodyWallPolicyTest {
             )
         )
         assertEquals(
+            1_800L,
+            NtkWebtoonReplicaHeaderPolicy.primaryExactQuicTimeoutMs(
+                NtkWebtoonReplicaHeaderPolicy.WIFI_SHORT_EPISODE_MAX_PAGES,
+            ),
+        )
+        assertEquals(
             3_000L,
             NtkWebtoonReplicaHeaderPolicy.primaryExactQuicTimeoutMs(
-                NtkWebtoonReplicaHeaderPolicy.WIFI_VERY_LARGE_EPISODE_PAGES - 1,
+                NtkWebtoonReplicaHeaderPolicy.WIFI_SHORT_EPISODE_MAX_PAGES + 1,
             ),
         )
         assertEquals(8, NtkWebtoonReplicaHeaderPolicy.WIFI_PROVISIONAL_RANGE_MAX_CONCURRENT)
         assertEquals(600L, NtkWebtoonReplicaHeaderPolicy.WIFI_PROVISIONAL_RANGE_ADMISSION_MS)
         assertEquals(1_200L, NtkWebtoonReplicaHeaderPolicy.WIFI_PROVISIONAL_RANGE_TOTAL_MS)
+        assertEquals(
+            100L,
+            NtkWebtoonReplicaHeaderPolicy.provisionalRangeAdmissionMs(
+                NtkWebtoonReplicaHeaderPolicy.WIFI_SHORT_EPISODE_MAX_PAGES,
+            ),
+        )
+        assertEquals(
+            700L,
+            NtkWebtoonReplicaHeaderPolicy.provisionalRangeTotalMs(
+                NtkWebtoonReplicaHeaderPolicy.WIFI_SHORT_EPISODE_MAX_PAGES,
+            ),
+        )
+        assertEquals(
+            600L,
+            NtkWebtoonReplicaHeaderPolicy.provisionalRangeAttemptMs(
+                NtkWebtoonReplicaHeaderPolicy.WIFI_SHORT_EPISODE_MAX_PAGES,
+                preferredReplica = true,
+            ),
+        )
+        assertEquals(
+            50L,
+            NtkWebtoonReplicaHeaderPolicy.provisionalRangeAttemptMs(
+                NtkWebtoonReplicaHeaderPolicy.WIFI_SHORT_EPISODE_MAX_PAGES,
+                preferredReplica = false,
+            ),
+        )
+        assertEquals(
+            1_200L,
+            NtkWebtoonReplicaHeaderPolicy.provisionalRangeTotalMs(
+                NtkWebtoonReplicaHeaderPolicy.WIFI_SHORT_EPISODE_MAX_PAGES + 1,
+            ),
+        )
         assertEquals(
             8_000L,
             NtkWebtoonReplicaHeaderPolicy.primaryExactQuicTimeoutMs(

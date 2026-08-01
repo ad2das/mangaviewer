@@ -832,15 +832,21 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     const val WIFI_ENTRY_LAST_PAGE = 2
     const val WIFI_FOCUSED_RECOVERY_HEADER_MS = 2_500L
     const val WIFI_FOCUSED_RECOVERY_ATTEMPTS = 3
+    const val WIFI_SHORT_EPISODE_MAX_PAGES = 24
+    const val WIFI_SHORT_PRIMARY_EXACT_QUIC_TIMEOUT_MS = 1_800L
     const val WIFI_PRIMARY_EXACT_QUIC_TIMEOUT_MS = 3_000L
     const val WIFI_VERY_LARGE_PRIMARY_EXACT_QUIC_TIMEOUT_MS = 8_000L
     const val WIFI_VERY_LARGE_EPISODE_PAGES = 200
     const val WIFI_EXHAUSTED_EXACT_QUIC_TIMEOUT_MS = 6_000L
     const val WIFI_PROVISIONAL_RANGE_MAX_CONCURRENT = 8
     const val WIFI_PROVISIONAL_RANGE_ADMISSION_MS = 600L
+    const val WIFI_SHORT_PROVISIONAL_RANGE_ADMISSION_MS = 100L
     const val WIFI_PROVISIONAL_RANGE_TOTAL_MS = 1_200L
+    const val WIFI_SHORT_PROVISIONAL_RANGE_TOTAL_MS = 700L
     const val WIFI_PROVISIONAL_PREFERRED_RANGE_MS = 900L
+    const val WIFI_SHORT_PROVISIONAL_PREFERRED_RANGE_MS = 600L
     const val WIFI_PROVISIONAL_OTHER_RANGE_MS = 150L
+    const val WIFI_SHORT_PROVISIONAL_OTHER_RANGE_MS = 50L
     const val CELLULAR_REPLICA_CYCLES = 4
 
     fun headerFailoverMs(
@@ -897,10 +903,42 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         require(episodePageCount >= 0)
         return if (episodePageCount >= WIFI_VERY_LARGE_EPISODE_PAGES) {
             WIFI_VERY_LARGE_PRIMARY_EXACT_QUIC_TIMEOUT_MS
+        } else if (episodePageCount in 1..WIFI_SHORT_EPISODE_MAX_PAGES) {
+            WIFI_SHORT_PRIMARY_EXACT_QUIC_TIMEOUT_MS
         } else {
             WIFI_PRIMARY_EXACT_QUIC_TIMEOUT_MS
         }
     }
+
+    fun provisionalRangeAdmissionMs(episodePageCount: Int): Long =
+        if (episodePageCount in 1..WIFI_SHORT_EPISODE_MAX_PAGES) {
+            WIFI_SHORT_PROVISIONAL_RANGE_ADMISSION_MS
+        } else {
+            WIFI_PROVISIONAL_RANGE_ADMISSION_MS
+        }
+
+    fun provisionalRangeTotalMs(episodePageCount: Int): Long =
+        if (episodePageCount in 1..WIFI_SHORT_EPISODE_MAX_PAGES) {
+            WIFI_SHORT_PROVISIONAL_RANGE_TOTAL_MS
+        } else {
+            WIFI_PROVISIONAL_RANGE_TOTAL_MS
+        }
+
+    fun provisionalRangeAttemptMs(
+        episodePageCount: Int,
+        preferredReplica: Boolean,
+    ): Long =
+        if (episodePageCount in 1..WIFI_SHORT_EPISODE_MAX_PAGES) {
+            if (preferredReplica) {
+                WIFI_SHORT_PROVISIONAL_PREFERRED_RANGE_MS
+            } else {
+                WIFI_SHORT_PROVISIONAL_OTHER_RANGE_MS
+            }
+        } else if (preferredReplica) {
+            WIFI_PROVISIONAL_PREFERRED_RANGE_MS
+        } else {
+            WIFI_PROVISIONAL_OTHER_RANGE_MS
+        }
 }
 
 internal object NtkManhwaWifiTransportPolicy {
@@ -2068,6 +2106,7 @@ data class NtkResolvedSourceRoute(
                             primaryCandidate.url.host
                         )
                     },
+                    episodePageCount = strictEpisodePageCount,
                 )?.let { return it }
                 // An immutable 404/410/empty-2xx is host-local proof, not a transport timeout.
                 // Try one different already-pooled H3 origin immediately so a single bad replica
@@ -2118,6 +2157,7 @@ data class NtkResolvedSourceRoute(
                                     alternateCandidate.url.host
                                 )
                             },
+                            episodePageCount = strictEpisodePageCount,
                             recheckCancellationAfterRegistration = true,
                             admissionCheck = {
                                 val liveClient = getHttpClient()
@@ -2688,6 +2728,7 @@ data class NtkResolvedSourceRoute(
             logScope: String,
             sharedSession: NtkQuicFetcher.Session? = null,
             onExplicitMiss: (() -> Unit)? = null,
+            episodePageCount: Int = 0,
             recheckCancellationAfterRegistration: Boolean = false,
             admissionCheck: (() -> Boolean)? = null,
         ): Response? {
@@ -2799,6 +2840,7 @@ data class NtkResolvedSourceRoute(
                             result.contentType().toMediaTypeOrNull(),
                             validatorProof,
                             strictReplicaRequests(request),
+                            episodePageCount,
                             exactPageIndex,
                             logScope,
                             startedAtMs,
@@ -2878,6 +2920,7 @@ data class NtkResolvedSourceRoute(
             prefixContentType: MediaType?,
             validatorProof: NtkExactQuicPartialResumePolicy.StrongValidatorProof,
             candidates: List<Request>,
+            episodePageCount: Int,
             exactPageIndex: Int,
             logScope: String,
             startedAtMs: Long,
@@ -2888,7 +2931,9 @@ data class NtkResolvedSourceRoute(
             ) return null
             val permitAcquired = try {
                 ntkWifiWebtoonProvisionalRangePermits.tryAcquire(
-                    NtkWebtoonReplicaHeaderPolicy.WIFI_PROVISIONAL_RANGE_ADMISSION_MS,
+                    NtkWebtoonReplicaHeaderPolicy.provisionalRangeAdmissionMs(
+                        episodePageCount,
+                    ),
                     TimeUnit.MILLISECONDS,
                 )
             } catch (_: InterruptedException) {
@@ -2915,7 +2960,9 @@ data class NtkResolvedSourceRoute(
                     addAll(allCandidates)
                 }.distinctBy { it.url }.take(3)
                 val rangeDeadlineAtMs = SystemClock.elapsedRealtime() +
-                    NtkWebtoonReplicaHeaderPolicy.WIFI_PROVISIONAL_RANGE_TOTAL_MS
+                    NtkWebtoonReplicaHeaderPolicy.provisionalRangeTotalMs(
+                        episodePageCount,
+                    )
 
                 fun completeResponse(
                     response: Response,
@@ -2966,16 +3013,13 @@ data class NtkResolvedSourceRoute(
                 }
                     val attemptTimeoutMs = minOf(
                         remainingMs,
-                        when {
-                            candidate.url.host.equals(
+                        NtkWebtoonReplicaHeaderPolicy.provisionalRangeAttemptMs(
+                            episodePageCount = episodePageCount,
+                            preferredReplica = candidate.url.host.equals(
                                 preferredRangeHost,
                                 ignoreCase = true,
-                            ) ->
-                                NtkWebtoonReplicaHeaderPolicy
-                                    .WIFI_PROVISIONAL_PREFERRED_RANGE_MS
-                            else ->
-                                NtkWebtoonReplicaHeaderPolicy.WIFI_PROVISIONAL_OTHER_RANGE_MS
-                        },
+                            ),
+                        ),
                     )
                 val rangeRequest = candidate.newBuilder()
                     .header("Accept-Encoding", "identity")
