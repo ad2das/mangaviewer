@@ -1,7 +1,9 @@
 package ml.melun.mangaview.reader
 
+import okhttp3.Call
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.Closeable
@@ -10,6 +12,31 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicInteger
 
 class NtkClickOwnedExactBodyStreamTest {
+
+    @Test
+    fun telemetryClientIdentityFollowsFactoryObjectInsteadOfRouteLabel() {
+        val sharedFactory = Call.Factory {
+            throw AssertionError("Telemetry identity must not create a Call")
+        }
+        val otherFactory = Call.Factory {
+            throw AssertionError("Telemetry identity must not create a Call")
+        }
+
+        val ordinaryRouteIdentity = ReaderImageCache.telemetryClientInstanceId(sharedFactory)
+        val probeWarmRouteIdentity = ReaderImageCache.telemetryClientInstanceId(sharedFactory)
+
+        assertEquals(ordinaryRouteIdentity, probeWarmRouteIdentity)
+        assertNotEquals(
+            ordinaryRouteIdentity,
+            ReaderImageCache.telemetryClientInstanceId(otherFactory),
+        )
+
+        val cache = readSource("ReaderImageCache.kt")
+        val telemetryIdentityBlock = cache.substringAfter(
+            "internal fun telemetryClientInstanceId("
+        ).substringBefore("private fun takeQuarantineConnectionObservation(")
+        assertFalse(telemetryIdentityBlock.contains("callFactoryId"))
+    }
 
     @Test
     fun probeWarmAdjacentRouteCannotBeOverriddenByOrdinaryH1Admission() {

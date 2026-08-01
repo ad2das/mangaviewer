@@ -7565,7 +7565,6 @@ data class NtkResolvedSourceRoute(
         tag: NtkStrictSourceCallTag?,
         protocol: String,
         observation: StrictConnectionObservation,
-        callFactoryId: String,
         callFactory: Call.Factory
     ) {
         if (tag == null || !tag.isProductionStrict) return
@@ -7573,16 +7572,21 @@ data class NtkResolvedSourceRoute(
             tag.pageIndex,
             protocol,
             observation,
-            callFactoryId,
             callFactory
         )
     }
+
+    /** Logical route labels must not turn one physical Call.Factory into multiple clients. */
+    internal fun telemetryClientInstanceId(callFactory: Call.Factory): String =
+        NtkStripDigests.sha256Tokens(
+            "viewer-http-client-instance-v2",
+            System.identityHashCode(callFactory).toString(),
+        )
 
     private fun reportNetworkObservation(
         pageIndex: Int,
         protocol: String,
         observation: StrictConnectionObservation,
-        callFactoryId: String,
         callFactory: Call.Factory
     ) {
         if (pageIndex < 0) return
@@ -7594,11 +7598,7 @@ data class NtkResolvedSourceRoute(
                 observation.connectionId
             )
         }
-        val clientInstanceId = NtkStripDigests.sha256Tokens(
-            "viewer-http-client-instance-v1",
-            callFactoryId,
-            System.identityHashCode(callFactory).toString()
-        )
+        val clientInstanceId = telemetryClientInstanceId(callFactory)
         ViewerTelemetry.networkObservation(
             pageIndex,
             protocol.ifBlank { "unknown" },
@@ -7983,7 +7983,6 @@ data class NtkResolvedSourceRoute(
                     operation?.tag,
                     protocol,
                     connection,
-                    route.callFactoryId,
                     route.callFactory
                 )
                 operation?.operationLease?.complete(
@@ -8227,7 +8226,6 @@ data class NtkResolvedSourceRoute(
                 operation.tag,
                 protocol,
                 connection,
-                resolvedRoute.callFactoryId,
                 resolvedRoute.callFactory
             )
             operation.operationLease.complete(
@@ -8604,7 +8602,6 @@ data class NtkResolvedSourceRoute(
                 identity.pageIndex,
                 protocol,
                 connection,
-                route.callFactoryId,
                 route.callFactory
             )
             if (!succeeded) tempLease.close()
@@ -9341,7 +9338,6 @@ data class NtkResolvedSourceRoute(
                 callContext.tag,
                 protocol,
                 connection,
-                route.callFactoryId,
                 route.callFactory
             )
             callContext.operationLease.complete(
