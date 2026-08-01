@@ -2,6 +2,7 @@ package ml.melun.mangaview.mangaview;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -61,8 +62,20 @@ final class EpisodeOrderingPolicy {
         if(end - start < 2)
             return;
         ArrayList<EpisodeOrder> block = new ArrayList<>();
-        for(int i = start; i < end; i++)
-            block.add(new EpisodeOrder(episodes.get(i), i - start, visibleEpisodeNumber(episodes.get(i))));
+        HashSet<Long> visibleNumbers = new HashSet<>();
+        for(int i = start; i < end; i++) {
+            double number = visibleEpisodeNumber(episodes.get(i));
+            /*
+             * A season can restart its displayed numbering while the source keeps one canonical
+             * episode sequence.  Re-sorting such a block by the repeated display number turns a
+             * canonical 312 -> 311 transition into 311 -> an old season's "60화".  The parser's
+             * source order is the only unambiguous order once a visible number repeats, so keep it
+             * intact.  Unique-number blocks still get the legacy repair below.
+             */
+            if(!visibleNumbers.add(Double.doubleToLongBits(number)))
+                return;
+            block.add(new EpisodeOrder(episodes.get(i), i - start, number));
+        }
         Collections.sort(block, (left, right) -> {
             int numberCompare = Double.compare(right.number, left.number);
             if(numberCompare != 0)

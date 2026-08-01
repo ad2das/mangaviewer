@@ -61,6 +61,25 @@ public class ViewerEpisodeResolverTest {
         assertEquals(episodes, preparedPrevious.getEps());
     }
 
+    @Test
+    public void nextCandidateFollowsCanonicalOrderWhenSeasonNumbersRepeat() {
+        Title title = title(751999, "ntk");
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(episode(title, 312, "3부 - 천상대전 60화", "/webtoon/751999/nv-751999-312"));
+        episodes.add(episode(title, 311, "3부 - 천상대전 59화", "/webtoon/751999/nv-751999-311"));
+        episodes.add(episode(title, 60, "60화", "/webtoon/751999/nv-751999-60"));
+        title.setEps(episodes);
+        Manga current = title.getEps().stream()
+                .filter(episode -> episode.getId() == 311)
+                .findFirst()
+                .orElseThrow(AssertionError::new);
+
+        Manga next = ViewerEpisodeResolver.nextCandidate(
+                current, null, title, Manga::sameEpisodeIdentity);
+
+        assertEquals("/webtoon/751999/nv-751999-312", next.getNtkEpisodePath());
+    }
+
     private static Title title(int id, String source) {
         Title title = new Title("작품" + id, "", "", new ArrayList<>(), "", id, MTitle.base_comic);
         title.setSourceSite(source);
@@ -79,5 +98,13 @@ public class ViewerEpisodeResolverTest {
             episode.setEps(episodes);
         title.setEps(episodes);
         return episodes;
+    }
+
+    private static Manga episode(Title title, int id, String name, String path) {
+        Manga episode = new Manga(id, name, "", MTitle.base_comic);
+        episode.setTitle(title);
+        episode.setTitleId(title.getId());
+        episode.setNtkEpisodePath(path);
+        return episode;
     }
 }

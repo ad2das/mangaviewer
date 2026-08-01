@@ -42,4 +42,18 @@ public class EpisodeOrderingPolicyTest {
         assertEquals("작품 번외편", episodes.get(3).getName());
         assertEquals("작품 4화", episodes.get(4).getName());
     }
+
+    @Test
+    public void repeatedSeasonNumbersPreserveCanonicalSourceOrder() {
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(new Manga(312, "3부 - 천상대전 60화", "", 0));
+        episodes.add(new Manga(311, "3부 - 천상대전 59화", "", 0));
+        episodes.add(new Manga(60, "60화", "", 0));
+
+        EpisodeOrderingPolicy.sortByVisibleEpisodeNumber(episodes);
+
+        assertEquals(312, episodes.get(0).getId());
+        assertEquals(311, episodes.get(1).getId());
+        assertEquals(60, episodes.get(2).getId());
+    }
 }
