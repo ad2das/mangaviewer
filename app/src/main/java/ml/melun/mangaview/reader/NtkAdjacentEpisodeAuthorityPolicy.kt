@@ -8,6 +8,38 @@ package ml.melun.mangaview.reader
  * database id creates phantom episodes and permanently retries URLs that do not exist.
  */
 internal object NtkAdjacentEpisodeAuthorityPolicy {
+    /**
+     * Both proofs below bind the complete ordered asset list to the exact episode path. A plain
+     * episode-document generation is intentionally excluded because it has no token-bound source
+     * identity and therefore cannot publish an adjacent strict-body runway.
+     */
+    @JvmStatic
+    fun supportsStrictAdjacentManifest(proofKind: NtkExactManifestProofKind): Boolean =
+        proofKind == NtkExactManifestProofKind.VIEWER_IMAGE_API ||
+            proofKind == NtkExactManifestProofKind.TOKEN_BOUND_GENERATED
+
+    @JvmStatic
+    fun supportsStrictAdjacentManifest(
+        authority: NtkAuthoritativeManifest,
+        expectedEpisodePath: String,
+    ): Boolean {
+        val concreteProofSupported = when (authority.proof) {
+            is NtkViewerImageApiManifestProof,
+            is NtkTokenBoundGeneratedManifestProof,
+            is NtkObservedNumericReplicaManifestProof -> true
+            is NtkEpisodeDocumentGeneratedManifestProof -> false
+        }
+        val expectedPath = NtkStripDigests.normalizeEpisodePath(expectedEpisodePath)
+        return concreteProofSupported &&
+            supportsStrictAdjacentManifest(authority.proof.kind) &&
+            authority.isProductionClaimable &&
+            authority.seal.revision == authority.proof.discoveryGeneration &&
+            expectedPath.isNotEmpty() &&
+            authority.seal.normalizedEpisodePath.equals(expectedPath, ignoreCase = true) &&
+            authority.seal.normalizedCanonicalAssets.isNotEmpty() &&
+            authority.seal.normalizedCanonicalAssets.size == authority.seal.pageCount
+    }
+
     @JvmStatic
     fun maySynthesizeNumericCandidate(
         authoritativeEpisodeCount: Int,

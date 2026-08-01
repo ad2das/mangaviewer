@@ -42,6 +42,54 @@ class NtkColdRendererPreparationArchitectureTest {
     private val quicFetcherSource = File(
         "src/main/java/ml/melun/mangaview/activity/NtkQuicFetcher.java"
     ).readText()
+    private val clickOwnedQuarantineSource = File(
+        "src/main/java/ml/melun/mangaview/reader/NtkClickOwnedAnchorQuarantine.kt"
+    ).readText()
+    private val macrobenchmarkSource = File(
+        "../macrobenchmark/src/main/java/ml/melun/mangaview/macrobenchmark/NtkColdViewerMacrobenchmark.kt"
+    ).readText()
+    private val qualificationSource = File(
+        "../tools/ntk_cold_qualification.ps1"
+    ).readText()
+
+    @Test
+    fun timedOutExactQuicPrefixCannotOverlapItsRangeContinuation() {
+        assertTrue(quicFetcherSource.contains("boolean terminalAfterCancel = done.await"))
+        assertTrue(quicFetcherSource.contains("if(!terminalAfterCancel)"))
+        assertTrue(quicFetcherSource.contains("if(!exactIdentityRequest)"))
+        assertTrue(quicFetcherSource.contains("state.responseSnapshot()"))
+        assertTrue(
+            quicFetcherSource.contains(
+                "completed = done.await(boundedTimeoutMs"
+            )
+        )
+        assertFalse(quicFetcherSource.contains("done.await(\n" +
+            "                                    EXACT_IDENTITY_TAIL_PROGRESS_GRACE_MS"))
+        assertTrue(
+            imageCacheSource.contains(
+                "NtkExactQuicPartialResumePolicy.completeBodyLength("
+            )
+        )
+        assertTrue(imageCacheSource.contains("isCompleteImageBytes(request.url.toString()"))
+        assertTrue(quicFetcherSource.contains("state.terminalKind"))
+        assertTrue(quicFetcherSource.contains("CANCELED_BY_INTERNAL_TIMEOUT"))
+        assertTrue(
+            imageCacheSource.contains(
+                "NtkExactQuicPartialResumePolicy.IDENTITY_REQUEST_MARKER"
+            )
+        )
+        assertTrue(
+            imageCacheSource.contains(
+                "requiresDirectWifiContinuation"
+            )
+        )
+        assertTrue(
+            imageCacheSource.contains(
+                "return maybeWrapStalledReplicaBody("
+            )
+        )
+    }
+
     @Test
     fun directStrictColdSessionEnablesGpuRunwayWithoutChangingPixelProofMode() {
         assertTrue(
@@ -355,6 +403,138 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun directWifiAdjacentWorkStartsOnlyAfterEveryCurrentDrawable() {
+        val directGate = functionBody(
+            "private fun isDirectWifiStrictAdjacentCompletionGateActive(",
+            sessionSource
+        )
+        val complete = functionBody(
+            "private fun isEpisodeFullyDrawableForAdjacent(",
+            sessionSource
+        )
+        val metadata = functionBody(
+            "private fun maybeStartInitialAdjacentMetadataPrefetch(",
+            sessionSource
+        )
+        val prefetch = functionBody(
+            "private fun maybeStartInitialTailAdjacentPrefetch(",
+            sessionSource
+        )
+        val streams = functionBody(
+            "private fun startAdjacentForegroundStreams(",
+            sessionSource
+        )
+        val refStreams = functionBody(
+            "private fun startAdjacentForegroundStreamsForRefs(",
+            sessionSource
+        )
+        val completionCallback = functionBody(
+            "private fun queueStrictAllImagesRenderReady(",
+            activitySource
+        )
+        val committedFrame = functionBody(
+            "private fun handleStrictRollingCompletedDraw(",
+            activitySource
+        )
+        val directAdjacentPolicy = functionBody(
+            "fun isDirectWifiForwardAdjacentPolicyActive(",
+            sessionSource
+        )
+        val prime = functionBody(
+            "private fun primeAdjacentLaunchWindow(",
+            activitySource
+        )
+        val hybridPrime = functionBody(
+            "private fun maybePrimeHybridNtkNextEpisode(",
+            activitySource
+        )
+        val hybridStart = functionBody(
+            "private fun maybeStartHybridNtkNextEpisode(",
+            activitySource
+        )
+        val pageBottomGeometry = functionBody(
+            "fun isPageBottomReachedAtScroll(",
+            source
+        )
+
+        assertTrue(directGate.contains("if (!httpClient.isNtk) return false"))
+        assertFalse(directGate.contains("strictExactColdRolling"))
+        assertTrue(directGate.contains("httpClient.isNtkWifiTransportActive()"))
+        assertTrue(
+            directGate.contains(
+                "!httpClient.isNtkCellularResilientTransportActive()"
+            )
+        )
+        assertTrue(complete.contains("authoritativeCount <= 0"))
+        assertTrue(complete.contains("refs.size < authoritativeCount"))
+        assertTrue(complete.contains("hasListenerDrawableDelivery(index, page)"))
+        assertTrue(complete.contains("hasDeliveredBitmap(index)"))
+        assertTrue(metadata.contains("!isEpisodeFullyDrawableForAdjacent(source)"))
+        assertTrue(prefetch.contains("!isEpisodeFullyDrawableForAdjacent(source)"))
+        assertTrue(streams.contains("append_adjacent_foreground_streams_wait_current_complete"))
+        assertTrue(
+            refStreams.contains(
+                "append_adjacent_foreground_ref_streams_wait_current_complete"
+            )
+        )
+        assertTrue(
+            completionCallback.contains(
+                "session?.prepareForwardAdjacentAfterCurrentComplete(completedAnchor)"
+            )
+        )
+        assertTrue(prime.contains("val activeSession = session ?: return"))
+        assertTrue(prime.contains("!activeSession.canPrepareForwardAdjacentNow()"))
+        assertTrue(hybridPrime.contains("!isDirectWifiHybridCurrentEpisodeComplete()"))
+        assertTrue(hybridStart.contains("!isDirectWifiHybridCurrentEpisodeComplete()"))
+        assertTrue(directAdjacentPolicy.contains("!reverse"))
+        assertTrue(
+            directAdjacentPolicy.contains(
+                "isDirectWifiStrictAdjacentCompletionGateActive()"
+            )
+        )
+        assertTrue(
+            committedFrame.contains(
+                "activeSession.isDirectWifiForwardAdjacentPolicyActive()"
+            )
+        )
+        assertTrue(
+            committedFrame.contains(
+                "ViewerTelemetry.adjacentActualDrawCommitted("
+            )
+        )
+        assertTrue(committedFrame.contains("direction > 0"))
+        assertTrue(committedFrame.contains("presentedUptimeNanos > 0L"))
+        assertTrue(pageBottomGeometry.contains("pageTopOrElseLocked"))
+        assertTrue(pageBottomGeometry.contains("pageDrawHeightLocked"))
+        assertTrue(pageBottomGeometry.contains("committedScrollOffsetPx + height.toFloat()"))
+        assertTrue(
+            committedFrame.contains(
+                "identity.sourcePageIndex == launchSeal.canonicalAssets.lastIndex"
+            )
+        )
+        assertTrue(
+            committedFrame.contains(
+                "renderView.isPageBottomReachedAtScroll(launchTailDisplayPage, scrollOffset)"
+            )
+        )
+        assertTrue(
+            committedFrame.contains(
+                "ViewerTelemetry.forwardBoundaryReached(presentedUptimeNanos)"
+            )
+        )
+        val actualPublish = committedFrame.indexOf(
+            "ViewerTelemetry.actualImageDrawCommittedForEpisode("
+        )
+        assertTrue(
+            committedFrame.indexOf("ViewerTelemetry.forwardBoundaryReached(") < actualPublish
+        )
+        assertTrue(
+            committedFrame.indexOf("ViewerTelemetry.adjacentActualDrawCommitted(") < actualPublish
+        )
+        assertTrue(activitySource.contains("boundary_append_skip_ntk_previous_auto"))
+    }
+
+    @Test
     fun adjacentRunwayPublishesOriginalCdnImagesOnlyAfterDrawablePreparation() {
         val appendResolved = functionBody(
             "private fun appendResolvedEpisode(",
@@ -657,7 +837,7 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
-    fun clickOwnedManhwaAnchorUsesBoundedShardAndMixedWifiUsesIndependentH2() {
+    fun clickOwnedManhwaAnchorUsesBoundedShardAndMixedWifiPngUsesIndependentH1() {
         val route = functionBody(
             "fun resolveClickOwnedAnchorQuarantineRoute(",
             imageCacheSource
@@ -671,22 +851,52 @@ class NtkColdRendererPreparationArchitectureTest {
         )
         assertTrue(
             route.contains(
-                "clickOwnedMixedFormatBodyClient(shared)"
+                "clickOwnedMixedFormatBodyClient(shared, checkNotNull(directWifiNetwork))"
             )
         )
-        assertTrue(route.contains("directWifiMixedEpisodePage"))
+        assertTrue(route.contains("httpClient.getNtkDirectWifiNetwork()"))
+        assertTrue(route.contains("directWifiMixedPngPage"))
         assertTrue(route.contains("generatedRef.extension"))
-        assertTrue(route.contains("directWifiMixedUncommonPage"))
-        assertTrue(route.contains("\"ntk-click-mixed-h2\""))
-        assertFalse(
-            functionBody(
-                "private fun clickOwnedMixedFormatBodyClient(",
-                imageCacheSource
-            ).contains(".protocols(listOf(Protocol.HTTP_1_1))")
+        assertTrue(route.contains("generatedRef.extension == \"png\""))
+        assertTrue(
+            route.contains(
+                "directWifiMixedManhwaPhysicalAsset(asset, checkNotNull(directWifiNetwork))"
+            )
         )
+        assertTrue(route.contains("\"ntk-click-mixed-png-h1\""))
+        val physicalRoute = functionBody(
+            "private fun directWifiMixedManhwaPhysicalAsset(",
+            imageCacheSource
+        )
+        assertTrue(physicalRoute.contains("plan.networkHandle != directWifiNetwork.networkHandle"))
+        val mixedClient = functionBody(
+            "private fun clickOwnedMixedFormatBodyClient(",
+            imageCacheSource
+        )
+        assertTrue(mixedClient.contains(".protocols(listOf(Protocol.HTTP_1_1))"))
+        assertTrue(mixedClient.contains(".socketFactory(directWifiNetwork.socketFactory)"))
+        assertTrue(mixedClient.contains("directWifiNetwork.getAllByName(hostname)"))
+        assertFalse(route.contains("generatedRef.extension != \"jpg\""))
         assertTrue(route.contains("\"ntk-click-anchor-okhttp\""))
         assertFalse(route.contains("ntkDemandBoundExactImageFactory()"))
         assertFalse(route.contains("ntk-click-anchor-http3"))
+    }
+
+    @Test
+    fun mixedPngPlanUsesOnlyObservedSuffixesAndNeverBlocksJpegBodies() {
+        val start = functionBody(
+            "fun start(manga: Manga, normalizedEpisodePath: String)",
+            clickOwnedQuarantineSource
+        )
+
+        assertTrue(start.contains("val exactResolutionExtensions = observedExtensions"))
+        assertFalse(start.contains("snapshot + candidateAsset"))
+        assertTrue(start.contains("candidateFuture.thenCompose { candidate ->"))
+        assertTrue(start.contains("!candidate.substringAfterLast('.', \"\")"))
+        assertTrue(start.contains("physicalPlanReady.handle { _, _ -> candidate }"))
+        assertTrue(start.contains("DIRECT_WIFI_LARGE_PNG_BODY_BYTES"))
+        assertTrue(start.contains("CompletableFuture.completedFuture(candidate)"))
+        assertFalse(start.contains("candidateFuture.thenCombine("))
     }
 
     @Test
@@ -722,7 +932,7 @@ class NtkColdRendererPreparationArchitectureTest {
             imageCacheSource
         )
 
-        assertTrue(route.contains("replicaFailoverFactory(strictInstrumentedClient(bounded))"))
+        assertTrue(route.contains("val factory = replicaFailoverFactory(transportFactory)"))
         assertTrue(factory.contains("replicaFailoverFactories.computeIfAbsent(identity)"))
         assertFalse(route.contains("NtkReplicaFailoverCallFactory(strictInstrumentedClient(bounded))"))
     }
@@ -823,6 +1033,216 @@ class NtkColdRendererPreparationArchitectureTest {
             defer.indexOf("if (isViewportInsideEpisode(target)) return false") <
                 defer.indexOf("if (viewportBusy.get()) return true")
         )
+    }
+
+    @Test
+    fun directWifiAdjacentHasNoPreCompletionOrPreviousAutoFetchEntry() {
+        val prepare = functionBody("fun prepareAdjacentEpisode(", sessionSource)
+        val append = functionBody("fun appendAdjacentEpisode(", sessionSource)
+        val unavailable = functionBody(
+            "private fun resolveInitialNtkUnavailableEpisode(",
+            sessionSource
+        )
+        val runway = functionBody(
+            "private fun shouldUseAdjacentInitialAppendRunway(",
+            sessionSource
+        )
+        val prime = functionBody(
+            "private fun primeAdjacentLaunchWindow(",
+            activitySource
+        )
+
+        assertTrue(prepare.contains("reader_adjacent_previous_auto_prepare_disabled"))
+        assertTrue(prepare.contains("!canPrepareForwardAdjacentNow()"))
+        assertTrue(append.contains("reader_adjacent_previous_auto_append_disabled"))
+        assertTrue(append.contains("append_adjacent_wait_current_complete"))
+        assertTrue(
+            append.indexOf("append_adjacent_wait_current_complete") <
+                append.indexOf("appendExecutor.execute")
+        )
+        assertTrue(append.contains("ViewerTelemetry.adjacentWorkStarted("))
+        assertTrue(unavailable.contains("listOf(ReaderSurfaceView.DIRECTION_NEXT)"))
+        assertTrue(runway.contains("urls.isEmpty()"))
+        assertFalse(runway.contains("urls.size <= NTK_APPEND_INITIAL_RUNWAY_PAGES"))
+        assertTrue(prime.contains("val activeSession = session ?: return"))
+        assertTrue(prime.contains("!activeSession.canPrepareForwardAdjacentNow()"))
+    }
+
+    @Test
+    fun exactForwardRunwayRacesHealthyReplicasOnlyAfterDirectWifiGrant() {
+        val candidates = functionBody(
+            "private fun initialGeneratedDirectRaceCandidates(",
+            imageCacheSource
+        )
+        val gate = functionBody(
+            "private fun isDirectWifiGrantedAdjacentGeneratedPath(",
+            imageCacheSource
+        )
+        val transportGate = functionBody(
+            "private fun isDirectWifiAdjacentTransportAllowed(",
+            imageCacheSource
+        )
+        val replicaCandidates = functionBody(
+            "private fun ntkDirectWifiAdjacentReplicaRaceCandidates(",
+            imageCacheSource
+        )
+        val race = functionBody(
+            "private fun requestDirectInitialGeneratedCandidateRaceUnshared(",
+            imageCacheSource
+        )
+        val sharedRace = functionBody(
+            "private fun requestDirectInitialGeneratedCandidateRace(",
+            imageCacheSource
+        )
+        val exactResponse = functionBody(
+            "private fun isExactNtkGeneratedPageResponse(",
+            imageCacheSource
+        )
+        val strictAdjacentResponse = functionBody(
+            "private fun isStrictDirectWifiAdjacentResponse(",
+            imageCacheSource
+        )
+
+        assertTrue(
+            candidates.contains(
+                "directWifiExactAdjacent =\n            isDirectWifiGrantedAdjacentGeneratedPath(target.path)"
+            )
+        )
+        assertTrue(candidates.contains("ntkDirectWifiAdjacentReplicaRaceCandidates(image)"))
+        assertTrue(
+            candidates.indexOf("ntkDirectWifiAdjacentReplicaRaceCandidates(image)") <
+                candidates.indexOf("ntkGeneratedExtensionFallbacks(image)")
+        )
+        assertTrue(gate.contains("isDirectWifiAdjacentTransportAllowed(path)"))
+        assertTrue(gate.contains("trustedNtkImageApiCount(path, minCreatedAtMs)"))
+        assertTrue(gate.contains("hasAuthoritativeCompleteEarlyNtkImageUrls(path, trustedCount, minCreatedAtMs)"))
+        assertTrue(transportGate.contains("hasActiveAdjacentNtkForegroundViewerGrant(path)"))
+        assertTrue(transportGate.contains("httpClient.isNtkWifiTransportActive"))
+        assertTrue(transportGate.contains("!httpClient.isNtkCellularResilientTransportActive()"))
+        assertTrue(replicaCandidates.contains("addFirst(\"moamoabon.com\")"))
+        assertTrue(replicaCandidates.contains("addFirst(\"aws-cdn1.site\", \"https\")"))
+        assertTrue(replicaCandidates.contains("addFirst(\"aws-cdn1.site\", \"http\")"))
+        assertTrue(replicaCandidates.contains("ntkDirectWifiAdjacentReplicaOrigins"))
+        assertTrue(race.contains("if (directWifiAdjacentCandidate &&"))
+        assertTrue(race.contains("!isDirectWifiAdjacentTransportAllowed(target.path)"))
+        assertTrue(race.contains("response.close()"))
+        assertTrue(race.contains("rememberDirectWifiAdjacentReplicaOrigin("))
+        assertTrue(race.contains("result.second.request.url.toString()"))
+        assertTrue(race.contains("isStrictDirectWifiAdjacentResponse(image, target, response)"))
+        assertTrue(strictAdjacentResponse.contains("isExactNtkGeneratedPageResponse(target, response)"))
+        assertTrue(sharedRace.contains("shouldUseDirectWifiAdjacentReplicaPath(target.path)"))
+        assertTrue(sharedRace.indexOf("shouldUseDirectWifiAdjacentReplicaPath(target.path)") <
+            sharedRace.indexOf("initialGeneratedDirectRaceFlightKey("))
+        assertTrue(exactResponse.contains("actual.path.trimEnd('/').equals(expected.path.trimEnd('/')"))
+    }
+
+    @Test
+    fun adjacentQualificationTraversesTheAtomicRunwayAndAcceptsShortEpisodes() {
+        val drive = functionBody(
+            "private fun driveIntoExpectedAdjacentEpisode(",
+            macrobenchmarkSource
+        )
+
+        assertTrue(drive.contains("maxExpectedSource = maxOf(maxExpectedSource, source)"))
+        assertTrue(drive.contains("telemetryNanos(\"adjacentTotalPageCount\")"))
+        assertTrue(drive.contains("ADJACENT_REQUIRED_RUNWAY_PAGES"))
+        assertTrue(drive.contains("maxExpectedSource >= requiredLastSource"))
+        assertTrue(
+            drive.contains(
+                "if (expectedEpisodePath.isBlank() &&\n                launchReadyPageCount > 0"
+            )
+        )
+        assertTrue(
+            macrobenchmarkSource.contains(
+                "ADJACENT_REQUIRED_RUNWAY_PAGES,\n                        adjacentTotalPageCount"
+            )
+        )
+        assertTrue(
+            qualificationSource.contains(
+                "[Math]::Min(4, \$observedAdjacentTotalPageCount)"
+            )
+        )
+        assertFalse(
+            qualificationSource.contains(
+                "adjacentRunwayPageCount\") -ne 4"
+            )
+        )
+    }
+
+    @Test
+    fun terminalDecodeExpansionIsGenerationOwnedAndCurrentWifiWebtoonOnly() {
+        val allResidentStart = sessionSource.indexOf(
+            "if (residentPageCount == launchSeal.pageCount)"
+        )
+        val allResidentEnd = sessionSource.indexOf(
+            "// A terminal sweep makes the invariant explicit",
+            startIndex = allResidentStart,
+        )
+        assertTrue(allResidentStart >= 0)
+        assertTrue(allResidentEnd > allResidentStart)
+        val allResident = sessionSource.substring(allResidentStart, allResidentEnd)
+
+        assertTrue(sessionSource.contains("strictExactForegroundViewerGenerationAtCreation"))
+        assertTrue(sessionSource.contains("ViewerTelemetry.activeGeneration() == generation"))
+        assertTrue(
+            allResident.contains(
+                "activeGeneration == strictExactForegroundViewerGenerationAtCreation"
+            )
+        )
+        assertTrue(
+            allResident.contains(
+                "ViewerTelemetry.activeGeneration() == strictExactForegroundViewerGenerationAtCreation"
+            )
+        )
+        assertTrue(allResident.contains("val directWifiActive ="))
+        assertTrue(allResident.contains("directWifi = directWifiActive"))
+        assertTrue(allResident.contains("webtoon = strictWebtoon"))
+        assertTrue(
+            sessionSource.contains(
+                "NtkStrictTerminalDecodePolicy.DIRECT_WIFI_CURRENT_WEBTOON_PARALLELISM"
+            )
+        )
+    }
+
+    @Test
+    fun alternateWebtoonH3IsLiveWifiGenerationBoundAndUsesOnlyAnExistingSession() {
+        val alternateStart = imageCacheSource.indexOf(
+            "val liveDirectWifi ="
+        )
+        val alternateEnd = imageCacheSource.indexOf(
+            "} else if (shouldTryWifiManhwaPrimaryExactQuic(",
+            startIndex = alternateStart,
+        )
+        assertTrue(alternateStart >= 0)
+        assertTrue(alternateEnd > alternateStart)
+        val alternate = imageCacheSource.substring(alternateStart, alternateEnd)
+
+        assertTrue(alternate.contains("isNtkCellularResilientTransportActive()"))
+        assertTrue(alternate.contains("isNtkWifiTransportActive()"))
+        assertTrue(alternate.contains("ViewerTelemetry.activeGeneration() == viewerGeneration"))
+        assertTrue(alternate.contains("wifiExactQuicSessionPool?.existingSession("))
+        assertFalse(alternate.contains("wifiExactQuicSessionPool?.session("))
+        assertTrue(alternate.contains("recheckCancellationAfterRegistration = true"))
+        assertTrue(alternate.contains("admissionCheck ="))
+        assertTrue(alternate.contains("explicitReplicaMissHosts.add("))
+        assertTrue(alternate.contains("getNtkDirectWifiNetwork()?.networkHandle"))
+        assertTrue(alternate.contains("sameDirectWifiNetwork"))
+        assertTrue(imageCacheSource.contains("NtkQuicFetcher.newDirectWifiQuicSession("))
+        assertTrue(quicFetcherSource.contains("setDefaultNetworkMigration("))
+        assertTrue(quicFetcherSource.contains("setPathDegradationMigration("))
+        assertTrue(quicFetcherSource.contains("setAllowNonDefaultNetworkUsage("))
+        assertTrue(quicFetcherSource.contains("continuationCheck.getAsBoolean()"))
+        assertTrue(quicFetcherSource.contains("cancelIfOwnerRetired(request)"))
+    }
+
+    @Test
+    fun directWifiForwardAdjacentEpisodeOmitsOnlyTheStructuralTransitionCard() {
+        val refs = functionBody("private fun pageRefsForEpisode(", sessionSource)
+        assertTrue(refs.contains("NtkAdjacentTransitionCardPolicy.shouldInsert("))
+        assertTrue(refs.contains("isDirectWifiStrictAdjacentCompletionGateActive()"))
+        assertTrue(refs.contains("isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)"))
+        assertTrue(refs.contains("if (!insertTransitionCard)"))
+        assertTrue(refs.contains("return pageRefs"))
     }
 
     private fun functionBody(signature: String, text: String = source): String {

@@ -2035,6 +2035,34 @@ public class CustomHttpClient {
         }
     }
 
+    /**
+     * Captures only the current direct-Wi-Fi bearer for transport-scoped image work.
+     *
+     * Callers bind both sockets and DNS to this Network. If Wi-Fi disappears, those calls fail on
+     * the retired bearer rather than silently reopening their Wi-Fi-only protocol on cellular.
+     */
+    public Network getNtkDirectWifiNetwork() {
+        if(context == null)
+            return null;
+        try {
+            ConnectivityManager manager =
+                    (ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(manager == null)
+                return null;
+            Network active = manager.getActiveNetwork();
+            NetworkCapabilities capabilities =
+                    active == null ? null : manager.getNetworkCapabilities(active);
+            if(capabilities == null
+                    || !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                    || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    || isCellularBackedNetwork(manager, capabilities))
+                return null;
+            return active;
+        } catch(Exception e) {
+            return null;
+        }
+    }
+
     private static boolean isCellularBackedNetwork(ConnectivityManager manager,
                                                     NetworkCapabilities capabilities) {
         if(capabilities == null)

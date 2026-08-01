@@ -85,6 +85,7 @@ class NtkStrictInitialWavePolicyTest {
                 cohortCount = 24,
                 cellularResilientTransport = false,
                 episodePageCount = 140,
+                directWifiTransport = true,
             ),
         )
         assertEquals(
@@ -93,6 +94,17 @@ class NtkStrictInitialWavePolicyTest {
                 cohortCount = 24,
                 cellularResilientTransport = false,
                 episodePageCount = 139,
+                directWifiTransport = true,
+            ),
+        )
+        // A non-cellular transport is not necessarily direct Wi-Fi (for example, VPN).
+        assertEquals(
+            3,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 24,
+                cellularResilientTransport = false,
+                episodePageCount = 140,
+                directWifiTransport = false,
             ),
         )
         // Carrier retains the pre-existing finite-cohort wave.
@@ -313,16 +325,45 @@ class NtkStrictInitialWavePolicyTest {
         assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(3))
         assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(124))
         assertEquals(
-            60,
+            24,
             NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
                 1,
                 wifiQuicBulkTransport = true,
             ),
         )
         assertEquals(
-            72,
+            24,
             NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
                 1,
+                wifiQuicBulkTransport = true,
+                episodePageCount = 143,
+            ),
+        )
+        assertEquals(
+            24,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                8,
+                wifiQuicBulkTransport = true,
+            ),
+        )
+        assertEquals(
+            24,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                20,
+                wifiQuicBulkTransport = true,
+            ),
+        )
+        assertEquals(
+            24,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                36,
+                wifiQuicBulkTransport = true,
+            ),
+        )
+        assertEquals(
+            24,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                36,
                 wifiQuicBulkTransport = true,
                 episodePageCount = 143,
             ),
@@ -337,7 +378,7 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
-            60,
+            24,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 120,
@@ -347,7 +388,7 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
-            72,
+            24,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 120,
@@ -430,6 +471,19 @@ class NtkStrictInitialWavePolicyTest {
             20,
             NtkStrictInitialWavePolicy.submissionTarget(admitted.size),
         )
+    }
+
+    @Test
+    fun directWifiAdjacentAdmissionKeepsOnlyAtomicRunwayUntilViewportActivation() {
+        val admitted = NtkStrictInitialWavePolicy.admittedPageIndexes(
+            pageCount = 78,
+            initialPageIndex = 0,
+            rollingAdmission = true,
+            adjacentPrefetch = true,
+        )
+
+        assertEquals((0 until 5).toSet(), admitted)
+        assertEquals(5, NtkStrictInitialWavePolicy.submissionTarget(admitted.size))
     }
 
     @Test

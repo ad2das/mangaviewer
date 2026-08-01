@@ -4155,6 +4155,30 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Returns true only when the supplied committed-frame scroll coordinate exposed the physical
+     * bottom of [displayPageIndex]. A continuously appended reader cannot use the surface's global
+     * max scroll as an episode boundary, and merely seeing the final page is insufficient for a
+     * tall webtoon image whose bottom may still be several viewports away.
+     */
+    fun isPageBottomReachedAtScroll(
+        displayPageIndex: Int,
+        committedScrollOffsetPx: Float,
+    ): Boolean {
+        return synchronized(stateLock) {
+            if (!committedScrollOffsetPx.isFinite() || height <= 0 || displayPageIndex !in pages.indices) {
+                return@synchronized false
+            }
+            rebuildLayoutLocked()
+            val page = pages[displayPageIndex]
+            val pageHeight = pageDrawHeightLocked(page)
+            if (pageHeight <= 0f) return@synchronized false
+            val pageBottom = pageTopOrElseLocked(displayPageIndex, Float.MAX_VALUE) + pageHeight
+            val committedViewportBottom = committedScrollOffsetPx + height.toFloat()
+            committedViewportBottom + BOUNDARY_EPSILON_PX >= pageBottom
+        }
+    }
+
     fun testScrollByPixels(deltaPx: Float) {
         val request = synchronized(stateLock) {
             statsAwaitingFirstInput = false

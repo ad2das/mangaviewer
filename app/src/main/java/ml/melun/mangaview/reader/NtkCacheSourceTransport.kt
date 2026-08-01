@@ -72,6 +72,9 @@ internal class NtkCacheSourceTransport(
     override fun onFirstActualFramePresented(episode: NtkEpisodeToken) =
         strictSession.onFirstActualFramePresented(episode)
 
+    override fun onAdjacentViewportActivated(episode: NtkEpisodeToken) =
+        strictSession.onAdjacentViewportActivated(episode)
+
     override fun requestPreparationDrain(
         episode: NtkEpisodeToken,
         completion: (NtkSourceDrainProof) -> Unit

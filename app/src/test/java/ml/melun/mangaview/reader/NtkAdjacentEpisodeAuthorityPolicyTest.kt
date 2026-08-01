@@ -6,6 +6,25 @@ import org.junit.Test
 
 class NtkAdjacentEpisodeAuthorityPolicyTest {
     @Test
+    fun strictAdjacentRunwayAcceptsOnlyExactApiOrTokenBoundGeneratedProofs() {
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.supportsStrictAdjacentManifest(
+                NtkExactManifestProofKind.VIEWER_IMAGE_API
+            )
+        )
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.supportsStrictAdjacentManifest(
+                NtkExactManifestProofKind.TOKEN_BOUND_GENERATED
+            )
+        )
+        assertFalse(
+            NtkAdjacentEpisodeAuthorityPolicy.supportsStrictAdjacentManifest(
+                NtkExactManifestProofKind.EPISODE_DOCUMENT_GENERATED
+            )
+        )
+    }
+
+    @Test
     fun offlineSourceWithoutMetadataAllowsBoundedNumericDiscovery() {
         assertTrue(
             NtkAdjacentEpisodeAuthorityPolicy.maySynthesizeNumericCandidate(

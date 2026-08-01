@@ -26,6 +26,55 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
+    fun adjacentViewportReleasesTheOwningPhysicalWaveExactlyOnce() {
+        val releases = AtomicInteger()
+        val stream = NtkClickOwnedExactBodyStream(
+            mapOf(0 to CompletableFuture.completedFuture(null)),
+            Closeable { },
+            adjacentViewportActivated = { releases.incrementAndGet() },
+        )
+
+        stream.onAdjacentViewportActivated()
+        stream.onAdjacentViewportActivated()
+        stream.close()
+        stream.onAdjacentViewportActivated()
+
+        assertEquals(1, releases.get())
+
+        val closedReleases = AtomicInteger()
+        val closedStream = NtkClickOwnedExactBodyStream(
+            mapOf(0 to CompletableFuture.completedFuture(null)),
+            Closeable { },
+            adjacentViewportActivated = { closedReleases.incrementAndGet() },
+        )
+        closedStream.close()
+        closedStream.onAdjacentViewportActivated()
+        assertEquals(0, closedReleases.get())
+    }
+
+    @Test
+    fun directWifiAdjacentPhysicalWaveIsFourPagesUntilViewportActivation() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val coordinator = readSource("NtkStrictEpisodeDiscoveryCoordinator.kt")
+        val session = readSource("NtkStrictSourceSession.kt")
+
+        assertTrue(
+            quarantine.contains(
+                "private const val DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES = 4"
+            )
+        )
+        assertTrue(quarantine.contains("val completeWaveRelease = networkRelease.thenCombine(adjacentViewportRelease)"))
+        assertTrue(quarantine.contains("minOf(initialSpeculationPages, exactCount)"))
+        assertTrue(quarantine.contains("adjacentPhysicalAdmissionFuture(pageIndex, callCancellation)"))
+        assertTrue(quarantine.contains("awaitAdjacentPhysicalAdmission(pageIndex, callCancellation)"))
+        assertTrue(quarantine.contains("adjacentViewportActivated = ::notifyAdjacentViewportActivated"))
+        assertTrue(coordinator.contains("val directWifiAdjacentOwned ="))
+        assertTrue(coordinator.contains("!client.isNtkCellularResilientTransportActive()"))
+        assertTrue(coordinator.contains("plan == null && !directWifiAdjacentOwned"))
+        assertTrue(session.contains("streamedExactBodies?.onAdjacentViewportActivated()"))
+    }
+
+    @Test
     fun productionHandoffDoesNotWaitForEveryBodyBeforePlanReservation() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val coordinator = readSource("NtkStrictEpisodeDiscoveryCoordinator.kt")
@@ -121,6 +170,32 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
+    fun ordinaryDirectWifiLaneIsProofBoundAndFallsBackAtCallTime() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val cache = readSource("ReaderImageCache.kt")
+        val policy = readSource("NtkClickOwnedManhwaWavePolicy.kt")
+
+        assertTrue(policy.contains("const val BODY_LANES = 40"))
+        assertTrue(policy.contains("const val DIRECT_WIFI_ORDINARY_BODY_TRANSFERS = 40"))
+        assertTrue(quarantine.contains("private val DIRECT_WIFI_ORDINARY_BODY_EXECUTOR"))
+        assertTrue(quarantine.contains("isKnownDirectWifiOrdinaryManhwaEpisode(candidate)"))
+        assertTrue(quarantine.contains("liveHandle == capturedHandle"))
+        assertTrue(quarantine.contains("if (!isLiveOrdinaryDirectWifiCandidate(candidate))"))
+        assertTrue(quarantine.contains("if (ordinaryWifiLease != null && pageIndex != 0)"))
+        assertTrue(cache.contains("rememberNtkDirectWifiOrdinaryManhwaEpisode("))
+        assertTrue(cache.contains("clickOwnedDirectWifiOrdinaryRouteFactory("))
+        assertTrue(cache.contains("NtkDirectWifiOrdinaryTransportSelection"))
+        assertTrue(cache.contains("selectedNetworkBoundH1() == true"))
+        assertTrue(cache.contains("selectDirectWifiOrdinaryNetworkBoundH1("))
+        assertTrue(cache.contains("selected.newCall(request)"))
+        assertTrue(quarantine.contains("liveHandle == capturedHandle"))
+        assertTrue(quarantine.contains("httpClient.isNtkCellularResilientTransportActive"))
+        assertTrue(quarantine.contains("isKnownDirectWifiMixedManhwaEpisode(candidate)"))
+        assertTrue(quarantine.contains("selectDirectWifiOrdinaryNetworkBoundH1(route, true)"))
+        assertTrue(quarantine.contains("rememberNtkDirectWifiMixedManhwaEpisode("))
+    }
+
+    @Test
     fun virtualGeneratedManhwaRouteFallsThroughToSignedAuthority() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val coordinator = readSource("NtkStrictEpisodeDiscoveryCoordinator.kt")
@@ -198,6 +273,65 @@ class NtkClickOwnedExactBodyStreamTest {
             1,
             Regex(Regex.escape("bodyReadAdmission?.invoke()")).findAll(spool).count(),
         )
+    }
+
+    @Test
+    fun mixedPngEarlyBodyRemainsWifiOnlyDocumentAndHeadProved() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val cache = readSource("ReaderImageCache.kt")
+        val start = quarantine.indexOf("private fun startVerifiedFrontierCandidate(")
+        val end = quarantine.indexOf("private fun attachPrivatePredecodes(", start)
+        val verified = quarantine.substring(start, end)
+        val guardStart = cache.indexOf(
+            "fun directWifiMixedManhwaSpeculativeUncommonExtension("
+        )
+        val guardEnd = cache.indexOf("\n    }\n", guardStart) + 7
+        val guard = cache.substring(guardStart, guardEnd)
+
+        assertTrue(verified.contains("val admission = primaryAdmissionFuture("))
+        assertTrue(verified.contains(".thenCombine(documentValidated.handle"))
+        assertTrue(verified.contains("directWifiMixedManhwaSpeculativeUncommonExtension("))
+        assertTrue(verified.contains("started.candidate == candidate"))
+        assertTrue(verified.contains("observedCandidates[pageIndex]?.complete(candidate)"))
+        assertTrue(verified.contains("earlyVerifiedCancellation.cancel()"))
+        assertFalse(verified.contains("candidateFuture.complete("))
+        assertTrue(guard.contains("httpClient.isNtkWifiTransportActive"))
+        assertTrue(guard.contains("!httpClient.isNtkCellularResilientTransportActive()"))
+    }
+
+    @Test
+    fun mixedPngPhysicalPlanIsFiniteWifiOnlyAndHeadSized() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val cache = readSource("ReaderImageCache.kt")
+        val policy = readSource("NtkClickOwnedManhwaWavePolicy.kt")
+        val publishStart = cache.indexOf(
+            "fun rememberNtkDirectWifiMixedManhwaPhysicalHostPlan("
+        )
+        val publishEnd = cache.indexOf("\n    }\n", publishStart) + 7
+        val publish = cache.substring(publishStart, publishEnd)
+        val routeStart = cache.indexOf(
+            "private fun directWifiMixedManhwaPhysicalAsset("
+        )
+        val routeEnd = cache.indexOf("\n    }\n", routeStart) + 7
+        val route = cache.substring(routeStart, routeEnd)
+
+        assertTrue(quarantine.contains("onUsableResponse = { asset, byteCount ->"))
+        assertTrue(quarantine.contains("PHYSICAL_PLAN_WAIT_MS"))
+        assertTrue(quarantine.contains("sizeBalancedReplicaHosts("))
+        assertTrue(quarantine.contains("val firstUsableMixedExtensions"))
+        assertTrue(quarantine.contains("probeDirectWifiTailPage("))
+        assertTrue(quarantine.contains("rememberNtkDirectWifiMixedManhwaPhysicalHostPlan("))
+        assertTrue(quarantine.contains("val routedFutures = futures.mapValues"))
+        assertTrue(quarantine.contains("mixedUncommonTransferPermits"))
+        assertTrue(quarantine.contains("acquireMixedUncommonTransferLease("))
+        assertTrue(publish.contains("httpClient.getNtkDirectWifiNetwork()"))
+        assertTrue(publish.contains("val networkHandle = directWifiNetwork.networkHandle"))
+        assertTrue(publish.contains("existing.networkHandle != networkHandle"))
+        assertTrue(quarantine.contains("byteCount >= DIRECT_WIFI_LARGE_PNG_BODY_BYTES"))
+        assertTrue(quarantine.contains("it.byteCount < DIRECT_WIFI_LARGE_PNG_BODY_BYTES"))
+        assertTrue(route.contains("directWifiNetwork: android.net.Network"))
+        assertTrue(route.contains("plan.networkHandle != directWifiNetwork.networkHandle"))
+        assertTrue(policy.contains("compareByDescending<SizedReplicaBody> { it.byteCount }"))
     }
 
     @Test

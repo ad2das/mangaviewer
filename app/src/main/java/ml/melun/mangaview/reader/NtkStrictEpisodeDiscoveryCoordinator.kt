@@ -443,6 +443,12 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         try {
             requireDiscoveryOwnership(flight, "worker_start")
             val directWebtoon = isDirectTrustedWebtoon(path)
+            val directWifiAdjacentOwned =
+                !flight.viewerOwnerEpisodePath.equals(path, ignoreCase = true) &&
+                    runCatching {
+                        client.isNtkWifiTransportActive &&
+                            !client.isNtkCellularResilientTransportActive()
+                    }.getOrDefault(false)
             if (!directWebtoon) {
                 // Resolve a four-page format sample at the committed click. It downloads no image
                 // body and lets uncommon-format pages join the same bounded body race. Every body
@@ -454,6 +460,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     path,
                     flight.lease.generation.value,
                     clickOwnedManhwaProbe,
+                    directWifiAdjacentOwned,
                 )
                 if (clickOwnedAnchor != null) {
                     clickOwnedManhwaProbe = null
@@ -472,6 +479,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             path,
                             flight.lease.generation.value,
                             clickOwnedManhwaProbe,
+                            directWifiAdjacentOwned,
                         )
                     if (clickOwnedAnchor != null) {
                         clickOwnedManhwaProbe = null
@@ -717,6 +725,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         manga,
                         draft,
                         clickOwnedManhwaProbe,
+                        directWifiAdjacentOwned,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                 }
@@ -821,6 +830,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         manga,
                         draft,
                         clickOwnedManhwaProbe,
+                        directWifiAdjacentOwned,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                     clickOwnedAnchor?.let { anchor ->
@@ -835,7 +845,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             // physical replica response prove the finite mixed-extension table. Join only that
             // observed authority on the normal path; an isolated browser is created below solely
             // if observation genuinely fails and the signed-API compatibility path is required.
-            val observedAuthorityFuture = if (plan == null) {
+            // Observed numeric authority requires every physical body. An offscreen adjacent owns
+            // only four runway bodies until boundary activation, so joining that proof here would
+            // deadlock before a strict stream exists to receive the activation signal. Use the
+            // normal signed-image authority for that bounded adjacent flight instead.
+            val observedAuthorityFuture = if (plan == null && !directWifiAdjacentOwned) {
                 clickOwnedAnchor?.observedDocumentAuthorityFuture(flight.lease, draft)
             } else {
                 null

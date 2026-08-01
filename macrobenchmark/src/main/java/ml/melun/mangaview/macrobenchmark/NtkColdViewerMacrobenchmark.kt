@@ -109,6 +109,15 @@ class NtkColdViewerMacrobenchmark {
         var adjacentTraversalGestureCount = 0
         var adjacentLastActualDescription = ""
         var adjacentLastSourceIndex = -1
+        var adjacentWorkStartedAtNanos = 0L
+        var adjacentRunwayReadyAtNanos = 0L
+        var adjacentRunwayTargetEpisode = ""
+        var adjacentRunwayPageCount = 0
+        var adjacentTotalPageCount = 0
+        var forwardBoundaryReachedAtNanos = 0L
+        var firstAdjacentActualAtNanos = 0L
+        var firstAdjacentActualEpisode = ""
+        var adjacentBoundaryWaitMs = -1.0
         var traceProcessingFailure: Throwable? = null
 
         try {
@@ -243,6 +252,87 @@ class NtkColdViewerMacrobenchmark {
                 allImagesSlaPassed = allImagesReadyPageCount > 0 &&
                     allImagesReadyAtNanos >= clickElapsedNanos &&
                     allImagesReadyAtNanos - clickElapsedNanos <= allImagesSlaMs * 1_000_000L
+                if (expectedAdjacentEpisodePath.isNotBlank()) {
+                    adjacentWorkStartedAtNanos = adjacentLastActualDescription
+                        .telemetryNanos("adjacentWorkStartedAtNanos")
+                    adjacentRunwayReadyAtNanos = adjacentLastActualDescription
+                        .telemetryNanos("adjacentRunwayReadyAtNanos")
+                    adjacentRunwayTargetEpisode = adjacentLastActualDescription
+                        .telemetryValue("adjacentRunwayTargetEpisode")
+                    adjacentRunwayPageCount = adjacentLastActualDescription
+                        .telemetryNanos("adjacentRunwayPageCount")
+                        .toInt()
+                    adjacentTotalPageCount = adjacentLastActualDescription
+                        .telemetryNanos("adjacentTotalPageCount")
+                        .toInt()
+                    forwardBoundaryReachedAtNanos = adjacentLastActualDescription
+                        .telemetryNanos("forwardBoundaryReachedAtNanos")
+                    firstAdjacentActualAtNanos = adjacentLastActualDescription
+                        .telemetryNanos("firstAdjacentActualAtNanos")
+                    firstAdjacentActualEpisode = adjacentLastActualDescription
+                        .telemetryValue("firstAdjacentActualEpisode")
+                    check(adjacentWorkStartedAtNanos >= allImagesReadyAtNanos) {
+                        "Adjacent work competed with the current episode: " +
+                            "work=$adjacentWorkStartedAtNanos allReady=$allImagesReadyAtNanos"
+                    }
+                    check(adjacentRunwayReadyAtNanos > 0L) {
+                        "Adjacent runway never became atomically ready"
+                    }
+                    check(adjacentRunwayTargetEpisode == expectedAdjacentEpisodePath) {
+                        "Adjacent runway targeted the wrong episode: " +
+                            "expected=$expectedAdjacentEpisodePath actual=$adjacentRunwayTargetEpisode"
+                    }
+                    check(adjacentTotalPageCount > 0) {
+                        "Adjacent total page proof was missing"
+                    }
+                    if (expectedAdjacentPageCount > 0) {
+                        check(adjacentTotalPageCount == expectedAdjacentPageCount) {
+                            "Adjacent total page count did not match selection: " +
+                                "expected=$expectedAdjacentPageCount actual=$adjacentTotalPageCount"
+                        }
+                    }
+                    val requiredRunwayPages = minOf(
+                        ADJACENT_REQUIRED_RUNWAY_PAGES,
+                        adjacentTotalPageCount,
+                    )
+                    check(adjacentRunwayPageCount == requiredRunwayPages) {
+                        "Adjacent runway was not a complete atomic cohort: " +
+                            "ready=$adjacentRunwayPageCount required=$requiredRunwayPages"
+                    }
+                    check(adjacentTotalPageCount >= adjacentRunwayPageCount) {
+                        "Adjacent total page proof is invalid: " +
+                            "total=$adjacentTotalPageCount runway=$adjacentRunwayPageCount"
+                    }
+                    check(forwardBoundaryReachedAtNanos > 0L) {
+                        "Launch episode bottom was never physically committed"
+                    }
+                    adjacentBoundaryWaitMs = maxOf(
+                        0L,
+                        adjacentRunwayReadyAtNanos - forwardBoundaryReachedAtNanos,
+                    ) / 1_000_000.0
+                    check(adjacentBoundaryWaitMs == 0.0) {
+                        "Adjacent runway was not ready at the bottom: " +
+                            "boundaryWaitMs=$adjacentBoundaryWaitMs"
+                    }
+                    check(firstAdjacentActualAtNanos >= forwardBoundaryReachedAtNanos) {
+                        "Expected adjacent episode did not commit after the launch bottom"
+                    }
+                    check(firstAdjacentActualEpisode == expectedAdjacentEpisodePath) {
+                        "First adjacent pixels belonged to the wrong episode: " +
+                            "expected=$expectedAdjacentEpisodePath actual=$firstAdjacentActualEpisode"
+                    }
+                    check(adjacentLastSourceIndex >= requiredRunwayPages - 1) {
+                        "The full adjacent runway was not physically traversable: " +
+                            "source=$adjacentLastSourceIndex required=${requiredRunwayPages - 1}"
+                    }
+                    check(
+                        firstAdjacentActualAtNanos - forwardBoundaryReachedAtNanos <=
+                            ADJACENT_ATTACH_SLA_MS * 1_000_000L
+                    ) {
+                        "Adjacent first actual exceeded ${ADJACENT_ATTACH_SLA_MS}ms: " +
+                            "${(firstAdjacentActualAtNanos - forwardBoundaryReachedAtNanos) / 1_000_000.0}ms"
+                    }
+                }
 
                 device.pressBack()
                 check(device.wait(Until.hasObject(By.res(TARGET_PACKAGE, "EpisodeList")), UI_TIMEOUT_MS)) {
@@ -364,6 +454,15 @@ class NtkColdViewerMacrobenchmark {
                 .put("adjacentTraversalGestureCount", adjacentTraversalGestureCount)
                 .put("adjacentLastActualDescription", adjacentLastActualDescription)
                 .put("adjacentLastSourceIndex", adjacentLastSourceIndex)
+                .put("adjacentWorkStartedAtNanos", adjacentWorkStartedAtNanos)
+                .put("adjacentRunwayReadyAtNanos", adjacentRunwayReadyAtNanos)
+                .put("adjacentRunwayTargetEpisode", adjacentRunwayTargetEpisode)
+                .put("adjacentRunwayPageCount", adjacentRunwayPageCount)
+                .put("adjacentTotalPageCount", adjacentTotalPageCount)
+                .put("forwardBoundaryReachedAtNanos", forwardBoundaryReachedAtNanos)
+                .put("firstAdjacentActualAtNanos", firstAdjacentActualAtNanos)
+                .put("firstAdjacentActualEpisode", firstAdjacentActualEpisode)
+                .put("adjacentBoundaryWaitMs", adjacentBoundaryWaitMs)
                 .put("sameProcessWarmAttempted", warmAttempted)
                 .put("sameProcessWarmPassed", warmPassed)
                 .put("fastFunctionalTriage", fastFunctionalTriage)
@@ -629,6 +728,8 @@ class NtkColdViewerMacrobenchmark {
         var gestures = 0
         var launchReadyPageCount = 0
         var maxLaunchSource = -1
+        var maxExpectedSource = -1
+        var expectedDescription = ""
         var lastDescription = ""
         while (
             SystemClock.elapsedRealtime() < deadline &&
@@ -657,12 +758,34 @@ class NtkColdViewerMacrobenchmark {
                     path == launchEpisodePath -> {
                         maxLaunchSource = maxOf(maxLaunchSource, source)
                     }
-                    expectedEpisodePath.isBlank() || path == expectedEpisodePath -> {
+                    expectedEpisodePath.isBlank() -> {
                         return AdjacentTraversalObservation(
                             gestures = gestures,
                             actualDescription = description,
                             sourceIndex = source,
                         )
+                    }
+                    path == expectedEpisodePath -> {
+                        maxExpectedSource = maxOf(maxExpectedSource, source)
+                        // Keep the newest suffix even if callbacks expose an older source node;
+                        // timing/count one-shots may have been published after the furthest source.
+                        expectedDescription = description
+                        val adjacentTotalPageCount = description
+                            .telemetryNanos("adjacentTotalPageCount")
+                            .toInt()
+                        if (adjacentTotalPageCount > 0) {
+                            val requiredLastSource = minOf(
+                                ADJACENT_REQUIRED_RUNWAY_PAGES,
+                                adjacentTotalPageCount,
+                            ) - 1
+                            if (maxExpectedSource >= requiredLastSource) {
+                                return AdjacentTraversalObservation(
+                                    gestures = gestures,
+                                    actualDescription = expectedDescription,
+                                    sourceIndex = maxExpectedSource,
+                                )
+                            }
+                        }
                     }
                     else -> error(
                         "Reader crossed into the wrong adjacent episode: " +
@@ -672,7 +795,8 @@ class NtkColdViewerMacrobenchmark {
                 }
                 lastDescription = description
             }
-            if (launchReadyPageCount > 0 &&
+            if (expectedEpisodePath.isBlank() &&
+                launchReadyPageCount > 0 &&
                 maxLaunchSource >= launchReadyPageCount - 1 &&
                 device.hasObject(edgeSelector("bottom"))
             ) {
@@ -692,10 +816,11 @@ class NtkColdViewerMacrobenchmark {
             gestures++
         }
         error(
-            "Neither an adjacent episode nor the selected episode's final edge was committed: " +
+            "The expected adjacent atomic runway was not physically traversed: " +
                 "launch=$launchEpisodePath expected=$expectedEpisodePath " +
                 "readyPages=$launchReadyPageCount maxLaunchSource=$maxLaunchSource " +
-                "gestures=$gestures actual=$lastDescription"
+                "maxExpectedSource=$maxExpectedSource gestures=$gestures " +
+                "actual=${expectedDescription.ifBlank { lastDescription }}"
         )
     }
 
@@ -956,6 +1081,21 @@ class NtkColdViewerMacrobenchmark {
     private fun String.safeFileComponent(): String =
         replace(Regex("[^A-Za-z0-9._-]"), "_").take(96).ifBlank { "case" }
 
+    private fun String.telemetryNanos(field: String): Long =
+        Regex("(?:^|;)${Regex.escape(field)}=(\\d+)(?:;|$)")
+            .find(this)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toLongOrNull()
+            ?: 0L
+
+    private fun String.telemetryValue(field: String): String =
+        Regex("(?:^|;)${Regex.escape(field)}=([^;]*)(?:;|$)")
+            .find(this)
+            ?.groupValues
+            ?.getOrNull(1)
+            .orEmpty()
+
     private companion object {
         const val TARGET_PACKAGE = "ml.melun.mangaview"
         const val SETTINGS_PACKAGE = "com.android.settings"
@@ -1003,6 +1143,8 @@ class NtkColdViewerMacrobenchmark {
         const val FAST_SWIPE_STEPS = 4
         const val INITIAL_MODERATE_FORWARD_GESTURES = 3
         const val ADJACENT_FINE_SWIPE_RUNWAY_PAGES = 4
+        const val ADJACENT_REQUIRED_RUNWAY_PAGES = 4
+        const val ADJACENT_ATTACH_SLA_MS = 200L
         // One accessibility observation costs ~2.5 s on the continuously rendering SurfaceView,
         // whereas sixteen 20 ms shell flings cost only ~0.3 s and cover the measured 119-page
         // manga. Long webtoons repeat the same bounded batch until their real edge is observed.
@@ -1011,7 +1153,7 @@ class NtkColdViewerMacrobenchmark {
         const val MIN_SHELL_SWIPE_DURATION_MS = 20
         val ACTUAL_IMAGE_SELECTOR: BySelector = By.desc(Pattern.compile("^actual:.*$"))
         val ALL_IMAGES_READY_SELECTOR: BySelector = By.desc(
-            Pattern.compile("^actual:.*;allReady=\\d+;allReadyAtNanos=\\d+$")
+            Pattern.compile("^actual:.*;allReady=\\d+;allReadyAtNanos=\\d+(?:;.*)?$")
         )
         val TERMINAL_IMAGE_FAILURE_SELECTOR: BySelector = By.desc(
             Pattern.compile("^viewer-terminal-image-failure:\\d+$")
@@ -1019,10 +1161,26 @@ class NtkColdViewerMacrobenchmark {
         val ACTUAL_IDENTITY_PATTERN =
             Regex("^actual:(.+):(\\d+):(\\d+)(?:;actualAtNanos=(\\d+))?" +
                 "(?:;edge=(?:top|middle|bottom))?" +
-                "(?:;allReady=\\d+;allReadyAtNanos=\\d+)?$")
+                "(?:;allReady=\\d+;allReadyAtNanos=\\d+)?" +
+                "(?:;adjacentWorkStartedAtNanos=\\d+" +
+                ";adjacentRunwayReadyAtNanos=\\d+" +
+                ";adjacentRunwayTargetEpisode=[^;]+" +
+                ";adjacentRunwayPageCount=\\d+" +
+                ";adjacentTotalPageCount=\\d+" +
+                ";forwardBoundaryReachedAtNanos=\\d+" +
+                ";firstAdjacentActualAtNanos=\\d+" +
+                ";firstAdjacentActualEpisode=[^;]+)?$")
         val ALL_IMAGES_READY_PATTERN =
             Regex("^actual:.+:\\d+:\\d+(?:;actualAtNanos=\\d+)?" +
                 "(?:;edge=(?:top|middle|bottom))?;" +
-                "allReady=(\\d+);allReadyAtNanos=(\\d+)$")
+                "allReady=(\\d+);allReadyAtNanos=(\\d+)" +
+                "(?:;adjacentWorkStartedAtNanos=\\d+" +
+                ";adjacentRunwayReadyAtNanos=\\d+" +
+                ";adjacentRunwayTargetEpisode=[^;]+" +
+                ";adjacentRunwayPageCount=\\d+" +
+                ";adjacentTotalPageCount=\\d+" +
+                ";forwardBoundaryReachedAtNanos=\\d+" +
+                ";firstAdjacentActualAtNanos=\\d+" +
+                ";firstAdjacentActualEpisode=[^;]+)?$")
     }
 }

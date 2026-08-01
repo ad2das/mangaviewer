@@ -4,6 +4,7 @@ import android.annotation.TargetApi;
 import android.content.Context;
 import android.net.http.HttpEngine;
 import android.net.http.HttpException;
+import android.net.http.ConnectionMigrationOptions;
 import android.net.http.QuicOptions;
 import android.net.http.UrlRequest;
 import android.net.http.UrlResponseInfo;
@@ -28,11 +29,19 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 
 @TargetApi(34)
 public final class NtkQuicFetcher {
     private static volatile Boolean runtimeAvailable;
     private static final long EXECUTOR_SHUTDOWN_GRACE_MS = 5_000L;
+    private static final long EXACT_IDENTITY_RESUME_HARD_TIMEOUT_MS = 3_000L;
+    private static final long MAX_EXACT_IDENTITY_IMAGE_BYTES = 64L * 1024L * 1024L;
+    // A 108-page cold Wi-Fi trace left 81,473 bytes on its final body at the hard wall.
+    // 128 KiB keeps that already-progressing stream eligible without extending a distant tail.
+    private static final long EXACT_IDENTITY_TAIL_GRACE_BYTES = 128L * 1024L;
+    private static final long EXACT_IDENTITY_TAIL_PROGRESS_PROBE_MS = 250L;
+    private static final long EXACT_IDENTITY_TAIL_PROGRESS_GRACE_MS = 750L;
     private static final ScheduledExecutorService EXECUTOR_CLOSER =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "ntk-quic-executor-closer");
@@ -63,6 +72,23 @@ public final class NtkQuicFetcher {
         boolean onPartialBytes(int code, Map<String, List<String>> headers, byte[] bytes);
     }
 
+    public enum TerminalKind {
+        UNKNOWN,
+        SUCCEEDED,
+        FAILED,
+        CANCELED,
+        CANCELED_BY_INTERNAL_TIMEOUT,
+        EARLY
+    }
+
+    public enum TailProbeOutcome {
+        NOT_ATTEMPTED,
+        TERMINAL_IN_PROBE,
+        NO_PROGRESS,
+        TERMINAL_IN_GRACE,
+        GRACE_EXHAUSTED
+    }
+
     /**
      * Linearizes an HttpEngine request with the foreground viewer generation that owns it.
      * Registration happens before {@link UrlRequest#start()}, so a retired owner can reject the
@@ -71,6 +97,9 @@ public final class NtkQuicFetcher {
     public interface RequestOwner {
         boolean register(UrlRequest request);
         void unregister(UrlRequest request);
+        default boolean isStillAdmitted() {
+            return true;
+        }
     }
 
     public static boolean isAvailable() {
@@ -129,10 +158,32 @@ public final class NtkQuicFetcher {
     }
 
     public static Session newQuicSession(Context context, String userAgent, String host) {
+        return newQuicSession(context, userAgent, host, 1);
+    }
+
+    public static Session newQuicSession(Context context, String userAgent, String host,
+                                         int callbackThreadCount) {
         if(!isAvailable())
             return null;
         try {
-            return new Session(context, userAgent, true, host);
+            return new Session(context, userAgent, true, host, callbackThreadCount);
+        } catch (Throwable throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Creates the host-scoped QUIC engine used only by direct-Wi-Fi image pools. Disabling both
+     * default-network and degraded-path migration prevents an admitted Wi-Fi request from being
+     * moved onto cellular during a bearer handoff. Callers still recheck the captured Network at
+     * request registration and on every response callback.
+     */
+    public static Session newDirectWifiQuicSession(Context context, String userAgent, String host,
+                                                    int callbackThreadCount) {
+        if(!isAvailable())
+            return null;
+        try {
+            return new Session(context, userAgent, true, host, callbackThreadCount, true);
         } catch (Throwable throwable) {
             return null;
         }
@@ -163,6 +214,12 @@ public final class NtkQuicFetcher {
 
         public Result fetch(Context context, String url, String userAgent, String cookieHeader,
                             Map<String, String> requestHeaders, long timeoutMs) {
+            return fetch(context, url, userAgent, cookieHeader, requestHeaders, timeoutMs, null);
+        }
+
+        public Result fetch(Context context, String url, String userAgent, String cookieHeader,
+                            Map<String, String> requestHeaders, long timeoutMs,
+                            BooleanSupplier continuationCheck) {
             if(cancelled.get())
                 return Result.error(new InterruptedException("Exact QUIC request cancelled"));
             if(!isAvailable())
@@ -184,10 +241,10 @@ public final class NtkQuicFetcher {
             RequestOwner owner = new RequestOwner() {
                 @Override
                 public boolean register(UrlRequest request) {
-                    if(cancelled.get())
+                    if(!isStillAdmitted())
                         return false;
                     activeRequest.set(request);
-                    if(cancelled.get() && activeRequest.compareAndSet(request, null)) {
+                    if(!isStillAdmitted() && activeRequest.compareAndSet(request, null)) {
                         request.cancel();
                         return false;
                     }
@@ -197,6 +254,19 @@ public final class NtkQuicFetcher {
                 @Override
                 public void unregister(UrlRequest request) {
                     activeRequest.compareAndSet(request, null);
+                }
+
+                @Override
+                public boolean isStillAdmitted() {
+                    if(cancelled.get())
+                        return false;
+                    if(continuationCheck == null)
+                        return true;
+                    try {
+                        return continuationCheck.getAsBoolean();
+                    } catch (Throwable ignored) {
+                        return false;
+                    }
                 }
             };
             try {
@@ -259,6 +329,18 @@ public final class NtkQuicFetcher {
         private final ExecutorService executor;
 
         private Session(Context context, String userAgent, boolean enableQuic, String host) {
+            this(context, userAgent, enableQuic, host, 1);
+        }
+
+        private Session(Context context, String userAgent, boolean enableQuic, String host,
+                        int callbackThreadCount) {
+            this(context, userAgent, enableQuic, host, callbackThreadCount, false);
+        }
+
+        private Session(Context context, String userAgent, boolean enableQuic, String host,
+                        int callbackThreadCount, boolean disableConnectionMigration) {
+            if(callbackThreadCount <= 0)
+                throw new IllegalArgumentException("callbackThreadCount must be positive");
             HttpEngine.Builder engineBuilder = new HttpEngine.Builder(context.getApplicationContext())
                     .setEnableHttp2(true)
                     .setEnableQuic(enableQuic)
@@ -271,8 +353,21 @@ public final class NtkQuicFetcher {
                                 .build())
                         .addQuicHint(host, 443, 443);
             }
+            if(disableConnectionMigration) {
+                engineBuilder.setConnectionMigrationOptions(
+                        new ConnectionMigrationOptions.Builder()
+                                .setDefaultNetworkMigration(
+                                        ConnectionMigrationOptions.MIGRATION_OPTION_DISABLED)
+                                .setPathDegradationMigration(
+                                        ConnectionMigrationOptions.MIGRATION_OPTION_DISABLED)
+                                .setAllowNonDefaultNetworkUsage(
+                                        ConnectionMigrationOptions.MIGRATION_OPTION_DISABLED)
+                                .build());
+            }
             engine = engineBuilder.build();
-            executor = Executors.newSingleThreadExecutor();
+            executor = callbackThreadCount == 1
+                    ? Executors.newSingleThreadExecutor()
+                    : Executors.newFixedThreadPool(callbackThreadCount);
         }
 
         public Result fetch(String url, String userAgent, String cookieHeader,
@@ -435,15 +530,27 @@ public final class NtkQuicFetcher {
         CountDownLatch done = new CountDownLatch(1);
         State state = new State();
         UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
-                final ByteArrayOutputStream response = new ByteArrayOutputStream();
                 boolean notifyPartialText;
                 boolean notifyPartialBytes;
 
+                private boolean cancelIfOwnerRetired(UrlRequest request) {
+                    if(requestOwner == null || requestOwner.isStillAdmitted())
+                        return false;
+                    state.error = new InterruptedException("Exact request owner retired");
+                    state.terminalKind = TerminalKind.CANCELED;
+                    done.countDown();
+                    request.cancel();
+                    return true;
+                }
+
                 @Override
                 public void onRedirectReceived(UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
+                    if(cancelIfOwnerRetired(request))
+                        return;
                     if(!followRedirects) {
                         state.error = new ProtocolException(
                                 "Exact HttpEngine request redirected to " + newLocationUrl);
+                        state.terminalKind = TerminalKind.FAILED;
                         done.countDown();
                         request.cancel();
                         return;
@@ -453,8 +560,11 @@ public final class NtkQuicFetcher {
 
                 @Override
                 public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
+                    if(cancelIfOwnerRetired(request))
+                        return;
                     state.code = info.getHttpStatusCode();
                     state.headers = new HashMap<>(info.getHeaders().getAsMap());
+                    state.updateExactIdentityResponseInvariant();
                     state.negotiatedProtocol = info.getNegotiatedProtocol();
                     if(responseStartedObserver != null) {
                         try {
@@ -467,6 +577,7 @@ public final class NtkQuicFetcher {
                             if(earlyResponseStartedObserver.onResponseStarted(state.code, state.headers)) {
                                 state.bodyBytes = new byte[0];
                                 state.completedEarly = true;
+                                state.terminalKind = TerminalKind.EARLY;
                                 done.countDown();
                                 request.cancel();
                                 return;
@@ -486,21 +597,24 @@ public final class NtkQuicFetcher {
 
                 @Override
                 public void onReadCompleted(UrlRequest request, UrlResponseInfo info, ByteBuffer byteBuffer) {
+                    if(cancelIfOwnerRetired(request))
+                        return;
                     if(state.completedEarly)
                         return;
                     byteBuffer.flip();
                     byte[] bytes = new byte[byteBuffer.remaining()];
                     byteBuffer.get(bytes);
-                    response.write(bytes, 0, bytes.length);
+                    state.appendResponse(bytes);
                     if(notifyPartialText) {
                         try {
-                            String text = response.toString(StandardCharsets.UTF_8.name());
+                            String text = state.responseText();
                             if(partialTextObserver != null)
                                 partialTextObserver.onPartialText(text);
                             if(earlyTextObserver != null
                                     && earlyTextObserver.onPartialText(state.code, state.headers, text)) {
-                                state.bodyBytes = response.toByteArray();
+                                state.bodyBytes = state.responseSnapshot();
                                 state.completedEarly = true;
+                                state.terminalKind = TerminalKind.EARLY;
                                 done.countDown();
                                 request.cancel();
                                 return;
@@ -510,10 +624,11 @@ public final class NtkQuicFetcher {
                     }
                     if(notifyPartialBytes) {
                         try {
-                            byte[] partial = response.toByteArray();
+                            byte[] partial = state.responseSnapshot();
                             if(partialBytesObserver.onPartialBytes(state.code, state.headers, partial)) {
                                 state.bodyBytes = partial;
                                 state.completedEarly = true;
+                                state.terminalKind = TerminalKind.EARLY;
                                 done.countDown();
                                 request.cancel();
                                 return;
@@ -527,20 +642,26 @@ public final class NtkQuicFetcher {
 
                 @Override
                 public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
+                    if(cancelIfOwnerRetired(request))
+                        return;
                     state.code = info.getHttpStatusCode();
                     state.headers = new HashMap<>(info.getHeaders().getAsMap());
+                    state.updateExactIdentityResponseInvariant();
                     state.negotiatedProtocol = info.getNegotiatedProtocol();
-                    state.bodyBytes = response.toByteArray();
+                    state.bodyBytes = state.responseSnapshot();
+                    state.terminalKind = TerminalKind.SUCCEEDED;
                     done.countDown();
                 }
 
                 @Override
                 public void onFailed(UrlRequest request, UrlResponseInfo info, HttpException error) {
                     state.error = error;
+                    state.terminalKind = TerminalKind.FAILED;
                     if(info != null) {
                         try {
                             state.code = info.getHttpStatusCode();
                             state.headers = new HashMap<>(info.getHeaders().getAsMap());
+                            state.updateExactIdentityResponseInvariant();
                             state.negotiatedProtocol = info.getNegotiatedProtocol();
                         } catch (Exception ignored) {
                         }
@@ -554,6 +675,7 @@ public final class NtkQuicFetcher {
                         return;
                     if(state.error == null)
                         state.error = new InterruptedException("cancelled");
+                    state.terminalKind = TerminalKind.CANCELED;
                     done.countDown();
                 }
         });
@@ -564,6 +686,9 @@ public final class NtkQuicFetcher {
         if(body != null && body.length > 0)
             builder.setUploadDataProvider(new ByteArrayUploadDataProvider(body), executor);
         addForwardedHeaders(builder, requestHeaders);
+        // HttpEngine owns Accept-Encoding and explicitly ignores application overrides. The
+        // direct-Wi-Fi exact marker remains internal; response Content-Encoding is still checked
+        // before a timed-out prefix can be reused.
         if(userAgent != null && userAgent.length() > 0)
             builder.addHeader("User-Agent", userAgent);
         if(shouldInjectSyntheticUploadContentType(requestHeaders, body))
@@ -585,9 +710,20 @@ public final class NtkQuicFetcher {
         }
         try {
             request.start();
-            final boolean completed;
+            boolean completed;
+            TailProbeOutcome tailProbeOutcome = TailProbeOutcome.NOT_ATTEMPTED;
+            long tailProbeBeforeBytes = -1L;
+            long tailProbeAfterBytes = -1L;
+            long tailProbeExpectedBytes = -1L;
+            boolean exactIdentityRequest =
+                    "1".equalsIgnoreCase(headerValue(
+                            requestHeaders, "X-MangaViewer-Exact-Identity"));
             try {
-                completed = done.await(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS);
+                long boundedTimeoutMs = Math.max(1L, timeoutMs);
+                completed = done.await(boundedTimeoutMs, TimeUnit.MILLISECONDS);
+                // Focused traces proved that even a progressing tail can stall again and make
+                // the unconditional grace slower than an exact Range. Stop at the hard wall;
+                // the caller may preserve this terminally fenced prefix through a proven 206.
             } catch(InterruptedException e) {
                 // Future.cancel(true) interrupts the waiting owner, but HttpEngine's request keeps
                 // running unless it is explicitly cancelled. Letting that orphan continue retains
@@ -597,14 +733,44 @@ public final class NtkQuicFetcher {
             }
             if(!completed) {
                 request.cancel();
-                done.await(750, TimeUnit.MILLISECONDS);
-                return Result.error(new java.net.SocketTimeoutException("QUIC fetch timed out"));
+                boolean terminalAfterCancel = done.await(750, TimeUnit.MILLISECONDS);
+                if(!terminalAfterCancel)
+                    return Result.error(
+                            new java.net.SocketTimeoutException("QUIC fetch timed out"));
+                // Partial response identity is meaningful only for the explicitly marked strict
+                // image request. Legacy carrier/SNI metadata and ACK callers must retain their
+                // original timeout contract (code=0, no headers/body), otherwise a timed-out 2xx
+                // prefix can be mistaken for a successful impression or cookie-bearing response.
+                if(!exactIdentityRequest)
+                    return Result.error(
+                            new java.net.SocketTimeoutException("QUIC fetch timed out"));
+                // Preserve every byte already delivered by this exact request. Callers still see
+                // a timeout through result.error; the strict Wi-Fi image path may additionally
+                // prove the immutable validator and declared length, then resume only the
+                // untouched suffix instead of downloading the whole body again.
+                return new Result(
+                        state.code,
+                        state.responseSnapshot(),
+                        state.headers == null ? Collections.emptyMap() : state.headers,
+                        state.negotiatedProtocol,
+                        new java.net.SocketTimeoutException("QUIC fetch timed out"),
+                        state.terminalKind == TerminalKind.CANCELED
+                                ? TerminalKind.CANCELED_BY_INTERNAL_TIMEOUT
+                                : state.terminalKind,
+                        exactIdentityRequest,
+                        tailProbeOutcome,
+                        tailProbeBeforeBytes,
+                        tailProbeAfterBytes,
+                        tailProbeExpectedBytes
+                );
             }
             if(state.error != null)
                 return Result.error(state.error);
             return new Result(state.code, state.bodyBytes == null ? new byte[0] : state.bodyBytes,
                     state.headers == null ? Collections.emptyMap() : state.headers,
-                    state.negotiatedProtocol, null);
+                    state.negotiatedProtocol, null, state.terminalKind,
+                    exactIdentityRequest, tailProbeOutcome, tailProbeBeforeBytes,
+                    tailProbeAfterBytes, tailProbeExpectedBytes);
         } finally {
             if(registered)
                 requestOwner.unregister(request);
@@ -637,6 +803,16 @@ public final class NtkQuicFetcher {
         return false;
     }
 
+    private static String headerValue(Map<String, String> headers, String name) {
+        if(headers == null || name == null)
+            return null;
+        for(String key : headers.keySet()) {
+            if(name.equalsIgnoreCase(key))
+                return headers.get(key);
+        }
+        return null;
+    }
+
     static boolean shouldInjectSyntheticUploadContentTypeForTest(Map<String, String> requestHeaders, byte[] body) {
         return shouldInjectSyntheticUploadContentType(requestHeaders, body);
     }
@@ -654,7 +830,8 @@ public final class NtkQuicFetcher {
                 && !"host".equals(lower)
                 && !"connection".equals(lower)
                 && !"content-length".equals(lower)
-                && !"accept-encoding".equals(lower);
+                && !"accept-encoding".equals(lower)
+                && !"x-mangaviewer-exact-identity".equals(lower);
     }
 
     public static final class Result {
@@ -664,6 +841,11 @@ public final class NtkQuicFetcher {
         public final Map<String, List<String>> headers;
         public final String negotiatedProtocol;
         public final Throwable error;
+        public final TerminalKind terminalKind;
+        public final TailProbeOutcome tailProbeOutcome;
+        public final long tailProbeBeforeBytes;
+        public final long tailProbeAfterBytes;
+        public final long tailProbeExpectedBytes;
 
         Result(int code, byte[] bodyBytes, Map<String, List<String>> headers, Throwable error) {
             this(code, bodyBytes, headers, "", error);
@@ -671,14 +853,34 @@ public final class NtkQuicFetcher {
 
         Result(int code, byte[] bodyBytes, Map<String, List<String>> headers,
                String negotiatedProtocol, Throwable error) {
+            this(code, bodyBytes, headers, negotiatedProtocol, error, TerminalKind.UNKNOWN);
+        }
+
+        Result(int code, byte[] bodyBytes, Map<String, List<String>> headers,
+               String negotiatedProtocol, Throwable error, TerminalKind terminalKind) {
+            this(code, bodyBytes, headers, negotiatedProtocol, error, terminalKind,
+                    false, TailProbeOutcome.NOT_ATTEMPTED, -1L, -1L, -1L);
+        }
+
+        Result(int code, byte[] bodyBytes, Map<String, List<String>> headers,
+               String negotiatedProtocol, Throwable error, TerminalKind terminalKind,
+               boolean exactIdentityBinaryBody, TailProbeOutcome tailProbeOutcome,
+               long tailProbeBeforeBytes, long tailProbeAfterBytes,
+               long tailProbeExpectedBytes) {
             this.code = code;
             this.bodyBytes = bodyBytes == null ? new byte[0] : bodyBytes;
             this.headers = headers;
             this.negotiatedProtocol = negotiatedProtocol == null ? "" : negotiatedProtocol;
-            this.body = shouldDecodeBodyAsText(headers)
+            this.body = !exactIdentityBinaryBody && shouldDecodeBodyAsText(headers)
                     ? new String(this.bodyBytes, StandardCharsets.UTF_8)
                     : "";
             this.error = error;
+            this.terminalKind = terminalKind == null ? TerminalKind.UNKNOWN : terminalKind;
+            this.tailProbeOutcome = tailProbeOutcome == null
+                    ? TailProbeOutcome.NOT_ATTEMPTED : tailProbeOutcome;
+            this.tailProbeBeforeBytes = tailProbeBeforeBytes;
+            this.tailProbeAfterBytes = tailProbeAfterBytes;
+            this.tailProbeExpectedBytes = tailProbeExpectedBytes;
         }
 
         private static boolean shouldDecodeBodyAsText(Map<String, List<String>> headers) {
@@ -738,12 +940,123 @@ public final class NtkQuicFetcher {
     }
 
     private static final class State {
-        int code;
+        private final ByteArrayOutputStream response = new ByteArrayOutputStream();
+        private final byte[] responsePrefix = new byte[4];
+        private int responsePrefixLength;
+        volatile int code;
         byte[] bodyBytes;
-        Map<String, List<String>> headers;
-        String negotiatedProtocol;
+        volatile Map<String, List<String>> headers;
+        volatile String negotiatedProtocol;
         Throwable error;
         boolean completedEarly;
+        volatile TerminalKind terminalKind = TerminalKind.UNKNOWN;
+        private boolean exactIdentityResponseInvariant;
+        private long exactIdentityExpectedLength = -1L;
+
+        synchronized void appendResponse(byte[] bytes) {
+            int copyCount = Math.min(
+                    bytes.length,
+                    responsePrefix.length - responsePrefixLength);
+            if(copyCount > 0) {
+                System.arraycopy(
+                        bytes, 0, responsePrefix, responsePrefixLength, copyCount);
+                responsePrefixLength += copyCount;
+            }
+            response.write(bytes, 0, bytes.length);
+        }
+
+        synchronized byte[] responseSnapshot() {
+            return response.toByteArray();
+        }
+
+        synchronized String responseText() {
+            return new String(response.toByteArray(), StandardCharsets.UTF_8);
+        }
+
+        synchronized void updateExactIdentityResponseInvariant() {
+            exactIdentityResponseInvariant = false;
+            exactIdentityExpectedLength = -1L;
+            if(code != 200 || headers == null)
+                return;
+            if(!responseHeaderValues("Content-Range").isEmpty()
+                    || !responseHeaderValues("Transfer-Encoding").isEmpty())
+                return;
+            List<String> lengths = responseHeaderValues("Content-Length");
+            if(lengths.size() != 1 || !isAsciiDigits(lengths.get(0).trim()))
+                return;
+            final long expectedLength;
+            try {
+                expectedLength = Long.parseLong(lengths.get(0).trim());
+            } catch(NumberFormatException ignored) {
+                return;
+            }
+            if(expectedLength <= 0L || expectedLength > MAX_EXACT_IDENTITY_IMAGE_BYTES)
+                return;
+            List<String> encodings = responseHeaderValues("Content-Encoding");
+            if(encodings.size() > 1
+                    || (encodings.size() == 1
+                        && encodings.get(0) != null
+                        && encodings.get(0).trim().length() > 0
+                        && !"identity".equalsIgnoreCase(encodings.get(0).trim())))
+                return;
+            exactIdentityExpectedLength = expectedLength;
+            exactIdentityResponseInvariant = true;
+        }
+
+        synchronized long exactIdentityTailCandidateReceivedBytes() {
+            long receivedBytes = response.size();
+            if(!exactIdentityResponseInvariant
+                    || !responseLooksLikeImage()
+                    || receivedBytes <= 0L
+                    || exactIdentityExpectedLength <= receivedBytes
+                    || exactIdentityExpectedLength - receivedBytes
+                        > EXACT_IDENTITY_TAIL_GRACE_BYTES)
+                return -1L;
+            return receivedBytes;
+        }
+
+        synchronized long exactIdentityReceivedBytes() {
+            return response.size();
+        }
+
+        synchronized long exactIdentityExpectedLength() {
+            return exactIdentityExpectedLength;
+        }
+
+
+        private boolean isAsciiDigits(String value) {
+            if(value == null || value.length() == 0)
+                return false;
+            for(int index = 0; index < value.length(); index++) {
+                char character = value.charAt(index);
+                if(character < '0' || character > '9')
+                    return false;
+            }
+            return true;
+        }
+
+        private List<String> responseHeaderValues(String name) {
+            List<String> values = new java.util.ArrayList<>();
+            for(Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                if(!name.equalsIgnoreCase(entry.getKey()) || entry.getValue() == null)
+                    continue;
+                values.addAll(entry.getValue());
+            }
+            return values;
+        }
+
+        private boolean responseLooksLikeImage() {
+            if(responsePrefixLength < 4)
+                return false;
+            int b0 = responsePrefix[0] & 0xff;
+            int b1 = responsePrefix[1] & 0xff;
+            int b2 = responsePrefix[2] & 0xff;
+            int b3 = responsePrefix[3] & 0xff;
+            return (b0 == 0xff && b1 == 0xd8)
+                    || (b0 == 0x89 && b1 == 0x50 && b2 == 0x4e && b3 == 0x47)
+                    || (b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46)
+                    || (b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38);
+        }
     }
 
     private static final class ByteArrayUploadDataProvider extends UploadDataProvider {

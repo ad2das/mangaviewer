@@ -81,6 +81,35 @@ internal object NtkStrictDecodeReleasePolicy {
         residentPageCount >= releaseThreshold(pageCount, webtoon)
 }
 
+internal object NtkStrictTerminalDecodePolicy {
+    const val DEFAULT_PARALLELISM = 5
+    const val DIRECT_WIFI_CURRENT_WEBTOON_PARALLELISM = 7
+    const val DEFAULT_EXPAND_MIN_BACKLOG = 12
+    const val DIRECT_WIFI_CURRENT_WEBTOON_EXPAND_MIN_BACKLOG = 7
+
+    fun expandedParallelism(
+        rollingPixelResidency: Boolean,
+        terminalBacklog: Int,
+        directWifi: Boolean,
+        currentForegroundEpisode: Boolean,
+        webtoon: Boolean,
+    ): Int? {
+        if (rollingPixelResidency) return null
+        val directWifiCurrentWebtoon = directWifi && currentForegroundEpisode && webtoon
+        val expandMinBacklog = if (directWifiCurrentWebtoon) {
+            DIRECT_WIFI_CURRENT_WEBTOON_EXPAND_MIN_BACKLOG
+        } else {
+            DEFAULT_EXPAND_MIN_BACKLOG
+        }
+        if (terminalBacklog < expandMinBacklog) return null
+        return if (directWifiCurrentWebtoon) {
+            DIRECT_WIFI_CURRENT_WEBTOON_PARALLELISM
+        } else {
+            DEFAULT_PARALLELISM
+        }
+    }
+}
+
 internal object NtkWifiAdjacentCascadePolicy {
     // The first next episode is prepared from the initial episode. Once the reader has crossed
     // that boundary, wait until page five of the new episode before resolving a third episode.
@@ -96,6 +125,17 @@ internal object NtkWifiAdjacentCascadePolicy {
         !wifiTransportActive ||
             initialEpisode ||
             activeSourcePageIndex >= MIN_ACTIVE_SOURCE_PAGE_INDEX
+}
+
+internal object NtkAdjacentTransitionCardPolicy {
+    fun shouldInsert(
+        direction: Int,
+        directWifiStrictAdjacent: Boolean,
+        ntkGeneratedEpisode: Boolean,
+    ): Boolean =
+        direction <= 0 ||
+            !directWifiStrictAdjacent ||
+            !ntkGeneratedEpisode
 }
 
 class ReaderSession(
@@ -121,6 +161,20 @@ class ReaderSession(
 ) {
     private val strictExactColdRolling: Boolean = strictExactLaunchSeal != null
     private val initialNtkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
+    private val strictExactForegroundViewerGenerationAtCreation: Long = run {
+        val generation = ViewerTelemetry.activeGeneration()
+        val normalizedPath = strictExactLaunchSeal?.normalizedEpisodePath.orEmpty()
+        if (strictExactLaunchSeal != null &&
+            generation > 0L &&
+            (ViewerTelemetry.isActiveEpisode(initialNtkEpisodePath) ||
+                ViewerTelemetry.isActiveEpisode(normalizedPath)) &&
+            ViewerTelemetry.activeGeneration() == generation
+        ) {
+            generation
+        } else {
+            0L
+        }
+    }
     enum class InitialPrerenderResult {
         NOT_RENDERED,
         RENDERED_ONLY,
@@ -561,7 +615,7 @@ class ReaderSession(
     private val strictExactBulkDecode = LazySessionExecutor {
         ThreadPoolExecutor(
             STRICT_EXACT_BULK_DECODE_PARALLELISM,
-            STRICT_EXACT_TERMINAL_DECODE_PARALLELISM,
+            NtkStrictTerminalDecodePolicy.DIRECT_WIFI_CURRENT_WEBTOON_PARALLELISM,
             0L,
             TimeUnit.MILLISECONDS,
             LinkedBlockingQueue(),
@@ -862,6 +916,7 @@ class ReaderSession(
     private val strictExactResidentBodyBinding = AtomicReference<Closeable?>()
     private data class AdjacentStrictSourceClaim(
         val manifestDigest: String,
+        val episode: NtkEpisodeToken,
         val transport: NtkStrictSourceTransport,
         val residentBinding: Closeable,
     )
@@ -1379,18 +1434,34 @@ class ReaderSession(
         }
         if (residentPageCount == launchSeal.pageCount) {
             val terminalDecodeBacklog = strictExactDecodeInFlight.size
+            val activeGeneration = ViewerTelemetry.activeGeneration()
+            val currentForegroundEpisode =
+                strictExactForegroundViewerGenerationAtCreation > 0L &&
+                activeGeneration == strictExactForegroundViewerGenerationAtCreation &&
+                (ViewerTelemetry.isActiveEpisode(initialNtkEpisodePath) ||
+                    ViewerTelemetry.isActiveEpisode(launchSeal.normalizedEpisodePath)) &&
+                ViewerTelemetry.activeGeneration() == strictExactForegroundViewerGenerationAtCreation
+            val directWifiActive = isDirectWifiStrictAdjacentCompletionGateActive()
+            val terminalDecodeParallelism = NtkStrictTerminalDecodePolicy.expandedParallelism(
+                rollingPixelResidency = strictExactRollingPixelResidency.get(),
+                terminalBacklog = terminalDecodeBacklog,
+                directWifi = directWifiActive,
+                currentForegroundEpisode = currentForegroundEpisode,
+                webtoon = strictWebtoon,
+            )
             val terminalDecodeExpanded =
-                !strictExactRollingPixelResidency.get() &&
-                    terminalDecodeBacklog >= STRICT_EXACT_TERMINAL_DECODE_EXPAND_MIN_BACKLOG &&
+                terminalDecodeParallelism != null &&
                     strictExactTerminalDecodeExpanded.compareAndSet(false, true) &&
                     strictExactBulkDecode.setCorePoolSize(
-                        STRICT_EXACT_TERMINAL_DECODE_PARALLELISM
+                        terminalDecodeParallelism
                     )
             if (terminalDecodeExpanded) {
                 Log.d(
                     TAG,
-                    "reader_ntk_terminal_decode_expanded backlog=$terminalDecodeBacklog," +
-                        "parallelism=$STRICT_EXACT_TERMINAL_DECODE_PARALLELISM",
+                        "reader_ntk_terminal_decode_expanded backlog=$terminalDecodeBacklog," +
+                        "parallelism=$terminalDecodeParallelism," +
+                        "currentForeground=$currentForegroundEpisode,directWifi=" +
+                        directWifiActive,
                 )
             }
             // A terminal sweep makes the invariant explicit: every resident, admitted source has
@@ -4725,23 +4796,7 @@ class ReaderSession(
             // list resolves an immediate neighbor, that list order outranks numeric id monotonicity.
             val authoritativeNext = tailSource.nextEp()
             if (authoritativeNext != null) {
-                val tailParts = ntkNumericEpisodePathParts(tailSource.ntkEpisodePath)
-                val nextParts = ntkNumericEpisodePathParts(authoritativeNext.ntkEpisodePath)
-                val providedPointsBackward = tailParts != null &&
-                    nextParts != null &&
-                    tailParts.first.equals(nextParts.first, ignoreCase = true) &&
-                    tailParts.second == nextParts.second &&
-                    nextParts.third <= tailParts.third
-                if (!providedPointsBackward) {
-                    return !looseSameEpisodeForAppend(authoritativeNext, target)
-                }
-                Log.w(
-                    TAG,
-                    "append_adjacent_out_of_order_ignore_backward_provided_next " +
-                        "source=${tailSource.ntkEpisodePath} " +
-                        "provided=${authoritativeNext.ntkEpisodePath} " +
-                        "target=${target.ntkEpisodePath}"
-                )
+                return !looseSameEpisodeForAppend(authoritativeNext, target)
             }
         }
         var maxExistingEpisodeId = Long.MIN_VALUE
@@ -6563,6 +6618,17 @@ class ReaderSession(
         asyncLaunch: Boolean = false
     ) {
         if (!isNtkSource(target, title) || urls.isEmpty()) return
+        if (direction > 0 &&
+            isDirectWifiStrictAdjacentCompletionGateActive() &&
+            !isCurrentEpisodeCompleteForImmediateAdjacentStream(target, direction)
+        ) {
+            Log.d(
+                TAG,
+                "append_adjacent_foreground_streams_wait_current_complete " +
+                    "path=${target.ntkEpisodePath}"
+            )
+            return
+        }
         if (direction > 0 && shouldDeferAdjacentRunwayBehindActiveRemaining(target)) return
         if (asyncLaunch) {
             try {
@@ -6674,6 +6740,17 @@ class ReaderSession(
         asyncLaunch: Boolean = false
     ) {
         if (!isNtkSource(target, title) || refs.isEmpty()) return
+        if (direction > 0 &&
+            isDirectWifiStrictAdjacentCompletionGateActive() &&
+            !isCurrentEpisodeCompleteForImmediateAdjacentStream(target, direction)
+        ) {
+            Log.d(
+                TAG,
+                "append_adjacent_foreground_ref_streams_wait_current_complete " +
+                    "path=${target.ntkEpisodePath}"
+            )
+            return
+        }
         if (direction > 0 && shouldDeferAdjacentRunwayBehindActiveRemaining(target)) return
         if (asyncLaunch) {
             try {
@@ -7100,7 +7177,16 @@ class ReaderSession(
         }
         source.title = currentTitle
         source.titleId = currentTitle.id
-        for (direction in listOf(ReaderSurfaceView.DIRECTION_NEXT, ReaderSurfaceView.DIRECTION_PREVIOUS)) {
+        val unavailableRecoveryDirections =
+            if (isDirectWifiStrictAdjacentCompletionGateActive()) {
+                listOf(ReaderSurfaceView.DIRECTION_NEXT)
+            } else {
+                listOf(
+                    ReaderSurfaceView.DIRECTION_NEXT,
+                    ReaderSurfaceView.DIRECTION_PREVIOUS,
+                )
+            }
+        for (direction in unavailableRecoveryDirections) {
             var checked = 0
             val candidates = adjacentEpisodeCandidates(source, episodes, direction)
             Log.d(
@@ -10554,6 +10640,19 @@ class ReaderSession(
     }
 
     fun prepareAdjacentEpisode(anchor: Int, direction: Int) {
+        if (isDirectWifiStrictAdjacentCompletionGateActive()) {
+            if (direction < 0) {
+                Log.d(TAG, "reader_adjacent_previous_auto_prepare_disabled anchor=$anchor")
+                return
+            }
+            if (direction > 0 && !canPrepareForwardAdjacentNow()) {
+                Log.d(
+                    TAG,
+                    "reader_adjacent_prepare_wait_current_complete anchor=$anchor"
+                )
+                return
+            }
+        }
         val quietMs = ntkAdjacentAppendStartDelayMs()
         if (quietMs > 0L) {
             scheduleDeferredAdjacentPrepare(anchor, direction, quietMs, silentMissing = true)
@@ -11005,6 +11104,19 @@ class ReaderSession(
         skipStartDelay: Boolean = false
     ): AppendStartResult {
         if (cancelled.get()) return AppendStartResult.CANCELLED
+        if (isDirectWifiStrictAdjacentCompletionGateActive()) {
+            if (direction < 0) {
+                Log.d(TAG, "reader_adjacent_previous_auto_append_disabled anchor=$anchor")
+                return AppendStartResult.CANCELLED
+            }
+            if (direction > 0 && !canPrepareForwardAdjacentNow()) {
+                Log.d(
+                    TAG,
+                    "append_adjacent_wait_current_complete direction=$direction anchor=$anchor"
+                )
+                return AppendStartResult.CANCELLED
+            }
+        }
         // The launch episode remains sealed and continues to use its immutable source transport.
         // Adjacent PageRefs have a different episode identity and are routed through the ordinary
         // append pipeline below; blocking the whole session here made continuous reading
@@ -11161,6 +11273,11 @@ class ReaderSession(
         // move this same tail page while the adjacent executor is queued. Looking it up again by
         // the old index would return null and incorrectly fall back to the launch episode.
         val appendAnchorPage = pageRef(anchor)
+        if (direction > 0 && isDirectWifiStrictAdjacentCompletionGateActive()) {
+            ViewerTelemetry.adjacentWorkStarted(
+                appendAnchorPage?.manga?.ntkEpisodePath ?: manga.ntkEpisodePath
+            )
+        }
         try {
             val appendExecutor = if (isNtkSource(manga, title)) adjacentNetwork else network
             appendExecutor.execute {
@@ -11823,6 +11940,42 @@ class ReaderSession(
         exactViewerApiAdjacentUrls(target)?.let {
             return AppendUrlLoad(Title.LOAD_OK, it)
         }
+        if (
+            direction > 0 &&
+            isDirectWifiStrictAdjacentCompletionGateActive() &&
+            isNtkSource(target, currentTitle) &&
+            isNtkManhwaOrWebtoonEpisodePath(expectedPath)
+        ) {
+            if (!isEpisodeFullyDrawableForAdjacent(source)) {
+                Log.d(
+                    TAG,
+                    "append_adjacent_wifi_exact_manifest_wait_current_complete " +
+                        "direction=$direction path=$expectedPath",
+                )
+                return AppendUrlLoad(Title.LOAD_ERROR, emptyList())
+            }
+            // Direct Wi-Fi starts forward adjacent work only after every current-episode page is
+            // drawable. At that point use the same isolated exact-manifest owner as a cold click.
+            // A viewer document can authoritatively expose only the page count while the canonical
+            // image API uses mixed extensions or opaque assets. Turning that count back into
+            // pNNN.jpg guesses made real next episodes (for example an 80-page webtoon epilogue)
+            // retry four 404s until the reader hit a permanent physical bottom.
+            listener.onAdjacentExactManifestRequired(target)
+            val exactUrls = waitForExactViewerApiAdjacentUrls(
+                target,
+                NTK_APPEND_EXACT_MANIFEST_WAIT_MS,
+            )
+            Log.d(
+                TAG,
+                "append_adjacent_wifi_exact_manifest direction=$direction path=$expectedPath " +
+                    "images=${exactUrls.size}",
+            )
+            return if (exactUrls.isNotEmpty()) {
+                AppendUrlLoad(Title.LOAD_OK, exactUrls)
+            } else {
+                AppendUrlLoad(Title.LOAD_ERROR, emptyList())
+            }
+        }
         target.setImgs(null)
         if (isNtkSource(target, currentTitle) &&
             isNtkSyntheticEpisodePath(expectedPath)
@@ -12270,7 +12423,11 @@ class ReaderSession(
     ): Boolean {
         if (direction <= 0) return false
         if (!isImmediateNtkGeneratedUx()) return false
-        if (hasForwardAdjacentBoundaryDemand(target, direction)) return true
+        val enforceFullCurrentEpisode =
+            isDirectWifiStrictAdjacentCompletionGateActive()
+        if (!enforceFullCurrentEpisode &&
+            hasForwardAdjacentBoundaryDemand(target, direction)
+        ) return true
         val anchor = currentViewportAnchor.get()
         if (anchor < 0) return false
         val snapshot = synchronized(pagesLock) {
@@ -12314,6 +12471,11 @@ class ReaderSession(
                 snapshot.sourceRefs.all { (index, page) ->
                     hasListenerDrawableDelivery(index, page) || hasDeliveredBitmap(index)
                 }
+        if (enforceFullCurrentEpisode) {
+            return snapshot.differentEpisode &&
+                snapshot.completeCurrentStructure &&
+                allCurrentDrawablesReady
+        }
         val currentTailDemandReady = snapshot.completeCurrentStructure &&
             snapshot.sourceRefs.lastOrNull()?.let { (index, page) ->
                 snapshot.boundedAnchor >= index &&
@@ -12336,6 +12498,36 @@ class ReaderSession(
         val completeCurrentStructure: Boolean,
         val sourceRefs: List<IndexedValue<PageRef>>,
     )
+
+    private fun isDirectWifiStrictAdjacentCompletionGateActive(): Boolean {
+        val httpClient = MainApplication.getHttpClient()
+        if (!httpClient.isNtk) return false
+        return runCatching {
+            httpClient.isNtkWifiTransportActive() &&
+                !httpClient.isNtkCellularResilientTransportActive()
+        }.getOrDefault(false)
+    }
+
+    private fun isEpisodeFullyDrawableForAdjacent(source: Manga): Boolean {
+        val snapshot = synchronized(pagesLock) {
+            val refs = pages.withIndex().filter { (_, page) ->
+                page.transitionTitle == null &&
+                    looseSameEpisodeForAppend(page.manga, source)
+            }
+            if (refs.isEmpty()) return@synchronized null
+            val authoritativeCount = canonicalEpisodeImageCount(
+                source,
+                refs.map { it.value },
+            )
+            if (authoritativeCount <= 0 || refs.size < authoritativeCount) {
+                return@synchronized null
+            }
+            refs
+        } ?: return false
+        return snapshot.all { (index, page) ->
+            hasListenerDrawableDelivery(index, page) || hasDeliveredBitmap(index)
+        }
+    }
 
     private fun markForwardAdjacentBoundaryDemand(target: Manga, direction: Int) {
         if (direction <= 0) return
@@ -13250,7 +13442,7 @@ class ReaderSession(
         val authority = exactViewerApiAdjacentAuthority(target) ?: return null
         val path = authority.seal.normalizedEpisodePath
         val urls = authority.seal.normalizedCanonicalAssets
-        ensureAdjacentStrictSourceClaim(target, authority)
+        if (!ensureAdjacentStrictSourceClaim(target, authority)) return null
         target.setNtkImageCount(urls.size)
         target.setImgs(ArrayList(urls))
         Log.d(
@@ -13338,6 +13530,7 @@ class ReaderSession(
             }
             adjacentStrictSourceClaims[path] = AdjacentStrictSourceClaim(
                 manifestDigest = seal.digestSha256,
+                episode = episode,
                 transport = transport,
                 residentBinding = binding,
             )
@@ -13384,10 +13577,7 @@ class ReaderSession(
         )
         if (path.isEmpty()) return null
         val authority = NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) ?: return null
-        if (authority.proof.kind != NtkExactManifestProofKind.VIEWER_IMAGE_API ||
-            !authority.isProductionClaimable ||
-            !authority.seal.normalizedEpisodePath.equals(path, ignoreCase = true)
-        ) {
+        if (!NtkAdjacentEpisodeAuthorityPolicy.supportsStrictAdjacentManifest(authority, path)) {
             return null
         }
         val urls = authority.seal.normalizedCanonicalAssets
@@ -13705,6 +13895,21 @@ class ReaderSession(
             )
         }
         val totalPages = pageRefs.size
+        val insertTransitionCard = NtkAdjacentTransitionCardPolicy.shouldInsert(
+            direction = direction,
+            directWifiStrictAdjacent = isDirectWifiStrictAdjacentCompletionGateActive(),
+            ntkGeneratedEpisode =
+                isNtkSource(target, title) &&
+                    isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath),
+        )
+        if (!insertTransitionCard) {
+            Log.d(
+                TAG,
+                "reader_repository_stage stage=direct_wifi_forward_skip_transition_card," +
+                    "path=${target.ntkEpisodePath},count=${pageRefs.size},direction=$direction"
+            )
+            return pageRefs
+        }
         return ArrayList<PageRef>(pageRefs.size + 1).apply {
             if (direction < 0) {
                 addAll(pageRefs)
@@ -14064,7 +14269,7 @@ class ReaderSession(
     }
 
     private fun shouldUseAdjacentInitialAppendRunway(target: Manga, urls: List<String>, direction: Int): Boolean {
-        if (direction <= 0 || urls.size <= NTK_APPEND_INITIAL_RUNWAY_PAGES) return false
+        if (direction <= 0 || urls.isEmpty()) return false
         if (!isNtkSource(target, title) || !firstBitmapLogged.get()) return false
         if (!isImmediateNtkGeneratedUx()) return false
         if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
@@ -14110,6 +14315,15 @@ class ReaderSession(
                 "installed=$installed,available=$available,target=${target.ntkEpisodePath}"
             )
             return false
+        }
+        if (isDirectWifiStrictAdjacentCompletionGateActive()) {
+            requestAllUndeliveredNtkPages("current_complete_before_next")
+            maybeLogAdjacentCurrentGate(
+                "append_adjacent_runway_defer_current_incomplete",
+                target,
+                "installed=$installed,available=$available,target=${target.ntkEpisodePath}"
+            )
+            return true
         }
         val anchor = currentViewportAnchor.get()
             .takeIf { it >= 0 }
@@ -14410,6 +14624,13 @@ class ReaderSession(
                 listener.onPagesAppended(total)
                 if (cardOffset >= 0) listener.onPageCard(cardIndex + cardOffset, transitionTitle)
                 commitAdjacentRunwayDrawableBatch(drawableBatch)
+                if (isDirectWifiStrictAdjacentCompletionGateActive()) {
+                    ViewerTelemetry.adjacentRunwayReady(
+                        target.ntkEpisodePath,
+                        drawableBatch.deliveries.size,
+                        refs.count { it.transitionTitle == null },
+                    )
+                }
                 if (warm && shouldWarmAppendedEpisode(cardIndex)) {
                     warmAppendedVisibleRunway(cardIndex, total, "append_initial_runway")
                 }
@@ -15193,6 +15414,29 @@ class ReaderSession(
         if (!isImmediateNtkGeneratedUx()) return false
         if (!isNtkSource(target, title)) return false
         if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
+        val strictPath = NtkStripDigests.normalizeEpisodePath(
+            target.ntkEpisodePath?.trim().orEmpty()
+        )
+        val strictClaim = adjacentStrictSourceClaims[strictPath]
+        if (strictClaim != null) {
+            if (isViewportInsideEpisode(target)) {
+                strictClaim.transport.onAdjacentViewportActivated(strictClaim.episode)
+                Log.d(
+                    TAG,
+                    "append_adjacent_strict_source_viewport_release path=$strictPath " +
+                        "digest=${strictClaim.manifestDigest}",
+                )
+            } else {
+                Log.d(
+                    TAG,
+                    "append_adjacent_strict_source_runway_hold path=$strictPath " +
+                        "digest=${strictClaim.manifestDigest}",
+                )
+            }
+            // The strict owner is either holding its proven five-body runway or has just resumed
+            // the remaining workset. Never launch a generic duplicate against that ownership.
+            return true
+        }
         val fetchLimit = remainingAdjacentRunwayFileFetchLimit(target)
         val fetchRefs = candidates
             .asSequence()
@@ -15433,22 +15677,25 @@ class ReaderSession(
         )
         if (path.isEmpty()) return null
         val authority = NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) ?: return null
-        if (authority.proof.kind != NtkExactManifestProofKind.VIEWER_IMAGE_API ||
-            !authority.isProductionClaimable ||
-            !authority.seal.normalizedEpisodePath.equals(path, ignoreCase = true) ||
+        if (!NtkAdjacentEpisodeAuthorityPolicy.supportsStrictAdjacentManifest(authority, path) ||
             ref.sourceIndex !in authority.seal.normalizedCanonicalAssets.indices
         ) {
             return null
         }
         val image = ref.image.orEmpty()
         if (image.isBlank()) return null
-        return ReaderImageCache.strictCachedPublishedBody(
+        val published = ReaderImageCache.strictCachedPublishedBody(
             appContext,
             ref.manga,
             image,
             authority.seal,
             ref.sourceIndex,
         )
+        val current = NtkSourceSpoolRegistry.currentAuthoritativeManifest(path)
+        return published.takeIf {
+            current?.seal?.revision == authority.seal.revision &&
+                current.seal.digestSha256 == authority.seal.digestSha256
+        }
     }
 
     private fun prepareAdjacentRunwayDrawableBatch(
@@ -16495,28 +16742,9 @@ class ReaderSession(
     }
 
     private fun ntkTrustedProvidedAdjacentCandidate(source: Manga, direction: Int): Manga? {
-        val candidate = if (direction < 0) source.prevEp() else source.nextEp()
-            ?: return null
-        val sourceParts = ntkNumericEpisodePathParts(source.ntkEpisodePath)
-        val candidateParts = ntkNumericEpisodePathParts(candidate.ntkEpisodePath)
-        if (
-            sourceParts != null &&
-            candidateParts != null &&
-            sourceParts.first.equals(candidateParts.first, ignoreCase = true) &&
-            sourceParts.second == candidateParts.second
-        ) {
-            val delta = candidateParts.third - sourceParts.third
-            val correctDirection = if (direction > 0) delta > 0L else delta < 0L
-            if (!correctDirection) {
-                Log.w(
-                    TAG,
-                    "append_adjacent_provided_candidate_wrong_direction direction=$direction " +
-                        "source=${source.ntkEpisodePath} candidate=${candidate.ntkEpisodePath}"
-                )
-                return null
-            }
-        }
-        return candidate
+        // nextEp()/prevEp() already encode the server episode-list direction. Database ids are
+        // opaque record keys and legitimately decrease between chronological episodes.
+        return if (direction < 0) source.prevEp() else source.nextEp()
     }
 
     private fun shouldSkipLoadedNtkAdjacentCandidate(source: Manga, candidate: Manga, direction: Int): Boolean {
@@ -20676,6 +20904,8 @@ class ReaderSession(
             currentRefs.all { (index, page) ->
                 hasListenerDrawableDelivery(index, page) || hasDeliveredBitmap(index)
             }
+        val enforceFullCurrentEpisode =
+            isDirectWifiStrictAdjacentCompletionGateActive()
         val restoredStart = currentStartPage()
         val resumedFromTail = strictExactColdRolling &&
             Manga.sameEpisodeIdentity(source, manga) &&
@@ -20696,7 +20926,9 @@ class ReaderSession(
                 NtkAdjacentRunwayPreparationPolicy.RESUMED_TAIL_DRAWABLE_READY_REASON,
             )
         }
-        val currentEpisodeReady =
+        val currentEpisodeReady = if (enforceFullCurrentEpisode) {
+            completeCurrentStructure && allCurrentDrawablesReady
+        } else {
             NtkAdjacentRunwayPreparationPolicy.isCurrentEpisodeReadyForAdjacent(
                 completeCurrentStructure = completeCurrentStructure,
                 allCurrentDrawablesReady = allCurrentDrawablesReady,
@@ -20704,6 +20936,7 @@ class ReaderSession(
                 resumedFromTail = resumedFromTail,
                 resumedForwardDrawablesReady = resumedForwardDrawablesReady,
             )
+        }
         if (!currentEpisodeReady) {
             Log.d(
                 TAG,
@@ -20832,6 +21065,9 @@ class ReaderSession(
         if (!isImmediateNtkGeneratedUx() || reverse) return
         if (!isNtkSource(source, currentTitle)) return
         if (!isNtkManhwaOrWebtoonEpisodePath(source.ntkEpisodePath)) return
+        if (isDirectWifiStrictAdjacentCompletionGateActive() &&
+            !isEpisodeFullyDrawableForAdjacent(source)
+        ) return
         val sourcePath = source.ntkEpisodePath?.trim().orEmpty()
         if (sourcePath.isEmpty()) return
         if (!shouldStartWifiAdjacentCascade(source, sourcePath)) return
@@ -20848,6 +21084,9 @@ class ReaderSession(
             )
         ) return
         if (!initialAdjacentMetadataPrefetchPaths.add(sourcePath)) return
+        if (isDirectWifiStrictAdjacentCompletionGateActive()) {
+            ViewerTelemetry.adjacentWorkStarted(sourcePath)
+        }
         Log.d(
             TAG,
             "append_adjacent_initial_metadata_start reason=$reason source=$sourcePath"
@@ -20902,6 +21141,9 @@ class ReaderSession(
         reason: String
     ) {
         if (cancelled.get()) return
+        if (isDirectWifiStrictAdjacentCompletionGateActive() &&
+            !isEpisodeFullyDrawableForAdjacent(source)
+        ) return
         if (!NtkAdjacentRunwayPreparationPolicy.shouldStartAdjacentPrefetch(
                 strictExactColdRolling,
                 reason,
@@ -20956,6 +21198,9 @@ class ReaderSession(
         val key = "${ReaderSurfaceView.DIRECTION_NEXT}:$sourcePath:initial_tail_prefetch"
         if (preparedInitialAdjacentRunways.keys.any { it.isNotEmpty() }) return
         if (!initialTailAdjacentPrefetchKeys.add(key)) return
+        if (isDirectWifiStrictAdjacentCompletionGateActive()) {
+            ViewerTelemetry.adjacentWorkStarted(sourcePath)
+        }
         Log.d(
             TAG,
             "append_adjacent_initial_prefetch_start reason=$reason source=$sourcePath"
@@ -26774,6 +27019,58 @@ class ReaderSession(
         scheduleForwardReadingDrain()
     }
 
+    /**
+     * Starts the one forward runway immediately after the renderer proves the whole current
+     * episode. This bypasses only input-quiet delay; every metadata/body/decode entry rechecks the
+     * direct-Wi-Fi full-drawable gate. Previous-episode preparation is intentionally absent.
+     */
+    fun prepareForwardAdjacentAfterCurrentComplete(anchor: Int) {
+        if (anchor < 0 || reverse || cancelled.get()) return
+        if (!isDirectWifiStrictAdjacentCompletionGateActive()) return
+        try {
+            control.execute {
+                if (cancelled.get()) return@execute
+                val source = synchronized(pagesLock) {
+                    if (pages.isEmpty()) return@synchronized null
+                    pages.getOrNull(anchor.coerceIn(0, pages.lastIndex))
+                        ?.takeIf { it.transitionTitle == null }
+                        ?.manga
+                } ?: return@execute
+                if (!isEpisodeFullyDrawableForAdjacent(source)) return@execute
+                val currentTitle = title ?: source.title ?: manga.title ?: return@execute
+                maybeStartInitialAdjacentMetadataPrefetch(
+                    source,
+                    currentTitle,
+                    NtkAdjacentRunwayPreparationPolicy.CURRENT_EPISODE_COMPLETE_IDLE_REASON,
+                )
+                maybeWarmCompletedForwardEpisode(anchor, source)
+            }
+        } catch (_: RejectedExecutionException) {
+        }
+    }
+
+    fun canPrepareForwardAdjacentNow(): Boolean {
+        if (!isDirectWifiStrictAdjacentCompletionGateActive()) return true
+        val anchor = currentViewportAnchor.get()
+            .takeIf { it >= 0 }
+            ?: currentStartPage()
+        val source = synchronized(pagesLock) {
+            if (pages.isEmpty()) return@synchronized null
+            pages.getOrNull(anchor.coerceIn(0, pages.lastIndex))
+                ?.takeIf { it.transitionTitle == null }
+                ?.manga
+        } ?: return false
+        return isEpisodeFullyDrawableForAdjacent(source)
+    }
+
+    /**
+     * Exposes only the scope of the Wi-Fi completion-gated adjacent policy. The Activity uses this
+     * to timestamp the launch episode's real tail commit even after an already-prepared next
+     * runway has extended the surface, so mobile/SNI sessions retain their existing behavior.
+     */
+    fun isDirectWifiForwardAdjacentPolicyActive(): Boolean =
+        !reverse && isDirectWifiStrictAdjacentCompletionGateActive()
+
     private fun scheduleForwardReadingDrain() {
         if (!forwardReadingDrainPosted.compareAndSet(false, true)) return
         try {
@@ -30942,12 +31239,11 @@ class ReaderSession(
         private const val URGENT_VISIBLE_DECODE_PARALLELISM = 8
         // The anchor owns its own display-priority lane. Keep the measured three-worker pool while
         // HTTP bodies are arriving so decode cannot steal network/render CPU. Once every canonical
-        // body is verified, a sizeable finite queue may expand to five workers: this removes the
-        // post-network pixel tail without reintroducing the old always-eight-wide allocation/GC
-        // pressure, and every result still enters the same bounded native install queue.
+        // body is verified, a sizeable finite queue may expand to five workers. Only the current
+        // direct-Wi-Fi webtoon may use seven for a seven-or-larger final tail after the final EOF,
+        // when no network body remains to compete with; every result still enters the same bounded
+        // native install queue.
         private const val STRICT_EXACT_BULK_DECODE_PARALLELISM = 3
-        private const val STRICT_EXACT_TERMINAL_DECODE_PARALLELISM = 5
-        private const val STRICT_EXACT_TERMINAL_DECODE_EXPAND_MIN_BACKLOG = 12
         private const val STRICT_EXACT_ROLLING_DECODE_PARALLELISM = 6
         private const val STRICT_EXACT_OVERLAP_DECODE_PARALLELISM = 3
         private const val STRICT_EXACT_OVERLAP_DECODE_LIMIT = 40

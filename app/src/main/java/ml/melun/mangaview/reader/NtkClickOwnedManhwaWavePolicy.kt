@@ -2,6 +2,18 @@ package ml.melun.mangaview.reader
 
 /** Resource policy for the finite, post-click numeric-manhwa quarantine wave. */
 internal object NtkClickOwnedManhwaWavePolicy {
+    data class SizedReplicaBody(
+        val pageIndex: Int,
+        val byteCount: Long,
+        val currentHost: String,
+    ) {
+        init {
+            require(pageIndex >= 0)
+            require(byteCount > 0L)
+            require(currentHost.isNotBlank())
+        }
+    }
+
     private val REPLICA_HOST_RING = listOf(
         "booktoki8.org",
         "mana.apihost93.com",
@@ -13,10 +25,9 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // validator-compatible Range origins. AWS remains a failure-only terminal replica inside
     // ReaderImageCache; making it own one quarter of the ordinary wave produced the 2.497 s header
     // tail in r103 and deadline failover made the full episode substantially worse in r106.
-    // This CDN is throughput-limited per cold H2 connection: measured 112-page completion improved
-    // from roughly 6.0 s at 8 pools to 4.743 s at 16 and 4.268 s at 24. Thirty-two regressed to
-    // about 6.3 s from handshake saturation, while the r132 28-shard retry remained slower than
-    // the 24-shard r129/r130 cohort. Keep the measured production balance at 24.
+    // The formal 230-page/27.4 MiB cohort completed in 5.211 s with this 24-shard topology.
+    // Smaller rings reduce handshakes but also lose the independent cold-CDN bandwidth needed by
+    // long episodes.
     const val CONNECTION_SHARDS = 24
     // Metadata probes begin at the committed click and overlap the independent episode document.
     // One lane per bounded page prevents a second extension-discovery turn; by the time document
@@ -35,6 +46,12 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // the smaller measured ring and remove the anchor-release serialization instead.
     const val BODY_LANES = 40
     const val ACTIVE_BODY_TRANSFERS = BODY_LANES
+    // Direct Wi-Fi ordinary JPEG bodies can use a Network-bound HTTP/1.1 pool instead of the
+    // carrier H2/SNI topology. Keep its switch and bound Wi-Fi-only so transport A/B work cannot
+    // change the forty-body carrier, VPN, mixed-format, or fallback admission ring.
+    const val DIRECT_WIFI_ORDINARY_H1_ENABLED = true
+    const val DIRECT_WIFI_ORDINARY_BODY_TRANSFERS = 40
+    const val MIXED_UNCOMMON_BODY_TRANSFERS = 8
     // Keep the authority document's cold QUIC request alive: starting 32 bodies before exact-count
     // proof saturated the emulator and made that independent request time out at 3.5 seconds.
     // Eight bodies still cover the entry viewport; the bounded full-page wave is released after
@@ -89,6 +106,14 @@ internal object NtkClickOwnedManhwaWavePolicy {
 
     fun initialSpeculationPages(wifiTransport: Boolean): Int =
         if (wifiTransport) WIFI_ENTRY_SPECULATION_PAGES else SPECULATION_DEBT_LIMIT
+
+    fun shouldUseWifiEntryFallbackLane(
+        wifiTransport: Boolean,
+        pageIndex: Int,
+    ): Boolean {
+        require(pageIndex >= 0)
+        return wifiTransport && pageIndex in 1 until WIFI_ENTRY_SPECULATION_PAGES
+    }
 
     fun shouldHoldExactPreFrameRunway(wifiTransport: Boolean, pageCount: Int): Boolean {
         require(pageCount > 0)
@@ -145,12 +170,16 @@ internal object NtkClickOwnedManhwaWavePolicy {
         return pageIndex >= FORWARD_ADMISSION_RUNWAY_PAGES
     }
 
-    fun headerFailoverMs(pageIndex: Int): Long {
+    fun headerFailoverMs(
+        pageIndex: Int,
+        directWifiOrdinaryJpeg: Boolean = false,
+    ): Long {
         require(pageIndex >= 0)
         return when {
             pageIndex == 0 -> 0L
             pageIndex < DIRECT_EXTENSION_RACE_PAGES -> ENTRY_HEADER_FAILOVER_MS
             pageIndex < FORWARD_ADMISSION_RUNWAY_PAGES -> RUNWAY_HEADER_FAILOVER_MS
+            directWifiOrdinaryJpeg -> RUNWAY_HEADER_FAILOVER_MS
             else -> TAIL_HEADER_FAILOVER_MS
         }
     }
@@ -177,6 +206,38 @@ internal object NtkClickOwnedManhwaWavePolicy {
         REPLICA_HOST_RING.any { it.equals(host, ignoreCase = true) }
 
     fun replicaHosts(): List<String> = REPLICA_HOST_RING.distinct()
+
+    /**
+     * Assigns known large bodies to the least byte-loaded exact replica using deterministic LPT.
+     */
+    fun sizeBalancedReplicaHosts(
+        fixedBodies: List<SizedReplicaBody>,
+        movableBodies: List<SizedReplicaBody>,
+    ): Map<Int, String> {
+        val hosts = replicaHosts()
+        val loads = hosts.associateWith { 0L }.toMutableMap()
+        fixedBodies.forEach { body ->
+            val host = hosts.firstOrNull {
+                it.equals(body.currentHost, ignoreCase = true)
+            } ?: return@forEach
+            loads[host] = checkNotNull(loads[host]) + body.byteCount
+        }
+        val assignments = LinkedHashMap<Int, String>()
+        movableBodies
+            .sortedWith(
+                compareByDescending<SizedReplicaBody> { it.byteCount }
+                    .thenBy { it.pageIndex }
+            )
+            .forEach { body ->
+                val host = hosts.minWithOrNull(
+                    compareBy<String> { checkNotNull(loads[it]) }
+                        .thenBy { hosts.indexOf(it) }
+                ) ?: return@forEach
+                assignments[body.pageIndex] = host
+                loads[host] = checkNotNull(loads[host]) + body.byteCount
+            }
+        return assignments
+    }
 
     /**
      * Numeric books commonly use one extension for the whole volume.  The bounded click-time

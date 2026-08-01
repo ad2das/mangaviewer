@@ -266,10 +266,11 @@ public final class ViewerTelemetry {
     public static long imageDecodeStarted(String sourceKeyHash, int pageIndex) {
         long id = NEXT_OPERATION.incrementAndGet();
         int cookie = nextCookie();
+        Session session = SESSION.get();
         Operation operation = new Operation(
                 id, cookie, "ImageDecode", pageIndex, safe(sourceKeyHash, "unknown"),
                 "none", 0,
-                SystemClock.elapsedRealtimeNanos());
+                SystemClock.elapsedRealtimeNanos(), session);
         DECODES.put(id, operation);
         PerfTrace.beginAsync("ImageDecode", cookie);
         PerfTrace.counter("ViewerActiveDecodes", DECODES.size());
@@ -277,7 +278,7 @@ public final class ViewerTelemetry {
         // 100+ parallel cold decoders contend on logd exactly on the all-images critical path.
         // Keep human-readable detail for the first real page; failures are always logged below.
         if(pageIndex == 0)
-            event("decode", SESSION.get(), "phase=start," + operation.metadata());
+            event("decode", session, "phase=start," + operation.metadata());
         return id;
     }
 
@@ -625,8 +626,9 @@ public final class ViewerTelemetry {
         // root node remains queryable for the entire committed frame. This is observability only:
         // it does not start, delay, or alter image work.
         final String value = actual == null || actual.length() == 0
-                ? edge
-                : actual + ";edge=" + edge.substring("viewer-edge:".length()) + allReady;
+                ? edge + adjacentTimingSuffix(session)
+                : actual + ";edge=" + edge.substring("viewer-edge:".length()) + allReady
+                    + adjacentTimingSuffix(session);
         Runnable publish = () -> {
             CharSequence previous = hostView.getContentDescription();
             if(previous != null && value.contentEquals(previous))
@@ -680,15 +682,94 @@ public final class ViewerTelemetry {
                     + session.generation + ";allReadyAtNanos=" + completedAtNanos
                 : actual + ";edge=middle;allReady=" + pageCount
                     + ";allReadyAtNanos=" + completedAtNanos;
+        final String publishedDescription = description + adjacentTimingSuffix(session);
         Runnable publish = () -> {
             hostView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
-            hostView.setContentDescription(description);
+            hostView.setContentDescription(publishedDescription);
             hostView.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
         };
         if(Looper.myLooper() == Looper.getMainLooper())
             publish.run();
         else
             MAIN.post(publish);
+    }
+
+    public static void adjacentWorkStarted(String sourceEpisodeId) {
+        Session session = SESSION.get();
+        if(session == null)
+            return;
+        long now = SystemClock.elapsedRealtimeNanos();
+        synchronized(session) {
+            if(session.adjacentWorkStartedAtNanos > 0L)
+                return;
+            session.adjacentWorkStartedAtNanos = now;
+        }
+        event("adjacent_work_started", session,
+                "sourceEpisode=" + clean(sourceEpisodeId) + ",atNanos=" + now);
+    }
+
+    public static void adjacentRunwayReady(
+            String targetEpisodeId, int pageCount, int totalPageCount) {
+        Session session = SESSION.get();
+        if(session == null || pageCount <= 0 || totalPageCount < pageCount)
+            return;
+        long now = SystemClock.elapsedRealtimeNanos();
+        synchronized(session) {
+            if(session.adjacentRunwayReadyAtNanos > 0L)
+                return;
+            session.adjacentRunwayReadyAtNanos = now;
+            session.adjacentRunwayTargetEpisode = clean(targetEpisodeId);
+            session.adjacentRunwayPageCount = pageCount;
+            session.adjacentTotalPageCount = totalPageCount;
+        }
+        event("adjacent_runway_ready", session,
+                "targetEpisode=" + clean(targetEpisodeId)
+                        + ",pageCount=" + pageCount
+                        + ",totalPageCount=" + totalPageCount
+                        + ",atNanos=" + now);
+    }
+
+    public static void adjacentActualDrawCommitted(
+            String physicalEpisodeId, long presentedAtNanos) {
+        Session session = SESSION.get();
+        if(session == null || physicalEpisodeId == null
+                || physicalEpisodeId.trim().isEmpty()
+                || physicalEpisodeId.trim().equals(session.episodeId))
+            return;
+        long now = SystemClock.elapsedRealtimeNanos();
+        long actualAtNanos = presentedAtNanos > 0L ? presentedAtNanos : now;
+        synchronized(session) {
+            // Preserve the first physical adjacent pixels even if commit callbacks are delivered
+            // out of order. The caller limits this marker to the direct-Wi-Fi UX policy.
+            if(session.firstAdjacentActualAtNanos > 0L
+                    && session.firstAdjacentActualAtNanos <= actualAtNanos)
+                return;
+            session.firstAdjacentActualAtNanos = actualAtNanos;
+            session.firstAdjacentActualEpisode = clean(physicalEpisodeId);
+        }
+        event("first_adjacent_actual", session,
+                "episode=" + clean(physicalEpisodeId) + ",atNanos=" + actualAtNanos);
+    }
+
+    public static void forwardBoundaryReached() {
+        forwardBoundaryReached(0L);
+    }
+
+    public static void forwardBoundaryReached(long presentedAtNanos) {
+        Session session = SESSION.get();
+        if(session == null)
+            return;
+        long now = SystemClock.elapsedRealtimeNanos();
+        long boundaryAtNanos = presentedAtNanos > 0L ? presentedAtNanos : now;
+        synchronized(session) {
+            // Surface commit callbacks can arrive out of order. Preserve the earliest physical
+            // presentation of the launch tail instead of the callback delivery time.
+            if(session.forwardBoundaryReachedAtNanos > 0L
+                    && session.forwardBoundaryReachedAtNanos <= boundaryAtNanos)
+                return;
+            session.forwardBoundaryReachedAtNanos = boundaryAtNanos;
+        }
+        event("forward_boundary_reached", session, "atNanos=" + boundaryAtNanos);
     }
 
     public static void frameSummary(
@@ -833,16 +914,16 @@ public final class ViewerTelemetry {
             long startedAtNanos) {
         long id = NEXT_OPERATION.incrementAndGet();
         int cookie = nextCookie();
+        Session session = SESSION.get();
         long nowNanos = SystemClock.elapsedRealtimeNanos();
         long boundedStartedAtNanos = startedAtNanos > 0L && startedAtNanos <= nowNanos
                 ? startedAtNanos : nowNanos;
         Operation operation = new Operation(
                 id, cookie, traceName, pageIndex, sourceKeyHash, urlHost, priority,
-                boundedStartedAtNanos);
+                boundedStartedAtNanos, session);
         REQUESTS.put(id, operation);
-        Session session = SESSION.get();
         if("ImageRequest".equals(traceName) && session != null)
-            session.imageRequestStarted.incrementAndGet();
+            session.recordImageRequestStarted();
         PerfTrace.beginAsync(traceName, cookie);
         PerfTrace.counter("ViewerActiveRequests", REQUESTS.size());
         if(traceName.equals("PageListRequest") || pageIndex == 0)
@@ -878,16 +959,9 @@ public final class ViewerTelemetry {
         String phase = outcome.startsWith("cancelled")
                 ? "cancel"
                 : outcome.startsWith("failed") ? "fail" : "end";
-        Session session = SESSION.get();
+        Session session = operation.ownerSession;
         if("ImageRequest".equals(operation.traceName) && session != null) {
-            if(phase.equals("cancel"))
-                session.imageRequestCancelled.incrementAndGet();
-            else if(phase.equals("fail"))
-                session.imageRequestFailed.incrementAndGet();
-            else {
-                session.imageRequestSucceeded.incrementAndGet();
-                session.imageResponseBytes.addAndGet(Math.max(0L, bytes));
-            }
+            session.recordImageRequestTerminal(phase, bytes);
         }
         boolean sampledImageSuccess = "ImageRequest".equals(operation.traceName)
                 && phase.equals("end")
@@ -896,7 +970,7 @@ public final class ViewerTelemetry {
             event(operation.traceName.equals("ImageDecode") ? "decode" :
                             operation.traceName.equals("PageListRequest")
                                     ? "page_list_request" : "image_request",
-                    SESSION.get(),
+                    session,
                     "phase=" + phase + ',' + operation.metadata()
                             + ",outcome=" + clean(outcome)
                             + ",bytes=" + bytes
@@ -936,12 +1010,16 @@ public final class ViewerTelemetry {
     private static void publishImagePipelineSummary(Session session) {
         if(session == null || !session.imagePipelineSummaryPublished.compareAndSet(false, true))
             return;
+        ImageRequestStatsSnapshot requests = session.imageRequestStatsSnapshot();
         event("image_pipeline_summary", session,
-                "requestStarted=" + session.imageRequestStarted.get()
-                        + ",requestSucceeded=" + session.imageRequestSucceeded.get()
-                        + ",requestCancelled=" + session.imageRequestCancelled.get()
-                        + ",requestFailed=" + session.imageRequestFailed.get()
-                        + ",responseBytes=" + session.imageResponseBytes.get()
+                "requestStarted=" + requests.started
+                        + ",requestSucceeded=" + requests.succeeded
+                        + ",requestCancelled=" + requests.cancelled
+                        + ",requestFailed=" + requests.failed
+                        + ",requestActive=" + requests.active
+                        + ",requestPeakActive=" + requests.peakActive
+                        + ",requestTerminalBalance=" + requests.terminalBalance
+                        + ",responseBytes=" + requests.responseBytes
                         + ",metadataCount=" + session.imageMetadataCount.get()
                         + ",encodedBytes=" + session.imageEncodedBytes.get()
                         + ",averageWidth=" + average(session.imageWidthSum, session.imageMetadataCount)
@@ -1108,12 +1186,39 @@ public final class ViewerTelemetry {
                 ? ";allReady=" + session.allImagesReadyPageCount
                     + ";allReadyAtNanos=" + session.allImagesReadyAtNanos
                 : "";
-        String publishedDescription = description + allReady;
+        String publishedDescription =
+                description + allReady + adjacentTimingSuffix(session);
         Runnable publish = () -> view.setContentDescription(publishedDescription);
         if(Looper.myLooper() == Looper.getMainLooper())
             publish.run();
         else
             MAIN.post(publish);
+    }
+
+    private static String adjacentTimingSuffix(Session session) {
+        if(session == null)
+            return "";
+        if(session.adjacentWorkStartedAtNanos <= 0L
+                && session.adjacentRunwayReadyAtNanos <= 0L
+                && session.forwardBoundaryReachedAtNanos <= 0L
+                && session.firstAdjacentActualAtNanos <= 0L)
+            return "";
+        return ";adjacentWorkStartedAtNanos="
+                    + Math.max(0L, session.adjacentWorkStartedAtNanos)
+                + ";adjacentRunwayReadyAtNanos="
+                    + Math.max(0L, session.adjacentRunwayReadyAtNanos)
+                + ";adjacentRunwayTargetEpisode="
+                    + clean(session.adjacentRunwayTargetEpisode)
+                + ";adjacentRunwayPageCount="
+                    + Math.max(0, session.adjacentRunwayPageCount)
+                + ";adjacentTotalPageCount="
+                    + Math.max(0, session.adjacentTotalPageCount)
+                + ";forwardBoundaryReachedAtNanos="
+                    + Math.max(0L, session.forwardBoundaryReachedAtNanos)
+                + ";firstAdjacentActualAtNanos="
+                    + Math.max(0L, session.firstAdjacentActualAtNanos)
+                + ";firstAdjacentActualEpisode="
+                    + clean(session.firstAdjacentActualEpisode);
     }
 
     private static void event(String name, Session session, String fields) {
@@ -1203,6 +1308,30 @@ public final class ViewerTelemetry {
                 .replace('\r', '_');
     }
 
+    private static final class ImageRequestStatsSnapshot {
+        final long started;
+        final long succeeded;
+        final long cancelled;
+        final long failed;
+        final long active;
+        final long peakActive;
+        final long terminalBalance;
+        final long responseBytes;
+
+        ImageRequestStatsSnapshot(
+                long started, long succeeded, long cancelled, long failed,
+                long active, long peakActive, long terminalBalance, long responseBytes) {
+            this.started = started;
+            this.succeeded = succeeded;
+            this.cancelled = cancelled;
+            this.failed = failed;
+            this.active = active;
+            this.peakActive = peakActive;
+            this.terminalBalance = terminalBalance;
+            this.responseBytes = responseBytes;
+        }
+    }
+
     private static final class Session {
         final long generation;
         final String workId;
@@ -1225,6 +1354,8 @@ public final class ViewerTelemetry {
         final AtomicLong imageRequestSucceeded = new AtomicLong();
         final AtomicLong imageRequestCancelled = new AtomicLong();
         final AtomicLong imageRequestFailed = new AtomicLong();
+        final AtomicLong imageRequestActive = new AtomicLong();
+        final AtomicLong imageRequestPeakActive = new AtomicLong();
         final AtomicLong imageResponseBytes = new AtomicLong();
         final AtomicLong imageMetadataCount = new AtomicLong();
         final AtomicLong imageEncodedBytes = new AtomicLong();
@@ -1240,6 +1371,14 @@ public final class ViewerTelemetry {
         volatile long firstActualFrameAtNanos;
         volatile long latestActualAtNanos;
         volatile long allImagesReadyAtNanos;
+        volatile long adjacentWorkStartedAtNanos;
+        volatile long adjacentRunwayReadyAtNanos;
+        volatile long forwardBoundaryReachedAtNanos;
+        volatile long firstAdjacentActualAtNanos;
+        volatile String adjacentRunwayTargetEpisode = "";
+        volatile String firstAdjacentActualEpisode = "";
+        volatile int adjacentRunwayPageCount;
+        volatile int adjacentTotalPageCount;
         volatile int allImagesReadyPageCount;
         volatile String latestActualDescription;
         volatile ScheduledFuture<?> memorySampler;
@@ -1267,6 +1406,40 @@ public final class ViewerTelemetry {
             this.openCookie = openCookie;
             this.scrollCookie = scrollCookie;
             this.allImagesReadyCookie = allImagesReadyCookie;
+        }
+
+        synchronized void recordImageRequestStarted() {
+            imageRequestStarted.incrementAndGet();
+            long active = imageRequestActive.incrementAndGet();
+            updateMax(imageRequestPeakActive, active);
+        }
+
+        synchronized void recordImageRequestTerminal(String phase, long bytes) {
+            if(phase.equals("cancel"))
+                imageRequestCancelled.incrementAndGet();
+            else if(phase.equals("fail"))
+                imageRequestFailed.incrementAndGet();
+            else {
+                imageRequestSucceeded.incrementAndGet();
+                imageResponseBytes.addAndGet(Math.max(0L, bytes));
+            }
+            imageRequestActive.decrementAndGet();
+        }
+
+        synchronized ImageRequestStatsSnapshot imageRequestStatsSnapshot() {
+            long started = imageRequestStarted.get();
+            long succeeded = imageRequestSucceeded.get();
+            long cancelled = imageRequestCancelled.get();
+            long failed = imageRequestFailed.get();
+            return new ImageRequestStatsSnapshot(
+                    started,
+                    succeeded,
+                    cancelled,
+                    failed,
+                    imageRequestActive.get(),
+                    imageRequestPeakActive.get(),
+                    started - succeeded - cancelled - failed,
+                    imageResponseBytes.get());
         }
 
         synchronized void recordQualifiedActualFrame(
@@ -1393,9 +1566,10 @@ public final class ViewerTelemetry {
         final String urlHost;
         final int priority;
         final long startedAtNanos;
+        final Session ownerSession;
 
         Operation(long id, int cookie, String traceName, int pageIndex, String sourceKeyHash,
-                  String urlHost, int priority, long startedAtNanos) {
+                  String urlHost, int priority, long startedAtNanos, Session ownerSession) {
             this.id = id;
             this.cookie = cookie;
             this.traceName = traceName;
@@ -1404,6 +1578,7 @@ public final class ViewerTelemetry {
             this.urlHost = urlHost;
             this.priority = priority;
             this.startedAtNanos = startedAtNanos;
+            this.ownerSession = ownerSession;
         }
 
         String metadata() {

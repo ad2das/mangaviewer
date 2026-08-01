@@ -7,6 +7,7 @@ import ml.melun.mangaview.MainApplication
 import ml.melun.mangaview.Preference
 import ml.melun.mangaview.activity.NtkQuicFetcher
 import ml.melun.mangaview.mangaview.Manga
+import ml.melun.mangaview.runtime.ViewerTelemetry
 import java.io.Closeable
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -669,6 +670,20 @@ object NtkSourceSpoolRegistry {
             .takeIf { it in binding.normalizedOrderedCanonicalAssets.indices } ?: 0
         val callbacksEnabled = AtomicBoolean(false)
         val bootstrap = awaitActorFuture(spec.executionBootstrapFuture)
+        val cellularResilientTransport = runCatching {
+            MainApplication.getHttpClient().isNtkCellularResilientTransportActive()
+        }.getOrDefault(false)
+        val directWifiTransport = !cellularResilientTransport && runCatching {
+            MainApplication.getHttpClient().isNtkWifiTransportActive()
+        }.getOrDefault(false)
+        // Capture a positive current-viewer identity at construction. `adjacentPrefetch == false`
+        // alone is not current authority: a retiring/previous session can also lack that grant.
+        val observedViewerGeneration = ViewerTelemetry.activeGeneration()
+        val currentForegroundViewerGeneration = observedViewerGeneration.takeIf {
+            it > 0L &&
+                ViewerTelemetry.isActiveEpisode(binding.episodePath) &&
+                ViewerTelemetry.activeGeneration() == it
+        } ?: 0L
         val session = try {
             NtkStrictSourceSession(
                 context = spec.context,
@@ -691,14 +706,11 @@ object NtkSourceSpoolRegistry {
                 initialExactBodies = initialExactBodies,
                 streamedExactBodies = streamedExactBodies,
                 viewerImageApiBacked = spec.viewerImageApiBacked,
-                cellularResilientTransport = runCatching {
-                    MainApplication.getHttpClient().isNtkCellularResilientTransportActive()
-                }.getOrDefault(false),
-                wifiQuicBulkTransport = spec.viewerImageApiBacked && runCatching {
-                    MainApplication.getHttpClient().isNtkWifiTransportActive() &&
-                        NtkQuicFetcher.isAvailable()
-                }.getOrDefault(false),
-                adjacentPrefetch =
+                cellularResilientTransport = cellularResilientTransport,
+                wifiQuicBulkTransport =
+                    spec.viewerImageApiBacked && directWifiTransport && NtkQuicFetcher.isAvailable(),
+                currentForegroundViewerGeneration = currentForegroundViewerGeneration,
+                adjacentPrefetch = directWifiTransport &&
                     ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(
                         binding.episodePath,
                     ),
@@ -1907,6 +1919,9 @@ object NtkSourceSpoolRegistry {
 
         override fun onFirstActualFramePresented(episode: NtkEpisodeToken) =
             transport.onFirstActualFramePresented(episode)
+
+        override fun onAdjacentViewportActivated(episode: NtkEpisodeToken) =
+            transport.onAdjacentViewportActivated(episode)
 
         override fun requestPreparationDrain(
             episode: NtkEpisodeToken,

@@ -14,6 +14,11 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(24, NtkClickOwnedManhwaWavePolicy.CONNECTION_SHARDS)
         assertEquals(3, NtkClickOwnedManhwaWavePolicy.REPLICA_STRIPE_SIZE)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS)
+        assertEquals(
+            40,
+            NtkClickOwnedManhwaWavePolicy.DIRECT_WIFI_ORDINARY_BODY_TRANSFERS,
+        )
+        assertEquals(8, NtkClickOwnedManhwaWavePolicy.MIXED_UNCOMMON_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)
         assertEquals(4, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_SPECULATION_PAGES)
         assertEquals(12_000L, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_RELEASE_TIMEOUT_MS)
@@ -31,6 +36,7 @@ class NtkClickOwnedManhwaWavePolicyTest {
             NtkManhwaWifiTransportPolicy.WIFI_UNCOMMON_SESSION_STRIPES_PER_HOST,
         )
         assertEquals(3, NtkWifiExactQuicSessionPool.WEBTOON_SESSION_STRIPES_PER_HOST)
+        assertEquals(2, NtkWifiExactQuicSessionPool.WEBTOON_CALLBACK_THREADS_PER_SESSION)
         assertEquals(6, NtkWifiExactQuicSessionPool.MANHWA_SESSION_STRIPES_PER_HOST)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.EXACT_PRE_FRAME_RUNWAY_PAGES)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.FORWARD_ADMISSION_RUNWAY_PAGES)
@@ -63,6 +69,30 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(
             8,
             NtkClickOwnedManhwaWavePolicy.initialSpeculationPages(wifiTransport = false),
+        )
+        assertTrue(
+            NtkClickOwnedManhwaWavePolicy.shouldUseWifiEntryFallbackLane(
+                wifiTransport = true,
+                pageIndex = 1,
+            ),
+        )
+        assertTrue(
+            NtkClickOwnedManhwaWavePolicy.shouldUseWifiEntryFallbackLane(
+                wifiTransport = true,
+                pageIndex = 3,
+            ),
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldUseWifiEntryFallbackLane(
+                wifiTransport = true,
+                pageIndex = 4,
+            ),
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldUseWifiEntryFallbackLane(
+                wifiTransport = false,
+                pageIndex = 1,
+            ),
         )
         assertTrue(
             NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
@@ -125,6 +155,13 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(1_800L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(4))
         assertEquals(1_800L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(39))
         assertEquals(700L, NtkClickOwnedManhwaWavePolicy.headerFailoverMs(40))
+        assertEquals(
+            1_800L,
+            NtkClickOwnedManhwaWavePolicy.headerFailoverMs(
+                40,
+                directWifiOrdinaryJpeg = true,
+            ),
+        )
     }
 
     @Test
@@ -270,6 +307,44 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(38, hosts.count { it == "booktoki8.org" })
         assertEquals(37, hosts.count { it == "mana.apihost93.com" })
         assertEquals(37, hosts.count { it == "booktoki9.org" })
+    }
+
+    @Test
+    fun mixedPngBytesUseDeterministicLargestFirstReplicaPlacement() {
+        fun body(pageIndex: Int, byteCount: Long, host: String) =
+            NtkClickOwnedManhwaWavePolicy.SizedReplicaBody(pageIndex, byteCount, host)
+        val assignments = NtkClickOwnedManhwaWavePolicy.sizeBalancedReplicaHosts(
+            fixedBodies = listOf(
+                body(2, 1_100L, "booktoki9.org"),
+                body(3, 1_400L, "booktoki8.org"),
+            ),
+            movableBodies = listOf(
+                body(11, 5_400L, "booktoki9.org"),
+                body(12, 3_700L, "booktoki8.org"),
+                body(24, 2_800L, "booktoki8.org"),
+                body(30, 3_100L, "booktoki8.org"),
+            ),
+        )
+
+        assertEquals("mana.apihost93.com", assignments[11])
+        assertEquals("booktoki9.org", assignments[12])
+        assertEquals("booktoki8.org", assignments[30])
+        assertEquals("booktoki8.org", assignments[24])
+        assertEquals(
+            assignments,
+            NtkClickOwnedManhwaWavePolicy.sizeBalancedReplicaHosts(
+                fixedBodies = listOf(
+                    body(2, 1_100L, "booktoki9.org"),
+                    body(3, 1_400L, "booktoki8.org"),
+                ),
+                movableBodies = listOf(
+                    body(24, 2_800L, "booktoki8.org"),
+                    body(30, 3_100L, "booktoki8.org"),
+                    body(12, 3_700L, "booktoki8.org"),
+                    body(11, 5_400L, "booktoki9.org"),
+                ),
+            )
+        )
     }
 
     @Test

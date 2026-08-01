@@ -239,7 +239,10 @@ foreach($requiredToken in @(
         '$forwardTraversalGestureCount -ge $script:ProductionMinForwardGestures',
         '$forwardTraversalGestureCount -le $script:ProductionMaxForwardGestures',
         'continuous forward traversal metrics were missing or invalid',
-        'image requests were cancelled during continuous forward reading')) {
+        'image requests were cancelled during continuous forward reading',
+        '[Math]::Max(0L, $pipelineRequestSucceeded - $authoritativePageCount)',
+        'retryAttemptCount = if($null -ne $pipelineRequestStarted',
+        '[Math]::Max(0L, $pipelineRequestStarted - $pipelineRequestSucceeded)')) {
     Assert-SourceContains $requiredToken
 }
 if($source.Contains('warm reopen retained-PSS growth was unmeasured',
@@ -257,10 +260,11 @@ $helperNames = @(
     "Get-OptionalProperty",
     "Get-PackageUid",
     "Get-PreClickProcessState",
-    "Get-PreClickServiceState",
-    "Get-PreClickJobState",
-    "Get-RequestQueueMetrics",
-    "Get-MaxTelemetryBurst")
+        "Get-PreClickServiceState",
+        "Get-PreClickJobState",
+        "Get-RequestQueueMetrics",
+        "Get-ImagePipelineRequestQueueMetrics",
+        "Get-MaxTelemetryBurst")
 foreach($helperName in $helperNames) {
     $definition = $ast.FindAll({
         param($node)
@@ -369,6 +373,43 @@ if(-not $queue.measured -or $queue.peakActive -ne 2 -or $queue.terminalBalance -
 }
 $unbalanced = Get-RequestQueueMetrics @((New-RequestEvent 1 "start" "1"))
 if($unbalanced.measured) { throw "Unbalanced request telemetry did not fail closed" }
+
+$sampledFailure = Get-RequestQueueMetrics @(
+    (New-RequestEvent 1 "fail" "sampled-terminal-without-start"))
+$aggregateQueue = Get-ImagePipelineRequestQueueMetrics ([pscustomobject]@{
+    requestStarted = 728L
+    requestSucceeded = 230L
+    requestCancelled = 0L
+    requestFailed = 498L
+    requestActive = 0L
+    requestPeakActive = 40L
+    requestTerminalBalance = 0L
+}) $sampledFailure
+if(-not $aggregateQueue.measured -or $aggregateQueue.peakActive -ne 40L -or
+        $aggregateQueue.terminalBalance -ne 0L -or $aggregateQueue.problems.Count -ne 0) {
+    throw "Authoritative image pipeline queue aggregate was not preferred over sampled JSON"
+}
+$malformedAggregateQueue = Get-ImagePipelineRequestQueueMetrics ([pscustomobject]@{
+    requestStarted = 2L
+    requestSucceeded = 1L
+    requestCancelled = 0L
+    requestFailed = 0L
+    requestActive = 0L
+    requestPeakActive = 2L
+    requestTerminalBalance = 0L
+}) $queue
+if($malformedAggregateQueue.measured -or $malformedAggregateQueue.problems.Count -eq 0) {
+    throw "Unbalanced image pipeline queue aggregate did not fail closed"
+}
+$legacyQueue = Get-ImagePipelineRequestQueueMetrics ([pscustomobject]@{
+    requestStarted = 1L
+    requestSucceeded = 1L
+    requestCancelled = 0L
+    requestFailed = 0L
+}) $queue
+if($legacyQueue -ne $queue) {
+    throw "Legacy image pipeline summary did not retain sampled queue compatibility"
+}
 
 $teardownBalanced = Get-RequestQueueMetrics @(
     (New-RequestEvent 1 "start" "visible" 10L),

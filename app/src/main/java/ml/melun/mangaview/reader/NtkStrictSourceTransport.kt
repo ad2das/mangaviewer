@@ -141,6 +141,12 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
     /** Opens post-anchor bulk transfer only after an identity-valid real-pixel frame committed. */
     fun onFirstActualFramePresented(episode: NtkEpisodeToken)
 
+    /**
+     * Releases a direct-Wi-Fi adjacent session's body workset after that episode becomes the
+     * physical viewport. Before this signal the session keeps only its atomic boundary runway.
+     */
+    fun onAdjacentViewportActivated(episode: NtkEpisodeToken)
+
     /** Completes only at the exact no-call/no-lease source drain boundary. */
     fun requestPreparationDrain(
         episode: NtkEpisodeToken,

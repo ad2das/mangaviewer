@@ -72,6 +72,7 @@ $ProductionMinForwardGestures = 3
 $ProductionMaxForwardGestures = 500
 $ProductionWarmRetainedPssFloorLimitKb = 16384L
 $ProductionWarmRetainedPssRatioLimit = 0.10
+$ProductionMaxAdjacentAttachMs = 200.0
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $siteRoot = $NtkSiteRoot.TrimEnd('/')
 $perfettoConfig = Join-Path $PSScriptRoot "ntk_perfetto.textproto"
@@ -271,21 +272,21 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     foreach($argument in @(
         "-avd", $avdName, "-port", [string]$port,
         # Keep the explicitly provisioned qualification resources across every hard process
-        # restart. Four guest vCPUs leave four physical host cores for QEMU's gfxstream/HWC,
-        # Perfetto and Windows GPU-fence dispatch on this eight-core/no-SMT host. With six guest
-        # vCPUs, repeated short-scene traces still caught SurfaceFlinger in HwcPresentDisplay for
-        # 34.8 ms while the app main/draw lanes stayed below 1 ms; the guest was waiting for host
-        # fence service, not for additional Android compute. Preserve host service capacity here.
-        # Giving the guest all eight physical cores repeatedly made ranchu rcCompose encode block
-        # for 60-80ms even though
-        # app draw/queue work stayed below 1ms. More guest vCPUs therefore reduced, rather than
-        # improved, compositor throughput. Six GiB remains deliberately generous for the app
-        # while preserving host headroom for gfxstream and the physical GPU driver.
-        "-cores", "4", "-memory", [string]$guestMemoryMiB, "-gpu", "host",
-        # The windowed QEMU backend can remain alive before opening its adb port after a prior
-        # host-GPU process is retired. The headless backend retains the same host GLES translator
-        # and booted this AVD immediately in the reproduced failure.
-        "-no-window", "-no-snapshot-load", "-no-boot-anim", "-no-audio", "-no-metrics"
+        # restart. Five guest vCPUs retain more application throughput than the stable four-vCPU
+        # fixture while reserving three physical host cores for ranchu's virtual Wi-Fi, gfxstream,
+        # Perfetto and Windows network/GPU dispatch. The six-vCPU fixture reached 7.56 s once, but
+        # under repeated body waves it later missed AP beacons and destroyed 61-69 live sockets.
+        "-cores", "5", "-memory", [string]$guestMemoryMiB, "-gpu", "host",
+        # The Qt-backed hidden-window loop was measured against the same 230-page case and still
+        # lost the emulated access-point beacon before Android tore down 69 live sockets. Keep the
+        # deterministic headless fixture; window backend choice does not repair that guest link.
+        "-no-window", "-no-snapshot-load", "-no-boot-anim", "-no-audio", "-no-metrics",
+        # Emulator 36.5 enables WiFiPacketStream by default. Its shared Wi-Fi model emitted an
+        # eight-second BEACON-LOSS cadence in this fixture and eventually destroyed 50-69 live
+        # sockets even though the host route was healthy wired Ethernet. Android's documented
+        # feature fallback retains Transport.WIFI while selecting the legacy network model.
+        "-feature", "-WiFiPacketStream", "-netdelay", "none", "-netspeed", "full",
+        "-netfast", "-dns-server", "1.1.1.1,8.8.8.8"
     )) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
@@ -371,6 +372,87 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
             'mCurrentFocus=.*com\.google\.android\.apps\.nexuslauncher') {
         throw "Restarted emulator did not publish a focused launcher within 30 seconds"
     }
+    # A boot-complete, focused emulator can still expose an unvalidated or half-initialized NAT
+    # route. That state produced thousands of replica failovers and 15-second waves while the app
+    # itself remained healthy. Prove both raw-IP TCP reachability and guest DNS before admitting a
+    # case. The documented legacy Wi-Fi backend does not proxy ICMP, so ping would reject a healthy
+    # validated route; TCP/443 exercises the same transport the image pipeline actually needs.
+    $networkReadyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    $ipReachability = $null
+    $dnsReachability = $null
+    do {
+        $ipReachability = Invoke-Adb @(
+            "shell", "nc", "-z", "-w", "3", "1.1.1.1", "443"
+        ) -TimeoutSeconds 10 -AllowFailure
+        $dnsReachability = Invoke-Adb @(
+            "shell", "nc", "-z", "-w", "3", "sbxh9.com", "443"
+        ) -TimeoutSeconds 10 -AllowFailure
+        if($ipReachability.ExitCode -eq 0 -and $dnsReachability.ExitCode -eq 0) {
+            break
+        }
+        Start-Sleep -Seconds 1
+    } while([DateTime]::UtcNow -lt $networkReadyDeadline)
+    $wifiRecoveryApplied = $false
+    if($ipReachability.ExitCode -ne 0 -or $dnsReachability.ExitCode -ne 0) {
+        # Ranchu occasionally publishes boot-complete while its restored Wi-Fi NetworkAgent has no
+        # usable NAT route. Re-associate that exact emulator interface once; this is test-fixture
+        # recovery before app launch, not application warm-up or a production-network mutation.
+        [void](Invoke-Adb @("shell", "svc", "wifi", "disable") -TimeoutSeconds 30 -AllowFailure)
+        Start-Sleep -Seconds 3
+        [void](Invoke-Adb @("shell", "svc", "wifi", "enable") -TimeoutSeconds 30 -AllowFailure)
+        $wifiRecoveryApplied = $true
+        $networkReadyDeadline = [DateTime]::UtcNow.AddSeconds(45)
+        do {
+            Start-Sleep -Seconds 1
+            $ipReachability = Invoke-Adb @(
+                "shell", "nc", "-z", "-w", "3", "1.1.1.1", "443"
+            ) -TimeoutSeconds 10 -AllowFailure
+            $dnsReachability = Invoke-Adb @(
+                "shell", "nc", "-z", "-w", "3", "sbxh9.com", "443"
+            ) -TimeoutSeconds 10 -AllowFailure
+            if($ipReachability.ExitCode -eq 0 -and $dnsReachability.ExitCode -eq 0) {
+                break
+            }
+        } while([DateTime]::UtcNow -lt $networkReadyDeadline)
+    }
+    if($ipReachability.ExitCode -ne 0 -or $dnsReachability.ExitCode -ne 0) {
+        throw "Restarted emulator did not establish tested IP and DNS reachability after one Wi-Fi recovery"
+    }
+    # The emulator Wi-Fi driver can answer one probe and then report BEACON-LOSS while its boot
+    # association is still settling. Android destroys every live TCP socket at that transition,
+    # which looks exactly like an application-wide retry storm. Require a continuous stability
+    # window longer than the observed 11-second reassociation cycle before launching the app.
+    $networkStableSince = [DateTime]::UtcNow
+    $networkStabilityDeadline = [DateTime]::UtcNow.AddSeconds(75)
+    $networkStableForMs = 0L
+    do {
+        Start-Sleep -Seconds 1
+        $ipReachability = Invoke-Adb @(
+            "shell", "nc", "-z", "-w", "3", "1.1.1.1", "443"
+        ) -TimeoutSeconds 10 -AllowFailure
+        $dnsReachability = Invoke-Adb @(
+            "shell", "nc", "-z", "-w", "3", "sbxh9.com", "443"
+        ) -TimeoutSeconds 10 -AllowFailure
+        if($ipReachability.ExitCode -eq 0 -and $dnsReachability.ExitCode -eq 0) {
+            $networkStableForMs = [long]([DateTime]::UtcNow - $networkStableSince).TotalMilliseconds
+            if($networkStableForMs -ge 15000L) { break }
+        } else {
+            $networkStableSince = [DateTime]::UtcNow
+            $networkStableForMs = 0L
+        }
+    } while([DateTime]::UtcNow -lt $networkStabilityDeadline)
+    if($networkStableForMs -lt 15000L) {
+        throw "Restarted emulator Wi-Fi did not remain continuously reachable for 15 seconds"
+    }
+    $socketState = Invoke-Adb @("shell", "cat", "/proc/net/sockstat") -TimeoutSeconds 30
+    $orphanSockets = if($socketState.Stdout -match '(?m)^TCP:\s+.*\borphan\s+(\d+)\b') {
+        [int]$Matches[1]
+    } else {
+        throw "Restarted emulator did not expose a parseable TCP orphan count"
+    }
+    if($orphanSockets -gt 8) {
+        throw "Restarted emulator retained an invalid TCP orphan backlog: $orphanSockets"
+    }
     $newProcesses = @(Get-CimInstance Win32_Process | Where-Object {
         $_.Name -in (@("emulator.exe") + $qemuProcessNames) -and
         $_.CommandLine -match "(?:^|\s)-port\s+$port(?:\s|$)"
@@ -395,6 +477,12 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         gpu = $freshDevice.surfaceFlingerGles
         hostGpuSatisfied = [bool]$freshDevice.hostGpuEmulatorSatisfied
         guestMemoryMiB = $guestMemoryMiB
+        guestCpuCount = 5
+        ipReachabilityProven = $true
+        dnsReachabilityProven = $true
+        wifiRecoveryApplied = $wifiRecoveryApplied
+        networkStableForMs = $networkStableForMs
+        orphanSocketsBeforeCase = $orphanSockets
         performancePolicy = $freshProcessPolicy
     }
 }
@@ -716,7 +804,11 @@ function Get-EpisodeMetadata($Work) {
                 originallySelectedEpisodeId = ""
                 originallySelectedEpisodeTitle = ""
                 accessReplacementReason = $null
-                workAccessStatus = "UNKNOWN"
+                workAccessStatus = "NO_FORWARD_ADJACENT_EPISODE"
+                expectedAdjacentEpisodePath = ""
+                expectedAdjacentEpisodeId = ""
+                expectedAdjacentEpisodeTitle = ""
+                expectedAdjacentPageCount = 0
             }
         }
     }
@@ -732,7 +824,11 @@ function Get-EpisodeMetadata($Work) {
             originallySelectedEpisodeId = ""
             originallySelectedEpisodeTitle = ""
             accessReplacementReason = $null
-            workAccessStatus = "UNKNOWN"
+            workAccessStatus = "NO_FORWARD_ADJACENT_EPISODE"
+            expectedAdjacentEpisodePath = ""
+            expectedAdjacentEpisodeId = ""
+            expectedAdjacentEpisodeTitle = ""
+            expectedAdjacentPageCount = 0
         }
     }
     # Keep the randomly selected work. Some upstream catalogs prepend provider/imported rows whose
@@ -743,12 +839,27 @@ function Get-EpisodeMetadata($Work) {
     # API only: no episode document or image URL is requested, and image count/size is never used.
     $original = $episodes[0]
     $value = $original
+    $expectedAdjacent = $null
     $accessReplacementReason = $null
     $nativeAccessible = @()
     $escapedNativeWorkId = [regex]::Escape([string]$Work.workId)
     $nativeEpisodePattern = "^(?:\d+|nv-$escapedNativeWorkId-\d+)$"
     $providerImportedPattern = "^(?:kp-|tkor)"
-    if(([string]$original.episodeId) -notmatch $nativeEpisodePattern) {
+    for($episodeIndex = 1; $episodeIndex -lt $episodes.Count; $episodeIndex++) {
+        if(([string]$episodes[$episodeIndex].episodeId) -match $nativeEpisodePattern -and
+                ([string]$episodes[$episodeIndex - 1].episodeId) -match $nativeEpisodePattern) {
+            $value = $episodes[$episodeIndex]
+            $expectedAdjacent = $episodes[$episodeIndex - 1]
+            if($episodeIndex -ne 1 -or
+                    ([string]$original.episodeId) -notmatch $nativeEpisodePattern) {
+                $accessReplacementReason =
+                    "selected the first consecutive native episode pair with a real forward adjacent episode"
+            }
+            break
+        }
+    }
+    if($null -eq $expectedAdjacent -and
+            ([string]$original.episodeId) -notmatch $nativeEpisodePattern) {
         $nativeAccessible = @($episodes | Where-Object {
             ([string]$_.episodeId) -match $nativeEpisodePattern
         } | Select-Object -First 1)
@@ -758,7 +869,9 @@ function Get-EpisodeMetadata($Work) {
                 "first episode uses a provider/imported metadata-only id; selected first native canonical episode"
         }
     }
-    $workAccessStatus = if(
+    $workAccessStatus = if($null -eq $expectedAdjacent) {
+        "NO_FORWARD_ADJACENT_EPISODE"
+    } elseif(
         ([string]$original.metadataSource) -ceq "episode-api" -and
         ([string]$original.episodeId) -match $providerImportedPattern -and
         $nativeAccessible.Count -eq 0 -and
@@ -782,6 +895,16 @@ function Get-EpisodeMetadata($Work) {
         originallySelectedEpisodeTitle = [string]$original.episodeTitle
         accessReplacementReason = $accessReplacementReason
         workAccessStatus = $workAccessStatus
+        expectedAdjacentEpisodePath = if($null -ne $expectedAdjacent) {
+            [string]$expectedAdjacent.episodePath
+        } else { "" }
+        expectedAdjacentEpisodeId = if($null -ne $expectedAdjacent) {
+            [string]$expectedAdjacent.episodeId
+        } else { "" }
+        expectedAdjacentEpisodeTitle = if($null -ne $expectedAdjacent) {
+            [string]$expectedAdjacent.episodeTitle
+        } else { "" }
+        expectedAdjacentPageCount = 0
     }
 }
 
@@ -1147,6 +1270,72 @@ function Get-RequestQueueMetrics(
     }
 }
 
+function Get-ImagePipelineRequestQueueMetrics(
+    [object]$ImagePipelineSummary,
+    [object]$FallbackMetrics
+) {
+    $queueFields = @(
+        "requestActive",
+        "requestPeakActive",
+        "requestTerminalBalance"
+    )
+    if($null -eq $ImagePipelineSummary) { return $FallbackMetrics }
+    $propertyNames = @($ImagePipelineSummary.PSObject.Properties.Name)
+    $presentQueueFields = @($queueFields | Where-Object { $_ -cin $propertyNames })
+    # Old artifacts predate authoritative queue aggregates. Preserve their existing interpretation
+    # while making any partially upgraded summary fail closed instead of mixing aggregate and
+    # sampled JSON evidence.
+    if($presentQueueFields.Count -eq 0) { return $FallbackMetrics }
+
+    $requiredFields = @(
+        "requestStarted",
+        "requestSucceeded",
+        "requestCancelled",
+        "requestFailed"
+    ) + $queueFields
+    $values = @{}
+    $problems = [Collections.Generic.List[string]]::new()
+    foreach($field in $requiredFields) {
+        $value = 0L
+        if($field -cnotin $propertyNames) {
+            $problems.Add("image pipeline queue aggregate lacked $field")
+        } elseif(-not [int64]::TryParse(
+                [string](Get-OptionalProperty $ImagePipelineSummary $field),
+                [ref]$value)) {
+            $problems.Add("image pipeline queue aggregate had invalid $field")
+        }
+        $values[$field] = $value
+    }
+
+    $started = [int64]$values.requestStarted
+    $succeeded = [int64]$values.requestSucceeded
+    $cancelled = [int64]$values.requestCancelled
+    $failed = [int64]$values.requestFailed
+    $active = [int64]$values.requestActive
+    $peak = [int64]$values.requestPeakActive
+    $balance = [int64]$values.requestTerminalBalance
+    if(@($started, $succeeded, $cancelled, $failed, $active, $peak, $balance |
+                Where-Object { $_ -lt 0L }).Count -gt 0) {
+        $problems.Add("image pipeline queue aggregate contained a negative count")
+    }
+    if($active -ne $balance) {
+        $problems.Add("image pipeline active count did not match terminal balance")
+    }
+    if($started -ne $succeeded + $cancelled + $failed + $balance) {
+        $problems.Add("image pipeline starts did not balance terminal outcomes")
+    }
+    if($peak -lt $active -or $peak -gt $started -or ($started -gt 0L -and $peak -le 0L)) {
+        $problems.Add("image pipeline peak active count was inconsistent")
+    }
+    return [pscustomobject][ordered]@{
+        measured = ($started -gt 0L -and $problems.Count -eq 0)
+        eventCount = $started + $succeeded + $cancelled + $failed
+        peakActive = $peak
+        terminalBalance = $balance
+        problems = @($problems)
+    }
+}
+
 function Get-MaxTelemetryBurst(
     [object[]]$Events,
     [int64]$StartNanos,
@@ -1471,6 +1660,10 @@ function Stop-StandalonePerfetto(
 function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAdditional) {
     $caseImageSlaMs = Get-CaseImageSlaMs ([string]$Target.workType)
     $caseAllImagesSlaMs = Get-CaseAllImagesSlaMs ([string]$Target.workType)
+    $expectedAdjacentPath =
+        [string](Get-OptionalProperty $Target "expectedAdjacentEpisodePath")
+    $expectedAdjacentPageCount =
+        [string](Get-OptionalProperty $Target "expectedAdjacentPageCount")
     $instrumentArgs = @(
         # API 30+ otherwise gives instrumentation an isolated external-storage view. AndroidX can
         # report a valid trace path from that private mount, but `adb pull` cannot see it after the
@@ -1492,6 +1685,17 @@ function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAd
         "-e", "androidx.benchmark.output.enable", "true",
         "-e", "additionalTestOutputDir", $RemoteAdditional
     )
+    if(-not [string]::IsNullOrWhiteSpace($expectedAdjacentPath)) {
+        $instrumentArgs += @(
+            "-e", "ntkExpectedAdjacentEpisodePath", $expectedAdjacentPath,
+            "-e", "ntkExpectedAdjacentPageCount",
+                $(if([string]::IsNullOrWhiteSpace($expectedAdjacentPageCount)) {
+                    "0"
+                } else {
+                    $expectedAdjacentPageCount
+                })
+        )
+    }
     if($script:deviceInfo.virtualDeviceDetected) {
         # Only the emulator capability check is suppressed. Battery, debuggability,
         # profileability and every other Macrobenchmark configuration error remain fatal.
@@ -1627,13 +1831,79 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     Write-Utf8 (Join-Path $caseDir "activity-services-after.txt") $servicesAfter.Text
     Write-Utf8 (Join-Path $caseDir "jobscheduler-after.txt") $jobsAfter.Text
     $benchmarkArtifactRoot = Join-Path $caseDir "benchmark"
-    # Windows adb can create a non-existent destination using the remote directory's basename and
-    # then treat that same path as a file when the directory contains multiple artifacts. Create
-    # the destination explicitly and pull the directory contents so Perfetto and benchmarkData are
-    # retained as siblings on every case.
-    [void](New-Item -ItemType Directory -Path $benchmarkArtifactRoot -Force)
-    $benchmarkPull = Invoke-Adb @("pull", "$remoteAdditional/.", $benchmarkArtifactRoot) `
-        -TimeoutSeconds 180 -AllowFailure
+    # Windows adb 36 intermittently materializes the first child of AndroidX's additional-output
+    # directory as a file named `benchmark`; its second child then fails with "Not a directory".
+    # Enumerate and pull each artifact to an explicit local file so the large Perfetto trace and
+    # benchmarkData JSON are always retained as siblings.
+    if(Test-Path -LiteralPath $benchmarkArtifactRoot) {
+        throw "Benchmark artifact destination unexpectedly existed before pull: $benchmarkArtifactRoot"
+    }
+    [void](New-Item -ItemType Directory -Path $benchmarkArtifactRoot)
+    $benchmarkPullLog = [Collections.Generic.List[string]]::new()
+    $benchmarkPullExitCode = 0
+    $benchmarkRemoteListing = Invoke-Adb @(
+        "shell", "find", $remoteAdditional, "-type", "f"
+    ) -TimeoutSeconds 30 -AllowFailure
+    $benchmarkPullLog.Add($benchmarkRemoteListing.Text)
+    $benchmarkRemoteFiles = @(if($benchmarkRemoteListing.ExitCode -eq 0) {
+        @($benchmarkRemoteListing.Stdout -split "`r?`n" | ForEach-Object { $_.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    } else {
+        $benchmarkPullExitCode = $benchmarkRemoteListing.ExitCode
+        @()
+    })
+    if($benchmarkRemoteFiles.Count -eq 0) {
+        $benchmarkPullExitCode = 1
+        $benchmarkPullLog.Add("No remote benchmark artifacts were found under $remoteAdditional")
+    }
+    $remoteAdditionalPrefix = $remoteAdditional.TrimEnd('/') + "/"
+    $benchmarkArtifactOrdinal = 0
+    foreach($remoteArtifact in $benchmarkRemoteFiles) {
+        if(-not $remoteArtifact.StartsWith(
+                $remoteAdditionalPrefix,
+                [StringComparison]::Ordinal)) {
+            $benchmarkPullExitCode = 1
+            $benchmarkPullLog.Add("Rejected out-of-root benchmark artifact: $remoteArtifact")
+            continue
+        }
+        $relativeArtifact = $remoteArtifact.Substring($remoteAdditionalPrefix.Length)
+        $relativeSegments = @($relativeArtifact.Split(
+            '/',
+            [StringSplitOptions]::RemoveEmptyEntries
+        ))
+        if($relativeSegments.Count -eq 0 -or
+                @($relativeSegments | Where-Object { $_ -in @(".", "..") }).Count -gt 0) {
+            $benchmarkPullExitCode = 1
+            $benchmarkPullLog.Add("Rejected unsafe benchmark artifact path: $remoteArtifact")
+            continue
+        }
+        $benchmarkArtifactOrdinal++
+        $remoteArtifactName = [IO.Path]::GetFileName($relativeArtifact)
+        $localArtifactName = if($remoteArtifactName -match '(?i)\.perfetto-trace$') {
+            "macro-$($benchmarkArtifactOrdinal.ToString('000')).perfetto-trace"
+        } elseif($remoteArtifactName -match '(?i)-benchmarkData\.json$') {
+            "macro-$($benchmarkArtifactOrdinal.ToString('000'))-benchmarkData.json"
+        } else {
+            $safeExtension = [IO.Path]::GetExtension($remoteArtifactName)
+            "artifact-$($benchmarkArtifactOrdinal.ToString('000'))$safeExtension"
+        }
+        # adb on Windows reports the path-length failure as "Not a directory". Use stable short
+        # evidence names inside the per-case root and retain the remote-to-local mapping in the
+        # pull log; the artifact contents and AndroidX benchmark test identity remain authoritative.
+        $localArtifact = Join-Path $benchmarkArtifactRoot $localArtifactName
+        $benchmarkPullLog.Add("Mapping $remoteArtifact -> $localArtifactName")
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $localArtifact) -Force)
+        $artifactPull = Invoke-Adb @("pull", $remoteArtifact, $localArtifact) `
+            -TimeoutSeconds 180 -AllowFailure
+        $benchmarkPullLog.Add($artifactPull.Text)
+        if($artifactPull.ExitCode -ne 0) {
+            $benchmarkPullExitCode = $artifactPull.ExitCode
+        }
+    }
+    $benchmarkPull = [pscustomobject][ordered]@{
+        ExitCode = $benchmarkPullExitCode
+        Text = $benchmarkPullLog -join [Environment]::NewLine
+    }
     Write-Utf8 (Join-Path $caseDir "benchmark-pull.txt") $benchmarkPull.Text
     $benchmarkArtifactFiles = @(if(Test-Path -LiteralPath $benchmarkArtifactRoot) {
         Get-ChildItem -LiteralPath $benchmarkArtifactRoot -Recurse -File -ErrorAction SilentlyContinue
@@ -1788,7 +2058,7 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
                 [ref]$timestampNanos) -or
             $timestampNanos -le $forwardTraversalEndNanos
     })
-    $requestQueueMetrics = Get-RequestQueueMetrics `
+    $sampledRequestQueueMetrics = Get-RequestQueueMetrics `
         $sessionTelemetry `
         $(if($forwardTraversalMetricsPresent) { $forwardTraversalEndNanos } else { 0L })
     $allDrawCommits = @($sessionTelemetry | Where-Object {
@@ -1919,6 +2189,9 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     $imagePipelineSummary = if($imagePipelineSummaries.Count -gt 0) {
         $imagePipelineSummaries[-1].value
     } else { $null }
+    $requestQueueMetrics = Get-ImagePipelineRequestQueueMetrics `
+        $imagePipelineSummary `
+        $sampledRequestQueueMetrics
 
     if($script:IncludeWarmReopen) {
         $warmGeneration = 0L
@@ -2474,6 +2747,52 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     }
     if($null -eq $macroResult) { $violations.Add("NtkColdMacro result missing") }
     elseif($macroResult.passed -ne $true) { $violations.Add("real-UI scenario failed") }
+    $expectedAdjacentPath = [string](
+        Get-OptionalProperty $Target "expectedAdjacentEpisodePath"
+    )
+    $expectedAdjacentPageCount = [int](
+        Get-OptionalProperty $Target "expectedAdjacentPageCount"
+    )
+    $observedAdjacentTotalPageCount = if($null -ne $macroResult) {
+        [int](Get-OptionalProperty $macroResult "adjacentTotalPageCount")
+    } else { 0 }
+    $requiredAdjacentRunwayPages = if($observedAdjacentTotalPageCount -gt 0) {
+        [Math]::Min(4, $observedAdjacentTotalPageCount)
+    } else { 0 }
+    if([string]::IsNullOrWhiteSpace($expectedAdjacentPath)) {
+        $violations.Add("exact forward-adjacent episode was not configured")
+    } elseif($null -eq $macroResult -or
+            [string](Get-OptionalProperty $macroResult "expectedAdjacentEpisodePath") -cne
+                $expectedAdjacentPath) {
+        $violations.Add("exact forward-adjacent episode identity was not proven")
+    } elseif([long](Get-OptionalProperty $macroResult "adjacentRunwayReadyAtNanos") -le 0 -or
+            [long](Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos") -le 0 -or
+            [long](Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos") -le 0) {
+        $violations.Add("forward-adjacent timing evidence was incomplete")
+    } elseif([string](Get-OptionalProperty $macroResult "adjacentRunwayTargetEpisode") -cne
+            $expectedAdjacentPath -or
+            [string](Get-OptionalProperty $macroResult "firstAdjacentActualEpisode") -cne
+                $expectedAdjacentPath) {
+        $violations.Add("forward-adjacent runway or first pixels had the wrong episode identity")
+    } elseif($expectedAdjacentPageCount -gt 0 -and
+            $observedAdjacentTotalPageCount -ne $expectedAdjacentPageCount) {
+        $violations.Add("forward-adjacent total page count did not match selection")
+    } elseif($requiredAdjacentRunwayPages -le 0 -or
+            [int](Get-OptionalProperty $macroResult "adjacentRunwayPageCount") -ne
+                $requiredAdjacentRunwayPages) {
+        $violations.Add(
+            "forward-adjacent atomic runway p1-p$requiredAdjacentRunwayPages was not proven"
+        )
+    } elseif([double](Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs") -ne 0.0) {
+        $violations.Add("adjacent runway was not ready when the launch bottom was reached")
+    } elseif(
+        (
+            [long](Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos") -
+            [long](Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos")
+        ) / 1000000.0 -gt $ProductionMaxAdjacentAttachMs
+    ) {
+        $violations.Add("adjacent pixels exceeded the ${ProductionMaxAdjacentAttachMs}ms immediate-attach UX bound")
+    }
     if($null -eq $allImagesReadyMs -or $allImagesReadyMs -gt $caseAllImagesSlaMs) {
         $violations.Add("all canonical images exceeded ${caseAllImagesSlaMs}ms or were unmeasured")
     }
@@ -2694,6 +3013,27 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         episodeId = [string]$Target.episodeId
         episodeTitle = [string]$Target.episodeTitle
         episodePath = [string]$Target.episodePath
+        expectedAdjacentEpisodePath = $expectedAdjacentPath
+        adjacentRunwayTargetEpisode = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "adjacentRunwayTargetEpisode"
+        } else { $null }
+        adjacentRunwayPageCount = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "adjacentRunwayPageCount"
+        } else { $null }
+        adjacentTotalPageCount = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "adjacentTotalPageCount"
+        } else { $null }
+        adjacentBoundaryWaitMs = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs"
+        } else { $null }
+        adjacentAttachMs = if($null -ne $macroResult -and
+                [long](Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos") -gt 0 -and
+                [long](Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos") -gt 0) {
+            (
+                [long](Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos") -
+                [long](Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos")
+            ) / 1000000.0
+        } else { $null }
         episodeMetadataSource = [string]$Target.metadataSource
         catalogPage = $Target.catalogPage
         testedAt = $caseStartedAt
@@ -2816,10 +3156,14 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         forwardTraversalEndElapsedNanos = if($forwardTraversalMetricsPresent) {
             $forwardTraversalEndNanos
         } else { $null }
-        duplicateRequestCount = if($null -ne $pipelineRequestStarted -and
+        duplicateRequestCount = if($null -ne $pipelineRequestSucceeded -and
                 $null -ne $authoritativePageCount) {
-            [Math]::Max(0L, $pipelineRequestStarted - $authoritativePageCount)
+            [Math]::Max(0L, $pipelineRequestSucceeded - $authoritativePageCount)
         } else { $duplicates.Count }
+        retryAttemptCount = if($null -ne $pipelineRequestStarted -and
+                $null -ne $pipelineRequestSucceeded) {
+            [Math]::Max(0L, $pipelineRequestStarted - $pipelineRequestSucceeded)
+        } else { $null }
         completedImageDownloadCount = if($null -ne $pipelineRequestSucceeded) {
             $pipelineRequestSucceeded
         } else { $completedImageDownloads.Count }
@@ -3059,6 +3403,49 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
             }
         }
     }
+    # Older logged selections chose the newest episode, which has no forward adjacent episode by
+    # definition. Preserve every replayed work identity and random rank, but refresh its metadata-
+    # only episode list so the same work opens the first consecutive native pair: the older member
+    # is the measured current episode and the newer member is its exact forward adjacent episode.
+    # This does not request an episode document or any image URL.
+    $replayTargets = @($replayTargets | ForEach-Object {
+        $recordedTarget = $_
+        $episode = Get-EpisodeMetadata $recordedTarget
+        if(([string]$episode.workAccessStatus) -in @(
+                "NO_NATIVE_CANONICAL_EPISODE",
+                "NO_FORWARD_ADJACENT_EPISODE"
+            )) {
+            throw "Replay target has no exact forward-adjacent native episode pair: $([string]$recordedTarget.workType):$([string]$recordedTarget.workId)"
+        }
+        [pscustomobject][ordered]@{
+            workType = [string]$recordedTarget.workType
+            workId = [string]$recordedTarget.workId
+            title = [string]$recordedTarget.title
+            latestEpisodeNumber = Get-OptionalProperty $recordedTarget "latestEpisodeNumber"
+            catalogPage = Get-OptionalProperty $recordedTarget "catalogPage"
+            episodeId = $episode.episodeId
+            episodeTitle = $episode.episodeTitle
+            episodePath = $episode.episodePath
+            expectedAdjacentEpisodePath = $episode.expectedAdjacentEpisodePath
+            expectedAdjacentEpisodeId = $episode.expectedAdjacentEpisodeId
+            expectedAdjacentEpisodeTitle = $episode.expectedAdjacentEpisodeTitle
+            expectedAdjacentPageCount = $episode.expectedAdjacentPageCount
+            metadataSource = $episode.metadataSource
+            metadataError = $episode.metadataError
+            originallySelectedEpisodePath = [string]$recordedTarget.episodePath
+            originallySelectedEpisodeId = [string]$recordedTarget.episodeId
+            originallySelectedEpisodeTitle = [string]$recordedTarget.episodeTitle
+            accessReplacementReason = $episode.accessReplacementReason
+            selectionAccessStatus = Get-OptionalProperty $recordedTarget "selectionAccessStatus"
+            selectionAccessHttpStatus = Get-OptionalProperty $recordedTarget "selectionAccessHttpStatus"
+            selectionAccessLocation = Get-OptionalProperty $recordedTarget "selectionAccessLocation"
+            selectionAccessError = Get-OptionalProperty $recordedTarget "selectionAccessError"
+            originallySelectedWorkId = Get-OptionalProperty $recordedTarget "originallySelectedWorkId"
+            originallySelectedWorkTitle = Get-OptionalProperty $recordedTarget "originallySelectedWorkTitle"
+            workAccessReplacementReason = Get-OptionalProperty $recordedTarget "workAccessReplacementReason"
+            selectionRankOrdinal = Get-OptionalProperty $recordedTarget "selectionRankOrdinal"
+        }
+    })
     foreach($target in $replayTargets) {
         if([string]::IsNullOrWhiteSpace([string]$target.workId) -or
                 [string]::IsNullOrWhiteSpace([string]$target.episodePath)) {
@@ -3096,14 +3483,25 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
                 $rankIndex++) {
             $work = $ranked[$rankIndex]
             $episode = Get-EpisodeMetadata $work
-            if(([string]$episode.workAccessStatus) -ceq "NO_NATIVE_CANONICAL_EPISODE") {
+            if(([string]$episode.workAccessStatus) -in @(
+                    "NO_NATIVE_CANONICAL_EPISODE",
+                    "NO_FORWARD_ADJACENT_EPISODE"
+                )) {
+                $episodeExclusionReason = if(
+                    ([string]$episode.workAccessStatus) -ceq
+                        "NO_FORWARD_ADJACENT_EPISODE"
+                ) {
+                    "episode list has no consecutive native pair for exact forward-adjacent UX qualification"
+                } else {
+                    "episode-list API contains only provider/imported ids and no native canonical viewer episode"
+                }
                 $exclusion = [pscustomobject][ordered]@{
                     workType = $work.workType
                     workId = $work.workId
                     title = $work.title
                     rankOrdinal = $rankIndex + 1
                     originallySelected = $rankIndex -lt $script:CountPerType
-                    reason = "episode-list API contains only provider/imported ids and no native canonical viewer episode"
+                    reason = $episodeExclusionReason
                     episodeCountSource = $episode.metadataSource
                     firstEpisodeId = $episode.originallySelectedEpisodeId
                     firstEpisodePath = $episode.originallySelectedEpisodePath
@@ -3153,6 +3551,10 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
                 episodeId = $episode.episodeId
                 episodeTitle = $episode.episodeTitle
                 episodePath = $episode.episodePath
+                expectedAdjacentEpisodePath = $episode.expectedAdjacentEpisodePath
+                expectedAdjacentEpisodeId = $episode.expectedAdjacentEpisodeId
+                expectedAdjacentEpisodeTitle = $episode.expectedAdjacentEpisodeTitle
+                expectedAdjacentPageCount = $episode.expectedAdjacentPageCount
                 metadataSource = $episode.metadataSource
                 metadataError = $episode.metadataError
                 originallySelectedEpisodePath = $episode.originallySelectedEpisodePath
