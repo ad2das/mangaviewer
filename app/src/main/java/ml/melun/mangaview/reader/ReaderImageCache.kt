@@ -1804,16 +1804,21 @@ data class NtkResolvedSourceRoute(
             get() = NtkStripDigests.sha256Tokens("ntk-strict-source-route-v1", routeKey)
     }
 
-    internal class NtkDirectWifiOrdinaryTransportSelection {
+    internal class NtkDirectWifiOrdinaryTransportSelection(
+        private val forceExistingFallback: Boolean = false,
+    ) {
         enum class Mode {
             UNDECIDED,
             NETWORK_BOUND_H1,
             EXISTING_FALLBACK,
         }
 
-        private val selected = AtomicReference(Mode.UNDECIDED)
+        private val selected = AtomicReference(
+            if (forceExistingFallback) Mode.EXISTING_FALLBACK else Mode.UNDECIDED,
+        )
 
         fun select(networkBoundH1: Boolean) {
+            if (forceExistingFallback) return
             selected.set(
                 if (networkBoundH1) Mode.NETWORK_BOUND_H1 else Mode.EXISTING_FALLBACK,
             )
@@ -6956,6 +6961,7 @@ data class NtkResolvedSourceRoute(
         binding: NtkQuarantinePlanBinding,
         pageIndex: Int,
         canonicalAsset: String,
+        preferProbeWarmRoute: Boolean = false,
     ): NtkResolvedSourceRoute {
         val asset = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
         require(pageIndex in binding.normalizedOrderedCanonicalAssets.indices)
@@ -6999,7 +7005,9 @@ data class NtkResolvedSourceRoute(
                 }
             }
         val ordinaryTransportSelection =
-            NtkDirectWifiOrdinaryTransportSelection().takeIf {
+            NtkDirectWifiOrdinaryTransportSelection(
+                forceExistingFallback = preferProbeWarmRoute,
+            ).takeIf {
                 directWifiOrdinaryJpegPage
             }
         val request = requestBuilder
@@ -7025,10 +7033,19 @@ data class NtkResolvedSourceRoute(
         val factory = replicaFailoverFactory(transportFactory)
         val factoryId = if (directWifiMixedPngPage) {
             "ntk-click-mixed-png-h1"
+        } else if (directWifiOrdinaryJpegPage && preferProbeWarmRoute) {
+            "ntk-click-adjacent-probe-warm-existing"
         } else if (directWifiOrdinaryJpegPage) {
             "ntk-click-ordinary-jpeg-h1"
         } else {
             "ntk-click-anchor-okhttp"
+        }
+        if (factoryId == "ntk-click-adjacent-probe-warm-existing") {
+            Log.d(
+                TAG,
+                "click_adjacent_probe_warm_existing_route page=$pageIndex," +
+                    "host=${request.url.host},network=${directWifiNetwork?.networkHandle}",
+            )
         }
         val refererHost = request.header("Referer")?.let { referer ->
             runCatching { Uri.parse(referer).host?.lowercase(Locale.ROOT).orEmpty() }

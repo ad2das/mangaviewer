@@ -2045,6 +2045,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         } else {
             pageBinding(pageIndex, candidate)
         }
+        val probeWarmAdjacentRunway = directWifiAdjacentOwned &&
+            capturedDirectWifiNetworkHandle != null &&
+            runCatching { getHttpClient().getNtkDirectWifiNetwork()?.networkHandle }
+                .getOrNull() == capturedDirectWifiNetworkHandle &&
+            pageIndex in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES &&
+            runCatching { earlyJpgCandidates[pageIndex]?.getNow(null) }
+                .getOrNull() == candidate
         return PreparedCandidate(
             binding,
             ReaderImageCache.resolveClickOwnedAnchorQuarantineRoute(
@@ -2052,6 +2059,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 binding,
                 pageIndex,
                 candidate,
+                preferProbeWarmRoute = probeWarmAdjacentRunway,
             ),
         )
     }

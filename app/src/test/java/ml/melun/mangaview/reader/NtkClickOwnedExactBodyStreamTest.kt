@@ -12,6 +12,46 @@ import java.util.concurrent.atomic.AtomicInteger
 class NtkClickOwnedExactBodyStreamTest {
 
     @Test
+    fun probeWarmAdjacentRouteCannotBeOverriddenByOrdinaryH1Admission() {
+        val warm = ReaderImageCache.NtkDirectWifiOrdinaryTransportSelection(
+            forceExistingFallback = true,
+        )
+        warm.select(networkBoundH1 = true)
+        assertEquals(false, warm.selectedNetworkBoundH1())
+
+        val ordinary = ReaderImageCache.NtkDirectWifiOrdinaryTransportSelection()
+        assertEquals(null, ordinary.selectedNetworkBoundH1())
+        ordinary.select(networkBoundH1 = true)
+        assertEquals(true, ordinary.selectedNetworkBoundH1())
+    }
+
+    @Test
+    fun probeWarmRouteIsLimitedToExactDirectWifiAdjacentRunwayCandidate() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val preparation = quarantine.substringAfter("private fun prepareOwnedCandidate(")
+            .substringBefore("private fun acquireBodyTransferPermit(")
+
+        assertTrue(preparation.contains("directWifiAdjacentOwned &&"))
+        assertTrue(preparation.contains("capturedDirectWifiNetworkHandle != null"))
+        assertTrue(preparation.contains(
+            ".getOrNull() == capturedDirectWifiNetworkHandle"
+        ))
+        assertTrue(preparation.contains(
+            "pageIndex in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES"
+        ))
+        assertTrue(preparation.contains(
+            "earlyJpgCandidates[pageIndex]?.getNow(null)"
+        ))
+        assertTrue(preparation.contains(".getOrNull() == candidate"))
+        assertTrue(preparation.contains(
+            "preferProbeWarmRoute = probeWarmAdjacentRunway"
+        ))
+        val cache = readSource("ReaderImageCache.kt")
+        assertTrue(cache.contains("ntk-click-adjacent-probe-warm-existing"))
+        assertTrue(cache.contains("click_adjacent_probe_warm_existing_route"))
+    }
+
+    @Test
     fun closeRetiresTheOwningNetworkWaveExactlyOnce() {
         val closes = AtomicInteger()
         val stream = NtkClickOwnedExactBodyStream(
