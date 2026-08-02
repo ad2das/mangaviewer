@@ -434,11 +434,20 @@ internal object NtkStrictInitialWavePolicy {
         cellularResilientTransport: Boolean,
         episodePageCount: Int = 0,
         directWifiTransport: Boolean = false,
+        adjacentPrefetch: Boolean = false,
     ): Int {
         require(cohortCount >= 0)
         require(episodePageCount >= 0)
         val limit = if (cellularResilientTransport) {
             WEBTOON_CELLULAR_ANCHOR_GATE_OPERATIONS
+        } else if (directWifiTransport && adjacentPrefetch) {
+            // Adjacent admission is already hard-capped to the four user-visible runway bodies.
+            // Starting only three of them made page four wait for an earlier EOF, even though the
+            // predecessor was fully drawable and the fourth isolated connection cohort was idle.
+            // Match the physical opening wave to that existing four-body UI contract. Ordinary
+            // Wi-Fi/current episodes, carrier/SNI, later pages, and previous episodes never enter
+            // this branch.
+            WIFI_ADJACENT_INITIAL_RUNWAY_BODIES
         } else if (
             directWifiTransport &&
             episodePageCount >= WEBTOON_WIFI_LARGE_ANCHOR_GATE_EPISODE_PAGES
@@ -961,6 +970,7 @@ internal class NtkStrictSourceSession(
     private val streamedExactBodies: NtkClickOwnedExactBodyStream? = null,
     private val viewerImageApiBacked: Boolean = false,
     private val cellularResilientTransport: Boolean = false,
+    private val directWifiTransport: Boolean = false,
     private val wifiQuicBulkTransport: Boolean = false,
     private val currentForegroundViewerGeneration: Long = 0L,
     private val adjacentPrefetch: Boolean = false,
@@ -1236,7 +1246,10 @@ internal class NtkStrictSourceSession(
             cohortCount = coldConnectionCohortLeaders.size,
             cellularResilientTransport = cellularResilientTransport,
             episodePageCount = pages.size,
-            directWifiTransport = wifiQuicBulkTransport && !cellularResilientTransport,
+            // This new identity is consumed only by the adjacent four-body exception above. Keep
+            // ordinary/current webtoon entry on its already-qualified three-body policy.
+            directWifiTransport = directWifiTransport && adjacentPrefetch,
+            adjacentPrefetch = adjacentPrefetch,
         )
     private val settledColdConnectionCohortLeaders = ConcurrentHashMap.newKeySet<Int>()
     private val coldConnectionCohortByPage = Array(pages.size) { pageIndex ->

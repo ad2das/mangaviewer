@@ -313,7 +313,7 @@ for($index = 0; $index -lt $cases.Count; $index++) {
 
         Assert-Contract ($case.forwardTraversalMetricsMeasured -eq $true) `
             "forward traversal metrics missing: $($case.caseId)"
-        Assert-Contract ([int64]$case.forwardTraversalGestureMin -eq 3L -and
+        Assert-Contract ([int64]$case.forwardTraversalGestureMin -eq 1L -and
             [int64]$case.forwardTraversalGestureMax -eq 500L) `
             "forward traversal gesture bounds changed: $($case.caseId)"
         Assert-Contract ([int64]$case.forwardTraversalGestureCount -ge

@@ -119,6 +119,42 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun directWifiAdjacentWebtoonStartsItsExactFourBodyRunwayTogether() {
+        assertEquals(
+            4,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 4,
+                cellularResilientTransport = false,
+                episodePageCount = 8,
+                directWifiTransport = true,
+                adjacentPrefetch = true,
+            ),
+        )
+        // Current/ordinary direct-Wi-Fi scenes retain the measured three-body entry gate.
+        assertEquals(
+            3,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 4,
+                cellularResilientTransport = false,
+                episodePageCount = 8,
+                directWifiTransport = true,
+                adjacentPrefetch = false,
+            ),
+        )
+        // Carrier/SNI retains its independent finite-cohort wave.
+        assertEquals(
+            4,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 4,
+                cellularResilientTransport = true,
+                episodePageCount = 8,
+                directWifiTransport = false,
+                adjacentPrefetch = true,
+            ),
+        )
+    }
+
+    @Test
     fun manhwaColdLeadersCoverTwentyFourActualConnectionShards() {
         val leaders = NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             episodePath = "/manhwa/work/episode",

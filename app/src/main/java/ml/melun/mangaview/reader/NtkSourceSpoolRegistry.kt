@@ -707,6 +707,7 @@ object NtkSourceSpoolRegistry {
                 streamedExactBodies = streamedExactBodies,
                 viewerImageApiBacked = spec.viewerImageApiBacked,
                 cellularResilientTransport = cellularResilientTransport,
+                directWifiTransport = directWifiTransport,
                 wifiQuicBulkTransport =
                     spec.viewerImageApiBacked &&
                         !binding.episodePath.startsWith("/webtoon/") &&
@@ -714,6 +715,7 @@ object NtkSourceSpoolRegistry {
                         NtkQuicFetcher.isAvailable(),
                 currentForegroundViewerGeneration = currentForegroundViewerGeneration,
                 adjacentPrefetch = directWifiTransport &&
+                    currentForegroundViewerGeneration == 0L &&
                     ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(
                         binding.episodePath,
                     ),

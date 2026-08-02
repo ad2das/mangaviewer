@@ -725,7 +725,7 @@
               "requestQueueTerminalBalance": { "const": 0 },
               "requestQueueMetricProblems": { "type": "array", "maxItems": 0 },
               "forwardTraversalMetricsMeasured": { "const": true },
-              "forwardTraversalGestureMin": { "const": 3 },
+              "forwardTraversalGestureMin": { "const": 1 },
               "forwardTraversalGestureMax": { "const": 500 },
               "networkObservationCount": { "type": "integer", "minimum": 1 },
               "macroTraceArtifactCount": { "type": "integer", "minimum": 1 },

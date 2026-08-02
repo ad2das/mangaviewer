@@ -15277,6 +15277,25 @@ class ReaderSession(
             isImmediateNtkGeneratedUx() &&
             isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)
         ) {
+            if (isDirectWifiStrictAdjacentTransportActive()) {
+                val requiredInitialRunway = minOf(
+                    target.ntkImageCount.takeIf { it > 0 } ?: NTK_APPEND_INITIAL_RUNWAY_PAGES,
+                    NTK_APPEND_INITIAL_RUNWAY_PAGES,
+                )
+                val installed = installedDrawablePageCountForEpisode(target)
+                if (installed in 1 until requiredInitialRunway &&
+                    !viewportBusy.get() &&
+                    physicalTouchQuietRemainingMs(
+                        NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS
+                    ) <= 0L
+                ) {
+                    // The predecessor is already fully drawable and page zero of B is attached.
+                    // Retain the normal 128 ms foreground grace only after physical input is
+                    // quiet. An active fling/touch keeps the existing 180 ms protection so this
+                    // bounded adjacent decode cannot change current-episode scroll response.
+                    return NTK_ADJACENT_FOREGROUND_STREAM_RECHECK_MS
+                }
+            }
             if (isViewportInsideEpisode(target) &&
                 !viewportBusy.get() &&
                 physicalTouchQuietRemainingMs(
@@ -15300,6 +15319,20 @@ class ReaderSession(
     }
 
     private fun remainingAdjacentRunwayPublishPages(target: Manga): Int {
+        if (isDirectWifiStrictAdjacentTransportActive()) {
+            val requiredInitialRunway = minOf(
+                target.ntkImageCount.takeIf { it > 0 } ?: NTK_APPEND_INITIAL_RUNWAY_PAGES,
+                NTK_APPEND_INITIAL_RUNWAY_PAGES,
+            )
+            val installed = installedDrawablePageCountForEpisode(target)
+            if (installed in 1 until requiredInitialRunway) {
+                // Page zero is attached independently on direct Wi-Fi. Do not let an already-ready
+                // fifth body join the next publication and serialize behind the three drawables
+                // that complete the exact four-page UX runway. The suffix is scheduled normally
+                // immediately after this bounded cohort commits.
+                return requiredInitialRunway - installed
+            }
+        }
         return if (isInitialTailAdjacentPreappendTarget(target)) {
             NTK_APPEND_REMAINING_RUNWAY_PUBLISH_PAGES
         } else if (isActiveGeneratedTouchOrQuiet() || viewportBusy.get()) {
@@ -16429,7 +16462,22 @@ class ReaderSession(
             val indexedPages = refs.mapIndexedNotNull { offset, page ->
                 if (page.transitionTitle == null) offset to page else null
             }
-            if (reason == "initial_strict_source" && indexedPages.size > 1) {
+            val directWifiInitialAdjacentRemainder =
+                reason == "append_runway_remaining_publish" &&
+                    isDirectWifiStrictAdjacentTransportActive() &&
+                    indexedPages.size in 2 until NTK_APPEND_INITIAL_RUNWAY_PAGES &&
+                    indexedPages.all { (_, page) ->
+                        page.sourceIndex in 1 until NTK_APPEND_INITIAL_RUNWAY_PAGES &&
+                            isNtkManhwaOrWebtoonEpisodePath(page.manga.ntkEpisodePath)
+                    }
+            if ((reason == "initial_strict_source" || directWifiInitialAdjacentRemainder) &&
+                indexedPages.size > 1
+            ) {
+                // Direct Wi-Fi attaches page zero as soon as it is drawable, then preserves the
+                // active-scroll publication grace before installing pages one through three. At
+                // that point all three exact bodies can already be resident. Decode only this
+                // bounded initial-runway remainder on the existing background overlap pool so the
+                // grace does not turn into three serial decode costs at the chapter boundary.
                 val tasks = indexedPages.map { (offset, page) ->
                     FutureTask {
                         prepareAdjacentRunwayDelivery(startIndex, offset, page, startedAt)

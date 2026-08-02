@@ -319,12 +319,15 @@ class NtkColdViewerMacrobenchmark {
                             "observed=$adjacentObservedRunwayDrawableCount " +
                             "required=$requiredRunwayPages"
                     }
-                    check(
-                        firstAdjacentActualAtNanos - forwardBoundaryReachedAtNanos <=
-                            ADJACENT_ATTACH_SLA_MS * 1_000_000L
-                    ) {
-                        "Adjacent first actual exceeded ${ADJACENT_ATTACH_SLA_MS}ms: " +
-                            "${(firstAdjacentActualAtNanos - forwardBoundaryReachedAtNanos) / 1_000_000.0}ms"
+                    // firstAdjacentActualAtNanos proves the exact next-episode identity after a
+                    // real forward gesture. Its distance from the launch tail also includes the
+                    // automation/user time before injecting that next gesture, so it is not an
+                    // attachment-latency clock. The atomic runway timestamp is emitted only after
+                    // the page table and all four drawables have been installed; its positive
+                    // distance from the physical tail is the actual wait a reader can experience.
+                    check(adjacentBoundaryWaitMs <= ADJACENT_ATTACH_SLA_MS) {
+                        "Adjacent atomic attach exceeded ${ADJACENT_ATTACH_SLA_MS}ms: " +
+                            "${adjacentBoundaryWaitMs}ms"
                     }
                 device.pressBack()
                 check(device.wait(Until.hasObject(By.res(TARGET_PACKAGE, "EpisodeList")), UI_TIMEOUT_MS)) {
@@ -775,13 +778,14 @@ class NtkColdViewerMacrobenchmark {
                         adjacentRunwayTargetEpisode == expectedEpisodePath &&
                         firstAdjacentActualAtNanos > 0L &&
                         firstAdjacentActualEpisode == expectedEpisodePath
-                if (exactAtomicRunwayProven &&
-                    gestures >= INITIAL_MODERATE_FORWARD_GESTURES
-                ) {
+                if (exactAtomicRunwayProven) {
                     // The runway count is published only after every member of the exact drawable
                     // cohort is ready; the adjacent identity is published only by a committed
                     // frame. Together they prove the requested next episode was attached with
-                    // all four pages even if UiAutomator next samples a later episode.
+                    // all four pages even if UiAutomator next samples a later episode. Do not
+                    // require another synthetic gesture after that physical proof: a short B can
+                    // become complete and legitimately prepare C before accessibility samples
+                    // again, which would otherwise misclassify a successful B traversal as a skip.
                     return AdjacentTraversalObservation(
                         gestures = gestures,
                         actualDescription = description,
@@ -1162,12 +1166,15 @@ class NtkColdViewerMacrobenchmark {
         const val MAX_EPISODE_LIST_SCROLLS = 400
         const val EPISODE_END_CONFIRM_GESTURES = 3
         const val EPISODE_SEARCH_SWIPE_STEPS = 36
-        const val EPISODE_SCROLL_EVENT_TIMEOUT_MS = 1_000L
-        // Keep a large overlap between consecutive real RecyclerView viewports. A 64%-height
-        // gesture could move from chapters 123..121 directly to 114.. and permanently skip an
-        // exact row such as chapter 120 even though the app had all 123 episodes. This smaller
-        // physical gesture still exercises the real list and never opens or warms the viewer.
-        const val EPISODE_SEARCH_SWIPE_INSET_FRACTION = 0.40f
+        // RecyclerView regularly advances without producing the window-update event. The visible
+        // episode identities below are the actual progress proof, so a full one-second event wait
+        // multiplied a deep 200-row selection into minutes without adding synchronization value.
+        const val EPISODE_SCROLL_EVENT_TIMEOUT_MS = 250L
+        // Keep overlap between consecutive real RecyclerView viewports. A 64%-height gesture was
+        // observed to skip an exact row, while this 40%-height gesture retains visible overlap and
+        // advances more than the former one-row 20%-height gesture. It still exercises the real
+        // list and never opens or warms the viewer before the exact row is physically tapped.
+        const val EPISODE_SEARCH_SWIPE_INSET_FRACTION = 0.30f
         const val MEDIUM_SWIPE_STEPS = 90
         const val FAST_SWIPE_STEPS = 4
         const val INITIAL_MODERATE_FORWARD_GESTURES = 3

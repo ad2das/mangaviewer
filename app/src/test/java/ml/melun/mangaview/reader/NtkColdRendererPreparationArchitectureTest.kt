@@ -1294,6 +1294,61 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun directWifiInitialAdjacentRemainderUsesOnlyTheBoundedBackgroundOverlapDecode() {
+        val batch = functionBody(
+            "private fun prepareAdjacentRunwayDrawableBatch(",
+            sessionSource
+        )
+
+        assertTrue(batch.contains("reason == \"append_runway_remaining_publish\""))
+        assertTrue(batch.contains("isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(batch.contains("indexedPages.size in 2 until NTK_APPEND_INITIAL_RUNWAY_PAGES"))
+        assertTrue(batch.contains("page.sourceIndex in 1 until NTK_APPEND_INITIAL_RUNWAY_PAGES"))
+        assertTrue(batch.contains("tasks.forEach(strictExactOverlapDecode::execute)"))
+
+        val publishBound = functionBody(
+            "private fun remainingAdjacentRunwayPublishPages(",
+            sessionSource
+        )
+        assertTrue(publishBound.contains("isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(publishBound.contains("installed in 1 until requiredInitialRunway"))
+        assertTrue(publishBound.contains("return requiredInitialRunway - installed"))
+
+        val retryBound = functionBody(
+            "private fun remainingAdjacentRunwayAppendMinRetryMs(",
+            sessionSource
+        )
+        assertTrue(retryBound.contains("isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(retryBound.contains("installed in 1 until requiredInitialRunway"))
+        assertTrue(retryBound.contains("!viewportBusy.get()"))
+        assertTrue(
+            retryBound.contains(
+                "physicalTouchQuietRemainingMs(" +
+                    "NTK_APPEND_REMAINING_RUNWAY_PHYSICAL_QUIET_MS"
+            )
+        )
+        assertTrue(retryBound.contains("return NTK_ADJACENT_FOREGROUND_STREAM_RECHECK_MS"))
+    }
+
+    @Test
+    fun strictSourceReceivesDirectWifiIdentityIndependentlyFromOptionalQuicBulk() {
+        val registrySource = File(
+            "src/main/java/ml/melun/mangaview/reader/NtkSourceSpoolRegistry.kt"
+        ).readText()
+        val construction = functionBody("val session = try {", registrySource)
+
+        assertTrue(construction.contains("directWifiTransport = directWifiTransport"))
+        assertTrue(construction.contains("wifiQuicBulkTransport ="))
+        assertTrue(construction.contains("adjacentPrefetch = directWifiTransport"))
+        assertTrue(construction.contains("currentForegroundViewerGeneration == 0L"))
+        assertTrue(
+            File("src/main/java/ml/melun/mangaview/reader/NtkStrictSourceSession.kt")
+                .readText()
+                .contains("directWifiTransport = directWifiTransport && adjacentPrefetch")
+        )
+    }
+
+    @Test
     fun blockedLegacySingleOriginUsesCancelableExactQuicWithoutChangingAssetIdentity() {
         val execute = functionBody(
             "override fun execute(): Response",
@@ -1539,6 +1594,8 @@ class NtkColdRendererPreparationArchitectureTest {
         assertFalse(drive.contains("expectedEpisodePath.isBlank()"))
         assertTrue(drive.contains("telemetryNanos(\"adjacentRunwayPageCount\")"))
         assertTrue(drive.contains("exactAtomicRunwayProven"))
+        assertTrue(drive.contains("if (exactAtomicRunwayProven)"))
+        assertFalse(drive.contains("if (exactAtomicRunwayProven &&"))
         assertTrue(drive.contains("provenExpectedRunwayDrawableCount"))
         assertTrue(drive.contains("if (maxExpectedSource >= 0 ||"))
         assertTrue(drive.contains("firstAdjacentActualAtNanos > 0L"))
@@ -1558,12 +1615,24 @@ class NtkColdRendererPreparationArchitectureTest {
         )
         assertTrue(macrobenchmarkSource.contains("val requiredRunwayPages = ADJACENT_REQUIRED_RUNWAY_PAGES"))
         assertTrue(macrobenchmarkSource.contains("runwayReadyBeforeTail ="))
+        assertTrue(macrobenchmarkSource.contains("check(adjacentBoundaryWaitMs <= ADJACENT_ATTACH_SLA_MS)"))
+        assertFalse(
+            macrobenchmarkSource.contains(
+                "firstAdjacentActualAtNanos - forwardBoundaryReachedAtNanos <="
+            )
+        )
         assertTrue(macrobenchmarkSource.contains("ADJACENT_BOUNDARY_WAIT_SLA_MS = 500L"))
         assertTrue(qualificationSource.contains("\$requiredAdjacentRunwayPages = 4"))
         assertTrue(qualificationSource.contains("\$expectedAdjacentPageCount -lt \$requiredAdjacentRunwayPages"))
         assertTrue(qualificationSource.contains("\"adjacentObservedRunwayDrawableCount\""))
         assertTrue(qualificationSource.contains("\"runwayReadyBeforeTail\""))
         assertTrue(qualificationSource.contains("\$ProductionMaxAdjacentBoundaryWaitMs = 500.0"))
+        assertTrue(qualificationSource.contains("\$ProductionMinForwardGestures = 1"))
+        assertTrue(
+            qualificationSource.contains(
+                "Get-OptionalProperty \$macroResult \"adjacentRunwayReadyAtNanos\""
+            )
+        )
     }
 
     @Test
