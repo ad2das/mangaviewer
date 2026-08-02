@@ -616,6 +616,9 @@ public class CustomHttpClient {
     // Large 200+ page strips otherwise place enough data behind each H2 flow to make one CDN tail
     // dominate the whole-scene deadline. This is a production, host-local stripe for every work.
     private static final int NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 8;
+    // Direct Wi-Fi keeps the proven 64-body large-strip ceiling over sixteen host-local pools.
+    // Carrier/SNI remains on the established eight-pool layout, and manhwa stays independent.
+    private static final int NTK_DIRECT_WIFI_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 16;
     private static final int NTK_MANHWA_EXACT_IMAGE_CONNECTION_SHARDS = 24;
     /**
      * A failed pass over all three immutable webtoon replicas is no longer a useful H2 retry.
@@ -1932,8 +1935,9 @@ public class CustomHttpClient {
                             .build();
         }
         this.ntkDemandBoundExactImageHttp1RecoveryShards =
-                new OkHttpClient[NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS];
-        for(int shard = 0; shard < NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS; shard++) {
+                new OkHttpClient[NTK_DIRECT_WIFI_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS];
+        for(int shard = 0;
+                shard < NTK_DIRECT_WIFI_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS; shard++) {
             this.ntkDemandBoundExactImageHttp1RecoveryShards[shard] =
                     this.externalViewerImageFastClient.newBuilder()
                             .connectionPool(new ConnectionPool())
@@ -2539,7 +2543,12 @@ public class CustomHttpClient {
             if(isNtkManhwaImageOriginHost(request.url().host())) {
                 shardCount = Math.min(NTK_MANHWA_EXACT_IMAGE_CONNECTION_SHARDS, shards.length);
             } else if(isNtkWebtoonImageOriginHost(request.url().host())) {
-                shardCount = Math.min(NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS, shards.length);
+                boolean exactIdentity = strictTag != null || quarantineTag != null;
+                boolean directWifiExact = !cellularResilientTransport
+                        && CustomHttpClient.this.isNtkWifiTransportActive()
+                        && exactIdentity;
+                shardCount = Math.min(ntkWebtoonExactImageShardCount(
+                        cellularResilientTransport, directWifiExact, exactIdentity), shards.length);
                 NtkExactImagePhysicalAttempt physicalAttempt =
                         request.tag(NtkExactImagePhysicalAttempt.class);
                 int attemptOrdinal = physicalAttempt == null ? 0 : physicalAttempt.getOrdinal();
@@ -2686,6 +2695,14 @@ public class CustomHttpClient {
      */
     static int ntkWebtoonExactImageShardIndex(int pageIndex, int shardCount) {
         return ntkWebtoonExactImageShardIndex(pageIndex, shardCount, 0);
+    }
+
+    static int ntkWebtoonExactImageShardCount(boolean cellularResilientTransport,
+                                               boolean directWifiTransport,
+                                               boolean exactIdentity) {
+        return !cellularResilientTransport && directWifiTransport && exactIdentity
+                ? NTK_DIRECT_WIFI_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS
+                : NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS;
     }
 
     static int ntkWebtoonExactImageShardIndex(int pageIndex, int shardCount,

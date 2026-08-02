@@ -367,10 +367,10 @@ internal object NtkStrictSourceSchedulerPolicy {
 
 /** Defines the immutable, forward-only first quarantine wave. */
 internal object NtkStrictInitialWavePolicy {
-    // Must match CustomHttpClient.NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS. A stale value here
-    // leaves two physical pools without a cohort leader and serializes their first real bodies
-    // into the post-anchor wave.
+    // Must match CustomHttpClient's established and direct-Wi-Fi webtoon pool counts. A stale
+    // value leaves physical pools without cohort leaders and serializes their first real bodies.
     private const val WEBTOON_CONNECTION_SHARDS = 8
+    private const val DIRECT_WIFI_WEBTOON_CONNECTION_SHARDS = 16
     private const val MANHWA_CONNECTION_SHARDS = 24
     // Three independent Wi-Fi leaders keep the entry route resilient to a slow/dead CDN pool.
     // A single leader was measured to stall for its full 10-second retry window.
@@ -400,12 +400,14 @@ internal object NtkStrictInitialWavePolicy {
     // explicit immutable misses; a merely fast host can no longer collapse this balanced topology.
     // A failed entry earns no growth, and the carrier transport policy remains untouched.
     private const val WEBTOON_WIFI_POST_ANCHOR_INITIAL_BODY_TRANSFERS = 4
-    // Direct Wi-Fi webtoon bodies use the eight host-local H2 pools proven by the cold suite.
+    // Direct Wi-Fi webtoon bodies use host-local H2 pools proven by the cold suite.
     // Twenty-four transfers leave an 89-page episode in four 2-3 second waves even after every
     // call converges on the healthy compatibility origin. Six streams per isolated pool keep the
     // server's supported multiplexing bound while reducing that same workset to two waves.
     // Carrier/SNI and manhwa use their independent policies below.
     private const val WEBTOON_WIFI_POST_ANCHOR_TCP_BODY_TRANSFERS = 48
+    private const val WEBTOON_DIRECT_WIFI_LARGE_TCP_BODY_TRANSFERS = 64
+    private const val WEBTOON_DIRECT_WIFI_LARGE_TCP_EPISODE_PAGES = 180
     private const val WEBTOON_WIFI_POST_ANCHOR_QUIC_BODY_TRANSFERS = 24
     private const val WEBTOON_WIFI_LARGE_QUIC_BODY_TRANSFERS = 24
     private const val WEBTOON_WIFI_LARGE_EPISODE_PAGES = 140
@@ -475,12 +477,14 @@ internal object NtkStrictInitialWavePolicy {
         wifiQuicBulkTransport: Boolean = false,
         episodePageCount: Int = 0,
         adjacentPrefetch: Boolean = false,
+        webtoonConnectionShardCount: Int = WEBTOON_CONNECTION_SHARDS,
     ): Int {
         require(episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
         require(physicalLaneCount >= 0)
         require(manhwaTransferLimit in 1..NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
         require(webtoonPublishedBodyCount >= 0)
         require(episodePageCount >= 0)
+        require(webtoonConnectionShardCount > 0)
         return if (episodePath.startsWith("/webtoon/")) {
             // Until the entry body reaches EOF its pool is deliberately single-stream. Counting
             // it as a full six-stream pool pushes an avoidable extra body onto the other pools.
@@ -493,10 +497,11 @@ internal object NtkStrictInitialWavePolicy {
                         webtoonPublishedBodyCount,
                         wifiQuicBulkTransport,
                         episodePageCount,
+                        webtoonConnectionShardCount,
                     )
                 }
             } else {
-                1 + (WEBTOON_CONNECTION_SHARDS - 1) *
+                1 + (webtoonConnectionShardCount - 1) *
                     WEBTOON_PRE_ANCHOR_STREAMS_PER_CONNECTION_SHARD
             }
             minOf(
@@ -543,19 +548,22 @@ internal object NtkStrictInitialWavePolicy {
 
     /**
      * Entry-completion-clocked Wi-Fi release. Before page zero EOF the stable four-call gate remains
-     * in force. TCP releases exactly one transfer per immutable cold cohort. When the exact HTTP/3
-     * primary is actually available, keep the same twenty-four-transfer ceiling. A larger cold
-     * wave can over-share each QUIC session and turn useful in-flight progress into a synchronized
-     * timeout/fallback storm. An unavailable HTTP/3 engine keeps the TCP limit, and the carrier
-     * ring remains independently fixed at eighty.
+     * in force. TCP first opens every immutable cold cohort. A 180+ page direct-Wi-Fi scene may
+     * then use a bounded extra transfer on part of the sixteen-pool origin rings. When the exact
+     * HTTP/3 primary is actually available, keep the same twenty-four-transfer ceiling. A larger
+     * cold wave can over-share each QUIC session and turn useful in-flight progress into a
+     * synchronized timeout/fallback storm. An unavailable HTTP/3 engine keeps the TCP limit, and
+     * the carrier ring remains independently fixed at eighty.
      */
     fun webtoonWifiPostAnchorBodyTransfers(
         publishedBodyCount: Int,
         wifiQuicBulkTransport: Boolean = false,
         episodePageCount: Int = 0,
+        webtoonConnectionShardCount: Int = WEBTOON_CONNECTION_SHARDS,
     ): Int {
         require(publishedBodyCount >= 0)
         require(episodePageCount >= 0)
+        require(webtoonConnectionShardCount > 0)
         return if (publishedBodyCount > 0) {
             if (wifiQuicBulkTransport) {
                 if (episodePageCount >= WEBTOON_WIFI_LARGE_EPISODE_PAGES) {
@@ -564,7 +572,14 @@ internal object NtkStrictInitialWavePolicy {
                     WEBTOON_WIFI_POST_ANCHOR_QUIC_BODY_TRANSFERS
                 }
             } else {
-                WEBTOON_WIFI_POST_ANCHOR_TCP_BODY_TRANSFERS
+                if (
+                    webtoonConnectionShardCount >= DIRECT_WIFI_WEBTOON_CONNECTION_SHARDS &&
+                    episodePageCount >= WEBTOON_DIRECT_WIFI_LARGE_TCP_EPISODE_PAGES
+                ) {
+                    WEBTOON_DIRECT_WIFI_LARGE_TCP_BODY_TRANSFERS
+                } else {
+                    WEBTOON_WIFI_POST_ANCHOR_TCP_BODY_TRANSFERS
+                }
             }
         } else {
             WEBTOON_WIFI_POST_ANCHOR_INITIAL_BODY_TRANSFERS
@@ -626,18 +641,25 @@ internal object NtkStrictInitialWavePolicy {
         episodePath: String,
         admittedPageIndexes: Set<Int>,
         maximumLeaders: Int = Int.MAX_VALUE,
+        webtoonShardCount: Int = WEBTOON_CONNECTION_SHARDS,
         routeBucketForPage: (Int) -> String,
     ): List<Int> {
         require(episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
         require(admittedPageIndexes.all { it >= 0 })
         require(maximumLeaders >= 0)
+        require(webtoonShardCount > 0)
         val seen = HashSet<String>()
         val leaders = ArrayList<Int>()
         for (pageIndex in admittedPageIndexes.sorted()) {
             if (leaders.size >= maximumLeaders) break
             val routeBucket = routeBucketForPage(pageIndex)
             require(routeBucket.isNotBlank())
-            val cohort = coldConnectionCohortKey(episodePath, pageIndex, routeBucket)
+            val cohort = coldConnectionCohortKey(
+                episodePath,
+                pageIndex,
+                routeBucket,
+                webtoonShardCount,
+            )
             if (seen.add(cohort)) leaders += pageIndex
         }
         return leaders
@@ -647,13 +669,15 @@ internal object NtkStrictInitialWavePolicy {
         episodePath: String,
         pageIndex: Int,
         routeBucket: String,
+        webtoonShardCount: Int = WEBTOON_CONNECTION_SHARDS,
     ): String {
         require(episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
         require(routeBucket.isNotBlank())
+        require(webtoonShardCount > 0)
         val shardCount = if (episodePath.startsWith("/manhwa/")) {
             MANHWA_CONNECTION_SHARDS
         } else {
-            WEBTOON_CONNECTION_SHARDS
+            webtoonShardCount
         }
         val shard = if (episodePath.startsWith("/webtoon/")) {
             webtoonHostLocalShardIndex(pageIndex, shardCount)
@@ -662,6 +686,13 @@ internal object NtkStrictInitialWavePolicy {
         }
         return "$routeBucket#$shard"
     }
+
+    fun webtoonConnectionShardCount(directWifiTransport: Boolean): Int =
+        if (directWifiTransport) {
+            DIRECT_WIFI_WEBTOON_CONNECTION_SHARDS
+        } else {
+            WEBTOON_CONNECTION_SHARDS
+        }
 
     /**
      * Keep one real body per cold pool initially. As soon as a pool returns real response headers,
@@ -1208,6 +1239,8 @@ internal class NtkStrictSourceSession(
     } else {
         NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS
     }
+    private val webtoonConnectionShardCount =
+        NtkStrictInitialWavePolicy.webtoonConnectionShardCount(directWifiTransport)
     /** Disk-backed adoption still owns its lane; resident bodies retire inline at actor commit. */
     private val adoptionInFlightByLane = BooleanArray(physicalLanes.size)
     private val laneRouteAffinity = arrayOfNulls<String>(physicalLanes.size)
@@ -1231,14 +1264,21 @@ internal class NtkStrictSourceSession(
         NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             planBinding.episodePath,
             rollingAdmittedPages,
-            maximumLeaders = NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
-                planBinding.episodePath,
-                activeWorks.size,
-                anchorBodyPublished = false,
-                manhwaTransferLimit = manhwaPhysicalTransferLimit,
-                cellularResilientTransport = cellularResilientTransport,
-                adjacentPrefetch = adjacentPrefetch,
-            ),
+            maximumLeaders = if (
+                directWifiTransport && planBinding.episodePath.startsWith("/webtoon/")
+            ) {
+                activeWorks.size
+            } else {
+                NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                    planBinding.episodePath,
+                    activeWorks.size,
+                    anchorBodyPublished = false,
+                    manhwaTransferLimit = manhwaPhysicalTransferLimit,
+                    cellularResilientTransport = cellularResilientTransport,
+                    adjacentPrefetch = adjacentPrefetch,
+                )
+            },
+            webtoonShardCount = webtoonConnectionShardCount,
         ) { pageIndex -> pages[pageIndex].routeBucketHint }
     private val coldConnectionCohortLeaderSet = coldConnectionCohortLeaders.toHashSet()
     private val webtoonPreAnchorGateOperations =
@@ -1257,6 +1297,7 @@ internal class NtkStrictSourceSession(
             planBinding.episodePath,
             pageIndex,
             pages[pageIndex].routeBucketHint,
+            webtoonConnectionShardCount,
         )
     }
     private val settledColdConnectionCohorts = ConcurrentHashMap.newKeySet<String>()
@@ -2113,6 +2154,7 @@ internal class NtkStrictSourceSession(
             wifiQuicBulkTransport = wifiQuicBulkTransport,
             episodePageCount = pages.size,
             adjacentPrefetch = adjacentPrefetch && !adjacentPrefetchReleased,
+            webtoonConnectionShardCount = webtoonConnectionShardCount,
         )
         val adaptive = wifiWebtoonAdaptiveLanes ?: return base
         if (!isCurrentForegroundViewerEpisode()) return base
@@ -3433,6 +3475,7 @@ internal class NtkStrictSourceSession(
                     planBinding.episodePath,
                     page.pageIndex,
                     page.routeBucketHint,
+                    webtoonConnectionShardCount,
                 )
             }
             .toSortedMap()

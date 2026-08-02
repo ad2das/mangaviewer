@@ -53,6 +53,27 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun directWifiWebtoonColdLeadersCoverSixteenBalancedPoolsPerOrigin() {
+        val shardCount = NtkStrictInitialWavePolicy.webtoonConnectionShardCount(
+            directWifiTransport = true,
+        )
+        val leaders = NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
+            episodePath = "/webtoon/work/episode",
+            admittedPageIndexes = (0 until 193).toSet(),
+            webtoonShardCount = shardCount,
+            routeBucketForPage = { page -> "cdn-${if (page <= 1) 0 else page % 3}" },
+        )
+
+        assertEquals(16, shardCount)
+        assertEquals(48, leaders.size)
+        assertEquals(48, leaders.map { page ->
+            "cdn-${if (page <= 1) 0 else page % 3}#" +
+                NtkStrictInitialWavePolicy.webtoonHostLocalShardIndex(page, shardCount)
+        }.toSet().size)
+        assertEquals(8, NtkStrictInitialWavePolicy.webtoonConnectionShardCount(false))
+    }
+
+    @Test
     fun cellularWebtoonOpensOneLeaderForEveryFiniteColdCohort() {
         assertEquals(
             24,
@@ -243,6 +264,15 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
+            91,
+            NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
+                "/webtoon/work/direct-wifi",
+                120,
+                false,
+                webtoonConnectionShardCount = 16,
+            ),
+        )
+        assertEquals(
             4,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
@@ -360,6 +390,30 @@ class NtkStrictInitialWavePolicyTest {
         assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(1))
         assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(3))
         assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(124))
+        assertEquals(
+            64,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                publishedBodyCount = 1,
+                episodePageCount = 193,
+                webtoonConnectionShardCount = 16,
+            ),
+        )
+        assertEquals(
+            48,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                publishedBodyCount = 1,
+                episodePageCount = 179,
+                webtoonConnectionShardCount = 16,
+            ),
+        )
+        assertEquals(
+            48,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                publishedBodyCount = 1,
+                episodePageCount = 193,
+                webtoonConnectionShardCount = 8,
+            ),
+        )
         assertEquals(
             24,
             NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
