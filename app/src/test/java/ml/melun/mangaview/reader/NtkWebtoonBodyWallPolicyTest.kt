@@ -184,6 +184,19 @@ class NtkWebtoonBodyWallPolicyTest {
         assertFalse(NtkWebtoonReplicaHeaderPolicy.WIFI_PRIMARY_EXACT_QUIC_ENABLED)
         assertTrue(NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_COHORT_ENABLED)
         assertEquals(2_500L, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS)
+        assertEquals(3, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES)
+        assertEquals(1_500L, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS)
+        assertEquals(
+            "xiaomichina.com",
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_HOST,
+        )
+        assertEquals(
+            1,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_MAX_CONCURRENT,
+        )
+        assertEquals(3, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(1))
+        assertEquals(1, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(2))
+        assertEquals(1, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(32))
         assertEquals(2, NtkWebtoonReplicaHeaderPolicy.WIFI_ENTRY_LAST_PAGE)
         assertFalse(
             NtkWebtoonReplicaHeaderPolicy.shouldAttemptPrimaryExactQuic(
@@ -266,6 +279,36 @@ class NtkWebtoonBodyWallPolicyTest {
                 NtkWebtoonReplicaHeaderPolicy.WIFI_VERY_LARGE_EPISODE_PAGES,
             ),
         )
+    }
+
+    @Test
+    fun directWifiExplicitMissQuicRequiresCurrentOwnershipAndStableNetworkGeneration() {
+        fun eligible(
+            directWifi: Boolean = true,
+            currentOwned: Boolean = true,
+            adjacent: Boolean = false,
+            sameNetwork: Boolean = true,
+            sameGeneration: Boolean = true,
+            attempt: Int = 1,
+            explicitMiss: Boolean = true,
+        ) = NtkWebtoonReplicaHeaderPolicy.shouldAttemptDirectWifiExplicitMissQuic(
+            directWifi,
+            currentOwned,
+            adjacent,
+            sameNetwork,
+            sameGeneration,
+            attempt,
+            explicitMiss,
+        )
+
+        assertTrue(eligible())
+        assertFalse(eligible(directWifi = false))
+        assertFalse(eligible(currentOwned = false))
+        assertFalse(eligible(adjacent = true))
+        assertFalse(eligible(sameNetwork = false))
+        assertFalse(eligible(sameGeneration = false))
+        assertFalse(eligible(attempt = 2))
+        assertFalse(eligible(explicitMiss = false))
     }
 
     @Test

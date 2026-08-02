@@ -42,6 +42,8 @@ public final class NtkQuicFetcher {
     private static final long EXACT_IDENTITY_TAIL_GRACE_BYTES = 128L * 1024L;
     private static final long EXACT_IDENTITY_TAIL_PROGRESS_PROBE_MS = 250L;
     private static final long EXACT_IDENTITY_TAIL_PROGRESS_GRACE_MS = 750L;
+    private static final long DIRECT_WIFI_DRAIN_CLOSE_RETRY_MS = 250L;
+    private static final int DIRECT_WIFI_DRAIN_CLOSE_MAX_ATTEMPTS = 20;
     private static final ScheduledExecutorService EXECUTOR_CLOSER =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "ntk-quic-executor-closer");
@@ -327,6 +329,7 @@ public final class NtkQuicFetcher {
     public static final class Session implements AutoCloseable {
         private final HttpEngine engine;
         private final ExecutorService executor;
+        private final AtomicBoolean boundedDrainCloseStarted = new AtomicBoolean(false);
 
         private Session(Context context, String userAgent, boolean enableQuic, String host) {
             this(context, userAgent, enableQuic, host, 1);
@@ -395,6 +398,47 @@ public final class NtkQuicFetcher {
         @Override
         public void close() {
             shutdownEngineAndExecutor(engine, executor);
+        }
+
+        /**
+         * Closes a one-shot direct-Wi-Fi session without leaking its engine if a timed-out request's
+         * terminal cancellation callback arrives after the fetch fence. Existing pooled and
+         * carrier/SNI sessions retain their normal close contract and never call this method.
+         */
+        public boolean closeAfterBoundedRequestDrain(Runnable completion) {
+            if(completion == null)
+                throw new IllegalArgumentException("completion must not be null");
+            if(!boundedDrainCloseStarted.compareAndSet(false, true))
+                return false;
+            shutdownEngineAndExecutorAfterBoundedDrain(engine, executor, 0, completion);
+            return true;
+        }
+    }
+
+    private static void shutdownEngineAndExecutorAfterBoundedDrain(HttpEngine engine,
+                                                                    ExecutorService executor,
+                                                                    int attempt,
+                                                                    Runnable completion) {
+        boolean shutdown = false;
+        try {
+            engine.shutdown();
+            shutdown = true;
+        } catch (Throwable ignored) {
+        }
+        if(shutdown || attempt + 1 >= DIRECT_WIFI_DRAIN_CLOSE_MAX_ATTEMPTS) {
+            shutdownExecutorAfterGrace(executor);
+            completion.run();
+            return;
+        }
+        try {
+            EXECUTOR_CLOSER.schedule(
+                    () -> shutdownEngineAndExecutorAfterBoundedDrain(
+                            engine, executor, attempt + 1, completion),
+                    DIRECT_WIFI_DRAIN_CLOSE_RETRY_MS,
+                    TimeUnit.MILLISECONDS);
+        } catch (Throwable ignored) {
+            shutdownExecutorAfterGrace(executor);
+            completion.run();
         }
     }
 

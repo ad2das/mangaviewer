@@ -695,7 +695,10 @@ object NtkStrictSourceOwnershipRegistry {
                 }
             }
             check(active.total < NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
-            val attemptOrdinal = 1
+            // This field is telemetry-only, but it must describe the same immutable strict tag
+            // that selected the retry pool. Hard-coding one made successful attempt-2/3 routing
+            // appear unrotated in qualification evidence.
+            val attemptOrdinal = tag.attemptOrdinal
             record.operations[tag.operationId] = ActiveOperation(
                 tag,
                 startedAt,

@@ -582,6 +582,14 @@ internal data class NtkStrictEpisodePageCountTag(val pageCount: Int) {
     }
 }
 
+/** Immutable logical episode identity retained across transport-only replica URL rewrites. */
+internal data class NtkStrictEpisodePathTag(val path: String) {
+    init {
+        require(path.startsWith('/'))
+        require(path.length > 1)
+    }
+}
+
 /**
  * Accepts only an immutable, byte-addressable prefix from a timed-out direct-Wi-Fi HTTP/3 GET.
  * The caller still verifies image magic and the eventual complete-body digest; this policy merely
@@ -822,6 +830,42 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     const val WIFI_PRIMARY_EXACT_QUIC_ENABLED = false
     const val WIFI_DIRECT_H2_COHORT_ENABLED = true
     const val WIFI_DIRECT_H2_HEADER_FAILOVER_MS = 2_500L
+    const val WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES = 3
+    const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS = 1_500L
+    const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_HOST = "xiaomichina.com"
+    const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_MAX_CONCURRENT = 1
+
+    /**
+     * The first exact attempt preserves the measured three-ring fallback that rescued a page on
+     * its third alternate pool. A strict outer retry already rotates the bounded physical pool;
+     * repeating all three rings there rechecks mostly overlapping pools and delayed a 58-page
+     * scene past six seconds. Later attempts therefore probe one fresh ring and return promptly
+     * to the page-owned retry ledger. Carrier/SNI never enters this direct-Wi-Fi branch.
+     */
+    fun directWifiH2RecoveryCycles(logicalAttemptOrdinal: Int): Int {
+        require(logicalAttemptOrdinal > 0)
+        return if (logicalAttemptOrdinal == 1) {
+            WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES
+        } else {
+            1
+        }
+    }
+
+    fun shouldAttemptDirectWifiExplicitMissQuic(
+        directWifiActive: Boolean,
+        currentEpisodeOwned: Boolean,
+        adjacentProofRoute: Boolean,
+        sameNetwork: Boolean,
+        sameViewerGeneration: Boolean,
+        logicalAttemptOrdinal: Int,
+        preferredHostExplicitMiss: Boolean,
+    ): Boolean = directWifiActive &&
+        currentEpisodeOwned &&
+        !adjacentProofRoute &&
+        sameNetwork &&
+        sameViewerGeneration &&
+        logicalAttemptOrdinal == 1 &&
+        preferredHostExplicitMiss
 
     fun directWifiH2HostPriority(host: String): Int =
         if (host.equals(WIFI_DIRECT_H2_PREFERRED_HOST, ignoreCase = true)) 0 else 1
@@ -1199,6 +1243,10 @@ object ReaderImageCache {
         ConcurrentHashMap<Long, NtkWebtoonReplicaPreference>()
     private val ntkWifiExactQuicSessionPools =
         ConcurrentHashMap<Long, NtkWifiExactQuicSessionPool>()
+    private val ntkWifiWebtoonExplicitMissQuicPermits = Semaphore(
+        NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_MAX_CONCURRENT,
+        true,
+    )
     private val ntkWifiWebtoonProvisionalRangePermits = Semaphore(
         NtkWebtoonReplicaHeaderPolicy.WIFI_PROVISIONAL_RANGE_MAX_CONCURRENT,
         true,
@@ -2027,6 +2075,11 @@ data class NtkResolvedSourceRoute(
             val wifiTransportActive =
                 !cellularResilientTransport && getHttpClient().isNtkWifiTransportActive()
             val viewerGeneration = ViewerTelemetry.activeGeneration()
+            val capturedDirectWifiNetworkHandle = if (wifiTransportActive) {
+                runCatching { getHttpClient().getNtkDirectWifiNetwork()?.networkHandle }.getOrNull()
+            } else {
+                null
+            }
             val wifiWebtoonReplicaPreference =
                 if (webtoonReplica && wifiTransportActive && viewerGeneration > 0L) {
                     ntkWifiWebtoonReplicaPreferences.computeIfAbsent(viewerGeneration) {
@@ -2057,10 +2110,17 @@ data class NtkResolvedSourceRoute(
                     if (it.url.host.equals(preferredHost, ignoreCase = true)) 0 else 1
                 }
             }
+            val strictEpisodePageCount =
+                originalRequest.tag(NtkStrictEpisodePageCountTag::class.java)?.pageCount ?: 0
             if (webtoonReplica && wifiTransportActive &&
                 NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_COHORT_ENABLED
             ) {
-                return executeDirectWifiWebtoonH2(candidates)
+                return executeDirectWifiWebtoonH2(
+                    candidates,
+                    strictEpisodePageCount,
+                    capturedDirectWifiNetworkHandle,
+                    viewerGeneration,
+                )
             }
             // Quarantine discovery and the adopted strict source intentionally use different
             // internal session ids. The immutable episode directory is common to both phases and
@@ -2092,8 +2152,6 @@ data class NtkResolvedSourceRoute(
             val strictPageIndex = originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
                 ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
                 ?: -1
-            val strictEpisodePageCount =
-                originalRequest.tag(NtkStrictEpisodePageCountTag::class.java)?.pageCount ?: 0
             val liveDirectWifiAdjacentProofRoute = isLiveDirectWifiAdjacentProofRoute()
             // The signed adjacent runway already has one canonical full-body request per page.
             // Splitting its visible anchor into eleven cold Range calls measured slower than the
@@ -3602,9 +3660,16 @@ data class NtkResolvedSourceRoute(
         /**
          * Restores the measured direct-Wi-Fi webtoon transport: one bounded logical call rotates
          * through the three immutable origins and eight host-local H2 pools. There is no primary
-         * H3 body, focused H1 fan-out, or discarded prefix. Carrier/SNI never enters this branch.
+         * H3 body, focused H1 fan-out, or discarded prefix. One current-page-only exact H3 request
+         * may run after the first complete H2 ring proves a host-local miss plus two transport
+         * failures. Carrier/SNI never enters this branch.
          */
-        private fun executeDirectWifiWebtoonH2(candidates: List<Request>): Response {
+        private fun executeDirectWifiWebtoonH2(
+            candidates: List<Request>,
+            episodePageCount: Int,
+            capturedDirectWifiNetworkHandle: Long?,
+            viewerGeneration: Long,
+        ): Response {
             // The signed manifest makes these origins interchangeable and the exact response
             // validator still owns publication. In the fixed wired-emulator cohort both legacy
             // origins reset every H2 stream before the compatibility origin succeeded (128
@@ -3613,14 +3678,143 @@ data class NtkResolvedSourceRoute(
             val orderedCandidates = candidates.sortedBy {
                 NtkWebtoonReplicaHeaderPolicy.directWifiH2HostPriority(it.url.host)
             }
-            val attempts = List(3) { orderedCandidates }.flatten()
+            val logicalAttemptOrdinal = originalRequest
+                .tag(NtkStrictSourceCallTag::class.java)
+                ?.attemptOrdinal
+                ?: 1
+            val attempts = List(
+                NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                    logicalAttemptOrdinal,
+                ),
+            ) { orderedCandidates }.flatten()
             // A headerless response on one immutable origin has already consumed its complete
             // cold allowance. Retrying that same host twice more delayed one exact page by five
             // seconds even though the later alternate pool succeeded. Preserve every physical
             // attempt index (and therefore its measured pool), but skip the failed host for the
             // rest of this one logical call. A new strict outer attempt starts with a fresh set.
             val suppressedHosts = ConcurrentHashMap.newKeySet<String>()
+            var explicitMissExactQuicAttempted = false
+            var preferredHostExplicitMiss = false
             var lastFailure: IOException? = null
+            fun attemptExplicitMissExactQuicRecovery(tcpFailure: IOException): Response? {
+                if (explicitMissExactQuicAttempted) return null
+                val strictTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
+                val quarantineTag = originalRequest.tag(
+                    NtkQuarantineSourceCallIdentity::class.java,
+                )
+                val episodePath = originalRequest
+                    .tag(NtkStrictEpisodePathTag::class.java)
+                    ?.path
+                    .orEmpty()
+                val currentEpisodeOwned =
+                    (strictTag?.isProductionStrict == true || quarantineTag?.isValid == true) &&
+                        episodePath.isNotEmpty() &&
+                        MainApplication.isNtkForegroundViewerPath(episodePath)
+                val adjacentProofRoute = originalRequest.tag(
+                    NtkExactApiReplicaRouteTag::class.java,
+                ) != null
+                val liveClient = getHttpClient()
+                val liveDirectWifi = runCatching {
+                    !liveClient.isNtkCellularResilientTransportActive() &&
+                        liveClient.isNtkWifiTransportActive()
+                }.getOrDefault(false)
+                val sameNetwork = capturedDirectWifiNetworkHandle != null && runCatching {
+                    liveClient.getNtkDirectWifiNetwork()?.networkHandle ==
+                        capturedDirectWifiNetworkHandle
+                }.getOrDefault(false)
+                val sameViewerGeneration = viewerGeneration > 0L &&
+                    ViewerTelemetry.activeGeneration() == viewerGeneration
+                val eligible = NtkWebtoonReplicaHeaderPolicy
+                    .shouldAttemptDirectWifiExplicitMissQuic(
+                        directWifiActive = liveDirectWifi,
+                        currentEpisodeOwned = currentEpisodeOwned,
+                        adjacentProofRoute = adjacentProofRoute,
+                        sameNetwork = sameNetwork,
+                        sameViewerGeneration = sameViewerGeneration,
+                        logicalAttemptOrdinal = logicalAttemptOrdinal,
+                        preferredHostExplicitMiss = preferredHostExplicitMiss,
+                    )
+                if (!eligible) {
+                    Log.w(
+                        TAG,
+                        "reader_strict_direct_wifi_h3_skip " +
+                            "direct=$liveDirectWifi,current=$currentEpisodeOwned," +
+                            "adjacent=$adjacentProofRoute,sameNetwork=$sameNetwork," +
+                            "sameGeneration=$sameViewerGeneration,attempt=$logicalAttemptOrdinal," +
+                            "explicitMiss=$preferredHostExplicitMiss",
+                    )
+                    return null
+                }
+                explicitMissExactQuicAttempted = true
+                if (!ntkWifiWebtoonExplicitMissQuicPermits.tryAcquire()) {
+                    Log.w(TAG, "reader_strict_direct_wifi_h3_skip reason=permit_busy")
+                    return null
+                }
+                var releasePermitDirectly = true
+                return try {
+                    val pageIndex = strictTag?.pageIndex ?: quarantineTag?.pageIndex ?: run {
+                        Log.w(TAG, "reader_strict_direct_wifi_h3_skip reason=missing_page_identity")
+                        return null
+                    }
+                    val quicCandidate = candidates.firstOrNull {
+                        it.url.host.equals(
+                            NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_HOST,
+                            ignoreCase = true,
+                        )
+                    } ?: run {
+                        Log.w(TAG, "reader_strict_direct_wifi_h3_skip reason=missing_candidate")
+                        return null
+                    }
+                    // This exceptional route owns one engine/thread at most. It is independent of
+                    // the 48 H2 source lanes and cannot become a second full-scene body wave.
+                    val quicSession = NtkQuicFetcher.newDirectWifiQuicSession(
+                        MainApplication.appContext,
+                        getHttpClient().agent,
+                        quicCandidate.url.host,
+                        1,
+                    ) ?: run {
+                        Log.w(TAG, "reader_strict_direct_wifi_h3_skip reason=session_unavailable")
+                        return null
+                    }
+                    try {
+                        executeExactQuicImageRecovery(
+                            quicCandidate,
+                            tcpFailure,
+                            NtkWebtoonReplicaHeaderPolicy
+                                .WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS,
+                            "wifi_webtoon_direct_h2_explicit_miss",
+                            quicSession,
+                            episodePageCount = episodePageCount,
+                            recheckCancellationAfterRegistration = true,
+                            admissionCheck = {
+                                val currentClient = getHttpClient()
+                                val sameDirectWifiNetwork = runCatching {
+                                    currentClient.getNtkDirectWifiNetwork()?.networkHandle ==
+                                        capturedDirectWifiNetworkHandle
+                                }.getOrDefault(false)
+                                !currentClient.isNtkCellularResilientTransportActive() &&
+                                    currentClient.isNtkWifiTransportActive() &&
+                                    sameDirectWifiNetwork &&
+                                    ViewerTelemetry.activeGeneration() == viewerGeneration &&
+                                    MainApplication.isNtkForegroundViewerPath(episodePath) &&
+                                    originalRequest.tag(NtkExactApiReplicaRouteTag::class.java) == null
+                            },
+                        )
+                    } finally {
+                        val drainCloseOwnsPermitRelease = runCatching {
+                            quicSession.closeAfterBoundedRequestDrain {
+                                ntkWifiWebtoonExplicitMissQuicPermits.release()
+                            }
+                        }.getOrDefault(false)
+                        if (drainCloseOwnsPermitRelease) releasePermitDirectly = false
+                    }
+                } finally {
+                    if (releasePermitDirectly) {
+                        ntkWifiWebtoonExplicitMissQuicPermits.release()
+                    }
+                }
+            }
             attempts.forEachIndexed { index, candidate ->
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
                 if (candidate.url.host.lowercase(Locale.ROOT) in suppressedHosts) {
@@ -3688,10 +3882,18 @@ data class NtkResolvedSourceRoute(
                         )
                     }
                     suppressedHosts += candidate.url.host.lowercase(Locale.ROOT)
-                    lastFailure = IOException(
+                    val explicitMissFailure = IOException(
                         "Direct Wi-Fi H2 definitive miss ${candidate.url.host} code=${response.code}",
                     )
+                    lastFailure = explicitMissFailure
                     response.close()
+                    if (candidate.url.host.equals(
+                            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_PREFERRED_HOST,
+                            ignoreCase = true,
+                        )
+                    ) {
+                        preferredHostExplicitMiss = true
+                    }
                     val nextHost = attempts.drop(index + 1).firstOrNull {
                         it.url.host.lowercase(Locale.ROOT) !in suppressedHosts
                     }?.url?.host ?: "exhausted"
@@ -3704,11 +3906,20 @@ data class NtkResolvedSourceRoute(
                 } catch (failure: IOException) {
                     if (cancelled.get() || index == attempts.lastIndex) throw failure
                     lastFailure = failure
+                    // A definitive compatibility-host miss is host-local. First give both TCP/H2
+                    // alternates one complete ring; only if neither owns a response do we spend the
+                    // single bounded H3 permit. A failed H3 therefore cannot delay a healthy H2 URL.
+                    if (index == orderedCandidates.lastIndex) {
+                        attemptExplicitMissExactQuicRecovery(failure)?.let { return it }
+                    }
+                    val nextHost = attempts.drop(index + 1).firstOrNull {
+                        it.url.host.lowercase(Locale.ROOT) !in suppressedHosts
+                    }?.url?.host ?: "exhausted"
                     Log.w(
                         TAG,
                         "reader_strict_direct_wifi_h2_failover " +
                             "error=${failure.javaClass.simpleName},from=${candidate.url.host}," +
-                            "to=${attempts[index + 1].url.host}",
+                            "to=$nextHost",
                     )
                 } finally {
                     headerResolved.set(true)
@@ -7104,6 +7315,10 @@ data class NtkResolvedSourceRoute(
                 NtkStrictEpisodePageCountTag::class.java,
                 NtkStrictEpisodePageCountTag(manifestSeal.pageCount),
             )
+            .tag(
+                NtkStrictEpisodePathTag::class.java,
+                NtkStrictEpisodePathTag(manifestSeal.normalizedEpisodePath),
+            )
             .apply {
                 exactApiReplicaTag?.let { proof ->
                     tag(NtkExactApiReplicaRouteTag::class.java, proof)
@@ -7269,6 +7484,10 @@ data class NtkResolvedSourceRoute(
             }
         val request = requestBuilder
             .apply {
+                tag(
+                    NtkStrictEpisodePathTag::class.java,
+                    NtkStrictEpisodePathTag(binding.episodePath),
+                )
                 ordinaryTransportSelection?.let { selection ->
                     tag(NtkDirectWifiOrdinaryTransportSelection::class.java, selection)
                 }
