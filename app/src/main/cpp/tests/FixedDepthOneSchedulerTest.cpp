@@ -177,6 +177,34 @@ void move_coalescing_stays_in_one_gesture() {
             name, "promotion renumbered mutation serial");
 }
 
+void fractional_moves_preserve_one_to_one_drag_distance() {
+    const std::string name =
+        "fractional_moves_preserve_one_to_one_drag_distance";
+    FixedDepthOneScheduler scheduler;
+    scheduler.reset({});
+    down(scheduler, 1, 1, 500.0F);
+    move(scheduler, 2, 1, 499.6F, 21, {});
+    move(scheduler, 3, 1, 499.2F, 21, {});
+    move(scheduler, 4, 1, 498.8F, 21, {});
+    require(scheduler.reducer().view.scroll_top == 1,
+            name, "subpixel MOVE distance was discarded between samples");
+}
+
+void release_coordinate_does_not_nudge_viewport() {
+    const std::string name =
+        "release_coordinate_does_not_nudge_viewport";
+    FixedDepthOneScheduler scheduler;
+    scheduler.reset({});
+    down(scheduler, 1, 1, 500.0F);
+    move(scheduler, 2, 1, 450.0F, 22, {});
+    const auto releasedAt = scheduler.reducer().view.scroll_top;
+    terminal(scheduler, 3, 1, 447.0F, 22, {});
+    const auto& work = *scheduler.successor();
+    require(releasedAt == 50 && work.view_state.scroll_top == releasedAt &&
+                work.input.input_watermark == 3 && work.terminal,
+            name, "ACTION_UP changed the already-MOVE-owned viewport");
+}
+
 void terminal_never_crosses_next_down() {
     const std::string name = "terminal_never_crosses_next_down";
     FixedDepthOneScheduler scheduler;
@@ -1157,6 +1185,10 @@ int main() {
         retained_head_drains_terminal_successor);
     run("move_coalescing_stays_in_one_gesture",
         move_coalescing_stays_in_one_gesture);
+    run("fractional_moves_preserve_one_to_one_drag_distance",
+        fractional_moves_preserve_one_to_one_drag_distance);
+    run("release_coordinate_does_not_nudge_viewport",
+        release_coordinate_does_not_nudge_viewport);
     run("terminal_never_crosses_next_down",
         terminal_never_crosses_next_down);
     run("queued_control_rearms_after_terminal_promotion",

@@ -111,6 +111,7 @@ struct InputReducerState {
     std::uint64_t visual_demand_epoch = 0;
     int active_pointer_id = -1;
     float last_touch_y = 0.0F;
+    double fractional_scroll_remainder = 0.0;
     std::int64_t last_event_time_ns = 0;
     std::uint64_t applied_move_sequence = 0;
     InputEnvelope unassigned_input{};

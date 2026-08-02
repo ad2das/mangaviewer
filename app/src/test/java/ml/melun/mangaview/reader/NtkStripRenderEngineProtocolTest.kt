@@ -418,12 +418,16 @@ class NtkStripRenderEngineProtocolTest {
         )
         assertOrdered(
             terminalReduction,
-            "(void)applyScroll(input, maximumScroll, mutationNanos);",
+            "(void)applyScroll(terminalMove, maximumScroll, mutationNanos);",
+            "recordInput(input);",
             "reducer_.unassigned_input.recordMutation(mutationNanos);",
             "reducer_.gesture_state = ReducerGestureState::IDLE;",
             "result.frame_cause = true;",
             "result.terminal = true;"
         )
+        assertFalse(terminalReduction.contains(
+            "(void)applyScroll(input, maximumScroll, mutationNanos);"
+        ))
     }
 
     @Test

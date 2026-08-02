@@ -186,11 +186,18 @@ bool FixedDepthOneScheduler::applyScroll(
     if (reducer_.gesture_state != ReducerGestureState::ACTIVE ||
         input.gesture_generation != reducer_.gesture_generation ||
         input.pointer_id != reducer_.active_pointer_id) return false;
-    const float delta = reducer_.last_touch_y - input.y;
+    const double delta = static_cast<double>(reducer_.last_touch_y) -
+        static_cast<double>(input.y) + reducer_.fractional_scroll_remainder;
     const std::int64_t previousScroll = reducer_.view.scroll_top;
+    const std::int64_t integralDelta = static_cast<std::int64_t>(
+        std::llround(delta));
+    const std::int64_t requested = previousScroll + integralDelta;
     const std::int64_t next = std::clamp<std::int64_t>(
-        previousScroll + static_cast<std::int64_t>(std::llround(delta)),
+        requested,
         0, std::max<std::int64_t>(0, maximumScroll));
+    reducer_.fractional_scroll_remainder = requested == next
+        ? delta - static_cast<double>(integralDelta)
+        : 0.0;
     const std::int64_t previousEvent = reducer_.last_event_time_ns;
     reducer_.last_touch_y = input.y;
     reducer_.last_event_time_ns = input.event_time_ns;
@@ -239,6 +246,7 @@ ReductionResult FixedDepthOneScheduler::reduceControl(
         reducer_.gesture_generation = input.gesture_generation;
         reducer_.active_pointer_id = input.pointer_id;
         reducer_.last_touch_y = input.y;
+        reducer_.fractional_scroll_remainder = 0.0;
         reducer_.last_event_time_ns = input.event_time_ns;
         reducer_.view.velocity_px_per_second = 0.0F;
         reducer_.applied_move_sequence = input.input_sequence;
@@ -268,7 +276,14 @@ ReductionResult FixedDepthOneScheduler::reduceControl(
         terminalMove.pointer_id = input.terminal_move.pointer_id;
         (void)applyScroll(terminalMove, maximumScroll, mutationNanos);
     }
-    (void)applyScroll(input, maximumScroll, mutationNanos);
+    // Android drag widgets consume displacement on MOVE. ACTION_UP/CANCEL terminates the
+    // gesture and contributes velocity/ownership evidence, but does not move the viewport to a
+    // slightly different release coordinate. Applying UP here caused the visible strip to nudge
+    // by a few pixels after the finger had already stopped.
+    reducer_.last_touch_y = input.y;
+    reducer_.last_event_time_ns = input.event_time_ns;
+    recordInput(input);
+    reducer_.fractional_scroll_remainder = 0.0;
     reducer_.unassigned_input.recordMutation(mutationNanos);
     reducer_.gesture_state = ReducerGestureState::IDLE;
     reducer_.active_pointer_id = -1;
