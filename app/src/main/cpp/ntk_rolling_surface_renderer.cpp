@@ -73,7 +73,12 @@ constexpr std::size_t kMaxResidentTextureCount = 1024;
 // Deleting and recreating texture storage on the emulator's host GL translator serializes the
 // render pipe. Keep a very small, byte-bounded storage pool so later pages reuse existing
 // allocations. This is GPU storage only: it neither retains encoded bodies nor starts requests.
-constexpr std::uint64_t kMaxPooledTextureBytes = 16ULL * 1024ULL * 1024ULL;
+// A source-native 1080x1440 page is split into three 6,220,800-byte RGBA upload
+// tiles.  A 16 MiB pool retained only two of those equal-size allocations, so
+// every forward page boundary deleted and recreated the third GL texture while
+// the user was scrolling.  Keep one complete three-tile page plus a small tail;
+// the count, resident-window eviction and upload pacing remain unchanged.
+constexpr std::uint64_t kMaxPooledTextureBytes = 24ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kMaxPooledTextureCount = 12;
 
 #define RLOGI(...) __android_log_print(ANDROID_LOG_INFO, kTag, __VA_ARGS__)

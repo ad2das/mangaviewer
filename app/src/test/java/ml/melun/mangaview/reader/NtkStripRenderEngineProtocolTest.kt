@@ -803,6 +803,19 @@ class NtkStripRenderEngineProtocolTest {
     }
 
     @Test
+    fun rollingTexturePoolRetainsOneCompleteThreeTileSourcePage() {
+        val rollingRenderer = readRepositoryFile(
+            "app/src/main/cpp/ntk_rolling_surface_renderer.cpp"
+        )
+        assertTrue(rollingRenderer.contains(
+            "constexpr std::uint64_t kMaxPooledTextureBytes = 24ULL * 1024ULL * 1024ULL;"
+        ))
+        assertTrue(rollingRenderer.contains(
+            "constexpr std::size_t kMaxPooledTextureCount = 12;"
+        ))
+    }
+
+    @Test
     fun releaseCompletionThrowDoesNotPoisonOrStrandProof() {
         val protocol = NtkEngineProtocolCoordinator()
         protocol.withProtocolLock {
