@@ -86,6 +86,13 @@ Assert-SourceContains 'Set-HostGpuEmulatorNotificationIsolation'
 Assert-SourceContains 'heads_up_notifications_enabled", "0"'
 Assert-SourceContains 'Restore-HostGpuEmulatorNotificationIsolation'
 Assert-SourceContains 'hostGpuNotificationRestoration = $hostGpuNotificationRestoration'
+Assert-SourceContains 'Set-HostGpuEmulatorConnectedScanIsolation'
+Assert-SourceContains '"set-network-selection-config",'
+Assert-SourceContains '"enabled", "enabled", "-a", "2"'
+Assert-SourceContains 'mAssociatedNetworkSelectionOverride=2(?:,|$)'
+Assert-SourceContains 'Restore-HostGpuEmulatorConnectedScanIsolation'
+Assert-SourceContains '"enabled", "enabled", "-a", "0"'
+Assert-SourceContains 'hostGpuConnectedScanRestoration = $hostGpuConnectedScanRestoration'
 
 foreach($formalGatePattern in @(
         '(?s)\$diagnosticOnly\s*=.*?\$freshRandomSeedRequirementSatisfied\)',

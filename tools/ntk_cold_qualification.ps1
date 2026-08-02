@@ -262,6 +262,82 @@ function Restore-HostGpuEmulatorNotificationIsolation($Policy) {
     }
 }
 
+function Set-HostGpuEmulatorConnectedScanIsolation {
+    if($script:QualificationDeviceMode -cne "HOST_GPU_EMULATOR") {
+        return [pscustomobject][ordered]@{
+            applied = $false
+            reason = "not-host-gpu-emulator-mode"
+        }
+    }
+    # Android Emulator exposes the host's wired route as a guest Wi-Fi transport. While already
+    # connected, WifiConnectivityManager otherwise starts periodic AP-selection scans at
+    # 20/20/40/80-second intervals. Perfetto proved one such nl80211 scan monopolized guest CPU 4
+    # for 135 ms while the reader kept submitting frames normally. Disable only associated-network
+    # selection during the case; connectivity, sufficiency checks, DNS and the measured app path
+    # remain unchanged. A hard QEMU restart discards this runtime override, so callers apply it
+    # after every restart and before app launch.
+    $apply = Invoke-Adb @(
+        "shell", "cmd", "wifi", "set-network-selection-config",
+        "enabled", "enabled", "-a", "2"
+    ) -TimeoutSeconds 30
+    $probe = Invoke-Adb @("shell", "dumpsys", "wifi") -TimeoutSeconds 30
+    $configMatches = [regex]::Matches(
+        $probe.Stdout,
+        'WifiNetworkSelectionConfig=[^\r\n]*'
+    )
+    $effectiveConfig = if($configMatches.Count -gt 0) {
+        $configMatches[$configMatches.Count - 1].Value
+    } else {
+        ""
+    }
+    if($effectiveConfig -notmatch 'mAssociatedNetworkSelectionOverride=2(?:,|$)') {
+        throw "Could not isolate host-GPU emulator connected-network selection scans"
+    }
+    return [pscustomobject][ordered]@{
+        applied = $true
+        effectiveAssociatedNetworkSelectionOverride = 2
+        effectiveConfig = $effectiveConfig
+        commandExitCode = $apply.ExitCode
+        rationale = "Exclude emulator connected-AP selection scans proven to stall guest presentation while preserving connectivity"
+    }
+}
+
+function Restore-HostGpuEmulatorConnectedScanIsolation($Policies) {
+    $appliedPolicies = @($Policies | Where-Object { $null -ne $_ -and [bool]$_.applied })
+    if($appliedPolicies.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            restored = $true
+            reason = "policy-not-applied"
+        }
+    }
+    # ASSOCIATED_NETWORK_SELECTION_OVERRIDE_NONE is the platform/default emulator state. Keep
+    # both sufficiency checks enabled exactly as they were for qualification and remove only the
+    # temporary connected-network-selection override.
+    $restore = Invoke-Adb @(
+        "shell", "cmd", "wifi", "set-network-selection-config",
+        "enabled", "enabled", "-a", "0"
+    ) -TimeoutSeconds 30 -AllowFailure
+    $probe = Invoke-Adb @("shell", "dumpsys", "wifi") -TimeoutSeconds 30 -AllowFailure
+    $configMatches = [regex]::Matches(
+        $probe.Stdout,
+        'WifiNetworkSelectionConfig=[^\r\n]*'
+    )
+    $effectiveConfig = if($configMatches.Count -gt 0) {
+        $configMatches[$configMatches.Count - 1].Value
+    } else {
+        ""
+    }
+    $restored = $restore.ExitCode -eq 0 -and $probe.ExitCode -eq 0 -and
+        $effectiveConfig -match 'mAssociatedNetworkSelectionOverride=0(?:,|$)'
+    return [pscustomobject][ordered]@{
+        restored = $restored
+        restoredAssociatedNetworkSelectionOverride = 0
+        effectiveConfig = $effectiveConfig
+        exitCode = $restore.ExitCode
+        output = $restore.Text
+    }
+}
+
 function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     if($script:QualificationDeviceMode -cne "HOST_GPU_EMULATOR") {
         throw "Per-case emulator-process isolation is valid only in HOST_GPU_EMULATOR mode"
@@ -3895,6 +3971,8 @@ $hostGpuNotificationIsolation = Set-HostGpuEmulatorNotificationIsolation
 Write-Json (Join-Path $runDir "host-gpu-notification-isolation.json") `
     $hostGpuNotificationIsolation
 $hostGpuNotificationRestoration = $null
+$hostGpuConnectedScanIsolations = [Collections.Generic.List[object]]::new()
+$hostGpuConnectedScanRestoration = $null
 try {
     for($index = 0; $index -lt $targets.Count; $index++) {
         $target = $targets[$index]
@@ -3907,6 +3985,11 @@ try {
                     "host-gpu-reset-{0:D2}.json" -f ($index + 1)
                 )) $hostGpuReset
             }
+            $hostGpuConnectedScanIsolation = Set-HostGpuEmulatorConnectedScanIsolation
+            $hostGpuConnectedScanIsolations.Add($hostGpuConnectedScanIsolation)
+            Write-Json (Join-Path $runDir (
+                "host-gpu-connected-scan-isolation-{0:D2}.json" -f ($index + 1)
+            )) $hostGpuConnectedScanIsolation
             $caseResult = Invoke-ColdCase $target ($index + 1) $remoteRunRoot
             $caseResults.Add($caseResult)
             if($StopOnFirstFailure -and -not [bool]$caseResult.passed) {
@@ -3940,6 +4023,10 @@ try {
         }
     }
 } finally {
+    $hostGpuConnectedScanRestoration =
+        Restore-HostGpuEmulatorConnectedScanIsolation $hostGpuConnectedScanIsolations
+    Write-Json (Join-Path $runDir "host-gpu-connected-scan-restoration.json") `
+        $hostGpuConnectedScanRestoration
     $hostGpuNotificationRestoration =
         Restore-HostGpuEmulatorNotificationIsolation $hostGpuNotificationIsolation
     Write-Json (Join-Path $runDir "host-gpu-notification-restoration.json") `
@@ -4107,6 +4194,8 @@ $summary = [pscustomobject][ordered]@{
     hostGpuPerformancePolicy = $hostGpuPerformancePolicy
     hostGpuNotificationIsolation = $hostGpuNotificationIsolation
     hostGpuNotificationRestoration = $hostGpuNotificationRestoration
+    hostGpuConnectedScanIsolations = @($hostGpuConnectedScanIsolations)
+    hostGpuConnectedScanRestoration = $hostGpuConnectedScanRestoration
     device = $deviceInfo
     apks = [pscustomobject][ordered]@{
         app = $appApk
