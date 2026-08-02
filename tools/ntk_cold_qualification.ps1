@@ -208,6 +208,60 @@ function Set-HostGpuEmulatorPerformancePolicy {
     }
 }
 
+function Set-HostGpuEmulatorNotificationIsolation {
+    if($script:QualificationDeviceMode -cne "HOST_GPU_EMULATOR") {
+        return [pscustomobject][ordered]@{
+            applied = $false
+            reason = "not-host-gpu-emulator-mode"
+        }
+    }
+    # Heads-up windows are external SurfaceFlinger layers. A system data-usage warning posted in
+    # the middle of a trace can hold the host GPU for several frames and falsely charge that jank
+    # to the reader. Preserve the emulator setting and suppress only transient heads-up overlays
+    # for the measured case loop; notification records and app behavior are otherwise unchanged.
+    $beforeResult = Invoke-Adb @(
+        "shell", "settings", "get", "global", "heads_up_notifications_enabled"
+    )
+    $before = $beforeResult.Stdout.Trim()
+    [void](Invoke-Adb @(
+        "shell", "settings", "put", "global", "heads_up_notifications_enabled", "0"
+    ))
+    $effective = (Invoke-Adb @(
+        "shell", "settings", "get", "global", "heads_up_notifications_enabled"
+    )).Stdout.Trim()
+    if($effective -cne "0") {
+        throw "Could not suppress host-GPU emulator heads-up notifications"
+    }
+    return [pscustomobject][ordered]@{
+        applied = $true
+        beforeValue = $before
+        effectiveValue = $effective
+        rationale = "Exclude external SystemUI heads-up GPU layers from reader frame attribution"
+    }
+}
+
+function Restore-HostGpuEmulatorNotificationIsolation($Policy) {
+    if($null -eq $Policy -or -not [bool]$Policy.applied) {
+        return [pscustomobject][ordered]@{
+            restored = $true
+            reason = "policy-not-applied"
+        }
+    }
+    $before = [string]$Policy.beforeValue
+    $arguments = if([string]::IsNullOrWhiteSpace($before) -or $before -ceq "null") {
+        @("shell", "settings", "delete", "global", "heads_up_notifications_enabled")
+    } else {
+        @("shell", "settings", "put", "global", "heads_up_notifications_enabled", $before)
+    }
+    $restore = Invoke-Adb $arguments -AllowFailure
+    return [pscustomobject][ordered]@{
+        restored = $restore.ExitCode -eq 0
+        restoredValue = $before
+        exitCode = $restore.ExitCode
+        output = $restore.Text
+    }
+}
+
 function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     if($script:QualificationDeviceMode -cne "HOST_GPU_EMULATOR") {
         throw "Per-case emulator-process isolation is valid only in HOST_GPU_EMULATOR mode"
@@ -3837,48 +3891,59 @@ Write-Json $selectionOutputPath $selection
 
 $remoteRunRoot = "/sdcard/Android/media/$BenchmarkPackage/ntk-cold-output/$timestamp-$Seed"
 $caseResults = [Collections.Generic.List[object]]::new()
-for($index = 0; $index -lt $targets.Count; $index++) {
-    $target = $targets[$index]
-    Write-Host ("[{0}/{1}] {2} {3} {4}" -f ($index + 1), $targets.Count,
-        $target.workType, $target.workId, $target.title)
-    try {
-        if($RestartHostGpuProcessPerCase) {
-            $hostGpuReset = Restart-HostGpuEmulatorForCase ($index + 1)
-            Write-Json (Join-Path $runDir (
-                "host-gpu-reset-{0:D2}.json" -f ($index + 1)
-            )) $hostGpuReset
-        }
-        $caseResult = Invoke-ColdCase $target ($index + 1) $remoteRunRoot
-        $caseResults.Add($caseResult)
-        if($StopOnFirstFailure -and -not [bool]$caseResult.passed) {
-            Write-Warning "Stopping after first failed case: $([string]$caseResult.caseId)"
-            break
-        }
-    } catch {
-        $failure = [pscustomobject][ordered]@{
-            schema = 1
-            caseId = "unstarted-$($index + 1)"
-            ordinal = $index + 1
-            workType = $target.workType
-            workId = $target.workId
-            workTitle = $target.title
-            episodeId = $target.episodeId
-            episodeTitle = $target.episodeTitle
-            episodePath = $target.episodePath
-            expectedAdjacentEpisodePath = $target.expectedAdjacentEpisodePath
-            expectedAdjacentPageCount = $target.expectedAdjacentPageCount
-            passed = $false
-            violations = @("host orchestration exception: $($_.Exception.Message)")
-            hostScriptStackTrace = $_.ScriptStackTrace
-            hostPosition = $_.InvocationInfo.PositionMessage
-        }
-        $caseResults.Add($failure)
-        Write-Json (Join-Path $runDir ("unstarted-{0:D2}-summary.json" -f ($index + 1))) $failure
-        if($StopOnFirstFailure) {
-            Write-Warning "Stopping after first host orchestration failure: $([string]$failure.caseId)"
-            break
+$hostGpuNotificationIsolation = Set-HostGpuEmulatorNotificationIsolation
+Write-Json (Join-Path $runDir "host-gpu-notification-isolation.json") `
+    $hostGpuNotificationIsolation
+$hostGpuNotificationRestoration = $null
+try {
+    for($index = 0; $index -lt $targets.Count; $index++) {
+        $target = $targets[$index]
+        Write-Host ("[{0}/{1}] {2} {3} {4}" -f ($index + 1), $targets.Count,
+            $target.workType, $target.workId, $target.title)
+        try {
+            if($RestartHostGpuProcessPerCase) {
+                $hostGpuReset = Restart-HostGpuEmulatorForCase ($index + 1)
+                Write-Json (Join-Path $runDir (
+                    "host-gpu-reset-{0:D2}.json" -f ($index + 1)
+                )) $hostGpuReset
+            }
+            $caseResult = Invoke-ColdCase $target ($index + 1) $remoteRunRoot
+            $caseResults.Add($caseResult)
+            if($StopOnFirstFailure -and -not [bool]$caseResult.passed) {
+                Write-Warning "Stopping after first failed case: $([string]$caseResult.caseId)"
+                break
+            }
+        } catch {
+            $failure = [pscustomobject][ordered]@{
+                schema = 1
+                caseId = "unstarted-$($index + 1)"
+                ordinal = $index + 1
+                workType = $target.workType
+                workId = $target.workId
+                workTitle = $target.title
+                episodeId = $target.episodeId
+                episodeTitle = $target.episodeTitle
+                episodePath = $target.episodePath
+                expectedAdjacentEpisodePath = $target.expectedAdjacentEpisodePath
+                expectedAdjacentPageCount = $target.expectedAdjacentPageCount
+                passed = $false
+                violations = @("host orchestration exception: $($_.Exception.Message)")
+                hostScriptStackTrace = $_.ScriptStackTrace
+                hostPosition = $_.InvocationInfo.PositionMessage
+            }
+            $caseResults.Add($failure)
+            Write-Json (Join-Path $runDir ("unstarted-{0:D2}-summary.json" -f ($index + 1))) $failure
+            if($StopOnFirstFailure) {
+                Write-Warning "Stopping after first host orchestration failure: $([string]$failure.caseId)"
+                break
+            }
         }
     }
+} finally {
+    $hostGpuNotificationRestoration =
+        Restore-HostGpuEmulatorNotificationIsolation $hostGpuNotificationIsolation
+    Write-Json (Join-Path $runDir "host-gpu-notification-restoration.json") `
+        $hostGpuNotificationRestoration
 }
 
 $passedCount = @($caseResults | Where-Object passed).Count
@@ -4040,6 +4105,8 @@ $summary = [pscustomobject][ordered]@{
     fastFunctionalTriage = $FastFunctionalTriage.IsPresent
     includeWarmReopen = $IncludeWarmReopen
     hostGpuPerformancePolicy = $hostGpuPerformancePolicy
+    hostGpuNotificationIsolation = $hostGpuNotificationIsolation
+    hostGpuNotificationRestoration = $hostGpuNotificationRestoration
     device = $deviceInfo
     apks = [pscustomobject][ordered]@{
         app = $appApk

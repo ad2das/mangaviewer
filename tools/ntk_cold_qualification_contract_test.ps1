@@ -82,6 +82,10 @@ Assert-HostSourceContains 'ManhwaImageSlaMs = 4000'
 Assert-HostSourceContains 'AllImagesSlaMs = 6000'
 Assert-HostSourceContains 'QualificationDeviceMode = "HOST_GPU_EMULATOR"'
 Assert-HostSourceContains 'IncludeWarmReopen = $false'
+Assert-SourceContains 'Set-HostGpuEmulatorNotificationIsolation'
+Assert-SourceContains 'heads_up_notifications_enabled", "0"'
+Assert-SourceContains 'Restore-HostGpuEmulatorNotificationIsolation'
+Assert-SourceContains 'hostGpuNotificationRestoration = $hostGpuNotificationRestoration'
 
 foreach($formalGatePattern in @(
         '(?s)\$diagnosticOnly\s*=.*?\$freshRandomSeedRequirementSatisfied\)',
@@ -120,6 +124,15 @@ if(-not $reportSource.Contains(
         'freshRandomSeedRequirementSatisfied mismatch',
         [StringComparison]::Ordinal)) {
     throw "Report contract does not recompute the fresh-random seed requirement"
+}
+foreach($failFastReportToken in @(
+        '$cases.Count -le $expectedCaseCount',
+        '$webtoonCases.Count -le [int]$summary.expectedWebtoon',
+        '$manhwaCases.Count -le [int]$summary.expectedManhwa',
+        '$selectedEpisodePairs.Count -eq $expectedCaseCount')) {
+    if(-not $reportSource.Contains($failFastReportToken, [StringComparison]::Ordinal)) {
+        throw "Fail-fast partial report contract is missing: $failFastReportToken"
+    }
 }
 if(-not $macroSource.Contains('const val MAX_EDGE_GESTURES = 500', [StringComparison]::Ordinal)) {
     throw "Cold qualification cannot traverse the longest canonical episodes"

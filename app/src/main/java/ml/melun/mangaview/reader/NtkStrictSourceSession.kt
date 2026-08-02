@@ -615,6 +615,31 @@ internal object NtkStrictInitialWavePolicy {
             .toCollection(LinkedHashSet())
     }
 
+    /**
+     * Route construction allocates request/header/digest state even before a body Call is admitted.
+     * Keep that hidden work under the same direct-Wi-Fi adjacent runway gate as physical bodies:
+     * before viewport release only the four attachable pages may prepare, and pages behind the
+     * forward anchor are never prepared. Ordinary/current Wi-Fi and carrier/SNI sessions retain
+     * their complete existing route-preparation policy.
+     */
+    fun isRoutePreparationAdmitted(
+        pageIndex: Int,
+        pageCount: Int,
+        initialPageIndex: Int,
+        adjacentPrefetch: Boolean,
+        adjacentPrefetchReleased: Boolean,
+    ): Boolean {
+        require(pageCount > 0)
+        require(pageIndex in 0 until pageCount)
+        require(initialPageIndex in 0 until pageCount)
+        if (!adjacentPrefetch) return true
+        if (pageIndex < initialPageIndex) return false
+        return adjacentPrefetchReleased || pageIndex < minOf(
+            pageCount,
+            initialPageIndex + WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+        )
+    }
+
     fun submissionTarget(admittedPageCount: Int): Int {
         require(admittedPageCount >= 0)
         return minOf(NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS, admittedPageCount)
@@ -1260,6 +1285,7 @@ internal class NtkStrictSourceSession(
         )
     private var adjacentPrefetchReleased = false
     private var adjacentPredecessorCompleted = false
+    private var adjacentViewportActivated = false
     private val coldConnectionCohortLeaders =
         NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             planBinding.episodePath,
@@ -1558,7 +1584,10 @@ internal class NtkStrictSourceSession(
         }
         quarantineRoutePreparations = Array(pages.size) { pageIndex ->
             val page = pages[pageIndex]
-            if (page.seededExactBody != null || page.streamedExactBodyPending) {
+            if (page.seededExactBody != null ||
+                page.streamedExactBodyPending ||
+                !isRoutePreparationAdmitted(pageIndex)
+            ) {
                 CompletableFuture()
             } else {
                 createRoutePreparation(pageIndex)
@@ -1608,11 +1637,48 @@ internal class NtkStrictSourceSession(
         assertActorThread()
         if (!::quarantineRoutePreparations.isInitialized ||
             quarantineRoutePreparations.isEmpty() ||
-            quarantineRoutePreparations[pageIndex].isDone
+            quarantineRoutePreparations[pageIndex].isDone ||
+            !isRoutePreparationAdmitted(pageIndex)
         ) return
         val preparation = createRoutePreparation(pageIndex)
         quarantineRoutePreparations[pageIndex] = preparation
         preparation.whenComplete { _, _ -> scheduleRoutePreparationRefill() }
+    }
+
+    private fun isRoutePreparationAdmitted(pageIndex: Int): Boolean =
+        NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+            pageIndex = pageIndex,
+            pageCount = pages.size,
+            initialPageIndex = initialPageIndex,
+            adjacentPrefetch = adjacentPrefetch,
+            adjacentPrefetchReleased = adjacentPrefetchReleased,
+        )
+
+    private fun startReleasedAdjacentRoutePreparationsActor() {
+        assertActorThread()
+        if (!adjacentPrefetch || !adjacentPrefetchReleased ||
+            !::quarantineRoutePreparations.isInitialized ||
+            quarantineRoutePreparations.isEmpty()
+        ) return
+        pages.forEachIndexed { pageIndex, page ->
+            if (!isRoutePreparationAdmitted(pageIndex) ||
+                page.seededExactBody != null ||
+                page.streamedExactBodyPending ||
+                quarantineRoutePreparations[pageIndex].isDone
+            ) return@forEachIndexed
+            val wasInitiallyAdmitted =
+                NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+                    pageIndex = pageIndex,
+                    pageCount = pages.size,
+                    initialPageIndex = initialPageIndex,
+                    adjacentPrefetch = true,
+                    adjacentPrefetchReleased = false,
+                )
+            if (wasInitiallyAdmitted) return@forEachIndexed
+            val preparation = createRoutePreparation(pageIndex)
+            quarantineRoutePreparations[pageIndex] = preparation
+            preparation.whenComplete { _, _ -> scheduleRoutePreparationRefill() }
+        }
     }
 
     private fun scheduleRoutePreparationRefill() {
@@ -1899,6 +1965,7 @@ internal class NtkStrictSourceSession(
         if (closeRequested.get()) return
         executeActor {
             if (!acceptsEpisode(episode)) return@executeActor
+            adjacentViewportActivated = true
             streamedExactBodies?.onAdjacentViewportActivated()
             maybeReleaseAdjacentPrefetchAfterRunwayActor("viewport_activated")
         }
@@ -1906,7 +1973,9 @@ internal class NtkStrictSourceSession(
 
     private fun maybeReleaseAdjacentPrefetchAfterRunwayActor(reason: String) {
         assertActorThread()
-        if (!adjacentPrefetch || adjacentPrefetchReleased || !adjacentPredecessorCompleted) return
+        if (!adjacentPrefetch || adjacentPrefetchReleased ||
+            !adjacentPredecessorCompleted || !adjacentViewportActivated
+        ) return
         val runwayEndExclusive = minOf(
             pages.size,
             initialPageIndex + NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
@@ -1920,6 +1989,7 @@ internal class NtkStrictSourceSession(
         assertActorThread()
         if (!adjacentPrefetch || adjacentPrefetchReleased) return
         adjacentPrefetchReleased = true
+        startReleasedAdjacentRoutePreparationsActor()
         if (rollingAdmission) {
             val previousAdmission = rollingAdmittedPages
             val expandedAdmission = (initialPageIndex until pages.size).toSet()

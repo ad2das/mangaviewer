@@ -125,9 +125,12 @@ $derivedDeviceStatus = if($derivedHostGpuEmulator) {
 }
 
 Assert-Contract ($cases.Count -eq [int]$summary.completedCases) "completedCases mismatch"
-Assert-Contract ($cases.Count -eq $expectedCaseCount) "case count did not match expected types"
-Assert-Contract ($webtoonCases.Count -eq [int]$summary.expectedWebtoon) "webtoon count mismatch"
-Assert-Contract ($manhwaCases.Count -eq [int]$summary.expectedManhwa) "manhwa count mismatch"
+# A fail-fast run is deliberately a strict prefix of the recorded random selection. It can never
+# become a PASS because smokePassed still requires the complete expected case count, but the first
+# failed case must remain reportable instead of losing its diagnosis to a report-contract error.
+Assert-Contract ($cases.Count -le $expectedCaseCount) "case count exceeded expected types"
+Assert-Contract ($webtoonCases.Count -le [int]$summary.expectedWebtoon) "webtoon count exceeded selection"
+Assert-Contract ($manhwaCases.Count -le [int]$summary.expectedManhwa) "manhwa count exceeded selection"
 Assert-Contract ($actualPassedCases -eq [int]$summary.passedCases) "passedCases mismatch"
 Assert-Contract ($summary.qualificationTargetSatisfied -eq $targetSatisfied) `
     "qualificationTargetSatisfied was not derived from exact 20+20"
@@ -165,8 +168,8 @@ Assert-Contract ([string]$summary.finalDeviceStatus -ceq $derivedDeviceStatus) `
 Assert-Contract ([string]$summary.selectionAlgorithm -ceq
         "work: sha256(seed|type|id) lexical rank; episode-pair: sha256(seed|type|workId|currentEpisodeId|nextEpisodeId) lexical rank") `
     "work/episode-pair selection algorithm mismatch"
-Assert-Contract ($selectedEpisodePairs.Count -eq $cases.Count) `
-    "selected exact episode-pair count did not match case count"
+Assert-Contract ($selectedEpisodePairs.Count -eq $expectedCaseCount) `
+    "selected exact episode-pair count did not match expected selection"
 
 $caseIds = @($cases | ForEach-Object { [string]$_.caseId })
 $workKeys = @($cases | ForEach-Object { "$($_.workType)|$($_.workId)" })

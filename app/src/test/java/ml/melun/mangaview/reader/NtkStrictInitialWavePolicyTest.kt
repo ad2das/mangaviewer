@@ -577,6 +577,41 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun directWifiAdjacentRoutePreparationKeepsOnlyForwardRunwayUntilViewportRelease() {
+        val held = (0 until 12).filter { pageIndex ->
+            NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+                pageIndex = pageIndex,
+                pageCount = 12,
+                initialPageIndex = 2,
+                adjacentPrefetch = true,
+                adjacentPrefetchReleased = false,
+            )
+        }
+        val released = (0 until 12).filter { pageIndex ->
+            NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+                pageIndex = pageIndex,
+                pageCount = 12,
+                initialPageIndex = 2,
+                adjacentPrefetch = true,
+                adjacentPrefetchReleased = true,
+            )
+        }
+        val ordinary = (0 until 12).filter { pageIndex ->
+            NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+                pageIndex = pageIndex,
+                pageCount = 12,
+                initialPageIndex = 2,
+                adjacentPrefetch = false,
+                adjacentPrefetchReleased = false,
+            )
+        }
+
+        assertEquals((2 until 6).toList(), held)
+        assertEquals((2 until 12).toList(), released)
+        assertEquals((0 until 12).toList(), ordinary)
+    }
+
+    @Test
     fun twoHundredSeventyPageEpisodeKeepsCompleteAuthorityWithBoundedConcurrency() {
         val admitted = NtkStrictInitialWavePolicy.admittedPageIndexes(
             pageCount = 270,
