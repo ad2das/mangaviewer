@@ -1920,6 +1920,9 @@ object NtkSourceSpoolRegistry {
         override fun onFirstActualFramePresented(episode: NtkEpisodeToken) =
             transport.onFirstActualFramePresented(episode)
 
+        override fun onInitialDrawableCommitted(episode: NtkEpisodeToken) =
+            transport.onInitialDrawableCommitted(episode)
+
         override fun onAdjacentViewportActivated(episode: NtkEpisodeToken) =
             transport.onAdjacentViewportActivated(episode)
 

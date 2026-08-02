@@ -276,13 +276,29 @@ ReductionResult FixedDepthOneScheduler::reduceControl(
         terminalMove.pointer_id = input.terminal_move.pointer_id;
         (void)applyScroll(terminalMove, maximumScroll, mutationNanos);
     }
-    // Android drag widgets consume displacement on MOVE. ACTION_UP/CANCEL terminates the
-    // gesture and contributes velocity/ownership evidence, but does not move the viewport to a
-    // slightly different release coordinate. Applying UP here caused the visible strip to nudge
-    // by a few pixels after the finger had already stopped.
-    reducer_.last_touch_y = input.y;
-    reducer_.last_event_time_ns = input.event_time_ns;
-    recordInput(input);
+    // Android drag widgets consume ordinary displacement on MOVE. Do not replay the release
+    // coordinate in the middle of the strip, where it produces a visible post-finger nudge.
+    // The sole exception is a real ACTION_UP whose remaining displacement crosses an exact
+    // content edge: consuming that clamp is what publishes the terminal edge frame used by the
+    // continuous-reader boundary hand-off.
+    const auto clampedMaximum = std::max<std::int64_t>(0, maximumScroll);
+    const double releaseDelta = static_cast<double>(reducer_.last_touch_y) -
+        static_cast<double>(input.y) + reducer_.fractional_scroll_remainder;
+    const auto releaseIntegral = static_cast<std::int64_t>(
+        std::llround(releaseDelta));
+    const auto currentScroll = reducer_.view.scroll_top;
+    const bool releaseCrossesEdge = input.action == kUp && (
+        (releaseIntegral > 0 && currentScroll < clampedMaximum &&
+            releaseIntegral >= clampedMaximum - currentScroll) ||
+        (releaseIntegral < 0 && currentScroll > 0 &&
+            releaseIntegral <= -currentScroll));
+    if (releaseCrossesEdge) {
+        (void)applyScroll(input, maximumScroll, mutationNanos);
+    } else {
+        reducer_.last_touch_y = input.y;
+        reducer_.last_event_time_ns = input.event_time_ns;
+        recordInput(input);
+    }
     reducer_.fractional_scroll_remainder = 0.0;
     reducer_.unassigned_input.recordMutation(mutationNanos);
     reducer_.gesture_state = ReducerGestureState::IDLE;

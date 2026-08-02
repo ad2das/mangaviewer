@@ -205,6 +205,25 @@ void release_coordinate_does_not_nudge_viewport() {
             name, "ACTION_UP changed the already-MOVE-owned viewport");
 }
 
+void release_crossing_terminal_edge_publishes_exact_bottom() {
+    const std::string name =
+        "release_crossing_terminal_edge_publishes_exact_bottom";
+    FixedDepthOneScheduler scheduler;
+    ViewState initial{};
+    initial.scroll_top = kMaximumScroll - 51;
+    scheduler.reset(initial);
+    down(scheduler, 1, 1, 500.0F);
+    move(scheduler, 2, 1, 450.0F, 23, initial);
+    require(scheduler.reducer().view.scroll_top == kMaximumScroll - 1,
+            name, "final MOVE did not stop immediately before the bottom");
+    terminal(scheduler, 3, 1, 447.0F, 23, initial);
+    const auto& work = *scheduler.successor();
+    require(work.view_state.scroll_top == kMaximumScroll &&
+                work.visible_state_changed && work.terminal &&
+                work.input.input_watermark == 3,
+            name, "edge-crossing ACTION_UP did not publish the exact bottom");
+}
+
 void terminal_never_crosses_next_down() {
     const std::string name = "terminal_never_crosses_next_down";
     FixedDepthOneScheduler scheduler;
@@ -1189,6 +1208,8 @@ int main() {
         fractional_moves_preserve_one_to_one_drag_distance);
     run("release_coordinate_does_not_nudge_viewport",
         release_coordinate_does_not_nudge_viewport);
+    run("release_crossing_terminal_edge_publishes_exact_bottom",
+        release_crossing_terminal_edge_publishes_exact_bottom);
     run("terminal_never_crosses_next_down",
         terminal_never_crosses_next_down);
     run("queued_control_rearms_after_terminal_promotion",

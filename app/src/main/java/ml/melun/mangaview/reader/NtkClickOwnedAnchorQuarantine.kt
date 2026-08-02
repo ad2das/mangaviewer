@@ -34,6 +34,8 @@ private fun ntkClickWorkerThread(
 class NtkClickOwnedExactBodyStream(
     val bodyFutures: Map<Int, CompletableFuture<ReaderImageCache.NtkStrictPublishedBody?>>,
     private val owner: Closeable,
+    private val initialViewportActivated: (Int) -> Unit = {},
+    private val initialDrawableCommitted: () -> Unit = {},
     private val firstActualFramePresented: () -> Unit = {},
     private val adjacentViewportActivated: () -> Unit = {},
     val sourceRoutePreparationReady: CompletableFuture<Unit> =
@@ -49,6 +51,8 @@ class NtkClickOwnedExactBodyStream(
     val manhwaWaveRecoveryState: NtkManhwaWaveRecoveryState? = null,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
+    private val initialViewportActivationSignaled = AtomicBoolean(false)
+    private val initialDrawableCommitSignaled = AtomicBoolean(false)
     private val adjacentViewportActivationSignaled = AtomicBoolean(false)
 
     init {
@@ -58,6 +62,19 @@ class NtkClickOwnedExactBodyStream(
 
     fun onFirstActualFramePresented() {
         if (!closed.get()) firstActualFramePresented()
+    }
+
+    fun onInitialViewportActivated(pageIndex: Int) {
+        require(pageIndex in bodyFutures.keys)
+        if (!closed.get() && initialViewportActivationSignaled.compareAndSet(false, true)) {
+            initialViewportActivated(pageIndex)
+        }
+    }
+
+    fun onInitialDrawableCommitted() {
+        if (!closed.get() && initialDrawableCommitSignaled.compareAndSet(false, true)) {
+            initialDrawableCommitted()
+        }
     }
 
     fun onAdjacentViewportActivated() {
@@ -775,6 +792,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private val anchorBodyTransferPermit = Semaphore(1, true)
     private val waveReleased = AtomicBoolean(false)
     private val networkRelease = CompletableFuture<Unit>()
+    private val initialViewportPage = CompletableFuture<Int>()
+    private val restoredTailDrawableCommitted = CompletableFuture<Unit>()
     private val adjacentViewportRelease = CompletableFuture<Unit>().also { release ->
         if (!directWifiAdjacentOwned) release.complete(Unit)
     }
@@ -1075,6 +1094,30 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         )
     }
 
+    private fun notifyInitialViewportActivated(pageIndex: Int) {
+        if (closed.get() || pageIndex !in 0 until effectivePageCount.get() ||
+            !initialViewportPage.complete(pageIndex)
+        ) return
+        Log.d(
+            TAG,
+            "click_forward_quarantine_initial_viewport " +
+                "path=${plan.normalizedEpisodePath},page=$pageIndex",
+        )
+    }
+
+    private fun notifyInitialDrawableCommitted() {
+        val initialPageIndex = initialViewportPage.getNow(-1)
+        if (closed.get() ||
+            initialPageIndex < NtkClickOwnedManhwaWavePolicy.PROBE_FRONTIER_PAGES ||
+            !restoredTailDrawableCommitted.complete(Unit)
+        ) return
+        Log.d(
+            TAG,
+            "click_forward_quarantine_restored_tail_drawable " +
+                "path=${plan.normalizedEpisodePath},page=$initialPageIndex",
+        )
+    }
+
     private fun notifyAdjacentViewportActivated() {
         if (closed.get() || !directWifiAdjacentOwned ||
             !adjacentViewportRelease.complete(Unit)
@@ -1204,6 +1247,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         val stream = NtkClickOwnedExactBodyStream(
             bodyFutures = exactFutures,
             owner = this,
+            initialViewportActivated = ::notifyInitialViewportActivated,
+            initialDrawableCommitted = ::notifyInitialDrawableCommitted,
             firstActualFramePresented = ::notifyFirstActualFramePresented,
             adjacentViewportActivated = ::notifyAdjacentViewportActivated,
             // URL derivation is CPU-only and must be ready before the source actor starts. Holding
@@ -1467,8 +1512,30 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         pageIndex: Int,
         callCancellation: ReaderImageCache.Cancellation,
     ): CompletableFuture<Boolean> {
-        val entryRelease =
-            if (wifiEntryPriorityMode) wifiEntryReleaseGate else networkRelease
+        val entryRelease = if (wifiEntryPriorityMode) {
+            // A restored reader can start beyond the 120-page metadata frontier. Requiring its
+            // initial page to wait for firstActualFramePresented creates a cycle: that frame needs
+            // the same page's body. Let exactly the bound initial viewport page follow the already
+            // protected anchor-resident network gate; every other tail page keeps the existing
+            // first-frame/timeout gate. Cellular/SNI never enters this branch.
+            val restoredViewportRelease = initialViewportPage.thenCompose { initialPageIndex ->
+                if (pageIndex == initialPageIndex) networkRelease else wifiEntryReleaseGate
+            }
+            // Once that restored page has an authoritative drawable committed, the rest of the
+            // current episode may fill. This does not prefetch the adjacent episode: its separate
+            // completion gate still waits for every current source body.
+            val restoredTailRelease = networkRelease.thenCombine(
+                restoredTailDrawableCommitted
+            ) { _, _ -> Unit }
+            CompletableFuture.anyOf(
+                wifiEntryReleaseGate,
+                restoredViewportRelease,
+                restoredTailRelease,
+            )
+                .thenApply { Unit }
+        } else {
+            networkRelease
+        }
         val baseAdmission = documentValidated.thenCombine(entryRelease) { _, _ ->
             !closed.get() && pageIndex < effectivePageCount.get()
         }

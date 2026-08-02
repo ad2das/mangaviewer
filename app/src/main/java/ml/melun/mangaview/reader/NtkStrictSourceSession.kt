@@ -1729,6 +1729,7 @@ internal class NtkStrictSourceSession(
     ): Closeable {
         check(!closeRequested.get())
         require(initialPageIndex in pages.indices)
+        streamedExactBodies?.onInitialViewportActivated(initialPageIndex)
         val listenerId = listenerSequence.getAndIncrement()
         val detached = AtomicBoolean(false)
         executeActor {
@@ -1807,6 +1808,15 @@ internal class NtkStrictSourceSession(
         executeActor {
             if (acceptsEpisode(episode)) {
                 streamedExactBodies?.onFirstActualFramePresented()
+            }
+        }
+    }
+
+    fun onInitialDrawableCommitted(episode: NtkEpisodeToken) {
+        if (closeRequested.get()) return
+        executeActor {
+            if (acceptsEpisode(episode)) {
+                streamedExactBodies?.onInitialDrawableCommitted()
             }
         }
     }

@@ -8913,6 +8913,9 @@ class ReaderSession(
         ntkCoordinator?.markFirstDrawableCommitted(index)
         if (!firstCommit || !isImmediateNtkGeneratedUx()) return
         if (strictExactColdRolling) {
+            strictExactEpisodeToken?.let { episode ->
+                strictExactSourceTransport.get()?.onInitialDrawableCommitted(episode)
+            }
             strictOffscreenPublishResumeAtMs.set(
                 SystemClock.uptimeMillis() + STRICT_EXACT_FIRST_FRAME_PUBLICATION_GRACE_MS
             )

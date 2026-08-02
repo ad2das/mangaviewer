@@ -502,6 +502,17 @@ class NtkColdRendererPreparationArchitectureTest {
                 "ViewerTelemetry.adjacentActualDrawCommitted("
             )
         )
+        assertTrue(committedFrame.contains("adoptPhysicallyPresentedAdjacentEpisode("))
+        val physicalAdjacent = functionBody(
+            "private fun adoptPhysicallyPresentedAdjacentEpisode(",
+            activitySource
+        )
+        assertTrue(physicalAdjacent.contains("activeSession.pageInfo(displayPage)"))
+        assertTrue(physicalAdjacent.contains("info.transitionCard"))
+        assertTrue(physicalAdjacent.contains("physicalEpisodePath"))
+        assertTrue(physicalAdjacent.contains("updateCurrentEpisode(displayPage"))
+        assertFalse(physicalAdjacent.contains("scrollTo"))
+        assertFalse(physicalAdjacent.contains("scrollBy"))
         assertTrue(committedFrame.contains("direction > 0"))
         assertTrue(committedFrame.contains("presentedUptimeNanos > 0L"))
         assertTrue(pageBottomGeometry.contains("pageTopOrElseLocked"))

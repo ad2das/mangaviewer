@@ -120,6 +120,54 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
+    fun restoredInitialViewportReleasesExactlyOneBoundPage() {
+        val releasedPages = mutableListOf<Int>()
+        val drawableCommits = AtomicInteger()
+        val stream = NtkClickOwnedExactBodyStream(
+            mapOf(
+                167 to CompletableFuture.completedFuture(null),
+                168 to CompletableFuture.completedFuture(null),
+            ),
+            Closeable { },
+            initialViewportActivated = { releasedPages += it },
+            initialDrawableCommitted = { drawableCommits.incrementAndGet() },
+        )
+
+        stream.onInitialViewportActivated(168)
+        stream.onInitialViewportActivated(167)
+        stream.onInitialDrawableCommitted()
+        stream.onInitialDrawableCommitted()
+        stream.close()
+        stream.onInitialDrawableCommitted()
+        stream.onInitialViewportActivated(167)
+
+        assertEquals(listOf(168), releasedPages)
+        assertEquals(1, drawableCommits.get())
+    }
+
+    @Test
+    fun restoredWifiTailBreaksOnlyTheInitialFrameAdmissionCycle() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val session = readSource("NtkStrictSourceSession.kt")
+        val reader = readSource("ReaderSession.kt")
+        val admission = quarantine.substringAfter("private fun tailAdmissionFuture(")
+            .substringBefore("private fun discardHeldBody(")
+
+        assertTrue(quarantine.contains("initialViewportActivated = ::notifyInitialViewportActivated"))
+        val binding = session.substringAfter("fun bindEpisode(")
+            .substringBefore("fun bindResidentBodies(")
+        assertTrue(binding.contains("streamedExactBodies?.onInitialViewportActivated(initialPageIndex)"))
+        assertTrue(admission.contains("if (wifiEntryPriorityMode)"))
+        assertTrue(admission.contains("pageIndex == initialPageIndex"))
+        assertTrue(admission.contains("networkRelease else wifiEntryReleaseGate"))
+        assertTrue(admission.contains("CompletableFuture.anyOf("))
+        assertTrue(admission.contains("wifiEntryReleaseGate,"))
+        assertTrue(admission.contains("} else {\n            networkRelease"))
+        assertTrue(admission.contains("restoredTailDrawableCommitted"))
+        assertTrue(reader.contains("onInitialDrawableCommitted(episode)"))
+    }
+
+    @Test
     fun directWifiAdjacentPhysicalWaveIsFourPagesUntilViewportActivation() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val coordinator = readSource("NtkStrictEpisodeDiscoveryCoordinator.kt")

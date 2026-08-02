@@ -6276,10 +6276,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (directWifiAdjacentPolicy) {
             identities.firstOrNull { (_, identity) ->
                 identity.normalizedEpisodePath != launchSeal.normalizedEpisodePath
-            }?.second?.let { adjacentIdentity ->
+            }?.let { (displayPage, adjacentIdentity) ->
                 ViewerTelemetry.adjacentActualDrawCommitted(
                     adjacentIdentity.normalizedEpisodePath,
                     presentedUptimeNanos
+                )
+                adoptPhysicallyPresentedAdjacentEpisode(
+                    activeSession,
+                    displayPage,
+                    adjacentIdentity.normalizedEpisodePath,
                 )
             }
         }
@@ -6308,6 +6313,36 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             )
         )
     }
+
+    /**
+     * A committed identity-valid adjacent pixel is the authoritative episode transition. Waiting
+     * for the normal post-fling quiet timer keeps the old title/progress active throughout the
+     * already-attached runway and can make the boundary appear not to attach at all. This updates
+     * only Activity metadata after physical presentation; it never changes the scroll coordinate.
+     */
+    private fun adoptPhysicallyPresentedAdjacentEpisode(
+        activeSession: ReaderSession,
+        displayPage: Int,
+        physicalEpisodePath: String,
+    ) {
+        if (currentManga?.ntkEpisodePath?.trim()
+                ?.equals(physicalEpisodePath, ignoreCase = true) == true
+        ) return
+        val info = activeSession.pageInfo(displayPage) ?: return
+        if (info.transitionCard || !info.manga.ntkEpisodePath.orEmpty().trim()
+                .equals(physicalEpisodePath, ignoreCase = true)
+        ) return
+        statusHandler.removeCallbacks(deferredEpisodeUpdateRunnable)
+        deferredEpisodeUpdatePage = -1
+        deferredEpisodeUpdateOffset = 0
+        deferredEpisodeUpdateSaveProgress = false
+        updateCurrentEpisode(displayPage, saveProgress = true)
+        Log.d(
+            TAG,
+            "current_episode_physical_adjacent page=$displayPage,path=$physicalEpisodePath",
+        )
+    }
+
     private fun prepareDeferredNtkAckChallenge(manga: Manga) {
         val path = manga.ntkEpisodePath ?: return
         if (isStrictNtkEpisodePath(path)) {

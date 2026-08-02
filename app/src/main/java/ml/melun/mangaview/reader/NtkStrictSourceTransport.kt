@@ -141,6 +141,9 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
     /** Opens post-anchor bulk transfer only after an identity-valid real-pixel frame committed. */
     fun onFirstActualFramePresented(episode: NtkEpisodeToken)
 
+    /** The restored tail anchor has an authoritative drawable ready for compositor submission. */
+    fun onInitialDrawableCommitted(episode: NtkEpisodeToken) = Unit
+
     /**
      * Releases a direct-Wi-Fi adjacent session's body workset after that episode becomes the
      * physical viewport. Before this signal the session keeps only its atomic boundary runway.

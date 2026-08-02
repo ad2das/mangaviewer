@@ -419,15 +419,17 @@ class NtkStripRenderEngineProtocolTest {
         assertOrdered(
             terminalReduction,
             "(void)applyScroll(terminalMove, maximumScroll, mutationNanos);",
-            "recordInput(input);",
+            "const bool releaseCrossesEdge = input.action == kUp",
+            "if (releaseCrossesEdge)",
             "reducer_.unassigned_input.recordMutation(mutationNanos);",
             "reducer_.gesture_state = ReducerGestureState::IDLE;",
             "result.frame_cause = true;",
             "result.terminal = true;"
         )
-        assertFalse(terminalReduction.contains(
+        assertTrue(terminalReduction.contains(
             "(void)applyScroll(input, maximumScroll, mutationNanos);"
         ))
+        assertTrue(terminalReduction.contains("recordInput(input);"))
     }
 
     @Test
