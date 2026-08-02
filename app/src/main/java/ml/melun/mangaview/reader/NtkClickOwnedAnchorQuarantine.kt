@@ -1170,7 +1170,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }
 
     /**
-     * On direct Wi-Fi, keep p001-p004 on an otherwise quiet connection ring until their first
+     * On direct Wi-Fi, keep p001-p012 on an otherwise quiet connection ring until their first
      * physical frame is visible. A finite timeout releases recovery work if that presentation
      * cannot be proved; cellular never enters this method.
      */
@@ -2341,7 +2341,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }
 
     /**
-     * Gives one already HEAD-proven uncommon p002-p004 body the next current-viewport worker.
+     * Gives one already HEAD-proven uncommon p002-p012 body the next current-viewport worker.
      *
      * The request, transport, ownership, cancellation, and shared body permit remain exactly the
      * same. Only the executor used to submit that one canonical GET changes, and every live network
@@ -2786,7 +2786,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 Process.THREAD_PRIORITY_DISPLAY,
             )
         }
-        // p002-p004 can resolve to an uncommon extension after the exact-count bulk wave has
+        // p002-p012 can resolve to an uncommon extension after the exact-count bulk wave has
         // already filled the normal fallback executor. Keep those viewport peers ahead of the
         // offscreen queue; otherwise a 70 KiB p002 can wait behind ninety unrelated bodies and
         // hold the first complete landscape viewport for many seconds.

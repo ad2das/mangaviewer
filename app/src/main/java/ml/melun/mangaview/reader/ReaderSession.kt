@@ -110,6 +110,23 @@ internal object NtkStrictTerminalDecodePolicy {
     }
 }
 
+internal object NtkStrictActiveScrollDecodePolicy {
+    /**
+     * Wide manhwa originals can finish in one dense decode/NativeAlloc-GC wave immediately after
+     * the first frame. On a host-GPU emulator that wave can starve the independent Surface
+     * producer even though every worker is background-priority. Share the existing two-permit
+     * visible decode gate only for offscreen current-episode work during real/settling input.
+     * Webtoon, cellular/SNI, the visible anchor, and adjacent episodes retain their proven paths.
+     */
+    fun shouldShareVisibleDecodeGate(
+        directWifi: Boolean,
+        currentForegroundEpisode: Boolean,
+        activeInput: Boolean,
+        anchor: Boolean,
+        manhwa: Boolean,
+    ): Boolean = directWifi && currentForegroundEpisode && activeInput && !anchor && manhwa
+}
+
 internal object NtkWifiAdjacentCascadePolicy {
     // The first next episode is prepared from the initial episode. Once the reader has crossed
     // that boundary, page five remains the demand signal only while the new episode is unfinished.
@@ -1546,6 +1563,17 @@ class ReaderSession(
             if (admitted >= STRICT_EXACT_OVERLAP_DECODE_LIMIT) return false
             if (strictExactOverlapDecodeAdmissions.compareAndSet(admitted, admitted + 1)) return true
         }
+    }
+
+    private fun isStrictExactCurrentForegroundEpisode(): Boolean {
+        val viewerGeneration = strictExactForegroundViewerGenerationAtCreation
+        if (viewerGeneration <= 0L || ViewerTelemetry.activeGeneration() != viewerGeneration) {
+            return false
+        }
+        val launchPath = strictExactLaunchSeal?.normalizedEpisodePath.orEmpty()
+        return (ViewerTelemetry.isActiveEpisode(initialNtkEpisodePath) ||
+            ViewerTelemetry.isActiveEpisode(launchPath)) &&
+            ViewerTelemetry.activeGeneration() == viewerGeneration
     }
 
     private fun activateStrictExactRollingPixelResidency(
@@ -17644,6 +17672,8 @@ class ReaderSession(
                 source.ntkEpisodePath,
                 candidate.ntkEpisodePath,
                 direction,
+                Manga.visibleEpisodeNumberKey(source.name),
+                Manga.visibleEpisodeNumberKey(candidate.name),
             )
         ) {
             Log.d(
@@ -18453,6 +18483,7 @@ class ReaderSession(
                     return@execute
                 }
                 var lease: NtkStrictBodyLease? = null
+                var activeScrollDecodeGateAcquired = false
                 try {
                     val currentAdmission = strictRollingAdmission.get() ?: return@execute
                     if (!currentAdmission.admitsSource(page.sourceIndex) ||
@@ -18463,7 +18494,22 @@ class ReaderSession(
                             page,
                             "strict_exact_worker"
                         )
-                    ) return@execute
+                        ) return@execute
+                    if (NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                            directWifi = isDirectWifiStrictAdjacentTransportActive(),
+                            currentForegroundEpisode = isStrictExactCurrentForegroundEpisode(),
+                            activeInput = isActiveGeneratedInputOrQuietForDelivery(),
+                            anchor = anchor,
+                            manhwa = strictExactLaunchSeal?.normalizedEpisodePath
+                                ?.startsWith("/manhwa/", ignoreCase = true) == true,
+                        )
+                    ) {
+                        activeVisibleDecodeGate.acquire()
+                        activeScrollDecodeGateAcquired = true
+                        if (cancelled.get() || !isStrictExactIdentityValid(index, page)) {
+                            return@execute
+                        }
+                    }
                     lease = descriptor.openLease()
                     val opened = checkNotNull(lease)
                     if (opened.sourceKey != descriptor.sourceKey ||
@@ -18564,6 +18610,9 @@ class ReaderSession(
                     postPageError(index, page, failure)
                 } finally {
                     lease?.release?.invoke()
+                    if (activeScrollDecodeGateAcquired) {
+                        releaseActiveGeneratedProofDecodeGate()
+                    }
                     if (decodeClaimActive) {
                         releaseStrictExactDecodeClaim(index, page, splitSourceSingleFlight)
                     }

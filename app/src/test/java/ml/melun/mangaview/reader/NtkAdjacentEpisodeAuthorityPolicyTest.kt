@@ -24,6 +24,89 @@ class NtkAdjacentEpisodeAuthorityPolicyTest {
     }
 
     @Test
+    fun decreasingDatabaseIdIsAcceptedWhenVisibleNumbersProveExactNextEpisode() {
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10928/110270",
+                "/manhwa/10928/110268",
+                1,
+                "4",
+                "5",
+            )
+        )
+    }
+
+    @Test
+    fun increasingDatabaseIdStillRejectsVisiblePreviousEpisode() {
+        assertFalse(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10928/110270",
+                "/manhwa/10928/110272",
+                1,
+                "5",
+                "4",
+            )
+        )
+    }
+
+    @Test
+    fun missingVisibleNumberFallsBackToNumericPathDirection() {
+        assertFalse(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10928/110270",
+                "/manhwa/10928/110268",
+                1,
+                null,
+                "5",
+            )
+        )
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10928/110270",
+                "/manhwa/10928/110272",
+                1,
+                null,
+                "5",
+            )
+        )
+    }
+
+    @Test
+    fun increasingDatabaseIdMayStillBeExactPreviousByVisibleNumber() {
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10928/110268",
+                "/manhwa/10928/110270",
+                -1,
+                "5",
+                "4",
+            )
+        )
+    }
+
+    @Test
+    fun decreasingDatabaseIdPreservesFractionalAndSplitForwardEpisodes() {
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10928/110270",
+                "/manhwa/10928/110268",
+                1,
+                "4",
+                "4.5",
+            )
+        )
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10928/110270",
+                "/manhwa/10928/110268",
+                1,
+                "11",
+                "11-2",
+            )
+        )
+    }
+
+    @Test
     fun opaqueTrustedCandidateKeepsLegacyOrderingBehavior() {
         assertTrue(
             NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(

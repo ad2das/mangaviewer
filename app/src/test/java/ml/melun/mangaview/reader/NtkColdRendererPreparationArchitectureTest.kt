@@ -1723,6 +1723,22 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun activeScrollStrictDecodeGateIsWiredOnlyAroundCurrentWifiManhwaWorker() {
+        val worker = functionBody("private fun requestStrictExactSourcePage(", sessionSource)
+
+        assertTrue(worker.contains("NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate("))
+        assertTrue(worker.contains("directWifi = isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(worker.contains("currentForegroundEpisode = isStrictExactCurrentForegroundEpisode()"))
+        assertTrue(worker.contains("activeInput = isActiveGeneratedInputOrQuietForDelivery()"))
+        assertTrue(worker.contains("anchor = anchor"))
+        assertTrue(worker.contains("?.startsWith(\"/manhwa/\", ignoreCase = true) == true"))
+        assertTrue(worker.contains("activeVisibleDecodeGate.acquire()"))
+        assertTrue(worker.contains("activeScrollDecodeGateAcquired = true"))
+        assertTrue(worker.contains("if (activeScrollDecodeGateAcquired)"))
+        assertTrue(worker.contains("releaseActiveGeneratedProofDecodeGate()"))
+    }
+
+    @Test
     fun directWifiForwardAdjacentEpisodeKeepsTheStructuralTransitionCard() {
         val refs = functionBody("private fun pageRefsForEpisode(", sessionSource)
         assertFalse(refs.contains("direct_wifi_forward_skip_transition_card"))

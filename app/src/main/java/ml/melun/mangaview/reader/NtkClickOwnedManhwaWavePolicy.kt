@@ -58,12 +58,14 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // authority and the first visible body, so this never drops a canonical page.
     const val SPECULATION_DEBT_LIMIT = 8
     // Wi-Fi can expose forty body streams without the cellular SNI path, but doing so before the
-    // entry viewport reaches EOF lets one visible image compete with the whole volume. Four
-    // images are the measured minimum for landscape pages whose first three total under one
-    // physical viewport. Admit p001-p004, then restore the unchanged forty-wide production ring
-    // as soon as that entry set is presented (or after the finite fallback below). Cellular
-    // deliberately retains the proven eight-page launch and all of its existing SNI behavior.
-    const val WIFI_ENTRY_SPECULATION_PAGES = 4
+    // entry viewport reaches EOF lets one visible image compete with the whole volume. Twelve
+    // images cover the measured active-fling prefix: after an eight-page seed, the first unprotected
+    // p009 body started 220-300 ms later and its 1.50 s CDN read gap left eight consecutive producer
+    // callbacks without a drawable. Admit p001-p012 at the click so an isolated body stall is
+    // absorbed before the user reaches it, then restore the unchanged forty-wide production ring
+    // after anchor EOF. Cellular deliberately retains SPECULATION_DEBT_LIMIT=8, so its request/SNI
+    // schedule remains byte-for-byte unchanged.
+    const val WIFI_ENTRY_SPECULATION_PAGES = 12
     const val WIFI_ENTRY_RELEASE_TIMEOUT_MS = 12_000L
     // Four metadata samples establish the volume extension without making every page repeat the
     // five-way HEAD race.

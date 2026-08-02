@@ -32,6 +32,7 @@ param(
     [switch]$RequireBaselineProfile,
     [switch]$StandalonePerfetto,
     [switch]$RestartHostGpuProcessPerCase,
+    [switch]$StopOnFirstFailure,
     [string]$HostGpuEmulatorPath = "",
     [string]$HostGpuAvdName = "",
     [switch]$FastFunctionalTriage,
@@ -3847,7 +3848,12 @@ for($index = 0; $index -lt $targets.Count; $index++) {
                 "host-gpu-reset-{0:D2}.json" -f ($index + 1)
             )) $hostGpuReset
         }
-        $caseResults.Add((Invoke-ColdCase $target ($index + 1) $remoteRunRoot))
+        $caseResult = Invoke-ColdCase $target ($index + 1) $remoteRunRoot
+        $caseResults.Add($caseResult)
+        if($StopOnFirstFailure -and -not [bool]$caseResult.passed) {
+            Write-Warning "Stopping after first failed case: $([string]$caseResult.caseId)"
+            break
+        }
     } catch {
         $failure = [pscustomobject][ordered]@{
             schema = 1
@@ -3868,6 +3874,10 @@ for($index = 0; $index -lt $targets.Count; $index++) {
         }
         $caseResults.Add($failure)
         Write-Json (Join-Path $runDir ("unstarted-{0:D2}-summary.json" -f ($index + 1))) $failure
+        if($StopOnFirstFailure) {
+            Write-Warning "Stopping after first host orchestration failure: $([string]$failure.caseId)"
+            break
+        }
     }
 }
 
@@ -3914,6 +3924,7 @@ $rerunParts = [Collections.Generic.List[string]]::new()
 if($RestartHostGpuProcessPerCase) {
     [void]$rerunParts.Add("-RestartHostGpuProcessPerCase")
 }
+if($StopOnFirstFailure) { [void]$rerunParts.Add("-StopOnFirstFailure") }
 [void]$rerunParts.Add("-IncludeWarmReopen:$(if($IncludeWarmReopen) { '$true' } else { '$false' })")
 if($RequireBaselineProfile) { [void]$rerunParts.Add("-RequireBaselineProfile") }
 if($StandalonePerfetto) { [void]$rerunParts.Add("-StandalonePerfetto") }

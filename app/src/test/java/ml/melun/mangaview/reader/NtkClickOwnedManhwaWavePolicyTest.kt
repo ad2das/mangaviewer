@@ -20,7 +20,7 @@ class NtkClickOwnedManhwaWavePolicyTest {
         )
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.MIXED_UNCOMMON_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)
-        assertEquals(4, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_SPECULATION_PAGES)
+        assertEquals(12, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_SPECULATION_PAGES)
         assertEquals(12_000L, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_RELEASE_TIMEOUT_MS)
         assertEquals(4, NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES)
         assertEquals(1, NtkClickOwnedManhwaWavePolicy.DIRECT_BODY_RACE_PAGES)
@@ -61,9 +61,9 @@ class NtkClickOwnedManhwaWavePolicyTest {
     }
 
     @Test
-    fun wifiLaunchProtectsFourViewportBodiesWhileCellularPolicyIsUnchanged() {
+    fun wifiLaunchProtectsTwelveForwardBodiesWhileCellularPolicyIsUnchanged() {
         assertEquals(
-            4,
+            12,
             NtkClickOwnedManhwaWavePolicy.initialSpeculationPages(wifiTransport = true),
         )
         assertEquals(
@@ -83,9 +83,15 @@ class NtkClickOwnedManhwaWavePolicyTest {
             ),
         )
         assertTrue(
+            NtkClickOwnedManhwaWavePolicy.shouldUseWifiEntryFallbackLane(
+                wifiTransport = true,
+                pageIndex = 11,
+            ),
+        )
+        assertTrue(
             !NtkClickOwnedManhwaWavePolicy.shouldUseWifiEntryFallbackLane(
                 wifiTransport = true,
-                pageIndex = 4,
+                pageIndex = 12,
             ),
         )
         assertTrue(
@@ -122,6 +128,12 @@ class NtkClickOwnedManhwaWavePolicyTest {
             !NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
                 wifiTransport = true,
                 pageCount = 4,
+            ),
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldHoldExactPreFrameRunway(
+                wifiTransport = true,
+                pageCount = 12,
             ),
         )
     }
@@ -184,10 +196,11 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertTrue(prioritize(pageIndex = 1, extension = "gif"))
         assertTrue(prioritize(pageIndex = 2, extension = "webp"))
         assertTrue(prioritize(pageIndex = 3, extension = "PNG"))
+        assertTrue(prioritize(pageIndex = 11, extension = "gif"))
 
         // p001, the offscreen wave, and ordinary JPEGs keep their original executor.
         assertTrue(!prioritize(pageIndex = 0))
-        assertTrue(!prioritize(pageIndex = 4))
+        assertTrue(!prioritize(pageIndex = 12))
         assertTrue(!prioritize(extension = "jpg"))
         assertTrue(!prioritize(extension = "JPEG"))
         assertTrue(!prioritize(extension = "avif"))
