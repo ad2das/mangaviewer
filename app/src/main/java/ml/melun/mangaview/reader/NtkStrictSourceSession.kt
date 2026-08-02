@@ -400,7 +400,12 @@ internal object NtkStrictInitialWavePolicy {
     // explicit immutable misses; a merely fast host can no longer collapse this balanced topology.
     // A failed entry earns no growth, and the carrier transport policy remains untouched.
     private const val WEBTOON_WIFI_POST_ANCHOR_INITIAL_BODY_TRANSFERS = 4
-    private const val WEBTOON_WIFI_POST_ANCHOR_TCP_BODY_TRANSFERS = 24
+    // Direct Wi-Fi webtoon bodies use the eight host-local H2 pools proven by the cold suite.
+    // Twenty-four transfers leave an 89-page episode in four 2-3 second waves even after every
+    // call converges on the healthy compatibility origin. Six streams per isolated pool keep the
+    // server's supported multiplexing bound while reducing that same workset to two waves.
+    // Carrier/SNI and manhwa use their independent policies below.
+    private const val WEBTOON_WIFI_POST_ANCHOR_TCP_BODY_TRANSFERS = 48
     private const val WEBTOON_WIFI_POST_ANCHOR_QUIC_BODY_TRANSFERS = 24
     private const val WEBTOON_WIFI_LARGE_QUIC_BODY_TRANSFERS = 24
     private const val WEBTOON_WIFI_LARGE_EPISODE_PAGES = 140
@@ -410,8 +415,13 @@ internal object NtkStrictInitialWavePolicy {
     private const val MANHWA_WIFI_QUIC_BODY_TRANSFERS = 60
     private const val MANHWA_WIFI_LARGE_QUIC_BODY_TRANSFERS = 80
     private const val MANHWA_WIFI_LARGE_EPISODE_PAGES = 120
-    private const val MANHWA_WIFI_ADJACENT_PREFETCH_BODY_TRANSFERS = 5
-    private const val WIFI_ADJACENT_INITIAL_RUNWAY_BODIES = 5
+    // The UI contract is an exact four-drawable runway. A fifth offscreen body used to enter the
+    // same tiny adjacent wave and divide the just-released connection bandwidth with those four
+    // user-visible pages. Keep discovery/authority complete, but admit and transfer exactly what
+    // can be attached before the boundary. The full forward set opens only after that episode is
+    // the real viewport; carrier/SNI never enters this adjacent Wi-Fi-only cap.
+    private const val MANHWA_WIFI_ADJACENT_PREFETCH_BODY_TRANSFERS = 4
+    internal const val WIFI_ADJACENT_INITIAL_RUNWAY_BODIES = 4
 
     /**
      * Carrier transport needs one actual demanded body to establish each finite host/pool cohort.
@@ -750,8 +760,8 @@ internal object NtkStrictInitialWavePolicy {
  *
  * The exact HTTP/3 pool owns three hosts with three host-local session stripes. Pages two and
  * later therefore map to one real multiplexed session by `pageIndex % 9`. A global completion
- * count can be dominated by one healthy connection (r106 did exactly that), so every promotion
- * requires fresh, balanced EOF evidence from all nine sessions. Any retry, physical failure, or
+ * count can be dominated by one healthy connection, so every promotion requires fresh, balanced
+ * EOF evidence from all nine sessions. Any retry, physical failure, or
  * body that reaches the 3.0 second guard permanently reduces future admission to two streams per
  * real session (18 calls). The owner never cancels an active physical call, so the narrower target
  * takes effect only as completed calls naturally release lanes.
@@ -1206,6 +1216,7 @@ internal class NtkStrictSourceSession(
             adjacentPrefetch = adjacentPrefetch,
         )
     private var adjacentPrefetchReleased = false
+    private var adjacentPredecessorCompleted = false
     private val coldConnectionCohortLeaders =
         NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             planBinding.episodePath,
@@ -1821,23 +1832,89 @@ internal class NtkStrictSourceSession(
         }
     }
 
+    fun onAdjacentPredecessorComplete(episode: NtkEpisodeToken) {
+        if (closeRequested.get()) return
+        executeActor {
+            if (!acceptsEpisode(episode)) return@executeActor
+            adjacentPredecessorCompleted = true
+            maybeReleaseAdjacentPrefetchAfterRunwayActor("predecessor_complete")
+        }
+    }
+
     fun onAdjacentViewportActivated(episode: NtkEpisodeToken) {
         if (closeRequested.get()) return
         executeActor {
             if (!acceptsEpisode(episode)) return@executeActor
             streamedExactBodies?.onAdjacentViewportActivated()
-            if (!adjacentPrefetch || adjacentPrefetchReleased) return@executeActor
-            adjacentPrefetchReleased = true
-            if (rollingAdmission) {
-                rollingAdmittedPages = (initialPageIndex until pages.size).toSet()
-                pendingRollingAdmittedPages = null
-            }
-            logSourceEvent(
-                "reader_strip_source_adjacent_viewport_activated",
-                "initialPage=$initialPageIndex,admitted=${rollingAdmittedPages.size}",
-            )
-            refillLanesActor()
+            maybeReleaseAdjacentPrefetchAfterRunwayActor("viewport_activated")
         }
+    }
+
+    private fun maybeReleaseAdjacentPrefetchAfterRunwayActor(reason: String) {
+        assertActorThread()
+        if (!adjacentPrefetch || adjacentPrefetchReleased || !adjacentPredecessorCompleted) return
+        val runwayEndExclusive = minOf(
+            pages.size,
+            initialPageIndex + NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+        )
+        if ((initialPageIndex until runwayEndExclusive).any { pages[it].publishedBody == null }) return
+        streamedExactBodies?.onAdjacentRunwayReady()
+        releaseAdjacentPrefetchActor("${reason}_runway_ready")
+    }
+
+    private fun releaseAdjacentPrefetchActor(reason: String) {
+        assertActorThread()
+        if (!adjacentPrefetch || adjacentPrefetchReleased) return
+        adjacentPrefetchReleased = true
+        if (rollingAdmission) {
+            val previousAdmission = rollingAdmittedPages
+            val expandedAdmission = (initialPageIndex until pages.size).toSet()
+            rollingAdmittedPages = expandedAdmission
+            pendingRollingAdmittedPages = null
+            // The pre-geometry deque is materialized from the initial four-page adjacent runway.
+            // Expand the immutable resident-body workset after predecessor completion, but keep
+            // list structure and decoded pixels under ReaderSession's viewport/idle gates.
+            if (!isGeometrySealed() && sourceDemand == null) {
+                for (pageIndex in initialPageIndex until pages.size) {
+                    val page = pages[pageIndex]
+                    if (pageIndex !in previousAdmission &&
+                        !page.primaryStarted && page.terminalEvent == null &&
+                        page.seededExactBody == null && !page.streamedExactBodyPending
+                    ) {
+                        preGeometryPendingPages.addLast(pageIndex)
+                    }
+                }
+            }
+        }
+        logSourceEvent(
+                "reader_strip_source_adjacent_prefetch_released",
+                "reason=$reason,initialPage=$initialPageIndex,admitted=${rollingAdmittedPages.size}," +
+                    "activeBefore=${activeWorks.count { it != null }}," +
+                    "published=$bodyPublishedCount,metadata=$metadataPublishedCount," +
+                    "unstarted=${pages.count { !it.primaryStarted && it.publishedBody == null && !it.streamedExactBodyPending }}," +
+                    "pending=${preGeometryPendingPages.size}," +
+                    "admissionsSealed=$primaryAdmissionsSealed",
+        )
+        refillLanesActor()
+        val exactManifest = (phase as? SessionPhase.ExactOpen)?.manifest
+        logSourceEvent(
+                "reader_strip_source_adjacent_prefetch_refilled",
+                "reason=$reason,activeAfter=${activeWorks.count { it != null }}," +
+                    "published=$bodyPublishedCount," +
+                    "unstarted=${pages.count { !it.primaryStarted && it.publishedBody == null && !it.streamedExactBodyPending }}," +
+                    "bulkReady=${pages.count { !it.primaryStarted && isBulkSourcePhysicalAdmissionReady(it.pageIndex) }}," +
+                    "cohortReady=${pages.count { !it.primaryStarted && isColdConnectionCohortEligible(it.pageIndex) }}," +
+                    "routeReady=${pages.count { !it.primaryStarted && isRoutePreparationReadyWithoutActorWait(it.pageIndex) }}," +
+                    "physicalLanes=${activeWorks.size},usefulLanes=${usefulPhysicalLaneCountActor(anchorBodyPublishedActor())}," +
+                    "cohortsOpen=$coldConnectionCohortsOpen,phase=${phase.javaClass.simpleName}," +
+                    "ownerReady=${exactManifest?.let { manifest ->
+                        NtkStrictSourceOwnershipRegistry.canBeginOperationNow(
+                            planBinding.episodePath,
+                            manifest.seal.digestSha256,
+                            sessionId,
+                        )
+                    } ?: false}",
+        )
     }
 
     fun applyPreGeometryPlan(episode: NtkEpisodeToken, candidate: NtkPreGeometrySourcePlan) {
@@ -2993,7 +3070,10 @@ internal class NtkStrictSourceSession(
             page.quarantineState = NtkQuarantinePageState.EXACT_OWNED
             // The render owner needs only the already validated metadata/proof/body. Publish it
             // before producing the detailed accounting record for the completed source call.
-            acceptExactBody(page, published)
+            // The synthetic promoted operation still owns this physical lane until the detailed
+            // success record below retires its lease. Publishing the fourth adjacent runway body
+            // can open suffix admission, so suppress that refill until the lane ledger is closed.
+            acceptExactBody(page, published, releaseAdjacentRunway = false)
             if (NtkStrictSourceOperationTelemetryPolicy.shouldLogSuccessfulAdoption(page.pageIndex)) {
                 logSourceEvent(
                     "reader_strip_source_adoption",
@@ -3003,6 +3083,7 @@ internal class NtkStrictSourceSession(
             }
             completeResidentOperationActor(body, published, acceptedContext)
             retirementScheduled = true
+            maybeReleaseAdjacentPrefetchAfterRunwayActor("resident_body_published")
         } catch (failure: Throwable) {
             if (!retirementScheduled) acceptedContext.operationLease.complete()
             page.adoptedExactContext = null
@@ -3215,7 +3296,8 @@ internal class NtkStrictSourceSession(
 
     private fun acceptExactBody(
         page: PageState,
-        published: ReaderImageCache.NtkStrictPublishedBody
+        published: ReaderImageCache.NtkStrictPublishedBody,
+        releaseAdjacentRunway: Boolean = true,
     ) {
         assertActorThread()
         if (phase !is SessionPhase.ExactOpen) {
@@ -3280,6 +3362,9 @@ internal class NtkStrictSourceSession(
         val bodyEvent = SourceEvent.BodyPublished(descriptor)
         page.bodyEvent = bodyEvent
         appendAndEmit(bodyEvent)
+        if (releaseAdjacentRunway) {
+            maybeReleaseAdjacentPrefetchAfterRunwayActor("body_published")
+        }
         if (rollingAdmission && page.pageIndex == initialPageIndex) {
             pendingRollingAdmittedPages?.let { demandedPages ->
                 rollingAdmittedPages = demandedPages

@@ -155,6 +155,18 @@ class NtkManifestEvidenceParserTest {
             envelope.orderedAssets
         )
         assertEquals(
+            listOf(
+                "https://z.example/cv/1.jpg",
+                "https://a.example/cv/1.jpg",
+                "https://m.example/cv/1.jpg",
+            ),
+            envelope.orderedReplicaCandidates[0],
+        )
+        assertEquals(3, envelope.orderedReplicaCandidates.size)
+        assertTrue(envelope.orderedAssets.indices.all { index ->
+            envelope.orderedAssets[index] in envelope.orderedReplicaCandidates[index]
+        })
+        assertEquals(
             "ntk-viewer-assets-renderable-balanced-replica-v3",
             envelope.orderedAssetSelectionPolicyVersion
         )

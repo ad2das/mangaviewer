@@ -2834,12 +2834,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     "count=${seal.pageCount},pageCount=${seal.pageCount}," +
                     "page=$lastInstalledPage,nativeRunwayQueued=true"
             )
-            ViewerTelemetry.allImagesRenderReady(readerRoot ?: renderView, seal.pageCount)
+            // Publish the contractual timestamp/event before any next-episode work, but keep the
+            // expensive image/network summary and accessibility refresh off the critical edge.
+            ViewerTelemetry.markAllImagesRenderReady(seal.pageCount)
+            // [lastInstalledPage] is the exact authoritative page that completed this seal. A
+            // synchronous native currentProgressPosition() read measured ~250 ms on the emulator;
+            // it is needed for reading-position bookkeeping, not for identifying the completed
+            // predecessor. Start the exact next owner first, then sample the user's real anchor.
+            session?.prepareForwardAdjacentAfterCurrentComplete(
+                seal.normalizedEpisodePath,
+                cachedNextEpisode,
+                authoritativeCompletionProof = true,
+            )
             val completedAnchor =
                 renderView.currentProgressPosition()?.page ?: currentPage
             session?.noteForwardReadingPosition(completedAnchor)
-            session?.prepareForwardAdjacentAfterCurrentComplete(completedAnchor)
             primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
+            ViewerTelemetry.allImagesRenderReady(readerRoot ?: renderView, seal.pageCount)
         }
         val queued = if (strictRollingHistoricalScene) {
             renderView.queueResidentAuthoritativeTextureRunway(publishReady)
@@ -5354,7 +5365,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             renderView.requestCurrentPositionCommit()
             return
         }
-        if (session?.isDirectWifiForwardAdjacentPolicyActive() == true) {
+        if (session?.isNtkForwardAdjacentCompletionPolicyActive() == true) {
             ViewerTelemetry.forwardBoundaryReached()
         }
         publishStrictViewerEdge(false, true)
@@ -6254,8 +6265,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
         val firstVisibleSource = identities.minOf { (_, identity) -> identity.sourcePageIndex }
         val lastVisibleSource = identities.maxOf { (_, identity) -> identity.sourcePageIndex }
-        val directWifiAdjacentPolicy =
-            activeSession.isDirectWifiForwardAdjacentPolicyActive()
+        val ntkAdjacentCompletionPolicy =
+            activeSession.isNtkForwardAdjacentCompletionPolicyActive()
         // A prepared next-episode runway extends the surface before the reader reaches the launch
         // tail, so the launch boundary is no longer the surface's absolute `maxScroll`. Seeing any
         // part of a tall final webtoon page is also not a boundary: require the immutable committed
@@ -6265,7 +6276,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 identity.sourcePageIndex == launchSeal.canonicalAssets.lastIndex
         }?.first
         if (
-            directWifiAdjacentPolicy &&
+            ntkAdjacentCompletionPolicy &&
             direction > 0 &&
             presentedUptimeNanos > 0L &&
             launchTailDisplayPage != null &&
@@ -6273,7 +6284,15 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ) {
             ViewerTelemetry.forwardBoundaryReached(presentedUptimeNanos)
         }
-        if (directWifiAdjacentPolicy) {
+        if (ntkAdjacentCompletionPolicy) {
+            // One committed viewport can contain the B/C boundary while the immutable launch seal
+            // still belongs to A. Signal every physically present appended claim; choosing only
+            // the first non-A identity would keep C's fallback closed until B left the viewport.
+            identities.asSequence()
+                .map { (_, identity) -> identity.normalizedEpisodePath }
+                .filter { path -> path != launchSeal.normalizedEpisodePath }
+                .distinct()
+                .forEach(activeSession::onExactNtkAdjacentActualFramePresented)
             identities.firstOrNull { (_, identity) ->
                 identity.normalizedEpisodePath != launchSeal.normalizedEpisodePath
             }?.let { (displayPage, adjacentIdentity) ->
@@ -6549,7 +6568,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
      * Strict UI entry points may only reserve or join the isolated ACK + exact-manifest flight.
      * This method deliberately does not inspect or publish any Browser broker state.
      */
-    private fun startStrictNtkDiscovery(manga: Manga, reason: String): Boolean {
+    private fun startStrictNtkDiscovery(
+        manga: Manga,
+        reason: String,
+        adjacentPredecessorEpisodePath: String? = null,
+    ): Boolean {
         val path = NtkStripDigests.normalizeEpisodePath(manga.ntkEpisodePath.orEmpty())
         if (!isStrictNtkEpisodePath(path)) return false
         val telemetryOwnerPath = NtkStripDigests.normalizeEpisodePath(
@@ -6557,6 +6580,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         )
         val currentPath = NtkStripDigests.normalizeEpisodePath(
             currentManga?.ntkEpisodePath.orEmpty()
+        )
+        val explicitPredecessorPath = NtkStripDigests.normalizeEpisodePath(
+            adjacentPredecessorEpisodePath.orEmpty()
         )
         // A continuously appended reader keeps one telemetry generation for its launch episode.
         // currentManga advances as the viewport enters each appended episode, but that must not
@@ -6574,11 +6600,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val adjacentOwned = ownerPath.isNotBlank() &&
             !ownerPath.equals(path, ignoreCase = true) &&
             NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(ownerPath, path)
+        // Continuous ReaderSession callbacks carry the immutable source episode that selected this
+        // exact neighbor. `currentManga` is only a delayed toolbar/progress label during a fling;
+        // use it solely as a fallback for synchronous click/prime entry points.
+        val predecessorPath = explicitPredecessorPath.ifBlank { currentPath }
         val started = if (adjacentOwned) {
             NtkStrictEpisodeDiscoveryCoordinator.startAdjacentColdRolling(
                 getHttpClient(),
                 manga,
                 ownerPath,
+                predecessorPath,
             )
         } else {
             NtkStrictEpisodeDiscoveryCoordinator.startColdRolling(getHttpClient(), manga)
@@ -6589,15 +6620,38 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(
             "ViewerPerf",
             "reader_ntk_strict_exact_discovery_ui path=$path,reason=$reason," +
-                "started=$started,joined=$joined"
+                "predecessor=$predecessorPath,started=$started,joined=$joined"
         )
         return joined
     }
 
-    override fun onAdjacentExactManifestRequired(manga: Manga) {
-        statusHandler.post {
-            if (destroyed || isFinishing) return@post
-            startStrictNtkDiscovery(manga, "continuous_adjacent_exact_manifest")
+    override fun onAdjacentExactManifestRequired(
+        manga: Manga,
+        predecessorEpisodePath: String,
+    ) {
+        val capturedPredecessorPath = NtkStripDigests.normalizeEpisodePath(
+            predecessorEpisodePath
+        )
+        if (capturedPredecessorPath.isBlank()) {
+            Log.w(
+                TAG,
+                "reader_ntk_adjacent_exact_manifest_missing_predecessor " +
+                    "target=${manga.ntkEpisodePath}",
+            )
+            return
+        }
+        val startDiscovery = Runnable {
+            if (destroyed || isFinishing) return@Runnable
+            startStrictNtkDiscovery(
+                manga,
+                "continuous_adjacent_exact_manifest",
+                capturedPredecessorPath,
+            )
+        }
+        if (Looper.myLooper() == statusHandler.looper) {
+            startDiscovery.run()
+        } else {
+            statusHandler.post(startDiscovery)
         }
     }
 
@@ -9078,7 +9132,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun maybePrimeHybridNtkNextEpisode(reason: String): Boolean {
         if (!hybridNtkBrowserActive || destroyed || isFinishing) return false
-        if (!isDirectWifiHybridCurrentEpisodeComplete()) {
+        if (!isHybridNtkCurrentEpisodeComplete()) {
             Log.d(
                 TAG,
                 "reader_ntk_hybrid_next_prime_wait_current_complete reason=$reason"
@@ -9136,7 +9190,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     private fun maybeStartHybridNtkNextEpisode(reason: String): Boolean {
         if (!hybridNtkBrowserActive || adjacentNavigationInFlight || destroyed || isFinishing) return false
-        if (!isDirectWifiHybridCurrentEpisodeComplete()) {
+        if (!isHybridNtkCurrentEpisodeComplete()) {
             Log.d(
                 TAG,
                 "reader_ntk_hybrid_next_start_wait_current_complete reason=$reason"
@@ -9186,13 +9240,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         return startPreparedHybridNtkNextEpisode(manga, next, title, reason)
     }
 
-    private fun isDirectWifiHybridCurrentEpisodeComplete(): Boolean {
-        val httpClient = getHttpClient()
-        val directWifi = runCatching {
-            httpClient.isNtkWifiTransportActive() &&
-                !httpClient.isNtkCellularResilientTransportActive()
-        }.getOrDefault(false)
-        if (!directWifi) return true
+    private fun isHybridNtkCurrentEpisodeComplete(): Boolean {
         val readiness = hybridNtkPageReadinessSnapshot()
         return readiness.pageCount > 0 &&
             readiness.drawablePages == readiness.pageCount &&
@@ -9577,7 +9625,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val next = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, true)
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
-        if (shouldPrimeAdjacentNow()) primeAdjacentLaunchWindow(title, next)
+        if (shouldPrimeAdjacentNow()) {
+            // The renderer can finish the current episode before the asynchronous episode list
+            // has supplied its exact next neighbor. The completion callback then performs a
+            // correct no-op, but it used to be the only Session preparation trigger; when this
+            // later metadata update arrived, primeAdjacentLaunchWindow() started only exact
+            // discovery and never re-entered the four-drawable atomic append path. Re-arm the
+            // completion-owned preparation after publishing the resolved neighbor. Session
+            // readiness and per-episode keys make this idempotent, and unfinished current
+            // episodes still fail the full-drawable gate without starting adjacent body work.
+            if (strictAllImagesReadyPublished && next != null) {
+                session?.prepareForwardAdjacentAfterCurrentComplete(
+                    manga?.ntkEpisodePath.orEmpty(),
+                    next,
+                )
+            }
+            primeAdjacentLaunchWindow(title, next)
+        }
         prevButton.isEnabled = shouldEnableAdjacentButton(
             previous != null,
             canFetchMissingAdjacent(manga, title, previous)
@@ -9601,7 +9665,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun primeAdjacentLaunchWindow(title: Title?, target: Manga?) {
         if (target == null) return
         val activeSession = session ?: return
-        if (!activeSession.canPrepareForwardAdjacentNow()) {
+        if (!activeSession.canPrepareForwardAdjacentNow(currentManga?.ntkEpisodePath)) {
             Log.d(
                 TAG,
                 "reader_adjacent_prime_wait_current_complete path=${target.ntkEpisodePath}"

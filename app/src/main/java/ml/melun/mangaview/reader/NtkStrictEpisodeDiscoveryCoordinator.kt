@@ -27,11 +27,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  * challenge retain the isolated browser/key-signing authority.
  */
 object NtkStrictEpisodeDiscoveryCoordinator {
+    private enum class AdjacentBodyGateRelease {
+        OPENED,
+        ALREADY_OPEN,
+        FAILED,
+    }
+
     private class AckRoute(
         val bootstrap: CustomHttpClient.NtkStrictAckBootstrap,
-        val directTrustedTask: FutureTask<CustomHttpClient.NtkDirectTrustedGrant>?,
-        val directTrustedThread: Thread?,
     ) {
+        @Volatile
+        var directTrustedTask: FutureTask<CustomHttpClient.NtkDirectTrustedGrant>? = null
+            private set
+
+        @Volatile
+        private var directTrustedThread: Thread? = null
+
         @Volatile
         var nvSeedTask: FutureTask<Boolean>? = null
             private set
@@ -57,6 +68,16 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         }
 
         @Synchronized
+        fun attachDirectTrustedTask(
+            task: FutureTask<CustomHttpClient.NtkDirectTrustedGrant>,
+            thread: Thread,
+        ) {
+            check(directTrustedTask == null) { "Strict direct trusted owner already attached" }
+            directTrustedTask = task
+            directTrustedThread = thread
+        }
+
+        @Synchronized
         fun attachNvSeedTask(task: FutureTask<Boolean>, thread: Thread) {
             check(nvSeedTask == null) { "Strict nv seed owner already attached" }
             nvSeedTask = task
@@ -79,6 +100,9 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val viewerGeneration: Long,
         val episodePath: String,
         val viewerOwnerEpisodePath: String,
+        val adjacentPredecessorEpisodePath: String,
+        val adjacentPredecessorGate: Boolean,
+        val directWifiAdjacentBodyGate: Boolean,
         val rollingAdmission: Boolean,
         val completedRouteRecoveryAttempts: Int,
     ) {
@@ -93,6 +117,25 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         )
         /** Exact authority is retained here until its viewer explicitly retires ownership. */
         val completed = AtomicBoolean(false)
+        val foregroundNetworkEntered = AtomicBoolean(false)
+        /**
+         * Linearizes the last possible adjacent foreground-network enter with viewer retirement.
+         * Retirement claims this flag under the same Flight monitor used by body-gate release,
+         * so a stale flights.values snapshot can never re-enter after leave has already run.
+         */
+        val networkOwnershipRetiring = AtomicBoolean(false)
+        /**
+         * An adjacent flight may reserve only its local lifecycle before this event.
+         * Its foreground route, grant/ACK, probe HEADs, document/API, image bodies, source
+         * promotion and decode all start only after every predecessor drawable is installed.
+         * Current flights receive an already-open event. Network-specific adjacent transport
+         * topology is selected separately and never weakens this predecessor ordering contract.
+         */
+        val adjacentPredecessorComplete = CompletableFuture<Unit>().also { release ->
+            if (!adjacentPredecessorGate) {
+                release.complete(Unit)
+            }
+        }
 
         init {
             check(
@@ -105,6 +148,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     private val flights = ConcurrentHashMap<String, Flight>()
     private val flightLifecycleLocks = ConcurrentHashMap<String, Any>()
+    private val completedAdjacentPredecessors = ConcurrentHashMap<String, Long>()
 
     @JvmStatic
     fun start(client: CustomHttpClient?, manga: Manga?): Boolean {
@@ -114,6 +158,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             rollingAdmission = false,
             completedRouteRecoveryAttempts = 0,
             viewerOwnerEpisodePath = null,
+            adjacentPredecessorEpisodePath = null,
         )
     }
 
@@ -126,6 +171,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             rollingAdmission = true,
             completedRouteRecoveryAttempts = 0,
             viewerOwnerEpisodePath = null,
+            adjacentPredecessorEpisodePath = null,
         )
     }
 
@@ -139,6 +185,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         client: CustomHttpClient?,
         manga: Manga?,
         viewerOwnerEpisodePath: String?,
+        adjacentPredecessorEpisodePath: String? = viewerOwnerEpisodePath,
     ): Boolean {
         return startInternal(
             client,
@@ -146,6 +193,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             rollingAdmission = true,
             completedRouteRecoveryAttempts = 0,
             viewerOwnerEpisodePath = viewerOwnerEpisodePath,
+            adjacentPredecessorEpisodePath = adjacentPredecessorEpisodePath,
         )
     }
 
@@ -155,12 +203,25 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         rollingAdmission: Boolean,
         completedRouteRecoveryAttempts: Int,
         viewerOwnerEpisodePath: String?,
+        adjacentPredecessorEpisodePath: String?,
     ): Boolean {
         if (client == null || manga == null) return false
         val path = normalizedPath(manga.ntkEpisodePath) ?: return false
         val ownerPath = normalizedPath(viewerOwnerEpisodePath) ?: path
         val adjacentOwned = ownerPath != path &&
             ntkAdjacentOwnerAllowsTarget(ownerPath, path)
+        val predecessorPath = normalizedPath(adjacentPredecessorEpisodePath) ?: ownerPath
+        val transportState = runCatching {
+            client.isNtkWifiTransportActive to
+                client.isNtkCellularResilientTransportActive
+        }.getOrDefault(false to true)
+        val adjacentAdmission = NtkAdjacentAdmissionPolicy.decide(
+            adjacentOwned = adjacentOwned,
+            wifiTransportActive = transportState.first,
+            cellularResilientTransportActive = transportState.second,
+        )
+        val adjacentPredecessorGate = adjacentAdmission.predecessorCompletionRequired
+        val directWifiAdjacentBodyGate = adjacentAdmission.directWifiPhysicalRunway
         if (!ViewerTelemetry.hasActiveSession() ||
             !ViewerTelemetry.isActiveEpisode(ownerPath) ||
             (ownerPath != path && !adjacentOwned)
@@ -186,6 +247,9 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 viewerGeneration,
                 path,
                 ownerPath,
+                predecessorPath,
+                adjacentPredecessorGate,
+                directWifiAdjacentBodyGate,
                 rollingAdmission,
                 completedRouteRecoveryAttempts,
             ).also {
@@ -199,50 +263,31 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             // enter has one deterministic retirement owner and an early start rejection cannot
             // strand a process-wide gate. This retires already-running compatibility calls but
             // starts no viewer request by itself.
-            client.enterNtkStrictForegroundNetwork(path, viewerGeneration)
-            // Discovery ownership is already fenced at this point. Retire any pre-cutover
-            // main-process browser work before the isolated owner is allowed to navigate.
-            client.cancelNtkWebViewFallbacks()
-            // Bootstrap is local-only: it creates identity seeds but performs no network request.
-            val bootstrap = client.prepareNtkStrictAckBootstrap(path)
-            val route = if (isDirectTrustedWebtoon(path)) {
-                val task = FutureTask {
-                    traceStage("NtkTrustedChallenge") {
-                        client.fetchExactNtkTrustedChallengeGrant(
-                            bootstrap,
-                            flight.physicalCalls,
-                        )
-                    }
+            if (!flight.adjacentPredecessorGate) {
+                enterForegroundNetworkIfNeeded(flight)
+            } else if (
+                completedAdjacentPredecessors[flight.adjacentPredecessorEpisodePath] ==
+                    viewerGeneration
+            ) {
+                // Completion can win just before the resolved neighbor creates this flight.
+                // Publish admission now; the worker still performs the foreground enter before
+                // starting any target-network prerequisite.
+                check(releaseAdjacentBodyGate(flight) != AdjacentBodyGateRelease.FAILED) {
+                    "Completed adjacent predecessor could not release work admission"
                 }
-                val thread = Thread(task, "ntk-strict-trusted-challenge").apply {
-                    isDaemon = true
-                    priority = (Thread.NORM_PRIORITY + 1).coerceAtMost(Thread.MAX_PRIORITY)
-                }
-                thread.start()
-                AckRoute(bootstrap, task, thread)
-            } else {
-                // Numeric manhwa replica responses plus the fresh episode document can establish
-                // exact source authority without spinning up an isolated WebView. Keep ACK fully
-                // demand-driven: it is a compatibility fallback only if that observed path fails.
-                AckRoute(bootstrap, null, null)
             }
-            if (requiresClickOwnedIsolatedAck(path)) {
-                // Slug manhwa cannot bind the document's virtual numeric replica names directly;
-                // its exact source table is issued by the signed image API. Start that mandatory
-                // proof at the committed viewer click, alongside the fresh document GET, instead
-                // of serializing a cold service/WebView launch after the document has completed.
-                // This starts no image body and grants no pixels before the document/API identity
-                // checks below. Numeric manhwa retains the demand-driven observation path.
-                ensureIsolatedAck(client, flight, route)
-                Log.d(
-                    "ViewerPerf",
-                    "ntk_strict_click_owned_isolated_ack_start path=$path," +
-                        "generation=${flight.lease.generation.value}",
-                )
+            // Bootstrap is local-only: it creates identity seeds but performs no network request.
+            // Every adjacent flight retains this empty route until its worker observes the
+            // predecessor-complete event. Its network-specific transport is selected only after
+            // that release; current flights preserve eager overlap.
+            val route = AckRoute(client.prepareNtkStrictAckBootstrap(path))
+            if (!flight.adjacentPredecessorGate) {
+                startAckNetworkPrerequisites(client, flight, path, route)
             }
             route
         } catch (failure: Throwable) {
             synchronized(flightLifecycleLock(path)) {
+                claimNetworkOwnershipRetirement(flight)
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                     flight.lease,
                     "strict_exact_ack_start_${failure.javaClass.simpleName}"
@@ -274,6 +319,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             ackRoute.cancel()
             flight.physicalCalls.cancelAll()
             synchronized(flightLifecycleLock(path)) {
+                claimNetworkOwnershipRetirement(flight)
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                     flight.lease,
                     "strict_exact_worker_start_${failure.javaClass.simpleName}"
@@ -297,6 +343,104 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         normalizedPath(path)?.let { key ->
             flights[key]?.let { !it.completed.get() && !it.retirement.isRetired() } == true
         } == true
+
+    /**
+     * Opens all target-work admission for adjacent flights whose immediate
+     * predecessor is now completely drawable. The generation-scoped marker also covers the
+     * normal ordering where completion wins just before the adjacent flight is created.
+     */
+    @JvmStatic
+    fun releaseAdjacentBodiesAfterPredecessorComplete(path: String?): Int {
+        val key = normalizedPath(path) ?: return 0
+        val generation = ViewerTelemetry.activeGeneration()
+        // A continuously appended reader retains the launch episode as its telemetry owner, so an
+        // appended predecessor is intentionally not ViewerTelemetry's active episode. The exact
+        // path match plus the active generation keeps this release scoped to the foreground
+        // Session while allowing B-complete to unlock B->C.
+        if (generation <= 0L || !ViewerTelemetry.hasActiveSession()) return 0
+        completedAdjacentPredecessors[key] = generation
+        var released = 0
+        flights.values.forEach { flight ->
+            if (flight.viewerGeneration == generation &&
+                flight.adjacentPredecessorGate &&
+                flight.adjacentPredecessorEpisodePath.equals(key, ignoreCase = true)
+            ) {
+                if (releaseAdjacentBodyGate(flight) == AdjacentBodyGateRelease.OPENED) {
+                    released++
+                }
+            }
+        }
+        return released
+    }
+
+    private fun enterForegroundNetworkIfNeeded(flight: Flight) {
+        synchronized(flight) {
+            if (flight.foregroundNetworkEntered.get()) return
+            if (flight.networkOwnershipRetiring.get() ||
+                flight.retirement.isRetired() ||
+                flights[flight.episodePath] !== flight ||
+                !isViewerOwnerActive(flight)
+            ) {
+                throw InterruptedIOException("Viewer ownership retired before foreground enter")
+            }
+            if (!flight.foregroundNetworkEntered.compareAndSet(false, true)) return
+            try {
+                flight.client.enterNtkStrictForegroundNetwork(
+                    flight.episodePath,
+                    flight.viewerGeneration,
+                )
+                flight.client.cancelNtkWebViewFallbacks()
+            } catch (failure: Throwable) {
+                flight.foregroundNetworkEntered.set(false)
+                throw failure
+            }
+        }
+    }
+
+    private fun releaseAdjacentBodyGate(flight: Flight): AdjacentBodyGateRelease {
+        return synchronized(flight) {
+            if (flight.adjacentPredecessorComplete.isDone) {
+                return@synchronized AdjacentBodyGateRelease.ALREADY_OPEN
+            }
+            if (flight.networkOwnershipRetiring.get() ||
+                flight.retirement.isRetired() ||
+                flights[flight.episodePath] !== flight ||
+                !isViewerOwnerActive(flight)
+            ) {
+                return@synchronized AdjacentBodyGateRelease.FAILED
+            }
+            try {
+                if (!flight.adjacentPredecessorComplete.complete(Unit)) {
+                    return@synchronized AdjacentBodyGateRelease.ALREADY_OPEN
+                }
+                ViewerTelemetry.adjacentWorkStarted(flight.adjacentPredecessorEpisodePath)
+                Log.d(
+                    "ViewerPerf",
+                    "ntk_adjacent_body_gate_release " +
+                        "predecessor=${flight.adjacentPredecessorEpisodePath}," +
+                        "target=${flight.episodePath},generation=${flight.viewerGeneration}",
+                )
+                AdjacentBodyGateRelease.OPENED
+            } catch (failure: Throwable) {
+                Log.e(
+                    "ViewerPerf",
+                    "ntk_adjacent_body_gate_release_failed target=${flight.episodePath}",
+                    failure,
+                )
+                AdjacentBodyGateRelease.FAILED
+            }
+        }
+    }
+
+    /** Orders every terminal leave against a possibly concurrent adjacent gate release. */
+    private fun claimNetworkOwnershipRetirement(flight: Flight): Boolean = synchronized(flight) {
+        if (flight.networkOwnershipRetiring.get()) {
+            false
+        } else {
+            flight.networkOwnershipRetiring.set(true)
+            true
+        }
+    }
 
     /**
      * Cancels only the coordinator flight owned by this exact viewer generation. An old Activity
@@ -323,7 +467,14 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             val flight = synchronized(flightLifecycleLock(ownedPath)) {
                 val owned = flights[ownedPath] ?: return@synchronized null
                 if (owned.viewerGeneration != viewerGeneration ||
-                    !owned.viewerOwnerEpisodePath.equals(key, ignoreCase = true) ||
+                    !owned.viewerOwnerEpisodePath.equals(key, ignoreCase = true)
+                ) return@synchronized null
+                // Body-gate release owns the same monitor while entering the target foreground
+                // network. Claim retirement here first: either release finishes before this claim
+                // and leave below balances its enter, or every stale release observes the claim and
+                // exits without entering after leave.
+                val retirementClaimed = claimNetworkOwnershipRetirement(owned)
+                if (!retirementClaimed ||
                     !owned.retirement.retire(ownedPath, viewerGeneration)
                 ) return@synchronized null
             // Detach the terminal lease before releasing this path's flight slot. Its asynchronous
@@ -347,7 +498,104 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             flight.client.leaveNtkStrictForegroundNetwork(ownedPath, flight.viewerGeneration)
             retiredAny = true
         }
+        completedAdjacentPredecessors.entries.forEach { entry ->
+            if (entry.value == viewerGeneration) {
+                completedAdjacentPredecessors.remove(entry.key, entry.value)
+            }
+        }
         return retiredAny
+    }
+
+    /**
+     * Detaches one failed adjacent exact generation so the same active viewer can replace it.
+     *
+     * This is intentionally narrower than [retireViewerOwnership]: the launch episode and every
+     * other healthy adjacent flight remain owned. Both viewer and discovery generations must match,
+     * and a launch/current flight can never enter this replacement path.
+     */
+    @JvmStatic
+    fun retireAdjacentTargetForReplacement(
+        path: String?,
+        discoveryGeneration: Long,
+        viewerGeneration: Long,
+        reason: String?,
+    ): Boolean {
+        val key = normalizedPath(path) ?: return false
+        if (discoveryGeneration <= 0L || viewerGeneration <= 0L) return false
+        val flight = synchronized(flightLifecycleLock(key)) {
+            val owned = flights[key] ?: return@synchronized null
+            if (owned.viewerGeneration != viewerGeneration ||
+                owned.lease.generation.value != discoveryGeneration ||
+                owned.viewerOwnerEpisodePath.equals(key, ignoreCase = true)
+            ) {
+                return@synchronized null
+            }
+            if (!claimNetworkOwnershipRetirement(owned) ||
+                !owned.retirement.retire(key, viewerGeneration)
+            ) {
+                return@synchronized null
+            }
+            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                owned.lease,
+                "strict_exact_adjacent_recovery_${safeReason(reason)}",
+            )
+            flights.remove(key, owned)
+            owned
+        } ?: return false
+        Log.d(
+            "ViewerPerf",
+            "ntk_strict_exact_adjacent_recovery_retired path=$key," +
+                "viewerOwnerPath=${flight.viewerOwnerEpisodePath}," +
+                "viewerGeneration=$viewerGeneration," +
+                "discoveryGeneration=$discoveryGeneration," +
+                "reason=${safeReason(reason)}",
+        )
+        flight.client.leaveNtkStrictForegroundNetwork(key, viewerGeneration)
+        return true
+    }
+
+    /** Retires one completed episode after continuous forward reading has removed its page table. */
+    @JvmStatic
+    fun retireConsumedTargetOwnership(
+        path: String?,
+        discoveryGeneration: Long,
+        viewerGeneration: Long,
+        viewerOwnerPath: String?,
+        reason: String?,
+    ): Boolean {
+        val key = normalizedPath(path) ?: return false
+        val ownerKey = normalizedPath(viewerOwnerPath) ?: return false
+        if (discoveryGeneration <= 0L || viewerGeneration <= 0L) return false
+        val flight = synchronized(flightLifecycleLock(key)) {
+            val owned = flights[key] ?: return@synchronized null
+            if (owned.viewerGeneration != viewerGeneration ||
+                owned.lease.generation.value != discoveryGeneration ||
+                !owned.viewerOwnerEpisodePath.equals(ownerKey, ignoreCase = true) ||
+                !owned.completed.get()
+            ) {
+                return@synchronized null
+            }
+            if (!claimNetworkOwnershipRetirement(owned) ||
+                !owned.retirement.retire(key, viewerGeneration)
+            ) {
+                return@synchronized null
+            }
+            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                owned.lease,
+                "strict_exact_consumed_${safeReason(reason)}",
+            )
+            flights.remove(key, owned)
+            owned
+        } ?: return false
+        completedAdjacentPredecessors.remove(key, viewerGeneration)
+        flight.client.leaveNtkStrictForegroundNetwork(key, viewerGeneration)
+        Log.d(
+            "ViewerPerf",
+            "ntk_strict_exact_consumed_retired path=$key," +
+                "viewerOwnerPath=$ownerKey,viewerGeneration=$viewerGeneration," +
+                "discoveryGeneration=$discoveryGeneration,reason=${safeReason(reason)}",
+        )
+        return true
     }
 
     private fun startIsolatedAck(
@@ -362,6 +610,42 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             bootstrap.userAgent,
             bootstrap.seedCookies,
         )
+
+    /** Starts every target-network prerequisite only after adjacent admission is open. */
+    private fun startAckNetworkPrerequisites(
+        client: CustomHttpClient,
+        flight: Flight,
+        path: String,
+        ackRoute: AckRoute,
+    ) {
+        if (isDirectTrustedWebtoon(path) && ackRoute.directTrustedTask == null) {
+            val task = FutureTask {
+                traceStage("NtkTrustedChallenge") {
+                    client.fetchExactNtkTrustedChallengeGrant(
+                        ackRoute.bootstrap,
+                        flight.physicalCalls,
+                    )
+                }
+            }
+            val thread = Thread(task, "ntk-strict-trusted-challenge").apply {
+                isDaemon = true
+                priority = (Thread.NORM_PRIORITY + 1).coerceAtMost(Thread.MAX_PRIORITY)
+            }
+            ackRoute.attachDirectTrustedTask(task, thread)
+            thread.start()
+        }
+        if (requiresClickOwnedIsolatedAck(path)) {
+            // Slug manhwa cannot bind the document's virtual numeric replica names directly;
+            // its exact source table is issued by the signed image API. Numeric manhwa retains
+            // the demand-driven observation path.
+            ensureIsolatedAck(client, flight, ackRoute)
+            Log.d(
+                "ViewerPerf",
+                "ntk_strict_click_owned_isolated_ack_start path=$path," +
+                    "generation=${flight.lease.generation.value}",
+            )
+        }
+    }
 
     private fun ensureIsolatedAck(
         client: CustomHttpClient,
@@ -442,13 +726,15 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         var routeRecoveryRequested = false
         try {
             requireDiscoveryOwnership(flight, "worker_start")
+            if (flight.adjacentPredecessorGate) {
+                // This is the single admission point for every target-network operation. The
+                // foreground route switch, grant/ACK, manhwa HEAD frontier and document/API all
+                // remain absent until the immediate predecessor is completely drawable.
+                awaitAdjacentPredecessorComplete(flight)
+                enterForegroundNetworkIfNeeded(flight)
+                startAckNetworkPrerequisites(client, flight, path, ackRoute)
+            }
             val directWebtoon = isDirectTrustedWebtoon(path)
-            val directWifiAdjacentOwned =
-                !flight.viewerOwnerEpisodePath.equals(path, ignoreCase = true) &&
-                    runCatching {
-                        client.isNtkWifiTransportActive &&
-                            !client.isNtkCellularResilientTransportActive()
-                    }.getOrDefault(false)
             if (!directWebtoon) {
                 // Resolve a four-page format sample at the committed click. It downloads no image
                 // body and lets uncommon-format pages join the same bounded body race. Every body
@@ -460,7 +746,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     path,
                     flight.lease.generation.value,
                     clickOwnedManhwaProbe,
-                    directWifiAdjacentOwned,
+                    flight.directWifiAdjacentBodyGate,
+                    flight.adjacentPredecessorComplete,
                 )
                 if (clickOwnedAnchor != null) {
                     clickOwnedManhwaProbe = null
@@ -479,7 +766,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             path,
                             flight.lease.generation.value,
                             clickOwnedManhwaProbe,
-                            directWifiAdjacentOwned,
+                            flight.directWifiAdjacentBodyGate,
+                            flight.adjacentPredecessorComplete,
                         )
                     if (clickOwnedAnchor != null) {
                         clickOwnedManhwaProbe = null
@@ -725,7 +1013,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         manga,
                         draft,
                         clickOwnedManhwaProbe,
-                        directWifiAdjacentOwned,
+                        flight.directWifiAdjacentBodyGate,
+                        flight.adjacentPredecessorComplete,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                 }
@@ -830,7 +1119,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         manga,
                         draft,
                         clickOwnedManhwaProbe,
-                        directWifiAdjacentOwned,
+                        flight.directWifiAdjacentBodyGate,
+                        flight.adjacentPredecessorComplete,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                     clickOwnedAnchor?.let { anchor ->
@@ -849,7 +1139,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             // only four runway bodies until boundary activation, so joining that proof here would
             // deadlock before a strict stream exists to receive the activation signal. Use the
             // normal signed-image authority for that bounded adjacent flight instead.
-            val observedAuthorityFuture = if (plan == null && !directWifiAdjacentOwned) {
+            val observedAuthorityFuture = if (plan == null && !flight.directWifiAdjacentBodyGate) {
                 clickOwnedAnchor?.observedDocumentAuthorityFuture(flight.lease, draft)
             } else {
                 null
@@ -1019,6 +1309,18 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 apiResponse
             )
             requireDiscoveryOwnership(flight, "signed_api_parse_complete")
+            // Preserve the exact page-slot replicas before route preparation begins. This is a
+            // transport-only proof cache: the canonical manifest/digest is unchanged, and only a
+            // direct-Wi-Fi adjacent runway may consume the alternatives after its predecessor
+            // completion gate has released.
+            withDiscoveryOwnership(flight, "signed_api_replica_transport_proof") {
+                ReaderImageCache.rememberExactNtkApiReplicaCandidates(
+                    path,
+                    envelope.orderedAssetsDigestSha256,
+                    envelope.orderedAssets,
+                    envelope.orderedReplicaCandidates,
+                )
+            }
             val boundPlan: NtkProvisionalEpisodePlan
             val authority: NtkAuthoritativeManifest
             if (plan == null) {
@@ -1060,7 +1362,6 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     tokenBoundBodies
                 else -> emptyMap()
             }
-            clickOwnedAnchor = null
             if (!planReserved) {
                 val planResult = withDiscoveryOwnership(flight, "exact_plan_reserve") {
                     NtkSourceSpoolRegistry.reserveDocumentPlan(
@@ -1077,6 +1378,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     "Exact-backed document plan rejected: ${planResult.status}"
                 }
                 planReserved = true
+                // The source session accepted the stream and now owns its Closeable lifecycle.
+                // Until this exact handoff succeeds, keep the quarantine owner reachable from the
+                // flight finally block so retirement while waiting on the predecessor cannot leak
+                // its pending futures, files or physical workers.
+                clickOwnedAnchor = null
             }
             authority = withDiscoveryOwnership(flight, "exact_manifest_install") {
                 val exactResult = NtkManifestAuthorityFactory.installViewerImageApiEnvelope(
@@ -1137,6 +1443,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 // source reachable without a lifecycle retirement handle.
                 synchronized(flightLifecycleLock(path)) {
                     if (flights[path] === flight) {
+                        claimNetworkOwnershipRetirement(flight)
                         flight.retirement.retire(path, flight.viewerGeneration)
                         NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                             flight.lease,
@@ -1161,8 +1468,10 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             if (routeRecoveryRequested) {
                 // The resolver is intentionally demand-driven and may run only after the failed
                 // strict owner releases its network gate. The path slot stays reserved above.
+                claimNetworkOwnershipRetirement(flight)
                 client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)
             } else if (!flight.completed.get() || flight.retirement.isRetired()) {
+                claimNetworkOwnershipRetirement(flight)
                 flights.remove(path, flight)
                 client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)
             }
@@ -1208,6 +1517,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             failedFlight.rollingAdmission,
             failedFlight.completedRouteRecoveryAttempts + 1,
             failedFlight.viewerOwnerEpisodePath,
+            failedFlight.adjacentPredecessorEpisodePath,
         )
         val joined = restarted ||
             isInFlight(path) ||
@@ -1356,6 +1666,19 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         throw InterruptedIOException("Strict discovery future was interrupted").also {
             it.initCause(interrupted)
         }
+    }
+
+    private fun awaitAdjacentPredecessorComplete(flight: Flight) {
+        if (!flight.adjacentPredecessorGate) return
+        awaitFuture(flight.adjacentPredecessorComplete)
+        requireDiscoveryOwnership(flight, "adjacent_predecessor_complete")
+        Log.d(
+            "ViewerPerf",
+            "ntk_adjacent_metadata_ready_wait_body_released " +
+                "predecessor=${flight.adjacentPredecessorEpisodePath}," +
+                "target=${flight.episodePath}," +
+                "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+        )
     }
 
     private fun logStage(flight: Flight, stage: String) {

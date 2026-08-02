@@ -75,6 +75,9 @@ internal class NtkCacheSourceTransport(
     override fun onInitialDrawableCommitted(episode: NtkEpisodeToken) =
         strictSession.onInitialDrawableCommitted(episode)
 
+    override fun onAdjacentPredecessorComplete(episode: NtkEpisodeToken) =
+        strictSession.onAdjacentPredecessorComplete(episode)
+
     override fun onAdjacentViewportActivated(episode: NtkEpisodeToken) =
         strictSession.onAdjacentViewportActivated(episode)
 

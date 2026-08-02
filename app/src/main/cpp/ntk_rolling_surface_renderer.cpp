@@ -1443,24 +1443,23 @@ private:
             display_, config_, EGL_MIN_SWAP_INTERVAL, &minimumSwapInterval);
         (void)eglGetConfigAttrib(
             display_, config_, EGL_MAX_SWAP_INTERVAL, &maximumSwapInterval);
-        // The EGL owner is a dedicated thread and the Java side keeps only the newest pending
-        // viewport. Let BufferQueue pace this owner at the physical refresh instead of bursting
-        // several interval-0 buffers and then blocking on a full compositor queue. The
-        // mailbox continues accepting touch frames while this thread waits, so this removes queue
-        // phase jitter without blocking input or adding stale-frame latency.
-        const EGLBoolean displayPaced = eglSwapInterval(display_, 1);
-        const int nativeDisplayPacedResult =
-            setNativeWindowSwapInterval(command.window, 1);
+        // Choreographer is the sole 60 Hz pacing authority. Keeping EGL itself at interval one
+        // made gfxstream queueBuffer block 23-30 ms per physical frame and reduced the measured
+        // SurfaceFlinger cadence to 37-39 fps. Interval zero does not synthesize or interpolate a
+        // viewport: Java still submits at most the latest exact MotionEvent coordinate once per
+        // Choreographer callback.
+        const EGLBoolean asynchronous = eglSwapInterval(display_, 0);
+        const int nativeAsyncResult = setNativeWindowSwapInterval(command.window, 0);
         const auto& bufferControls = nativeWindowBufferControls();
         const float requestedFrameRate = command.refreshPeriodNanos > 0
             ? static_cast<float>(1'000'000'000.0 /
                 static_cast<double>(command.refreshPeriodNanos))
             : 60.0F;
-        // The Java Surface owns the one frame-rate vote. A second native vote on the same
-        // BufferQueue creates an unnecessary SurfaceFlinger transaction and can leave the host
-        // emulator's mode-selection state one producer cycle behind the Surface lifecycle.
-        // The renderer still logs the requested cadence, but never competes with that owner.
-        constexpr int frameRateResult = -4;
+        // This is a cadence hint, not another clock: Choreographer still owns admission while the
+        // vote keeps the Surface on the display's seamless 60 Hz mode.
+        const int frameRateResult = bufferControls.setFrameRate != nullptr
+            ? bufferControls.setFrameRate(command.window, requestedFrameRate, 0)
+            : -3;
         // Shared-buffer + auto-refresh exposes the same producer buffer while GLES is updating
         // it. Several physical Samsung compositors scan that buffer out concurrently, which
         // presents old/new image rows as a cascade of horizontal tears during a fling. Keep the
@@ -1472,13 +1471,10 @@ private:
         const int autoRefreshOffResult = bufferControls.setAutoRefresh != nullptr
             ? bufferControls.setAutoRefresh(command.window, false)
             : -3;
-        // The retirement-driven Java producer now admits one successor from each completed native
-        // swap, preventing the old free-running burst. Keep two spare compositor buffers beyond
-        // front/queued/producer so a transient host gfxstream fence does not turn into a 25-30 ms
-        // moving-frame gap. The Java/native mailbox remains depth one and never retains additional
-        // stale FrameCommands.
+        // Front/queued/producer plus one spare is sufficient because Java and native mailboxes
+        // remain depth one and Choreographer never admits a free-running producer burst.
         const int bufferCountResult = bufferControls.setBufferCount != nullptr
-            ? bufferControls.setBufferCount(command.window, 6)
+            ? bufferControls.setBufferCount(command.window, 4)
             : -3;
         // Allocate the finite queue before physical scrolling begins. Leaving this lazy made
         // host-GPU eglSwapBuffers repeatedly spend 55-70 ms growing/acquiring the queue during
@@ -1513,12 +1509,12 @@ private:
         height_ = command.height;
         refreshPeriodNanos_ = command.refreshPeriodNanos > 0
             ? command.refreshPeriodNanos : kDefaultRefreshPeriodNanos;
-        RLOGI("cold display-paced SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap1=%d nativeSwap1=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount6=%d intervalRange=%d..%d durationMs=%.3f",
+        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount4=%d intervalRange=%d..%d durationMs=%.3f",
               static_cast<unsigned long long>(surfaceEpoch_), width_, height_,
               static_cast<long long>(refreshPeriodNanos_),
               preparedWidth_ == width_ && preparedHeight_ == height_ ? 1 : 0,
-              displayPaced == EGL_TRUE ? 1 : 0,
-              nativeDisplayPacedResult,
+              asynchronous == EGL_TRUE ? 1 : 0,
+              nativeAsyncResult,
               static_cast<double>(requestedFrameRate),
               frameRateResult,
               sharedBufferOffResult,
@@ -1592,7 +1588,7 @@ private:
         // ANativeWindow_setSwapInterval on every frame can itself enter BufferQueue
         // synchronization, so keep the established mode for the surface's lifetime and submit
         // only the complete buffer here.
-        constexpr int nativeSwapInterval = 1;
+        constexpr int nativeSwapInterval = 0;
         if (eglSwapBuffers(display_, windowSurface_) != EGL_TRUE) {
             if (failureStage != nullptr) *failureStage = "window-swap";
             return PresentResult::FAILED;

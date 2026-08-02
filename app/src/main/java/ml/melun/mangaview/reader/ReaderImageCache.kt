@@ -818,7 +818,14 @@ internal object NtkReplicaRangeContinuationPolicy {
 }
 
 internal object NtkWebtoonReplicaHeaderPolicy {
-    // A 24-pool Wi-Fi release creates cold TLS/H2 connections together. The former one-second
+    const val WIFI_DIRECT_H2_PREFERRED_HOST = "f1spard.site"
+    const val WIFI_PRIMARY_EXACT_QUIC_ENABLED = false
+    const val WIFI_DIRECT_H2_COHORT_ENABLED = true
+    const val WIFI_DIRECT_H2_HEADER_FAILOVER_MS = 2_500L
+
+    fun directWifiH2HostPriority(host: String): Int =
+        if (host.equals(WIFI_DIRECT_H2_PREFERRED_HOST, ignoreCase = true)) 0 else 1
+    // A 24-call Wi-Fi release fills eight already-isolated H2 pools. The former one-second
     // timer cancelled 79 otherwise viable headers in one 124-page scene and forced 38 redundant
     // QUIC recoveries, extending the complete scene from 9.7 to 11.3 seconds. Explicit 404/410,
     // empty 2xx, and socket resets still fail over immediately; only a live cold connection gets
@@ -883,7 +890,10 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         webtoonReplica: Boolean,
         pageIndex: Int,
     ): Boolean =
-        wifiTransportActive && webtoonReplica && pageIndex > WIFI_ENTRY_LAST_PAGE
+        WIFI_PRIMARY_EXACT_QUIC_ENABLED &&
+            wifiTransportActive &&
+            webtoonReplica &&
+            pageIndex > WIFI_ENTRY_LAST_PAGE
 
     fun shouldAttemptAlternateExactQuic(
         wifiTransportActive: Boolean,
@@ -892,11 +902,10 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         primaryExplicitMisses: Int,
     ): Boolean {
         require(primaryExplicitMisses >= 0)
-        return primaryExplicitMisses > 0 && shouldAttemptPrimaryExactQuic(
-            wifiTransportActive,
-            webtoonReplica,
-            pageIndex,
-        )
+        return primaryExplicitMisses > 0 &&
+            wifiTransportActive &&
+            webtoonReplica &&
+            pageIndex > WIFI_ENTRY_LAST_PAGE
     }
 
     fun primaryExactQuicTimeoutMs(episodePageCount: Int): Long {
@@ -1095,18 +1104,10 @@ internal class NtkWifiExactQuicSessionPool(
 ) : Closeable {
     companion object {
         /**
-         * Use three connections per signed CDN host. This keeps the body wave multiplexed across
-         * nine independent QUIC connections while avoiding the cold initialization, handshake,
-         * native memory, and callback-thread cost of a larger cold engine set. Hosts rotate every
-         * three manifest
-         * entries, so stripe their per-host ordinal rather than the raw page index.
+         * Use three connections per signed CDN host. This remains the bounded recovery topology;
+         * ordinary direct-Wi-Fi webtoon bodies use the measured H2 cohort path above.
          */
         const val WEBTOON_SESSION_STRIPES_PER_HOST = 3
-        // Five to six active H3 bodies share each session in a 48-call wave. One callback thread
-        // serialized their read-ready callbacks; two removed every failed H3 recovery in the
-        // 44.8 MiB cold reproduction. Six produced only another 0.25 s while tripling the executor
-        // cost, so retain the measured knee. This remains direct-Wi-Fi webtoon only and leaves
-        // carrier/SNI and manhwa sessions unchanged.
         const val WEBTOON_CALLBACK_THREADS_PER_SESSION = 2
         const val MANHWA_SESSION_STRIPES_PER_HOST = 6
         private const val REPLICA_HOST_COUNT = 3
@@ -1589,6 +1590,8 @@ object ReaderImageCache {
     private val suppressedPermitlessInitialGeneratedUntil = ConcurrentHashMap<String, Long>()
     private val earlyNtkImageUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
     private val ntkApiPageSlotCandidates = ConcurrentHashMap<String, NtkApiPageSlotCandidates>()
+    private val ntkExactApiReplicaCandidates =
+        ConcurrentHashMap<String, NtkExactApiReplicaCandidates>()
     private val speculativeNtkGeneratedUrls = ConcurrentHashMap<String, EarlyNtkImageUrls>()
     private val earlyNtkImageUrlListeners = CopyOnWriteArrayList<(String, List<String>, String) -> Unit>()
     private val trustedNtkImageApiCounts = ConcurrentHashMap<String, TrustedNtkImageApiCount>()
@@ -1728,6 +1731,24 @@ object ReaderImageCache {
         val createdAtMs: Long
     )
 
+    /** Transport-only replicas proved by the same signed envelope as one canonical page slot. */
+    private data class NtkExactApiReplicaCandidates(
+        val path: String,
+        val manifestDigest: String,
+        val pageIndex: Int,
+        val canonicalAsset: String,
+        val urls: List<String>,
+        val createdAtMs: Long,
+    )
+
+    private data class NtkExactApiReplicaRouteTag(
+        val path: String,
+        val manifestDigest: String,
+        val pageIndex: Int,
+        val canonicalAsset: String,
+        val orderedCandidates: List<String>,
+    )
+
     private data class AnchorAssetBytes(
         val bytes: ByteArray,
         val createdAtMs: Long
@@ -1861,6 +1882,26 @@ data class NtkResolvedSourceRoute(
         request: Request,
         pageIndexOverride: Int? = null,
     ): List<Request> {
+        request.tag(NtkExactApiReplicaRouteTag::class.java)?.let { proof ->
+            val taggedPage = request.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
+                ?: request.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
+                ?: pageIndexOverride
+            val httpClient = getHttpClient()
+            val liveDirectWifiAdjacent = taggedPage == proof.pageIndex &&
+                hasActiveAdjacentNtkForegroundViewerGrant(proof.path) &&
+                runCatching {
+                    httpClient.isNtkWifiTransportActive() &&
+                        !httpClient.isNtkCellularResilientTransportActive()
+                }.getOrDefault(false)
+            val urls = if (liveDirectWifiAdjacent) {
+                proof.orderedCandidates
+            } else {
+                listOf(proof.canonicalAsset)
+            }
+            return urls.distinct().map { candidate ->
+                request.newBuilder().url(candidate).build()
+            }
+        }
         val url = request.url
         val originalHost = url.host.lowercase(Locale.ROOT)
         val replicaHosts = when (originalHost) {
@@ -2016,6 +2057,11 @@ data class NtkResolvedSourceRoute(
                     if (it.url.host.equals(preferredHost, ignoreCase = true)) 0 else 1
                 }
             }
+            if (webtoonReplica && wifiTransportActive &&
+                NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_COHORT_ENABLED
+            ) {
+                return executeDirectWifiWebtoonH2(candidates)
+            }
             // Quarantine discovery and the adopted strict source intentionally use different
             // internal session ids. The immutable episode directory is common to both phases and
             // every canonical pNNN asset, so it is the correct finite-wave resource key.
@@ -2048,8 +2094,14 @@ data class NtkResolvedSourceRoute(
                 ?: -1
             val strictEpisodePageCount =
                 originalRequest.tag(NtkStrictEpisodePageCountTag::class.java)?.pageCount ?: 0
-            val segmentedTransportEnabled = NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED ||
-                (NTK_MANHWA_PAGE_ZERO_SEGMENTED_TRANSPORT_ENABLED && strictPageIndex == 0)
+            val liveDirectWifiAdjacentProofRoute = isLiveDirectWifiAdjacentProofRoute()
+            // The signed adjacent runway already has one canonical full-body request per page.
+            // Splitting its visible anchor into eleven cold Range calls measured slower than the
+            // normal stream and needlessly multiplied physical work. Current episodes and every
+            // carrier/SNI route retain their existing transport policy.
+            val segmentedTransportEnabled = !liveDirectWifiAdjacentProofRoute &&
+                (NTK_MANHWA_SEGMENTED_TRANSPORT_ENABLED ||
+                    (NTK_MANHWA_PAGE_ZERO_SEGMENTED_TRANSPORT_ENABLED && strictPageIndex == 0))
             if (segmentedTransportEnabled && manhwaRangeReplica) {
                 return executeSegmentedManhwa(candidates)
             }
@@ -3547,6 +3599,108 @@ data class NtkResolvedSourceRoute(
          * exposed to the strict spool as one synthetic 200 response. No two successful requests
          * cover the same byte and the ordinary outer operation still observes exactly one image.
          */
+        /**
+         * Restores the measured direct-Wi-Fi webtoon transport: one bounded logical call rotates
+         * through the three immutable origins and eight host-local H2 pools. There is no primary
+         * H3 body, focused H1 fan-out, or discarded prefix. Carrier/SNI never enters this branch.
+         */
+        private fun executeDirectWifiWebtoonH2(candidates: List<Request>): Response {
+            // The signed manifest makes these origins interchangeable and the exact response
+            // validator still owns publication. In the fixed wired-emulator cohort both legacy
+            // origins reset every H2 stream before the compatibility origin succeeded (128
+            // redundant failovers for 89 images). Put the measured healthy origin first only in
+            // this direct-Wi-Fi branch; carrier/SNI retains its independently sharded order.
+            val orderedCandidates = candidates.sortedBy {
+                NtkWebtoonReplicaHeaderPolicy.directWifiH2HostPriority(it.url.host)
+            }
+            val attempts = List(3) { orderedCandidates }.flatten()
+            var lastFailure: IOException? = null
+            attempts.forEachIndexed { index, candidate ->
+                if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+                val physicalCandidate = if (index == 0) {
+                    candidate
+                } else {
+                    candidate.newBuilder()
+                        .tag(
+                            CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                            CustomHttpClient.NtkExactImagePhysicalAttempt(index),
+                        )
+                        .build()
+                }
+                val call = if (index == 0 && candidate.url == originalRequest.url) {
+                    firstCall
+                } else {
+                    delegateFactory.newCall(physicalCandidate)
+                }
+                active.set(call)
+                val headerResolved = AtomicBoolean(false)
+                val deadline = strictReplicaHeaderDeadlineScheduler.schedule({
+                    if (headerResolved.compareAndSet(false, true)) {
+                        val identity = originalRequest.tag(
+                            NtkQuarantineSourceCallIdentity::class.java,
+                        )
+                        val strictTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
+                        Log.w(
+                            TAG,
+                            "reader_strict_direct_wifi_h2_header_deadline " +
+                                "page=${identity?.pageIndex ?: strictTag?.pageIndex ?: -1}," +
+                                "host=${candidate.url.host},attempt=$index," +
+                                "deadlineMs=${NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS}",
+                        )
+                        call.cancel()
+                    }
+                }, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS,
+                    TimeUnit.MILLISECONDS)
+                try {
+                    val response = call.execute()
+                    if (!headerResolved.compareAndSet(false, true)) {
+                        response.close()
+                        throw java.net.SocketTimeoutException(
+                            "Direct Wi-Fi H2 response headers exceeded " +
+                                "${NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS}ms"
+                        )
+                    }
+                    val emptySuccessfulBody = response.code in 200..299 &&
+                        response.body?.contentLength() == 0L
+                    val retryableMiss = response.code == 404 || response.code == 410 ||
+                        emptySuccessfulBody
+                    if (!retryableMiss || index == attempts.lastIndex) {
+                        val canonicalIndex = candidates.indexOfFirst {
+                            it.url == candidate.url
+                        }.coerceAtLeast(0)
+                        return maybeWrapStalledReplicaBody(
+                            response,
+                            candidates,
+                            canonicalIndex,
+                            null,
+                            null,
+                            null,
+                        )
+                    }
+                    response.close()
+                    Log.w(
+                        TAG,
+                        "reader_strict_direct_wifi_h2_failover code=${response.code}," +
+                            "empty=$emptySuccessfulBody,from=${candidate.url.host}," +
+                            "to=${attempts[index + 1].url.host}",
+                    )
+                } catch (failure: IOException) {
+                    if (cancelled.get() || index == attempts.lastIndex) throw failure
+                    lastFailure = failure
+                    Log.w(
+                        TAG,
+                        "reader_strict_direct_wifi_h2_failover " +
+                            "error=${failure.javaClass.simpleName},from=${candidate.url.host}," +
+                            "to=${attempts[index + 1].url.host}",
+                    )
+                } finally {
+                    headerResolved.set(true)
+                    deadline.cancel(false)
+                }
+            }
+            throw lastFailure ?: IOException("Direct Wi-Fi H2 replica image Call exhausted")
+        }
+
         private fun executeSegmentedManhwa(candidates: List<Request>): Response {
             val rangeCandidates = candidates.filter {
                 it.url.host.lowercase(Locale.ROOT) in NTK_MANHWA_RANGE_REPLICA_HOSTS
@@ -3845,6 +3999,15 @@ data class NtkResolvedSourceRoute(
          * identity and the original total length are all mandatory.  No already-consumed byte is
          * requested again and ordinary responsive bodies still use exactly one physical GET.
          */
+        private fun isLiveDirectWifiAdjacentProofRoute(): Boolean =
+            originalRequest.tag(NtkExactApiReplicaRouteTag::class.java)?.let { proof ->
+                hasActiveAdjacentNtkForegroundViewerGrant(proof.path) &&
+                    runCatching {
+                        getHttpClient().isNtkWifiTransportActive() &&
+                            !getHttpClient().isNtkCellularResilientTransportActive()
+                    }.getOrDefault(false)
+            } == true
+
         private fun maybeWrapStalledReplicaBody(
             response: Response,
             candidates: List<Request>,
@@ -5381,6 +5544,7 @@ data class NtkResolvedSourceRoute(
             ntkEpisodeWorkCancelledAt.clear()
             earlyNtkImageUrls.clear()
             ntkApiPageSlotCandidates.clear()
+            ntkExactApiReplicaCandidates.clear()
             speculativeNtkGeneratedUrls.clear()
             trustedNtkImageApiCounts.clear()
             exactNtkImageApiCountProofs.clear()
@@ -5489,6 +5653,7 @@ data class NtkResolvedSourceRoute(
         val cancelledAck = cancelFutureTasks(ntkGeneratedAckRecoveryFlights) { it.endsWith(fallbackSuffix) }
         earlyNtkImageUrls.remove(path)
         ntkApiPageSlotCandidates.entries.removeAll { it.value.path == path }
+        ntkExactApiReplicaCandidates.entries.removeAll { it.value.path == path }
         speculativeNtkGeneratedUrls.remove(path)
         trustedNtkImageApiCounts.remove(path)
         exactNtkImageApiCountProofs.remove(path)
@@ -6875,11 +7040,43 @@ data class NtkResolvedSourceRoute(
         // The manifest retains the document's canonical asset identity. A sampled suffix is
         // transport routing only: exact response validation and fallback still reject a stale or
         // genuinely mixed-page hint without changing the manifest seal.
+        val httpClient = getHttpClient()
+        val proofBackedAdjacentCandidates = if (
+            pageIndex in 0 until NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES &&
+            hasActiveAdjacentNtkForegroundViewerGrant(manifestSeal.normalizedEpisodePath) &&
+            runCatching {
+                httpClient.isNtkWifiTransportActive() &&
+                    !httpClient.isNtkCellularResilientTransportActive()
+            }.getOrDefault(false)
+        ) {
+            NtkProofBackedAdjacentReplicaPolicy.orderedCandidates(
+                asset,
+                recentExactNtkApiReplicaCandidates(
+                    manifestSeal.normalizedEpisodePath,
+                    manifestSeal.digestSha256,
+                    pageIndex,
+                    asset,
+                ),
+                pageIndex,
+                directWifiAdjacent = true,
+            )
+        } else {
+            listOf(asset)
+        }
+        val exactApiReplicaTag = proofBackedAdjacentCandidates
+            .takeIf { it.size > 1 }
+            ?.let { candidates ->
+                NtkExactApiReplicaRouteTag(
+                    manifestSeal.normalizedEpisodePath,
+                    manifestSeal.digestSha256,
+                    pageIndex,
+                    asset,
+                    candidates,
+                )
+            }
         val hintedTransportAsset = hintedNtkGeneratedImageUrl(asset) ?: asset
-        val transportAsset = stripeStrictManhwaTransportAsset(
-            hintedTransportAsset,
-            pageIndex,
-        )
+        val transportAsset = exactApiReplicaTag?.orderedCandidates?.first()
+            ?: stripeStrictManhwaTransportAsset(hintedTransportAsset, pageIndex)
         val base = requestFor(manga, transportAsset, foregroundPriority = true).newBuilder()
             .removeHeader("X-MangaViewer-Foreground")
             // The three current image origins negotiate H2 reliably. Cold H3 was measured to
@@ -6890,8 +7087,12 @@ data class NtkResolvedSourceRoute(
                 NtkStrictEpisodePageCountTag::class.java,
                 NtkStrictEpisodePageCountTag(manifestSeal.pageCount),
             )
+            .apply {
+                exactApiReplicaTag?.let { proof ->
+                    tag(NtkExactApiReplicaRouteTag::class.java, proof)
+                }
+            }
             .build()
-        val httpClient = getHttpClient()
         // The strict session is created only after a typed exact manifest has been atomically
         // installed. Route authority therefore comes from that immutable seal, not from the
         // asynchronous compatibility mirror in earlyNtkImageUrls. Consulting the mirror here made
@@ -6903,7 +7104,11 @@ data class NtkResolvedSourceRoute(
         // exists) and never retries, redirects, or hedges that source body.
         val baseFactory: Call.Factory = httpClient.ntkDemandBoundExactImageFactory()
         val replicaAwareFactory = replicaFailoverFactory(baseFactory)
-        val factoryId = "ntk-demand-bound-exact-image"
+        val factoryId = if (exactApiReplicaTag != null) {
+            "ntk-demand-bound-exact-image-proof-replica"
+        } else {
+            "ntk-demand-bound-exact-image"
+        }
         val host = base.url.host.lowercase(Locale.ROOT)
         val port = base.url.port
         val refererHost = base.header("Referer")?.let { referer ->
@@ -6962,6 +7167,7 @@ data class NtkResolvedSourceRoute(
         pageIndex: Int,
         canonicalAsset: String,
         preferProbeWarmRoute: Boolean = false,
+        enableProofBackedExactReplicaRoute: Boolean = false,
     ): NtkResolvedSourceRoute {
         val asset = ReaderPreparedStore.canonicalOriginalAssetIdentity(canonicalAsset)
         require(pageIndex in binding.normalizedOrderedCanonicalAssets.indices)
@@ -6985,7 +7191,41 @@ data class NtkResolvedSourceRoute(
                 generatedRef != null &&
                 (generatedRef.extension == "jpg" || generatedRef.extension == "jpeg") &&
                 generatedRef.episodeKey !in ntkDirectWifiMixedManhwaEpisodes
-        val transportAsset = if (directWifiMixedPngPage) {
+        val proofBackedAdjacentCandidates = if (
+            enableProofBackedExactReplicaRoute && generatedRef == null &&
+            directWifiNetwork != null &&
+            !httpClient.isNtkCellularResilientTransportActive() &&
+            httpClient.isNtkWifiTransportActive() &&
+            hasActiveAdjacentNtkForegroundViewerGrant(binding.episodePath)
+        ) {
+            NtkProofBackedAdjacentReplicaPolicy.orderedCandidates(
+                asset,
+                recentExactNtkApiReplicaCandidates(
+                    binding.episodePath,
+                    binding.orderedAssetsDigest,
+                    pageIndex,
+                    asset,
+                ),
+                pageIndex,
+                directWifiAdjacent = true,
+            )
+        } else {
+            listOf(asset)
+        }
+        val exactApiReplicaTag = proofBackedAdjacentCandidates
+            .takeIf { it.size > 1 }
+            ?.let { candidates ->
+                NtkExactApiReplicaRouteTag(
+                    binding.episodePath,
+                    binding.orderedAssetsDigest,
+                    pageIndex,
+                    asset,
+                    candidates,
+                )
+            }
+        val transportAsset = if (exactApiReplicaTag != null) {
+            exactApiReplicaTag.orderedCandidates.first()
+        } else if (directWifiMixedPngPage) {
             directWifiMixedManhwaPhysicalAsset(asset, checkNotNull(directWifiNetwork))
         } else {
             asset
@@ -7015,6 +7255,9 @@ data class NtkResolvedSourceRoute(
                 ordinaryTransportSelection?.let { selection ->
                     tag(NtkDirectWifiOrdinaryTransportSelection::class.java, selection)
                 }
+                exactApiReplicaTag?.let { proof ->
+                    tag(NtkExactApiReplicaRouteTag::class.java, proof)
+                }
             }
             .build()
         val transportFactory: Call.Factory = if (directWifiMixedPngPage) {
@@ -7033,6 +7276,8 @@ data class NtkResolvedSourceRoute(
         val factory = replicaFailoverFactory(transportFactory)
         val factoryId = if (directWifiMixedPngPage) {
             "ntk-click-mixed-png-h1"
+        } else if (exactApiReplicaTag != null) {
+            "ntk-click-adjacent-exact-api-replica"
         } else if (directWifiOrdinaryJpegPage && preferProbeWarmRoute) {
             "ntk-click-adjacent-probe-warm-existing"
         } else if (directWifiOrdinaryJpegPage) {
@@ -10661,6 +10906,78 @@ data class NtkResolvedSourceRoute(
         val entry = ntkApiPageSlotCandidates[image] ?: return emptyList()
         if (SystemClock.elapsedRealtime() - entry.createdAtMs > EARLY_NTK_IMAGE_URL_TTL_MS) {
             ntkApiPageSlotCandidates.remove(image, entry)
+            return emptyList()
+        }
+        return entry.urls
+    }
+
+    private fun exactApiReplicaKey(
+        path: String,
+        manifestDigest: String,
+        pageIndex: Int,
+        canonicalAsset: String,
+    ): String = "$path|$manifestDigest|$pageIndex|" +
+        NtkStripDigests.canonicalAssetDigestSha256(canonicalAsset)
+
+    /**
+     * Retains only transport alternatives from one already-validated exact API envelope. The
+     * canonical manifest remains unchanged; consumers must present its digest, page and asset to
+     * retrieve the candidates, so a later/stale envelope cannot route a strict operation.
+     */
+    internal fun rememberExactNtkApiReplicaCandidates(
+        path: String,
+        manifestDigest: String,
+        orderedAssets: List<String>,
+        orderedReplicaCandidates: List<List<String>>,
+    ) {
+        val normalizedPath = earlyNtkPathKey(path)
+        if (normalizedPath.isEmpty() || !NtkStripDigests.isSha256(manifestDigest) ||
+            orderedAssets.isEmpty() || orderedAssets.size != orderedReplicaCandidates.size
+        ) return
+        val createdAtMs = SystemClock.elapsedRealtime()
+        orderedAssets.indices.forEach { pageIndex ->
+            val canonical = NtkStripDigests.canonicalAsset(orderedAssets[pageIndex])
+            val trusted = LinkedHashSet<String>()
+            (orderedReplicaCandidates[pageIndex] + canonical).forEach { candidate ->
+                val value = NtkStripDigests.canonicalAsset(candidate)
+                val uri = runCatching { URI(value) }.getOrNull() ?: return@forEach
+                if (!uri.scheme.equals("https", ignoreCase = true) ||
+                    uri.host.isNullOrBlank() || uri.rawUserInfo != null ||
+                    uri.port !in setOf(-1, 443) || uri.rawPath.isNullOrBlank() ||
+                    uri.rawPath == "/" || isDisallowedNtkImageAssetUrl(value)
+                ) return@forEach
+                trusted += value
+            }
+            if (canonical !in trusted || trusted.size <= 1) return@forEach
+            val entry = NtkExactApiReplicaCandidates(
+                normalizedPath,
+                manifestDigest,
+                pageIndex,
+                canonical,
+                Collections.unmodifiableList(ArrayList(trusted.take(4))),
+                createdAtMs,
+            )
+            ntkExactApiReplicaCandidates[
+                exactApiReplicaKey(normalizedPath, manifestDigest, pageIndex, canonical)
+            ] = entry
+        }
+    }
+
+    private fun recentExactNtkApiReplicaCandidates(
+        path: String,
+        manifestDigest: String,
+        pageIndex: Int,
+        canonicalAsset: String,
+    ): List<String> {
+        val normalizedPath = earlyNtkPathKey(path)
+        val canonical = NtkStripDigests.canonicalAsset(canonicalAsset)
+        val key = exactApiReplicaKey(normalizedPath, manifestDigest, pageIndex, canonical)
+        val entry = ntkExactApiReplicaCandidates[key] ?: return emptyList()
+        if (entry.path != normalizedPath || entry.manifestDigest != manifestDigest ||
+            entry.pageIndex != pageIndex || entry.canonicalAsset != canonical ||
+            SystemClock.elapsedRealtime() - entry.createdAtMs > EARLY_NTK_IMAGE_URL_TTL_MS
+        ) {
+            ntkExactApiReplicaCandidates.remove(key, entry)
             return emptyList()
         }
         return entry.urls

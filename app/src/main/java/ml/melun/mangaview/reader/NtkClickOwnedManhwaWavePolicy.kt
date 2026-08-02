@@ -116,6 +116,23 @@ internal object NtkClickOwnedManhwaWavePolicy {
     }
 
     /**
+     * Reserves the visible-body lane for a cold continue that resumes beyond the click-time probe
+     * frontier. Without this distinction the restored page queues behind the complete offscreen
+     * body ring, so the user can wait several seconds before the one image they are looking at even
+     * starts. The carrier/SNI path deliberately keeps its existing admission topology.
+     */
+    fun shouldUseDirectWifiRestoredViewportLane(
+        wifiTransport: Boolean,
+        pageIndex: Int,
+        initialViewportPage: Int,
+    ): Boolean {
+        require(pageIndex >= 0)
+        return wifiTransport &&
+            initialViewportPage >= PROBE_FRONTIER_PAGES &&
+            pageIndex == initialViewportPage
+    }
+
+    /**
      * Prioritizes only an already HEAD-proven uncommon body needed by the current Wi-Fi viewport.
      *
      * This does not authorize another candidate race or body transfer. The caller merely chooses
@@ -194,6 +211,29 @@ internal object NtkClickOwnedManhwaWavePolicy {
             }
             while (forwardPage < forwardEnd) add(forwardPage++)
             while (tailPage >= forwardEnd) add(tailPage--)
+        }
+    }
+
+    /**
+     * Opens the rest of an adjacent episode after its bounded runway becomes the real viewport.
+     *
+     * [exactBodyAdmissionOrder] assumes the current-episode entry policy already admitted the
+     * complete forty-page forward ring.  An offscreen adjacent episode deliberately admits only
+     * four bodies before the boundary, so reusing that order left pages 5..40 unresolved and
+     * forced them through the slower missing-body fallback.  Once the adjacent viewport is
+     * compositor-proven, those pages are current-episode work: admit the forward gap first, then
+     * retain the unchanged finite-tail order.
+     */
+    fun adjacentExactBodyAdmissionOrder(
+        pageCount: Int,
+        admittedRunwayPages: Int,
+    ): List<Int> {
+        require(pageCount in 1..NtkSourceLanePolicy.MAX_EPISODE_PAGES)
+        require(admittedRunwayPages in 0..minOf(EXACT_PRE_FRAME_RUNWAY_PAGES, pageCount))
+        val forwardRingEnd = minOf(EXACT_PRE_FRAME_RUNWAY_PAGES, pageCount)
+        return buildList(pageCount - admittedRunwayPages) {
+            for (pageIndex in admittedRunwayPages until forwardRingEnd) add(pageIndex)
+            addAll(exactBodyAdmissionOrder(pageCount))
         }
     }
 

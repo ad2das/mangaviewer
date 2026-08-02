@@ -145,8 +145,14 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
     fun onInitialDrawableCommitted(episode: NtkEpisodeToken) = Unit
 
     /**
-     * Releases a direct-Wi-Fi adjacent session's body workset after that episode becomes the
-     * physical viewport. Before this signal the session keeps only its atomic boundary runway.
+     * Admits the encoded adjacent suffix after the predecessor is completely drawable. This does
+     * not publish list structure or decode pixels; it only lets the resident-body channel finish
+     * before the next physical scroll.
+     */
+    fun onAdjacentPredecessorComplete(episode: NtkEpisodeToken)
+
+    /**
+     * Reports that the already prepared adjacent episode has become the physical viewport.
      */
     fun onAdjacentViewportActivated(episode: NtkEpisodeToken)
 

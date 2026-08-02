@@ -287,7 +287,7 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
-            5,
+            4,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/manhwa/work/adjacent",
                 120,
@@ -321,9 +321,9 @@ class NtkStrictInitialWavePolicyTest {
                 wifiQuicBulkTransport = true,
             ),
         )
-        assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(1))
-        assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(3))
-        assertEquals(24, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(124))
+        assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(1))
+        assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(3))
+        assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(124))
         assertEquals(
             24,
             NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
@@ -369,7 +369,7 @@ class NtkStrictInitialWavePolicyTest {
             ),
         )
         assertEquals(
-            24,
+            48,
             NtkStrictInitialWavePolicy.usefulPhysicalLaneCount(
                 "/webtoon/work/episode",
                 120,
@@ -482,8 +482,8 @@ class NtkStrictInitialWavePolicyTest {
             adjacentPrefetch = true,
         )
 
-        assertEquals((0 until 5).toSet(), admitted)
-        assertEquals(5, NtkStrictInitialWavePolicy.submissionTarget(admitted.size))
+        assertEquals((0 until 4).toSet(), admitted)
+        assertEquals(4, NtkStrictInitialWavePolicy.submissionTarget(admitted.size))
     }
 
     @Test

@@ -44,12 +44,12 @@ $arguments = @{
     NtkSiteRoot = $NtkSiteRoot
     OutDir = $OutDir
     Seed = $Seed
-    CountPerType = 10
+    CountPerType = 20
     FirstImageSlaMs = 4000
     ManhwaImageSlaMs = 4000
-    # The user-facing entry deadline remains four seconds. Complete-work readiness is still
-    # mandatory, but large cold sources are allowed their measured physical transfer time.
-    AllImagesSlaMs = 30000
+    # The entry deadline remains four seconds; every canonical image must be drawable within the
+    # separate six-second complete-work UX deadline.
+    AllImagesSlaMs = 6000
     CaseTimeoutSeconds = $CaseTimeoutSeconds
     QualificationDeviceMode = "HOST_GPU_EMULATOR"
     # AndroidX terminates the measured target process after measureRepeated returns. A reopen
@@ -62,7 +62,7 @@ if($SkipInstall) { $arguments.SkipInstall = $true }
 if($RequireBaselineProfile) { $arguments.RequireBaselineProfile = $true }
 if($StandalonePerfetto) { $arguments.StandalonePerfetto = $true }
 
-Write-Host "NTK host-GPU emulator qualification: fresh random 10+10, cold, first image=4000ms, all images=30000ms"
+Write-Host "NTK host-GPU emulator qualification: fresh random 20+20, cold, first image=4000ms, all images=6000ms"
 & $runner @arguments
 if(-not $?) {
     throw "NTK host-GPU emulator qualification failed"

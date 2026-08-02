@@ -180,7 +180,10 @@ class NtkWebtoonBodyWallPolicyTest {
     }
 
     @Test
-    fun wifiUsesExactQuicPrimaryOnlyAfterTheEntryPages() {
+    fun wifiUsesMeasuredH2CohortsAndKeepsQuicForRecovery() {
+        assertFalse(NtkWebtoonReplicaHeaderPolicy.WIFI_PRIMARY_EXACT_QUIC_ENABLED)
+        assertTrue(NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_COHORT_ENABLED)
+        assertEquals(2_500L, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS)
         assertEquals(2, NtkWebtoonReplicaHeaderPolicy.WIFI_ENTRY_LAST_PAGE)
         assertFalse(
             NtkWebtoonReplicaHeaderPolicy.shouldAttemptPrimaryExactQuic(
@@ -189,7 +192,7 @@ class NtkWebtoonBodyWallPolicyTest {
                 pageIndex = NtkWebtoonReplicaHeaderPolicy.WIFI_ENTRY_LAST_PAGE,
             )
         )
-        assertTrue(
+        assertFalse(
             NtkWebtoonReplicaHeaderPolicy.shouldAttemptPrimaryExactQuic(
                 wifiTransportActive = true,
                 webtoonReplica = true,
@@ -657,6 +660,20 @@ class NtkWebtoonBodyWallPolicyTest {
         assertEquals(
             listOf("f1spard.site", "xiaomichina.com", "shaomoi.org"),
             preference.orderHosts(originalOrder),
+        )
+    }
+
+    @Test
+    fun directWifiH2StartsWithTheMeasuredHealthyCompatibilityOrigin() {
+        val hosts = listOf("xiaomichina.com", "f1spard.site", "shaomoi.org")
+
+        assertEquals(
+            listOf("f1spard.site", "xiaomichina.com", "shaomoi.org"),
+            hosts.sortedBy(NtkWebtoonReplicaHeaderPolicy::directWifiH2HostPriority),
+        )
+        assertEquals(
+            0,
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2HostPriority("F1SPARD.SITE"),
         )
     }
 

@@ -34,6 +34,17 @@ function Escape-Table([string]$Value) {
     return $Value.Replace('|', '\|').Replace("`r", ' ').Replace("`n", ' ')
 }
 
+function Get-Sha256([string]$Value) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString(
+            $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value))
+        )).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Get-DeltaMs($Start, $End) {
     if($null -eq $Start -or $null -eq $End) { return $null }
     $startValue = 0L
@@ -63,19 +74,20 @@ $summary = $summaryJson | ConvertFrom-Json
 # JSON Schema validates shape. Recompute cross-field invariants so a hand-edited or stale summary
 # cannot turn a diagnostic run, wrong renderer/device mode, or partial case set into a formal PASS.
 $cases = @($summary.cases)
+$selectedEpisodePairs = @($summary.selectedEpisodePairs)
 $webtoonCases = @($cases | Where-Object { [string]$_.workType -ceq "webtoon" })
 $manhwaCases = @($cases | Where-Object { [string]$_.workType -ceq "manhwa" })
 $actualPassedCases = @($cases | Where-Object { $_.passed -eq $true }).Count
 $expectedCaseCount = [int]$summary.expectedWebtoon + [int]$summary.expectedManhwa
-$targetSatisfied = [int]$summary.requestedCountPerType -eq 10 -and
-    [int]$summary.expectedWebtoon -eq 10 -and [int]$summary.expectedManhwa -eq 10
+$targetSatisfied = [int]$summary.requestedCountPerType -eq 20 -and
+    [int]$summary.expectedWebtoon -eq 20 -and [int]$summary.expectedManhwa -eq 20
 # Warm reopen is an out-of-verdict diagnostic. Cold qualification is never gated by whether that
 # optional second opening was available; measured retained-memory growth is asserted per case.
 $warmSatisfied = $true
 $firstSlaSatisfied = [int]$summary.firstImageSlaMs -eq 4000 -and
     [int]$summary.webtoonImageSlaMs -eq 4000 -and
     [int]$summary.manhwaImageSlaMs -eq 4000
-$allImagesSlaSatisfied = [int]$summary.allImagesSlaMs -eq 30000
+$allImagesSlaSatisfied = [int]$summary.allImagesSlaMs -eq 6000
 $freshRandomSeedSatisfied = [string]$summary.seedSelectionMode -ceq "FRESH_RANDOM"
 $formalConfiguration = $targetSatisfied -and $warmSatisfied -and $firstSlaSatisfied -and
     $allImagesSlaSatisfied -and
@@ -118,7 +130,7 @@ Assert-Contract ($webtoonCases.Count -eq [int]$summary.expectedWebtoon) "webtoon
 Assert-Contract ($manhwaCases.Count -eq [int]$summary.expectedManhwa) "manhwa count mismatch"
 Assert-Contract ($actualPassedCases -eq [int]$summary.passedCases) "passedCases mismatch"
 Assert-Contract ($summary.qualificationTargetSatisfied -eq $targetSatisfied) `
-    "qualificationTargetSatisfied was not derived from exact 10+10"
+    "qualificationTargetSatisfied was not derived from exact 20+20"
 Assert-Contract ($summary.warmReopenRequirementSatisfied -eq $warmSatisfied) `
     "warmReopenRequirementSatisfied mismatch"
 Assert-Contract ($summary.firstImageSlaRequirementSatisfied -eq $firstSlaSatisfied) `
@@ -150,6 +162,11 @@ Assert-Contract ($summary.deviceRequirementSatisfied -eq $derivedDeviceRequireme
     "selected device requirement mismatch"
 Assert-Contract ([string]$summary.finalDeviceStatus -ceq $derivedDeviceStatus) `
     "final device status mismatch"
+Assert-Contract ([string]$summary.selectionAlgorithm -ceq
+        "work: sha256(seed|type|id) lexical rank; episode-pair: sha256(seed|type|workId|currentEpisodeId|nextEpisodeId) lexical rank") `
+    "work/episode-pair selection algorithm mismatch"
+Assert-Contract ($selectedEpisodePairs.Count -eq $cases.Count) `
+    "selected exact episode-pair count did not match case count"
 
 $caseIds = @($cases | ForEach-Object { [string]$_.caseId })
 $workKeys = @($cases | ForEach-Object { "$($_.workType)|$($_.workId)" })
@@ -159,8 +176,37 @@ Assert-Contract ((@($workKeys | Sort-Object -Unique)).Count -eq $workKeys.Count)
     "duplicate selected work within a run"
 for($index = 0; $index -lt $cases.Count; $index++) {
     $case = $cases[$index]
+    $pair = $selectedEpisodePairs[$index]
     Assert-Contract ([int]$case.ordinal -eq ($index + 1)) `
         "case ordinal mismatch at index $index"
+    Assert-Contract ([int]$pair.ordinal -eq ($index + 1)) `
+        "selected episode-pair ordinal mismatch at index $index"
+    Assert-Contract ([int64]$pair.seed -eq [int64]$summary.seed) `
+        "selected episode-pair seed mismatch at index $index"
+    Assert-Contract ([string]$pair.workType -ceq [string]$case.workType -and
+        [string]$pair.workId -ceq [string]$case.workId -and
+        [string]$pair.currentEpisodeId -ceq [string]$case.episodeId -and
+        [string]$pair.currentEpisodePath -ceq [string]$case.episodePath -and
+        [string]$pair.nextEpisodePath -ceq
+            [string](Get-Property $case "expectedAdjacentEpisodePath") -and
+        [int]$pair.nextEpisodePageCount -eq
+            [int](Get-Property $case "expectedAdjacentPageCount")) `
+        "case identity does not match its recorded exact current/next episode pair at index $index"
+    $expectedPairPrefix = "/$([string]$pair.workType)/$([string]$pair.workId)/"
+    $expectedPairHash = Get-Sha256 (
+        "$([int64]$summary.seed)|$([string]$pair.workType)|$([string]$pair.workId)|" +
+            "$([string]$pair.currentEpisodeId)|$([string]$pair.nextEpisodeId)"
+    )
+    Assert-Contract ([string]$pair.currentEpisodePath -ceq
+            ($expectedPairPrefix + [string]$pair.currentEpisodeId) -and
+        [string]$pair.nextEpisodePath -ceq
+            ($expectedPairPrefix + [string]$pair.nextEpisodeId) -and
+        [string]$pair.currentEpisodePath -cne [string]$pair.nextEpisodePath -and
+        [int]$pair.nextEpisodePageCount -ge 4 -and
+        [string]$pair.pairSelectionHash -ceq $expectedPairHash -and
+        [int]$pair.pairRankOrdinal -ge 1 -and
+        [int]$pair.pairRankOrdinal -le [int]$pair.pairCandidateCount) `
+        "selected episode-pair provenance was invalid at index $index"
     $violations = @((Get-Property $case "violations"))
     Assert-Contract (($case.passed -eq $true) -eq ($violations.Count -eq 0)) `
         "case pass/violation mismatch: $($case.caseId)"
@@ -186,6 +232,21 @@ for($index = 0; $index -lt $cases.Count; $index++) {
         Assert-Contract ([int64]$case.allImagesReadyPageCount -eq
             [int64]$case.authoritativePageCount) `
             "render-ready page count mismatch: $($case.caseId)"
+        Assert-Contract (-not [string]::IsNullOrWhiteSpace(
+                [string]$case.expectedAdjacentEpisodePath) -and
+            [string]$case.adjacentRunwayTargetEpisode -ceq
+                [string]$case.expectedAdjacentEpisodePath -and
+            [int]$case.expectedAdjacentPageCount -ge 4 -and
+            [int]$case.adjacentTotalPageCount -eq [int]$case.expectedAdjacentPageCount -and
+            [int]$case.adjacentRunwayPageCount -eq 4 -and
+            [int]$case.adjacentObservedRunwayDrawableCount -eq 4) `
+            "exact four-drawable forward-adjacent proof missing: $($case.caseId)"
+        Assert-Contract ($case.runwayReadyBeforeTail -eq $true -and
+            [double]$case.adjacentBoundaryWaitMs -ge 0.0 -and
+            [double]$case.adjacentBoundaryWaitMs -le 500.0 -and
+            [double]$case.adjacentAttachMs -ge 0.0 -and
+            [double]$case.adjacentAttachMs -le 200.0) `
+            "forward-adjacent tail transition timing proof failed: $($case.caseId)"
         Assert-Contract ($case.macroResult.allImagesSlaPassed -eq $true) `
             "Macrobenchmark all-images SLA proof missing: $($case.caseId)"
         Assert-Contract (-not [string]::IsNullOrWhiteSpace(
@@ -211,7 +272,26 @@ for($index = 0; $index -lt $cases.Count; $index++) {
             [int64]$case.pageListFailureCount -eq 0L -and
             [int64]$case.duplicateRequestCount -eq 0L) `
             "image pipeline failure or duplicate request present: $($case.caseId)"
-        Assert-Contract ([double]$case.activePresentationFps -ge
+        foreach($frameField in @(
+                "activePresentedFrameCount",
+                "activePresentationIntervalCount",
+                "activePresentationFps",
+                "activePresentationFpsTarget",
+                "activePresentationJankPercent",
+                "activePresentationGapMaxMs",
+                "activeRefreshPeriodMs",
+                "activeRefreshHz",
+                "activeCpuPercent",
+                "activeMainThreadRunningMaxMs",
+                "activePresentationSystemFence")) {
+            Assert-Contract ($null -ne (Get-Property $case $frameField)) `
+                "forward-scroll frame field missing: $frameField ($($case.caseId))"
+        }
+        Assert-Contract ([double]$case.activePresentationSystemFence -eq 1.0) `
+            "forward-scroll evidence was not a SurfaceFlinger presentation fence: $($case.caseId)"
+        Assert-Contract ([double]$case.activePresentedFrameCount -gt 1.0 -and
+            [double]$case.activePresentationIntervalCount -gt 0.0 -and
+            [double]$case.activePresentationFps -ge
                 [double]$case.activePresentationFpsTarget -and
             [double]$case.activePresentationJankPercent -lt 1.0 -and
             [double]$case.activePresentationGapMaxMs -lt 100.0 -and
@@ -308,11 +388,12 @@ for($index = 0; $index -lt $cases.Count; $index++) {
 }
 
 $lines = [Collections.Generic.List[string]]::new()
-$lines.Add("# NTK 뷰어 콜드 10+10 결과")
+$lines.Add("# NTK 뷰어 콜드 20+20 결과")
 $lines.Add("")
 $lines.Add("- 실행 시각: $($summary.generatedAt)")
 $lines.Add("- 랜덤 시드: $($summary.seed)")
 $lines.Add("- 시드 선택 모드: $($summary.seedSelectionMode) (정식 자격 충족=$($summary.freshRandomSeedRequirementSatisfied))")
+$lines.Add("- 작품/회차 pair 선택: $($summary.selectionAlgorithm)")
 $lines.Add("- 기기: $($summary.device.manufacturer) $($summary.device.model), Android $($summary.device.androidRelease), $($summary.device.refreshHz)Hz")
 $lines.Add("- 기기 자격 모드: $($summary.qualificationDeviceMode) (충족=$($summary.deviceRequirementSatisfied), 판정=$($summary.finalDeviceStatus))")
 $lines.Add("- GPU: $($summary.device.surfaceFlingerGles); HWUI=$($summary.device.hwuiRenderer); software=$($summary.device.softwareGpuDetected)")
@@ -335,9 +416,28 @@ if(-not $summary.deviceRequirementSatisfied) {
     $lines.Add("- 선택 기기 자격 판정: **FAIL** — $($summary.qualificationDeviceMode) 증거를 충족하지 않았다.")
 }
 if($summary.diagnosticOnly) {
-    $lines.Add("- 형식 자격 판정: **DIAGNOSTIC ONLY** — 새 무작위 시드, 정확히 10+10, 첫 이미지 4000ms 및 전체 이미지 완료 30000ms SLA가 모두 필요하다. 웜 재개방은 선택 진단이며 콜드 판정에 포함되지 않는다.")
+    $lines.Add("- 형식 자격 판정: **DIAGNOSTIC ONLY** — 새 무작위 시드, 정확히 20+20, 첫 이미지 4000ms 및 전체 이미지 완료 6000ms SLA가 모두 필요하다. 웜 재개방은 선택 진단이며 콜드 판정에 포함되지 않는다.")
 }
 $lines.Add("- Schema 검증: ``$schemaPath`` 및 cross-field 재계산 PASS")
+$lines.Add("")
+
+$lines.Add("## 시드로 선정된 정확한 current → next 회차 pair")
+$lines.Add("")
+$lines.Add("순번 | seed | 유형 | 작품 ID | current 회차 | next 회차 | next 페이지 | pair rank | pair hash")
+$lines.Add("---: | ---: | --- | --- | --- | --- | ---: | ---: | ---")
+foreach($pair in $selectedEpisodePairs) {
+    $lines.Add((@(
+        [string]$pair.ordinal
+        [string]$pair.seed
+        Escape-Table ([string]$pair.workType)
+        Escape-Table ([string]$pair.workId)
+        Escape-Table ([string]$pair.currentEpisodePath)
+        Escape-Table ([string]$pair.nextEpisodePath)
+        [string]$pair.nextEpisodePageCount
+        ("{0}/{1}" -f $pair.pairRankOrdinal, $pair.pairCandidateCount)
+        Escape-Table ([string]$pair.pairSelectionHash)
+    ) -join ' | '))
+}
 $lines.Add("")
 
 $lines.Add("## 작품별 결과")
@@ -440,7 +540,7 @@ $lines.Add("")
 
 $lines.Add("## 프레임·네트워크·메모리 증거")
 $lines.Add("")
-$lines.Add('`uiWorkEquivalentFps`는 진단값이다. formal FPS 판정은 HWUI frame-commit-qualified `native_frame_summary`를 사용한다.')
+$lines.Add('`uiWorkEquivalentFps`와 `native_frame_summary`는 진단값이다. formal FPS/jank 판정은 Reader SurfaceView의 SurfaceFlinger `PresentFenceSignaled` 프레임만 사용한다.')
 $lines.Add("")
 foreach($case in $cases) {
     $androidx = Get-Property $case "androidxBenchmark"
@@ -522,7 +622,7 @@ $lines.Add("")
 $lines.Add("- 프로덕션 APK: ``$($summary.apks.app)`` (SHA-256 ``$($summary.apks.appSha256)``)")
 $lines.Add("- 측정 APK: ``$($summary.apks.benchmark)`` (SHA-256 ``$($summary.apks.benchmarkSha256)``)")
 $lines.Add("- 변경 전 자격 경로: 고정 작품·에뮬레이터·전체 페이지 선행 staging 경로가 존재했다.")
-$lines.Add("- 변경 후 자격 경로: ``ntk_emulator_host_qualification.ps1`` → ``ntk_cold_qualification.ps1`` 한 경로만 사용하며, 실행 시 새 무작위 시드·10+10·첫 이미지 4000ms·전체 이미지 완료 30000ms·Host GPU 에뮬레이터를 고정한다. 고정 시드 재현과 선택적 웜 재개방은 진단 전용이다.")
+$lines.Add("- 변경 후 자격 경로: ``ntk_emulator_host_qualification.ps1`` → ``ntk_cold_qualification.ps1`` 한 경로만 사용하며, 실행 시 새 무작위 시드로 작품과 current→next 회차 pair를 각각 hash-rank하고 20+20·첫 이미지 4000ms·전체 이미지 완료 6000ms·Host GPU 에뮬레이터를 고정한다. 기록된 selection.json 고정 시드 재현과 선택적 웜 재개방은 진단 전용이다.")
 $lines.Add("- 테스트용 변경: Macrobenchmark는 production ``#작품ID`` 검색 UI, 회차 행 탭, 순방향 스크롤을 수행한다. viewer Activity나 이미지 URL을 직접 실행하지 않는다.")
 $lines.Add("- 프로덕션 변경: 이 측정 보고서는 APK에서 소스 diff를 역추정하지 않는다. 위 APK hash와 별도 VCS diff를 함께 보관해야 하며, 측정값이 없는 before/after 수치는 작성하지 않는다.")
 $lines.Add("- 테스트 통과 전용 분기 확인: 특정 작품 ID 분기 없이 모든 사용자가 쓸 수 있는 production 정확 검색과 production UI를 사용한다. 클릭 전 image/page-list/decode 작업은 1건이라도 case FAIL이다.")
@@ -535,7 +635,7 @@ $commands = [ordered]@{
     "앱 APK 설치" = $summary.reproducibility.installApp
     "Macrobenchmark APK 설치" = $summary.reproducibility.installBenchmark
     "선정 첫 case 직접 Macrobenchmark" = $summary.reproducibility.macrobenchmark
-    "전체 랜덤 run 재실행" = $summary.reproducibility.rerun
+    "기록된 exact pair 전체 재실행" = $summary.reproducibility.rerun
     "Perfetto config 전송" = $summary.reproducibility.perfettoPush
     "Perfetto 시작" = $summary.reproducibility.perfettoStart
     "Perfetto 종료" = $summary.reproducibility.perfettoStop
@@ -550,6 +650,7 @@ foreach($entry in $commands.GetEnumerator()) {
     $lines.Add("")
 }
 $lines.Add("- 결과 디렉터리: ``$($summary.reproducibility.output)``")
+$lines.Add("- exact pair selection: ``$($summary.reproducibility.selection)`` (SHA-256 ``$($summary.reproducibility.selectionSha256)``)")
 $lines.Add("- 인증: $($summary.reproducibility.authentication)")
 $lines.Add("- 필요 환경: PowerShell 7.2+, JDK/Android SDK, ``adb``와 Gradle wrapper, 연결된 실제 Android 기기. ``ANDROID_SERIAL`` 대신 보고서의 ``-DeviceSerial``을 명시한다.")
 $lines.Add("- 작품별 instrumentation/logcat/meminfo/gfxinfo/cpuinfo, cold proof, Macrobenchmark JSON/Perfetto trace와 스크린샷은 각 case artifact directory에 있다.")

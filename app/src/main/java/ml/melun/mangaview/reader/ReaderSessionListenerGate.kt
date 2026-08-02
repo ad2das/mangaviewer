@@ -655,8 +655,13 @@ class ReaderSessionListenerGate(
         if (active()) downstream.onCaptchaRequired(manga)
     }
 
-    override fun onAdjacentExactManifestRequired(manga: Manga) {
-        if (active()) downstream.onAdjacentExactManifestRequired(manga)
+    override fun onAdjacentExactManifestRequired(
+        manga: Manga,
+        predecessorEpisodePath: String,
+    ) {
+        if (active()) {
+            downstream.onAdjacentExactManifestRequired(manga, predecessorEpisodePath)
+        }
     }
 
     override fun onBoundaryAppendFinished(

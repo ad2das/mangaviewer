@@ -302,11 +302,27 @@ class NtkStrictSourceRouteOwnershipTest {
         val commitStart = session.indexOf("private fun completeResidentAdoptionActor(")
         val commitEnd = session.indexOf("private fun completeResidentOperationActor(", commitStart)
         val commit = session.substring(commitStart, commitEnd)
-        assertTrue(commit.contains("acceptExactBody(page, published)"))
+        assertTrue(
+            commit.contains(
+                "acceptExactBody(page, published, releaseAdjacentRunway = false)"
+            )
+        )
         assertTrue(commit.contains("completeResidentOperationActor(body, published, acceptedContext)"))
         assertTrue(
-            commit.indexOf("acceptExactBody(page, published)") <
-                commit.indexOf("completeResidentOperationActor(body, published, acceptedContext)")
+            commit.contains(
+                "maybeReleaseAdjacentPrefetchAfterRunwayActor(\"resident_body_published\")"
+            )
+        )
+        assertTrue(
+            commit.indexOf(
+                "acceptExactBody(page, published, releaseAdjacentRunway = false)"
+            ) < commit.indexOf(
+                "completeResidentOperationActor(body, published, acceptedContext)"
+            ) && commit.indexOf(
+                "completeResidentOperationActor(body, published, acceptedContext)"
+            ) < commit.indexOf(
+                "maybeReleaseAdjacentPrefetchAfterRunwayActor(\"resident_body_published\")"
+            )
         )
     }
 

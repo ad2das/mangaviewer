@@ -17,13 +17,13 @@ param(
     [string]$ReplaySelectionPath = "",
     [string]$ReplayTargetKeys = "",
     [ValidateRange(1, 100)]
-    [int]$CountPerType = 10,
+    [int]$CountPerType = 20,
     [ValidateRange(250, 30000)]
     [int]$FirstImageSlaMs = 4000,
     [ValidateRange(250, 30000)]
     [int]$ManhwaImageSlaMs = 4000,
     [ValidateRange(250, 30000)]
-    [int]$AllImagesSlaMs = 30000,
+    [int]$AllImagesSlaMs = 6000,
     [ValidateRange(60, 1800)]
     [int]$CaseTimeoutSeconds = 360,
     [ValidateSet("PHYSICAL_DEVICE", "HOST_GPU_EMULATOR")]
@@ -64,7 +64,9 @@ $Runner = "$BenchmarkPackage/androidx.test.runner.AndroidJUnitRunner"
 $TestClass = "$BenchmarkPackage.NtkColdViewerMacrobenchmark#coldViewerRandomWork"
 $FormalWebtoonImageSlaMs = 4000
 $FormalManhwaImageSlaMs = 4000
-$FormalAllImagesSlaMs = 30000
+$FormalAllImagesSlaMs = 6000
+$EpisodePairSelectionAlgorithm =
+    "sha256(seed|type|workId|currentEpisodeId|nextEpisodeId) lexical rank"
 # Qualification safety ceilings. These are production bounds, not test-tunable parameters.
 $ProductionMaxActiveRequestQueue = 120
 $ProductionMaxBitmapBytes = 1536L * 1024L * 1024L
@@ -72,6 +74,7 @@ $ProductionMinForwardGestures = 3
 $ProductionMaxForwardGestures = 500
 $ProductionWarmRetainedPssFloorLimitKb = 16384L
 $ProductionWarmRetainedPssRatioLimit = 0.10
+$ProductionMaxAdjacentBoundaryWaitMs = 500.0
 $ProductionMaxAdjacentAttachMs = 200.0
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $siteRoot = $NtkSiteRoot.TrimEnd('/')
@@ -551,7 +554,7 @@ function Remove-RemoteCaseArtifacts(
     }
 
     # Host pulls above are the retained evidence. AndroidX also leaves a full trace copy in the
-    # shared external output directory; retaining every remote copy exhausts /data during 10+10.
+    # shared external output directory; retaining every remote copy exhausts /data during 20+20.
     # Remove only this validated case and this package-owned screenshot directory.
     $benchmarkRemove = Invoke-Adb @("shell", "rm", "-rf", $RemoteCase) -AllowFailure
     $screenshotRemove = Invoke-Adb @("shell", "rm", "-rf", $ScreenshotRemote) -AllowFailure
@@ -730,9 +733,95 @@ function Get-StableRandomWorkRanking([object[]]$Works, [string]$WorkType) {
         ForEach-Object { $_.value })
 }
 
+function Get-StableRandomEpisodePairRanking([object[]]$Pairs, $Work) {
+    return @($Pairs | ForEach-Object {
+        $currentEpisodeId = [string]$_.currentEpisode.episodeId
+        $nextEpisodeId = [string]$_.nextEpisode.episodeId
+        [pscustomobject][ordered]@{
+            pairSelectionHash = Get-Sha256 (
+                "$script:Seed|$([string]$Work.workType)|$([string]$Work.workId)|" +
+                    "$currentEpisodeId|$nextEpisodeId"
+            )
+            currentEpisodeId = $currentEpisodeId
+            nextEpisodeId = $nextEpisodeId
+            value = $_
+        }
+    } | Sort-Object pairSelectionHash, currentEpisodeId, nextEpisodeId)
+}
+
 function ConvertFrom-HtmlText([string]$Value) {
     $withoutTags = [regex]::Replace($Value, '<[^>]+>', '')
     return [Net.WebUtility]::HtmlDecode($withoutTags).Trim()
+}
+
+function Get-EpisodePageCountFromDocumentContent([string]$Content) {
+    if([string]::IsNullOrWhiteSpace($Content)) {
+        throw "Episode document was empty while resolving adjacent page count"
+    }
+    # The Next flight document carries structural imageMetas only: page ordinals and optional
+    # bounds, followed by the opaque images token. It contains no image bodies and this parser
+    # deliberately never consumes the token. Support both the escaped flight form and plain JSON.
+    $container = $null
+    foreach($pattern in @(
+            '\\"imageMetas\\":\[(?<items>.*?)\],\\"imagesToken\\"',
+            '"imageMetas":\[(?<items>.*?)\],"imagesToken"')) {
+        $candidate = [regex]::Match(
+            $Content,
+            $pattern,
+            [Text.RegularExpressions.RegexOptions]::Singleline
+        )
+        if($candidate.Success) {
+            $container = $candidate.Groups['items'].Value
+            break
+        }
+    }
+    if($null -eq $container) {
+        throw "Episode document omitted structural imageMetas"
+    }
+    $normalized = $container.Replace('\"', '"')
+    $pages = @([regex]::Matches(
+        $normalized,
+        '"page"\s*:\s*(?<page>\d{1,4})'
+    ) | ForEach-Object { [int]$_.Groups['page'].Value })
+    if($pages.Count -eq 0) {
+        throw "Episode imageMetas contained no page ordinals"
+    }
+    $unique = @($pages | Sort-Object -Unique)
+    if($unique.Count -ne $pages.Count -or $unique[0] -ne 1 -or
+            $unique[-1] -ne $unique.Count) {
+        throw "Episode imageMetas page ordinals were not the exact contiguous 1..N set"
+    }
+    return [int]$unique.Count
+}
+
+function Get-EpisodePageCountMetadata([string]$EpisodePath) {
+    if([string]::IsNullOrWhiteSpace($EpisodePath)) {
+        return [pscustomobject][ordered]@{
+            pageCount = 0
+            proven = $false
+            error = "adjacent episode path is empty"
+        }
+    }
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Method Get `
+            -Uri "$script:siteRoot$EpisodePath" `
+            -Headers @{
+                "User-Agent" = "mangaviewer-ntk-cold-selector/1"
+                "Cache-Control" = "no-cache"
+            } -TimeoutSec 30
+        $pageCount = Get-EpisodePageCountFromDocumentContent ([string]$response.Content)
+        return [pscustomobject][ordered]@{
+            pageCount = $pageCount
+            proven = $true
+            error = $null
+        }
+    } catch {
+        return [pscustomobject][ordered]@{
+            pageCount = 0
+            proven = $false
+            error = $_.Exception.Message
+        }
+    }
 }
 
 function Get-EpisodeMetadataFromDocument($Work) {
@@ -809,6 +898,11 @@ function Get-EpisodeMetadata($Work) {
                 expectedAdjacentEpisodeId = ""
                 expectedAdjacentEpisodeTitle = ""
                 expectedAdjacentPageCount = 0
+                episodePairSelectionSeed = $script:Seed
+                episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
+                episodePairSelectionHash = ""
+                episodePairRankOrdinal = 0
+                episodePairCandidateCount = 0
             }
         }
     }
@@ -829,48 +923,84 @@ function Get-EpisodeMetadata($Work) {
             expectedAdjacentEpisodeId = ""
             expectedAdjacentEpisodeTitle = ""
             expectedAdjacentPageCount = 0
+            episodePairSelectionSeed = $script:Seed
+            episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
+            episodePairSelectionHash = ""
+            episodePairRankOrdinal = 0
+            episodePairCandidateCount = 0
         }
     }
     # Keep the randomly selected work. Some upstream catalogs prepend provider/imported rows whose
     # ids (for example `kp-*` or `tkor*`) resolve to metadata-only/purchase-gate pages without a
     # viewer payload. The current native canonical ids are numeric or `nv-<workId>-<ordinal>`.
-    # Select the first canonical row when the first row is non-native, retaining the original
-    # identity and reason in selection evidence. This is access validation from the episode-list
-    # API only: no episode document or image URL is requested, and image count/size is never used.
+    # Build every consecutive native current->next pair, rank the pairs by the run seed, then select
+    # the first ranked pair whose exact next document proves at least four structural pages. This
+    # removes newest/first-list bias while remaining deterministic for fixed-seed replay. The host
+    # reads only imageMetas ordinals; no image URL or image body is requested and device state stays
+    # cold. Short/unproven adjacent episodes are excluded before instrumentation.
     $original = $episodes[0]
     $value = $original
     $expectedAdjacent = $null
+    $expectedAdjacentPageCount = 0
+    $episodePairSelectionHash = ""
+    $episodePairRankOrdinal = 0
     $accessReplacementReason = $null
-    $nativeAccessible = @()
+    $adjacentPageCountErrors = [Collections.Generic.List[string]]::new()
     $escapedNativeWorkId = [regex]::Escape([string]$Work.workId)
     $nativeEpisodePattern = "^(?:\d+|nv-$escapedNativeWorkId-\d+)$"
     $providerImportedPattern = "^(?:kp-|tkor)"
+    $nativeAccessible = @($episodes | Where-Object {
+        ([string]$_.episodeId) -match $nativeEpisodePattern
+    })
+    $pairCandidates = [Collections.Generic.List[object]]::new()
     for($episodeIndex = 1; $episodeIndex -lt $episodes.Count; $episodeIndex++) {
         if(([string]$episodes[$episodeIndex].episodeId) -match $nativeEpisodePattern -and
                 ([string]$episodes[$episodeIndex - 1].episodeId) -match $nativeEpisodePattern) {
-            $value = $episodes[$episodeIndex]
-            $expectedAdjacent = $episodes[$episodeIndex - 1]
-            if($episodeIndex -ne 1 -or
-                    ([string]$original.episodeId) -notmatch $nativeEpisodePattern) {
-                $accessReplacementReason =
-                    "selected the first consecutive native episode pair with a real forward adjacent episode"
-            }
-            break
+            $pairCandidates.Add([pscustomobject][ordered]@{
+                currentEpisode = $episodes[$episodeIndex]
+                nextEpisode = $episodes[$episodeIndex - 1]
+                sourceEpisodeIndex = $episodeIndex
+            })
         }
+    }
+    $rankedPairs = @(Get-StableRandomEpisodePairRanking @($pairCandidates) $Work)
+    for($pairRankIndex = 0; $pairRankIndex -lt $rankedPairs.Count; $pairRankIndex++) {
+        $rankedPair = $rankedPairs[$pairRankIndex]
+        $pair = $rankedPair.value
+        $adjacentCandidate = $pair.nextEpisode
+        $pageEvidence = Get-EpisodePageCountMetadata `
+            ([string]$adjacentCandidate.episodePath)
+        if(-not $pageEvidence.proven -or [int]$pageEvidence.pageCount -lt 4) {
+            $adjacentPageCountErrors.Add(
+                "$([string]$adjacentCandidate.episodePath): " +
+                    $(if($pageEvidence.proven) {
+                        "only $([int]$pageEvidence.pageCount) structural pages"
+                    } else {
+                        [string]$pageEvidence.error
+                    })
+            )
+            continue
+        }
+        $value = $pair.currentEpisode
+        $expectedAdjacent = $adjacentCandidate
+        $expectedAdjacentPageCount = [int]$pageEvidence.pageCount
+        $episodePairSelectionHash = [string]$rankedPair.pairSelectionHash
+        $episodePairRankOrdinal = $pairRankIndex + 1
+        $accessReplacementReason =
+            "selected seed-ranked native episode pair $episodePairRankOrdinal/$($rankedPairs.Count) with a proven four-page forward adjacent episode"
+        break
     }
     if($null -eq $expectedAdjacent -and
             ([string]$original.episodeId) -notmatch $nativeEpisodePattern) {
-        $nativeAccessible = @($episodes | Where-Object {
-            ([string]$_.episodeId) -match $nativeEpisodePattern
-        } | Select-Object -First 1)
-        if($nativeAccessible.Count -eq 1) {
-            $value = $nativeAccessible[0]
+        $firstNative = @($nativeAccessible | Select-Object -First 1)
+        if($firstNative.Count -eq 1) {
+            $value = $firstNative[0]
             $accessReplacementReason =
                 "first episode uses a provider/imported metadata-only id; selected first native canonical episode"
         }
     }
-    $workAccessStatus = if($null -eq $expectedAdjacent) {
-        "NO_FORWARD_ADJACENT_EPISODE"
+    $workAccessStatus = if($null -ne $expectedAdjacent) {
+        "ACCESSIBLE_OR_UNPROVEN"
     } elseif(
         ([string]$original.metadataSource) -ceq "episode-api" -and
         ([string]$original.episodeId) -match $providerImportedPattern -and
@@ -880,8 +1010,10 @@ function Get-EpisodeMetadata($Work) {
         }).Count -eq 0
     ) {
         "NO_NATIVE_CANONICAL_EPISODE"
+    } elseif($rankedPairs.Count -gt 0) {
+        "NO_QUALIFYING_FORWARD_ADJACENT_EPISODE"
     } else {
-        "ACCESSIBLE_OR_UNPROVEN"
+        "NO_FORWARD_ADJACENT_EPISODE"
     }
     return [pscustomobject][ordered]@{
         episodePath = [string]$value.episodePath
@@ -889,7 +1021,13 @@ function Get-EpisodeMetadata($Work) {
         episodeTitle = [string]$value.episodeTitle
         episodeNumber = $value.episodeNumber
         metadataSource = [string]$value.metadataSource
-        metadataError = $apiError
+        metadataError = @(
+            $apiError
+            if($adjacentPageCountErrors.Count -gt 0) {
+                "adjacentPageCount=" + ($adjacentPageCountErrors -join ' | ')
+            }
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            Join-String -Separator '; '
         originallySelectedEpisodePath = [string]$original.episodePath
         originallySelectedEpisodeId = [string]$original.episodeId
         originallySelectedEpisodeTitle = [string]$original.episodeTitle
@@ -904,7 +1042,12 @@ function Get-EpisodeMetadata($Work) {
         expectedAdjacentEpisodeTitle = if($null -ne $expectedAdjacent) {
             [string]$expectedAdjacent.episodeTitle
         } else { "" }
-        expectedAdjacentPageCount = 0
+        expectedAdjacentPageCount = $expectedAdjacentPageCount
+        episodePairSelectionSeed = $script:Seed
+        episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
+        episodePairSelectionHash = $episodePairSelectionHash
+        episodePairRankOrdinal = $episodePairRankOrdinal
+        episodePairCandidateCount = $rankedPairs.Count
     }
 }
 
@@ -1663,7 +1806,11 @@ function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAd
     $expectedAdjacentPath =
         [string](Get-OptionalProperty $Target "expectedAdjacentEpisodePath")
     $expectedAdjacentPageCount =
-        [string](Get-OptionalProperty $Target "expectedAdjacentPageCount")
+        [int](Get-OptionalProperty $Target "expectedAdjacentPageCount")
+    if([string]::IsNullOrWhiteSpace($expectedAdjacentPath) -or
+            $expectedAdjacentPageCount -lt 4) {
+        throw "Cold qualification target lacks an exact four-page forward adjacent proof: $([string]$Target.workType):$([string]$Target.workId)"
+    }
     $instrumentArgs = @(
         # API 30+ otherwise gives instrumentation an isolated external-storage view. AndroidX can
         # report a valid trace path from that private mount, but `adb pull` cannot see it after the
@@ -1676,6 +1823,8 @@ function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAd
         "-e", "ntkWorkTitleBase64", (ConvertTo-Base64Utf8 ([string]$Target.title)),
         "-e", "ntkEpisodeTitleBase64", (ConvertTo-Base64Utf8 ([string]$Target.episodeTitle)),
         "-e", "ntkEpisodePath", [string]$Target.episodePath,
+        "-e", "ntkExpectedAdjacentEpisodePath", $expectedAdjacentPath,
+        "-e", "ntkExpectedAdjacentPageCount", [string]$expectedAdjacentPageCount,
         "-e", "ntkCaseId", $CaseId,
         "-e", "ntkFirstImageSlaMs", [string]$caseImageSlaMs,
         "-e", "ntkAllImagesSlaMs", [string]$caseAllImagesSlaMs,
@@ -1685,17 +1834,6 @@ function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAd
         "-e", "androidx.benchmark.output.enable", "true",
         "-e", "additionalTestOutputDir", $RemoteAdditional
     )
-    if(-not [string]::IsNullOrWhiteSpace($expectedAdjacentPath)) {
-        $instrumentArgs += @(
-            "-e", "ntkExpectedAdjacentEpisodePath", $expectedAdjacentPath,
-            "-e", "ntkExpectedAdjacentPageCount",
-                $(if([string]::IsNullOrWhiteSpace($expectedAdjacentPageCount)) {
-                    "0"
-                } else {
-                    $expectedAdjacentPageCount
-                })
-        )
-    }
     if($script:deviceInfo.virtualDeviceDetected) {
         # Only the emulator capability check is suppressed. Battery, debuggability,
         # profileability and every other Macrobenchmark configuration error remain fatal.
@@ -2513,9 +2651,9 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         $instrumentation.Text -match 'OK \(1 test\)'
     # AndroidX Benchmark 1.4.1 on this API-35 x86_64 emulator can finish the real UI scenario and
     # write a non-empty Perfetto trace, then fail its in-process trace-processor Parse call before
-    # benchmarkData.json is emitted. Accept only that exact infrastructure signature; the macro's
-    # independent click/draw/SLA verdict and the app's native frame/coverage telemetry below stay
-    # mandatory, so this cannot turn a product or performance failure into a pass.
+    # benchmarkData.json is emitted. Recognize only that exact infrastructure signature so the
+    # retained artifact explains the failure. The case still fails below because presentation
+    # metrics are mandatory; parser isolation can never turn missing frame evidence into a pass.
     $androidxTraceParserIsolationAccepted =
         -not $androidxBenchmark.valid -and
         $androidxBenchmark.dataFiles.Count -eq 0 -and
@@ -2556,6 +2694,14 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         $decodeNanos -le $drawNanos
 
     $violations = [Collections.Generic.List[string]]::new()
+    if($androidxTraceParserIsolationAccepted) {
+        # Retain the trace and exact parser signature as diagnostics, but never turn missing
+        # presentation-frame measurements into a qualifying result. This is especially important
+        # in fast triage, which deliberately does not run the final report/schema pass.
+        $violations.Add(
+            "AndroidX trace parser failed before qualifying presentation-frame metrics were emitted"
+        )
+    }
     if(-not $coldProof.processStateMeasured) {
         $violations.Add("pre-click target UID/process state was not measurable")
     } elseif(-not $coldProof.processCold) {
@@ -2704,17 +2850,11 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
                 [double]$androidxActiveMainRunMaxMs -ge 100.0) {
             $violations.Add("active-scroll main-thread running slice reached 100ms")
         }
-        if($script:FastFunctionalTriage) {
-            if($null -eq $androidxActivePresentationSystemFence -or
-                    [double]$androidxActivePresentationSystemFence -ne 1.0) {
-                $violations.Add(
-                    "fast jank gate did not obtain authoritative SurfaceFlinger fence evidence"
-                )
-            }
-        } elseif($null -eq $androidxActivePresentationSystemFence -or
-                ([double]$androidxActivePresentationSystemFence -ne 0.0 -and
-                    [double]$androidxActivePresentationSystemFence -ne 1.0)) {
-            $violations.Add("active-scroll presentation evidence kind was missing or invalid")
+        if($null -eq $androidxActivePresentationSystemFence -or
+                [double]$androidxActivePresentationSystemFence -ne 1.0) {
+            $violations.Add(
+                "active-scroll jank gate did not obtain authoritative SurfaceFlinger fence evidence"
+            )
         }
         if($null -eq $androidxViewerOpenMs -or
                 [double]$androidxViewerOpenMs -gt $caseImageSlaMs) {
@@ -2756,11 +2896,11 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     $observedAdjacentTotalPageCount = if($null -ne $macroResult) {
         [int](Get-OptionalProperty $macroResult "adjacentTotalPageCount")
     } else { 0 }
-    $requiredAdjacentRunwayPages = if($observedAdjacentTotalPageCount -gt 0) {
-        [Math]::Min(4, $observedAdjacentTotalPageCount)
-    } else { 0 }
+    $requiredAdjacentRunwayPages = 4
     if([string]::IsNullOrWhiteSpace($expectedAdjacentPath)) {
         $violations.Add("exact forward-adjacent episode was not configured")
+    } elseif($expectedAdjacentPageCount -lt $requiredAdjacentRunwayPages) {
+        $violations.Add("forward-adjacent selection did not prove four canonical pages")
     } elseif($null -eq $macroResult -or
             [string](Get-OptionalProperty $macroResult "expectedAdjacentEpisodePath") -cne
                 $expectedAdjacentPath) {
@@ -2774,17 +2914,22 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
             [string](Get-OptionalProperty $macroResult "firstAdjacentActualEpisode") -cne
                 $expectedAdjacentPath) {
         $violations.Add("forward-adjacent runway or first pixels had the wrong episode identity")
-    } elseif($expectedAdjacentPageCount -gt 0 -and
-            $observedAdjacentTotalPageCount -ne $expectedAdjacentPageCount) {
+    } elseif($observedAdjacentTotalPageCount -ne $expectedAdjacentPageCount) {
         $violations.Add("forward-adjacent total page count did not match selection")
-    } elseif($requiredAdjacentRunwayPages -le 0 -or
-            [int](Get-OptionalProperty $macroResult "adjacentRunwayPageCount") -ne
+    } elseif([int](Get-OptionalProperty $macroResult "adjacentRunwayPageCount") -ne
                 $requiredAdjacentRunwayPages) {
         $violations.Add(
             "forward-adjacent atomic runway p1-p$requiredAdjacentRunwayPages was not proven"
         )
-    } elseif([double](Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs") -ne 0.0) {
-        $violations.Add("adjacent runway was not ready when the launch bottom was reached")
+    } elseif([int](Get-OptionalProperty $macroResult "adjacentObservedRunwayDrawableCount") -ne
+            $requiredAdjacentRunwayPages) {
+        $violations.Add("four forward-adjacent drawables were not physically observed")
+    } elseif((Get-OptionalProperty $macroResult "runwayReadyBeforeTail") -ne $true) {
+        $violations.Add("adjacent runway was not ready before the launch tail")
+    } elseif([double](Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs") -lt 0.0 -or
+            [double](Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs") -gt
+                $ProductionMaxAdjacentBoundaryWaitMs) {
+        $violations.Add("adjacent runway exceeded the ${ProductionMaxAdjacentBoundaryWaitMs}ms tail boundary bound")
     } elseif(
         (
             [long](Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos") -
@@ -2849,10 +2994,9 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     # Reader pixels are produced by a dedicated Surface/BufferQueue, so a perfectly stationary
     # ViewRoot can legitimately give JankStats zero frames while the child layer presents every
     # scrolling viewport. SurfaceFlinger's PresentFenceSignaled rows are authoritative when the
-    # platform exposes them. A synchronous eglSwapBuffers completion proves that an immutable
-    # buffer was queued, but callback scheduling can alternate a late sample with an early one
-    # while display presents remain evenly paced; qualify that fallback cadence only when
-    # system-fence evidence is unavailable.
+    # platform exposes them. A synchronous eglSwapBuffers completion proves only that an immutable
+    # buffer was queued, not that it was displayed, so native cadence remains diagnostic and can
+    # add failure context when system-fence evidence is unavailable. It cannot qualify the case.
     if(-not $script:FastFunctionalTriage) {
         $nativeSurfaceFrameObserverPresent = $null -ne $nativeFrameSummary -and
             $null -ne $scrollIntervals -and $scrollIntervals -gt 0
@@ -3014,17 +3158,24 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         episodeTitle = [string]$Target.episodeTitle
         episodePath = [string]$Target.episodePath
         expectedAdjacentEpisodePath = $expectedAdjacentPath
+        expectedAdjacentPageCount = $expectedAdjacentPageCount
         adjacentRunwayTargetEpisode = if($null -ne $macroResult) {
             Get-OptionalProperty $macroResult "adjacentRunwayTargetEpisode"
         } else { $null }
         adjacentRunwayPageCount = if($null -ne $macroResult) {
             Get-OptionalProperty $macroResult "adjacentRunwayPageCount"
         } else { $null }
+        adjacentObservedRunwayDrawableCount = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "adjacentObservedRunwayDrawableCount"
+        } else { $null }
         adjacentTotalPageCount = if($null -ne $macroResult) {
             Get-OptionalProperty $macroResult "adjacentTotalPageCount"
         } else { $null }
         adjacentBoundaryWaitMs = if($null -ne $macroResult) {
             Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs"
+        } else { $null }
+        runwayReadyBeforeTail = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "runwayReadyBeforeTail"
         } else { $null }
         adjacentAttachMs = if($null -ne $macroResult -and
                 [long](Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos") -gt 0 -and
@@ -3408,19 +3559,33 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
             }
         }
     }
-    # Older logged selections chose the newest episode, which has no forward adjacent episode by
-    # definition. Preserve every replayed work identity and random rank, but refresh its metadata-
-    # only episode list so the same work opens the first consecutive native pair: the older member
-    # is the measured current episode and the newer member is its exact forward adjacent episode.
-    # This does not request an episode document or any image URL.
+    # Recompute the seed-ranked pair and structural page proof, but never silently move a replay to
+    # another current/next identity. The recorded exact pair is the replay contract; catalog drift
+    # or changed eligibility fails closed. No image URL/body is requested.
     $replayTargets = @($replayTargets | ForEach-Object {
         $recordedTarget = $_
         $episode = Get-EpisodeMetadata $recordedTarget
         if(([string]$episode.workAccessStatus) -in @(
                 "NO_NATIVE_CANONICAL_EPISODE",
-                "NO_FORWARD_ADJACENT_EPISODE"
+                "NO_FORWARD_ADJACENT_EPISODE",
+                "NO_QUALIFYING_FORWARD_ADJACENT_EPISODE"
             )) {
             throw "Replay target has no exact forward-adjacent native episode pair: $([string]$recordedTarget.workType):$([string]$recordedTarget.workId)"
+        }
+        $recordedCurrentPath = [string](Get-OptionalProperty $recordedTarget "episodePath")
+        $recordedNextPath =
+            [string](Get-OptionalProperty $recordedTarget "expectedAdjacentEpisodePath")
+        if([string]::IsNullOrWhiteSpace($recordedCurrentPath) -or
+                [string]::IsNullOrWhiteSpace($recordedNextPath) -or
+                [string]$episode.episodePath -cne $recordedCurrentPath -or
+                [string]$episode.expectedAdjacentEpisodePath -cne $recordedNextPath) {
+            throw (
+                "Replay exact episode pair mismatch for " +
+                    "$([string]$recordedTarget.workType):$([string]$recordedTarget.workId); " +
+                    "recorded=$recordedCurrentPath->$recordedNextPath; " +
+                    "seed-ranked=$([string]$episode.episodePath)->" +
+                    "$([string]$episode.expectedAdjacentEpisodePath)"
+            )
         }
         [pscustomobject][ordered]@{
             workType = [string]$recordedTarget.workType
@@ -3435,6 +3600,11 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
             expectedAdjacentEpisodeId = $episode.expectedAdjacentEpisodeId
             expectedAdjacentEpisodeTitle = $episode.expectedAdjacentEpisodeTitle
             expectedAdjacentPageCount = $episode.expectedAdjacentPageCount
+            episodePairSelectionSeed = $episode.episodePairSelectionSeed
+            episodePairSelectionAlgorithm = $episode.episodePairSelectionAlgorithm
+            episodePairSelectionHash = $episode.episodePairSelectionHash
+            episodePairRankOrdinal = $episode.episodePairRankOrdinal
+            episodePairCandidateCount = $episode.episodePairCandidateCount
             metadataSource = $episode.metadataSource
             metadataError = $episode.metadataError
             originallySelectedEpisodePath = [string]$recordedTarget.episodePath
@@ -3460,11 +3630,14 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
     $targets = @($replayTargets)
     Write-Host "Replaying logged random targets for diagnostic comparison; no catalog, page, or image URL is requested."
     $selection = [pscustomobject][ordered]@{
-        schema = 1
+        schema = 2
         generatedAt = [DateTimeOffset]::Now.ToString("o")
         seed = $Seed
         seedSelectionMode = $seedQualification.selectionMode
-        algorithm = [string]$replay.algorithm
+        algorithm =
+            "work: sha256(seed|type|id) lexical rank; episode-pair: $script:EpisodePairSelectionAlgorithm"
+        workSelectionAlgorithm = "sha256(seed|type|id) lexical rank"
+        episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
         siteRoot = $siteRoot
         completeCatalogCounts = $replay.completeCatalogCounts
         replaySelectionSha256 = Get-FileSha256 $resolvedReplayPath
@@ -3490,13 +3663,17 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
             $episode = Get-EpisodeMetadata $work
             if(([string]$episode.workAccessStatus) -in @(
                     "NO_NATIVE_CANONICAL_EPISODE",
-                    "NO_FORWARD_ADJACENT_EPISODE"
+                    "NO_FORWARD_ADJACENT_EPISODE",
+                    "NO_QUALIFYING_FORWARD_ADJACENT_EPISODE"
                 )) {
                 $episodeExclusionReason = if(
                     ([string]$episode.workAccessStatus) -ceq
                         "NO_FORWARD_ADJACENT_EPISODE"
                 ) {
                     "episode list has no consecutive native pair for exact forward-adjacent UX qualification"
+                } elseif(([string]$episode.workAccessStatus) -ceq
+                        "NO_QUALIFYING_FORWARD_ADJACENT_EPISODE") {
+                    "no consecutive native pair has a forward adjacent episode with a proven four-page drawable runway"
                 } else {
                     "episode-list API contains only provider/imported ids and no native canonical viewer episode"
                 }
@@ -3560,6 +3737,11 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
                 expectedAdjacentEpisodeId = $episode.expectedAdjacentEpisodeId
                 expectedAdjacentEpisodeTitle = $episode.expectedAdjacentEpisodeTitle
                 expectedAdjacentPageCount = $episode.expectedAdjacentPageCount
+                episodePairSelectionSeed = $episode.episodePairSelectionSeed
+                episodePairSelectionAlgorithm = $episode.episodePairSelectionAlgorithm
+                episodePairSelectionHash = $episode.episodePairSelectionHash
+                episodePairRankOrdinal = $episode.episodePairRankOrdinal
+                episodePairCandidateCount = $episode.episodePairCandidateCount
                 metadataSource = $episode.metadataSource
                 metadataError = $episode.metadataError
                 originallySelectedEpisodePath = $episode.originallySelectedEpisodePath
@@ -3595,11 +3777,14 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
     }
 
     $selection = [pscustomobject][ordered]@{
-        schema = 1
+        schema = 2
         generatedAt = [DateTimeOffset]::Now.ToString("o")
         seed = $Seed
         seedSelectionMode = $seedQualification.selectionMode
-        algorithm = "sha256(seed|type|id) lexical rank"
+        algorithm =
+            "work: sha256(seed|type|id) lexical rank; episode-pair: $script:EpisodePairSelectionAlgorithm"
+        workSelectionAlgorithm = "sha256(seed|type|id) lexical rank"
+        episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
         siteRoot = $siteRoot
         completeCatalogCounts = [pscustomobject]@{
             webtoon = $webtoonCatalog.Count
@@ -3609,7 +3794,34 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
         targets = @($targets)
     }
 }
-Write-Json (Join-Path $runDir "selection.json") $selection
+foreach($target in @($targets)) {
+    $launchPath = [string](Get-OptionalProperty $target "episodePath")
+    $adjacentPath = [string](Get-OptionalProperty $target "expectedAdjacentEpisodePath")
+    $adjacentCount = [int](Get-OptionalProperty $target "expectedAdjacentPageCount")
+    $pairSeed = [long](Get-OptionalProperty $target "episodePairSelectionSeed")
+    $pairAlgorithm =
+        [string](Get-OptionalProperty $target "episodePairSelectionAlgorithm")
+    $pairHash = [string](Get-OptionalProperty $target "episodePairSelectionHash")
+    $pairRankOrdinal = [int](Get-OptionalProperty $target "episodePairRankOrdinal")
+    $pairCandidateCount = [int](Get-OptionalProperty $target "episodePairCandidateCount")
+    $expectedPairHash = Get-Sha256 (
+        "$Seed|$([string]$target.workType)|$([string]$target.workId)|" +
+            "$([string]$target.episodeId)|$([string]$target.expectedAdjacentEpisodeId)"
+    )
+    if([string]::IsNullOrWhiteSpace($launchPath) -or
+            [string]::IsNullOrWhiteSpace($adjacentPath) -or
+            $launchPath -ceq $adjacentPath -or $adjacentCount -lt 4) {
+        throw "Selected target is not a non-latest episode with an exact four-page forward adjacent proof: $([string]$target.workType):$([string]$target.workId)"
+    }
+    if($pairSeed -ne $Seed -or
+            $pairAlgorithm -cne $script:EpisodePairSelectionAlgorithm -or
+            $pairHash -cne $expectedPairHash -or
+            $pairRankOrdinal -lt 1 -or $pairCandidateCount -lt $pairRankOrdinal) {
+        throw "Selected target lacks deterministic episode-pair rank evidence: $([string]$target.workType):$([string]$target.workId)"
+    }
+}
+$selectionOutputPath = Join-Path $runDir "selection.json"
+Write-Json $selectionOutputPath $selection
 
 $remoteRunRoot = "/sdcard/Android/media/$BenchmarkPackage/ntk-cold-output/$timestamp-$Seed"
 $caseResults = [Collections.Generic.List[object]]::new()
@@ -3636,6 +3848,8 @@ for($index = 0; $index -lt $targets.Count; $index++) {
             episodeId = $target.episodeId
             episodeTitle = $target.episodeTitle
             episodePath = $target.episodePath
+            expectedAdjacentEpisodePath = $target.expectedAdjacentEpisodePath
+            expectedAdjacentPageCount = $target.expectedAdjacentPageCount
             passed = $false
             violations = @("host orchestration exception: $($_.Exception.Message)")
             hostScriptStackTrace = $_.ScriptStackTrace
@@ -3654,9 +3868,9 @@ $expectedManhwaCount = @($targets | Where-Object {
     ([string]$_.workType) -ceq "manhwa"
 }).Count
 $expectedCaseCount = $expectedWebtoonCount + $expectedManhwaCount
-$qualificationTargetSatisfied = $CountPerType -eq 10 -and
-    $expectedWebtoonCount -eq 10 -and
-    $expectedManhwaCount -eq 10
+$qualificationTargetSatisfied = $CountPerType -eq 20 -and
+    $expectedWebtoonCount -eq 20 -and
+    $expectedManhwaCount -eq 20
 # Same-process warm reopen is intentionally reported as a diagnostic only. The product contract
 # and the canonical verdict are cold-only, so an unavailable/failed warm sample must not turn a
 # valid cold case into a configuration failure (or dereference a missing field on an unstarted
@@ -3693,9 +3907,9 @@ if($RestartHostGpuProcessPerCase) {
 if($RequireBaselineProfile) { [void]$rerunParts.Add("-RequireBaselineProfile") }
 if($StandalonePerfetto) { [void]$rerunParts.Add("-StandalonePerfetto") }
 if($FastFunctionalTriage) { [void]$rerunParts.Add("-FastFunctionalTriage") }
-if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
-    [void]$rerunParts.Add("-ReplaySelectionPath $(ConvertTo-PowerShellLiteral $replayPath)")
-}
+[void]$rerunParts.Add(
+    "-ReplaySelectionPath $(ConvertTo-PowerShellLiteral $selectionOutputPath)"
+)
 if(-not [string]::IsNullOrWhiteSpace($replayTargetFilter)) {
     [void]$rerunParts.Add("-ReplayTargetKeys $(ConvertTo-PowerShellLiteral $replayTargetFilter)")
 }
@@ -3712,6 +3926,8 @@ $macroReproParts = @(
     "-e ntkWorkTitleBase64 $(ConvertTo-PowerShellLiteral (ConvertTo-Base64Utf8 ([string]$macroReproTarget.title)))",
     "-e ntkEpisodeTitleBase64 $(ConvertTo-PowerShellLiteral (ConvertTo-Base64Utf8 ([string]$macroReproTarget.episodeTitle)))",
     "-e ntkEpisodePath $(ConvertTo-PowerShellLiteral ([string]$macroReproTarget.episodePath))",
+    "-e ntkExpectedAdjacentEpisodePath $(ConvertTo-PowerShellLiteral ([string]$macroReproTarget.expectedAdjacentEpisodePath))",
+    "-e ntkExpectedAdjacentPageCount $([int]$macroReproTarget.expectedAdjacentPageCount)",
     "-e ntkCaseId $(ConvertTo-PowerShellLiteral $macroReproCaseId)",
     "-e ntkFirstImageSlaMs $macroReproImageSlaMs",
     "-e ntkAllImagesSlaMs $macroReproAllImagesSlaMs",
@@ -3722,13 +3938,33 @@ $macroReproParts = @(
     (ConvertTo-PowerShellLiteral $Runner)
 )
 $macroReproCommand = $macroReproParts -join ' '
+$selectedPairOrdinal = 0
+$selectedEpisodePairs = @($targets | ForEach-Object {
+    $selectedPairOrdinal++
+    [pscustomobject][ordered]@{
+        ordinal = $selectedPairOrdinal
+        seed = $Seed
+        workType = [string]$_.workType
+        workId = [string]$_.workId
+        currentEpisodeId = [string]$_.episodeId
+        currentEpisodePath = [string]$_.episodePath
+        nextEpisodeId = [string]$_.expectedAdjacentEpisodeId
+        nextEpisodePath = [string]$_.expectedAdjacentEpisodePath
+        nextEpisodePageCount = [int]$_.expectedAdjacentPageCount
+        pairSelectionHash = [string]$_.episodePairSelectionHash
+        pairRankOrdinal = [int]$_.episodePairRankOrdinal
+        pairCandidateCount = [int]$_.episodePairCandidateCount
+    }
+})
 $summary = [pscustomobject][ordered]@{
     schema = 1
-    profile = "ntk-real-ui-cold-10-plus-10-v1"
+    profile = "ntk-real-ui-cold-20-plus-20-v1"
     generatedAt = [DateTimeOffset]::Now.ToString("o")
     siteRoot = $siteRoot
     seed = $Seed
     seedSelectionMode = $seedQualification.selectionMode
+    selectionAlgorithm = [string]$selection.algorithm
+    selectedEpisodePairs = $selectedEpisodePairs
     expectedWebtoon = $expectedWebtoonCount
     expectedManhwa = $expectedManhwaCount
     completedCases = $caseResults.Count
@@ -3801,6 +4037,8 @@ $summary = [pscustomobject][ordered]@{
         perfettoStop = "adb -s $(ConvertTo-PowerShellLiteral $DeviceSerial) shell kill -TERM <perfetto-pid-from-start>"
         perfettoPull = "adb -s $(ConvertTo-PowerShellLiteral $DeviceSerial) pull /data/misc/perfetto-traces/ntk-cold.perfetto-trace $(ConvertTo-PowerShellLiteral (Join-Path $runDir 'manual.perfetto-trace'))"
         rerun = $rerunCommand
+        selection = $selectionOutputPath
+        selectionSha256 = Get-FileSha256 $selectionOutputPath
         output = $runDir
         authentication = "No authentication state is injected; pm clear is executed before every work."
     }

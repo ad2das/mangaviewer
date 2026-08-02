@@ -491,16 +491,28 @@ public final class NtkStrictFreshArchitectureTest {
                 "private fun startInternal(",
                 "private fun startIsolatedAck(");
         int committedDemandGuard = startInternal.indexOf("ViewerTelemetry.isActiveEpisode(ownerPath)");
-        int networkGate = startInternal.indexOf(
-                "client.enterNtkStrictForegroundNetwork(path, viewerGeneration)");
-        int compatibilityCancel = startInternal.indexOf("client.cancelNtkWebViewFallbacks()", networkGate);
-        int directChallengeWorker = startInternal.indexOf("val thread = Thread(task");
+        int networkAdmission = startInternal.indexOf(
+                "enterForegroundNetworkIfNeeded(flight)", committedDemandGuard);
+        int ackNetworkStart = startInternal.indexOf(
+                "startAckNetworkPrerequisites(client, flight, path, route)", networkAdmission);
         int documentWorker = startInternal.indexOf("val worker = Thread(");
-        assertTrue(committedDemandGuard >= 0 && networkGate > committedDemandGuard);
-        assertTrue(compatibilityCancel > networkGate);
-        assertTrue(directChallengeWorker > compatibilityCancel);
-        assertTrue(documentWorker > directChallengeWorker);
+        assertTrue(committedDemandGuard >= 0 && networkAdmission > committedDemandGuard);
+        assertTrue(ackNetworkStart > networkAdmission);
+        assertTrue(documentWorker > ackNetworkStart);
         assertFalse(startInternal.contains("startIsolatedAck("));
+        String ackPrerequisites = method(coordinator,
+                "private fun startAckNetworkPrerequisites(",
+                "private fun ensureIsolatedAck(");
+        assertTrue(ackPrerequisites.contains("val thread = Thread(task"));
+        assertTrue(ackPrerequisites.contains("ackRoute.attachDirectTrustedTask(task, thread)"));
+        String foregroundEntry = method(coordinator,
+                "private fun enterForegroundNetworkIfNeeded(",
+                "private fun releaseAdjacentBodyGate(");
+        int networkGate = foregroundEntry.indexOf("flight.client.enterNtkStrictForegroundNetwork(");
+        int compatibilityCancel = foregroundEntry.indexOf(
+                "flight.client.cancelNtkWebViewFallbacks()", networkGate);
+        assertTrue(networkGate >= 0);
+        assertTrue(compatibilityCancel > networkGate);
         String challengeFallback = method(coordinator,
                 "private fun awaitDirectTrustedGrantOrStartIsolated(",
                 "private fun runFlight(");

@@ -66,6 +66,20 @@ class NtkColdViewerMacrobenchmark {
             ?.toIntOrNull()
             ?.coerceAtLeast(0)
             ?: 0
+        require(episodePath.isNotBlank()) {
+            "ntkEpisodePath must identify the measured non-latest episode"
+        }
+        require(expectedAdjacentEpisodePath.isNotBlank()) {
+            "ntkExpectedAdjacentEpisodePath is mandatory for cold qualification"
+        }
+        require(expectedAdjacentEpisodePath != episodePath) {
+            "The forward-adjacent episode must differ from the measured episode"
+        }
+        require(expectedAdjacentPageCount >= ADJACENT_REQUIRED_RUNWAY_PAGES) {
+            "The selected adjacent episode must prove at least " +
+                "$ADJACENT_REQUIRED_RUNWAY_PAGES canonical pages; " +
+                "actual=$expectedAdjacentPageCount"
+        }
         val caseId = args.getString("ntkCaseId")?.trim().orEmpty().ifBlank {
             "$workType-$workId"
         }
@@ -109,6 +123,7 @@ class NtkColdViewerMacrobenchmark {
         var adjacentTraversalGestureCount = 0
         var adjacentLastActualDescription = ""
         var adjacentLastSourceIndex = -1
+        var adjacentObservedRunwayDrawableCount = 0
         var adjacentWorkStartedAtNanos = 0L
         var adjacentRunwayReadyAtNanos = 0L
         var adjacentRunwayTargetEpisode = ""
@@ -118,6 +133,7 @@ class NtkColdViewerMacrobenchmark {
         var firstAdjacentActualAtNanos = 0L
         var firstAdjacentActualEpisode = ""
         var adjacentBoundaryWaitMs = -1.0
+        var runwayReadyBeforeTail = false
         var traceProcessingFailure: Throwable? = null
 
         try {
@@ -195,48 +211,25 @@ class NtkColdViewerMacrobenchmark {
                 // toward later pages. Qualification deliberately performs no screenshot or idle
                 // between the first actual draw and the first gesture, so the forward runway must
                 // keep up from a genuinely cold entry rather than benefiting from automation time.
-                // No reverse-only capacity or alternating gesture is used.
+                // No reverse-only capacity or alternating gesture is used. Every gesture belongs
+                // to the observed traversal below: an unobserved three-fling burst could cross a
+                // short manga and its four-page adjacent runway before accessibility sampled it.
                 forwardTraversalStartElapsedNanos = SystemClock.elapsedRealtimeNanos()
-                repeat(INITIAL_MODERATE_FORWARD_GESTURES) {
-                    verticalSwipe(device, steps = MEDIUM_SWIPE_STEPS)
-                    forwardTraversalGestureCount++
-                }
 
-                if (expectedAdjacentEpisodePath.isNotBlank()) {
-                    // An appendable reader has no stable global bottom: chasing "bottom" first can
-                    // run through several later episodes and manufacture network/decode contention
-                    // beyond the one adjacent episode this scenario is meant to qualify. Traverse
-                    // the launch episode and the explicitly expected next episode in one bounded
-                    // forward pass, stopping as soon as that episode's final canonical page is
-                    // physically committed.
-                    val adjacent = if (expectedAdjacentPageCount > 0) {
-                        driveThroughExpectedAdjacentEpisode(
-                            device,
-                            expectedAdjacentEpisodePath,
-                            expectedAdjacentPageCount
-                        )
-                    } else {
-                        driveIntoExpectedAdjacentEpisode(
-                            device,
-                            episodePath,
-                            expectedAdjacentEpisodePath,
-                        )
-                    }
-                    adjacentTraversalGestureCount = adjacent.gestures
-                    forwardTraversalGestureCount += adjacent.gestures
-                    adjacentLastActualDescription = adjacent.actualDescription
-                    adjacentLastSourceIndex = adjacent.sourceIndex
-                } else {
-                    val adjacent = driveIntoExpectedAdjacentEpisode(
-                        device,
-                        episodePath,
-                        expectedEpisodePath = "",
-                    )
-                    adjacentTraversalGestureCount = adjacent.gestures
-                    forwardTraversalGestureCount += adjacent.gestures
-                    adjacentLastActualDescription = adjacent.actualDescription
-                    adjacentLastSourceIndex = adjacent.sourceIndex
-                }
+                // An appendable reader has no stable global bottom: chasing "bottom" first can
+                // run through several later episodes and manufacture contention beyond the one
+                // adjacent episode this scenario qualifies. Stop only after the expected episode
+                // has physically committed the complete four-drawable runway.
+                val adjacent = driveIntoExpectedAdjacentEpisode(
+                    device,
+                    episodePath,
+                    expectedAdjacentEpisodePath,
+                )
+                adjacentTraversalGestureCount = adjacent.gestures
+                forwardTraversalGestureCount += adjacent.gestures
+                adjacentLastActualDescription = adjacent.actualDescription
+                adjacentLastSourceIndex = adjacent.sourceIndex
+                adjacentObservedRunwayDrawableCount = adjacent.runwayDrawableCount
                 forwardTraversalEndElapsedNanos = SystemClock.elapsedRealtimeNanos()
                 capture(device, outputDirectory, "bottom")
 
@@ -252,8 +245,7 @@ class NtkColdViewerMacrobenchmark {
                 allImagesSlaPassed = allImagesReadyPageCount > 0 &&
                     allImagesReadyAtNanos >= clickElapsedNanos &&
                     allImagesReadyAtNanos - clickElapsedNanos <= allImagesSlaMs * 1_000_000L
-                if (expectedAdjacentEpisodePath.isNotBlank()) {
-                    adjacentWorkStartedAtNanos = adjacentLastActualDescription
+                adjacentWorkStartedAtNanos = adjacentLastActualDescription
                         .telemetryNanos("adjacentWorkStartedAtNanos")
                     adjacentRunwayReadyAtNanos = adjacentLastActualDescription
                         .telemetryNanos("adjacentRunwayReadyAtNanos")
@@ -285,16 +277,11 @@ class NtkColdViewerMacrobenchmark {
                     check(adjacentTotalPageCount > 0) {
                         "Adjacent total page proof was missing"
                     }
-                    if (expectedAdjacentPageCount > 0) {
-                        check(adjacentTotalPageCount == expectedAdjacentPageCount) {
-                            "Adjacent total page count did not match selection: " +
-                                "expected=$expectedAdjacentPageCount actual=$adjacentTotalPageCount"
-                        }
+                    check(adjacentTotalPageCount == expectedAdjacentPageCount) {
+                        "Adjacent total page count did not match selection: " +
+                            "expected=$expectedAdjacentPageCount actual=$adjacentTotalPageCount"
                     }
-                    val requiredRunwayPages = minOf(
-                        ADJACENT_REQUIRED_RUNWAY_PAGES,
-                        adjacentTotalPageCount,
-                    )
+                    val requiredRunwayPages = ADJACENT_REQUIRED_RUNWAY_PAGES
                     check(adjacentRunwayPageCount == requiredRunwayPages) {
                         "Adjacent runway was not a complete atomic cohort: " +
                             "ready=$adjacentRunwayPageCount required=$requiredRunwayPages"
@@ -310,9 +297,15 @@ class NtkColdViewerMacrobenchmark {
                         0L,
                         adjacentRunwayReadyAtNanos - forwardBoundaryReachedAtNanos,
                     ) / 1_000_000.0
-                    check(adjacentBoundaryWaitMs == 0.0) {
-                        "Adjacent runway was not ready at the bottom: " +
+                    runwayReadyBeforeTail =
+                        adjacentRunwayReadyAtNanos <= forwardBoundaryReachedAtNanos
+                    check(runwayReadyBeforeTail) {
+                        "Adjacent runway was not ready before the launch tail: " +
                             "boundaryWaitMs=$adjacentBoundaryWaitMs"
+                    }
+                    check(adjacentBoundaryWaitMs <= ADJACENT_BOUNDARY_WAIT_SLA_MS) {
+                        "Adjacent runway exceeded the ${ADJACENT_BOUNDARY_WAIT_SLA_MS}ms " +
+                            "tail boundary bound: boundaryWaitMs=$adjacentBoundaryWaitMs"
                     }
                     check(firstAdjacentActualAtNanos >= forwardBoundaryReachedAtNanos) {
                         "Expected adjacent episode did not commit after the launch bottom"
@@ -321,9 +314,10 @@ class NtkColdViewerMacrobenchmark {
                         "First adjacent pixels belonged to the wrong episode: " +
                             "expected=$expectedAdjacentEpisodePath actual=$firstAdjacentActualEpisode"
                     }
-                    check(adjacentLastSourceIndex >= requiredRunwayPages - 1) {
-                        "The full adjacent runway was not physically traversable: " +
-                            "source=$adjacentLastSourceIndex required=${requiredRunwayPages - 1}"
+                    check(adjacentObservedRunwayDrawableCount == requiredRunwayPages) {
+                        "Every adjacent runway drawable was not atomically proven: " +
+                            "observed=$adjacentObservedRunwayDrawableCount " +
+                            "required=$requiredRunwayPages"
                     }
                     check(
                         firstAdjacentActualAtNanos - forwardBoundaryReachedAtNanos <=
@@ -332,8 +326,6 @@ class NtkColdViewerMacrobenchmark {
                         "Adjacent first actual exceeded ${ADJACENT_ATTACH_SLA_MS}ms: " +
                             "${(firstAdjacentActualAtNanos - forwardBoundaryReachedAtNanos) / 1_000_000.0}ms"
                     }
-                }
-
                 device.pressBack()
                 check(device.wait(Until.hasObject(By.res(TARGET_PACKAGE, "EpisodeList")), UI_TIMEOUT_MS)) {
                     "Viewer did not return to the episode screen"
@@ -454,6 +446,7 @@ class NtkColdViewerMacrobenchmark {
                 .put("adjacentTraversalGestureCount", adjacentTraversalGestureCount)
                 .put("adjacentLastActualDescription", adjacentLastActualDescription)
                 .put("adjacentLastSourceIndex", adjacentLastSourceIndex)
+                .put("adjacentObservedRunwayDrawableCount", adjacentObservedRunwayDrawableCount)
                 .put("adjacentWorkStartedAtNanos", adjacentWorkStartedAtNanos)
                 .put("adjacentRunwayReadyAtNanos", adjacentRunwayReadyAtNanos)
                 .put("adjacentRunwayTargetEpisode", adjacentRunwayTargetEpisode)
@@ -463,6 +456,7 @@ class NtkColdViewerMacrobenchmark {
                 .put("firstAdjacentActualAtNanos", firstAdjacentActualAtNanos)
                 .put("firstAdjacentActualEpisode", firstAdjacentActualEpisode)
                 .put("adjacentBoundaryWaitMs", adjacentBoundaryWaitMs)
+                .put("runwayReadyBeforeTail", runwayReadyBeforeTail)
                 .put("sameProcessWarmAttempted", warmAttempted)
                 .put("sameProcessWarmPassed", warmPassed)
                 .put("fastFunctionalTriage", fastFunctionalTriage)
@@ -707,16 +701,17 @@ class NtkColdViewerMacrobenchmark {
     private data class AdjacentTraversalObservation(
         val gestures: Int,
         val actualDescription: String,
-        val sourceIndex: Int
+        val sourceIndex: Int,
+        val runwayDrawableCount: Int = 0,
     )
 
     /**
      * Qualifies exactly one selected episode plus its real forward boundary. The reader may keep
      * appending later episodes, so a global `bottom` is not a stable target. Seeing a committed
      * adjacent image proves that the selected episode was traversed and that its prepared runway
-     * was attached. Explicit diagnostic calls may additionally pin the exact adjacent path. The
-     * all-images assertion immediately after this function still requires every canonical image
-     * of the selected episode to be render-ready.
+     * was attached. The exact adjacent identity is mandatory; an unconfigured target must never
+     * degrade into a generic bottom traversal. The all-images assertion immediately after this
+     * function still requires every canonical image of the selected episode to be render-ready.
      */
     private fun driveIntoExpectedAdjacentEpisode(
         device: UiDevice,
@@ -724,11 +719,13 @@ class NtkColdViewerMacrobenchmark {
         expectedEpisodePath: String,
     ): AdjacentTraversalObservation {
         require(launchEpisodePath.isNotBlank())
+        require(expectedEpisodePath.isNotBlank())
         val deadline = SystemClock.elapsedRealtime() + EDGE_TIMEOUT_MS
         var gestures = 0
         var launchReadyPageCount = 0
         var maxLaunchSource = -1
         var maxExpectedSource = -1
+        var provenExpectedRunwayDrawableCount = 0
         var expectedDescription = ""
         var lastDescription = ""
         while (
@@ -754,35 +751,77 @@ class NtkColdViewerMacrobenchmark {
                 val identity = ACTUAL_IDENTITY_PATTERN.matchEntire(description) ?: continue
                 val path = identity.groupValues[1]
                 val source = identity.groupValues[2].toIntOrNull() ?: continue
+                val adjacentTotalPageCount = description
+                    .telemetryNanos("adjacentTotalPageCount")
+                    .toInt()
+                val requiredRunwayPageCount = minOf(
+                    ADJACENT_REQUIRED_RUNWAY_PAGES,
+                    adjacentTotalPageCount,
+                )
+                val adjacentRunwayPageCount = description
+                    .telemetryNanos("adjacentRunwayPageCount")
+                    .toInt()
+                val adjacentRunwayTargetEpisode = description
+                    .telemetryValue("adjacentRunwayTargetEpisode")
+                val firstAdjacentActualAtNanos = description
+                    .telemetryNanos("firstAdjacentActualAtNanos")
+                val firstAdjacentActualEpisode = description
+                    .telemetryValue("firstAdjacentActualEpisode")
+                val allRequiredDrawablesObserved =
+                    requiredRunwayPageCount > 0 &&
+                        adjacentRunwayPageCount == requiredRunwayPageCount
+                val exactAtomicRunwayProven =
+                    allRequiredDrawablesObserved &&
+                        adjacentRunwayTargetEpisode == expectedEpisodePath &&
+                        firstAdjacentActualAtNanos > 0L &&
+                        firstAdjacentActualEpisode == expectedEpisodePath
+                if (exactAtomicRunwayProven &&
+                    gestures >= INITIAL_MODERATE_FORWARD_GESTURES
+                ) {
+                    // The runway count is published only after every member of the exact drawable
+                    // cohort is ready; the adjacent identity is published only by a committed
+                    // frame. Together they prove the requested next episode was attached with
+                    // all four pages even if UiAutomator next samples a later episode.
+                    return AdjacentTraversalObservation(
+                        gestures = gestures,
+                        actualDescription = description,
+                        sourceIndex = if (path == expectedEpisodePath) source else -1,
+                        runwayDrawableCount = adjacentRunwayPageCount,
+                    )
+                }
                 when {
                     path == launchEpisodePath -> {
                         maxLaunchSource = maxOf(maxLaunchSource, source)
-                    }
-                    expectedEpisodePath.isBlank() -> {
-                        return AdjacentTraversalObservation(
-                            gestures = gestures,
-                            actualDescription = description,
-                            sourceIndex = source,
-                        )
                     }
                     path == expectedEpisodePath -> {
                         maxExpectedSource = maxOf(maxExpectedSource, source)
                         // Keep the newest suffix even if callbacks expose an older source node;
                         // timing/count one-shots may have been published after the furthest source.
                         expectedDescription = description
-                        val adjacentTotalPageCount = description
-                            .telemetryNanos("adjacentTotalPageCount")
-                            .toInt()
                         if (adjacentTotalPageCount > 0) {
                             val requiredLastSource = minOf(
                                 ADJACENT_REQUIRED_RUNWAY_PAGES,
                                 adjacentTotalPageCount,
                             ) - 1
-                            if (maxExpectedSource >= requiredLastSource) {
+                            val exactRunwayPrepared =
+                                adjacentRunwayPageCount == requiredLastSource + 1 &&
+                                    adjacentRunwayTargetEpisode == expectedEpisodePath &&
+                                    firstAdjacentActualEpisode == expectedEpisodePath
+                            if (exactRunwayPrepared) {
+                                provenExpectedRunwayDrawableCount = maxOf(
+                                    provenExpectedRunwayDrawableCount,
+                                    adjacentRunwayPageCount,
+                                )
+                            }
+                            if (gestures >= INITIAL_MODERATE_FORWARD_GESTURES &&
+                                maxExpectedSource >= requiredLastSource &&
+                                provenExpectedRunwayDrawableCount >= requiredLastSource + 1
+                            ) {
                                 return AdjacentTraversalObservation(
                                     gestures = gestures,
                                     actualDescription = expectedDescription,
                                     sourceIndex = maxExpectedSource,
+                                    runwayDrawableCount = requiredLastSource + 1,
                                 )
                             }
                         }
@@ -795,18 +834,8 @@ class NtkColdViewerMacrobenchmark {
                 }
                 lastDescription = description
             }
-            if (expectedEpisodePath.isBlank() &&
+            if (maxExpectedSource >= 0 ||
                 launchReadyPageCount > 0 &&
-                maxLaunchSource >= launchReadyPageCount - 1 &&
-                device.hasObject(edgeSelector("bottom"))
-            ) {
-                return AdjacentTraversalObservation(
-                    gestures = gestures,
-                    actualDescription = lastDescription,
-                    sourceIndex = maxLaunchSource,
-                )
-            }
-            if (launchReadyPageCount > 0 &&
                 maxLaunchSource >= launchReadyPageCount - ADJACENT_FINE_SWIPE_RUNWAY_PAGES
             ) {
                 adjacentEpisodeForwardSwipe(device)
@@ -1144,6 +1173,7 @@ class NtkColdViewerMacrobenchmark {
         const val INITIAL_MODERATE_FORWARD_GESTURES = 3
         const val ADJACENT_FINE_SWIPE_RUNWAY_PAGES = 4
         const val ADJACENT_REQUIRED_RUNWAY_PAGES = 4
+        const val ADJACENT_BOUNDARY_WAIT_SLA_MS = 500L
         const val ADJACENT_ATTACH_SLA_MS = 200L
         // One accessibility observation costs ~2.5 s on the continuously rendering SurfaceView,
         // whereas sixteen 20 ms shell flings cost only ~0.3 s and cover the measured 119-page

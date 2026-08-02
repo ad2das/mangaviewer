@@ -26,7 +26,9 @@ data class NtkExactViewerImageApiEnvelope(
     val orderedAssetsDigestSha256: String,
     val documentPlanProofDigestSha256: String,
     val viewerImageRequestIdentityDigestSha256: String,
-    val orderedAssetSelectionPolicyVersion: String
+    val orderedAssetSelectionPolicyVersion: String,
+    /** Exact per-page replicas carried by the same fully consumed, identity-bound API response. */
+    val orderedReplicaCandidates: List<List<String>>,
 ) {
     init {
         require(orderedAssets.isNotEmpty())
@@ -34,6 +36,15 @@ data class NtkExactViewerImageApiEnvelope(
         require(orderedAssets.toSet().size == orderedAssets.size)
         require(sourceSlotCount in orderedAssets.size..1_000)
         require(orderedSourcePages.size == orderedAssets.size)
+        require(orderedReplicaCandidates.size == orderedAssets.size)
+        require(orderedReplicaCandidates.all { candidates ->
+            candidates.isNotEmpty() &&
+                candidates.none(String::isBlank) &&
+                candidates.toSet().size == candidates.size
+        })
+        require(orderedAssets.indices.all { index ->
+            orderedAssets[index] in orderedReplicaCandidates[index]
+        })
         require(
             orderedSourcePages.all { it in 1..sourceSlotCount } &&
                 orderedSourcePages.zipWithNext().all { (first, second) -> first < second }
@@ -649,7 +660,8 @@ object NtkViewerImageApiAuthorityParser {
             documentPlanProofDigestSha256 = plan.proof.proofDigestSha256,
             viewerImageRequestIdentityDigestSha256 = identity.identityDigestSha256,
             orderedAssetSelectionPolicyVersion =
-                NtkViewerImageApiManifestProof.ORDERED_ASSET_SELECTION_POLICY_VERSION
+                NtkViewerImageApiManifestProof.ORDERED_ASSET_SELECTION_POLICY_VERSION,
+            orderedReplicaCandidates = selectedSlots.orderedReplicaCandidates,
         )
     }
 
@@ -724,7 +736,8 @@ object NtkViewerImageApiAuthorityParser {
             documentPlanProofDigestSha256 = provisionalProofDigest,
             viewerImageRequestIdentityDigestSha256 = identity.identityDigestSha256,
             orderedAssetSelectionPolicyVersion =
-                NtkViewerImageApiManifestProof.ORDERED_ASSET_SELECTION_POLICY_VERSION
+                NtkViewerImageApiManifestProof.ORDERED_ASSET_SELECTION_POLICY_VERSION,
+            orderedReplicaCandidates = selectedSlots.orderedReplicaCandidates,
         )
     }
 
@@ -739,6 +752,12 @@ object NtkViewerImageApiAuthorityParser {
     private data class SelectedRenderableSlots(
         val orderedAssets: List<String>,
         val orderedSourcePages: List<Int>,
+        val orderedReplicaCandidates: List<List<String>>,
+    )
+
+    private data class SelectedCanonicalAsset(
+        val canonical: String,
+        val exactReplicas: List<String>,
     )
 
     private fun selectRenderableSlots(
@@ -748,6 +767,7 @@ object NtkViewerImageApiAuthorityParser {
         logReplicaTopology(images)
         val assets = ArrayList<String>(images.length())
         val sourcePages = ArrayList<Int>(images.length())
+        val replicaCandidates = ArrayList<List<String>>(images.length())
         val excludedPages = ArrayList<Int>()
         for (index in 0 until images.length()) {
             val image = images.optJSONObject(index) ?: fail("images[$index] is not an object")
@@ -765,8 +785,9 @@ object NtkViewerImageApiAuthorityParser {
                 }
                 fail("Image API page $sourcePage lacks a canonical renderable asset")
             }
-            assets += NtkStripDigests.canonicalAsset(selected)
+            assets += NtkStripDigests.canonicalAsset(selected.canonical)
             sourcePages += sourcePage
+            replicaCandidates += selected.exactReplicas
         }
         if (assets.isEmpty()) fail("Image API contains no canonical renderable assets")
         if (excludedPages.isNotEmpty()) {
@@ -779,10 +800,10 @@ object NtkViewerImageApiAuthorityParser {
                 )
             }
         }
-        return SelectedRenderableSlots(assets, sourcePages)
+        return SelectedRenderableSlots(assets, sourcePages, replicaCandidates)
     }
 
-    private fun selectCanonicalAsset(image: JSONObject, pageIndex: Int): String? {
+    private fun selectCanonicalAsset(image: JSONObject, pageIndex: Int): SelectedCanonicalAsset? {
         val trusted = linkedSetOf<String>()
         image.optString("src", "").trim()
             .takeIf(::isTrustedCanonicalAsset)
@@ -795,7 +816,10 @@ object NtkViewerImageApiAuthorityParser {
             }
         }
         if (trusted.isEmpty()) return null
-        if (trusted.size == 1) return trusted.single()
+        if (trusted.size == 1) {
+            val only = trusted.single()
+            return SelectedCanonicalAsset(only, listOf(only))
+        }
 
         // The API explicitly publishes these as interchangeable per-page origins. Keep the first
         // two pages on one deterministic origin: short first pages commonly expose both pages in
@@ -810,7 +834,8 @@ object NtkViewerImageApiAuthorityParser {
         } else {
             byHost.keys.elementAt(pageIndex % byHost.size)
         }
-        return checkNotNull(byHost.getValue(preferredHost).firstOrNull())
+        val canonical = checkNotNull(byHost.getValue(preferredHost).firstOrNull())
+        return SelectedCanonicalAsset(canonical, trusted.toList())
     }
 
     private fun logReplicaTopology(images: JSONArray) {

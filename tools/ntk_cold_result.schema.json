@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mangaviewer.local/schemas/ntk-cold-result-v1.json",
-  "title": "NTK true-cold 10+10 qualification summary",
+  "title": "NTK true-cold 20+20 qualification summary",
   "type": "object",
   "required": [
     "schema",
@@ -9,6 +9,8 @@
     "generatedAt",
     "seed",
     "seedSelectionMode",
+    "selectionAlgorithm",
+    "selectedEpisodePairs",
     "expectedWebtoon",
     "expectedManhwa",
     "completedCases",
@@ -42,11 +44,20 @@
   ],
   "properties": {
     "schema": { "const": 1 },
-    "profile": { "const": "ntk-real-ui-cold-10-plus-10-v1" },
+    "profile": { "const": "ntk-real-ui-cold-20-plus-20-v1" },
     "generatedAt": { "type": "string", "format": "date-time" },
     "seed": { "type": "integer", "minimum": 1 },
     "seedSelectionMode": {
       "enum": ["FRESH_RANDOM", "FIXED_SEED_REPRODUCTION"]
+    },
+    "selectionAlgorithm": {
+      "const": "work: sha256(seed|type|id) lexical rank; episode-pair: sha256(seed|type|workId|currentEpisodeId|nextEpisodeId) lexical rank"
+    },
+    "selectedEpisodePairs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/selectedEpisodePair" }
     },
     "expectedWebtoon": { "type": "integer", "minimum": 0 },
     "expectedManhwa": { "type": "integer", "minimum": 0 },
@@ -144,8 +155,8 @@
       "type": "object",
       "required": ["webtoon", "manhwa"],
       "properties": {
-        "webtoon": { "type": "integer", "minimum": 10 },
-        "manhwa": { "type": "integer", "minimum": 10 }
+        "webtoon": { "type": "integer", "minimum": 20 },
+        "manhwa": { "type": "integer", "minimum": 20 }
       },
       "additionalProperties": false
     },
@@ -188,7 +199,7 @@
       },
       "then": {
         "properties": {
-          "allImagesSlaMs": { "const": 30000 }
+          "allImagesSlaMs": { "const": 6000 }
         }
       }
     },
@@ -199,11 +210,11 @@
       },
       "then": {
         "properties": {
-          "expectedWebtoon": { "const": 10 },
-          "expectedManhwa": { "const": 10 },
-          "requestedCountPerType": { "const": 10 },
-          "completedCases": { "const": 20 },
-          "passedCases": { "const": 20 },
+          "expectedWebtoon": { "const": 20 },
+          "expectedManhwa": { "const": 20 },
+          "requestedCountPerType": { "const": 20 },
+          "completedCases": { "const": 40 },
+          "passedCases": { "const": 40 },
           "smokePassed": { "const": true },
           "qualificationTargetSatisfied": { "const": true },
           "warmReopenRequirementSatisfied": { "const": true },
@@ -215,8 +226,9 @@
           "firstImageSlaMs": { "const": 4000 },
           "webtoonImageSlaMs": { "const": 4000 },
           "manhwaImageSlaMs": { "const": 4000 },
-          "allImagesSlaMs": { "const": 30000 },
-          "cases": { "minItems": 20, "maxItems": 20 }
+          "allImagesSlaMs": { "const": 6000 },
+          "cases": { "minItems": 40, "maxItems": 40 },
+          "selectedEpisodePairs": { "minItems": 40, "maxItems": 40 }
         }
       }
     },
@@ -232,8 +244,8 @@
           "freshRandomSeedRequirementSatisfied": { "const": true },
           "seedSelectionMode": { "const": "FRESH_RANDOM" },
           "diagnosticOnly": { "const": false },
-          "completedCases": { "const": 20 },
-          "passedCases": { "const": 20 }
+          "completedCases": { "const": 40 },
+          "passedCases": { "const": 40 }
         }
       }
     },
@@ -362,6 +374,38 @@
       },
       "additionalProperties": true
     },
+    "selectedEpisodePair": {
+      "type": "object",
+      "required": [
+        "ordinal",
+        "seed",
+        "workType",
+        "workId",
+        "currentEpisodeId",
+        "currentEpisodePath",
+        "nextEpisodeId",
+        "nextEpisodePath",
+        "nextEpisodePageCount",
+        "pairSelectionHash",
+        "pairRankOrdinal",
+        "pairCandidateCount"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "seed": { "type": "integer", "minimum": 1 },
+        "workType": { "enum": ["webtoon", "manhwa"] },
+        "workId": { "type": "string", "minLength": 1 },
+        "currentEpisodeId": { "type": "string", "minLength": 1 },
+        "currentEpisodePath": { "type": "string", "pattern": "^/(webtoon|manhwa)/[^/]+/[^/]+$" },
+        "nextEpisodeId": { "type": "string", "minLength": 1 },
+        "nextEpisodePath": { "type": "string", "pattern": "^/(webtoon|manhwa)/[^/]+/[^/]+$" },
+        "nextEpisodePageCount": { "type": "integer", "minimum": 4 },
+        "pairSelectionHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "pairRankOrdinal": { "type": "integer", "minimum": 1 },
+        "pairCandidateCount": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
     "reproducibility": {
       "type": "object",
       "required": [
@@ -374,6 +418,8 @@
         "perfettoStop",
         "perfettoPull",
         "rerun",
+        "selection",
+        "selectionSha256",
         "output",
         "authentication"
       ],
@@ -387,6 +433,8 @@
         "perfettoStop": { "type": "string", "minLength": 1 },
         "perfettoPull": { "type": "string", "minLength": 1 },
         "rerun": { "type": "string", "minLength": 1 },
+        "selection": { "type": "string", "minLength": 1 },
+        "selectionSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "output": { "type": "string", "minLength": 1 },
         "authentication": { "type": "string", "minLength": 1 }
       },
@@ -411,6 +459,15 @@
         "workId": { "type": "string", "minLength": 1 },
         "episodeId": { "type": ["string", "null"] },
         "episodePath": { "type": ["string", "null"] },
+        "expectedAdjacentEpisodePath": { "type": ["string", "null"] },
+        "expectedAdjacentPageCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentRunwayTargetEpisode": { "type": ["string", "null"] },
+        "adjacentRunwayPageCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentObservedRunwayDrawableCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentTotalPageCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentBoundaryWaitMs": { "type": ["number", "null"] },
+        "runwayReadyBeforeTail": { "type": ["boolean", "null"] },
+        "adjacentAttachMs": { "type": ["number", "null"] },
         "testedAt": { "type": ["string", "null"], "format": "date-time" },
         "completedAt": { "type": ["string", "null"], "format": "date-time" },
         "networkType": { "type": ["string", "null"] },
@@ -485,6 +542,7 @@
         "activeRefreshHz": { "type": ["number", "null"], "exclusiveMinimum": 0 },
         "activeCpuPercent": { "type": ["number", "null"], "minimum": 0 },
         "activeMainThreadRunningMaxMs": { "type": ["number", "null"], "minimum": 0 },
+        "activePresentationSystemFence": { "type": ["number", "null"] },
         "viewportDefectFrames": { "type": ["integer", "null"], "minimum": 0 },
         "runwayDefectFrames": { "type": ["integer", "null"], "minimum": 0 },
         "preSubmitViewportGaps": { "type": ["integer", "null"], "minimum": 0 },
@@ -529,6 +587,15 @@
             "required": [
               "episodeId",
               "episodePath",
+              "expectedAdjacentEpisodePath",
+              "expectedAdjacentPageCount",
+              "adjacentRunwayTargetEpisode",
+              "adjacentRunwayPageCount",
+              "adjacentObservedRunwayDrawableCount",
+              "adjacentTotalPageCount",
+              "adjacentBoundaryWaitMs",
+              "runwayReadyBeforeTail",
+              "adjacentAttachMs",
               "testedAt",
               "completedAt",
               "randomSeed",
@@ -565,6 +632,7 @@
               "activeRefreshHz",
               "activeCpuPercent",
               "activeMainThreadRunningMaxMs",
+              "activePresentationSystemFence",
               "viewportDefectFrames",
               "runwayDefectFrames",
               "preSubmitViewportGaps",
@@ -605,6 +673,15 @@
               "violations": { "maxItems": 0 },
               "episodeId": { "type": "string", "minLength": 1 },
               "episodePath": { "type": "string", "minLength": 1 },
+              "expectedAdjacentEpisodePath": { "type": "string", "minLength": 1 },
+              "expectedAdjacentPageCount": { "type": "integer", "minimum": 4 },
+              "adjacentRunwayTargetEpisode": { "type": "string", "minLength": 1 },
+              "adjacentRunwayPageCount": { "const": 4 },
+              "adjacentObservedRunwayDrawableCount": { "const": 4 },
+              "adjacentTotalPageCount": { "type": "integer", "minimum": 4 },
+              "adjacentBoundaryWaitMs": { "type": "number", "minimum": 0, "maximum": 500 },
+              "runwayReadyBeforeTail": { "const": true },
+              "adjacentAttachMs": { "type": "number", "minimum": 0, "maximum": 200 },
               "firstActualMs": { "type": "number", "minimum": 0 },
               "imageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
               "allImagesReadyMs": { "type": "number", "minimum": 0 },
@@ -615,6 +692,29 @@
               "manifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
               "traversalManifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
               "invalidCommittedFrames": { "const": 0 },
+              "activePresentedFrameCount": { "type": "number", "exclusiveMinimum": 1 },
+              "activePresentationIntervalCount": { "type": "number", "exclusiveMinimum": 0 },
+              "activePresentationFps": { "type": "number", "exclusiveMinimum": 0 },
+              "activePresentationFpsTarget": { "type": "number", "exclusiveMinimum": 0 },
+              "activePresentationJankPercent": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 1
+              },
+              "activePresentationGapMaxMs": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 100
+              },
+              "activeRefreshPeriodMs": { "type": "number", "exclusiveMinimum": 0 },
+              "activeRefreshHz": { "type": "number", "exclusiveMinimum": 0 },
+              "activeCpuPercent": { "type": "number", "minimum": 0 },
+              "activeMainThreadRunningMaxMs": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 100
+              },
+              "activePresentationSystemFence": { "const": 1 },
               "viewportDefectFrames": { "const": 0 },
               "preSubmitViewportGaps": { "const": 0 },
               "initialBlankFrames": { "const": 0 },

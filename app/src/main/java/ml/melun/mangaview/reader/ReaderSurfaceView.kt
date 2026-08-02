@@ -651,6 +651,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val earlyNativePresentations = LinkedHashMap<Long, EarlyNativePresentation>()
     private var directSurfaceReady = false
     private val nativeSurfaceView = SurfaceView(context)
+    /**
+     * Instrumentation-only A/B switch. The production default remains the rolling native
+     * producer; a test process can force the already-supported HWUI path before constructing the
+     * reader without changing content admission, scroll coordinates, or adjacent loading policy.
+     */
+    private val rollingNativePresentationEnabled =
+        !java.lang.Boolean.getBoolean(TEST_FORCE_HWUI_SYSTEM_PROPERTY)
     private var rollingTextureSurface: Surface? = null
     private var rollingNativeHandle = 0L
     private var rollingNativeCreatePending = false
@@ -684,8 +691,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var directChoreographer: Choreographer? = null
     private var directFrameCallbackPosted = false
     private var directLateInputCatchupPosted = false
-    private var directReleaseInputCatchupPosted = false
-    private var directNativeRetirementContinuationPosted = false
     private var dragTargetRevision = 0L
     private var directCallbackObservedDragTargetRevision = 0L
     private var physicalGestureRevision = 0L
@@ -1043,7 +1048,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         // native producer can be created/prepared after the click), but HWUI does not allocate a
         // TextureView layer until exact pixels cover the viewport. No placeholder is drawn and
         // no content request is moved before the viewer click.
-        nativeSurfaceView.visibility = if (enabled) View.GONE else View.VISIBLE
+        nativeSurfaceView.visibility =
+            if (enabled || !rollingNativePresentationEnabled) View.GONE else View.VISIBLE
         nativeSurfaceView.alpha = 1f
     }
 
@@ -1056,7 +1062,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun prepareDeferredSurfaceProducerAfterRootFrame() {
         check(Looper.myLooper() == Looper.getMainLooper())
         val generation = synchronized(stateLock) {
-            if (!surfaceAttachmentDeferredUntilActualPixels ||
+            if (!rollingNativePresentationEnabled ||
+                !surfaceAttachmentDeferredUntilActualPixels ||
                 deferredSurfacePreparationPosted
             ) {
                 return
@@ -4641,9 +4648,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         super.onAttachedToWindow()
         synchronized(stateLock) {
             renderRunning = true
-            startRenderThreadLocked()
-            if (surfaceAttachmentDeferredUntilActualPixels) {
-                prepareRollingNativeRendererLocked()
+            if (rollingNativePresentationEnabled) {
+                startRenderThreadLocked()
+                if (surfaceAttachmentDeferredUntilActualPixels) {
+                    prepareRollingNativeRendererLocked()
+                }
             }
             renderRequested = pages.isNotEmpty() && !shouldBlockInitialEmptyFrameLocked()
             if (renderRequested) scheduleFrameLocked()
@@ -4752,6 +4761,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        if (!rollingNativePresentationEnabled) return
         val surface = holder.surface
         val surfaceWidth = nativeSurfaceView.width
         val surfaceHeight = nativeSurfaceView.height
@@ -4765,13 +4775,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             surface.setFrameRate(
                 refreshRate,
-                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
-                Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS
+                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                Surface.CHANGE_FRAME_RATE_ALWAYS
             )
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             surface.setFrameRate(
                 refreshRate,
-                Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
+                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
             )
         }
         attachRollingNativeSurface(surface, surfaceWidth, surfaceHeight)
@@ -4783,6 +4793,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         width: Int,
         height: Int
     ) {
+        if (!rollingNativePresentationEnabled) return
         if (width <= 0 || height <= 0) return
         val surface = synchronized(stateLock) {
             val current = holder.surface
@@ -4855,6 +4866,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         surfaceWidth: Int,
         surfaceHeight: Int
     ) {
+        if (!rollingNativePresentationEnabled) return
         if (!surface.isValid || surfaceWidth <= 0 || surfaceHeight <= 0) return
         val surfaceIdentity = System.identityHashCode(surface)
         val request = synchronized(stateLock) {
@@ -5220,16 +5232,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     if (!pointerDown && scroller.isFinished && !upMoved) {
                         endPhysicalScrollTraceLocked()
                         setNativeTexturePrewarmPausedLocked(false)
-                    }
-                    if (wasReleased && !wasTap && (upMoved || !scroller.isFinished)) {
-                        // The producer callback can run immediately before ACTION_UP starts the
-                        // fling, leaving its already-reserved successor one missed host vsync
-                        // behind the real release position. Replace only that observed callback;
-                        // the admitted token contains the exact release/scroller state.
-                        postReleaseDirectInputCatchupLocked(
-                            releaseMoved = upMoved,
-                            scrollerFinished = scroller.isFinished,
-                        )
                     }
                     dispatch
                 }
@@ -7531,7 +7533,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     // the Activity root frame. Only the ultra-fast fallback, where actual pixels
                     // beat that root callback, needs an HWUI proof before making the child visible.
                     nativeSurfaceRevealAfterFirstHwuiCommitPending =
-                        nativeSurfaceView.visibility != View.VISIBLE
+                        rollingNativePresentationEnabled &&
+                            nativeSurfaceView.visibility != View.VISIBLE
                     renderRequested = true
                     true
                 }
@@ -7565,6 +7568,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
      */
     private fun revealNativeSurfaceAfterFirstHwuiCommit(expectedLifecycleEpoch: Long) {
         check(Looper.myLooper() == Looper.getMainLooper())
+        if (!rollingNativePresentationEnabled) return
         val reveal = synchronized(stateLock) {
             renderRunning &&
                 lifecycleEpoch == expectedLifecycleEpoch &&
@@ -7622,7 +7626,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         var completed: CompletedDrawProof? = null
         var revealNativeSurfaceAfterCompletedHwui = false
-        var continueFromNativeRetirement = false
         synchronized(stateLock) {
             if (epoch != lifecycleEpoch) return
             val submission = pendingFrameCommits.remove(token)
@@ -7749,15 +7752,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 if (!scroller.isFinished) pendingPixelReasons = pendingPixelReasons or DIRTY_ANIMATION
                 scheduleFrameLocked()
-                continueFromNativeRetirement =
-                    surfaceQueueObserved &&
-                        framePipe == FramePipe.INVALIDATION_POSTED &&
-                        inFlightToken != 0L
             }
             stateLock.notifyAll()
-        }
-        if (continueFromNativeRetirement) {
-            postDirectNativeRetirementContinuation()
         }
         completed?.let { proof ->
             mainHandler.post {
@@ -7975,7 +7971,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * already click-owned page requests. Must be called with [stateLock] held.
      */
     private fun prepareRollingNativeRendererLocked() {
-        if (!renderRunning || rollingNativeFatal || rollingNativeHandle != 0L ||
+        if (!rollingNativePresentationEnabled || !renderRunning || rollingNativeFatal ||
+            rollingNativeHandle != 0L ||
             rollingNativeCreatePending
         ) return
         val handler = directRenderHandler ?: return
@@ -8054,16 +8051,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
         directRenderHandler?.removeCallbacks(directFramePostRunnable)
         directRenderHandler?.removeCallbacks(directCadenceWatchdog)
         directRenderHandler?.removeCallbacks(directLateInputCatchup)
-        directRenderHandler?.removeCallbacks(directReleaseInputCatchup)
-        directRenderHandler?.removeCallbacks(directNativeRetirementContinuation)
         val choreographer = directChoreographer
         if (choreographer != null && directFrameCallbackPosted) {
             choreographer.removeFrameCallback(directFrameCallback)
         }
         directFrameCallbackPosted = false
         directLateInputCatchupPosted = false
-        directReleaseInputCatchupPosted = false
-        directNativeRetirementContinuationPosted = false
         directCallbackObservedDragTargetRevision = 0L
         directCallbackObservedPhysicalGestureRevision = 0L
         directCallbackObservedAtNanos = 0L
@@ -8119,100 +8112,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         } finally {
             Trace.endSection()
-        }
-    }
-
-    /**
-     * ACTION_UP can install the exact release coordinate/start a fling just after the producer
-     * callback observed the prior drag target. Waiting for that callback's successor exposed a
-     * 38.55 ms physical presentation gap when the host missed its next producer vsync. This is a
-     * one-shot replacement for the already-admitted real token, never a synthetic scroll frame.
-     */
-    private val directReleaseInputCatchup: Runnable = Runnable {
-        Trace.beginSection("ViewerDirectReleaseInputCatchup")
-        try {
-            val shouldRender = synchronized(stateLock) {
-                directReleaseInputCatchupPosted = false
-                val hasAdmittedFrame =
-                    framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
-                val canReplaceCallback = renderRunning && directSurfaceReady &&
-                    directFrameCallbackPosted && !pointerDown && hasAdmittedFrame &&
-                    rollingNativeHandle != 0L &&
-                    rollingNativeAttachEpoch > 0L &&
-                    rollingTextureSurface?.isValid == true
-                if (canReplaceCallback) {
-                    directChoreographer?.removeFrameCallback(directFrameCallback)
-                    directRenderHandler?.removeCallbacks(directCadenceWatchdog)
-                    directRenderHandler?.removeCallbacks(directLateInputCatchup)
-                    directFrameCallbackPosted = false
-                    directLateInputCatchupPosted = false
-                }
-                canReplaceCallback
-            }
-            if (shouldRender) {
-                renderDirectSurfaceFrame(System.nanoTime())
-            }
-        } finally {
-            Trace.endSection()
-        }
-    }
-
-    /**
-     * A display-paced EGL swap retires the prior token on the native owner. At that exact point
-     * [onFrameCommitted] may admit the next immutable token. The Choreographer callback reserved
-     * before the swap can already have run while the prior token still owned the pipe, leaving
-     * this new token parked until the watchdog. Continue from the retirement edge instead: EGL
-     * remains the 60 Hz pacing authority and the depth-one native mailbox still coalesces input.
-     */
-    private val directNativeRetirementContinuation: Runnable = Runnable {
-        Trace.beginSection("ViewerDirectNativeRetirement")
-        try {
-            val shouldRender = synchronized(stateLock) {
-                directNativeRetirementContinuationPosted = false
-                val hasAdmittedFrame =
-                    framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
-                val canContinue = renderRunning && directSurfaceReady &&
-                    hasAdmittedFrame &&
-                    rollingNativeHandle != 0L &&
-                    rollingNativeAttachEpoch > 0L &&
-                    rollingTextureSurface?.isValid == true
-                if (canContinue) {
-                    directChoreographer?.removeFrameCallback(directFrameCallback)
-                    directRenderHandler?.removeCallbacks(directCadenceWatchdog)
-                    directRenderHandler?.removeCallbacks(directLateInputCatchup)
-                    directRenderHandler?.removeCallbacks(directReleaseInputCatchup)
-                    directFrameCallbackPosted = false
-                    directLateInputCatchupPosted = false
-                    directReleaseInputCatchupPosted = false
-                }
-                canContinue
-            }
-            if (shouldRender) {
-                renderDirectSurfaceFrame(System.nanoTime())
-            }
-        } finally {
-            Trace.endSection()
-        }
-    }
-
-    private fun postDirectNativeRetirementContinuation() {
-        val handler = synchronized(stateLock) {
-            if (directNativeRetirementContinuationPosted || !renderRunning ||
-                !directSurfaceReady ||
-                framePipe != FramePipe.INVALIDATION_POSTED || inFlightToken == 0L
-            ) {
-                null
-            } else {
-                directNativeRetirementContinuationPosted = true
-                directRenderHandler
-            }
-        }
-        if (handler == null ||
-            !handler.postAtFrontOfQueue(directNativeRetirementContinuation)
-        ) {
-            synchronized(stateLock) {
-                directNativeRetirementContinuationPosted = false
-            }
         }
     }
 
@@ -8353,40 +8252,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
         directLateInputCatchupPosted = true
         if (!handler.postAtFrontOfQueue(directLateInputCatchup)) {
             directLateInputCatchupPosted = false
-            return false
-        }
-        return true
-    }
-
-    /** Must be called with [stateLock] held after the release mutation has been scheduled. */
-    private fun postReleaseDirectInputCatchupLocked(
-        releaseMoved: Boolean,
-        scrollerFinished: Boolean,
-    ): Boolean {
-        val refreshPeriodNanos =
-            (frameBudgetMs() * NANOS_PER_MILLISECOND.toFloat()).toLong().coerceAtLeast(1L)
-        val hasAdmittedFrame =
-            framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
-        if (!NtkReleaseInputCatchupPolicy.shouldPost(
-                renderRunning = renderRunning,
-                directSurfaceReady = directSurfaceReady,
-                callbackPosted = directFrameCallbackPosted,
-                catchupPosted = directReleaseInputCatchupPosted,
-                pointerDown = pointerDown,
-                hasAdmittedFrame = hasAdmittedFrame,
-                releaseMoved = releaseMoved,
-                scrollerFinished = scrollerFinished,
-                callbackObservedAtNanos = directCallbackObservedAtNanos,
-                nowNanos = System.nanoTime(),
-                refreshPeriodNanos = refreshPeriodNanos,
-            )
-        ) {
-            return false
-        }
-        val handler = directRenderHandler ?: return false
-        directReleaseInputCatchupPosted = true
-        if (!handler.postAtFrontOfQueue(directReleaseInputCatchup)) {
-            directReleaseInputCatchupPosted = false
             return false
         }
         return true
@@ -10682,6 +10547,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     companion object {
+        private const val TEST_FORCE_HWUI_SYSTEM_PROPERTY =
+            "mangaview.reader.force_hwui_for_test"
         const val DIRECTION_PREVIOUS = -1
         const val DIRECTION_NEXT = 1
         private const val ROLLING_AUTHORITATIVE_RECYCLE_DELAY_MS = 250L

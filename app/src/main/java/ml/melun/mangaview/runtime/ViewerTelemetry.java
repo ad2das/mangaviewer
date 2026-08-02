@@ -651,8 +651,8 @@ public final class ViewerTelemetry {
      * page retained either by the Surface or its frame-paced install queue. This is observability
      * only: callers do not wait for this signal before accepting input or starting a scroll.
      */
-    public static void allImagesRenderReady(View hostView, int pageCount) {
-        if(hostView == null || pageCount <= 0)
+    public static void markAllImagesRenderReady(int pageCount) {
+        if(pageCount <= 0)
             return;
         Session session = SESSION.get();
         if(session == null)
@@ -670,12 +670,23 @@ public final class ViewerTelemetry {
                 0L, (completedAtNanos - session.openedAtNanos) / 1_000_000L);
         event("all_images_render_ready", session,
                 "pageCount=" + pageCount + ",openToAllImagesReadyMs=" + openToReadyMs);
+    }
+
+    public static void allImagesRenderReady(View hostView, int pageCount) {
+        if(hostView == null || pageCount <= 0)
+            return;
+        markAllImagesRenderReady(pageCount);
+        Session session = SESSION.get();
+        if(session == null || !session.allImagesReady.get()
+                || !session.allImagesReadyPresentationPublished.compareAndSet(false, true))
+            return;
         publishImagePipelineSummary(session);
         event("network_pipeline_summary", session,
                 "observationCount=" + session.networkObservationCount.get()
                         + ",connectionReusedCount=" + session.networkReusedCount.get()
                         + ",protocols=" + joinedKeys(session.networkProtocols));
 
+        long completedAtNanos = session.allImagesReadyAtNanos;
         String actual = session.latestActualDescription;
         final String description = actual == null || actual.length() == 0
                 ? "viewer-all-ready:" + clean(session.episodeId) + ':' + pageCount + ':'
@@ -1343,6 +1354,7 @@ public final class ViewerTelemetry {
         final int allImagesReadyCookie;
         final AtomicBoolean firstActualFrame = new AtomicBoolean(false);
         final AtomicBoolean allImagesReady = new AtomicBoolean(false);
+        final AtomicBoolean allImagesReadyPresentationPublished = new AtomicBoolean(false);
         final AtomicBoolean scrollTraceOpen = new AtomicBoolean(false);
         final AtomicBoolean closeRequested = new AtomicBoolean(false);
         final AtomicBoolean closeFinalizing = new AtomicBoolean(false);

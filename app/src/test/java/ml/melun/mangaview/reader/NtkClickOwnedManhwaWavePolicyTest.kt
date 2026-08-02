@@ -127,6 +127,38 @@ class NtkClickOwnedManhwaWavePolicyTest {
     }
 
     @Test
+    fun restoredTailViewportOwnsReservedDirectWifiLane() {
+        assertTrue(
+            NtkClickOwnedManhwaWavePolicy.shouldUseDirectWifiRestoredViewportLane(
+                wifiTransport = true,
+                pageIndex = 168,
+                initialViewportPage = 168,
+            )
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldUseDirectWifiRestoredViewportLane(
+                wifiTransport = false,
+                pageIndex = 168,
+                initialViewportPage = 168,
+            )
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldUseDirectWifiRestoredViewportLane(
+                wifiTransport = true,
+                pageIndex = 167,
+                initialViewportPage = 168,
+            )
+        )
+        assertTrue(
+            !NtkClickOwnedManhwaWavePolicy.shouldUseDirectWifiRestoredViewportLane(
+                wifiTransport = true,
+                pageIndex = 39,
+                initialViewportPage = 39,
+            )
+        )
+    }
+
+    @Test
     fun verifiedEntryPriorityRequiresCurrentStableDirectWifiAndExactUncommonSuffix() {
         fun prioritize(
             pageIndex: Int = 1,
@@ -190,6 +222,15 @@ class NtkClickOwnedManhwaWavePolicyTest {
         assertEquals(40, heavy.last())
         assertEquals((40 until 119).toSet(), heavy.toSet())
         assertEquals(79, heavy.size)
+
+        val adjacent = NtkClickOwnedManhwaWavePolicy.adjacentExactBodyAdmissionOrder(
+            pageCount = 180,
+            admittedRunwayPages = 4,
+        )
+        assertEquals((4 until 40).toList(), adjacent.take(36))
+        assertEquals((40 until 180).reversed().toList(), adjacent.drop(36))
+        assertEquals((4 until 180).toSet(), adjacent.toSet())
+        assertEquals(176, adjacent.size)
         assertTrue(!NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(39))
         assertTrue(NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(40))
         assertTrue(NtkClickOwnedManhwaWavePolicy.shouldFailoverTailHeaders(118))

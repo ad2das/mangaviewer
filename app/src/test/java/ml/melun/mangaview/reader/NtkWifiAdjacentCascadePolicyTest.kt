@@ -37,6 +37,19 @@ class NtkWifiAdjacentCascadePolicyTest {
     }
 
     @Test
+    fun directWifiStartsTheFollowingEpisodeAsSoonAsCurrentIsComplete() {
+        assertTrue(
+            NtkWifiAdjacentCascadePolicy.shouldStart(
+                wifiTransportActive = true,
+                initialEpisode = false,
+                directWifiCurrentEpisodeComplete = true,
+                activeSourcePageIndex =
+                    NtkWifiAdjacentCascadePolicy.MIN_ACTIVE_SOURCE_PAGE_INDEX - 1,
+            )
+        )
+    }
+
+    @Test
     fun mobileBehaviorIsUnchanged() {
         assertTrue(
             NtkWifiAdjacentCascadePolicy.shouldStart(

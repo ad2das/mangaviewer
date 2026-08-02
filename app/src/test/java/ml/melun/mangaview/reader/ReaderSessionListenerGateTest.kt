@@ -378,12 +378,16 @@ class ReaderSessionListenerGateTest {
         val adjacent = Manga(11, "11화", "", MTitle.base_comic).apply {
             ntkEpisodePath = "/manhwa/work/episode-11"
         }
+        val predecessorPath = "/manhwa/work/episode-10"
 
-        gate.onAdjacentExactManifestRequired(adjacent)
+        gate.onAdjacentExactManifestRequired(adjacent, predecessorPath)
         activeGeneration = 5
-        gate.onAdjacentExactManifestRequired(adjacent)
+        gate.onAdjacentExactManifestRequired(adjacent, predecessorPath)
 
-        assertEquals(listOf("adjacent-exact:/manhwa/work/episode-11"), downstream.events)
+        assertEquals(
+            listOf("adjacent-exact:/manhwa/work/episode-11:after:$predecessorPath"),
+            downstream.events,
+        )
     }
 
     private open class RecordingListener : ReaderSession.Listener {
@@ -458,8 +462,11 @@ class ReaderSessionListenerGateTest {
             events += "captcha"
         }
 
-        override fun onAdjacentExactManifestRequired(manga: Manga) {
-            events += "adjacent-exact:${manga.ntkEpisodePath}"
+        override fun onAdjacentExactManifestRequired(
+            manga: Manga,
+            predecessorEpisodePath: String,
+        ) {
+            events += "adjacent-exact:${manga.ntkEpisodePath}:after:$predecessorEpisodePath"
         }
 
         override fun onBoundaryAppendFinished(

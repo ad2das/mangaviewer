@@ -6,6 +6,35 @@ import org.junit.Test
 
 class NtkAdjacentEpisodeAuthorityPolicyTest {
     @Test
+    fun numericTrustedCandidateCannotWalkBackwardDuringForwardContinuation() {
+        assertFalse(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10073/238730",
+                "/manhwa/10073/238729",
+                1,
+            )
+        )
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/manhwa/10073/238730",
+                "/manhwa/10073/238731",
+                1,
+            )
+        )
+    }
+
+    @Test
+    fun opaqueTrustedCandidateKeepsLegacyOrderingBehavior() {
+        assertTrue(
+            NtkAdjacentEpisodeAuthorityPolicy.isTrustedCandidateDirectionallyConsistent(
+                "/webtoon/work/u-current",
+                "/webtoon/work/u-next",
+                1,
+            )
+        )
+    }
+
+    @Test
     fun strictAdjacentRunwayAcceptsOnlyExactApiOrTokenBoundGeneratedProofs() {
         assertTrue(
             NtkAdjacentEpisodeAuthorityPolicy.supportsStrictAdjacentManifest(

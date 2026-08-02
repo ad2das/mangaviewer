@@ -2545,7 +2545,8 @@ public class CustomHttpClient {
                 int attemptOrdinal = physicalAttempt == null ? 0 : physicalAttempt.getOrdinal();
                 int shardIndex = ntkWebtoonExactImageShardIndex(
                         pageIndex, shardCount, attemptOrdinal);
-                if(shouldUseNtkExactImageHttp1Recovery(request, attemptOrdinal)) {
+                  if(shouldUseNtkExactImageHttp1Recovery(
+                          request, attemptOrdinal, cellularResilientTransport)) {
                     OkHttpClient[] recoveryShards = cellularResilientTransport
                             ? ntkCellularDemandBoundExactImageHttp1RecoveryShards
                             : ntkDemandBoundExactImageHttp1RecoveryShards;
@@ -2578,9 +2579,11 @@ public class CustomHttpClient {
         }
 
         private boolean shouldUseNtkExactImageHttp1Recovery(Request request,
-                                                             int physicalAttemptOrdinal) {
+                                                             int physicalAttemptOrdinal,
+                                                             boolean cellularResilientTransport) {
             return request.header("Range") != null
-                    || physicalAttemptOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT;
+                    || (cellularResilientTransport
+                    && physicalAttemptOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT);
         }
 
         /** Uses the stable global mixer for non-striped exact-image topologies such as manhwa. */

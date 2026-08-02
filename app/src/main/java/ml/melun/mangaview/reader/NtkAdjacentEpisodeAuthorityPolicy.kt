@@ -8,6 +8,35 @@ package ml.melun.mangaview.reader
  * database id creates phantom episodes and permanently retries URLs that do not exist.
  */
 internal object NtkAdjacentEpisodeAuthorityPolicy {
+    private val numericEpisodePath = Regex(
+        "^/(manhwa|webtoon)/(\\d{1,12})/(\\d{1,12})(?:[/?#].*)?$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * Rejects a legacy `nextEp()`/`prevEp()` answer only when both paths provide an unambiguous
+     * numeric direction for the same work and that answer points backward. Episode arrays from
+     * different NTK works are not consistently ordered; trusting their legacy index here can turn
+     * B -> C continuation into B -> A. Opaque/special paths retain the existing legacy behavior.
+     */
+    @JvmStatic
+    fun isTrustedCandidateDirectionallyConsistent(
+        sourceEpisodePath: String?,
+        candidateEpisodePath: String?,
+        direction: Int,
+    ): Boolean {
+        if (direction == 0) return false
+        val source = numericEpisodePath.matchEntire(sourceEpisodePath?.trim().orEmpty()) ?: return true
+        val candidate =
+            numericEpisodePath.matchEntire(candidateEpisodePath?.trim().orEmpty()) ?: return true
+        if (!source.groupValues[1].equals(candidate.groupValues[1], ignoreCase = true) ||
+            source.groupValues[2] != candidate.groupValues[2]
+        ) return true
+        val sourceId = source.groupValues[3].toLongOrNull() ?: return true
+        val candidateId = candidate.groupValues[3].toLongOrNull() ?: return true
+        return if (direction > 0) candidateId > sourceId else candidateId < sourceId
+    }
+
     /**
      * Both proofs below bind the complete ordered asset list to the exact episode path. A plain
      * episode-document generation is intentionally excluded because it has no token-bound source

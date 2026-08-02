@@ -708,7 +708,10 @@ object NtkSourceSpoolRegistry {
                 viewerImageApiBacked = spec.viewerImageApiBacked,
                 cellularResilientTransport = cellularResilientTransport,
                 wifiQuicBulkTransport =
-                    spec.viewerImageApiBacked && directWifiTransport && NtkQuicFetcher.isAvailable(),
+                    spec.viewerImageApiBacked &&
+                        !binding.episodePath.startsWith("/webtoon/") &&
+                        directWifiTransport &&
+                        NtkQuicFetcher.isAvailable(),
                 currentForegroundViewerGeneration = currentForegroundViewerGeneration,
                 adjacentPrefetch = directWifiTransport &&
                     ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(
@@ -1690,6 +1693,13 @@ object NtkSourceSpoolRegistry {
         lease: NtkDiscoveryLease,
         failure: Throwable
     ) {
+        Log.e(
+            "ViewerPerf",
+            "reader_quarantine_source_failed path=$path," +
+                "generation=${lease.generation.value}," +
+                "error=${failure.javaClass.simpleName}",
+            failure,
+        )
         val action: CloseAction? = synchronized(mutationLock(path)) {
             val entry = entries[path] ?: return@synchronized null
             if (entry.lease != lease ||
@@ -1922,6 +1932,9 @@ object NtkSourceSpoolRegistry {
 
         override fun onInitialDrawableCommitted(episode: NtkEpisodeToken) =
             transport.onInitialDrawableCommitted(episode)
+
+        override fun onAdjacentPredecessorComplete(episode: NtkEpisodeToken) =
+            transport.onAdjacentPredecessorComplete(episode)
 
         override fun onAdjacentViewportActivated(episode: NtkEpisodeToken) =
             transport.onAdjacentViewportActivated(episode)

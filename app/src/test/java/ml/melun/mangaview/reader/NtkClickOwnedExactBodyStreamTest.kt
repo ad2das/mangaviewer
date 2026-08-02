@@ -73,7 +73,13 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(preparation.contains(
             "preferProbeWarmRoute = probeWarmAdjacentRunway"
         ))
+        assertTrue(preparation.contains(
+            "enableProofBackedExactReplicaRoute = directWifiAdjacentRunway"
+        ))
         val cache = readSource("ReaderImageCache.kt")
+        assertTrue(cache.contains(
+            "enableProofBackedExactReplicaRoute && generatedRef == null"
+        ))
         assertTrue(cache.contains("ntk-click-adjacent-probe-warm-existing"))
         assertTrue(cache.contains("click_adjacent_probe_warm_existing_route"))
     }
@@ -168,9 +174,10 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
-    fun directWifiAdjacentPhysicalWaveIsFourPagesUntilViewportActivation() {
+    fun directWifiAdjacentBodyWaveWaitsForPredecessorWhileFirstFourKeepFastRoute() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val coordinator = readSource("NtkStrictEpisodeDiscoveryCoordinator.kt")
+        val admissionPolicy = readSource("NtkAdjacentAdmissionPolicy.kt")
         val session = readSource("NtkStrictSourceSession.kt")
 
         assertTrue(
@@ -178,15 +185,49 @@ class NtkClickOwnedExactBodyStreamTest {
                 "private const val DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES = 4"
             )
         )
-        assertTrue(quarantine.contains("val completeWaveRelease = networkRelease.thenCombine(adjacentViewportRelease)"))
+        assertTrue(quarantine.contains("networkRelease.thenCombine(adjacentRunwayRelease)"))
+        assertFalse(quarantine.contains("networkRelease.thenCombine(adjacentViewportRelease)"))
         assertTrue(quarantine.contains("minOf(initialSpeculationPages, exactCount)"))
         assertTrue(quarantine.contains("adjacentPhysicalAdmissionFuture(pageIndex, callCancellation)"))
         assertTrue(quarantine.contains("awaitAdjacentPhysicalAdmission(pageIndex, callCancellation)"))
+        val physicalAdmission = quarantine.substringAfter("private fun adjacentPhysicalAdmissionFuture(")
+            .substringBefore("/** Final physical-call backstop")
+        assertTrue(physicalAdmission.contains("adjacentPredecessorComplete.handle"))
+        assertTrue(physicalAdmission.contains("adjacentRunwayRelease"))
+        assertFalse(physicalAdmission.contains("adjacentViewportRelease"))
+        val physicalBackstop = quarantine.substringAfter("private fun awaitAdjacentPhysicalAdmission(")
+            .substringBefore("private fun releaseWave")
+        assertTrue(physicalBackstop.contains("adjacentPredecessorComplete"))
+        assertTrue(physicalBackstop.contains("adjacentRunwayRelease"))
+        assertFalse(physicalBackstop.contains("adjacentViewportRelease.get("))
         assertTrue(quarantine.contains("adjacentViewportActivated = ::notifyAdjacentViewportActivated"))
-        assertTrue(coordinator.contains("val directWifiAdjacentOwned ="))
-        assertTrue(coordinator.contains("!client.isNtkCellularResilientTransportActive()"))
-        assertTrue(coordinator.contains("plan == null && !directWifiAdjacentOwned"))
+        assertTrue(coordinator.contains("NtkAdjacentAdmissionPolicy.decide("))
+        assertTrue(
+            coordinator.contains(
+                "val adjacentPredecessorGate = adjacentAdmission.predecessorCompletionRequired"
+            )
+        )
+        assertTrue(
+            coordinator.contains(
+                "val directWifiAdjacentBodyGate = adjacentAdmission.directWifiPhysicalRunway"
+            )
+        )
+        assertTrue(admissionPolicy.contains("!cellularResilientTransportActive"))
+        val flightWorker = coordinator.substringAfter("private fun runFlight(")
+            .substringBefore("private fun recoverStrictRouteAndRestart(")
+        assertFalse(flightWorker.contains("isNtkWifiTransportActive"))
+        assertFalse(flightWorker.contains("isNtkCellularResilientTransportActive"))
+        assertFalse(flightWorker.contains("directWifiAdjacentOwned"))
+        assertTrue(flightWorker.contains("if (flight.adjacentPredecessorGate)"))
+        assertTrue(flightWorker.contains("awaitAdjacentPredecessorComplete(flight)"))
+        assertTrue(
+            flightWorker.contains("plan == null && !flight.directWifiAdjacentBodyGate")
+        )
+        assertTrue(flightWorker.contains("flight.directWifiAdjacentBodyGate,"))
         assertTrue(session.contains("streamedExactBodies?.onAdjacentViewportActivated()"))
+        assertTrue(session.contains("val previousAdmission = rollingAdmittedPages"))
+        assertTrue(session.contains("pageIndex !in previousAdmission"))
+        assertTrue(session.contains("preGeometryPendingPages.addLast(pageIndex)"))
     }
 
     @Test
