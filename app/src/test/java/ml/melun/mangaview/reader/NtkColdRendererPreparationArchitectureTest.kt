@@ -105,6 +105,27 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun directWifiExactAdjacentSkipsOnlyTheSpeculativeHwuiUploadDuringInput() {
+        val prepare = functionBody(
+            "private fun shouldPrepareAdjacentRunwayDecodeResultForDraw(",
+            sessionSource,
+        )
+        val delivery = functionBody(
+            "private fun prepareAdjacentRunwayDelivery(",
+            sessionSource,
+        )
+
+        assertTrue(prepare.contains("!strictExactAdjacent"))
+        assertTrue(prepare.contains("!isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(prepare.contains("!viewportBusy.get()"))
+        assertTrue(prepare.contains("!isActiveGeneratedTouchOrQuiet()"))
+        assertTrue(delivery.contains("strictDescriptor != null || strictBody != null"))
+        assertTrue(delivery.contains("prepareDecodeResultForDraw(decoded)"))
+        assertTrue(delivery.contains("decoded"))
+        assertFalse(delivery.contains("}.also(::prepareDecodeResultForDraw)"))
+    }
+
+    @Test
     fun strictSurfaceCannotPublishBeforeItsIdentityProvidingSessionIsBound() {
         val start = functionBody(
             "private fun startReaderSession(",

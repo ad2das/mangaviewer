@@ -16545,7 +16545,8 @@ class ReaderSession(
         } else {
             val strictDescriptor = strictAdjacentBodyDescriptor(page)
             val strictBody = strictAdjacentPublishedBody(page)
-            when {
+            val strictExactAdjacent = strictDescriptor != null || strictBody != null
+            val decoded = when {
                 strictDescriptor != null -> {
                     val lease = strictDescriptor.openLease()
                     try {
@@ -16625,7 +16626,21 @@ class ReaderSession(
                         proofDrawable = true,
                     )
                 }
-            }.also(::prepareDecodeResultForDraw)
+            }
+            if (shouldPrepareAdjacentRunwayDecodeResultForDraw(strictExactAdjacent)) {
+                prepareDecodeResultForDraw(decoded)
+            } else {
+                // prepareToDraw() is a real HWUI/gfxstream texture upload. The direct-Wi-Fi exact
+                // adjacent body remains fully decoded and is installed unchanged, but a chained
+                // physical scroll must not upload the same 2000 px original to HWUI before the
+                // native Surface renderer uploads it for first visibility at the chapter edge.
+                Log.d(
+                    TAG,
+                    "append_adjacent_exact_prepare_to_draw_skip path=${page.manga.ntkEpisodePath} " +
+                        "source=${page.sourceIndex} busy=${viewportBusy.get()}",
+                )
+            }
+            decoded
         }
         return Delivery(
             index,
@@ -16636,6 +16651,18 @@ class ReaderSession(
             retainWhenBusy = false,
             proofDrawable = true,
         )
+    }
+
+    private fun shouldPrepareAdjacentRunwayDecodeResultForDraw(
+        strictExactAdjacent: Boolean,
+    ): Boolean {
+        if (!strictExactAdjacent || !isDirectWifiStrictAdjacentTransportActive()) return true
+        // Keep cellular/SNI and every non-exact route on their established preparation path.
+        // A direct-Wi-Fi adjacent exact original is only a speculative GPU hint until it becomes
+        // visible, so suppress that hint throughout a real gesture and its input-quiet interval.
+        // CPU decode, exact-original identity, listener delivery, and four-page attachment are
+        // deliberately unaffected.
+        return !viewportBusy.get() && !isActiveGeneratedTouchOrQuiet()
     }
 
     private fun takePreparedInitialAdjacentRunwayBatch(
