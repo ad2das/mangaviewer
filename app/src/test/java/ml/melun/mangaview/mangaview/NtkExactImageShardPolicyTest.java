@@ -54,6 +54,22 @@ public final class NtkExactImageShardPolicyTest {
                 CustomHttpClient.ntkWebtoonExactImageShardIndex(pageIndex, 8, 1));
     }
 
+    @Test
+    public void directWifiLogicalRetriesRotateWhileCarrierKeepsItsRoute() {
+        assertEquals(1, CustomHttpClient.ntkWebtoonRoutePhysicalAttemptOrdinal(
+                1, 9, false));
+        assertEquals(9, CustomHttpClient.ntkWebtoonRoutePhysicalAttemptOrdinal(
+                1, 9, true));
+        assertEquals(
+                CustomHttpClient.ntkWebtoonExactImageShardIndex(23, 8, 1),
+                CustomHttpClient.ntkWebtoonExactImageShardIndex(23, 8,
+                        CustomHttpClient.ntkWebtoonRoutePhysicalAttemptOrdinal(1, 1, true)));
+        assertEquals(
+                (CustomHttpClient.ntkWebtoonExactImageShardIndex(23, 8, 1) + 1) % 8,
+                CustomHttpClient.ntkWebtoonExactImageShardIndex(23, 8,
+                        CustomHttpClient.ntkWebtoonRoutePhysicalAttemptOrdinal(1, 2, true)));
+    }
+
     @Test(expected = IllegalArgumentException.class)
     public void rejectsEmptyConnectionTopology() {
         CustomHttpClient.ntkExactImageShardIndex(0, 0);

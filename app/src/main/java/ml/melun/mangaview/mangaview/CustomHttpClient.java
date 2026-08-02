@@ -2543,8 +2543,14 @@ public class CustomHttpClient {
                 NtkExactImagePhysicalAttempt physicalAttempt =
                         request.tag(NtkExactImagePhysicalAttempt.class);
                 int attemptOrdinal = physicalAttempt == null ? 0 : physicalAttempt.getOrdinal();
+                int routeAttemptOrdinal = ntkWebtoonRoutePhysicalAttemptOrdinal(
+                        attemptOrdinal,
+                        strictTag == null ? 1 : strictTag.getAttemptOrdinal(),
+                        !cellularResilientTransport
+                                && CustomHttpClient.this.isNtkWifiTransportActive()
+                                && strictTag != null);
                 int shardIndex = ntkWebtoonExactImageShardIndex(
-                        pageIndex, shardCount, attemptOrdinal);
+                        pageIndex, shardCount, routeAttemptOrdinal);
                   if(shouldUseNtkExactImageHttp1Recovery(
                           request, attemptOrdinal, cellularResilientTransport)) {
                     OkHttpClient[] recoveryShards = cellularResilientTransport
@@ -2698,6 +2704,22 @@ public class CustomHttpClient {
                 hostLocalOrdinal = pageIndex / NTK_WEBTOON_IMAGE_ORIGINS.length;
         }
         return Math.floorMod(hostLocalOrdinal + physicalAttemptOrdinal, shardCount);
+    }
+
+    /**
+     * A strict direct-Wi-Fi retry may inherit a validated prefix from the preceding attempt. Move
+     * its wire-only route to the next bounded pool instead of repeatedly resuming on the same
+     * poisoned HTTP/1 connection. Carrier/SNI deliberately leaves the physical ordinal intact.
+     */
+    static int ntkWebtoonRoutePhysicalAttemptOrdinal(int physicalAttemptOrdinal,
+                                                      int logicalAttemptOrdinal,
+                                                      boolean rotateAcrossLogicalAttempts) {
+        if(physicalAttemptOrdinal < 0)
+            throw new IllegalArgumentException("Physical attempt ordinal must be non-negative");
+        if(logicalAttemptOrdinal <= 0)
+            throw new IllegalArgumentException("Logical attempt ordinal must be positive");
+        return physicalAttemptOrdinal +
+                (rotateAcrossLogicalAttempts ? logicalAttemptOrdinal - 1 : 0);
     }
 
     public OkHttpClient ntkForegroundImageFastClient() {

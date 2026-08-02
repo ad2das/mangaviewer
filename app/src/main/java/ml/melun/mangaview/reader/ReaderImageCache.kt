@@ -394,7 +394,6 @@ internal object NtkManhwaProjectedBodyHedgePolicy {
         ) ?: return false
         return projected > FINAL_BODY_PROJECTED_COMPLETION_MS.toDouble()
     }
-
 }
 
 /**
@@ -815,6 +814,7 @@ internal object NtkReplicaRangeContinuationPolicy {
             defaultMaximum
         }
     }
+
 }
 
 internal object NtkWebtoonReplicaHeaderPolicy {
@@ -3614,9 +3614,18 @@ data class NtkResolvedSourceRoute(
                 NtkWebtoonReplicaHeaderPolicy.directWifiH2HostPriority(it.url.host)
             }
             val attempts = List(3) { orderedCandidates }.flatten()
+            // A headerless response on one immutable origin has already consumed its complete
+            // cold allowance. Retrying that same host twice more delayed one exact page by five
+            // seconds even though the later alternate pool succeeded. Preserve every physical
+            // attempt index (and therefore its measured pool), but skip the failed host for the
+            // rest of this one logical call. A new strict outer attempt starts with a fresh set.
+            val suppressedHosts = ConcurrentHashMap.newKeySet<String>()
             var lastFailure: IOException? = null
             attempts.forEachIndexed { index, candidate ->
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
+                if (candidate.url.host.lowercase(Locale.ROOT) in suppressedHosts) {
+                    return@forEachIndexed
+                }
                 val physicalCandidate = if (index == 0) {
                     candidate
                 } else {
@@ -3636,6 +3645,7 @@ data class NtkResolvedSourceRoute(
                 val headerResolved = AtomicBoolean(false)
                 val deadline = strictReplicaHeaderDeadlineScheduler.schedule({
                     if (headerResolved.compareAndSet(false, true)) {
+                        suppressedHosts += candidate.url.host.lowercase(Locale.ROOT)
                         val identity = originalRequest.tag(
                             NtkQuarantineSourceCallIdentity::class.java,
                         )
@@ -3664,7 +3674,7 @@ data class NtkResolvedSourceRoute(
                         response.body?.contentLength() == 0L
                     val retryableMiss = response.code == 404 || response.code == 410 ||
                         emptySuccessfulBody
-                    if (!retryableMiss || index == attempts.lastIndex) {
+                    if (!retryableMiss) {
                         val canonicalIndex = candidates.indexOfFirst {
                             it.url == candidate.url
                         }.coerceAtLeast(0)
@@ -3677,12 +3687,19 @@ data class NtkResolvedSourceRoute(
                             null,
                         )
                     }
+                    suppressedHosts += candidate.url.host.lowercase(Locale.ROOT)
+                    lastFailure = IOException(
+                        "Direct Wi-Fi H2 definitive miss ${candidate.url.host} code=${response.code}",
+                    )
                     response.close()
+                    val nextHost = attempts.drop(index + 1).firstOrNull {
+                        it.url.host.lowercase(Locale.ROOT) !in suppressedHosts
+                    }?.url?.host ?: "exhausted"
                     Log.w(
                         TAG,
                         "reader_strict_direct_wifi_h2_failover code=${response.code}," +
                             "empty=$emptySuccessfulBody,from=${candidate.url.host}," +
-                            "to=${attempts[index + 1].url.host}",
+                            "to=$nextHost",
                     )
                 } catch (failure: IOException) {
                     if (cancelled.get() || index == attempts.lastIndex) throw failure
