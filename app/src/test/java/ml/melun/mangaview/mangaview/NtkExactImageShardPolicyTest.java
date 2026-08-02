@@ -1,6 +1,7 @@
 package ml.melun.mangaview.mangaview;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.HashSet;
@@ -68,6 +69,20 @@ public final class NtkExactImageShardPolicyTest {
                 (CustomHttpClient.ntkWebtoonExactImageShardIndex(23, 8, 1) + 1) % 8,
                 CustomHttpClient.ntkWebtoonExactImageShardIndex(23, 8,
                         CustomHttpClient.ntkWebtoonRoutePhysicalAttemptOrdinal(1, 2, true)));
+    }
+
+    @Test
+    public void directWifiUsesIndependentHttp1OnlyAfterTheH2ReplicaRing() {
+        assertFalse(CustomHttpClient.ntkWebtoonShouldUseHttp1Recovery(
+                false, 2, false, true));
+        assertTrue(CustomHttpClient.ntkWebtoonShouldUseHttp1Recovery(
+                false, 3, false, true));
+        assertFalse(CustomHttpClient.ntkWebtoonShouldUseHttp1Recovery(
+                false, 3, false, false));
+        assertTrue(CustomHttpClient.ntkWebtoonShouldUseHttp1Recovery(
+                false, 3, true, false));
+        assertTrue(CustomHttpClient.ntkWebtoonShouldUseHttp1Recovery(
+                true, 0, false, false));
     }
 
     @Test(expected = IllegalArgumentException.class)

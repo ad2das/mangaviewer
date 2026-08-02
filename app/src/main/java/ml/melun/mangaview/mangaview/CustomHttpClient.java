@@ -2543,16 +2543,18 @@ public class CustomHttpClient {
                 NtkExactImagePhysicalAttempt physicalAttempt =
                         request.tag(NtkExactImagePhysicalAttempt.class);
                 int attemptOrdinal = physicalAttempt == null ? 0 : physicalAttempt.getOrdinal();
+                boolean rotateAcrossLogicalAttempts = !cellularResilientTransport
+                        && CustomHttpClient.this.isNtkWifiTransportActive()
+                        && strictTag != null;
                 int routeAttemptOrdinal = ntkWebtoonRoutePhysicalAttemptOrdinal(
                         attemptOrdinal,
                         strictTag == null ? 1 : strictTag.getAttemptOrdinal(),
-                        !cellularResilientTransport
-                                && CustomHttpClient.this.isNtkWifiTransportActive()
-                                && strictTag != null);
+                        rotateAcrossLogicalAttempts);
                 int shardIndex = ntkWebtoonExactImageShardIndex(
                         pageIndex, shardCount, routeAttemptOrdinal);
-                  if(shouldUseNtkExactImageHttp1Recovery(
-                          request, attemptOrdinal, cellularResilientTransport)) {
+                if(shouldUseNtkExactImageHttp1Recovery(
+                          request, routeAttemptOrdinal, cellularResilientTransport,
+                          rotateAcrossLogicalAttempts)) {
                     OkHttpClient[] recoveryShards = cellularResilientTransport
                             ? ntkCellularDemandBoundExactImageHttp1RecoveryShards
                             : ntkDemandBoundExactImageHttp1RecoveryShards;
@@ -2586,10 +2588,13 @@ public class CustomHttpClient {
 
         private boolean shouldUseNtkExactImageHttp1Recovery(Request request,
                                                              int physicalAttemptOrdinal,
-                                                             boolean cellularResilientTransport) {
-            return request.header("Range") != null
-                    || (cellularResilientTransport
-                    && physicalAttemptOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT);
+                                                             boolean cellularResilientTransport,
+                                                             boolean directWifiRetryRotation) {
+            return ntkWebtoonShouldUseHttp1Recovery(
+                    request.header("Range") != null,
+                    physicalAttemptOrdinal,
+                    cellularResilientTransport,
+                    directWifiRetryRotation);
         }
 
         /** Uses the stable global mixer for non-striped exact-image topologies such as manhwa. */
@@ -2720,6 +2725,21 @@ public class CustomHttpClient {
             throw new IllegalArgumentException("Logical attempt ordinal must be positive");
         return physicalAttemptOrdinal +
                 (rotateAcrossLogicalAttempts ? logicalAttemptOrdinal - 1 : 0);
+    }
+
+    /**
+     * Selects an independent H1 pool only after the complete H2 replica ring has failed. Direct
+     * Wi-Fi folds the strict logical retry into {@code routeAttemptOrdinal}; carrier/SNI keeps its
+     * existing physical ordinal and therefore retains its established recovery behavior.
+     */
+    static boolean ntkWebtoonShouldUseHttp1Recovery(boolean rangeRequest,
+                                                     int routeAttemptOrdinal,
+                                                     boolean cellularResilientTransport,
+                                                     boolean directWifiRetryRotation) {
+        if(routeAttemptOrdinal < 0)
+            throw new IllegalArgumentException("Route attempt ordinal must be non-negative");
+        return rangeRequest || ((cellularResilientTransport || directWifiRetryRotation)
+                && routeAttemptOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT);
     }
 
     public OkHttpClient ntkForegroundImageFastClient() {
