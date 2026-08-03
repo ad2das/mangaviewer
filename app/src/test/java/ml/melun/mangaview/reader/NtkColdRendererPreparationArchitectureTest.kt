@@ -1914,6 +1914,37 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun directWifiAdjacentRunwayWaitsForFourDrawablesBeforeAtomicPublication() {
+        val runwayCount = functionBody(
+            "private fun initialAdjacentAppendRunwayRefCount(",
+            sessionSource,
+        )
+        val runwayPreparation = functionBody(
+            "private fun prepareInitialTailAdjacentRunway(",
+            sessionSource,
+        )
+        val runwayPublication = functionBody(
+            "private fun appendResolvedEpisodeInitialRunway(",
+            sessionSource,
+        )
+
+        assertTrue(
+            sessionSource.contains(
+                "private const val NTK_DIRECT_WIFI_INITIAL_ATTACHED_RUNWAY_PAGES =\n" +
+                    "            NTK_APPEND_INITIAL_RUNWAY_PAGES"
+            )
+        )
+        assertTrue(runwayCount.contains("NTK_DIRECT_WIFI_INITIAL_ATTACHED_RUNWAY_PAGES"))
+        assertTrue(runwayPreparation.contains("val initialDrawablePages = directWifiInitialAttachedRunwayPages()"))
+        assertTrue(runwayPreparation.contains(".take(initialDrawablePages)"))
+        assertTrue(runwayPreparation.contains("strictBodiesReady = refs.all"))
+        assertTrue(runwayPreparation.contains("\"initial_strict_source\""))
+        assertTrue(runwayPublication.contains("val minimumReadyRunwayCount = runwayRefs.size"))
+        assertTrue(runwayPublication.contains("if (readyRunwayCount < minimumReadyRunwayCount)"))
+        assertTrue(runwayPublication.contains("commitAdjacentRunwayDrawableBatch(drawableBatch)"))
+    }
+
+    @Test
     fun resumedRendererRunwayDoesNotRequireTheHistoricalPagePeekingAboveTheAnchor() {
         val queue = functionBody("fun queueResidentAuthoritativeTextureRunway(")
 

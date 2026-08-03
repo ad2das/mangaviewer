@@ -14692,10 +14692,9 @@ class ReaderSession(
         val cardOffset = refs.indexOfFirst { it.transitionTitle != null }
         val target = refs.firstOrNull { it.transitionTitle == null }?.manga
         val imageRunway = if (isDirectWifiStrictAdjacentTransportActive()) {
-            // The exact source still starts its proved four-body Wi-Fi runway after current
-            // completion. Attach its first actual drawable as soon as it is resident instead of
-            // making a short chapter wait for the slowest of four large originals. Pages 2-4 keep
-            // transferring concurrently and are appended by the existing remainder path.
+            // The exact source starts its proved four-body Wi-Fi runway only after current
+            // completion. Publish those four drawables as one unit: exposing page zero early lets
+            // a fast fling enter the adjacent episode before pages one through three are ready.
             NTK_DIRECT_WIFI_INITIAL_ATTACHED_RUNWAY_PAGES
         } else if (target != null && isInitialTailAdjacentPreappendTarget(target)) {
             NTK_APPEND_INITIAL_RUNWAY_PAGES
@@ -14912,7 +14911,7 @@ class ReaderSession(
         }
         val runwayRefs = refs.take(runwayCount)
         val readyRunwayCount = adjacentRunwayPublishablePrefixCount(runwayRefs)
-        // Never expose a partial initial runway. Both pages become cached,
+        // Never expose a partial initial runway. Every runway page becomes cached,
         // decoded, and GPU-prepared before one structure+drawable publication.
         val minimumReadyRunwayCount = runwayRefs.size
         if (readyRunwayCount < minimumReadyRunwayCount) {
@@ -32734,12 +32733,12 @@ class ReaderSession(
         private const val NTK_MAX_AUTHORITATIVE_ADJACENT_PAGES = 300
         private const val NTK_ADJACENT_AUTHORITATIVE_DOCUMENT_MAX_AGE_MS = 15000L
         private const val NTK_APPEND_INITIAL_PUBLISH_TOUCH_QUIET_MS = 4200L
-        // Non-Wi-Fi paths retain the existing four-page initial publication. Direct Wi-Fi starts
-        // the same four proved body transfers, but publishes the first actual drawable immediately
-        // so a short completed chapter cannot hit a physical bottom while the largest peer body is
-        // still finishing. The remaining three use the normal contiguous remainder publication.
+        // Direct Wi-Fi starts these proved body transfers only after the current episode is fully
+        // drawable. Keep the initial publication four-wide as well, so the user cannot enter the
+        // exact next episode while three members of its no-wait runway are still in flight.
         private const val NTK_APPEND_INITIAL_RUNWAY_PAGES = 4
-        private const val NTK_DIRECT_WIFI_INITIAL_ATTACHED_RUNWAY_PAGES = 1
+        private const val NTK_DIRECT_WIFI_INITIAL_ATTACHED_RUNWAY_PAGES =
+            NTK_APPEND_INITIAL_RUNWAY_PAGES
         private const val NTK_INITIAL_ADJACENT_RUNWAY_FETCH_PARALLELISM =
             NTK_APPEND_INITIAL_RUNWAY_PAGES
         private const val NTK_APPEND_INITIAL_RUNWAY_READY_PAGES = 3
