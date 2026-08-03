@@ -53,6 +53,30 @@ internal object NtkStrictSourceActorCloseRearmPolicy {
 }
 
 /**
+ * A delayed retry can be inspected by a refill before its deadline and removed from the
+ * pre-geometry deque. Re-admit only the bounded direct-WiFi adjacent session here: its initial
+ * runway is the exact next episode and the predecessor has already won foreground resources.
+ * Cellular/SNI and the current episode keep their existing scheduling semantics.
+ */
+internal object NtkStrictAdjacentRetryReadmissionPolicy {
+    fun remainingDelayMs(retryNotBeforeMs: Long, nowMs: Long): Long {
+        require(retryNotBeforeMs >= 0L)
+        require(nowMs >= 0L)
+        return (retryNotBeforeMs - nowMs).coerceAtLeast(0L)
+    }
+
+    fun shouldReadmit(
+        directWifiTransport: Boolean,
+        adjacentPrefetch: Boolean,
+        geometrySealed: Boolean,
+        hasSourceDemand: Boolean,
+        retryReady: Boolean,
+        alreadyQueued: Boolean,
+    ): Boolean = directWifiTransport && adjacentPrefetch &&
+        !geometrySealed && !hasSourceDemand && retryReady && !alreadyQueued
+}
+
+/**
  * Serializes actor callback admission with the final close-barrier snapshot.
  *
  * The actor executor itself cannot provide this boundary: a producer can increment the pending
@@ -625,6 +649,31 @@ internal object NtkStrictInitialWavePolicy {
         return (initialPageIndex until pageCount).asSequence()
             .filter { it !in alreadyPublishedPageIndexes }
             .toCollection(LinkedHashSet())
+    }
+
+    /**
+     * A click-owned adjacent body can fail before the first adjacent frame is presented. The
+     * fallback for that body's exact four-page runway must not wait for a frame that itself cannot
+     * be attached until the runway is contiguous. `adjacentPrefetch` is issued only for a
+     * direct-WiFi, foreground-authorized exact next episode; ordinary Wi-Fi and carrier/SNI retain
+     * the single-anchor fallback gate.
+     */
+    fun isPreBulkFallbackBodyAdmitted(
+        pageIndex: Int,
+        pageCount: Int,
+        initialPageIndex: Int,
+        directWifiTransport: Boolean,
+        adjacentPrefetch: Boolean,
+    ): Boolean {
+        require(pageCount > 0)
+        require(pageIndex in 0 until pageCount)
+        require(initialPageIndex in 0 until pageCount)
+        if (pageIndex == initialPageIndex) return true
+        if (!directWifiTransport || !adjacentPrefetch || pageIndex < initialPageIndex) return false
+        return pageIndex < minOf(
+            pageCount,
+            initialPageIndex + WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+        )
     }
 
     /**
@@ -2513,12 +2562,16 @@ internal class NtkStrictSourceSession(
 
     private fun isBulkSourcePhysicalAdmissionReady(pageIndex: Int): Boolean {
         if (streamedExactBodies == null || bulkSourcePhysicalAdmissionReady.isDone) return true
-        // If the click-owned anchor itself failed, it cannot produce the frame that opens the
-        // gate. Admit only its exact fallback; every other source page remains held until that
-        // fallback is actually presented.
-        return pageIndex == initialPageIndex &&
-            (pageIndex !in externallyOwnedPageIndexes ||
-                !pages[pageIndex].streamedExactBodyPending)
+        if (pageIndex in externallyOwnedPageIndexes && pages[pageIndex].streamedExactBodyPending) {
+            return false
+        }
+        return NtkStrictInitialWavePolicy.isPreBulkFallbackBodyAdmitted(
+            pageIndex = pageIndex,
+            pageCount = pages.size,
+            initialPageIndex = initialPageIndex,
+            directWifiTransport = directWifiTransport,
+            adjacentPrefetch = adjacentPrefetch,
+        )
     }
 
     private fun launchPrimaryFullBodyActor(laneIndex: Int, page: PageState) {
@@ -3121,12 +3174,48 @@ internal class NtkStrictSourceSession(
                 if (actorClosed || closeRequested.get() || current.terminalEvent != null ||
                     current.publishedBody != null || current.bodyEvent != null
                 ) return@executeActor
-                if (SystemClock.elapsedRealtime() < current.physicalRetryNotBeforeMs) {
+                val directWifiAdjacentRetry = directWifiTransport && adjacentPrefetch
+                val directWifiAdjacentRemainingMs =
+                    if (directWifiAdjacentRetry) {
+                        NtkStrictAdjacentRetryReadmissionPolicy.remainingDelayMs(
+                            retryNotBeforeMs = current.physicalRetryNotBeforeMs,
+                            nowMs = SystemClock.elapsedRealtime(),
+                        )
+                    } else {
+                        0L
+                    }
+                if (directWifiAdjacentRetry && directWifiAdjacentRemainingMs > 0L) {
+                    // Use one monotonic-clock sample. Reading it again while crossing the deadline
+                    // could turn a positive delay into zero; schedulePhysicalRetryActor rejects a
+                    // zero delay and the exact next-runway page would be lost permanently.
+                    schedulePhysicalRetryActor(current, directWifiAdjacentRemainingMs)
+                    return@executeActor
+                } else if (!directWifiAdjacentRetry &&
+                    SystemClock.elapsedRealtime() < current.physicalRetryNotBeforeMs
+                ) {
                     schedulePhysicalRetryActor(
                         current,
                         current.physicalRetryNotBeforeMs - SystemClock.elapsedRealtime(),
                     )
                     return@executeActor
+                }
+                if (NtkStrictAdjacentRetryReadmissionPolicy.shouldReadmit(
+                        directWifiTransport = directWifiTransport,
+                        adjacentPrefetch = adjacentPrefetch,
+                        geometrySealed = isGeometrySealed(),
+                        hasSourceDemand = sourceDemand != null,
+                        retryReady = current.physicalRetryNotBeforeMs <=
+                            SystemClock.elapsedRealtime(),
+                        alreadyQueued = preGeometryPendingPages.contains(pageIndex),
+                    )
+                ) {
+                    // selectPrimaryPageActor may have observed this page before the retry deadline
+                    // and consumed its deque entry. Restore exactly that page when the timer fires.
+                    preGeometryPendingPages.addFirst(pageIndex)
+                    logSourceEvent(
+                        "reader_strip_source_adjacent_retry_readmitted",
+                        "pageIndex=$pageIndex,attempt=${current.physicalAttemptOrdinal + 1}",
+                    )
                 }
                 refillLanesActor()
             }

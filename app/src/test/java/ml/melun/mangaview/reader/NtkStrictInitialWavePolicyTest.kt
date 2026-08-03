@@ -649,6 +649,71 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun directWifiAdjacentFallbackCanRepairOnlyTheAtomicRunwayBeforeBulkRelease() {
+        val directWifiAdjacent = (0 until 8).filter { pageIndex ->
+            NtkStrictInitialWavePolicy.isPreBulkFallbackBodyAdmitted(
+                pageIndex = pageIndex,
+                pageCount = 8,
+                initialPageIndex = 0,
+                directWifiTransport = true,
+                adjacentPrefetch = true,
+            )
+        }
+        val ordinaryWifi = (0 until 8).filter { pageIndex ->
+            NtkStrictInitialWavePolicy.isPreBulkFallbackBodyAdmitted(
+                pageIndex = pageIndex,
+                pageCount = 8,
+                initialPageIndex = 0,
+                directWifiTransport = true,
+                adjacentPrefetch = false,
+            )
+        }
+        val carrierAdjacent = (0 until 8).filter { pageIndex ->
+            NtkStrictInitialWavePolicy.isPreBulkFallbackBodyAdmitted(
+                pageIndex = pageIndex,
+                pageCount = 8,
+                initialPageIndex = 0,
+                directWifiTransport = false,
+                adjacentPrefetch = true,
+            )
+        }
+
+        assertEquals((0 until 4).toList(), directWifiAdjacent)
+        assertEquals(listOf(0), ordinaryWifi)
+        assertEquals(listOf(0), carrierAdjacent)
+    }
+
+    @Test
+    fun delayedRetryReadmissionIsIsolatedToDirectWifiAdjacentPreGeometryWork() {
+        fun shouldReadmit(
+            directWifi: Boolean = true,
+            adjacent: Boolean = true,
+            geometrySealed: Boolean = false,
+            hasDemand: Boolean = false,
+            retryReady: Boolean = true,
+            queued: Boolean = false,
+        ) = NtkStrictAdjacentRetryReadmissionPolicy.shouldReadmit(
+            directWifiTransport = directWifi,
+            adjacentPrefetch = adjacent,
+            geometrySealed = geometrySealed,
+            hasSourceDemand = hasDemand,
+            retryReady = retryReady,
+            alreadyQueued = queued,
+        )
+
+        assertTrue(shouldReadmit())
+        assertFalse(shouldReadmit(directWifi = false))
+        assertFalse(shouldReadmit(adjacent = false))
+        assertFalse(shouldReadmit(geometrySealed = true))
+        assertFalse(shouldReadmit(hasDemand = true))
+        assertFalse(shouldReadmit(retryReady = false))
+        assertFalse(shouldReadmit(queued = true))
+        assertEquals(50L, NtkStrictAdjacentRetryReadmissionPolicy.remainingDelayMs(150L, 100L))
+        assertEquals(0L, NtkStrictAdjacentRetryReadmissionPolicy.remainingDelayMs(150L, 150L))
+        assertEquals(0L, NtkStrictAdjacentRetryReadmissionPolicy.remainingDelayMs(150L, 151L))
+    }
+
+    @Test
     fun directWifiAdjacentRoutePreparationKeepsOnlyForwardRunwayUntilViewportRelease() {
         val held = (0 until 12).filter { pageIndex ->
             NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
