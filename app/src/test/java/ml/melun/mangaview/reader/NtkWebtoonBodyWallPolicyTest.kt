@@ -429,7 +429,25 @@ class NtkWebtoonBodyWallPolicyTest {
     }
 
     @Test
-    fun directWifiWebtoonKeepsOneContinuationExceptForItsForwardTail() {
+    fun directWifiWebtoonKeepsFullContinuationRingOnlyForEntryAndForwardTail() {
+        assertEquals(
+            3,
+            NtkReplicaRangeContinuationPolicy.maximumAttempts(
+                directWifiWebtoonBody = true,
+                pageIndex = 1,
+                episodePageCount = 65,
+                defaultMaximum = 3,
+            )
+        )
+        assertEquals(
+            1,
+            NtkReplicaRangeContinuationPolicy.maximumAttempts(
+                directWifiWebtoonBody = true,
+                pageIndex = 4,
+                episodePageCount = 65,
+                defaultMaximum = 3,
+            )
+        )
         assertEquals(
             1,
             NtkReplicaRangeContinuationPolicy.maximumAttempts(

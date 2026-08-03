@@ -805,6 +805,7 @@ internal object NtkExactQuicPartialResumePolicy {
 }
 
 internal object NtkReplicaRangeContinuationPolicy {
+    private const val DIRECT_WIFI_INITIAL_RUNWAY_PAGES = 4
     private const val DIRECT_WIFI_FORWARD_TAIL_PAGES = 8
 
     fun maximumAttempts(
@@ -817,15 +818,17 @@ internal object NtkReplicaRangeContinuationPolicy {
         if (!directWifiWebtoonBody) return defaultMaximum
 
         // Keep the measured one-continuation cap across the bulk of a Wi-Fi chapter so many
-        // parallel pages cannot form a Range herd. Once only the bounded forward tail remains,
-        // preserving its accepted prefix is cheaper than abandoning it and restarting the same
-        // large image as a new outer operation. This is the only region that can hold the user's
-        // all-current-ready edge and therefore delay the completion-gated next episode.
+        // parallel pages cannot form a Range herd. The four-page entry runway and bounded forward
+        // tail retain the complete candidate ring: abandoning an accepted prefix there restarts a
+        // user-visible image as a new outer operation, or prevents the exact next runway from
+        // becoming contiguous. Carrier/SNI never enters this policy.
         val forwardTailStart = (episodePageCount - DIRECT_WIFI_FORWARD_TAIL_PAGES).coerceAtLeast(0)
+        val initialRunwayEnd = minOf(episodePageCount, DIRECT_WIFI_INITIAL_RUNWAY_PAGES)
         return if (
             pageIndex >= 0 &&
             episodePageCount > 0 &&
-            pageIndex in forwardTailStart until episodePageCount
+            (pageIndex in 0 until initialRunwayEnd ||
+                pageIndex in forwardTailStart until episodePageCount)
         ) {
             defaultMaximum
         } else {
