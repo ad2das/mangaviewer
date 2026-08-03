@@ -2853,13 +2853,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             // synchronous native currentProgressPosition() read measured ~250 ms on the emulator;
             // it is needed for reading-position bookkeeping, not for identifying the completed
             // predecessor. Start the exact next owner first, then sample the user's real anchor.
-            cachedNextEpisode?.ntkEpisodePath?.let(
-                renderView::authorizeCompletedForwardNativeTextureEpisode
-            )
             session?.prepareForwardAdjacentAfterCurrentComplete(
                 seal.normalizedEpisodePath,
                 cachedNextEpisode,
                 authoritativeCompletionProof = true,
+                onResolvedForwardPath =
+                    renderView::authorizeCompletedForwardNativeTextureEpisode,
             )
             val completedAnchor =
                 renderView.currentProgressPosition()?.page ?: currentPage
@@ -9717,12 +9716,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             // readiness and per-episode keys make this idempotent, and unfinished current
             // episodes still fail the full-drawable gate without starting adjacent body work.
             if (strictAllImagesReadyPublished && next != null) {
-                next.ntkEpisodePath?.let(
-                    renderView::authorizeCompletedForwardNativeTextureEpisode
-                )
                 session?.prepareForwardAdjacentAfterCurrentComplete(
                     manga?.ntkEpisodePath.orEmpty(),
                     next,
+                    onResolvedForwardPath =
+                        renderView::authorizeCompletedForwardNativeTextureEpisode,
                 )
             }
             primeAdjacentLaunchWindow(title, next)

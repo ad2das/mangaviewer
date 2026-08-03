@@ -429,41 +429,52 @@ class NtkWebtoonBodyWallPolicyTest {
     }
 
     @Test
-    fun onlyDirectWifiWebtoonLimitsSerialRangeRecoveryToOneAttempt() {
+    fun directWifiWebtoonKeepsOneContinuationExceptForItsForwardTail() {
         assertEquals(
             1,
             NtkReplicaRangeContinuationPolicy.maximumAttempts(
-                webtoonReplica = true,
-                wifiTransportActive = true,
-                cellularResilientTransport = false,
+                directWifiWebtoonBody = true,
+                pageIndex = 56,
+                episodePageCount = 65,
                 defaultMaximum = 3,
             )
         )
         assertEquals(
             3,
             NtkReplicaRangeContinuationPolicy.maximumAttempts(
-                webtoonReplica = true,
-                wifiTransportActive = true,
-                cellularResilientTransport = true,
+                directWifiWebtoonBody = true,
+                pageIndex = 57,
+                episodePageCount = 65,
                 defaultMaximum = 3,
             )
         )
         assertEquals(
             3,
             NtkReplicaRangeContinuationPolicy.maximumAttempts(
-                webtoonReplica = false,
-                wifiTransportActive = true,
-                cellularResilientTransport = false,
+                directWifiWebtoonBody = false,
+                pageIndex = 0,
+                episodePageCount = 65,
                 defaultMaximum = 3,
             )
         )
+    }
+
+    @Test
+    fun directWifiWebtoonRangeRecoveryTriesAlternatesBeforeTheStalledOrigin() {
         assertEquals(
-            3,
-            NtkReplicaRangeContinuationPolicy.maximumAttempts(
-                webtoonReplica = true,
-                wifiTransportActive = false,
-                cellularResilientTransport = false,
-                defaultMaximum = 3,
+            listOf(2, 0, 1),
+            NtkDirectWifiWebtoonRangeCandidatePolicy.alternateFirstIndexes(
+                candidateCount = 3,
+                responseCandidateIndex = 1,
+                pageIndex = 57,
+            )
+        )
+        assertEquals(
+            listOf(0),
+            NtkDirectWifiWebtoonRangeCandidatePolicy.alternateFirstIndexes(
+                candidateCount = 1,
+                responseCandidateIndex = 0,
+                pageIndex = 57,
             )
         )
     }

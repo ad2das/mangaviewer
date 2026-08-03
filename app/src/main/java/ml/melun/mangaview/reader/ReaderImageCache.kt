@@ -805,24 +805,51 @@ internal object NtkExactQuicPartialResumePolicy {
 }
 
 internal object NtkReplicaRangeContinuationPolicy {
+    private const val DIRECT_WIFI_FORWARD_TAIL_PAGES = 8
+
     fun maximumAttempts(
-        webtoonReplica: Boolean,
-        wifiTransportActive: Boolean,
-        cellularResilientTransport: Boolean,
+        directWifiWebtoonBody: Boolean,
+        pageIndex: Int,
+        episodePageCount: Int,
         defaultMaximum: Int,
     ): Int {
         require(defaultMaximum > 0)
+        if (!directWifiWebtoonBody) return defaultMaximum
+
+        // Keep the measured one-continuation cap across the bulk of a Wi-Fi chapter so many
+        // parallel pages cannot form a Range herd. Once only the bounded forward tail remains,
+        // preserving its accepted prefix is cheaper than abandoning it and restarting the same
+        // large image as a new outer operation. This is the only region that can hold the user's
+        // all-current-ready edge and therefore delay the completion-gated next episode.
+        val forwardTailStart = (episodePageCount - DIRECT_WIFI_FORWARD_TAIL_PAGES).coerceAtLeast(0)
         return if (
-            webtoonReplica &&
-            wifiTransportActive &&
-            !cellularResilientTransport
+            pageIndex >= 0 &&
+            episodePageCount > 0 &&
+            pageIndex in forwardTailStart until episodePageCount
         ) {
-            1
-        } else {
             defaultMaximum
+        } else {
+            1
         }
     }
 
+}
+
+internal object NtkDirectWifiWebtoonRangeCandidatePolicy {
+    fun alternateFirstIndexes(
+        candidateCount: Int,
+        responseCandidateIndex: Int,
+        pageIndex: Int,
+    ): List<Int> {
+        if (candidateCount <= 0) return emptyList()
+        val responseIndex = responseCandidateIndex.coerceIn(0, candidateCount - 1)
+        val alternatives = (0 until candidateCount).filterNot { it == responseIndex }
+        val alternateStart = if (alternatives.isEmpty()) 0 else {
+            Math.floorMod(pageIndex, alternatives.size)
+        }
+        return alternatives.drop(alternateStart) + alternatives.take(alternateStart) +
+            responseIndex
+    }
 }
 
 internal object NtkWebtoonReplicaHeaderPolicy {
@@ -2730,6 +2757,7 @@ data class NtkResolvedSourceRoute(
                             manhwaSessionStartedAtNanos,
                             manhwaSessionProjectedStartCount,
                             waveRecoveryState,
+                            directWifiWebtoonBody = false,
                         )
                     }
                     response.close()
@@ -3958,6 +3986,7 @@ data class NtkResolvedSourceRoute(
                             null,
                             null,
                             null,
+                            directWifiWebtoonBody = true,
                         )
                     }
                     suppressedHosts += candidate.url.host.lowercase(Locale.ROOT)
@@ -4323,6 +4352,7 @@ data class NtkResolvedSourceRoute(
             manhwaSessionProjectedStartCount:
                 NtkManhwaProjectedBodyHedgePolicy.SessionStarts?,
             waveRecoveryState: NtkManhwaWaveRecoveryState?,
+            directWifiWebtoonBody: Boolean,
         ): Response {
             val body = response.body ?: return response
             val contentLength = body.contentLength()
@@ -4413,6 +4443,12 @@ data class NtkResolvedSourceRoute(
                     rangeCandidates.filter {
                     it.url.host.equals(responseHost, ignoreCase = true)
                 }
+            } else if (directWifiWebtoonBody) {
+                NtkDirectWifiWebtoonRangeCandidatePolicy.alternateFirstIndexes(
+                    candidateCount = candidates.size,
+                    responseCandidateIndex = candidateIndex,
+                    pageIndex = pageIndex,
+                ).map(candidates::get)
             } else {
                 buildList(candidates.size) {
                     add(candidates[candidateIndex])
@@ -4467,7 +4503,7 @@ data class NtkResolvedSourceRoute(
                 } else {
                     NTK_WEBTOON_BODY_PROGRESS_DEADLINE_MS
                 },
-                grantTailDeadlineGrace = !manhwaBody,
+                grantTailDeadlineGrace = !manhwaBody && !directWifiWebtoonBody,
                 pageIndex = pageIndex,
                 cancelled = cancelled,
                 active = active,
@@ -4511,10 +4547,11 @@ data class NtkResolvedSourceRoute(
                     NtkDirectWifiOrdinaryBodyRecoveryPolicy.MAX_CONTINUATIONS_PER_BODY
                 } else {
                     NtkReplicaRangeContinuationPolicy.maximumAttempts(
-                        webtoonReplica = webtoonReplica,
-                        wifiTransportActive = getHttpClient().isNtkWifiTransportActive(),
-                        cellularResilientTransport =
-                            getHttpClient().isNtkCellularResilientTransportActive(),
+                        directWifiWebtoonBody = directWifiWebtoonBody,
+                        pageIndex = pageIndex,
+                        episodePageCount = originalRequest.tag(
+                            NtkStrictEpisodePageCountTag::class.java,
+                        )?.pageCount ?: 0,
                         defaultMaximum = NTK_WEBTOON_MAX_RANGE_CONTINUATIONS,
                     )
                 },

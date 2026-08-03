@@ -28034,6 +28034,7 @@ class ReaderSession(
         completedEpisodePath: String,
         resolvedNext: Manga? = null,
         authoritativeCompletionProof: Boolean = false,
+        onResolvedForwardPath: ((String) -> Unit)? = null,
     ) {
         if (reverse || cancelled.get()) return
         if (!isNtkContinuousAdjacentCompletionPolicyActive()) return
@@ -28066,7 +28067,11 @@ class ReaderSession(
         ) return
         NtkStrictEpisodeDiscoveryCoordinator
             .releaseAdjacentBodiesAfterPredecessorComplete(completedSource.ntkEpisodePath)
-        startForwardAdjacentExactDiscoveryAtCompletion(completedSource, resolvedNext)
+        startForwardAdjacentExactDiscoveryAtCompletion(
+            completedSource,
+            resolvedNext,
+            onResolvedForwardPath,
+        )
         try {
             control.execute {
                 if (cancelled.get()) return@execute
@@ -28107,6 +28112,7 @@ class ReaderSession(
     private fun startForwardAdjacentExactDiscoveryAtCompletion(
         source: Manga,
         resolvedNext: Manga?,
+        onResolvedForwardPath: ((String) -> Unit)?,
     ) {
         val currentTitle = title ?: source.title ?: manga.title ?: return
         // nextEp() is the provider-owned exact neighbor and is already attached to the current
@@ -28170,6 +28176,17 @@ class ReaderSession(
             ntkViewerPayloadHint = sharedCandidate.ntkViewerPayloadHint
             ntkImageCount = sharedCandidate.ntkImageCount
         }
+        val targetPath = NtkStripDigests.normalizeEpisodePath(
+            candidate.ntkEpisodePath?.trim().orEmpty()
+        )
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(
+            source.ntkEpisodePath?.trim().orEmpty()
+        )
+        if (targetPath.isEmpty() || predecessorPath.isEmpty()) return
+        // This is the provider-validated target, not the Activity's possibly stale cached hint.
+        // Authorizing it before exact discovery lets an already-attached runway cross its
+        // structural card while never granting texture ownership to an unvalidated neighbor.
+        onResolvedForwardPath?.invoke(targetPath)
         if (hasEpisode(candidate)) return
         val declaredSourceWorkId = source.ntkImageWorkId.trim()
         if (candidate.ntkImageWorkId.isBlank() &&
@@ -28181,13 +28198,6 @@ class ReaderSession(
         } else {
             inheritNtkAppendGeneratedHints(candidate, source, currentTitle)
         }
-        val targetPath = NtkStripDigests.normalizeEpisodePath(
-            candidate.ntkEpisodePath?.trim().orEmpty()
-        )
-        val predecessorPath = NtkStripDigests.normalizeEpisodePath(
-            source.ntkEpisodePath?.trim().orEmpty()
-        )
-        if (targetPath.isEmpty() || predecessorPath.isEmpty()) return
         rememberAdjacentStrictPredecessor(targetPath, predecessorPath)
         ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
             targetPath,

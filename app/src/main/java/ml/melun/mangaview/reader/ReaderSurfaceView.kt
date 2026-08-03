@@ -38,6 +38,23 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.Locale
 
+internal object NtkExpandedNativeTextureTransitionPolicy {
+    fun mayCrossCard(
+        cardText: String?,
+        errorText: String?,
+        nextCardText: String?,
+        nextErrorText: String?,
+        nextEpisodePath: String?,
+        authorizedEpisodePaths: Set<String>,
+    ): Boolean =
+        cardText != null &&
+            errorText == null &&
+            nextCardText == null &&
+            nextErrorText == null &&
+            !nextEpisodePath.isNullOrEmpty() &&
+            nextEpisodePath in authorizedEpisodePaths
+}
+
 class ReaderSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
@@ -2026,8 +2043,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 buildList {
                     for (pageIndex in first..runwayEnd) {
                         val page = pages[pageIndex]
+                        if (page.errorText != null) break
+                        if (page.cardText != null) {
+                            val nextPage = pages.getOrNull(pageIndex + 1)
+                            if (NtkExpandedNativeTextureTransitionPolicy.mayCrossCard(
+                                    cardText = page.cardText,
+                                    errorText = page.errorText,
+                                    nextCardText = nextPage?.cardText,
+                                    nextErrorText = nextPage?.errorText,
+                                    nextEpisodePath = nextPage?.committedIdentity
+                                        ?.normalizedEpisodePath,
+                                    authorizedEpisodePaths =
+                                        directWifiExpandedNativeTextureEpisodePaths,
+                                )
+                            ) {
+                                continue
+                            }
+                            break
+                        }
                         val identity = page.committedIdentity ?: break
-                        if (page.cardText != null || page.errorText != null ||
+                        if (
                             identity.normalizedEpisodePath !in
                             directWifiExpandedNativeTextureEpisodePaths
                         ) break

@@ -1126,6 +1126,10 @@ class NtkColdRendererPreparationArchitectureTest {
     @Test
     fun completedCurrentEpisodeHandsOnlyItsForwardNeighborToTheWifiRunway() {
         val completion = functionBody("private fun queueStrictAllImagesRenderReady(", activitySource)
+        val completionDiscovery = functionBody(
+            "private fun startForwardAdjacentExactDiscoveryAtCompletion(",
+            sessionSource,
+        )
         val adoption = functionBody(
             "private fun adoptPhysicallyPresentedAdjacentEpisode(",
             activitySource,
@@ -1137,14 +1141,54 @@ class NtkColdRendererPreparationArchitectureTest {
             "fun advanceCompletedForwardNativeTextureEpisode(",
         )
 
-        assertTrue(completion.contains("authorizeCompletedForwardNativeTextureEpisode"))
-        assertTrue(completion.indexOf("authorizeCompletedForwardNativeTextureEpisode") <
-            completion.indexOf("prepareForwardAdjacentAfterCurrentComplete"))
+        assertTrue(completion.contains("onResolvedForwardPath ="))
+        assertFalse(completion.contains("cachedNextEpisode?.ntkEpisodePath?.let"))
+        assertTrue(completionDiscovery.contains("onResolvedForwardPath?.invoke(targetPath)"))
+        assertTrue(
+            completionDiscovery.indexOf("if (targetPath.isEmpty() || predecessorPath.isEmpty())") <
+                completionDiscovery.indexOf("onResolvedForwardPath?.invoke(targetPath)")
+        )
         assertTrue(authorize.contains("if (!directWifiExpandedNativeTextureRunway"))
         assertTrue(authorize.contains("directWifiExpandedNativeTextureEpisodePaths.add"))
         assertTrue(adoption.contains("advanceCompletedForwardNativeTextureEpisode("))
         assertTrue(advance.contains("directWifiExpandedNativeTextureEpisodePaths.clear()"))
         assertTrue(advance.contains("directWifiExpandedNativeTextureMinimumPage"))
+    }
+
+    @Test
+    fun expandedWifiTextureRunwayCrossesOnlyAnAuthorizedForwardTransitionCard() {
+        val authorized = setOf("/webtoon/1/next")
+
+        assertTrue(
+            NtkExpandedNativeTextureTransitionPolicy.mayCrossCard(
+                cardText = "next",
+                errorText = null,
+                nextCardText = null,
+                nextErrorText = null,
+                nextEpisodePath = "/webtoon/1/next",
+                authorizedEpisodePaths = authorized,
+            )
+        )
+        assertFalse(
+            NtkExpandedNativeTextureTransitionPolicy.mayCrossCard(
+                cardText = "next",
+                errorText = null,
+                nextCardText = null,
+                nextErrorText = null,
+                nextEpisodePath = "/webtoon/1/stale",
+                authorizedEpisodePaths = authorized,
+            )
+        )
+        assertFalse(
+            NtkExpandedNativeTextureTransitionPolicy.mayCrossCard(
+                cardText = "next",
+                errorText = null,
+                nextCardText = null,
+                nextErrorText = "failed",
+                nextEpisodePath = "/webtoon/1/next",
+                authorizedEpisodePaths = authorized,
+            )
+        )
     }
 
     @Test
