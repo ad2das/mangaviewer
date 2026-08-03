@@ -860,17 +860,18 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     const val WIFI_PRIMARY_EXACT_QUIC_ENABLED = false
     const val WIFI_DIRECT_H2_COHORT_ENABLED = true
     const val WIFI_DIRECT_H2_HEADER_FAILOVER_MS = 2_500L
+    const val WIFI_DIRECT_H2_REFRESHED_HOST_HEADER_FAILOVER_MS = 1_000L
     const val WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES = 3
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS = 1_500L
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_HOST = "xiaomichina.com"
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_MAX_CONCURRENT = 1
 
     /**
-     * The first exact attempt preserves the measured three-ring fallback that rescued a page on
-     * its third alternate pool. A strict outer retry already rotates the bounded physical pool;
-     * repeating all three rings there rechecks mostly overlapping pools and delayed a 58-page
-     * scene past six seconds. Later attempts therefore probe one fresh ring and return promptly
-     * to the page-owned retry ledger. Carrier/SNI never enters this direct-Wi-Fi branch.
+     * The first exact attempt preserves the measured three-ring fallback. A headerless host may
+     * use one fresh physical pool in the next ring, but that repeat has a shorter deadline and a
+     * second timeout suppresses the host. This keeps recovery in one logical image operation
+     * without reopening the former five-second repeated-header tail. Later attempts probe one
+     * fresh ring because their pools already begin rotated. Carrier/SNI never enters this branch.
      */
     fun directWifiH2RecoveryCycles(logicalAttemptOrdinal: Int): Int {
         require(logicalAttemptOrdinal > 0)
@@ -879,6 +880,20 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         } else {
             1
         }
+    }
+
+    fun directWifiH2HeaderDeadlineMs(previousHostTimeouts: Int): Long {
+        require(previousHostTimeouts >= 0)
+        return if (previousHostTimeouts == 0) {
+            WIFI_DIRECT_H2_HEADER_FAILOVER_MS
+        } else {
+            WIFI_DIRECT_H2_REFRESHED_HOST_HEADER_FAILOVER_MS
+        }
+    }
+
+    fun shouldSuppressDirectWifiH2HostAfterHeaderTimeout(hostTimeoutCount: Int): Boolean {
+        require(hostTimeoutCount > 0)
+        return hostTimeoutCount >= 2
     }
 
     fun shouldAttemptDirectWifiExplicitMissQuic(
@@ -3797,12 +3812,12 @@ data class NtkResolvedSourceRoute(
                     logicalAttemptOrdinal,
                 ),
             ) { orderedCandidates }.flatten()
-            // A headerless response on one immutable origin has already consumed its complete
-            // cold allowance. Retrying that same host twice more delayed one exact page by five
-            // seconds even though the later alternate pool succeeded. Preserve every physical
-            // attempt index (and therefore its measured pool), but skip the failed host for the
-            // rest of this one logical call. A new strict outer attempt starts with a fresh set.
+            // One header timeout may be a dead connection rather than a dead immutable origin.
+            // Preserve one shorter-deadline fresh-pool retry in the next ring. A second header
+            // timeout, or a definitive HTTP miss below, suppresses that host for the remainder of
+            // this logical call so recovery cannot recreate the former repeated five-second tail.
             val suppressedHosts = ConcurrentHashMap.newKeySet<String>()
+            val headerTimeoutsByHost = ConcurrentHashMap<String, AtomicInteger>()
             var explicitMissExactQuicAttempted = false
             var preferredHostExplicitMiss = false
             var lastFailure: IOException? = null
@@ -3947,9 +3962,20 @@ data class NtkResolvedSourceRoute(
                 }
                 active.set(call)
                 val headerResolved = AtomicBoolean(false)
+                val normalizedHost = candidate.url.host.lowercase(Locale.ROOT)
+                val previousHostTimeouts = headerTimeoutsByHost[normalizedHost]?.get() ?: 0
+                val headerDeadlineMs = NtkWebtoonReplicaHeaderPolicy
+                    .directWifiH2HeaderDeadlineMs(previousHostTimeouts)
                 val deadline = strictReplicaHeaderDeadlineScheduler.schedule({
                     if (headerResolved.compareAndSet(false, true)) {
-                        suppressedHosts += candidate.url.host.lowercase(Locale.ROOT)
+                        val hostTimeoutCount = headerTimeoutsByHost
+                            .computeIfAbsent(normalizedHost) { AtomicInteger(0) }
+                            .incrementAndGet()
+                        if (NtkWebtoonReplicaHeaderPolicy
+                                .shouldSuppressDirectWifiH2HostAfterHeaderTimeout(hostTimeoutCount)
+                        ) {
+                            suppressedHosts += normalizedHost
+                        }
                         val identity = originalRequest.tag(
                             NtkQuarantineSourceCallIdentity::class.java,
                         )
@@ -3959,19 +3985,18 @@ data class NtkResolvedSourceRoute(
                             "reader_strict_direct_wifi_h2_header_deadline " +
                                 "page=${identity?.pageIndex ?: strictTag?.pageIndex ?: -1}," +
                                 "host=${candidate.url.host},attempt=$index," +
-                                "deadlineMs=${NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS}",
+                                "hostTimeout=$hostTimeoutCount,deadlineMs=$headerDeadlineMs",
                         )
                         call.cancel()
                     }
-                }, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS,
-                    TimeUnit.MILLISECONDS)
+                }, headerDeadlineMs, TimeUnit.MILLISECONDS)
                 try {
                     val response = call.execute()
                     if (!headerResolved.compareAndSet(false, true)) {
                         response.close()
                         throw java.net.SocketTimeoutException(
                             "Direct Wi-Fi H2 response headers exceeded " +
-                                "${NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS}ms"
+                                "${headerDeadlineMs}ms"
                         )
                     }
                     val emptySuccessfulBody = response.code in 200..299 &&

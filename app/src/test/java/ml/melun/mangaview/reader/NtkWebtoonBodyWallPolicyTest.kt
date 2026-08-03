@@ -184,6 +184,7 @@ class NtkWebtoonBodyWallPolicyTest {
         assertFalse(NtkWebtoonReplicaHeaderPolicy.WIFI_PRIMARY_EXACT_QUIC_ENABLED)
         assertTrue(NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_COHORT_ENABLED)
         assertEquals(2_500L, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_HEADER_FAILOVER_MS)
+        assertEquals(1_000L, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_REFRESHED_HOST_HEADER_FAILOVER_MS)
         assertEquals(3, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES)
         assertEquals(1_500L, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS)
         assertEquals(
@@ -197,6 +198,16 @@ class NtkWebtoonBodyWallPolicyTest {
         assertEquals(3, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(1))
         assertEquals(1, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(2))
         assertEquals(1, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(32))
+        assertEquals(2_500L, NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(0))
+        assertEquals(1_000L, NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(1))
+        assertFalse(
+            NtkWebtoonReplicaHeaderPolicy
+                .shouldSuppressDirectWifiH2HostAfterHeaderTimeout(1)
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy
+                .shouldSuppressDirectWifiH2HostAfterHeaderTimeout(2)
+        )
         assertEquals(2, NtkWebtoonReplicaHeaderPolicy.WIFI_ENTRY_LAST_PAGE)
         assertFalse(
             NtkWebtoonReplicaHeaderPolicy.shouldAttemptPrimaryExactQuic(

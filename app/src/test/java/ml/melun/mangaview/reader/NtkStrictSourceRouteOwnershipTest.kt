@@ -258,6 +258,96 @@ class NtkStrictSourceRouteOwnershipTest {
     }
 
     @Test
+    fun directWifiWebtoonHeaderTimeoutRotatesInsideOneLogicalCallOnly() {
+        val cache = readSource("ReaderImageCache.kt")
+        val executeStart = cache.indexOf("override fun execute(): Response")
+        val executeEnd = cache.indexOf(
+            "private fun executeDirectWifiWebtoonH2(",
+            executeStart,
+        )
+        val directStart = executeEnd
+        val directEnd = cache.indexOf(
+            "private fun executeSegmentedManhwa(",
+            directStart,
+        )
+
+        assertTrue(executeStart >= 0)
+        assertTrue(executeEnd > executeStart)
+        assertTrue(directEnd > directStart)
+        val execute = cache.substring(executeStart, executeEnd)
+        val direct = cache.substring(directStart, directEnd)
+
+        // Carrier/SNI sets cellularResilientTransport and cannot enter this Wi-Fi-only path.
+        assertTrue(
+            execute.contains(
+                "val wifiTransportActive =\n                !cellularResilientTransport && getHttpClient().isNtkWifiTransportActive()"
+            )
+        )
+        assertTrue(execute.contains("if (webtoonReplica && wifiTransportActive &&"))
+        assertTrue(execute.contains("return executeDirectWifiWebtoonH2("))
+
+        // The deadline cancels only the current physical Call. The first timeout keeps that host
+        // eligible for its next fresh pool; only the bounded repeat timeout suppresses it.
+        assertTrue(direct.contains("attempts.forEachIndexed { index, candidate ->"))
+        assertTrue(direct.contains("val headerTimeoutsByHost = ConcurrentHashMap<String, AtomicInteger>()"))
+        assertTrue(direct.contains("val previousHostTimeouts = headerTimeoutsByHost[normalizedHost]?.get() ?: 0"))
+        assertTrue(direct.contains(".directWifiH2HeaderDeadlineMs(previousHostTimeouts)"))
+        assertTrue(direct.contains("if (headerResolved.compareAndSet(false, true))"))
+        assertTrue(direct.contains("call.cancel()"))
+        assertFalse(direct.contains("cancelled.set(true)"))
+        val deadlineStart = direct.indexOf("val deadline = strictReplicaHeaderDeadlineScheduler.schedule({")
+        val deadlineEnd = direct.indexOf("}, headerDeadlineMs, TimeUnit.MILLISECONDS)", deadlineStart)
+        assertTrue(deadlineStart >= 0)
+        assertTrue(deadlineEnd > deadlineStart)
+        val deadline = direct.substring(deadlineStart, deadlineEnd)
+        val timeoutIncrement = deadline.indexOf(".incrementAndGet()")
+        val boundedSuppression = deadline.indexOf(
+            ".shouldSuppressDirectWifiH2HostAfterHeaderTimeout(hostTimeoutCount)"
+        )
+        val suppressHost = deadline.indexOf("suppressedHosts += normalizedHost")
+        assertTrue(timeoutIncrement >= 0)
+        assertTrue(boundedSuppression > timeoutIncrement)
+        assertTrue(suppressHost > boundedSuppression)
+
+        // A definitive immutable-origin miss is different from a header timeout: it remains
+        // immediately suppressed and cannot consume another H2 pool in a later ring.
+        val retryableMiss = direct.indexOf("val retryableMiss = response.code == 404")
+        val definitiveSuppression = direct.indexOf(
+            "suppressedHosts += candidate.url.host.lowercase(Locale.ROOT)",
+            retryableMiss,
+        )
+        val explicitMissFailure = direct.indexOf(
+            "val explicitMissFailure = IOException(",
+            definitiveSuppression,
+        )
+        assertTrue(retryableMiss >= 0)
+        assertTrue(definitiveSuppression > retryableMiss)
+        assertTrue(explicitMissFailure > definitiveSuppression)
+        assertFalse(
+            direct.substring(definitiveSuppression, explicitMissFailure)
+                .contains("shouldSuppressDirectWifiH2HostAfterHeaderTimeout")
+        )
+        assertTrue(
+            direct.contains(
+                "if (cancelled.get() || index == attempts.lastIndex) throw failure"
+            )
+        )
+        assertTrue(direct.contains("lastFailure = failure"))
+        assertTrue(direct.contains("val nextHost = attempts.drop(index + 1).firstOrNull"))
+
+        // A failed physical header attempt is retained as the eventual error, but is surfaced to
+        // the outer source operation only after every internal candidate has been exhausted.
+        val physicalCatch = direct.indexOf("} catch (failure: IOException) {")
+        val nextReplica = direct.indexOf("val nextHost = attempts.drop(index + 1).firstOrNull", physicalCatch)
+        val logicalFailure = direct.lastIndexOf(
+            "throw lastFailure ?: IOException(\"Direct Wi-Fi H2 replica image Call exhausted\")"
+        )
+        assertTrue(physicalCatch >= 0)
+        assertTrue(nextReplica > physicalCatch)
+        assertTrue(logicalFailure > nextReplica)
+    }
+
+    @Test
     fun tinyReplicaBodyProbeRestoresThePhysicalSourcesTimeoutState() {
         val cache = readSource("ReaderImageCache.kt")
         val callStart = cache.indexOf("private class NtkReplicaFailoverCall(")

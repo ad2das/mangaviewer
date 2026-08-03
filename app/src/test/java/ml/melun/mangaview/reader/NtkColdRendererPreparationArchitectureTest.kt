@@ -1204,6 +1204,48 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun directWifiReleaseGapUploadsOnlyTheNearestUnreadPageBeforeTheQuietGate() {
+        val pause = functionBody("void setPrewarmPaused(bool paused) noexcept", rollingRendererSource)
+        val admission = functionBody(
+            "bool canUploadNextPrewarmLocked() const noexcept",
+            rollingRendererSource,
+        )
+
+        assertTrue(pause.contains("directWifiTextureProfile_.load"))
+        assertTrue(pause.contains("presentedMaxPage + 1"))
+        assertTrue(pause.contains("directWifiFullPrewarmResumeNanos_ = now + kPrewarmResumeQuietNanos"))
+        assertTrue(pause.contains("if (nextPrewarmUploadNanos_ > now) nextPrewarmUploadNanos_ = now"))
+        assertTrue(pause.contains("lastPresentedMaxPageSnapshot_.load"))
+        assertTrue(rollingRendererSource.contains("lastPresentedMaxPageSnapshot_.store"))
+        assertTrue(admission.contains("directWifiImmediateResumeMaxPage_"))
+        assertTrue(admission.contains("next.key.page > directWifiImmediateResumeMaxPage_"))
+        assertTrue(admission.contains("return false"))
+        assertFalse(admission.contains("directWifiTextureProfile_.load"))
+        assertTrue(pause.contains("nowNanos() + kPrewarmResumeQuietNanos"))
+    }
+
+    @Test
+    fun activeDirectWifiPrewarmUsesOnlyAnIdleForwardDripLane() {
+        val admission = functionBody(
+            "bool canUploadNextPrewarmLocked() const noexcept",
+            rollingRendererSource,
+        )
+        val loop = functionBody("void run() noexcept", rollingRendererSource)
+
+        assertTrue(admission.contains("isActiveDirectWifiPrewarmLocked()"))
+        assertTrue(admission.contains("resident->second.bitmapIdentity == next.bitmapIdentity"))
+        assertTrue(admission.contains("next.key.page >= lastPresentedMaxPage_"))
+        assertTrue(admission.contains("lastPresentedMaxPage_ + kPausedForwardPrewarmPages"))
+        assertTrue(loop.contains("activeDirectWifiCandidate"))
+        assertTrue(loop.contains("frames_.empty()"))
+        assertTrue(loop.contains("!backend_.hasPendingEvent()"))
+        assertTrue(loop.contains("kActiveDirectWifiPrewarmPeriods"))
+        assertTrue(loop.contains("prewarmEndNanos - prewarmBeginNanos > refresh"))
+        assertTrue(loop.contains("activeDirectWifiPrewarmSuppressed_ = true"))
+        assertTrue(loop.contains("prewarmTiles_.push_front(prewarmTile)"))
+    }
+
+    @Test
     fun authoritativeStripDeliveryQueuesTheExactValidatedPageSlot() {
         val stripInstall = functionBody("fun installAuthoritativeStripTileDelta(")
         val stripPrewarm = functionBody("private fun flushResidentNativeTexturePrewarm()")

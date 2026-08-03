@@ -50,6 +50,10 @@ constexpr std::size_t kMaxQueuedPrewarmTiles = 1024;
 // pacing below still prevents a complete-scene burst from saturating gfxstream.
 constexpr int kPausedForwardPrewarmPages = 16;
 constexpr std::int64_t kDefaultRefreshPeriodNanos = 11'111'111;
+// Direct Wi-Fi may replenish one immutable forward tile only when the visible mailbox and
+// compositor event queue are empty. Spread those uploads far enough apart that host gfxstream
+// receives three page tiles over several visible frames instead of one first-visible burst.
+constexpr std::int64_t kActiveDirectWifiPrewarmPeriods = 2;
 // UiAutomator and real repeated swipes both have a short interval after OverScroller finishes and
 // before the next ACTION_DOWN.  gfxstream retains uploads issued in that interval and makes the
 // next visible submission pay their fence cost.  Only a genuine reading pause may reopen the
@@ -611,13 +615,39 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             prewarmPaused_ = paused;
-            if (!paused) {
+            if (paused) {
+                // A new physical gesture revokes any bounded release-gap allowance before the
+                // first MOVE can enqueue visible work. An upload already issued by the owner
+                // thread is allowed to finish, but no successor can enter the EGL lane.
+                directWifiImmediateResumeMaxPage_ = -1;
+                directWifiFullPrewarmResumeNanos_ = 0;
+                activeDirectWifiPrewarmSuppressed_ = false;
+            } else if (directWifiTextureProfile_.load(std::memory_order_acquire)) {
+                const std::int64_t now = nowNanos();
+                // Repeated reading gestures leave roughly 0.6 s between flings. Waiting for the
+                // generic 750 ms quiet gate meant that newly decoded current-episode tiles were
+                // never uploaded in those gaps and their first visible frame paid 16-37 ms of
+                // glTexImage work. Admit only the nearest unread page immediately; after the real
+                // quiet period the normal bounded runway may resume. The next ACTION_DOWN clears
+                // this capability, so uploads still never intentionally overlap physical input.
+                const int presentedMaxPage =
+                    lastPresentedMaxPageSnapshot_.load(std::memory_order_acquire);
+                directWifiImmediateResumeMaxPage_ = presentedMaxPage >= 0
+                    ? presentedMaxPage + 1
+                    : -1;
+                directWifiFullPrewarmResumeNanos_ = now + kPrewarmResumeQuietNanos;
+                activeDirectWifiPrewarmSuppressed_ = false;
+                if (nextPrewarmUploadNanos_ > now) nextPrewarmUploadNanos_ = now;
+            } else {
                 // A display-period delay is insufficient on host-GPU emulators: a normal chain of
                 // forward flings contains 20-200 ms quiet gaps, and uploads started there remain
                 // ahead of the next visible buffer in gfxstream. Require a real UX pause.
                 nextPrewarmUploadNanos_ = std::max(
                     nextPrewarmUploadNanos_,
                     nowNanos() + kPrewarmResumeQuietNanos);
+                directWifiImmediateResumeMaxPage_ = -1;
+                directWifiFullPrewarmResumeNanos_ = 0;
+                activeDirectWifiPrewarmSuppressed_ = false;
             }
         }
         if (!paused) condition_.notify_one();
@@ -681,13 +711,37 @@ private:
     }
 
     /** Called only while [mutex_] is held by the renderer loop. */
+    bool isActiveDirectWifiPrewarmLocked() const noexcept {
+        return prewarmPaused_ && !activeDirectWifiPrewarmSuppressed_ &&
+            directWifiTextureProfile_.load(std::memory_order_acquire);
+    }
+
+    /** Called only while [mutex_] is held by the renderer loop. */
     bool canUploadNextPrewarmLocked() const noexcept {
         // setPrewarmPaused(true) is the physical-input ownership boundary. The flag previously
         // existed only as telemetry/state: this predicate ignored it, so a full-scene snapshot
         // kept winning the EGL lane while 500 forward gestures accumulated. Visible submissions
         // must always preempt non-presenting uploads; the queue remains intact and resumes after
         // the real quiet-period gate in setPrewarmPaused(false).
-        if (prewarmPaused_ || prewarmTiles_.empty()) return false;
+        if (prewarmTiles_.empty()) return false;
+        const FrameTile& next = prewarmTiles_.front();
+        if (prewarmPaused_) {
+            if (!isActiveDirectWifiPrewarmLocked()) return false;
+            const auto resident = textures_.find(next.key);
+            if (resident != textures_.end() &&
+                resident->second.bitmapIdentity == next.bitmapIdentity) {
+                // Coalesced snapshots begin with the current resident anchor. Drain those JNI
+                // references without GL work or pacing so the nearest missing forward tile can
+                // reach the head of the queue.
+                return true;
+            }
+            if (lastPresentedStructureEpoch_ <= 0 ||
+                queuedPrewarmEpoch_ != lastPresentedStructureEpoch_ ||
+                lastPresentedMaxPage_ < 0) return false;
+            return next.key.structureEpoch == lastPresentedStructureEpoch_ &&
+                next.key.page >= lastPresentedMaxPage_ &&
+                next.key.page <= lastPresentedMaxPage_ + kPausedForwardPrewarmPages;
+        }
         // The immutable full-scene queue is ordered from the first page to the last. During
         // physical motion it may feed only the short forward runway: this removes first-visible
         // allocation/upload at page boundaries without turning the entire episode into input-time
@@ -699,7 +753,16 @@ private:
         if (lastPresentedStructureEpoch_ <= 0 ||
             queuedPrewarmEpoch_ != lastPresentedStructureEpoch_ ||
             lastPresentedMaxPage_ < 0) return true;
-        const FrameTile& next = prewarmTiles_.front();
+        // Keep an already-issued direct-Wi-Fi capability bounded even if connectivity changes
+        // during the release gap. Dropping the profile term here would otherwise turn the
+        // immediate next-page grant into an unpaced ordinary/mobile +16-page upload burst.
+        const bool directWifiReleaseGap =
+            directWifiFullPrewarmResumeNanos_ > nowNanos();
+        if (directWifiReleaseGap &&
+            (directWifiImmediateResumeMaxPage_ < 0 ||
+             next.key.page > directWifiImmediateResumeMaxPage_)) {
+            return false;
+        }
         return next.key.structureEpoch == lastPresentedStructureEpoch_ &&
             next.key.page <= lastPresentedMaxPage_ + kPausedForwardPrewarmPages;
     }
@@ -1231,6 +1294,9 @@ private:
             if (tile.key.page > lastPresentedMaxPage_) lastPresentedMaxPage_ = tile.key.page;
         }
         lastPresentedStructureEpoch_ = frame.structureEpoch;
+        // Physical-input pause/resume is driven from the UI/JNI thread. Publish only the page
+        // scalar it needs instead of reading renderer-owned frame state across threads.
+        lastPresentedMaxPageSnapshot_.store(lastPresentedMaxPage_, std::memory_order_release);
         pruneTexturesToBudget(frame.structureEpoch, lastPresentedTextureKeys_);
     }
 
@@ -1928,6 +1994,7 @@ private:
             bool hasFrame = false;
             FrameTile prewarmTile{};
             bool hasPrewarmTile = false;
+            bool activeDirectWifiPrewarm = false;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 condition_.wait_for(lock, std::chrono::milliseconds(16), [&] {
@@ -1945,7 +2012,10 @@ private:
                         canUploadNextPrewarmLocked() &&
                         prewarmPacingReady &&
                         !preparePending_ && !attachPending_ && !detachPending_ &&
-                        (frames_.empty() || matchesLastAppliedFrame(frames_.front()));
+                        (frames_.empty() ||
+                         (!isActiveDirectWifiPrewarmLocked() &&
+                          matchesLastAppliedFrame(frames_.front()))) &&
+                        (!isActiveDirectWifiPrewarmLocked() || !backend_.hasPendingEvent());
                     return stopped_.load(std::memory_order_acquire) || preparePending_ ||
                         attachPending_ || detachPending_ || canPresentQueuedFrame ||
                         canUploadPrewarm || backend_.hasPendingEvent();
@@ -1969,10 +2039,13 @@ private:
                 }
                 const bool prewarmPacingReady =
                     nextPrewarmUploadNanos_ <= 0 || nowNanos() >= nextPrewarmUploadNanos_;
+                const bool activeDirectWifiCandidate = isActiveDirectWifiPrewarmLocked();
                 const bool preferPrewarm = !doDetach && !doPrepare && !doAttach &&
                     backendAttached_ && submittedFrames_ > 0 &&
                     canUploadNextPrewarmLocked() && prewarmPacingReady &&
-                    (frames_.empty() || matchesLastAppliedFrame(frames_.front()));
+                    (frames_.empty() ||
+                     (!activeDirectWifiCandidate && matchesLastAppliedFrame(frames_.front()))) &&
+                    (!activeDirectWifiCandidate || !backend_.hasPendingEvent());
                 if (!preferPrewarm && !frames_.empty()) {
                     if (backendAttached_ &&
                         (windowSurface_ != EGL_NO_SURFACE ||
@@ -1988,6 +2061,7 @@ private:
                     prewarmTiles_.front().bitmap = nullptr;
                     prewarmTiles_.pop_front();
                     hasPrewarmTile = true;
+                    activeDirectWifiPrewarm = activeDirectWifiCandidate;
                 }
             }
             if (doDetach && !detachBackend(env)) {
@@ -2036,7 +2110,29 @@ private:
                     releaseFrame(env, frame);
                 }
             } else if (hasPrewarmTile) {
-                const bool issuedUpload = uploadPrewarmTile(env, prewarmTile);
+                const bool profileStillOwnsActiveUpload = !activeDirectWifiPrewarm ||
+                    directWifiTextureProfile_.load(std::memory_order_acquire);
+                const std::int64_t prewarmBeginNanos = nowNanos();
+                bool issuedUpload = false;
+                if (profileStillOwnsActiveUpload) {
+                    issuedUpload = uploadPrewarmTile(env, prewarmTile);
+                } else {
+                    // A direct-Wi-Fi capability can disappear after admission but before the GL
+                    // owner consumes the tile. Preserve that sealed snapshot entry for the normal
+                    // idle lane; dropping it here would make the same epoch impossible to prewarm
+                    // again after a direct-to-mobile/SNI transition.
+                    bool restored = false;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if (queuedPrewarmEpoch_ == prewarmTile.key.structureEpoch) {
+                            prewarmTiles_.push_front(prewarmTile);
+                            prewarmTile.bitmap = nullptr;
+                            restored = true;
+                        }
+                    }
+                    if (!restored) releaseTile(env, prewarmTile);
+                }
+                const std::int64_t prewarmEndNanos = nowNanos();
                 // Only an actual GL upload consumes a display-period slot. Resident identities at
                 // the head of a coalesced full-scene snapshot are CPU-only queue maintenance; a
                 // period of pacing for each no-op previously kept the queue permanently behind the
@@ -2044,10 +2140,29 @@ private:
                 nextPrewarmUploadNanos_ = issuedUpload
                     ? nowNanos() + std::max<std::int64_t>(
                         1'000'000,
-                        refreshPeriodNanos_ > 0
+                        (refreshPeriodNanos_ > 0
                             ? refreshPeriodNanos_
-                            : kDefaultRefreshPeriodNanos)
+                            : kDefaultRefreshPeriodNanos) *
+                            (activeDirectWifiPrewarm
+                                ? kActiveDirectWifiPrewarmPeriods
+                                : 1))
                     : 0;
+                if (issuedUpload && activeDirectWifiPrewarm) {
+                    const std::int64_t refresh = refreshPeriodNanos_ > 0
+                        ? refreshPeriodNanos_
+                        : kDefaultRefreshPeriodNanos;
+                    if (prewarmEndNanos - prewarmBeginNanos > refresh) {
+                        // A slow full-frame host upload is not allowed to repeat in the same
+                        // gesture. Fast uploads retain the measured paced drip that keeps later
+                        // first-visible frames below the formal jank threshold.
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        activeDirectWifiPrewarmSuppressed_ = true;
+                        RLOGI(
+                            "active texture prewarm suppressed after slow upload elapsedUs=%lld",
+                            static_cast<long long>(
+                                (prewarmEndNanos - prewarmBeginNanos) / 1'000));
+                    }
+                }
             }
         }
 
@@ -2128,6 +2243,7 @@ private:
     std::int64_t lastPresentedStructureEpoch_ = 0;
     int lastPresentedMinPage_ = -1;
     int lastPresentedMaxPage_ = -1;
+    std::atomic<int> lastPresentedMaxPageSnapshot_{-1};
     std::unordered_set<TileKey, TileKeyHash> lastPresentedTextureKeys_;
     int lastAppliedFrameWidth_ = 0;
     int lastAppliedFrameHeight_ = 0;
@@ -2139,6 +2255,9 @@ private:
     std::uint64_t skippedResidentPrewarmTiles_ = 0;
     std::int64_t nextPrewarmUploadNanos_ = 0;
     bool prewarmPaused_ = false;
+    bool activeDirectWifiPrewarmSuppressed_ = false;
+    int directWifiImmediateResumeMaxPage_ = -1;
+    std::int64_t directWifiFullPrewarmResumeNanos_ = 0;
     std::atomic<bool> directWifiTextureProfile_{false};
 
     ntk::present::SurfaceControlPresentBackend backend_{};
