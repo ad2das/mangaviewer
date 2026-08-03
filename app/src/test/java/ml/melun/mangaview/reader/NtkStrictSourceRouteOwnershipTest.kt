@@ -348,6 +348,37 @@ class NtkStrictSourceRouteOwnershipTest {
     }
 
     @Test
+    fun relaxedWebtoonBodyWallIsWiredOnlyToTheDirectWifiCall() {
+        val cache = readSource("ReaderImageCache.kt")
+        val wrapperStart = cache.indexOf("private fun maybeWrapStalledReplicaBody(")
+        val wrapperEnd = cache.indexOf("override fun enqueue(", wrapperStart)
+        assertTrue(wrapperStart >= 0)
+        assertTrue(wrapperEnd > wrapperStart)
+        val wrapper = cache.substring(wrapperStart, wrapperEnd)
+
+        val directWall = wrapper.indexOf(
+            "webtoonReplica && directWifiWebtoonBody ->\n                        " +
+                "NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(pageIndex)"
+        )
+        val genericWall = wrapper.indexOf(
+            "webtoonReplica -> NtkWebtoonBodyWallPolicy.segmentWallMs(pageIndex)"
+        )
+        assertTrue(directWall >= 0)
+        assertTrue(genericWall > directWall)
+
+        val directExecuteStart = cache.indexOf("private fun executeDirectWifiWebtoonH2(")
+        val directExecuteEnd = cache.indexOf("private fun executeSegmentedManhwa(", directExecuteStart)
+        val directExecute = cache.substring(directExecuteStart, directExecuteEnd)
+        assertTrue(directExecute.contains("directWifiWebtoonBody = true"))
+
+        val ordinaryExecute = cache.substring(
+            cache.indexOf("override fun execute(): Response"),
+            directExecuteStart,
+        )
+        assertTrue(ordinaryExecute.contains("directWifiWebtoonBody = false"))
+    }
+
+    @Test
     fun tinyReplicaBodyProbeRestoresThePhysicalSourcesTimeoutState() {
         val cache = readSource("ReaderImageCache.kt")
         val callStart = cache.indexOf("private class NtkReplicaFailoverCall(")

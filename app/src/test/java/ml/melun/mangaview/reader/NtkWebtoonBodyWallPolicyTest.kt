@@ -906,6 +906,55 @@ class NtkWebtoonBodyWallPolicyTest {
                 NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_LAST_PAGE + 1
             ),
         )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_LAST_PAGE
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_LAST_PAGE + 1
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                NtkWebtoonBodyWallPolicy.DIRECT_WIFI_ADJACENT_RUNWAY_LAST_PAGE + 1
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.segmentWallMs(9),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(9),
+        )
+        assertEquals(1_800L, NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS)
+        assertEquals(3_000L, NtkWebtoonBodyWallPolicy.DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS)
+    }
+
+    @Test
+    fun directWifiHealthyBulkBodyIsNotSplitAtTheGenericWall() {
+        val directWall = NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(9)
+        assertFalse(
+            NtkWebtoonBodyWallPolicy.shouldResume(
+                elapsedMs = NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS,
+                deliveredBytes = 628_845L,
+                expectedLength = 777_864L,
+                segmentWallMs = directWall,
+            )
+        )
+        assertTrue(
+            NtkWebtoonBodyWallPolicy.shouldResume(
+                elapsedMs = directWall,
+                deliveredBytes = 628_845L,
+                expectedLength = 777_864L,
+                segmentWallMs = directWall,
+            )
+        )
     }
 
     @Test

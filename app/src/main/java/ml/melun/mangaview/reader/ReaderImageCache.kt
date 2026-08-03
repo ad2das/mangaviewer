@@ -539,6 +539,12 @@ internal object NtkWebtoonBodyWallPolicy {
     // ~300 KiB body held the scene open for 3.28 s. At 1.8 s, retain its exact delivered prefix
     // and move only a useful untouched suffix to the next immutable replica.
     const val INITIAL_SEGMENT_WALL_MS = 1_800L
+    // Direct Wi-Fi already fans the current immutable episode across independent H2 cohorts. On a
+    // 42-page cold wave, an otherwise healthy 760 KiB body had delivered 81% at 1.8 s; cutting it
+    // there made the Range suffix lose its socket and exposed an avoidable cancelled request. Let
+    // non-entry bodies finish their original stream for up to three seconds. The complete-scene
+    // UX deadline is eight seconds, while carrier/SNI retains the existing 1.8-second wall.
+    const val DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS = 3_000L
     // The first three vertical pages are the only bodies that can hold the real-pixel reveal gate
     // closed on a 2340 px entry viewport. A 107-page cold trace delivered page zero at +1.51 s,
     // but page one dripped behind an otherwise-complete wave until its ordinary 1.8 s body wall;
@@ -548,6 +554,9 @@ internal object NtkWebtoonBodyWallPolicy {
     // into a 100-request continuation herd.
     const val ENTRY_VIEWPORT_SEGMENT_WALL_MS = 900L
     const val ENTRY_VIEWPORT_LAST_PAGE = 2
+    // Adjacent UX proves four drawable pages before the current tail. Preserve page three's
+    // existing 1.8-second behavior so a near-tail resume cannot wait on the relaxed bulk wall.
+    const val DIRECT_WIFI_ADJACENT_RUNWAY_LAST_PAGE = 3
     const val TAIL_GRACE_BYTES = 64L * 1024L
 
     fun segmentWallMs(pageIndex: Int): Long =
@@ -555,6 +564,15 @@ internal object NtkWebtoonBodyWallPolicy {
             ENTRY_VIEWPORT_SEGMENT_WALL_MS
         } else {
             INITIAL_SEGMENT_WALL_MS
+        }
+
+    fun directWifiSegmentWallMs(pageIndex: Int): Long =
+        if (pageIndex in 0..ENTRY_VIEWPORT_LAST_PAGE) {
+            ENTRY_VIEWPORT_SEGMENT_WALL_MS
+        } else if (pageIndex <= DIRECT_WIFI_ADJACENT_RUNWAY_LAST_PAGE) {
+            INITIAL_SEGMENT_WALL_MS
+        } else {
+            DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS
         }
 
     fun shouldResume(
@@ -4501,6 +4519,8 @@ data class NtkResolvedSourceRoute(
                 absoluteInitialSegmentWallMs = when {
                     directWifiIdleSuffixNetwork != null -> 0L
                     manhwaBody && pageIndex != 0 -> NTK_MANHWA_BODY_WALL_MS
+                    webtoonReplica && directWifiWebtoonBody ->
+                        NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(pageIndex)
                     webtoonReplica -> NtkWebtoonBodyWallPolicy.segmentWallMs(pageIndex)
                     else -> 0L
                 },
