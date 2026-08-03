@@ -12,6 +12,9 @@ class NtkColdRendererPreparationArchitectureTest {
     private val activitySource = File(
         "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt"
     ).readText()
+    private val registrySource = File(
+        "src/main/java/ml/melun/mangaview/reader/NtkSourceSpoolRegistry.kt"
+    ).readText()
 
     @Test
     fun committedPixelIdentityProofExcludesStructuralTransitionCards() {
@@ -99,9 +102,35 @@ class NtkColdRendererPreparationArchitectureTest {
             activitySource.contains("it.setSurfaceAttachmentDeferredUntilActualPixels(strictNtkEpisode)")
         )
         assertTrue(
-            activitySource.contains("it.setForwardNativeTexturePrewarmEnabled(strictNtkEpisode)")
+            activitySource.contains("it.setForwardNativeTexturePrewarmEnabled(")
         )
         assertFalse(activitySource.contains("it.setInlineRealPixelsOnly(strictNtkEpisode)"))
+    }
+
+    @Test
+    fun expandedWifiRunwayUsesTheExactSourceConstructionCapability() {
+        val rememberFloor = functionBody(
+            "private fun rememberStrictForwardReadyFloor(",
+            activitySource,
+        )
+        val profileGetter = functionBody(
+            "fun isCurrentDirectWifiRendererProfile(",
+            registrySource,
+        )
+
+        assertTrue(registrySource.contains("entry.directWifiRendererProfileViewerGeneration ="))
+        assertTrue(registrySource.contains("spec.rollingAdmission && directWifiTransport &&"))
+        assertTrue(registrySource.contains("!cellularResilientTransport && it > 0L"))
+        assertTrue(registrySource.contains("spec.forwardResumeViewerGeneration == it"))
+        assertTrue(rememberFloor.contains("isCurrentDirectWifiRendererProfile("))
+        assertTrue(rememberFloor.contains("expandedMinimumPage = strictForwardReadyFirstPage"))
+        assertFalse(rememberFloor.contains("getHttpClient()"))
+        assertTrue(profileGetter.contains("viewerGeneration > 0L"))
+        assertTrue(
+            profileGetter.contains(
+                "directWifiRendererProfileViewerGeneration == viewerGeneration"
+            )
+        )
     }
 
     @Test
@@ -1075,11 +1104,59 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(completion.contains("onQueued.run()"))
         assertFalse(completion.contains("(0..pages.lastIndex).toList()"))
         assertTrue(snapshot.contains("NATIVE_PREWARM_AHEAD_VIEWPORTS"))
-        assertTrue(snapshot.contains("val requestedPages = (first..runwayEnd).toList()"))
-        assertTrue(snapshot.contains("val maxTiles = NATIVE_PREWARM_MAX_TILES"))
+        assertTrue(snapshot.contains("val requestedPages = if (expandedDirectWifiRunway)"))
+        assertTrue(snapshot.contains("DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES"))
+        assertTrue(snapshot.contains("DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES"))
+        assertTrue(snapshot.contains("DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES"))
+        assertTrue(snapshot.contains("identity.normalizedEpisodePath !in"))
+        assertTrue(source.contains("directWifiExpandedNativeTextureMinimumPage"))
+        assertTrue(snapshot.contains("pageBytes > maxBytes - selectedBytes"))
+        assertTrue(snapshot.contains("fun appendOrdinaryTile("))
+        assertTrue(snapshot.contains("if (bitmapList.size >= maxTiles) return"))
+        assertTrue(snapshot.contains("snapshot.bitmaps,\n                false,"))
+        assertTrue(source.contains("DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES = 48"))
+        assertTrue(source.contains("DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES = 288L * 1024L * 1024L"))
         assertFalse(snapshot.contains("NATIVE_FULL_EPISODE_PREWARM_MAX_TILES"))
+        assertTrue(nativeQueue.contains("const bool fullSceneSnapshot = completeSceneSnapshot"))
+        assertFalse(nativeQueue.contains("bitmapCount) >"))
         assertTrue(nativeQueue.contains("for (auto& queued : prewarmTiles_) releaseTile(env, queued)"))
         assertTrue(nativeQueue.contains("prewarmTiles_.clear()"))
+    }
+
+    @Test
+    fun completedCurrentEpisodeHandsOnlyItsForwardNeighborToTheWifiRunway() {
+        val completion = functionBody("private fun queueStrictAllImagesRenderReady(", activitySource)
+        val adoption = functionBody(
+            "private fun adoptPhysicallyPresentedAdjacentEpisode(",
+            activitySource,
+        )
+        val authorize = functionBody(
+            "fun authorizeCompletedForwardNativeTextureEpisode(",
+        )
+        val advance = functionBody(
+            "fun advanceCompletedForwardNativeTextureEpisode(",
+        )
+
+        assertTrue(completion.contains("authorizeCompletedForwardNativeTextureEpisode"))
+        assertTrue(completion.indexOf("authorizeCompletedForwardNativeTextureEpisode") <
+            completion.indexOf("prepareForwardAdjacentAfterCurrentComplete"))
+        assertTrue(authorize.contains("if (!directWifiExpandedNativeTextureRunway"))
+        assertTrue(authorize.contains("directWifiExpandedNativeTextureEpisodePaths.add"))
+        assertTrue(adoption.contains("advanceCompletedForwardNativeTextureEpisode("))
+        assertTrue(advance.contains("directWifiExpandedNativeTextureEpisodePaths.clear()"))
+        assertTrue(advance.contains("directWifiExpandedNativeTextureMinimumPage"))
+    }
+
+    @Test
+    fun directWifiTextureProfileNeverMutatesRecycledGlStorage() {
+        val upload = functionBody("bool uploadTile(", rollingRendererSource)
+        val recycle = functionBody("void recycleTextureStorage(", rollingRendererSource)
+
+        assertTrue(upload.contains("replaceExistingWithFreshName"))
+        assertTrue(upload.contains("existing != textures_.end() && !replaceExistingWithFreshName"))
+        assertTrue(upload.contains("recycleTextureStorage(std::move(previousTextureStorage))"))
+        assertTrue(recycle.contains("!directWifiTextureProfile_.load"))
+        assertTrue(recycle.contains("glDeleteTextures(1, &texture.texture)"))
     }
 
     @Test
@@ -1090,7 +1167,8 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(stripInstall.contains("if (!valid)"))
         assertTrue(stripInstall.contains("postNativeStripTexturePrewarmLocked(command.key, tile)"))
         assertTrue(stripPrewarm.contains("page.stripSlots.forEachIndexed { slot, tile ->"))
-        assertTrue(stripPrewarm.contains("appendTile(pageIndex, slot, tile)"))
+        assertTrue(stripPrewarm.contains("pageTiles += slot to tile"))
+        assertTrue(stripPrewarm.contains("indexedTile.first"))
         assertTrue(stripPrewarm.contains("NtkRollingNativeBridge.nativePrewarm("))
     }
 

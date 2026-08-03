@@ -368,6 +368,8 @@ object NtkSourceSpoolRegistry {
         var effectiveInitialPageIndex: Int =
             if (rollingAdmission) 0 else requestedInitialPageIndexHint
         var forwardResumeFinalized: Boolean = !rollingAdmission
+        /** Exact foreground generation allowed to use the direct-Wi-Fi renderer profile. */
+        var directWifiRendererProfileViewerGeneration: Long = 0L
         var state: NtkSourceState = NtkSourceState.DISCOVERING
         var planState: NtkPlanState = NtkPlanState.NONE
         var quarantineState: NtkQuarantineState = NtkQuarantineState.NONE
@@ -868,6 +870,12 @@ object NtkSourceSpoolRegistry {
             entry.planBinding = binding
             entry.effectiveInitialPageIndex = initialPageIndex
             entry.forwardResumeFinalized = true
+            entry.directWifiRendererProfileViewerGeneration =
+                currentForegroundViewerGeneration.takeIf {
+                    spec.rollingAdmission && directWifiTransport &&
+                        !cellularResilientTransport && it > 0L &&
+                        spec.forwardResumeViewerGeneration == it
+                } ?: 0L
             entry.sourceSession = session
             entry.executionBootstrapFuture = null
             entry.planState = NtkPlanState.PLAN_RESERVED
@@ -1580,6 +1588,22 @@ object NtkSourceSpoolRegistry {
                 }?.effectiveInitialPageIndex ?: 0
             }
         } ?: 0
+
+    /**
+     * Returns the renderer capability captured at source construction, never a later live-network
+     * guess. This prevents a Wi-Fi/cellular transition or an adjacent episode from inheriting the
+     * expanded texture policy selected for a different exact foreground source.
+     */
+    @JvmStatic
+    fun isCurrentDirectWifiRendererProfile(path: String?, viewerGeneration: Long): Boolean =
+        normalizedPath(path)?.let { key ->
+            synchronized(mutationLock(key)) {
+                entries[key]?.let { entry ->
+                    entry.forwardResumeFinalized && viewerGeneration > 0L &&
+                        entry.directWifiRendererProfileViewerGeneration == viewerGeneration
+                } ?: false
+            }
+        } ?: false
 
     private fun isCurrentPlanPublication(
         lease: NtkDiscoveryLease,

@@ -39,6 +39,32 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
+    fun cancelledCandidateWithoutAnAcquiredConnectionIsNotAClientInstance() {
+        val cache = readSource("ReaderImageCache.kt")
+        val report = cache.substringAfter("private fun reportNetworkObservation(")
+            .substringBefore("private fun takeQuarantineConnectionObservation(")
+
+        assertTrue(report.contains("observation.connectionId.isBlank()"))
+        assertTrue(report.contains("protocol.equals(\"unknown\", ignoreCase = true)"))
+        assertTrue(report.indexOf("observation.connectionId.isBlank()") <
+            report.indexOf("observation.physicalClientInstanceId.ifBlank"))
+    }
+
+    @Test
+    fun telemetryUsesThePhysicalOkHttpClientSelectedByARouteWrapper() {
+        val cache = readSource("ReaderImageCache.kt")
+        val instrumented = cache.substringAfter("private fun strictInstrumentedClient(")
+            .substringBefore("private fun replicaFailoverFactory(")
+        val report = cache.substringAfter("private fun reportNetworkObservation(")
+            .substringBefore("private fun takeQuarantineConnectionObservation(")
+
+        assertTrue(instrumented.contains("telemetryClientInstanceId(base)"))
+        assertTrue(instrumented.contains("physicalClientInstanceId = physicalClientInstanceId"))
+        assertTrue(report.contains("observation.physicalClientInstanceId.ifBlank"))
+        assertTrue(report.contains("telemetryClientInstanceId(callFactory)"))
+    }
+
+    @Test
     fun probeWarmAdjacentRouteCannotBeOverriddenByOrdinaryH1Admission() {
         val warm = ReaderImageCache.NtkDirectWifiOrdinaryTransportSelection(
             forceExistingFallback = true,

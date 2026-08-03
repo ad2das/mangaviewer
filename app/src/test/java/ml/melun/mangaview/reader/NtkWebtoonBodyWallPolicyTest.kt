@@ -690,6 +690,54 @@ class NtkWebtoonBodyWallPolicyTest {
     }
 
     @Test
+    fun directWifiManhwaTriesPngFirstAfterTheCanonicalSuffixExplicitlyMisses() {
+        assertEquals(
+            listOf("png", "gif", "webp", "jpeg"),
+            NtkManhwaWifiTransportPolicy.orderedExtensionFallbacks(
+                listOf("jpg", "gif", "webp", "png", "jpeg"),
+                currentExtension = "jpg",
+                preferUncommonFirst = true,
+            ),
+        )
+        assertEquals(
+            listOf("gif", "webp", "png", "jpeg"),
+            NtkManhwaWifiTransportPolicy.orderedExtensionFallbacks(
+                listOf("jpg", "gif", "webp", "png", "jpeg"),
+                currentExtension = "jpg",
+                preferUncommonFirst = false,
+            ),
+        )
+    }
+
+    @Test
+    fun onlyTheFirstExplicitDirectWifiCanonicalMissPrioritizesExtensions() {
+        assertTrue(
+            NtkManhwaWifiTransportPolicy.shouldPrioritizePngAfterCanonicalMiss(
+                directWifiOrdinaryJpeg = true,
+                retryableMiss = true,
+                candidateIndex = 0,
+                extensionFallbackAlreadyAdded = false,
+            ),
+        )
+        assertFalse(
+            NtkManhwaWifiTransportPolicy.shouldPrioritizePngAfterCanonicalMiss(
+                directWifiOrdinaryJpeg = false,
+                retryableMiss = true,
+                candidateIndex = 0,
+                extensionFallbackAlreadyAdded = false,
+            ),
+        )
+        assertFalse(
+            NtkManhwaWifiTransportPolicy.shouldPrioritizePngAfterCanonicalMiss(
+                directWifiOrdinaryJpeg = true,
+                retryableMiss = true,
+                candidateIndex = 1,
+                extensionFallbackAlreadyAdded = false,
+            ),
+        )
+    }
+
+    @Test
     fun wifiReplicaPreferenceRequiresUsableHeadersAndExplicitMissesBeforeReordering() {
         val preference = NtkWebtoonReplicaPreference()
         val originalOrder = listOf("xiaomichina.com", "f1spard.site", "shaomoi.org")

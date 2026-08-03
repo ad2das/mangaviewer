@@ -827,6 +827,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var limitScrollToDrawablePrefix = false
     private var inlineRealPixelsOnly = false
     private var forwardNativeTexturePrewarmEnabled = false
+    private var directWifiExpandedNativeTextureRunway = false
+    private val directWifiExpandedNativeTextureEpisodePaths = linkedSetOf<String>()
+    private var directWifiExpandedNativeTextureMinimumPage = 0
     private var sourceNativeWebtoonCompositingEnabled = false
     private val hwuiPreparedBitmapKeys = HashSet<Long>()
     private var frameSchedulingSuppressed = false
@@ -986,13 +989,83 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * separate original-proof object; coupling this switch to [inlineRealPixelsOnly] therefore
      * turned valid work pixels into placeholders and prevented the first native submission.
      */
-    fun setForwardNativeTexturePrewarmEnabled(enabled: Boolean) {
+    fun setForwardNativeTexturePrewarmEnabled(
+        enabled: Boolean,
+        directWifiExpandedRunway: Boolean = false,
+        expandedEpisodePath: String = "",
+        expandedMinimumPage: Int = 0,
+    ) {
         synchronized(stateLock) {
-            if (forwardNativeTexturePrewarmEnabled == enabled) return
+            val expanded = enabled && directWifiExpandedRunway
+            val normalizedExpandedPath = if (expanded) {
+                NtkStripDigests.normalizeEpisodePath(expandedEpisodePath)
+            } else {
+                ""
+            }
+            val minimumPage = if (expanded) max(0, expandedMinimumPage) else 0
+            val sameExpandedPaths = if (normalizedExpandedPath.isEmpty()) {
+                directWifiExpandedNativeTextureEpisodePaths.isEmpty()
+            } else {
+                directWifiExpandedNativeTextureEpisodePaths.size == 1 &&
+                    normalizedExpandedPath in directWifiExpandedNativeTextureEpisodePaths
+            }
+            if (forwardNativeTexturePrewarmEnabled == enabled &&
+                directWifiExpandedNativeTextureRunway == expanded &&
+                sameExpandedPaths &&
+                directWifiExpandedNativeTextureMinimumPage == minimumPage
+            ) return
             forwardNativeTexturePrewarmEnabled = enabled
+            directWifiExpandedNativeTextureRunway = expanded
+            directWifiExpandedNativeTextureEpisodePaths.clear()
+            if (normalizedExpandedPath.isNotEmpty()) {
+                directWifiExpandedNativeTextureEpisodePaths += normalizedExpandedPath
+            }
+            directWifiExpandedNativeTextureMinimumPage = minimumPage
+            if (rollingNativeHandle != 0L) {
+                NtkRollingNativeBridge.nativeSetDirectWifiTextureProfile(
+                    rollingNativeHandle,
+                    expanded,
+                )
+            }
             nativeTexturePrewarmAnchorPage = -1
             nativeTexturePrewarmDirty = enabled
             if (enabled) requestResidentNativeTexturePrewarmLocked()
+        }
+    }
+
+    /**
+     * Extends an already source-qualified direct-Wi-Fi runway to the exact next episode. The
+     * Activity calls this only after every required current-episode drawable has completed, so
+     * next work cannot compete with the current episode and no previous episode is admitted.
+     */
+    fun authorizeCompletedForwardNativeTextureEpisode(episodePath: String) {
+        val normalizedPath = NtkStripDigests.normalizeEpisodePath(episodePath)
+        if (normalizedPath.isEmpty()) return
+        synchronized(stateLock) {
+            if (!directWifiExpandedNativeTextureRunway ||
+                !directWifiExpandedNativeTextureEpisodePaths.add(normalizedPath)
+            ) return
+            nativeTexturePrewarmAnchorPage = -1
+            nativeTexturePrewarmDirty = true
+            requestResidentNativeTexturePrewarmLocked()
+        }
+    }
+
+    /** Drops the consumed episode from the forward-only profile after exact physical adoption. */
+    fun advanceCompletedForwardNativeTextureEpisode(
+        episodePath: String,
+        firstDisplayPage: Int,
+    ) {
+        val normalizedPath = NtkStripDigests.normalizeEpisodePath(episodePath)
+        if (normalizedPath.isEmpty()) return
+        synchronized(stateLock) {
+            if (!directWifiExpandedNativeTextureRunway) return
+            directWifiExpandedNativeTextureEpisodePaths.clear()
+            directWifiExpandedNativeTextureEpisodePaths += normalizedPath
+            directWifiExpandedNativeTextureMinimumPage = max(0, firstDisplayPage)
+            nativeTexturePrewarmAnchorPage = -1
+            nativeTexturePrewarmDirty = true
+            requestResidentNativeTexturePrewarmLocked()
         }
     }
 
@@ -1902,6 +1975,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    private fun effectiveNativeTexturePrewarmAnchorLocked(offset: Float): Int {
+        if (pages.isEmpty()) return 0
+        val visible = if (width > 0 && height > 0) {
+            firstVisiblePageLocked(offset).coerceIn(0, pages.lastIndex)
+        } else {
+            0
+        }
+        return if (directWifiExpandedNativeTextureRunway &&
+            directWifiExpandedNativeTextureEpisodePaths.isNotEmpty()
+        ) {
+            max(visible, directWifiExpandedNativeTextureMinimumPage)
+                .coerceIn(0, pages.lastIndex)
+        } else {
+            visible
+        }
+    }
+
     private fun flushResidentNativeTexturePrewarm() {
         val snapshot = synchronized(stateLock) {
             nativeTexturePrewarmFlushPosted = false
@@ -1912,12 +2002,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             ) return@synchronized null
 
             rebuildLayoutLocked()
-            val first = if (width > 0 && height > 0) {
-                firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
-            } else {
-                0
-            }
-            val runwayEnd = if (width > 0 && height > 0) {
+            val visibleFirst = effectiveNativeTexturePrewarmAnchorLocked(scrollOffset)
+            val expandedDirectWifiRunway = directWifiExpandedNativeTextureRunway &&
+                directWifiExpandedNativeTextureEpisodePaths.isNotEmpty()
+            val first = visibleFirst
+            val runwayEnd = if (expandedDirectWifiRunway) {
+                min(pages.lastIndex, first + DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES - 1)
+            } else if (width > 0 && height > 0) {
                 val endExclusive = min(
                     contentHeight,
                     scrollOffset + height.toFloat() *
@@ -1931,49 +2022,138 @@ class ReaderSurfaceView @JvmOverloads constructor(
             } else {
                 min(pages.lastIndex, first + NATIVE_PREWARM_FALLBACK_AHEAD_PAGES)
             }
-            val requestedPages = (first..runwayEnd).toList()
+            val requestedPages = if (expandedDirectWifiRunway) {
+                buildList {
+                    for (pageIndex in first..runwayEnd) {
+                        val page = pages[pageIndex]
+                        val identity = page.committedIdentity ?: break
+                        if (page.cardText != null || page.errorText != null ||
+                            identity.normalizedEpisodePath !in
+                            directWifiExpandedNativeTextureEpisodePaths
+                        ) break
+                        add(pageIndex)
+                    }
+                }
+            } else {
+                (first..runwayEnd).toList()
+            }
             if (requestedPages.isEmpty()) return@synchronized null
-            val firstPage = requestedPages.first()
-            val lastPage = requestedPages.last()
-            val maxTiles = NATIVE_PREWARM_MAX_TILES
+            val maxTiles = if (expandedDirectWifiRunway) {
+                DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES
+            } else {
+                NATIVE_PREWARM_MAX_TILES
+            }
+            val maxBytes = if (expandedDirectWifiRunway) {
+                DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES
+            } else {
+                Long.MAX_VALUE
+            }
             val tileIntegers = ArrayList<Int>(maxTiles * 7)
             val bitmapList = ArrayList<Bitmap>(maxTiles)
+            val selectedPages = ArrayList<Int>(requestedPages.size)
+            var selectedBytes = 0L
 
-            fun appendTile(pageIndex: Int, slotIndex: Int, tile: ReaderTile) {
+            fun validatedTextureBytes(tile: ReaderTile): Long? {
                 val bitmap = tile.bitmap
-                if (bitmapList.size >= maxTiles || bitmap.isRecycled ||
+                if (bitmap.isRecycled ||
                     tile.sourceWidth <= 0 || tile.sourceBottom <= tile.sourceTop ||
                     tile.sourceHeight < tile.sourceBottom
-                ) return
+                ) return null
+                val textureBytes = tile.sourceWidth.toLong() *
+                    (tile.sourceBottom - tile.sourceTop).toLong() * 4L
+                return textureBytes.takeIf { it > 0L }
+            }
+
+            fun appendTile(pageIndex: Int, slotIndex: Int, tile: ReaderTile, bytes: Long) {
                 tileIntegers += pageIndex
                 tileIntegers += slotIndex
                 tileIntegers += tile.sourceTop
                 tileIntegers += tile.sourceBottom
                 tileIntegers += tile.sourceWidth
                 tileIntegers += tile.sourceHeight
-                tileIntegers += System.identityHashCode(bitmap)
-                bitmapList += bitmap
+                tileIntegers += System.identityHashCode(tile.bitmap)
+                bitmapList += tile.bitmap
+                selectedBytes += bytes
             }
 
-            for (pageIndex in requestedPages) {
-                if (bitmapList.size >= maxTiles) break
-                val page = pages[pageIndex]
-                val bitmap = page.bitmap
-                when {
-                    bitmap != null && !bitmap.isRecycled -> appendTile(
-                        pageIndex,
-                        0,
-                        ReaderTile(0, bitmap.height, bitmap.width, bitmap.height, bitmap)
-                    )
-                    page.stripSlots.isNotEmpty() -> page.stripSlots.forEachIndexed { slot, tile ->
-                        if (tile != null) appendTile(pageIndex, slot, tile)
+            if (expandedDirectWifiRunway) {
+                for (pageIndex in requestedPages) {
+                    if (bitmapList.size >= maxTiles) break
+                    val page = pages[pageIndex]
+                    val bitmap = page.bitmap
+                    val pageTiles = ArrayList<Pair<Int, ReaderTile>>()
+                    when {
+                        bitmap != null && !bitmap.isRecycled -> pageTiles += 0 to ReaderTile(
+                            0,
+                            bitmap.height,
+                            bitmap.width,
+                            bitmap.height,
+                            bitmap,
+                        )
+                        page.stripSlots.isNotEmpty() -> {
+                            if (page.stripSlots.any { it == null }) break
+                            page.stripSlots.forEachIndexed { slot, tile ->
+                                if (tile != null) pageTiles += slot to tile
+                            }
+                        }
+                        page.tiles.isNotEmpty() -> page.tiles.forEachIndexed { slot, tile ->
+                            pageTiles += slot to tile
+                        }
                     }
-                    page.tiles.isNotEmpty() -> page.tiles.forEachIndexed { slot, tile ->
-                        appendTile(pageIndex, slot, tile)
+                    if (pageTiles.isEmpty()) break
+                    val pageByteSizes = pageTiles.map { (_, tile) ->
+                        validatedTextureBytes(tile)
+                    }
+                    if (pageByteSizes.any { it == null }) break
+                    val pageBytes = pageByteSizes.sumOf { checkNotNull(it) }
+                    if (bitmapList.size + pageTiles.size > maxTiles ||
+                        pageBytes > maxBytes - selectedBytes
+                    ) break
+                    pageTiles.zip(pageByteSizes).forEach { (indexedTile, bytes) ->
+                        appendTile(
+                            pageIndex,
+                            indexedTile.first,
+                            indexedTile.second,
+                            checkNotNull(bytes),
+                        )
+                    }
+                    selectedPages += pageIndex
+                }
+            } else {
+                // Preserve the ordinary mobile/SNI resident policy byte-for-byte in behavior:
+                // consume the first twelve valid tiles even when that ends part-way through one
+                // unusually tall page. Page-atomic and byte-budget rules belong only to the
+                // source-qualified direct-Wi-Fi profile above.
+                fun appendOrdinaryTile(pageIndex: Int, slotIndex: Int, tile: ReaderTile) {
+                    if (bitmapList.size >= maxTiles) return
+                    val bytes = validatedTextureBytes(tile) ?: return
+                    appendTile(pageIndex, slotIndex, tile, bytes)
+                }
+                for (pageIndex in requestedPages) {
+                    if (bitmapList.size >= maxTiles) break
+                    val page = pages[pageIndex]
+                    val bitmap = page.bitmap
+                    when {
+                        bitmap != null && !bitmap.isRecycled -> appendOrdinaryTile(
+                            pageIndex,
+                            0,
+                            ReaderTile(0, bitmap.height, bitmap.width, bitmap.height, bitmap),
+                        )
+                        page.stripSlots.isNotEmpty() ->
+                            page.stripSlots.forEachIndexed { slot, tile ->
+                                if (tile != null) appendOrdinaryTile(pageIndex, slot, tile)
+                            }
+                        page.tiles.isNotEmpty() -> page.tiles.forEachIndexed { slot, tile ->
+                            appendOrdinaryTile(pageIndex, slot, tile)
+                        }
                     }
                 }
             }
             if (bitmapList.isEmpty()) return@synchronized null
+            val snapshotPages = if (expandedDirectWifiRunway) selectedPages else requestedPages
+            if (snapshotPages.isEmpty()) return@synchronized null
+            val firstPage = snapshotPages.first()
+            val lastPage = snapshotPages.last()
             nativeTexturePrewarmDirty = false
             nativeTexturePrewarmAnchorPage = firstPage
             nativeTexturePrewarmPendingPages.clear()
@@ -1984,7 +2164,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 creationGeneration = rollingNativeCreateGeneration,
                 firstPage = firstPage,
                 lastPage = lastPage,
-                requestedPages = requestedPages.toIntArray(),
+                requestedPages = snapshotPages.toIntArray(),
                 tileData = tileIntegers.toIntArray(),
                 bitmaps = bitmapList.toTypedArray()
             )
@@ -2008,7 +2188,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 snapshot.handle,
                 snapshot.structureEpoch,
                 snapshot.tileData,
-                snapshot.bitmaps
+                snapshot.bitmaps,
+                false,
             )
         }.getOrDefault(false)
         synchronized(stateLock) {
@@ -3902,6 +4083,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val page = pages.getOrNull(index) ?: return@forEachIndexed
                 page.committedIdentity = identity?.copy(displayPageIndex = index)
             }
+            if (directWifiExpandedNativeTextureRunway) {
+                nativeTexturePrewarmDirty = true
+                requestResidentNativeTexturePrewarmLocked()
+            }
         }
     }
 
@@ -4889,11 +5074,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             if (rollingNativeHandle == 0L) {
                 rollingNativeHandle = NtkRollingNativeBridge.nativeCreate(this)
-                if (rollingNativeHandle != 0L && nativeTexturePrewarmPaused) {
-                    NtkRollingNativeBridge.nativeSetPrewarmPaused(
+                if (rollingNativeHandle != 0L) {
+                    NtkRollingNativeBridge.nativeSetDirectWifiTextureProfile(
                         rollingNativeHandle,
-                        true
+                        directWifiExpandedNativeTextureRunway,
                     )
+                    if (nativeTexturePrewarmPaused) {
+                        NtkRollingNativeBridge.nativeSetPrewarmPaused(
+                            rollingNativeHandle,
+                            true
+                        )
+                    }
                 }
             }
             val handle = rollingNativeHandle
@@ -8003,6 +8194,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     !rollingNativeFatal && rollingNativeHandle == 0L && createdHandle != 0L
                 ) {
                     rollingNativeHandle = createdHandle
+                    NtkRollingNativeBridge.nativeSetDirectWifiTextureProfile(
+                        createdHandle,
+                        directWifiExpandedNativeTextureRunway,
+                    )
                     if (nativeTexturePrewarmPaused) {
                         NtkRollingNativeBridge.nativeSetPrewarmPaused(createdHandle, true)
                     }
@@ -9866,7 +10061,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (changed) {
             markPixelsDirtyLocked(DIRTY_SCROLL)
             if ((inlineRealPixelsOnly || forwardNativeTexturePrewarmEnabled) && pages.isNotEmpty()) {
-                val currentAnchor = firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
+                val currentAnchor = effectiveNativeTexturePrewarmAnchorLocked(scrollOffset)
                 if (currentAnchor != nativeTexturePrewarmAnchorPage) {
                     requestResidentNativeTexturePrewarmLocked()
                 }
@@ -10862,6 +11057,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val NATIVE_PREWARM_AHEAD_VIEWPORTS = 6f
         private const val NATIVE_PREWARM_FALLBACK_AHEAD_PAGES = 6
         private const val NATIVE_PREWARM_MAX_TILES = 12
+        private const val DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 16
+        private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES = 48
+        private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES = 288L * 1024L * 1024L
         // Kept in one production policy point while the exact no-sampling NTK proof is bound.
         private const val FORWARD_REQUEST_END_EPSILON_PX = 0.01f
         private const val TILE_SEAM_OVERLAP_PX = 1f

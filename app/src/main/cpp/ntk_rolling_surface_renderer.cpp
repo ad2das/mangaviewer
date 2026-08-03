@@ -43,9 +43,6 @@ constexpr std::size_t kMaxQueuedFrames = 1;
 // post-click original has been installed it may publish one full-scene snapshot; keep that queue
 // intact so the worker can fill idle EGL slots during the long forward traversal.
 constexpr std::size_t kMaxQueuedPrewarmTiles = 1024;
-// Kotlin's normal viewport snapshot is capped at twelve tiles. Any larger immutable handoff is
-// the one terminal full-scene snapshot and seals the epoch against later partial re-enqueues.
-constexpr std::size_t kResidentSnapshotMaxTiles = 12;
 // During a physical drag/fling, keep a bounded immutable forward runway resident. Four pages was
 // enough for finger-speed reading but not repeated fast forward swipes: a 104-page cold trace
 // reached the next page before its texture upload and combined that 6.6 ms allocation with a host
@@ -450,7 +447,8 @@ public:
      * viewport geometry or frame token and has no path to the SurfaceControl backend.
      */
     bool prewarm(JNIEnv* env, std::int64_t structureEpoch,
-                 jintArray tileData, jobjectArray bitmaps) {
+                 jintArray tileData, jobjectArray bitmaps,
+                 bool completeSceneSnapshot) {
         if (env == nullptr || structureEpoch <= 0 || tileData == nullptr || bitmaps == nullptr ||
             stopped_.load(std::memory_order_acquire) || failed_.load(std::memory_order_acquire)) {
             return false;
@@ -515,8 +513,10 @@ public:
                 queuedPrewarmEpoch_ = structureEpoch;
                 sealedFullScenePrewarmEpoch_ = 0;
             }
-            const bool fullSceneSnapshot =
-                static_cast<std::size_t>(bitmapCount) > kResidentSnapshotMaxTiles;
+            // Snapshot cardinality is not authority. A direct-Wi-Fi current runway can contain
+            // more than the ordinary twelve tiles without being a complete immutable scene.
+            // Only an explicit JNI capability may seal an epoch against later resident updates.
+            const bool fullSceneSnapshot = completeSceneSnapshot;
             const bool ignoreIncoming = sealedFullScenePrewarmEpoch_ == structureEpoch;
             if (ignoreIncoming) {
                 // The authoritative full-scene snapshot already owns every immutable original in
@@ -621,6 +621,10 @@ public:
             }
         }
         if (!paused) condition_.notify_one();
+    }
+
+    void setDirectWifiTextureProfile(bool enabled) noexcept {
+        directWifiTextureProfile_.store(enabled, std::memory_order_release);
     }
 
 private:
@@ -964,14 +968,19 @@ private:
         GLuint texture = 0;
         bool allocatedStorage = false;
         bool generatedTexture = false;
-        if (existing != textures_.end()) {
+        TextureTile previousTextureStorage{};
+        const bool directWifiTextureProfile =
+            directWifiTextureProfile_.load(std::memory_order_acquire);
+        const bool replaceExistingWithFreshName =
+            directWifiTextureProfile && existing != textures_.end();
+        if (existing != textures_.end() && !replaceExistingWithFreshName) {
             // A Java LRU eviction may recreate an immutable Bitmap for the same logical tile.
             // Once the predecessor SurfaceControl buffer has latched this renderer is the sole
             // owner of the GL name, so replacing its pixels in place is identity-safe.
             texture = existing->second.texture;
             allocatedStorage = existing->second.width == width &&
                 existing->second.height == height;
-        } else {
+        } else if (!directWifiTextureProfile) {
             for (auto pooled = pooledTextures_.begin(); pooled != pooledTextures_.end(); ++pooled) {
                 if (pooled->width != width || pooled->height != height || pooled->texture == 0) {
                     continue;
@@ -1013,12 +1022,17 @@ private:
         if (texture == 0 || glGetError() != GL_NO_ERROR) {
             // An existing mapping is retried with the old logical identity on the next frame.
             // New or pooled names have no authoritative mapping yet and can be discarded.
-            if (existing == textures_.end() && texture != 0) glDeleteTextures(1, &texture);
+            if ((existing == textures_.end() || replaceExistingWithFreshName) && texture != 0) {
+                glDeleteTextures(1, &texture);
+            }
             return false;
         }
         if (existing != textures_.end()) {
             residentTextureBytes_ -= std::min(
                 residentTextureBytes_, existing->second.bytes);
+            if (replaceExistingWithFreshName) {
+                previousTextureStorage = std::move(existing->second);
+            }
             existing->second = TextureTile{
                 texture, tile.bitmapIdentity, width, height, textureBytes, useFrame};
         } else {
@@ -1028,6 +1042,13 @@ private:
                 textureBytes, useFrame});
         }
         residentTextureBytes_ += textureBytes;
+        if (replaceExistingWithFreshName) {
+            // The direct-Wi-Fi profile also forbids same-key storage mutation: an immutable
+            // Bitmap can be recreated after Java eviction while the old GL name is still sampled
+            // by a latched gfxstream buffer. Deleting the detached name lets GL defer its actual
+            // release until references retire, without a blocking glTexSubImage fence export.
+            recycleTextureStorage(std::move(previousTextureStorage));
+        }
         return true;
     }
 
@@ -1077,7 +1098,11 @@ private:
         if (texture.texture == 0) return;
         texture.bitmapIdentity = 0;
         texture.lastUsedFrame = 0;
-        if (texture.bytes <= kMaxPooledTextureBytes &&
+        // gfxstream can keep the GL name referenced after the logical frame has latched. The
+        // exact-current direct-Wi-Fi profile has enough idle runway to allocate ahead, so prefer
+        // a fresh name over an unsafe glTexSubImage into storage still sampled by BufferQueue.
+        if (!directWifiTextureProfile_.load(std::memory_order_acquire) &&
+            texture.bytes <= kMaxPooledTextureBytes &&
             pooledTextures_.size() < kMaxPooledTextureCount &&
             pooledTextureBytes_ + texture.bytes <= kMaxPooledTextureBytes) {
             pooledTextureBytes_ += texture.bytes;
@@ -2114,6 +2139,7 @@ private:
     std::uint64_t skippedResidentPrewarmTiles_ = 0;
     std::int64_t nextPrewarmUploadNanos_ = 0;
     bool prewarmPaused_ = false;
+    std::atomic<bool> directWifiTextureProfile_{false};
 
     ntk::present::SurfaceControlPresentBackend backend_{};
     ntk::present::FixedTransportProfile profile_{};
@@ -2199,10 +2225,11 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeSubmit(
 extern "C" JNIEXPORT jboolean JNICALL
 Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativePrewarm(
         JNIEnv* env, jobject, jlong handle, jlong structureEpoch,
-        jintArray tileData, jobjectArray bitmaps) {
+        jintArray tileData, jobjectArray bitmaps, jboolean completeSceneSnapshot) {
     RollingRenderer* value = renderer(handle);
     return value != nullptr && value->prewarm(
-        env, static_cast<std::int64_t>(structureEpoch), tileData, bitmaps)
+        env, static_cast<std::int64_t>(structureEpoch), tileData, bitmaps,
+        completeSceneSnapshot == JNI_TRUE)
         ? JNI_TRUE
         : JNI_FALSE;
 }
@@ -2212,6 +2239,13 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeSetPrewarmPaused(
         JNIEnv*, jobject, jlong handle, jboolean paused) {
     RollingRenderer* value = renderer(handle);
     if (value != nullptr) value->setPrewarmPaused(paused == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeSetDirectWifiTextureProfile(
+        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    RollingRenderer* value = renderer(handle);
+    if (value != nullptr) value->setDirectWifiTextureProfile(enabled == JNI_TRUE);
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -1057,6 +1057,30 @@ internal object NtkManhwaWifiTransportPolicy {
         return explicitQuicMisses >= 2
     }
 
+    fun orderedExtensionFallbacks(
+        extensions: List<String>,
+        currentExtension: String,
+        preferUncommonFirst: Boolean,
+    ): List<String> {
+        val remaining = extensions.filterNot {
+            it.equals(currentExtension, ignoreCase = true)
+        }
+        if (!preferUncommonFirst) return remaining
+        return remaining.sortedBy {
+            if (it.equals(WIFI_FIRST_UNCOMMON_EXTENSION, ignoreCase = true)) 0 else 1
+        }
+    }
+
+    fun shouldPrioritizePngAfterCanonicalMiss(
+        directWifiOrdinaryJpeg: Boolean,
+        retryableMiss: Boolean,
+        candidateIndex: Int,
+        extensionFallbackAlreadyAdded: Boolean,
+    ): Boolean = directWifiOrdinaryJpeg &&
+        retryableMiss &&
+        candidateIndex == 0 &&
+        !extensionFallbackAlreadyAdded
+
     fun <T> interleaveReplicaRings(replicaRings: List<List<T>>): List<T> =
         buildList(replicaRings.sumOf { it.size }) {
             val largestRing = replicaRings.maxOfOrNull { it.size } ?: 0
@@ -1563,7 +1587,12 @@ object ReaderImageCache {
     private val ntkEpisodeWorkCancelledAt = ConcurrentHashMap<String, Long>()
     private val activeNtkEpisodeCalls = ConcurrentHashMap<String, Call>()
     private val activeNtkEpisodeCallIds = AtomicLong(0L)
-    private data class StrictConnectionObservation(val connectionId: String, val reused: Boolean)
+    private data class StrictConnectionObservation(
+        val connectionId: String,
+        val reused: Boolean,
+        /** Identity of the OkHttp transport that actually acquired [connectionId]. */
+        val physicalClientInstanceId: String = "",
+    )
     private val strictInstrumentedClients = ConcurrentHashMap<Int, OkHttpClient>()
     private val clickOwnedAnchorClients = ConcurrentHashMap<Long, OkHttpClient>()
     private val clickOwnedMixedFormatProbeClients =
@@ -2024,9 +2053,12 @@ data class NtkResolvedSourceRoute(
         ).matchEntire(url.encodedPath) ?: return emptyList()
         val stem = match.groupValues[1]
         val currentExtension = match.groupValues[2].lowercase(Locale.ROOT)
-        val replicaRings = NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS
+        val replicaRings = NtkManhwaWifiTransportPolicy.orderedExtensionFallbacks(
+            NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS,
+            currentExtension,
+            preferUncommonFirst = interleaveExtensions,
+        )
             .asSequence()
-            .filterNot { it.equals(currentExtension, ignoreCase = true) }
             .map { extension ->
                 val extensionRequest = request.newBuilder()
                     .url(url.newBuilder().encodedPath("$stem.$extension").build())
@@ -2196,6 +2228,7 @@ data class NtkResolvedSourceRoute(
             var lastFailure: IOException? = null
             var index = 0
             var manhwaExtensionFallbackAdded = false
+            val earlyExtensionRecoveryUrls = mutableSetOf<String>()
             var wifiFocusedRecoveryStartIndex = Int.MAX_VALUE
             var wifiFocusedRecoveryAdded = false
             val explicitReplicaMissHosts = mutableSetOf<String>()
@@ -2604,14 +2637,60 @@ data class NtkResolvedSourceRoute(
                             )
                         }
                     }
+                    if (NtkManhwaWifiTransportPolicy.shouldPrioritizePngAfterCanonicalMiss(
+                            directWifiOrdinaryJpeg =
+                                isDirectWifiClickOwnedOrdinaryManhwaJpeg(),
+                            retryableMiss = retryableMiss,
+                            candidateIndex = index,
+                            extensionFallbackAlreadyAdded = manhwaExtensionFallbackAdded,
+                        )
+                    ) {
+                        val extensionFallbacks = strictManhwaExtensionFallbackRequests(
+                            originalRequest,
+                            strictPageIndex,
+                            interleaveExtensions = true,
+                        )
+                        val earlyPngCandidate = extensionFallbacks.firstOrNull {
+                            it.url.host.equals(candidate.url.host, ignoreCase = true) &&
+                                it.url.encodedPath.substringAfterLast('.', "")
+                                    .equals(
+                                        NtkManhwaWifiTransportPolicy
+                                            .WIFI_FIRST_UNCOMMON_EXTENSION,
+                                        ignoreCase = true,
+                                    )
+                        }
+                        if (earlyPngCandidate != null) {
+                            val remainingCanonical = attemptCandidates.drop(index + 1)
+                            attemptCandidates.subList(
+                                index + 1,
+                                attemptCandidates.size,
+                            ).clear()
+                            attemptCandidates.add(earlyPngCandidate)
+                            earlyExtensionRecoveryUrls.add(earlyPngCandidate.url.toString())
+                            // A 404 is host-local evidence. Preserve the other canonical mirrors
+                            // immediately after this one same-host PNG check. The complete uncommon
+                            // suffix ring remains the final fallback if every canonical mirror
+                            // misses, so correctness and GIF/WebP/JPEG support are unchanged.
+                            attemptCandidates.addAll(remainingCanonical)
+                            Log.w(
+                                TAG,
+                                "reader_strict_wifi_manhwa_png_after_first_miss " +
+                                    "page=$strictPageIndex,code=${response.code}," +
+                                    "from=${candidate.url.encodedPath.substringAfterLast('/')}," +
+                                    "pngHost=${earlyPngCandidate.url.host}," +
+                                    "canonicalRemaining=${remainingCanonical.size}",
+                            )
+                        }
+                    }
                     if (
                         retryableMiss &&
                         index == attemptCandidates.lastIndex &&
                         manhwaReplica &&
                         !manhwaExtensionFallbackAdded
                     ) {
-                        val extensionFallbacks =
-                            strictManhwaExtensionFallbackRequests(originalRequest)
+                        val extensionFallbacks = strictManhwaExtensionFallbackRequests(
+                            originalRequest,
+                        ).filterNot { it.url.toString() in earlyExtensionRecoveryUrls }
                         if (extensionFallbacks.isNotEmpty()) {
                             manhwaExtensionFallbackAdded = true
                             attemptCandidates.addAll(extensionFallbacks)
@@ -7996,6 +8075,7 @@ data class NtkResolvedSourceRoute(
 
     private fun strictInstrumentedClient(base: OkHttpClient): OkHttpClient {
         val identity = System.identityHashCode(base)
+        val physicalClientInstanceId = telemetryClientInstanceId(base)
         return strictInstrumentedClients.computeIfAbsent(identity) {
             base.newBuilder().eventListenerFactory {
                 object : EventListener() {
@@ -8017,7 +8097,8 @@ data class NtkResolvedSourceRoute(
                                 "ntk-source-connection-v1",
                                 connectionIdentity.toString()
                             ).take(16),
-                            reused = prior > 0
+                            reused = prior > 0,
+                            physicalClientInstanceId = physicalClientInstanceId,
                         )
                     }
                 }
@@ -8071,6 +8152,14 @@ data class NtkResolvedSourceRoute(
         callFactory: Call.Factory
     ) {
         if (pageIndex < 0) return
+        // A speculative filename candidate can be cancelled before OkHttp acquires a connection.
+        // Counting its route wrapper as a second physical client makes the cold contract report a
+        // client switch that never reached the network (mixed jpg/png page zero is the common
+        // case). Retry/cancellation telemetry remains on the operation lease; client topology is
+        // derived only from a real acquired connection.
+        if (observation.connectionId.isBlank() &&
+            protocol.equals("unknown", ignoreCase = true)
+        ) return
         val connectionIdHash = if (observation.connectionId.isBlank()) {
             "none"
         } else {
@@ -8079,7 +8168,14 @@ data class NtkResolvedSourceRoute(
                 observation.connectionId
             )
         }
-        val clientInstanceId = telemetryClientInstanceId(callFactory)
+        // A logical route may wrap the same physical OkHttp client more than once. For example,
+        // mixed-extension discovery can resolve page zero through the direct H2 route in the
+        // current episode and the ordinary Wi-Fi selector's H2 fallback in the adjacent episode.
+        // The EventListener runs on the selected physical client, so prefer that identity instead
+        // of falsely reporting the two outer route wrappers as a client switch.
+        val clientInstanceId = observation.physicalClientInstanceId.ifBlank {
+            telemetryClientInstanceId(callFactory)
+        }
         ViewerTelemetry.networkObservation(
             pageIndex,
             protocol.ifBlank { "unknown" },

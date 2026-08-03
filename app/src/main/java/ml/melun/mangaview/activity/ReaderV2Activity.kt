@@ -931,7 +931,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             // The direct strict session is the production cold path. Keep its established tile
             // identity rules, but make every decoded current/forward tile GPU-resident before it
             // enters the downward viewport. Inline-strip proof semantics are a different concern.
-            it.setForwardNativeTexturePrewarmEnabled(strictNtkEpisode)
+            it.setForwardNativeTexturePrewarmEnabled(
+                strictNtkEpisode,
+            )
         }
         status = ReaderStatusOverlayView(this).apply {
             text = "로딩 중"
@@ -2851,6 +2853,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             // synchronous native currentProgressPosition() read measured ~250 ms on the emulator;
             // it is needed for reading-position bookkeeping, not for identifying the completed
             // predecessor. Start the exact next owner first, then sample the user's real anchor.
+            cachedNextEpisode?.ntkEpisodePath?.let(
+                renderView::authorizeCompletedForwardNativeTextureEpisode
+            )
             session?.prepareForwardAdjacentAfterCurrentComplete(
                 seal.normalizedEpisodePath,
                 cachedNextEpisode,
@@ -4851,6 +4856,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         } else {
             0
         }
+        if (::renderView.isInitialized) {
+            renderView.setForwardNativeTexturePrewarmEnabled(
+                enabled = true,
+                directWifiExpandedRunway =
+                    NtkSourceSpoolRegistry.isCurrentDirectWifiRendererProfile(
+                        seal.normalizedEpisodePath,
+                        strictTelemetryGeneration,
+                    ),
+                expandedEpisodePath = seal.normalizedEpisodePath,
+                expandedMinimumPage = strictForwardReadyFirstPage,
+            )
+        }
     }
 
     private fun hasStrictDirectManifestAckAuthority(path: String): Boolean {
@@ -6392,6 +6409,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         deferredEpisodeUpdateOffset = 0
         deferredEpisodeUpdateSaveProgress = false
         updateCurrentEpisode(displayPage, saveProgress = true)
+        renderView.advanceCompletedForwardNativeTextureEpisode(
+            physicalEpisodePath,
+            displayPage,
+        )
         Log.d(
             TAG,
             "current_episode_physical_adjacent page=$displayPage,path=$physicalEpisodePath",
@@ -9696,6 +9717,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             // readiness and per-episode keys make this idempotent, and unfinished current
             // episodes still fail the full-drawable gate without starting adjacent body work.
             if (strictAllImagesReadyPublished && next != null) {
+                next.ntkEpisodePath?.let(
+                    renderView::authorizeCompletedForwardNativeTextureEpisode
+                )
                 session?.prepareForwardAdjacentAfterCurrentComplete(
                     manga?.ntkEpisodePath.orEmpty(),
                     next,

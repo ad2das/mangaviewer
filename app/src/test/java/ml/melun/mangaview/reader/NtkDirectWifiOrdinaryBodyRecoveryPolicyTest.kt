@@ -98,4 +98,34 @@ class NtkDirectWifiOrdinaryBodyRecoveryPolicyTest {
         assertTrue(body.contains("clickOwnedDirectWifiRangeClient(capturedNetwork)"))
         assertTrue(body.contains("header(\"X-MangaViewer-Wifi-Bound\", \"1\")"))
     }
+
+    @Test
+    fun explicitCanonicalMissUsesWifiOnlyPngFirstRecoveryAndRetainsCanonicalMirrors() {
+        val source = File(
+            "src/main/java/ml/melun/mangaview/reader/ReaderImageCache.kt"
+        ).readText()
+        val callStart = source.indexOf("private class NtkReplicaFailoverCall(")
+        val callEnd = source.indexOf("private data class NtkManhwaRangeSegment(", callStart)
+        assertTrue(callStart >= 0)
+        assertTrue(callEnd > callStart)
+        val call = source.substring(callStart, callEnd)
+
+        val recovery = call.substringAfter(
+            "shouldPrioritizePngAfterCanonicalMiss("
+        ).substringBefore("if (\n                        retryableMiss &&\n                        index == attemptCandidates.lastIndex")
+        assertTrue(recovery.contains("isDirectWifiClickOwnedOrdinaryManhwaJpeg()"))
+        assertTrue(recovery.contains("interleaveExtensions = true"))
+        assertTrue(recovery.contains("val earlyPngCandidate = extensionFallbacks.firstOrNull"))
+        assertTrue(recovery.contains("val remainingCanonical = attemptCandidates.drop(index + 1)"))
+        assertTrue(recovery.contains("attemptCandidates.add(earlyPngCandidate)"))
+        assertTrue(recovery.contains("attemptCandidates.addAll(remainingCanonical)"))
+        assertTrue(
+            recovery.indexOf("attemptCandidates.add(earlyPngCandidate)") <
+                recovery.indexOf("attemptCandidates.addAll(remainingCanonical)")
+        )
+        assertFalse(recovery.contains("attemptCandidates.addAll(extensionFallbacks)"))
+        assertTrue(call.contains(
+            "filterNot { it.url.toString() in earlyExtensionRecoveryUrls }"
+        ))
+    }
 }

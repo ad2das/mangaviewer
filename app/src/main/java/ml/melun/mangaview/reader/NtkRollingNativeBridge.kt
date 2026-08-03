@@ -52,11 +52,15 @@ internal object NtkRollingNativeBridge {
         handle: Long,
         structureEpoch: Long,
         tileData: IntArray,
-        bitmaps: Array<Bitmap>
+        bitmaps: Array<Bitmap>,
+        completeSceneSnapshot: Boolean,
     ): Boolean
 
     /** Prevents non-presenting texture uploads from sharing the EGL lane with physical input. */
     external fun nativeSetPrewarmPaused(handle: Long, paused: Boolean)
+
+    /** Selects the exact-current direct-Wi-Fi texture safety profile without changing input. */
+    external fun nativeSetDirectWifiTextureProfile(handle: Long, enabled: Boolean)
 
     external fun nativeDestroy(handle: Long)
 }
