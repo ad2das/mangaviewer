@@ -406,7 +406,13 @@ internal object NtkStrictInitialWavePolicy {
     // server's supported multiplexing bound while reducing that same workset to two waves.
     // Carrier/SNI and manhwa use their independent policies below.
     private const val WEBTOON_WIFI_POST_ANCHOR_TCP_BODY_TRANSFERS = 48
+    private const val WEBTOON_DIRECT_WIFI_MEDIUM_TCP_BODY_TRANSFERS = 60
     private const val WEBTOON_DIRECT_WIFI_LARGE_TCP_BODY_TRANSFERS = 64
+    // A 91-page, 27.9 MiB direct-Wi-Fi scene still needed a second 48-call transfer wave and
+    // varied between 5.49 s and 6.09 s. Add only twelve followers over the already-isolated
+    // 48-pool topology for medium-long scenes; the previously qualified 64-call ring remains
+    // reserved for 180+ pages. Carrier/SNI has eight shards and cannot enter either branch.
+    private const val WEBTOON_DIRECT_WIFI_MEDIUM_TCP_EPISODE_PAGES = 80
     private const val WEBTOON_DIRECT_WIFI_LARGE_TCP_EPISODE_PAGES = 180
     private const val WEBTOON_WIFI_POST_ANCHOR_QUIC_BODY_TRANSFERS = 24
     private const val WEBTOON_WIFI_LARGE_QUIC_BODY_TRANSFERS = 24
@@ -548,8 +554,9 @@ internal object NtkStrictInitialWavePolicy {
 
     /**
      * Entry-completion-clocked Wi-Fi release. Before page zero EOF the stable four-call gate remains
-     * in force. TCP first opens every immutable cold cohort. A 180+ page direct-Wi-Fi scene may
-     * then use a bounded extra transfer on part of the sixteen-pool origin rings. When the exact
+     * in force. TCP first opens every immutable cold cohort. An 80+ page direct-Wi-Fi scene may
+     * then use twelve bounded followers, while 180+ pages retain the qualified 64-call ring.
+     * When the exact
      * HTTP/3 primary is actually available, keep the same twenty-four-transfer ceiling. A larger
      * cold wave can over-share each QUIC session and turn useful in-flight progress into a
      * synchronized timeout/fallback storm. An unavailable HTTP/3 engine keeps the TCP limit, and
@@ -577,6 +584,11 @@ internal object NtkStrictInitialWavePolicy {
                     episodePageCount >= WEBTOON_DIRECT_WIFI_LARGE_TCP_EPISODE_PAGES
                 ) {
                     WEBTOON_DIRECT_WIFI_LARGE_TCP_BODY_TRANSFERS
+                } else if (
+                    webtoonConnectionShardCount >= DIRECT_WIFI_WEBTOON_CONNECTION_SHARDS &&
+                    episodePageCount >= WEBTOON_DIRECT_WIFI_MEDIUM_TCP_EPISODE_PAGES
+                ) {
+                    WEBTOON_DIRECT_WIFI_MEDIUM_TCP_BODY_TRANSFERS
                 } else {
                     WEBTOON_WIFI_POST_ANCHOR_TCP_BODY_TRANSFERS
                 }
@@ -628,10 +640,12 @@ internal object NtkStrictInitialWavePolicy {
         initialPageIndex: Int,
         adjacentPrefetch: Boolean,
         adjacentPrefetchReleased: Boolean,
+        forwardResume: Boolean = false,
     ): Boolean {
         require(pageCount > 0)
         require(pageIndex in 0 until pageCount)
         require(initialPageIndex in 0 until pageCount)
+        if (forwardResume && pageIndex < initialPageIndex) return false
         if (!adjacentPrefetch) return true
         if (pageIndex < initialPageIndex) return false
         return adjacentPrefetchReleased || pageIndex < minOf(
@@ -1382,6 +1396,7 @@ internal class NtkStrictSourceSession(
     private var metadataAllAtMs = 0L
     private var metadataPublishedCount = 0
     private var bodyPublishedCount = 0
+    private var forwardResumeReadyLogged = false
     private val wifiWebtoonAdaptiveLanes =
         if (NtkWifiWebtoonAdaptiveLaneState.isEligible(
                 episodePath = planBinding.episodePath,
@@ -1652,6 +1667,7 @@ internal class NtkStrictSourceSession(
             initialPageIndex = initialPageIndex,
             adjacentPrefetch = adjacentPrefetch,
             adjacentPrefetchReleased = adjacentPrefetchReleased,
+            forwardResume = rollingAdmission && initialPageIndex > 0,
         )
 
     private fun startReleasedAdjacentRoutePreparationsActor() {
@@ -3501,6 +3517,18 @@ internal class NtkStrictSourceSession(
             }
         }
         sealPrimaryAdmissionsWhenMetadataComplete()
+        if (rollingAdmission && initialPageIndex > 0 && !forwardResumeReadyLogged &&
+            (initialPageIndex until pages.size).all { pages[it].bodyEvent != null }
+        ) {
+            forwardResumeReadyLogged = true
+            logSourceEvent(
+                "reader_strip_source_forward_ready",
+                "initialPage=$initialPageIndex,forwardExpected=${pages.size - initialPageIndex}," +
+                    "forwardSucceeded=${pages.count { it.pageIndex >= initialPageIndex && it.bodyEvent != null }}," +
+                    "beforeAnchorBodies=${pages.count { it.pageIndex < initialPageIndex && it.bodyEvent != null }}," +
+                    "pageCount=${pages.size}"
+            )
+        }
         if (bodyPublishedCount == pages.size) {
             LogReady.log(this, metadata.manifestDigest, pages.size)
         }

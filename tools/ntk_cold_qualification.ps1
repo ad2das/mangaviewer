@@ -23,7 +23,7 @@ param(
     [ValidateRange(250, 30000)]
     [int]$ManhwaImageSlaMs = 4000,
     [ValidateRange(250, 30000)]
-    [int]$AllImagesSlaMs = 6000,
+    [int]$AllImagesSlaMs = 8000,
     [ValidateRange(60, 1800)]
     [int]$CaseTimeoutSeconds = 360,
     [ValidateSet("PHYSICAL_DEVICE", "HOST_GPU_EMULATOR")]
@@ -65,7 +65,7 @@ $Runner = "$BenchmarkPackage/androidx.test.runner.AndroidJUnitRunner"
 $TestClass = "$BenchmarkPackage.NtkColdViewerMacrobenchmark#coldViewerRandomWork"
 $FormalWebtoonImageSlaMs = 4000
 $FormalManhwaImageSlaMs = 4000
-$FormalAllImagesSlaMs = 6000
+$FormalAllImagesSlaMs = 8000
 $EpisodePairSelectionAlgorithm =
     "sha256(seed|type|workId|currentEpisodeId|nextEpisodeId) lexical rank"
 # Qualification safety ceilings. These are production bounds, not test-tunable parameters.

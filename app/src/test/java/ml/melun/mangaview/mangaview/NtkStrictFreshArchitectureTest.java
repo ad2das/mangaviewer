@@ -530,10 +530,11 @@ public final class NtkStrictFreshArchitectureTest {
                 "fun observeQuarantineAssetEvidence(");
         int existingEntry = begin.indexOf("val current = entries[path]");
         int existingLeaseReturn = begin.indexOf("return@synchronized current.lease");
-        int admissionChoice = begin.indexOf("val initialPage = if (rollingAdmission) 0");
+        int admissionChoice = begin.indexOf("val initialPage = if (rollingAdmission)");
         assertTrue(existingEntry >= 0);
         assertTrue(existingLeaseReturn > existingEntry);
         assertTrue(admissionChoice > existingLeaseReturn);
+        assertTrue(begin.contains("rollingInitialPageIndexHint.coerceAtLeast(0)"));
     }
 
     @Test
@@ -870,8 +871,8 @@ public final class NtkStrictFreshArchitectureTest {
                 "private fun failStrictExactColdSession(");
 
         assertTrue(strictStart.contains("requestedStartPage()"));
-        assertTrue(strictStart.contains(
-                "StrictRollingAdmission.initial(launchSeal.pageCount, installedSource)"));
+        assertTrue(strictStart.contains("StrictRollingAdmission.initial("));
+        assertTrue(strictStart.contains("strictForwardSourceFloor"));
         assertTrue(strictStart.contains("currentViewportAnchor.set(installed)"));
         assertTrue(strictStart.contains("anchor = sourceIndex == installedSource"));
         assertFalse(strictStart.contains(

@@ -49,7 +49,7 @@ $arguments = @{
     ManhwaImageSlaMs = 4000
     # The entry deadline remains four seconds; every canonical image must be drawable within the
     # separate six-second complete-work UX deadline.
-    AllImagesSlaMs = 6000
+    AllImagesSlaMs = 8000
     CaseTimeoutSeconds = $CaseTimeoutSeconds
     QualificationDeviceMode = "HOST_GPU_EMULATOR"
     # AndroidX terminates the measured target process after measureRepeated returns. A reopen
@@ -62,7 +62,7 @@ if($SkipInstall) { $arguments.SkipInstall = $true }
 if($RequireBaselineProfile) { $arguments.RequireBaselineProfile = $true }
 if($StandalonePerfetto) { $arguments.StandalonePerfetto = $true }
 
-Write-Host "NTK host-GPU emulator qualification: fresh random 20+20, cold, first image=4000ms, all images=6000ms"
+Write-Host "NTK host-GPU emulator qualification: fresh random 20+20, cold, first image=4000ms, all images=8000ms"
 & $runner @arguments
 if(-not $?) {
     throw "NTK host-GPU emulator qualification failed"

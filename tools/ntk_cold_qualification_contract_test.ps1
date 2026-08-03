@@ -74,12 +74,12 @@ function Assert-HostSourceContains([string]$Needle) {
 Assert-FinalSourceContains 'if($Seed -ne 0L)'
 Assert-FinalSourceContains 'Canonical final qualification requires Seed=0'
 Assert-FinalSourceContains 'CountPerType = 20'
-Assert-FinalSourceContains 'AllImagesSlaMs = 6000'
+Assert-FinalSourceContains 'AllImagesSlaMs = 8000'
 Assert-HostSourceContains 'if($Seed -ne 0L)'
 Assert-HostSourceContains 'CountPerType = 20'
 Assert-HostSourceContains 'FirstImageSlaMs = 4000'
 Assert-HostSourceContains 'ManhwaImageSlaMs = 4000'
-Assert-HostSourceContains 'AllImagesSlaMs = 6000'
+Assert-HostSourceContains 'AllImagesSlaMs = 8000'
 Assert-HostSourceContains 'QualificationDeviceMode = "HOST_GPU_EMULATOR"'
 Assert-HostSourceContains 'IncludeWarmReopen = $false'
 Assert-SourceContains 'Set-HostGpuEmulatorNotificationIsolation'
@@ -376,8 +376,8 @@ if([int]$formalPassContract.expectedWebtoon.const -ne 20 -or
         [int]$formalPassContract.expectedManhwa.const -ne 20 -or
         [int]$formalPassContract.completedCases.const -ne 40 -or
         [int]$formalPassContract.passedCases.const -ne 40 -or
-        [int]$formalPassContract.allImagesSlaMs.const -ne 6000) {
-    throw "Formal result schema is not fixed to random 20+20 and the 6000ms all-images SLA"
+        [int]$formalPassContract.allImagesSlaMs.const -ne 8000) {
+    throw "Formal result schema is not fixed to random 20+20 and the 8000ms all-images SLA"
 }
 $passedCaseRequired = @($schema.'$defs'.case.allOf[0].then.required)
 $passedCaseProperties = $schema.'$defs'.case.allOf[0].then.properties

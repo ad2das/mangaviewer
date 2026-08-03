@@ -98,13 +98,20 @@ public class ReaderPipelinePolicyTest {
 
     @Test
     public void rollingAdmissionUsesRestoredPageAsInitialVisibleAnchor() {
-        StrictRollingAdmission restored = StrictRollingAdmission.initial(112, 67);
+        StrictRollingAdmission restored = StrictRollingAdmission.initial(112, 67, 67);
 
         assertEquals(67, restored.getVisibleFirstDisplay());
         assertEquals(67, restored.getVisibleLastDisplay());
-        assertTrue(restored.admitsSource(0));
+        assertEquals(67, restored.getAllowedFirstSource());
+        assertFalse(restored.admitsSource(0));
         assertTrue(restored.admitsSource(67));
         assertTrue(restored.admitsSource(111));
+
+        StrictRollingAdmission committed = StrictRollingAdmission.update(
+                restored, 112, 67, 69, 67, 69, 1, true);
+        assertEquals(67, committed.getAllowedFirstSource());
+        assertFalse(committed.admitsSource(66));
+        assertTrue(committed.admitsSource(111));
     }
 
     @Test

@@ -19,6 +19,39 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun forwardResumeNeverPreparesRoutesBehindTheSavedSourceFloor() {
+        assertFalse(
+            NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+                pageIndex = 66,
+                pageCount = 112,
+                initialPageIndex = 67,
+                adjacentPrefetch = false,
+                adjacentPrefetchReleased = false,
+                forwardResume = true,
+            )
+        )
+        assertTrue(
+            NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+                pageIndex = 67,
+                pageCount = 112,
+                initialPageIndex = 67,
+                adjacentPrefetch = false,
+                adjacentPrefetchReleased = false,
+                forwardResume = true,
+            )
+        )
+        assertTrue(
+            NtkStrictInitialWavePolicy.isRoutePreparationAdmitted(
+                pageIndex = 0,
+                pageCount = 112,
+                initialPageIndex = 67,
+                adjacentPrefetch = false,
+                adjacentPrefetchReleased = false,
+            )
+        )
+    }
+
+    @Test
     fun initialWaveProofUsesReachablePerRouteCapacity() {
         assertEquals(
             27,
@@ -391,6 +424,14 @@ class NtkStrictInitialWavePolicyTest {
         assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(3))
         assertEquals(48, NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(124))
         assertEquals(
+            60,
+            NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
+                publishedBodyCount = 1,
+                episodePageCount = 91,
+                webtoonConnectionShardCount = 16,
+            ),
+        )
+        assertEquals(
             64,
             NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
                 publishedBodyCount = 1,
@@ -402,7 +443,7 @@ class NtkStrictInitialWavePolicyTest {
             48,
             NtkStrictInitialWavePolicy.webtoonWifiPostAnchorBodyTransfers(
                 publishedBodyCount = 1,
-                episodePageCount = 179,
+                episodePageCount = 79,
                 webtoonConnectionShardCount = 16,
             ),
         )

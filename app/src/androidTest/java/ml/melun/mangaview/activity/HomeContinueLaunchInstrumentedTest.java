@@ -17,6 +17,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.util.Collection;
+import java.util.ArrayList;
 
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.MainApplication;
@@ -29,9 +30,76 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 @RunWith(AndroidJUnit4.class)
 public class HomeContinueLaunchInstrumentedTest {
+    @Test
+    public void directWifiResumeFinishesOnlyTheForwardTailBeforePreparingTheNextRunway() {
+        Context context = ApplicationProvider.getApplicationContext();
+        Title title = new Title(
+                "Resume forward live regression",
+                "",
+                "",
+                null,
+                "",
+                844541,
+                MTitle.base_webtoon);
+        title.setSourceSite("ntk");
+        title.setPath("/webtoon/844541");
+
+        Manga next = new Manga(1039948, "104화", "", MTitle.base_webtoon);
+        next.setTitle(title);
+        next.setTitleId(title.getId());
+        next.setNtkEpisodePath("/webtoon/844541/1039948");
+        Manga current = new Manga(1039946, "103화", "", MTitle.base_webtoon);
+        current.setTitle(title);
+        current.setTitleId(title.getId());
+        current.setNtkEpisodePath("/webtoon/844541/1039946");
+        ArrayList<Manga> episodes = new ArrayList<>();
+        episodes.add(next);
+        episodes.add(current);
+        title.setEps(episodes);
+        current.setEps(episodes);
+        next.setEps(episodes);
+
+        int resumePage = 60;
+        MainApplication.p.setViewerBookmark(current, resumePage, -420, 0);
+        long launchStartedAtMs = SystemClock.elapsedRealtime();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(
+                () -> Utils.openContinueViewer(context, current, -1));
+
+        ReaderV2Activity reader = waitForReader(10000L);
+        try {
+            assertNotNull(reader);
+            assertEquals(resumePage, waitForSessionStartPage(reader, 20000L));
+            assertEquals(resumePage, reader.testStrictForwardReadyFirstPage());
+            assertTrue("First resumed image exceeded 4 seconds",
+                    waitForFirstDrawable(reader, launchStartedAtMs + 4000L));
+            assertTrue("Saved source through the current tail did not finish within 8 seconds",
+                    waitForForwardReady(reader, launchStartedAtMs + 8000L));
+            assertTrue("The next exact episode did not have its complete four-page runway ready",
+                    waitForAdjacentRunway(reader, next, 15000L));
+
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            int width = device.getDisplayWidth();
+            int height = device.getDisplayHeight();
+            long traversalDeadline = SystemClock.elapsedRealtime() + 15000L;
+            while(SystemClock.elapsedRealtime() < traversalDeadline
+                    && !"/webtoon/844541/1039948".equals(reader.testCurrentNtkEpisodePath())) {
+                device.swipe(width / 2, height * 4 / 5, width / 2, height / 5, 6);
+                SystemClock.sleep(40L);
+            }
+            assertEquals("The prepared next episode did not attach during continuous forward input",
+                    "/webtoon/844541/1039948", reader.testCurrentNtkEpisodePath());
+            assertTrue(reader.testHasReadyEpisodeRunway(next, 4));
+        } finally {
+            if(reader != null) {
+                InstrumentationRegistry.getInstrumentation().runOnMainSync(reader::finish);
+            }
+        }
+    }
+
     @Test
     public void exactNtkHomeContinueLaunchesReaderWithoutPreparedImageKey() {
         Context context = ApplicationProvider.getApplicationContext();
@@ -111,6 +179,35 @@ public class HomeContinueLaunchInstrumentedTest {
             SystemClock.sleep(100L);
         }
         return -1;
+    }
+
+    private static boolean waitForFirstDrawable(ReaderV2Activity reader, long deadlineMs) {
+        while(SystemClock.elapsedRealtime() < deadlineMs) {
+            if(reader.testFirstResumePhysicalDrawProof() != null) return true;
+            SystemClock.sleep(25L);
+        }
+        return false;
+    }
+
+    private static boolean waitForForwardReady(ReaderV2Activity reader, long deadlineMs) {
+        while(SystemClock.elapsedRealtime() < deadlineMs) {
+            if(reader.testStrictForwardReadyPublished()) return true;
+            SystemClock.sleep(25L);
+        }
+        return false;
+    }
+
+    private static boolean waitForAdjacentRunway(
+            ReaderV2Activity reader,
+            Manga next,
+            long timeoutMs
+    ) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        while(SystemClock.elapsedRealtime() < deadline) {
+            if(reader.testHasReadyEpisodeRunway(next, 4)) return true;
+            SystemClock.sleep(25L);
+        }
+        return false;
     }
 
     private static ReaderV2Activity waitForReader(long timeoutMs) {

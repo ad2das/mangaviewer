@@ -103,16 +103,21 @@ data class StrictRollingAdmission(
     companion object {
         @JvmStatic
         @JvmOverloads
-        fun initial(pageCount: Int, initialDisplay: Int = 0): StrictRollingAdmission {
+        fun initial(
+            pageCount: Int,
+            initialDisplay: Int = 0,
+            initialSource: Int = 0,
+        ): StrictRollingAdmission {
             require(pageCount > 0)
             val anchor = initialDisplay.coerceIn(0, pageCount - 1)
+            val sourceFloor = initialSource.coerceIn(0, pageCount - 1)
             return StrictRollingAdmission(
                 epoch = 0L,
                 physicalDrawPresented = false,
                 visibleFirstDisplay = anchor,
                 visibleLastDisplay = anchor,
                 direction = 1,
-                allowedFirstSource = 0,
+                allowedFirstSource = sourceFloor,
                 allowedLastSource = pageCount - 1
             )
         }
@@ -132,10 +137,10 @@ data class StrictRollingAdmission(
             // The product's dominant reader UX is a single continuous traversal toward later
             // pages. Direction changes never reserve or move capacity behind the viewport.
             val safeDirection = 1
+            val sourceFloor = previous.allowedFirstSource.coerceIn(0, pageCount - 1)
             val candidate = if (!physicalDrawPresented) {
-                initial(pageCount).copy(
-                    visibleFirstDisplay = 0,
-                    visibleLastDisplay = 0
+                initial(pageCount, previous.visibleFirstDisplay, sourceFloor).copy(
+                    visibleLastDisplay = previous.visibleLastDisplay
                 )
             } else {
                 StrictRollingAdmission(
@@ -144,7 +149,7 @@ data class StrictRollingAdmission(
                     visibleFirstDisplay = visibleFirstDisplay,
                     visibleLastDisplay = visibleLastDisplay,
                     direction = safeDirection,
-                    allowedFirstSource = 0,
+                    allowedFirstSource = sourceFloor,
                     allowedLastSource = pageCount - 1
                 )
             }

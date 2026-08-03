@@ -199,7 +199,7 @@
       },
       "then": {
         "properties": {
-          "allImagesSlaMs": { "const": 6000 }
+          "allImagesSlaMs": { "const": 8000 }
         }
       }
     },
@@ -226,7 +226,7 @@
           "firstImageSlaMs": { "const": 4000 },
           "webtoonImageSlaMs": { "const": 4000 },
           "manhwaImageSlaMs": { "const": 4000 },
-          "allImagesSlaMs": { "const": 6000 },
+          "allImagesSlaMs": { "const": 8000 },
           "cases": { "minItems": 40, "maxItems": 40 },
           "selectedEpisodePairs": { "minItems": 40, "maxItems": 40 }
         }

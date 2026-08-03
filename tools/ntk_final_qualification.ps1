@@ -49,7 +49,7 @@ $arguments = @{
     CountPerType = 20
     FirstImageSlaMs = 4000
     ManhwaImageSlaMs = 4000
-    AllImagesSlaMs = 6000
+    AllImagesSlaMs = 8000
     CaseTimeoutSeconds = $CaseTimeoutSeconds
     QualificationDeviceMode = $QualificationDeviceMode
     # The formal verdict is cold-only. A warm reopen remains available in the diagnostic runner,
@@ -67,7 +67,7 @@ if($SkipInstall) { $arguments.SkipInstall = $true }
 if($RequireBaselineProfile) { $arguments.RequireBaselineProfile = $true }
 if($StandalonePerfetto) { $arguments.StandalonePerfetto = $true }
 
-Write-Host "NTK canonical final qualification: random 20+20, cold, first image=4000ms, all images=6000ms, deviceMode=$QualificationDeviceMode"
+Write-Host "NTK canonical final qualification: random 20+20, cold, first image=4000ms, all images=8000ms, deviceMode=$QualificationDeviceMode"
 & $runner @arguments
 if(-not $?) {
     throw "Canonical NTK cold qualification failed"

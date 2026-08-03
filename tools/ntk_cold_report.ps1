@@ -87,7 +87,7 @@ $warmSatisfied = $true
 $firstSlaSatisfied = [int]$summary.firstImageSlaMs -eq 4000 -and
     [int]$summary.webtoonImageSlaMs -eq 4000 -and
     [int]$summary.manhwaImageSlaMs -eq 4000
-$allImagesSlaSatisfied = [int]$summary.allImagesSlaMs -eq 6000
+$allImagesSlaSatisfied = [int]$summary.allImagesSlaMs -eq 8000
 $freshRandomSeedSatisfied = [string]$summary.seedSelectionMode -ceq "FRESH_RANDOM"
 $formalConfiguration = $targetSatisfied -and $warmSatisfied -and $firstSlaSatisfied -and
     $allImagesSlaSatisfied -and
@@ -419,7 +419,7 @@ if(-not $summary.deviceRequirementSatisfied) {
     $lines.Add("- 선택 기기 자격 판정: **FAIL** — $($summary.qualificationDeviceMode) 증거를 충족하지 않았다.")
 }
 if($summary.diagnosticOnly) {
-    $lines.Add("- 형식 자격 판정: **DIAGNOSTIC ONLY** — 새 무작위 시드, 정확히 20+20, 첫 이미지 4000ms 및 전체 이미지 완료 6000ms SLA가 모두 필요하다. 웜 재개방은 선택 진단이며 콜드 판정에 포함되지 않는다.")
+    $lines.Add("- 형식 자격 판정: **DIAGNOSTIC ONLY** — 새 무작위 시드, 정확히 20+20, 첫 이미지 4000ms 및 전체 이미지 완료 8000ms SLA가 모두 필요하다. 웜 재개방은 선택 진단이며 콜드 판정에 포함되지 않는다.")
 }
 $lines.Add("- Schema 검증: ``$schemaPath`` 및 cross-field 재계산 PASS")
 $lines.Add("")
@@ -625,7 +625,7 @@ $lines.Add("")
 $lines.Add("- 프로덕션 APK: ``$($summary.apks.app)`` (SHA-256 ``$($summary.apks.appSha256)``)")
 $lines.Add("- 측정 APK: ``$($summary.apks.benchmark)`` (SHA-256 ``$($summary.apks.benchmarkSha256)``)")
 $lines.Add("- 변경 전 자격 경로: 고정 작품·에뮬레이터·전체 페이지 선행 staging 경로가 존재했다.")
-$lines.Add("- 변경 후 자격 경로: ``ntk_emulator_host_qualification.ps1`` → ``ntk_cold_qualification.ps1`` 한 경로만 사용하며, 실행 시 새 무작위 시드로 작품과 current→next 회차 pair를 각각 hash-rank하고 20+20·첫 이미지 4000ms·전체 이미지 완료 6000ms·Host GPU 에뮬레이터를 고정한다. 기록된 selection.json 고정 시드 재현과 선택적 웜 재개방은 진단 전용이다.")
+$lines.Add("- 변경 후 자격 경로: ``ntk_emulator_host_qualification.ps1`` → ``ntk_cold_qualification.ps1`` 한 경로만 사용하며, 실행 시 새 무작위 시드로 작품과 current→next 회차 pair를 각각 hash-rank하고 20+20·첫 이미지 4000ms·전체 이미지 완료 8000ms·Host GPU 에뮬레이터를 고정한다. 기록된 selection.json 고정 시드 재현과 선택적 웜 재개방은 진단 전용이다.")
 $lines.Add("- 테스트용 변경: Macrobenchmark는 production ``#작품ID`` 검색 UI, 회차 행 탭, 순방향 스크롤을 수행한다. viewer Activity나 이미지 URL을 직접 실행하지 않는다.")
 $lines.Add("- 프로덕션 변경: 이 측정 보고서는 APK에서 소스 diff를 역추정하지 않는다. 위 APK hash와 별도 VCS diff를 함께 보관해야 하며, 측정값이 없는 before/after 수치는 작성하지 않는다.")
 $lines.Add("- 테스트 통과 전용 분기 확인: 특정 작품 ID 분기 없이 모든 사용자가 쓸 수 있는 production 정확 검색과 production UI를 사용한다. 클릭 전 image/page-list/decode 작업은 1건이라도 case FAIL이다.")

@@ -158,12 +158,17 @@ internal object NtkCompletedForwardEpisodePolicy {
         authoritativeCount: Int,
         sourceIndexes: List<Int>,
         drawableReady: List<Boolean>,
+        requiredFirstSource: Int = 0,
     ): Boolean {
         if (authoritativeCount <= 0 || sourceIndexes.isEmpty()) return false
-        if (sourceIndexes.size != drawableReady.size || drawableReady.any { !it }) return false
+        if (requiredFirstSource !in 0 until authoritativeCount) return false
+        if (sourceIndexes.size != drawableReady.size) return false
         // Auto-cut can expose both display halves of one exact source image. Both halves must be
         // drawable, but canonical completeness is the ordered distinct source coverage.
-        return sourceIndexes.distinct() == (0 until authoritativeCount).toList()
+        if (sourceIndexes.distinct() != (0 until authoritativeCount).toList()) return false
+        return sourceIndexes.indices.all { index ->
+            sourceIndexes[index] < requiredFirstSource || drawableReady[index]
+        }
     }
 }
 
@@ -189,6 +194,19 @@ class ReaderSession(
     private val strictExactLaunchSeal: StrictExactLaunchSeal? = null
 ) {
     private val strictExactColdRolling: Boolean = strictExactLaunchSeal != null
+    private val strictForwardSourceFloor: Int = strictExactLaunchSeal?.let { seal ->
+        val client = MainApplication.getHttpClient()
+        val directWifi = runCatching {
+            client.isNtkWifiTransportActive() &&
+                !client.isNtkCellularResilientTransportActive()
+        }.getOrDefault(false)
+        if (directWifi && !startAtFirstPage) {
+            NtkSourceSpoolRegistry.currentInitialPageIndex(seal.normalizedEpisodePath)
+                .coerceIn(0, seal.pageCount - 1)
+        } else {
+            0
+        }
+    } ?: 0
     private val initialNtkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
     private val strictExactForegroundViewerGenerationAtCreation: Long = run {
         val generation = ViewerTelemetry.activeGeneration()
@@ -1263,13 +1281,17 @@ class ReaderSession(
             pages.getOrNull(installed)?.sourceIndex
         } ?: installed
         currentViewportAnchor.set(installed)
-        val initialAdmission = StrictRollingAdmission.initial(launchSeal.pageCount, installedSource)
+        val initialAdmission = StrictRollingAdmission.initial(
+            launchSeal.pageCount,
+            installedSource,
+            strictForwardSourceFloor,
+        )
         strictRollingAdmission.set(initialAdmission)
         // The product contract for this sealed episode is full-episode readiness, and the epoch-0
         // admission already owns every canonical source. Make that same immutable range physically
         // installable before the first body can finish; otherwise early offscreen originals are
         // parked in a primed backlog and decoded again only when scrolling reaches them.
-        physicalDeliveryFirstPage = 0
+        physicalDeliveryFirstPage = installed
         physicalDeliveryLastPage = synchronized(pagesLock) { pages.lastIndex }
 
         val residentBinding = try {
@@ -1679,7 +1701,7 @@ class ReaderSession(
                     .distinct()
             }
         } else {
-            listOf(0)
+            listOf(admission.allowedFirstSource)
         }
         val hard = visibleSources.ifEmpty { listOf(admission.allowedFirstSource) }
         val soft = admitted.filterNot(hard::contains).let { values ->
@@ -7385,7 +7407,11 @@ class ReaderSession(
         if (strictExactColdRolling) {
             strictRollingAdmission.compareAndSet(
                 null,
-                StrictRollingAdmission.initial(refs.size, startPage)
+                StrictRollingAdmission.initial(
+                    refs.size,
+                    startPage,
+                    strictForwardSourceFloor,
+                )
             )
         }
         if (isNtkSource(target, title)) {
@@ -10147,7 +10173,10 @@ class ReaderSession(
         }
         if (visibleSources.isEmpty()) return
         val previous = strictRollingAdmission.get()
-            ?: StrictRollingAdmission.initial(launchSeal.pageCount)
+            ?: StrictRollingAdmission.initial(
+                launchSeal.pageCount,
+                initialSource = strictForwardSourceFloor,
+            )
         val admission = StrictRollingAdmission.update(
             previous,
             launchSeal.pageCount,
@@ -12688,6 +12717,7 @@ class ReaderSession(
             AdjacentCurrentCompletionSnapshot(
                 boundedAnchor = boundedAnchor,
                 differentEpisode = differentEpisode,
+                episode = source,
                 authoritativeCount = authoritativeCount,
                 sourceRefs = sourceRefs,
             )
@@ -12709,6 +12739,10 @@ class ReaderSession(
             authoritativeCount = snapshot.authoritativeCount,
             sourceIndexes = sourceIndexes,
             drawableReady = drawableReady,
+            requiredFirstSource = requiredForwardFirstSource(
+                snapshot.episode,
+                snapshot.authoritativeCount,
+            ),
         )
         if (enforceFullCurrentEpisode) {
             return snapshot.differentEpisode &&
@@ -12734,9 +12768,17 @@ class ReaderSession(
     private data class AdjacentCurrentCompletionSnapshot(
         val boundedAnchor: Int,
         val differentEpisode: Boolean,
+        val episode: Manga,
         val authoritativeCount: Int,
         val sourceRefs: List<IndexedValue<PageRef>>,
     )
+
+    private fun requiredForwardFirstSource(source: Manga, authoritativeCount: Int): Int {
+        if (strictForwardSourceFloor <= 0 || authoritativeCount <= 0 ||
+            !looseSameEpisodeForAppend(source, manga)
+        ) return 0
+        return strictForwardSourceFloor.coerceIn(0, authoritativeCount - 1)
+    }
 
     private fun isNtkContinuousAdjacentCompletionPolicyActive(): Boolean {
         return MainApplication.getHttpClient().isNtk
@@ -12770,6 +12812,7 @@ class ReaderSession(
             drawableReady = snapshot.first.map { (index, page) ->
                 hasListenerDrawableDelivery(index, page) || hasDeliveredBitmap(index)
             },
+            requiredFirstSource = requiredForwardFirstSource(source, snapshot.second),
         )
     }
 
@@ -28661,6 +28704,10 @@ class ReaderSession(
             drawableReady = snapshot.refs.map { (index, ref) ->
                 hasListenerDrawableDelivery(index, ref) || hasDeliveredBitmap(index)
             },
+            requiredFirstSource = requiredForwardFirstSource(
+                snapshot.episode,
+                snapshot.authoritativeCount,
+            ),
         )
         if (!complete) return
         if (hasForwardNtkEpisodeAfterSource(snapshot.episode)) return

@@ -104,6 +104,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val adjacentPredecessorGate: Boolean,
         val directWifiAdjacentBodyGate: Boolean,
         val rollingAdmission: Boolean,
+        val initialPageIndexHint: Int,
         val completedRouteRecoveryAttempts: Int,
     ) {
         val retirement = NtkStrictDiscoveryRetirementFence(
@@ -156,6 +157,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             client,
             manga,
             rollingAdmission = false,
+            initialPageIndexHint = 0,
             completedRouteRecoveryAttempts = 0,
             viewerOwnerEpisodePath = null,
             adjacentPredecessorEpisodePath = null,
@@ -164,11 +166,17 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     /** Exact cold-reader discovery whose physical image body admission starts at source 0/1. */
     @JvmStatic
-    fun startColdRolling(client: CustomHttpClient?, manga: Manga?): Boolean {
+    @JvmOverloads
+    fun startColdRolling(
+        client: CustomHttpClient?,
+        manga: Manga?,
+        initialPageIndexHint: Int = 0,
+    ): Boolean {
         return startInternal(
             client,
             manga,
             rollingAdmission = true,
+            initialPageIndexHint = initialPageIndexHint,
             completedRouteRecoveryAttempts = 0,
             viewerOwnerEpisodePath = null,
             adjacentPredecessorEpisodePath = null,
@@ -191,6 +199,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             client,
             manga,
             rollingAdmission = true,
+            initialPageIndexHint = 0,
             completedRouteRecoveryAttempts = 0,
             viewerOwnerEpisodePath = viewerOwnerEpisodePath,
             adjacentPredecessorEpisodePath = adjacentPredecessorEpisodePath,
@@ -201,6 +210,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         client: CustomHttpClient?,
         manga: Manga?,
         rollingAdmission: Boolean,
+        initialPageIndexHint: Int,
         completedRouteRecoveryAttempts: Int,
         viewerOwnerEpisodePath: String?,
         adjacentPredecessorEpisodePath: String?,
@@ -236,7 +246,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 flights[path] != null
             ) return false
             val lease = if (rollingAdmission) {
-                NtkSourceSpoolRegistry.beginColdRollingDiscovery(client.context, manga)
+                NtkSourceSpoolRegistry.beginColdRollingDiscovery(
+                    client.context,
+                    manga,
+                    initialPageIndexHint,
+                )
             } else {
                 NtkSourceSpoolRegistry.beginDiscovery(client.context, manga)
             } ?: return false
@@ -251,6 +265,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 adjacentPredecessorGate,
                 directWifiAdjacentBodyGate,
                 rollingAdmission,
+                initialPageIndexHint,
                 completedRouteRecoveryAttempts,
             ).also {
                 flights[path] = it
@@ -1515,6 +1530,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             client,
             manga,
             failedFlight.rollingAdmission,
+            failedFlight.initialPageIndexHint,
             failedFlight.completedRouteRecoveryAttempts + 1,
             failedFlight.viewerOwnerEpisodePath,
             failedFlight.adjacentPredecessorEpisodePath,

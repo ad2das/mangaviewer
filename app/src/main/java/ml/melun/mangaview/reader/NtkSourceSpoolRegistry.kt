@@ -395,14 +395,25 @@ object NtkSourceSpoolRegistry {
     }
 
     @JvmStatic
-    fun beginColdRollingDiscovery(context: Context?, manga: Manga?): NtkDiscoveryLease? {
-        return beginDiscoveryInternal(context, manga, rollingAdmission = true)
+    @JvmOverloads
+    fun beginColdRollingDiscovery(
+        context: Context?,
+        manga: Manga?,
+        initialPageIndexHint: Int = 0,
+    ): NtkDiscoveryLease? {
+        return beginDiscoveryInternal(
+            context,
+            manga,
+            rollingAdmission = true,
+            rollingInitialPageIndexHint = initialPageIndexHint,
+        )
     }
 
     private fun beginDiscoveryInternal(
         context: Context?,
         manga: Manga?,
-        rollingAdmission: Boolean
+        rollingAdmission: Boolean,
+        rollingInitialPageIndexHint: Int = 0,
     ): NtkDiscoveryLease? {
         if (context == null || manga == null) return null
         val path = normalizedPath(manga.ntkEpisodePath) ?: return null
@@ -422,7 +433,11 @@ object NtkSourceSpoolRegistry {
                 path,
                 NtkDiscoveryGeneration(generationSequence.getAndIncrement())
             )
-            val initialPage = if (rollingAdmission) 0 else deriveInitialPageIndex(appContext, manga)
+            val initialPage = if (rollingAdmission) {
+                rollingInitialPageIndexHint.coerceAtLeast(0)
+            } else {
+                deriveInitialPageIndex(appContext, manga)
+            }
             val entry = Entry(appContext, manga, lease, initialPage, rollingAdmission)
             val bootstrapStartedAt = SystemClock.elapsedRealtime()
             entry.executionBootstrapFuture = CompletableFuture.supplyAsync({
@@ -1487,6 +1502,13 @@ object NtkSourceSpoolRegistry {
         normalizedPath(path)?.let { key ->
             synchronized(mutationLock(key)) { entries[key]?.authoritative }
         }
+
+    /** Immutable source floor captured when the active discovery generation was created. */
+    @JvmStatic
+    fun currentInitialPageIndex(path: String?): Int =
+        normalizedPath(path)?.let { key ->
+            synchronized(mutationLock(key)) { entries[key]?.initialPageIndexHint ?: 0 }
+        } ?: 0
 
     private fun isCurrentPlanPublication(
         lease: NtkDiscoveryLease,

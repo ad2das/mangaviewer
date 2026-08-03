@@ -69,4 +69,41 @@ class NtkCompletedForwardEpisodePolicyTest {
             )
         )
     }
+
+    @Test
+    fun resumedEpisodeRequiresOnlyCanonicalSourcesAtAndAfterTheSavedFloorToBeDrawable() {
+        val canonical = (0 until 8).toList()
+        assertTrue(
+            NtkCompletedForwardEpisodePolicy.isComplete(
+                authoritativeCount = 8,
+                sourceIndexes = canonical,
+                drawableReady = listOf(false, false, false, false, false, true, true, true),
+                requiredFirstSource = 5,
+            )
+        )
+        assertFalse(
+            NtkCompletedForwardEpisodePolicy.isComplete(
+                authoritativeCount = 8,
+                sourceIndexes = canonical,
+                drawableReady = listOf(false, false, false, false, false, true, false, true),
+                requiredFirstSource = 5,
+            )
+        )
+        assertFalse(
+            NtkCompletedForwardEpisodePolicy.isComplete(
+                authoritativeCount = 8,
+                sourceIndexes = listOf(0, 1, 2, 3, 5, 6, 7),
+                drawableReady = List(7) { true },
+                requiredFirstSource = 5,
+            )
+        )
+        assertFalse(
+            NtkCompletedForwardEpisodePolicy.isComplete(
+                authoritativeCount = 8,
+                sourceIndexes = canonical,
+                drawableReady = List(8) { true },
+                requiredFirstSource = 8,
+            )
+        )
+    }
 }

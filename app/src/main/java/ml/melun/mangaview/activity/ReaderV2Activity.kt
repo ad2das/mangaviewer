@@ -154,6 +154,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val strictRenderReadyPages = LinkedHashSet<Int>()
     private var strictRenderReadyGeneration = -1
     @Volatile private var strictAllImagesReadyPublished = false
+    @Volatile private var strictForwardReadyFirstPage = 0
     @Volatile private var strictRollingHistoricalScene = false
     private val strictAuthoritativeInstallLock = Any()
     private val pendingStrictAuthoritativeInstalls = LinkedHashMap<Int, PendingStrictTileInstall>()
@@ -644,6 +645,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val ntkPath = manga.ntkEpisodePath?.trim().orEmpty()
         val strictNtkEpisode = isStrictNtkEpisodePath(ntkPath)
         val startAtFirstPage = intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
+        initialStartAtFirstPage = startAtFirstPage
         if (strictNtkEpisode) {
             strictTelemetryEpisodePath = NtkStripDigests.normalizeEpisodePath(ntkPath)
             val hasActiveTelemetry = ViewerTelemetry.hasActiveSession()
@@ -1508,6 +1510,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = -1
             strictAllImagesReadyPublished = false
+            strictForwardReadyFirstPage = 0
             strictRollingHistoricalScene = false
         }
         preparedSessionBuildTask?.cancel()
@@ -2790,14 +2793,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         seal: StrictExactLaunchSeal,
         index: Int
     ) {
+        val requiredFirstPage = strictForwardReadyFirstPage.coerceIn(0, seal.pageCount - 1)
+        val requiredPageCount = seal.pageCount - requiredFirstPage
         val state = synchronized(strictRenderReadyLock) {
             if (strictRenderReadyGeneration != generation || strictAllImagesReadyPublished) {
                 return@synchronized 0 to false
             }
             strictRenderReadyPages.add(index)
-            val count = strictRenderReadyPages.size
-            val complete = strictRenderReadyPages.size == seal.pageCount &&
-                (0 until seal.pageCount).all(strictRenderReadyPages::contains)
+            val count = strictRenderReadyPages.count { it in requiredFirstPage until seal.pageCount }
+            val complete = count == requiredPageCount &&
+                (requiredFirstPage until seal.pageCount).all(strictRenderReadyPages::contains)
             if (complete) strictAllImagesReadyPublished = true
             count to complete
         }
@@ -2808,7 +2813,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             Log.d(
                 "ViewerPerf",
                 "reader_authoritative_scene_progress generation=$generation," +
-                    "ready=$readyCount,pageCount=${seal.pageCount},page=$index,complete=$publish"
+                    "ready=$readyCount,requiredFirst=$requiredFirstPage," +
+                    "requiredCount=$requiredPageCount,pageCount=${seal.pageCount}," +
+                    "page=$index,complete=$publish"
             )
         }
         if (publish) {
@@ -2828,15 +2835,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             if (activeReaderSessionGeneration.get() != generation ||
                 strictExactLaunchSeal !== seal
             ) return@Runnable
+            val requiredFirstPage = strictForwardReadyFirstPage.coerceIn(0, seal.pageCount - 1)
+            val requiredPageCount = seal.pageCount - requiredFirstPage
             Log.d(
                 "ViewerPerf",
                 "reader_all_images_render_ready_progress generation=$generation," +
-                    "count=${seal.pageCount},pageCount=${seal.pageCount}," +
+                    "count=$requiredPageCount,requiredFirst=$requiredFirstPage," +
+                    "pageCount=${seal.pageCount}," +
                     "page=$lastInstalledPage,nativeRunwayQueued=true"
             )
             // Publish the contractual timestamp/event before any next-episode work, but keep the
             // expensive image/network summary and accessibility refresh off the critical edge.
-            ViewerTelemetry.markAllImagesRenderReady(seal.pageCount)
+            ViewerTelemetry.markAllImagesRenderReady(requiredPageCount)
             // [lastInstalledPage] is the exact authoritative page that completed this seal. A
             // synchronous native currentProgressPosition() read measured ~250 ms on the emulator;
             // it is needed for reading-position bookkeeping, not for identifying the completed
@@ -2850,9 +2860,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 renderView.currentProgressPosition()?.page ?: currentPage
             session?.noteForwardReadingPosition(completedAnchor)
             primeAdjacentLaunchWindow(currentTitle, cachedNextEpisode)
-            ViewerTelemetry.allImagesRenderReady(readerRoot ?: renderView, seal.pageCount)
+            if (requiredFirstPage > 0) {
+                Log.d(
+                    "ViewerPerf",
+                    "reader_resume_forward_render_ready path=${seal.normalizedEpisodePath}," +
+                        "requiredFirst=$requiredFirstPage,requiredCount=$requiredPageCount," +
+                        "pageCount=${seal.pageCount}"
+                )
+            }
+            ViewerTelemetry.allImagesRenderReady(readerRoot ?: renderView, requiredPageCount)
         }
-        val queued = if (strictRollingHistoricalScene) {
+        val queued = if (strictRollingHistoricalScene || strictForwardReadyFirstPage > 0) {
             renderView.queueResidentAuthoritativeTextureRunway(publishReady)
         } else {
             renderView.queueAllAuthoritativeOriginalTextures(seal.pageCount, publishReady)
@@ -2898,7 +2916,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 strictRenderReadyGeneration == activeReaderSessionGeneration.get()
         }
         return historicallyComplete &&
-            (strictRollingHistoricalScene ||
+            (strictForwardReadyFirstPage > 0 || strictRollingHistoricalScene ||
                 renderView.hasCompleteAuthoritativeOriginalScene(pageCount))
     }
 
@@ -3052,7 +3070,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     override fun onPageCleared(index: Int) {
         synchronized(strictRenderReadyLock) {
             strictRenderReadyPages.remove(index)
-            strictAllImagesReadyPublished = false
+            if (index >= strictForwardReadyFirstPage) {
+                strictAllImagesReadyPublished = false
+            }
         }
         if (pagesReady) renderView.clearPageBitmap(index)
     }
@@ -4818,6 +4838,20 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
     }
 
+    private fun rememberStrictForwardReadyFloor(seal: StrictExactLaunchSeal) {
+        val client = getHttpClient()
+        val directWifi = runCatching {
+            client.isNtkWifiTransportActive() &&
+                !client.isNtkCellularResilientTransportActive()
+        }.getOrDefault(false)
+        strictForwardReadyFirstPage = if (directWifi && !initialStartAtFirstPage) {
+            NtkSourceSpoolRegistry.currentInitialPageIndex(seal.normalizedEpisodePath)
+                .coerceIn(0, seal.pageCount - 1)
+        } else {
+            0
+        }
+    }
+
     private fun hasStrictDirectManifestAckAuthority(path: String): Boolean {
         val normalized = NtkStripDigests.normalizeEpisodePath(path)
         return normalized.isNotEmpty() && strictDirectManifestAckSkipPath == normalized
@@ -5974,6 +6008,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         activeReaderSessionGeneration.incrementAndGet()
         strictReaderSessionGeneration = -1
         strictExactLaunchSeal = null
+        strictForwardReadyFirstPage = 0
         strictDirectManifestAckSkipPath = ""
         strictNtkPendingSessionPath = ""
         strictNtkManifestSubscription?.close()
@@ -6612,7 +6647,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 predecessorPath,
             )
         } else {
-            NtkStrictEpisodeDiscoveryCoordinator.startColdRolling(getHttpClient(), manga)
+            val resumeFloor = strictDirectWifiResumeFloor(manga, path)
+            NtkStrictEpisodeDiscoveryCoordinator.startColdRolling(
+                getHttpClient(),
+                manga,
+                resumeFloor,
+            )
         }
         val joined = started ||
             NtkStrictEpisodeDiscoveryCoordinator.isInFlight(path) ||
@@ -6620,9 +6660,30 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(
             "ViewerPerf",
             "reader_ntk_strict_exact_discovery_ui path=$path,reason=$reason," +
-                "predecessor=$predecessorPath,started=$started,joined=$joined"
+                "predecessor=$predecessorPath,resumeFloor=${NtkSourceSpoolRegistry.currentInitialPageIndex(path)}," +
+                "started=$started,joined=$joined"
         )
         return joined
+    }
+
+    /**
+     * Continue is the only entry that may skip already-consumed source bodies. Episode clicks,
+     * adjacent episodes, carrier/SNI and every non-Wi-Fi transport retain source zero.
+     */
+    private fun strictDirectWifiResumeFloor(manga: Manga, path: String): Int {
+        if (initialStartAtFirstPage || !manga.useBookmark() ||
+            !NtkStripDigests.normalizeEpisodePath(strictTelemetryEpisodePath)
+                .equals(path, ignoreCase = true)
+        ) return 0
+        val client = getHttpClient()
+        val directWifi = runCatching {
+            client.isNtkWifiTransportActive() &&
+                !client.isNtkCellularResilientTransportActive()
+        }.getOrDefault(false)
+        if (!directWifi) return 0
+        return runCatching { p?.getViewerBookmark(manga) ?: 0 }
+            .getOrDefault(0)
+            .coerceAtLeast(0)
     }
 
     override fun onAdjacentExactManifestRequired(
@@ -6821,6 +6882,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     manga.setImgs(exactImages)
                     manga.ntkImageCount = exactImages.size
                     strictExactLaunchSeal = seal
+                    rememberStrictForwardReadyFloor(seal)
                     rememberStrictDirectManifestAckAuthority(seal)
                     val generation = activeReaderSessionGeneration.incrementAndGet()
                     strictReaderSessionGeneration = generation
@@ -6943,6 +7005,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             manga.setImgs(exactImages)
             manga.ntkImageCount = exactImages.size
             strictExactLaunchSeal = exactLaunchSeal
+            rememberStrictForwardReadyFloor(exactLaunchSeal)
             rememberStrictDirectManifestAckAuthority(exactLaunchSeal)
             strictTelemetryObservedSources = BooleanArray(exactLaunchSeal.pageCount)
             if (strictTelemetryManifestDigest != exactLaunchSeal.manifestDigest) {
@@ -10415,6 +10478,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = -1
             strictAllImagesReadyPublished = false
+            strictForwardReadyFirstPage = 0
             strictRollingHistoricalScene = false
         }
         preparedSessionBuildTask?.cancel()
@@ -10480,6 +10544,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     fun testSessionInitialStartPage(): Int {
         return session?.initialStartPageForTest() ?: -1
     }
+
+    fun testStrictForwardReadyFirstPage(): Int = strictForwardReadyFirstPage
+
+    fun testStrictForwardReadyPublished(): Boolean = strictAllImagesReadyPublished
 
     fun testCurrentScrollPositionSnapshot(): ReaderSurfaceView.ScrollPositionSnapshot? {
         if (hybridNtkBrowserActive) {
