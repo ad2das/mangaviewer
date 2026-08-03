@@ -187,7 +187,11 @@ class NtkClickOwnedExactBodyStreamTest {
         )
         assertTrue(quarantine.contains("networkRelease.thenCombine(adjacentRunwayRelease)"))
         assertFalse(quarantine.contains("networkRelease.thenCombine(adjacentViewportRelease)"))
-        assertTrue(quarantine.contains("minOf(initialSpeculationPages, exactCount)"))
+        assertTrue(
+            quarantine.contains(
+                "minOf(forwardFirstPage + initialSpeculationPages, exactCount)"
+            )
+        )
         assertTrue(quarantine.contains("adjacentPhysicalAdmissionFuture(pageIndex, callCancellation)"))
         assertTrue(quarantine.contains("awaitAdjacentPhysicalAdmission(pageIndex, callCancellation)"))
         val physicalAdmission = quarantine.substringAfter("private fun adjacentPhysicalAdmissionFuture(")
@@ -242,11 +246,15 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(streamBody.contains("future.handle"))
         assertFalse(streamBody.contains("future.get(remainingNanos"))
         assertTrue(streamBody.contains("val completeEpisodeStream ="))
-        assertTrue(streamBody.contains("exactFutures.size == effectivePageCount.get()"))
+        assertTrue(
+            streamBody.contains(
+                "exactFutures.size == effectivePageCount.get() - forwardFirstPage"
+            )
+        )
         assertTrue(streamBody.contains("published.size == exactFutures.size"))
         assertTrue(streamBody.contains("if (completeEpisodeStream) close()"))
         assertTrue(quarantine.contains("probeLanes="))
-        assertTrue(quarantine.contains("(0 until pageLimit).associateWith"))
+        assertTrue(quarantine.contains("(forwardFirstPage until pageLimit).associateWith"))
         assertTrue(quarantine.contains("candidateFuture.thenCompose"))
         assertTrue(coordinator.contains("streamIfExact(exactManifestPreview)"))
         assertTrue(coordinator.contains("clickOwnedExactStream,"))
@@ -265,7 +273,7 @@ class NtkClickOwnedExactBodyStreamTest {
         )
         val release = quarantine.substring(releaseStart, releaseEnd)
 
-        assertTrue(release.contains("wave?.futures?.get(0)"))
+        assertTrue(release.contains("wave?.futures?.get(forwardFirstPage)"))
         assertTrue(release.contains("anchor.whenComplete"))
         assertTrue(release.contains("\"anchor_body_resident\""))
         assertFalse(release.contains("firstActualFramePresented.whenComplete"))
@@ -368,7 +376,11 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(quarantine.contains("isKnownDirectWifiOrdinaryManhwaEpisode(candidate)"))
         assertTrue(quarantine.contains("liveHandle == capturedHandle"))
         assertTrue(quarantine.contains("if (!isLiveOrdinaryDirectWifiCandidate(candidate))"))
-        assertTrue(quarantine.contains("if (ordinaryWifiLease != null && pageIndex != 0)"))
+        assertTrue(
+            quarantine.contains(
+                "if (ordinaryWifiLease != null && pageIndex != forwardFirstPage)"
+            )
+        )
         assertTrue(cache.contains("rememberNtkDirectWifiOrdinaryManhwaEpisode("))
         assertTrue(cache.contains("clickOwnedDirectWifiOrdinaryRouteFactory("))
         assertTrue(cache.contains("NtkDirectWifiOrdinaryTransportSelection"))
@@ -391,9 +403,13 @@ class NtkClickOwnedExactBodyStreamTest {
         ).substringBefore("if (plan == null && tokenBoundAuthority == null)")
 
         assertTrue(quarantine.contains("val sampledAnchorCandidate: CompletableFuture<String?>?"))
-        assertTrue(quarantine.contains("sampledAnchorCandidate = earlyJpgCandidates[0]"))
+        assertTrue(
+            quarantine.contains(
+                "sampledAnchorCandidate = earlyJpgCandidates[forwardFirstPage]"
+            )
+        )
         assertTrue(branch.contains("tokenBoundStream.sampledAnchorCandidate"))
-        assertTrue(branch.contains("tokenBoundStream.bodyFutures[0]"))
+        assertTrue(branch.contains("tokenBoundStream.bodyFutures[forwardFirstPage]"))
         assertTrue(branch.contains("tokenBoundStream.close()"))
         assertTrue(branch.contains("clickOwnedAnchor = null"))
         assertTrue(branch.contains("fallback=signed_image_api"))
@@ -419,7 +435,9 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(quarantine.contains("val bulkRouteReady = extensionRouteReady.thenCombine(firstActualFramePresented)"))
         assertFalse(quarantine.contains("val latePlaceholders ="))
         assertTrue(wave.contains("val initialPageLimit = pageLimit"))
-        assertTrue(wave.contains("(0 until initialPageLimit).associateWith"))
+        assertTrue(
+            wave.contains("(forwardFirstPage until initialPageLimit).associateWith")
+        )
         assertFalse(
             wave.contains(
                 "minOf(pageLimit, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)"
@@ -533,7 +551,11 @@ class NtkClickOwnedExactBodyStreamTest {
                 "private const val PRIVATE_PREDECODE_RUNWAY_PAGES = SPECULATIVE_CLICK_PAGES"
             )
         )
-        assertTrue(attach.contains("pageIndex >= PRIVATE_PREDECODE_RUNWAY_PAGES"))
+        assertTrue(
+            attach.contains(
+                "pageIndex - forwardFirstPage >= PRIVATE_PREDECODE_RUNWAY_PAGES"
+            )
+        )
         assertTrue(attach.contains("retained[pageIndex] = held"))
         assertTrue(attach.contains("ReaderImageCache.predecodeQuarantinedOriginalAsync("))
     }

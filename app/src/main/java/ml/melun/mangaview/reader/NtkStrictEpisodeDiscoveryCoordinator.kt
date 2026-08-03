@@ -225,6 +225,17 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             client.isNtkWifiTransportActive to
                 client.isNtkCellularResilientTransportActive
         }.getOrDefault(false to true)
+        // Freeze the forward-resume decision at discovery ownership. Every later source,
+        // renderer and click-owned manhwa consumer reads this same generation-owned value; a
+        // network handoff after the click can therefore neither enable the Wi-Fi optimization on
+        // cellular/SNI nor make the source and renderer wait for different ranges.
+        val effectiveInitialPageIndexHint = if (
+            rollingAdmission && !adjacentOwned && transportState.first && !transportState.second
+        ) {
+            initialPageIndexHint.coerceAtLeast(0)
+        } else {
+            0
+        }
         val adjacentAdmission = NtkAdjacentAdmissionPolicy.decide(
             adjacentOwned = adjacentOwned,
             wifiTransportActive = transportState.first,
@@ -249,7 +260,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 NtkSourceSpoolRegistry.beginColdRollingDiscovery(
                     client.context,
                     manga,
-                    initialPageIndexHint,
+                    effectiveInitialPageIndexHint,
+                    viewerGeneration,
                 )
             } else {
                 NtkSourceSpoolRegistry.beginDiscovery(client.context, manga)
@@ -265,7 +277,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 adjacentPredecessorGate,
                 directWifiAdjacentBodyGate,
                 rollingAdmission,
-                initialPageIndexHint,
+                effectiveInitialPageIndexHint,
                 completedRouteRecoveryAttempts,
             ).also {
                 flights[path] = it
@@ -754,7 +766,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 // Resolve a four-page format sample at the committed click. It downloads no image
                 // body and lets uncommon-format pages join the same bounded body race. Every body
                 // still validates response headers and encoded magic before private quarantine.
-                clickOwnedManhwaProbe = NtkClickOwnedManhwaProbeFrontier.start(manga, path)
+                clickOwnedManhwaProbe = NtkClickOwnedManhwaProbeFrontier.start(
+                    manga,
+                    path,
+                    flight.initialPageIndexHint,
+                )
                 clickOwnedAnchor = NtkClickOwnedAnchorQuarantine.startFromTrustedPayloadHint(
                     client.context,
                     manga,
@@ -763,6 +779,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     clickOwnedManhwaProbe,
                     flight.directWifiAdjacentBodyGate,
                     flight.adjacentPredecessorComplete,
+                    initialPageIndexHint = flight.initialPageIndexHint,
                 )
                 if (clickOwnedAnchor != null) {
                     clickOwnedManhwaProbe = null
@@ -783,6 +800,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             clickOwnedManhwaProbe,
                             flight.directWifiAdjacentBodyGate,
                             flight.adjacentPredecessorComplete,
+                            initialPageIndexHint = flight.initialPageIndexHint,
                         )
                     if (clickOwnedAnchor != null) {
                         clickOwnedManhwaProbe = null
@@ -1030,6 +1048,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         clickOwnedManhwaProbe,
                         flight.directWifiAdjacentBodyGate,
                         flight.adjacentPredecessorComplete,
+                        initialPageIndexHint = flight.initialPageIndexHint,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                 }
@@ -1054,8 +1073,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             null
                         } else {
                             runCatching {
-                                awaitFuture(checkNotNull(tokenBoundStream.bodyFutures[0]) {
-                                    "Token-bound numeric stream omitted page zero"
+                                val forwardFirstPage = anchor.forwardFirstPage()
+                                awaitFuture(checkNotNull(
+                                    tokenBoundStream.bodyFutures[forwardFirstPage]
+                                ) {
+                                    "Token-bound numeric stream omitted forward anchor"
                                 })
                             }.getOrNull()
                         }
@@ -1136,6 +1158,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         clickOwnedManhwaProbe,
                         flight.directWifiAdjacentBodyGate,
                         flight.adjacentPredecessorComplete,
+                        initialPageIndexHint = flight.initialPageIndexHint,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                     clickOwnedAnchor?.let { anchor ->
@@ -1154,7 +1177,10 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             // only four runway bodies until boundary activation, so joining that proof here would
             // deadlock before a strict stream exists to receive the activation signal. Use the
             // normal signed-image authority for that bounded adjacent flight instead.
-            val observedAuthorityFuture = if (plan == null && !flight.directWifiAdjacentBodyGate) {
+            val observedAuthorityFuture = if (
+                plan == null && !flight.directWifiAdjacentBodyGate &&
+                (clickOwnedAnchor?.forwardFirstPage() ?: 0) == 0
+            ) {
                 clickOwnedAnchor?.observedDocumentAuthorityFuture(flight.lease, draft)
             } else {
                 null

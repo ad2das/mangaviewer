@@ -208,6 +208,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(
             activitySource.contains(
                 "strictExactLaunchSeal = seal\n                    " +
+                    "rememberStrictForwardReadyFloor(seal)\n                    " +
                     "rememberStrictDirectManifestAckAuthority(seal)"
             )
         )
@@ -577,10 +578,12 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(complete.contains("hasDeliveredBitmap(index)"))
         assertTrue(completedEpisodePolicy.contains("authoritativeCount <= 0"))
         assertTrue(completedEpisodePolicy.contains("sourceIndexes.isEmpty()"))
-        assertTrue(completedEpisodePolicy.contains("drawableReady.any { !it }"))
+        assertTrue(completedEpisodePolicy.contains("requiredFirstSource !in 0 until authoritativeCount"))
+        assertTrue(completedEpisodePolicy.contains("sourceIndexes[index] < requiredFirstSource"))
+        assertTrue(completedEpisodePolicy.contains("drawableReady[index]"))
         assertTrue(
             completedEpisodePolicy.contains(
-                "sourceIndexes.distinct() == (0 until authoritativeCount).toList()"
+                "sourceIndexes.distinct() != (0 until authoritativeCount).toList()"
             )
         )
         assertTrue(metadata.contains("!isEpisodeFullyDrawableForAdjacent(source)"))
@@ -639,7 +642,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(adjacentAwait < exactInstall.indexOf("startAckNetworkPrerequisites("))
         assertTrue(
             adjacentAwait <
-                exactInstall.indexOf("NtkClickOwnedManhwaProbeFrontier.start(manga, path)")
+                exactInstall.indexOf("NtkClickOwnedManhwaProbeFrontier.start(")
         )
         assertTrue(adjacentAwait < exactInstall.indexOf("client.fetchExactNtkEpisodeDocument("))
         assertTrue(exactInstall.contains("if (plan != null)"))
@@ -1224,7 +1227,7 @@ class NtkColdRendererPreparationArchitectureTest {
     @Test
     fun mixedPngPlanUsesOnlyObservedSuffixesAndNeverBlocksJpegBodies() {
         val start = functionBody(
-            "fun start(manga: Manga, normalizedEpisodePath: String)",
+            "fun start(\n            manga: Manga,",
             clickOwnedQuarantineSource
         )
 
@@ -1744,6 +1747,23 @@ class NtkColdRendererPreparationArchitectureTest {
         assertFalse(refs.contains("direct_wifi_forward_skip_transition_card"))
         assertTrue(refs.contains("add(PageRef(target, null, transitionTitle"))
         assertTrue(refs.contains("addAll(pageRefs)"))
+    }
+
+    @Test
+    fun resumedRendererRunwayDoesNotRequireTheHistoricalPagePeekingAboveTheAnchor() {
+        val queue = functionBody("fun queueResidentAuthoritativeTextureRunway(")
+
+        assertTrue(activitySource.contains("renderView.queueResidentAuthoritativeTextureRunway("))
+        assertTrue(activitySource.contains("strictForwardReadyFirstPage,"))
+        assertTrue(queue.contains("minimumAuthoritativePage: Int"))
+        assertTrue(
+            queue.contains(
+                "val requiredFirst = max(first, minimumAuthoritativePage.coerceIn(0, pages.lastIndex))"
+            )
+        )
+        assertTrue(queue.contains("val requiredLast = max(requiredFirst, last)"))
+        assertTrue(queue.contains("if ((requiredFirst..requiredLast).any"))
+        assertTrue(queue.contains("onQueued.run()"))
     }
 
     private fun functionBody(signature: String, text: String = source): String {

@@ -1825,7 +1825,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * installation before this is called; unlike [queueAllAuthoritativeOriginalTextures], current
      * simultaneous residency is intentionally not an invariant.
      */
-    fun queueResidentAuthoritativeTextureRunway(onQueued: Runnable): Boolean {
+    fun queueResidentAuthoritativeTextureRunway(
+        minimumAuthoritativePage: Int,
+        onQueued: Runnable,
+    ): Boolean {
         val hwuiBitmaps = synchronized(stateLock) {
             if (!renderRunning || traversalStructureEpoch <= 0L || pages.isEmpty()) return false
             rebuildLayoutLocked()
@@ -1843,7 +1846,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             } else {
                 first
             }
-            if ((first..last).any { index ->
+            // A restored viewport can expose a few pixels of the preceding page above the saved
+            // anchor. Forward-resume deliberately owns only [minimumAuthoritativePage, tail]; an
+            // unowned historical placeholder must not keep the renderer-ready callback retrying
+            // forever. Still require every visible page at or after the saved anchor.
+            val requiredFirst = max(first, minimumAuthoritativePage.coerceIn(0, pages.lastIndex))
+            val requiredLast = max(requiredFirst, last)
+            if ((requiredFirst..requiredLast).any { index ->
                     val page = pages[index]
                     !usableAuthoritativeOriginalTilePage(
                         page.width,

@@ -25,6 +25,25 @@ fun interface NtkProvisionalEpisodePlanListener {
     fun onInstalled(episodePath: String, plan: NtkProvisionalEpisodePlan)
 }
 
+internal object NtkForwardResumeFloorPolicy {
+    fun decide(
+        rollingAdmission: Boolean,
+        directWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        requestedViewerGeneration: Long,
+        currentForegroundViewerGeneration: Long,
+        requestedPageIndex: Int,
+        pageCount: Int,
+    ): Int {
+        if (!rollingAdmission || !directWifiTransport || cellularResilientTransport ||
+            requestedViewerGeneration <= 0L ||
+            requestedViewerGeneration != currentForegroundViewerGeneration ||
+            requestedPageIndex !in 0 until pageCount
+        ) return 0
+        return requestedPageIndex
+    }
+}
+
 internal class NtkAuthoritativeManifestChannel {
     private val listeners = CopyOnWriteArraySet<NtkAuthoritativeManifestListener>()
 
@@ -331,7 +350,8 @@ object NtkSourceSpoolRegistry {
     private data class PlanSessionConstructionSpec(
         val context: Context,
         val manga: Manga,
-        val initialPageIndexHint: Int,
+        val requestedInitialPageIndexHint: Int,
+        val forwardResumeViewerGeneration: Long,
         val rollingAdmission: Boolean,
         val viewerImageApiBacked: Boolean,
         val executionBootstrapFuture: CompletableFuture<NtkStrictSourceExecutionBootstrap>,
@@ -341,9 +361,13 @@ object NtkSourceSpoolRegistry {
         val context: Context,
         val manga: Manga,
         val lease: NtkDiscoveryLease,
-        val initialPageIndexHint: Int,
-        val rollingAdmission: Boolean
+        val requestedInitialPageIndexHint: Int,
+        val forwardResumeViewerGeneration: Long,
+        val rollingAdmission: Boolean,
     ) {
+        var effectiveInitialPageIndex: Int =
+            if (rollingAdmission) 0 else requestedInitialPageIndexHint
+        var forwardResumeFinalized: Boolean = !rollingAdmission
         var state: NtkSourceState = NtkSourceState.DISCOVERING
         var planState: NtkPlanState = NtkPlanState.NONE
         var quarantineState: NtkQuarantineState = NtkQuarantineState.NONE
@@ -400,12 +424,14 @@ object NtkSourceSpoolRegistry {
         context: Context?,
         manga: Manga?,
         initialPageIndexHint: Int = 0,
+        forwardResumeViewerGeneration: Long = 0L,
     ): NtkDiscoveryLease? {
         return beginDiscoveryInternal(
             context,
             manga,
             rollingAdmission = true,
             rollingInitialPageIndexHint = initialPageIndexHint,
+            forwardResumeViewerGeneration = forwardResumeViewerGeneration,
         )
     }
 
@@ -414,6 +440,7 @@ object NtkSourceSpoolRegistry {
         manga: Manga?,
         rollingAdmission: Boolean,
         rollingInitialPageIndexHint: Int = 0,
+        forwardResumeViewerGeneration: Long = 0L,
     ): NtkDiscoveryLease? {
         if (context == null || manga == null) return null
         val path = normalizedPath(manga.ntkEpisodePath) ?: return null
@@ -438,7 +465,14 @@ object NtkSourceSpoolRegistry {
             } else {
                 deriveInitialPageIndex(appContext, manga)
             }
-            val entry = Entry(appContext, manga, lease, initialPage, rollingAdmission)
+            val entry = Entry(
+                appContext,
+                manga,
+                lease,
+                initialPage,
+                forwardResumeViewerGeneration,
+                rollingAdmission,
+            )
             val bootstrapStartedAt = SystemClock.elapsedRealtime()
             entry.executionBootstrapFuture = CompletableFuture.supplyAsync({
                 NtkStrictSourceExecutionBootstrap(
@@ -658,7 +692,8 @@ object NtkSourceSpoolRegistry {
             constructionSpec = PlanSessionConstructionSpec(
                 entry.context,
                 entry.manga,
-                entry.initialPageIndexHint,
+                entry.requestedInitialPageIndexHint,
+                entry.forwardResumeViewerGeneration,
                 entry.rollingAdmission,
                 entry.quarantineAssetEvidence != null,
                 checkNotNull(entry.executionBootstrapFuture) {
@@ -681,8 +716,6 @@ object NtkSourceSpoolRegistry {
         // Canonical-list normalization/digest checks can scale with the whole episode and must not
         // extend the path lock observed by Activity teardown.
         val binding = NtkQuarantinePlanBinding.from(incoming)
-        val initialPageIndex = spec.initialPageIndexHint
-            .takeIf { it in binding.normalizedOrderedCanonicalAssets.indices } ?: 0
         val callbacksEnabled = AtomicBoolean(false)
         val bootstrap = awaitActorFuture(spec.executionBootstrapFuture)
         val cellularResilientTransport = runCatching {
@@ -699,6 +732,36 @@ object NtkSourceSpoolRegistry {
                 ViewerTelemetry.isActiveEpisode(binding.episodePath) &&
                 ViewerTelemetry.activeGeneration() == it
         } ?: 0L
+        // Resolve the optimization once, at the exact source-session construction edge. A raw
+        // bookmark is not authority: direct Wi-Fi must still be live, cellular/SNI must be off,
+        // and the requesting viewer generation/path must still own the foreground. Invalid or
+        // stale bookmarks fail to source zero instead of being coerced to a different page.
+        val initialPageIndex = if (spec.rollingAdmission) {
+            NtkForwardResumeFloorPolicy.decide(
+                rollingAdmission = true,
+                directWifiTransport = directWifiTransport,
+                cellularResilientTransport = cellularResilientTransport,
+                requestedViewerGeneration = spec.forwardResumeViewerGeneration,
+                currentForegroundViewerGeneration = currentForegroundViewerGeneration,
+                requestedPageIndex = spec.requestedInitialPageIndexHint,
+                pageCount = binding.normalizedOrderedCanonicalAssets.size,
+            )
+        } else {
+            spec.requestedInitialPageIndexHint
+                .takeIf { it in binding.normalizedOrderedCanonicalAssets.indices } ?: 0
+        }
+        val effectiveStreamedExactBodies = streamedExactBodies?.let { stream ->
+            if (initialPageIndex == 0 && 0 !in stream.bodyFutures) {
+                // The request began as Wi-Fi resume but the source-construction transport or
+                // viewer owner no longer qualifies. Cancel its suffix-only overlap and restore
+                // the ordinary source-zero path; otherwise the stream's first-frame gate could
+                // retain mobile/SNI work behind a page it does not own.
+                stream.close()
+                null
+            } else {
+                stream
+            }
+        }
         val session = try {
             NtkStrictSourceSession(
                 context = spec.context,
@@ -719,7 +782,7 @@ object NtkSourceSpoolRegistry {
                 },
                 rollingAdmission = spec.rollingAdmission,
                 initialExactBodies = initialExactBodies,
-                streamedExactBodies = streamedExactBodies,
+                streamedExactBodies = effectiveStreamedExactBodies,
                 viewerImageApiBacked = spec.viewerImageApiBacked,
                 cellularResilientTransport = cellularResilientTransport,
                 directWifiTransport = directWifiTransport,
@@ -803,6 +866,8 @@ object NtkSourceSpoolRegistry {
             }
             entry.provisionalPlan = incoming
             entry.planBinding = binding
+            entry.effectiveInitialPageIndex = initialPageIndex
+            entry.forwardResumeFinalized = true
             entry.sourceSession = session
             entry.executionBootstrapFuture = null
             entry.planState = NtkPlanState.PLAN_RESERVED
@@ -1503,11 +1568,17 @@ object NtkSourceSpoolRegistry {
             synchronized(mutationLock(key)) { entries[key]?.authoritative }
         }
 
-    /** Immutable source floor captured when the active discovery generation was created. */
+    /** One-shot effective floor for the exact foreground viewer generation that requested it. */
     @JvmStatic
-    fun currentInitialPageIndex(path: String?): Int =
+    fun currentInitialPageIndex(path: String?, viewerGeneration: Long): Int =
         normalizedPath(path)?.let { key ->
-            synchronized(mutationLock(key)) { entries[key]?.initialPageIndexHint ?: 0 }
+            synchronized(mutationLock(key)) {
+                entries[key]?.takeIf { entry ->
+                    entry.forwardResumeFinalized &&
+                        (!entry.rollingAdmission ||
+                            entry.forwardResumeViewerGeneration == viewerGeneration)
+                }?.effectiveInitialPageIndex ?: 0
+            }
         } ?: 0
 
     private fun isCurrentPlanPublication(

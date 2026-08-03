@@ -2871,7 +2871,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ViewerTelemetry.allImagesRenderReady(readerRoot ?: renderView, requiredPageCount)
         }
         val queued = if (strictRollingHistoricalScene || strictForwardReadyFirstPage > 0) {
-            renderView.queueResidentAuthoritativeTextureRunway(publishReady)
+            renderView.queueResidentAuthoritativeTextureRunway(
+                strictForwardReadyFirstPage,
+                publishReady,
+            )
         } else {
             renderView.queueAllAuthoritativeOriginalTextures(seal.pageCount, publishReady)
         }
@@ -4839,13 +4842,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     private fun rememberStrictForwardReadyFloor(seal: StrictExactLaunchSeal) {
-        val client = getHttpClient()
-        val directWifi = runCatching {
-            client.isNtkWifiTransportActive() &&
-                !client.isNtkCellularResilientTransportActive()
-        }.getOrDefault(false)
-        strictForwardReadyFirstPage = if (directWifi && !initialStartAtFirstPage) {
-            NtkSourceSpoolRegistry.currentInitialPageIndex(seal.normalizedEpisodePath)
+        strictForwardReadyFirstPage = if (!initialStartAtFirstPage) {
+            NtkSourceSpoolRegistry.currentInitialPageIndex(
+                seal.normalizedEpisodePath,
+                strictTelemetryGeneration,
+            )
                 .coerceIn(0, seal.pageCount - 1)
         } else {
             0
@@ -6647,7 +6648,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 predecessorPath,
             )
         } else {
-            val resumeFloor = strictDirectWifiResumeFloor(manga, path)
+            val resumeFloor = strictCurrentResumePageHint(manga, path)
             NtkStrictEpisodeDiscoveryCoordinator.startColdRolling(
                 getHttpClient(),
                 manga,
@@ -6660,7 +6661,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         Log.d(
             "ViewerPerf",
             "reader_ntk_strict_exact_discovery_ui path=$path,reason=$reason," +
-                "predecessor=$predecessorPath,resumeFloor=${NtkSourceSpoolRegistry.currentInitialPageIndex(path)}," +
+                "predecessor=$predecessorPath," +
+                "resumeFloor=${NtkSourceSpoolRegistry.currentInitialPageIndex(path, strictTelemetryGeneration)}," +
                 "started=$started,joined=$joined"
         )
         return joined
@@ -6670,17 +6672,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
      * Continue is the only entry that may skip already-consumed source bodies. Episode clicks,
      * adjacent episodes, carrier/SNI and every non-Wi-Fi transport retain source zero.
      */
-    private fun strictDirectWifiResumeFloor(manga: Manga, path: String): Int {
+    private fun strictCurrentResumePageHint(manga: Manga, path: String): Int {
         if (initialStartAtFirstPage || !manga.useBookmark() ||
             !NtkStripDigests.normalizeEpisodePath(strictTelemetryEpisodePath)
                 .equals(path, ignoreCase = true)
         ) return 0
-        val client = getHttpClient()
-        val directWifi = runCatching {
-            client.isNtkWifiTransportActive() &&
-                !client.isNtkCellularResilientTransportActive()
-        }.getOrDefault(false)
-        if (!directWifi) return 0
+        // This is only a bookmark hint. The discovery owner freezes whether it is eligible from
+        // the entry transport and stores the resulting value in the source registry.
         return runCatching { p?.getViewerBookmark(manga) ?: 0 }
             .getOrDefault(0)
             .coerceAtLeast(0)

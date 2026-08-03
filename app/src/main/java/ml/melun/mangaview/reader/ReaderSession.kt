@@ -194,19 +194,6 @@ class ReaderSession(
     private val strictExactLaunchSeal: StrictExactLaunchSeal? = null
 ) {
     private val strictExactColdRolling: Boolean = strictExactLaunchSeal != null
-    private val strictForwardSourceFloor: Int = strictExactLaunchSeal?.let { seal ->
-        val client = MainApplication.getHttpClient()
-        val directWifi = runCatching {
-            client.isNtkWifiTransportActive() &&
-                !client.isNtkCellularResilientTransportActive()
-        }.getOrDefault(false)
-        if (directWifi && !startAtFirstPage) {
-            NtkSourceSpoolRegistry.currentInitialPageIndex(seal.normalizedEpisodePath)
-                .coerceIn(0, seal.pageCount - 1)
-        } else {
-            0
-        }
-    } ?: 0
     private val initialNtkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
     private val strictExactForegroundViewerGenerationAtCreation: Long = run {
         val generation = ViewerTelemetry.activeGeneration()
@@ -222,6 +209,16 @@ class ReaderSession(
             0L
         }
     }
+    private val strictForwardSourceFloor: Int = strictExactLaunchSeal?.let { seal ->
+        if (!startAtFirstPage && strictExactForegroundViewerGenerationAtCreation > 0L) {
+            NtkSourceSpoolRegistry.currentInitialPageIndex(
+                seal.normalizedEpisodePath,
+                strictExactForegroundViewerGenerationAtCreation,
+            ).coerceIn(0, seal.pageCount - 1)
+        } else {
+            0
+        }
+    } ?: 0
     enum class InitialPrerenderResult {
         NOT_RENDERED,
         RENDERED_ONLY,

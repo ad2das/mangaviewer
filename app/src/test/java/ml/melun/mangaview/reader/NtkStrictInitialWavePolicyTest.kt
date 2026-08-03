@@ -8,6 +8,37 @@ import org.junit.Test
 class NtkStrictInitialWavePolicyTest {
 
     @Test
+    fun forwardResumeFloorRequiresTheSameCurrentDirectWifiGeneration() {
+        fun decide(
+            directWifi: Boolean = true,
+            cellular: Boolean = false,
+            requestedGeneration: Long = 41L,
+            currentGeneration: Long = 41L,
+            pageIndex: Int = 67,
+            pageCount: Int = 112,
+            rolling: Boolean = true,
+        ) = NtkForwardResumeFloorPolicy.decide(
+            rollingAdmission = rolling,
+            directWifiTransport = directWifi,
+            cellularResilientTransport = cellular,
+            requestedViewerGeneration = requestedGeneration,
+            currentForegroundViewerGeneration = currentGeneration,
+            requestedPageIndex = pageIndex,
+            pageCount = pageCount,
+        )
+
+        assertEquals(67, decide())
+        assertEquals(0, decide(directWifi = false))
+        assertEquals(0, decide(cellular = true))
+        assertEquals(0, decide(currentGeneration = 42L))
+        assertEquals(0, decide(requestedGeneration = 0L))
+        assertEquals(0, decide(pageIndex = 112))
+        assertEquals(0, decide(pageIndex = -1))
+        assertEquals(0, decide(rolling = false))
+        assertEquals(0, decide(pageIndex = 0))
+    }
+
+    @Test
     fun routeAdmissionUsesTheBoundedColdProducerWindow() {
         assertEquals(40, NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS_PER_ROUTE)
         assertTrue(NtkStrictSourceSchedulerPolicy.hasRouteCapacity(0))

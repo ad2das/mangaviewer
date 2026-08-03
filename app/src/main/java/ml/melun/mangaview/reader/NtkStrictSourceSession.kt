@@ -2517,8 +2517,8 @@ internal class NtkStrictSourceSession(
         // gate. Admit only its exact fallback; every other source page remains held until that
         // fallback is actually presented.
         return pageIndex == initialPageIndex &&
-            pageIndex in externallyOwnedPageIndexes &&
-            !pages[pageIndex].streamedExactBodyPending
+            (pageIndex !in externallyOwnedPageIndexes ||
+                !pages[pageIndex].streamedExactBodyPending)
     }
 
     private fun launchPrimaryFullBodyActor(laneIndex: Int, page: PageState) {
