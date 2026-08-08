@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 import android.os.SystemClock;
 import android.util.Log;
 
+import ml.melun.mangaview.runtime.ViewerTelemetry;
+
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -25,6 +27,8 @@ public final class BenchmarkAdjacentCommitSignal {
     public static final String EXTRA_VIEWER_GENERATION = "viewerGeneration";
     public static final String EXTRA_PHASE = "phase";
     public static final String EXTRA_SEMANTIC_PUBLISHED_AT_NANOS = "semanticPublishedAtNanos";
+    public static final String EXTRA_FORWARD_BOUNDARY_REACHED_AT_NANOS =
+            "forwardBoundaryReachedAtNanos";
     public static final String EXTRA_MOTION_ENDED_AT_NANOS = "motionEndedAtNanos";
     public static final String EXTRA_RUNWAY_READY_AT_NANOS = "runwayReadyAtNanos";
     public static final String EXTRA_RUNWAY_PAGE_COUNT = "runwayPageCount";
@@ -154,6 +158,10 @@ public final class BenchmarkAdjacentCommitSignal {
         synchronized(PRESENTED_AT_NANOS) {
             if(PRESENTED_AT_NANOS[sourceIndex] != presentedAtNanos) return;
         }
+        long forwardBoundaryReachedAtNanos =
+                ViewerTelemetry.currentForwardBoundaryReachedAtNanos();
+        if(sourceIndex == 0 && (forwardBoundaryReachedAtNanos <= 0L
+                || forwardBoundaryReachedAtNanos > presentedAtNanos)) return;
         int sourceBit = 1 << sourceIndex;
         int observedMask;
         do {
@@ -171,6 +179,9 @@ public final class BenchmarkAdjacentCommitSignal {
                 .putExtra(EXTRA_SOURCE_INDEX, sourceIndex)
                 .putExtra(EXTRA_PRESENTED_AT_NANOS, presentedAtNanos)
                 .putExtra(EXTRA_SEMANTIC_PUBLISHED_AT_NANOS, semanticPublishedAtNanos)
+                .putExtra(
+                        EXTRA_FORWARD_BOUNDARY_REACHED_AT_NANOS,
+                        forwardBoundaryReachedAtNanos)
                 .putExtra(EXTRA_SENDER_AT_NANOS, senderAtNanos)
                 .putExtra(EXTRA_VIEWER_GENERATION, viewerGeneration);
         try {

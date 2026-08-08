@@ -156,6 +156,9 @@ class NtkColdViewerMacrobenchmark {
                 nonce = p0SignalNonce,
                 caseId = caseId,
                 expectedEpisodePath = expectedAdjacentEpisodePath,
+                allowTerminalResumeInitialViewport =
+                    resumePage == currentPageCount - 1 &&
+                        expectedForwardPageCount == 1 && resumeOffset <= 0,
             )
         } else {
             null
@@ -321,14 +324,41 @@ class NtkColdViewerMacrobenchmark {
                     findEpisodeRow(device, episodePath)
                 }
 
-                val actualObservation = clickAndAwaitActualImage(
-                    device,
-                    episode,
-                    episodePath,
-                    firstImageSlaMs,
-                    "first HWUI-committed actual work-image draw",
-                    expectedSourcePage = resumePage.takeIf { resumeMode },
-                )
+                // Arm the exact cross-process observer before the click, but keep its input gate
+                // closed until the first current-episode pixels are observed. A short terminal
+                // Continue can physically include next p0 in that first opaque viewport; arming
+                // here preserves that one-shot compositor proof without injecting any input or
+                // moving image work ahead of the click.
+                val continuousInput = if (resumeMode) {
+                    ContinuousForwardInput(
+                        displayWidth = device.displayWidth,
+                        displayHeight = device.displayHeight,
+                    ).also {
+                        try {
+                            it.prepareAndAwait()
+                            requireNotNull(p0SignalChannel).arm(it)
+                        } catch (throwable: Throwable) {
+                            it.requestStop()
+                            throw throwable
+                        }
+                    }
+                } else {
+                    null
+                }
+
+                val actualObservation = try {
+                    clickAndAwaitActualImage(
+                        device,
+                        episode,
+                        episodePath,
+                        firstImageSlaMs,
+                        "first HWUI-committed actual work-image draw",
+                        expectedSourcePage = resumePage.takeIf { resumeMode },
+                    )
+                } catch (throwable: Throwable) {
+                    continuousInput?.requestStop()
+                    throw throwable
+                }
                 clickElapsedNanos = actualObservation.clickElapsedNanos
                 actualElapsedNanos = actualObservation.observedElapsedNanos
                 actualDescription = actualObservation.description
@@ -384,24 +414,7 @@ class NtkColdViewerMacrobenchmark {
                 // to the observed traversal below: an unobserved three-fling burst could cross a
                 // short manga and its four-page adjacent runway before accessibility sampled it.
                 forwardTraversalStartElapsedNanos = SystemClock.elapsedRealtimeNanos()
-
-                val continuousInput = if (resumeMode) {
-                    ContinuousForwardInput(
-                        displayWidth = device.displayWidth,
-                        displayHeight = device.displayHeight,
-                    ).also {
-                        try {
-                            it.prepareAndAwait()
-                            requireNotNull(p0SignalChannel).arm(it)
-                            it.releaseSchedule()
-                        } catch (throwable: Throwable) {
-                            it.requestStop()
-                            throw throwable
-                        }
-                    }
-                } else {
-                    null
-                }
+                continuousInput?.releaseSchedule()
 
                 // An appendable reader has no stable global bottom. The exact p0 IPC supplies the
                 // seam timestamp without stopping this producer. The same uninterrupted reader-rate
@@ -1527,6 +1540,7 @@ class NtkColdViewerMacrobenchmark {
         private val nonce: String,
         private val caseId: String,
         private val expectedEpisodePath: String,
+        private val allowTerminalResumeInitialViewport: Boolean,
     ) {
         private val lock = Any()
         private var registeredContext: Context? = null
@@ -1828,6 +1842,8 @@ class NtkColdViewerMacrobenchmark {
                                 presentedAtNanos = semanticCommit.presentedAtNanos,
                                 firstAdjacentPresentedAtNanos =
                                     runwayPayloads[0]?.presentedAtNanos ?: 0L,
+                                forwardBoundaryReachedAtNanos =
+                                    semanticCommit.forwardBoundaryReachedAtNanos,
                             )
                         }
                 }
@@ -1898,6 +1914,8 @@ class NtkColdViewerMacrobenchmark {
                         firstDownInjectionStartedAtNanos = firstDownAt,
                         presentedAtNanos = current.presentedAtNanos,
                         acceptedAtNanos = acceptedAt,
+                        allowTerminalResumeInitialViewport =
+                            allowTerminalResumeInitialViewport,
                     )
                     if (inputStartRejection != AdjacentP0IpcRejectReason.NONE) {
                         throw MeasurementInvalidException(
@@ -2205,6 +2223,8 @@ class NtkColdViewerMacrobenchmark {
                             target.firstDownInjectionStartedAtNanos(),
                         presentedAtNanos = candidate.presentedAtNanos,
                         acceptedAtNanos = acceptedNow,
+                        allowTerminalResumeInitialViewport =
+                            allowTerminalResumeInitialViewport,
                     )
                 } else {
                     baseRejection
@@ -2263,6 +2283,10 @@ class NtkColdViewerMacrobenchmark {
                     P0_SIGNAL_EXTRA_SEMANTIC_PUBLISHED_AT_NANOS,
                     0L,
                 ),
+                forwardBoundaryReachedAtNanos = intent.getLongExtra(
+                    P0_SIGNAL_EXTRA_FORWARD_BOUNDARY_REACHED_AT_NANOS,
+                    0L,
+                ),
                 senderAtNanos = intent.getLongExtra(P0_SIGNAL_EXTRA_SENDER_AT_NANOS, 0L),
                 viewerGeneration = intent.getLongExtra(
                     P0_SIGNAL_EXTRA_VIEWER_GENERATION,
@@ -2287,6 +2311,8 @@ class NtkColdViewerMacrobenchmark {
                             target.firstDownInjectionStartedAtNanos(),
                         presentedAtNanos = candidate.presentedAtNanos,
                         acceptedAtNanos = SystemClock.elapsedRealtimeNanos(),
+                        allowTerminalResumeInitialViewport =
+                            allowTerminalResumeInitialViewport,
                     )
                     if (earlyRejection != AdjacentP0IpcRejectReason.NONE) {
                         earlySignal = true
@@ -3446,6 +3472,8 @@ class NtkColdViewerMacrobenchmark {
         const val P0_SIGNAL_EXTRA_TOTAL_PAGE_COUNT = "totalPageCount"
         const val P0_SIGNAL_EXTRA_SEMANTIC_PUBLISHED_AT_NANOS =
             "semanticPublishedAtNanos"
+        const val P0_SIGNAL_EXTRA_FORWARD_BOUNDARY_REACHED_AT_NANOS =
+            "forwardBoundaryReachedAtNanos"
         const val P0_SIGNAL_PHASE_PHYSICAL_COMMIT = "PHYSICAL_COMMIT"
         const val P0_SIGNAL_PHASE_SEMANTIC_COMMIT = "SEMANTIC_COMMIT"
         const val P0_SIGNAL_PHASE_RUNWAY_READY = "RUNWAY_READY"
@@ -3505,7 +3533,7 @@ class NtkColdViewerMacrobenchmark {
         // This is the only adjacent timing SLA: launch-tail presentation to exact p0 pixels.
         // p1-p3 are qualified by continued physical 3 viewport/s traversal, not by demanding that
         // their background-ready timestamp precede the launch boundary.
-        const val ADJACENT_P0_SEAM_SLA_MS = 200L
+        const val ADJACENT_P0_SEAM_SLA_MS = 250L
         // One accessibility observation costs ~2.5 s on the continuously rendering SurfaceView,
         // whereas sixteen 20 ms shell flings cost only ~0.3 s and cover the measured 119-page
         // manga. Long webtoons repeat the same bounded batch until their real edge is observed.

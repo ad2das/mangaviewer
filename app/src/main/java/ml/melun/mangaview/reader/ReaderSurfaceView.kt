@@ -103,7 +103,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val widthFillFailures: Int = 0,
         val lowResolutionItems: Int = 0,
         val minDrawableSourceWidth: Int = 0,
-        val physicalViewportPx: Int = 0
+        val physicalViewportPx: Int = 0,
+        /**
+         * The cold direct-Wi-Fi resume viewport starts at the exact terminal source page and may
+         * contain its one structural transition card before the already-resident next p0. This is
+         * still a fully opaque, identity-qualified forward viewport; the flag lets strict
+         * telemetry distinguish that card from a placeholder-first launch.
+         */
+        val directWifiForwardOnlyInitialResume: Boolean = false
     )
 
     data class PageReadinessSnapshot(
@@ -466,7 +473,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val directPreparedBitmapBatch: Boolean = false,
         val realPixelsOnly: Boolean = false,
         val traversalEpoch: Long = 0L,
-        val forwardRunway: ForwardRunwaySnapshot? = null
+        val forwardRunway: ForwardRunwaySnapshot? = null,
+        val directWifiForwardOnlyInitialResume: Boolean = false
     )
 
     private enum class BitmapSubmissionMode {
@@ -896,6 +904,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val directWifiExpandedNativeTextureEpisodePaths = linkedSetOf<String>()
     private var directWifiExpandedNativeTextureMinimumPage = 0
     private var directWifiShortWebtoonPixelWindowPrewarm = false
+    private var directWifiForwardOnlyInitialResumeEnabled = false
+    private var directWifiForwardOnlyInitialResumePage = -1
+    private var directWifiForwardOnlyInitialResumeOffset = 0
+    private var directWifiForwardOnlyInitialResumeRevealQualified = false
     private var sourceNativeWebtoonCompositingEnabled = false
     private val hwuiPreparedBitmapKeys = HashSet<Long>()
     private var frameSchedulingSuppressed = false
@@ -934,6 +946,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     /** Must be called with [stateLock] held. */
+    private fun pageHasCompleteActualPixelsLocked(page: Page): Boolean {
+        val bitmap = page.bitmap
+        return when {
+            page.cardText != null || page.errorText != null -> false
+            bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0 -> true
+            usableAuthoritativeOriginalTilePage(
+                page.width,
+                page.height,
+                page.tiles,
+                page.originalProof
+            ) -> true
+            hasCompleteFullQualityTilePixelsLocked(page) -> true
+            else -> false
+        }
+    }
+
+    /** Must be called with [stateLock] held. */
     private fun currentViewportDrawableOpaqueLocked(): Boolean {
         if (pages.isEmpty() || width <= 0 || height <= 0) return false
         rebuildLayoutLocked()
@@ -951,33 +980,87 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val visibleBottom = min(viewportBottom, bottom)
             if (visibleBottom <= visibleTop) continue
             if (visibleTop > coveredUntil + DRAW_COVERAGE_EPSILON_PX) return false
-            val bitmap = page.bitmap
             // The producer surface itself is RGBX and clears every frame. A decoded JPEG often
             // remains tagged hasAlpha=true simply because BitmapFactory returned ARGB_8888; that
             // metadata does not mean the viewport is unresolved. Conversely, loading/error cards
             // must never qualify as real work-image pixels. Gate attachment on a complete live
             // image resource, including a provenance-free legacy tile page whose full 0..height
             // geometry is independently validated by AdoptedDrawableIdentity.
-            val pageHasCompleteActualPixels = when {
-                page.cardText != null || page.errorText != null -> false
-                bitmap != null && !bitmap.isRecycled &&
-                    bitmap.width > 0 && bitmap.height > 0 -> true
-                usableAuthoritativeOriginalTilePage(
-                    page.width,
-                    page.height,
-                    page.tiles,
-                    page.originalProof
-                ) -> true
-                hasCompleteFullQualityTilePixelsLocked(page) -> true
-                else -> false
-            }
-            if (!pageHasCompleteActualPixels) return false
+            if (!pageHasCompleteActualPixelsLocked(page)) return false
             sawVisiblePage = true
             coveredUntil = max(coveredUntil, visibleBottom)
             if (coveredUntil >= viewportBottom - DRAW_COVERAGE_EPSILON_PX) return true
         }
         return sawVisiblePage &&
             coveredUntil >= viewportBottom - DRAW_COVERAGE_EPSILON_PX
+    }
+
+    /**
+     * A forward-only resume can legitimately start inside a short final image. Earlier images from
+     * the same episode may not be resident yet, so the ordinary content max would pin that image to
+     * the bottom of a viewport full of unresolved predecessors. Once current completion has
+     * admitted the exact next p0, preserve the bookmark offset and accept exactly: current tail,
+     * one opaque transition card, then source-qualified next-episode pixels. This is intentionally
+     * impossible outside the frozen direct-Wi-Fi renderer profile.
+     */
+    private fun directWifiForwardOnlyInitialResumeViewportOpaqueLocked(): Boolean {
+        val target = directWifiForwardOnlyInitialResumePage
+        if (!directWifiForwardOnlyInitialResumeEnabled || target !in pages.indices ||
+            width <= 0 || height <= 0 || target >= pages.lastIndex
+        ) return false
+        rebuildLayoutLocked()
+        val targetTop = pageTopOrElseLocked(target, Float.NaN)
+        val expectedScroll = targetTop - directWifiForwardOnlyInitialResumeOffset
+        if (!targetTop.isFinite() ||
+            abs(scrollOffset - expectedScroll) > RESTORE_POSITION_EPSILON_PX
+        ) {
+            return false
+        }
+        val viewportTop = scrollOffset
+        val viewportBottom = viewportTop + height
+        var coveredUntil = viewportTop
+        var sawTarget = false
+        var sawTransition = false
+        var sawAdjacentActual = false
+        for (index in target until pages.size) {
+            val page = pages[index]
+            val top = pageTopOrElseLocked(index, Float.NaN)
+            if (!top.isFinite()) return false
+            val bottom = top + pageDrawHeightLocked(page)
+            if (bottom <= viewportTop) continue
+            if (top >= viewportBottom) break
+            val visibleTop = max(viewportTop, top)
+            val visibleBottom = min(viewportBottom, bottom)
+            if (visibleBottom <= visibleTop) continue
+            if (visibleTop > coveredUntil + DRAW_COVERAGE_EPSILON_PX) return false
+            when {
+                index == target -> {
+                    val identity = page.committedIdentity ?: return false
+                    if (!pageHasCompleteActualPixelsLocked(page) ||
+                        identity.normalizedEpisodePath !in directWifiExpandedNativeTextureEpisodePaths
+                    ) return false
+                    sawTarget = true
+                }
+                page.cardText != null -> {
+                    if (!sawTarget || sawTransition || sawAdjacentActual || index != target + 1 ||
+                        page.errorText != null
+                    ) return false
+                    sawTransition = true
+                }
+                else -> {
+                    val identity = page.committedIdentity ?: return false
+                    if (!sawTransition || !pageHasCompleteActualPixelsLocked(page) ||
+                        identity.normalizedEpisodePath !in directWifiExpandedNativeTextureEpisodePaths
+                    ) return false
+                    sawAdjacentActual = true
+                }
+            }
+            coveredUntil = max(coveredUntil, visibleBottom)
+            if (coveredUntil >= viewportBottom - DRAW_COVERAGE_EPSILON_PX) {
+                return sawTarget && sawTransition && sawAdjacentActual
+            }
+        }
+        return false
     }
 
     fun setWindowListener(listener: WindowListener?) {
@@ -1082,6 +1165,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
             ) return
             forwardNativeTexturePrewarmEnabled = enabled
             directWifiExpandedNativeTextureRunway = expanded
+            directWifiForwardOnlyInitialResumeEnabled = expanded
+            if (!expanded) {
+                directWifiForwardOnlyInitialResumePage = -1
+                directWifiForwardOnlyInitialResumeOffset = 0
+                directWifiForwardOnlyInitialResumeRevealQualified = false
+            } else if (surfaceAttachmentDeferredUntilActualPixels && !hasDrawnContentFrame &&
+                lockedRestorePage == pages.lastIndex && lockedRestorePage >= 0
+            ) {
+                directWifiForwardOnlyInitialResumePage = lockedRestorePage
+                lockedRestoreOffset = min(0, lockedRestoreOffset)
+                directWifiForwardOnlyInitialResumeOffset = lockedRestoreOffset
+                applyLockedRestorePositionLocked()
+            }
             directWifiExpandedNativeTextureEpisodePaths.clear()
             if (normalizedExpandedPath.isNotEmpty()) {
                 directWifiExpandedNativeTextureEpisodePaths += normalizedExpandedPath
@@ -1191,6 +1287,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
             deferredSurfaceIdentityActivated = !enabled
             deferredSurfacePreparationPosted = false
             deferredSurfacePreparationGeneration += 1L
+            directWifiForwardOnlyInitialResumeRevealQualified = false
+            if (!enabled) {
+                directWifiForwardOnlyInitialResumePage = -1
+                directWifiForwardOnlyInitialResumeOffset = 0
+            }
             if (enabled) clearFramePipeLocked(preserveDirty = true)
         }
         // An alpha-zero TextureView still creates a HWUI layer/BufferQueue. On a cold host-GPU
@@ -1424,6 +1525,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             setScrollOffsetLocked(0f)
             clearLockedRestorePositionLocked()
+            directWifiForwardOnlyInitialResumePage = -1
+            directWifiForwardOnlyInitialResumeOffset = 0
+            directWifiForwardOnlyInitialResumeRevealQualified = false
             boundaryArmedDirection = 0
             boundaryDispatchInFlight = false
             lastAnchor = -1
@@ -4795,8 +4899,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun lockRestoredPageOffset(index: Int, offset: Int) {
         val request = synchronized(stateLock) {
             if (index !in 0 until pages.size) return
+            val forwardOnlyTerminalResume = directWifiForwardOnlyInitialResumeEnabled &&
+                surfaceAttachmentDeferredUntilActualPixels && !hasDrawnContentFrame &&
+                index == pages.lastIndex
+            if (forwardOnlyTerminalResume) {
+                directWifiForwardOnlyInitialResumePage = index
+                directWifiForwardOnlyInitialResumeOffset = min(0, offset)
+                directWifiForwardOnlyInitialResumeRevealQualified = false
+            }
             lockedRestorePage = index
-            lockedRestoreOffset = offset
+            // A positive offset exposes predecessor pixels above this page. The forward-only UX
+            // deliberately did not request those pages, so start the exact terminal page at the
+            // top instead of manufacturing a placeholder viewport.
+            lockedRestoreOffset = if (forwardOnlyTerminalResume) {
+                directWifiForwardOnlyInitialResumeOffset
+            } else {
+                offset
+            }
             lockedRestoreUntilMs = SystemClock.uptimeMillis() + RESTORE_POSITION_LOCK_MS
             applyLockedRestorePositionLocked()
             clampScrollLocked()
@@ -7417,6 +7536,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         } else {
             preparedSceneForDrawLocked(viewWidth)
         }
+        val forwardOnlyInitialResumeViewport =
+            directWifiForwardOnlyInitialResumeRevealQualified &&
+                directWifiForwardOnlyInitialResumeViewportOpaqueLocked()
         val state = DrawState(
             viewWidth,
             viewHeight,
@@ -7441,7 +7563,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 forwardRunwaySnapshotLocked(DEFAULT_FORWARD_RUNWAY_AHEAD_VIEWPORTS)
             } else {
                 null
-            }
+            },
+            forwardOnlyInitialResumeViewport
         )
         val nowMs = SystemClock.uptimeMillis()
         val recentScroll = nowMs <= programmaticScrollStatsUntilMs ||
@@ -7590,7 +7713,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             pageCount = state.pageCount,
             lowResolutionItems = coverage.lowResolutionItems,
             minDrawableSourceWidth = coverage.minDrawableSourceWidth,
-            physicalViewportPx = state.height
+            physicalViewportPx = state.height,
+            directWifiForwardOnlyInitialResume = state.directWifiForwardOnlyInitialResume
         )
     }
 
@@ -8222,7 +8346,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return viewportBottom > viewportTop &&
                 stripResidentCoverage.continuousEndFrom(viewportTop) >= viewportBottom
         }
-        return currentViewportDrawableOpaqueLocked()
+        if (currentViewportDrawableOpaqueLocked()) return true
+        val forwardOnlyResumeReady = directWifiForwardOnlyInitialResumeViewportOpaqueLocked()
+        if (forwardOnlyResumeReady) {
+            directWifiForwardOnlyInitialResumeRevealQualified = true
+            Log.d(
+                TAG,
+                "reader_surface_forward_only_resume_ready page=$directWifiForwardOnlyInitialResumePage " +
+                    "scroll=${scrollOffset.toInt()},viewport=${width}x$height"
+            )
+        }
+        return forwardOnlyResumeReady
     }
 
     /**
@@ -8495,7 +8629,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                             pending.coverage.placeholderPx == 0 &&
                             pending.coverage.visibleLoading == 0 &&
                             pending.coverage.visibleErrors == 0 &&
-                            pending.coverage.visibleCards == 0 &&
+                            (pending.coverage.visibleCards == 0 ||
+                                pending.coverage.directWifiForwardOnlyInitialResume) &&
                             pending.coverage.lowResolutionItems == 0
                     if (cleanCommittedHwuiActualPixels) {
                         nativeSurfaceRevealAfterFirstHwuiCommitPending = false
@@ -9576,10 +9711,15 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         }
         rebuildLayoutLocked()
         val desiredScroll = pageTopOrElseLocked(target, 0f) - lockedRestoreOffset
-        val maxScroll = max(0f, contentHeight - height)
+        val maxScroll = maxScrollLocked()
         val restoredScroll = desiredScroll.coerceIn(0f, maxScroll)
         setScrollOffsetLocked(restoredScroll)
+        val preserveForwardOnlyUntilPhysicalReveal =
+            directWifiForwardOnlyInitialResumeEnabled &&
+                surfaceAttachmentDeferredUntilActualPixels &&
+                directWifiForwardOnlyInitialResumePage == target
         if (
+            !preserveForwardOnlyUntilPhysicalReveal &&
             hasDrawnContentFrame &&
             pageHasDrawableContentLocked(target) &&
             abs(restoredScroll - desiredScroll) <= RESTORE_POSITION_EPSILON_PX
@@ -9770,7 +9910,17 @@ val lifecycleStillCurrent = synchronized(stateLock) {
 
     private fun maxScrollLocked(): Float {
         val viewportHeight = if (height > 0) height else pendingPreparedViewportHeight
-        return max(0f, totalHeightLocked() - max(1, viewportHeight))
+        val contentMax = max(0f, totalHeightLocked() - max(1, viewportHeight))
+        val forwardOnlyTarget = directWifiForwardOnlyInitialResumePage
+        if (!directWifiForwardOnlyInitialResumeEnabled ||
+            !surfaceAttachmentDeferredUntilActualPixels ||
+            forwardOnlyTarget !in pages.indices
+        ) return contentMax
+        // This is a temporary pre-presentation bound only. It creates no motion and disappears as
+        // soon as the exact forward pages make the ordinary content max large enough.
+        val forwardOnlyScroll = pageTopOrElseLocked(forwardOnlyTarget, contentMax) -
+            directWifiForwardOnlyInitialResumeOffset
+        return max(contentMax, forwardOnlyScroll)
     }
 
     private fun forwardScrollLimitLocked(scheduleBlocked: Boolean = true): Float {

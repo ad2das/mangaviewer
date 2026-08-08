@@ -166,6 +166,13 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
         assertTrue(telemetrySource.contains(";firstActualEpisode="))
         assertTrue(telemetrySource.contains(";firstActualSourcePage="))
         assertTrue(telemetrySource.contains("BenchmarkAdjacentCommitSignal.publishRunwayReady("))
+        assertTrue(telemetrySource.contains("currentForwardBoundaryReachedAtNanos()"))
+        assertTrue(
+            benchmarkSignalSource.contains("EXTRA_FORWARD_BOUNDARY_REACHED_AT_NANOS")
+        )
+        assertTrue(
+            macroSource.contains("semanticCommit.forwardBoundaryReachedAtNanos")
+        )
 
         val semantic = block("fun requireSourceCheckpointForSemanticProof(", macroSource)
         assertTrue(semantic.contains("semanticViewerGeneration != current.viewerGeneration"))

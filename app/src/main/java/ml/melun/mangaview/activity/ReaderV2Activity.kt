@@ -6400,7 +6400,8 @@ if (!renderView.isShown ||
             .sorted()
         val transitionCardDefectCount = ReaderPipelinePolicy.strictTransitionCardDefectCount(
             coverage.visibleCards,
-            strictTelemetryActualInLifecycle
+            strictTelemetryActualInLifecycle,
+            coverage.directWifiForwardOnlyInitialResume
         )
         val viewportDefectReasons = ReaderPipelinePolicy.strictViewportDefectReasons(
             coverage.physicalViewportPx,
@@ -6617,9 +6618,32 @@ if (!renderView.isShown ||
 
         val firstVisibleSource = identities.minOf { (_, identity) -> identity.sourcePageIndex }
         val lastVisibleSource = identities.maxOf { (_, identity) -> identity.sourcePageIndex }
-        var actualStateEpisodePath = physicalEpisodePath
-        var actualStateFirstSource = firstVisibleSource
-        var actualStateLastSource = lastVisibleSource
+        // A boundary viewport can contain the launch tail and adjacent p0 simultaneously. Keep
+        // its representative accessibility identity on the launch episode for as long as any
+        // launch pixels are physically visible. The exact adjacent IPC/semantic signals below
+        // still publish p0-p3 independently; advancing this node early merely erases Continue's
+        // exact restored-anchor evidence before the first committed frame can be observed.
+        val launchPixelsVisible = identities.any { (_, identity) ->
+            identity.normalizedEpisodePath == launchSeal.normalizedEpisodePath
+        }
+        val launchIdentities = if (launchPixelsVisible) {
+            identities.filter { (_, identity) ->
+                identity.normalizedEpisodePath == launchSeal.normalizedEpisodePath
+            }
+        } else {
+            emptyList()
+        }
+        var actualStateEpisodePath = if (launchIdentities.isNotEmpty()) {
+            launchSeal.normalizedEpisodePath
+        } else {
+            physicalEpisodePath
+        }
+        var actualStateFirstSource = launchIdentities.minOfOrNull { (_, identity) ->
+            identity.sourcePageIndex
+        } ?: firstVisibleSource
+        var actualStateLastSource = launchIdentities.maxOfOrNull { (_, identity) ->
+            identity.sourcePageIndex
+        } ?: lastVisibleSource
         var benchmarkSemanticEpisodePath = ""
         var benchmarkSemanticSourceIndexes = emptyList<Int>()
         val ntkAdjacentCompletionPolicy =
@@ -6680,14 +6704,16 @@ if (!renderView.isShown ||
                 // physical IPC, even when the viewport still contains launch-tail pixels. Using
                 // the launch episode plus a max source from a different episode would not be an
                 // exact semantic identity and could never satisfy the three-way timestamp bind.
-                actualStateEpisodePath = adjacentIdentity.normalizedEpisodePath
-                actualStateFirstSource = adjacentIdentity.sourcePageIndex
-                actualStateLastSource = adjacentIdentity.sourcePageIndex
-                adoptPhysicallyPresentedAdjacentEpisode(
-                    activeSession,
-                    displayPage,
-                    adjacentIdentity.normalizedEpisodePath,
-                )
+                if (!launchPixelsVisible) {
+                    actualStateEpisodePath = adjacentIdentity.normalizedEpisodePath
+                    actualStateFirstSource = adjacentIdentity.sourcePageIndex
+                    actualStateLastSource = adjacentIdentity.sourcePageIndex
+                    adoptPhysicallyPresentedAdjacentEpisode(
+                        activeSession,
+                        displayPage,
+                        adjacentIdentity.normalizedEpisodePath,
+                    )
+                }
             }
         }
         // Publish after the boundary/adjacent one-shots are recorded so this exact accessibility

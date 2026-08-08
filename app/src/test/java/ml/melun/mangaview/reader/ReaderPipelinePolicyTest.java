@@ -160,6 +160,8 @@ public class ReaderPipelinePolicyTest {
         assertEquals(1, ReaderPipelinePolicy.strictTransitionCardDefectCount(1, false));
         assertEquals(0, ReaderPipelinePolicy.strictTransitionCardDefectCount(1, true));
         assertEquals(0, ReaderPipelinePolicy.strictTransitionCardDefectCount(0, false));
+        assertEquals(0, ReaderPipelinePolicy.strictTransitionCardDefectCount(1, false, true));
+        assertEquals(1, ReaderPipelinePolicy.strictTransitionCardDefectCount(1, false, false));
     }
 
     @Test

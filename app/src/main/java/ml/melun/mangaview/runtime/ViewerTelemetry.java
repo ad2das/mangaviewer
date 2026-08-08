@@ -810,6 +810,16 @@ public final class ViewerTelemetry {
         event("forward_boundary_reached", session, "atNanos=" + boundaryAtNanos);
     }
 
+    /** Read-only benchmark evidence; it never participates in rendering or loading decisions. */
+    public static long currentForwardBoundaryReachedAtNanos() {
+        Session session = SESSION.get();
+        if(session == null)
+            return 0L;
+        synchronized(session) {
+            return Math.max(0L, session.forwardBoundaryReachedAtNanos);
+        }
+    }
+
     public static void frameSummary(
             long totalFrames, long jankyFrames, long worstFrameMs, String reason) {
         frameSummary(totalFrames, jankyFrames, worstFrameMs, 0L, 0L, reason);

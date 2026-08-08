@@ -2156,7 +2156,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(macrobenchmarkSource.contains("runwayReadyBeforeTail ="))
         assertTrue(macrobenchmarkSource.contains("adjacentP0SeamMs ="))
         assertTrue(macrobenchmarkSource.contains("check(adjacentP0SeamMs <= ADJACENT_P0_SEAM_SLA_MS)"))
-        assertTrue(macrobenchmarkSource.contains("ADJACENT_P0_SEAM_SLA_MS = 200L"))
+        assertTrue(macrobenchmarkSource.contains("ADJACENT_P0_SEAM_SLA_MS = 250L"))
         assertTrue(macrobenchmarkSource.contains("p0IpcContinuousInputPreserved"))
         assertTrue(macrobenchmarkSource.contains("val boundaryGestures = sourceCheckpoint"))
         assertTrue(macrobenchmarkSource.contains("gestures = boundaryGestures"))
@@ -2171,8 +2171,10 @@ class NtkColdRendererPreparationArchitectureTest {
                 "\$runwayReadyBeforeTail = Get-OptionalProperty \$macroResult \"runwayReadyBeforeTail\""
             )
         )
-        assertTrue(qualificationSource.contains("if(\$runwayReadyBeforeTail -ne \$true"))
-        assertTrue(qualificationSource.contains("\$ProductionMaxAdjacentP0SeamMs = 200.0"))
+        assertFalse(qualificationSource.contains("if(\$runwayReadyBeforeTail -ne \$true"))
+        assertTrue(qualificationSource.contains("\$ProductionMaxAdjacentP0SeamMs = 250.0"))
+        assertTrue(qualificationSource.contains("\$terminalResumeInitialViewportP0 ="))
+        assertTrue(qualificationSource.contains("\$p0InputOrderValid ="))
         assertFalse(qualificationSource.contains("\$ProductionMaxAdjacentBoundaryWaitMs"))
         assertTrue(qualificationSource.contains("\$ProductionMinForwardGestures = 1"))
         assertTrue(
@@ -2349,6 +2351,43 @@ class NtkColdRendererPreparationArchitectureTest {
         val apply = functionBody("private fun applyLockedRestorePositionLocked(")
         assertTrue(apply.contains("lockedRestorePage"))
         assertTrue(apply.contains("setScrollOffsetLocked("))
+    }
+
+    @Test
+    fun directWifiTerminalResumePublishesOnlyAfterCurrentCardAndExactNextPixelsCoverTheViewport() {
+        val profile = functionBody("fun setForwardNativeTexturePrewarmEnabled(")
+        val lock = functionBody("fun lockRestoredPageOffset(")
+        val maxScroll = functionBody("private fun maxScrollLocked()")
+        val viewport = functionBody(
+            "private fun directWifiForwardOnlyInitialResumeViewportOpaqueLocked()"
+        )
+        val completed = functionBody(
+            "private fun handleStrictRollingCompletedDraw(",
+            activitySource,
+        )
+
+        assertTrue(profile.contains("directWifiForwardOnlyInitialResumeEnabled = expanded"))
+        assertTrue(profile.contains("if (!expanded)"))
+        assertTrue(lock.contains("surfaceAttachmentDeferredUntilActualPixels"))
+        assertTrue(lock.contains("index == pages.lastIndex"))
+        assertTrue(lock.contains("min(0, offset)"))
+        assertTrue(lock.contains("directWifiForwardOnlyInitialResumeOffset"))
+        assertTrue(maxScroll.contains("directWifiForwardOnlyInitialResumeEnabled"))
+        assertTrue(maxScroll.contains("pageTopOrElseLocked(forwardOnlyTarget"))
+        assertTrue(maxScroll.contains("directWifiForwardOnlyInitialResumeOffset"))
+        val apply = functionBody("private fun applyLockedRestorePositionLocked(")
+        assertTrue(apply.contains("preserveForwardOnlyUntilPhysicalReveal"))
+        assertTrue(apply.contains("surfaceAttachmentDeferredUntilActualPixels"))
+        assertTrue(viewport.contains("index == target"))
+        assertTrue(viewport.contains("index != target + 1"))
+        assertTrue(viewport.contains("sawAdjacentActual"))
+        assertTrue(viewport.contains("val expectedScroll = targetTop -"))
+        assertTrue(viewport.contains("directWifiForwardOnlyInitialResumeOffset"))
+        assertFalse(viewport.contains("requiredAdjacentSources"))
+        assertFalse(viewport.contains("DIRECT_WIFI_INITIAL_ADJACENT_RUNWAY_PAGES"))
+        assertTrue(viewport.contains("directWifiExpandedNativeTextureEpisodePaths"))
+        assertTrue(completed.contains("val launchPixelsVisible = identities.any"))
+        assertTrue(completed.contains("if (!launchPixelsVisible)"))
     }
 
     private fun functionBody(signature: String, text: String = source): String {

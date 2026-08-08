@@ -542,6 +542,7 @@ internal object AdjacentSemanticCommitDescriptionPolicy {
         viewerGeneration: Long,
         presentedAtNanos: Long,
         firstAdjacentPresentedAtNanos: Long,
+        forwardBoundaryReachedAtNanos: Long = 0L,
     ): String {
         require(episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
         require(sourceIndex in 0..3)
@@ -557,7 +558,8 @@ internal object AdjacentSemanticCommitDescriptionPolicy {
             ";adjacentRunwayTargetEpisode=unknown" +
             ";adjacentRunwayPageCount=0" +
             ";adjacentTotalPageCount=0" +
-            ";forwardBoundaryReachedAtNanos=0" +
+            ";forwardBoundaryReachedAtNanos=" +
+            forwardBoundaryReachedAtNanos.coerceAtLeast(0L) +
             ";firstAdjacentActualAtNanos=$firstAt" +
             ";firstAdjacentActualEpisode=$firstEpisode"
     }
@@ -811,6 +813,7 @@ internal data class AdjacentSemanticCommitPayload(
     val sourceIndex: Int,
     val presentedAtNanos: Long,
     val semanticPublishedAtNanos: Long,
+    val forwardBoundaryReachedAtNanos: Long = 0L,
     val senderAtNanos: Long,
     val viewerGeneration: Long,
 )
@@ -835,6 +838,11 @@ internal object AdjacentSemanticCommitSignalPolicy {
             AdjacentP0IpcRejectReason.PRESENTED_TIMESTAMP
         semanticPayload.semanticPublishedAtNanos < semanticPayload.presentedAtNanos ->
             AdjacentP0IpcRejectReason.SEMANTIC_TIMESTAMP
+        semanticPayload.sourceIndex == 0 &&
+            (semanticPayload.forwardBoundaryReachedAtNanos <= 0L ||
+                semanticPayload.forwardBoundaryReachedAtNanos >
+                    semanticPayload.presentedAtNanos) ->
+            AdjacentP0IpcRejectReason.BOUNDARY_TIMESTAMP
         semanticPayload.senderAtNanos < semanticPayload.semanticPublishedAtNanos ->
             AdjacentP0IpcRejectReason.SENDER_TIMESTAMP
         receivedAtNanos < semanticPayload.senderAtNanos ->
@@ -901,16 +909,23 @@ internal object AdjacentP0IpcSignalPolicy {
     }
 }
 
-/** Prevents a prepared/armed channel from proving p0 before the first physical DOWN begins. */
+/**
+ * Prevents a prepared/armed channel from proving p0 before the first physical DOWN begins.
+ * A terminal Continue is the sole exception: its remaining current image can be shorter than the
+ * viewport, so an exact p0 compositor checkpoint is legitimately part of the first opaque frame.
+ */
 internal object AdjacentP0AfterInputStartPolicy {
     fun rejection(
         firstDownInjectionStartedAtNanos: Long,
         presentedAtNanos: Long,
         acceptedAtNanos: Long,
+        allowTerminalResumeInitialViewport: Boolean = false,
     ): AdjacentP0IpcRejectReason = if (
+        !allowTerminalResumeInitialViewport && (
         firstDownInjectionStartedAtNanos <= 0L ||
         presentedAtNanos < firstDownInjectionStartedAtNanos ||
         acceptedAtNanos < firstDownInjectionStartedAtNanos
+        )
     ) {
         AdjacentP0IpcRejectReason.EARLY_SIGNAL
     } else {
@@ -1022,6 +1037,7 @@ internal enum class AdjacentP0IpcRejectReason {
     DUPLICATE,
     PHASE,
     SEMANTIC_TIMESTAMP,
+    BOUNDARY_TIMESTAMP,
     PHYSICAL_MISMATCH,
     PAGE_COUNT,
 }

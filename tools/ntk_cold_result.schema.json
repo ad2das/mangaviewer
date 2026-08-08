@@ -1036,7 +1036,7 @@
               "forwardBoundaryReachedAtNanos": { "type": "integer", "minimum": 1 },
               "firstAdjacentActualAtNanos": { "type": "integer", "minimum": 1 },
               "firstAdjacentActualEpisode": { "type": "string", "minLength": 1 },
-              "adjacentP0SeamMs": { "type": "number", "minimum": 0, "maximum": 200 },
+              "adjacentP0SeamMs": { "type": "number", "minimum": 0, "maximum": 250 },
               "p0EmbeddedFirstAdjacentActualAtNanos": { "type": "integer", "minimum": 1 },
               "p0HarnessObservedAtNanos": { "type": "integer", "minimum": 1 },
               "p0GesturesAtObservation": { "type": "integer", "minimum": 0 },

@@ -420,6 +420,22 @@ object ReaderPipelinePolicy {
         actualImagePreviouslyCommitted: Boolean
     ): Int = if (actualImagePreviouslyCommitted) 0 else visibleCards.coerceAtLeast(0)
 
+    /**
+     * A source-qualified direct-Wi-Fi terminal resume may first commit the exact current tail and
+     * its single forward transition together. That is not the placeholder-before-image case the
+     * two-argument policy rejects.
+     */
+    @JvmStatic
+    fun strictTransitionCardDefectCount(
+        visibleCards: Int,
+        actualImagePreviouslyCommitted: Boolean,
+        directWifiForwardOnlyInitialResume: Boolean
+    ): Int = if (directWifiForwardOnlyInitialResume) {
+        0
+    } else {
+        strictTransitionCardDefectCount(visibleCards, actualImagePreviouslyCommitted)
+    }
+
     @JvmStatic
     fun isStrictBottomEdgeEligible(
         pageCount: Int,

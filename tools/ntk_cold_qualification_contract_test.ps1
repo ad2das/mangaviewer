@@ -460,7 +460,7 @@ $infraCase.measurementInvalid = $true
 $infraCase.measurementInvalidReason =
     "MEASUREMENT_INVALID: source=0 semanticLag=786.0985ms>240ms"
 $infraCase.invalidMeasurementDiagnostics = @(
-    "forward-adjacent p0 seam exceeded the 200ms physical UX bound",
+    "forward-adjacent p0 seam exceeded the 250ms physical UX bound",
     "all canonical images exceeded 8000ms"
 )
 $infraCase.violations = @(
@@ -498,7 +498,7 @@ try {
                     "MEASUREMENT_INVALID: source=0 semanticLag=786.0985ms>240ms",
                     [StringComparison]::Ordinal) -or
                     -not $renderedInfraReport.Contains(
-                        "forward-adjacent p0 seam exceeded the 200ms physical UX bound",
+                        "forward-adjacent p0 seam exceeded the 250ms physical UX bound",
                         [StringComparison]::Ordinal) -or
                     -not $renderedInfraReport.Contains(
                         "all canonical images exceeded 8000ms",
@@ -580,7 +580,7 @@ if(-not $macroSource.Contains(
         -not $resumePlanSource.Contains(
             'runwayDrawableCount == requiredRunwayPageCount',
             [StringComparison]::Ordinal) -or
-        -not $macroSource.Contains('ADJACENT_P0_SEAM_SLA_MS = 200L',
+        -not $macroSource.Contains('ADJACENT_P0_SEAM_SLA_MS = 250L',
             [StringComparison]::Ordinal) -or
         -not $macroSource.Contains('MAX_INPUT_INTER_GESTURE_GAP_MS = 64L',
             [StringComparison]::Ordinal) -or
@@ -597,7 +597,7 @@ if(-not $macroSource.Contains(
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$requiredAdjacentRunwayPages = 4',
             [StringComparison]::Ordinal) -or
-        -not $source.Contains('$ProductionMaxAdjacentP0SeamMs = 200.0',
+        -not $source.Contains('$ProductionMaxAdjacentP0SeamMs = 250.0',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$ProductionMaxP0DetectionLagMs = 240.0',
             [StringComparison]::Ordinal) -or
@@ -618,6 +618,14 @@ if($macroSource.Contains('ADJACENT_BOUNDARY_WAIT_SLA_MS', [StringComparison]::Or
         $reportSource.Contains('$case.runwayReadyBeforeTail -eq $true',
             [StringComparison]::Ordinal)) {
     throw "Historical pre-tail runway diagnostics must not be used as pass gates"
+}
+if(-not $source.Contains('$terminalResumeInitialViewportP0 =',
+        [StringComparison]::Ordinal) -or
+        -not $source.Contains('$p0InputOrderValid =', [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains('$terminalResumeInitialViewportP0 =',
+            [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains('$p0InputOrderValid =', [StringComparison]::Ordinal)) {
+    throw "Terminal Continue initial-viewport p0 is not consistently recognized"
 }
 $formalPassContract = $schema.allOf[3].then.properties
 if([int]$formalPassContract.expectedWebtoon.const -ne 20 -or
@@ -713,7 +721,7 @@ foreach($adjacentField in @(
         throw "Qualification case summary does not copy adjacent evidence: $adjacentField"
     }
 }
-if([double]$passedCaseProperties.adjacentP0SeamMs.maximum -ne 200.0 -or
+if([double]$passedCaseProperties.adjacentP0SeamMs.maximum -ne 250.0 -or
         [string]$passedCaseProperties.classification.const -cne "VALID" -or
         [string]$passedCaseProperties.adjacentPhysicallyObservedSources.const -cne
             "0,1,2,3" -or

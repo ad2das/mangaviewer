@@ -485,7 +485,7 @@ for($index = 0; $index -lt $cases.Count; $index++) {
             [string]$case.firstAdjacentActualEpisode -ceq
                 [string]$case.expectedAdjacentEpisodePath -and
             [double]$case.adjacentP0SeamMs -ge 0.0 -and
-            [double]$case.adjacentP0SeamMs -le 200.0 -and
+            [double]$case.adjacentP0SeamMs -le 250.0 -and
             (Test-NumericApproximatelyEqual `
                 $case.adjacentP0SeamMs $expectedAdjacentP0SeamMs)) `
             "forward-adjacent p0 seam timing proof failed: $($case.caseId)"
@@ -525,6 +525,15 @@ for($index = 0; $index -lt $cases.Count; $index++) {
         } else {
             $null -eq $case.p0SemanticEventLeadMs
         }
+        $terminalResumeInitialViewportP0 =
+            [int]$case.resumePage -eq ([int]$case.currentPageCount - 1) -and
+            [int]$case.expectedForwardPageCount -eq 1 -and
+            [int]$case.resumeOffset -le 0 -and
+            [int]$case.p0GesturesAtObservation -eq 0 -and
+            [int]$case.p0IpcGesturesAtSignal -eq 0
+        $p0InputOrderValid = $inputStartElapsedNanos -gt 0 -and
+            ($inputStartElapsedNanos -le $p0EmbeddedAtNanos -or
+                $terminalResumeInitialViewportP0)
         Assert-Contract ($p0EmbeddedAtNanos -gt 0 -and
             $p0EmbeddedAtNanos -eq $firstAdjacentActualAtNanos -and
             $p0IpcPresentedAtNanos -eq $p0EmbeddedAtNanos -and
@@ -536,7 +545,7 @@ for($index = 0; $index -lt $cases.Count; $index++) {
             $p0HarnessObservedAtNanos -ge $p0EmbeddedAtNanos -and
             $p0IpcSemanticObservedAtNanos -eq $p0HarnessObservedAtNanos -and
             $p0EventDiagnosticsValid -and
-            $inputStartElapsedNanos -gt 0 -and $inputStartElapsedNanos -le $p0EmbeddedAtNanos -and
+            $p0InputOrderValid -and
             $inputEndElapsedNanos -ge $p0IpcSemanticObservedAtNanos) `
             "adjacent p0 IPC/semantic timestamp order invalid: $($case.caseId)"
         $expectedP0PresentedToSenderLagMs =

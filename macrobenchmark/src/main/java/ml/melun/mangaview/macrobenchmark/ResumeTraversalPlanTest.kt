@@ -796,6 +796,15 @@ class ResumeTraversalPlanTest {
                 acceptedAtNanos = firstDownAt - 1L,
             ),
         )
+        assertEquals(
+            AdjacentP0IpcRejectReason.NONE,
+            AdjacentP0AfterInputStartPolicy.rejection(
+                firstDownInjectionStartedAtNanos = 0L,
+                presentedAtNanos = firstDownAt - 1L,
+                acceptedAtNanos = firstDownAt,
+                allowTerminalResumeInitialViewport = true,
+            ),
+        )
     }
 
     @Test
@@ -1169,6 +1178,33 @@ class ResumeTraversalPlanTest {
                 semantic.copy(
                     semanticPublishedAtNanos = semantic.presentedAtNanos - 1L,
                 )
+            ),
+        )
+        val physicalP0 = validP0IpcPayload()
+        val semanticP0 = semantic.copy(
+            sourceIndex = 0,
+            forwardBoundaryReachedAtNanos = physicalP0.presentedAtNanos - 1L,
+        )
+        assertEquals(
+            AdjacentP0IpcRejectReason.NONE,
+            AdjacentSemanticCommitSignalPolicy.rejection(
+                expectedNonce = physicalP0.nonce,
+                expectedCaseId = physicalP0.caseId,
+                expectedEpisodePath = physicalP0.episodePath,
+                physicalPayload = physicalP0,
+                semanticPayload = semanticP0,
+                receivedAtNanos = physicalP0.presentedAtNanos + 42_000_000L,
+            ),
+        )
+        assertEquals(
+            AdjacentP0IpcRejectReason.BOUNDARY_TIMESTAMP,
+            AdjacentSemanticCommitSignalPolicy.rejection(
+                expectedNonce = physicalP0.nonce,
+                expectedCaseId = physicalP0.caseId,
+                expectedEpisodePath = physicalP0.episodePath,
+                physicalPayload = physicalP0,
+                semanticPayload = semanticP0.copy(forwardBoundaryReachedAtNanos = 0L),
+                receivedAtNanos = physicalP0.presentedAtNanos + 42_000_000L,
             ),
         )
     }
