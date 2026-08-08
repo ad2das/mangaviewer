@@ -238,10 +238,41 @@ object NtkManifestAuthorityFactory {
         lease: NtkDiscoveryLease?,
         plan: NtkProvisionalEpisodePlan?,
         envelope: NtkExactViewerImageApiEnvelope?
+    ): NtkManifestInstallResult = installViewerImageApiEnvelope(
+        context,
+        manga,
+        lease,
+        plan,
+        envelope,
+        null,
+    )
+
+    /**
+     * Promotes an already validated preview built from this exact envelope. The coordinator needs
+     * that preview before reserve to reconcile private bodies, so rebuilding its seal and proof at
+     * install only repeats hashes; this overload preserves the same reserve-then-promote ordering.
+     */
+    @JvmStatic
+    fun installViewerImageApiEnvelope(
+        context: Context?,
+        manga: Manga?,
+        lease: NtkDiscoveryLease?,
+        plan: NtkProvisionalEpisodePlan?,
+        envelope: NtkExactViewerImageApiEnvelope?,
+        preparedManifest: NtkAuthoritativeManifest?
     ): NtkManifestInstallResult {
         if (context == null || manga == null) return rejectedResponse()
-        val manifest = createViewerImageApiManifest(lease, plan, envelope)
-            ?: return rejectedResponse()
+        val manifest = when {
+            preparedManifest != null && preparedViewerImageApiManifestMatches(
+                lease,
+                plan,
+                envelope,
+                preparedManifest,
+            ) -> preparedManifest
+            preparedManifest != null -> return rejectedResponse()
+            else -> createViewerImageApiManifest(lease, plan, envelope)
+                ?: return rejectedResponse()
+        }
         return NtkSourceSpoolRegistry.promoteDocumentPlanToExact(
             context,
             manga,
@@ -249,6 +280,44 @@ object NtkManifestAuthorityFactory {
             plan?.proof?.proofDigestSha256,
             manifest
         )
+    }
+
+    private fun preparedViewerImageApiManifestMatches(
+        lease: NtkDiscoveryLease?,
+        plan: NtkProvisionalEpisodePlan?,
+        envelope: NtkExactViewerImageApiEnvelope?,
+        manifest: NtkAuthoritativeManifest,
+    ): Boolean {
+        if (lease == null || plan == null || envelope == null ||
+            !manifest.isProductionClaimable
+        ) return false
+        val proof = manifest.proof as? NtkViewerImageApiManifestProof ?: return false
+        return plan.proof.normalizedEpisodePath == lease.episodePath &&
+            plan.proof.discoveryGeneration == lease.generation.value &&
+            envelope.documentPlanProofDigestSha256 == plan.proof.proofDigestSha256 &&
+            envelope.viewerImageRequestIdentityDigestSha256 ==
+            plan.proof.requestIdentity.identityDigestSha256 &&
+            envelope.response.request === envelope.request &&
+            envelope.response.consumedToEof &&
+            manifest.seal.normalizedEpisodePath == lease.episodePath &&
+            manifest.seal.revision == lease.generation.value &&
+            manifest.seal.normalizedCanonicalAssets == plan.normalizedOrderedCanonicalAssets &&
+            manifest.seal.normalizedCanonicalAssets ==
+            envelope.orderedAssets.map(NtkStripDigests::canonicalAsset) &&
+            manifest.seal.digestSha256 == envelope.orderedAssetsDigestSha256 &&
+            proof.documentPlanProofDigestSha256 == plan.proof.proofDigestSha256 &&
+            proof.viewerImageRequestIdentityDigestSha256 ==
+            plan.proof.requestIdentity.identityDigestSha256 &&
+            proof.canonicalRequestUrl == envelope.response.requestUrl.trim() &&
+            proof.canonicalFinalUrl == envelope.response.finalUrl.trim() &&
+            proof.selectedHeadersDigestSha256 == envelope.selectedHeadersDigestSha256 &&
+            proof.responseBodyLength == envelope.response.bodyBytes.size.toLong() &&
+            proof.requestBodyLength == envelope.request.bodyBytes.size.toLong() &&
+            proof.pageCount == plan.pageCount &&
+            proof.orderedAssetsDigestSha256 == envelope.orderedAssetsDigestSha256 &&
+            proof.manifestDigestSha256 == manifest.seal.digestSha256 &&
+            proof.orderedAssetSelectionPolicyVersion ==
+            envelope.orderedAssetSelectionPolicyVersion
     }
 
     /** Builds immutable exact authority without publishing it, for pre-install cache adoption. */

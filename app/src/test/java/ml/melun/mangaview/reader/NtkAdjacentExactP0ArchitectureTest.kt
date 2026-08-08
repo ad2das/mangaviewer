@@ -42,6 +42,29 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(callback.contains("setPageCard(publication.cardIndex"))
         assertTrue(callback.contains("installAdjacentExactP0Delta(publication.delta)"))
         assertTrue(callback.contains("setFrameSchedulingSuppressed(false)"))
+        assertTrue(callback.contains(
+            "requestDirectWifiAdjacentExactP0ContentCatchup(publication.delta.owner)"
+        ))
+        assertTrue(callback.contains("catchupEligible = result.accepted && result.firstInstall"))
+        assertTrue(
+            callback.indexOf("setFrameSchedulingSuppressed(false)") <
+                callback.indexOf("requestDirectWifiAdjacentExactP0ContentCatchup")
+        )
+        val catchup = block("fun requestDirectWifiAdjacentExactP0ContentCatchup(", surface)
+        assertTrue(catchup.contains("directWifiExpandedNativeTextureEpisodePaths"))
+        assertTrue(catchup.contains("NtkAdjacentExactP0FrameCatchupPolicy.shouldPost"))
+        assertTrue(catchup.contains("inFlightEpoch"))
+        assertTrue(catchup.contains("inFlightToken"))
+        assertTrue(catchup.contains("postAtFrontOfQueue(directAdjacentExactP0Catchup)"))
+        val catchupRunnable = block("private val directAdjacentExactP0Catchup:", surface)
+        assertTrue(catchupRunnable.contains("directWifiExpandedNativeTextureRunway"))
+        assertTrue(catchupRunnable.contains(
+            "pages.any { it.adjacentExactOwner == expectedOwner }"
+        ))
+        assertTrue(catchupRunnable.contains("inFlightEpoch == expectedEpoch"))
+        assertTrue(catchupRunnable.contains("inFlightToken == expectedToken"))
+        assertTrue(catchupRunnable.contains("rollingNativeAttachEpoch == expectedAttachEpoch"))
+        assertTrue(catchupRunnable.contains("removeCallbacks(directFramePostRunnable)"))
         assertTrue(publish.contains("rollbackAdjacentRunwayStructure(cardIndex, initialRefs)"))
         assertTrue(publish.contains("recycleAdjacentExactP0Delta(flight.head)"))
     }
@@ -87,6 +110,7 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(publish.contains("adjacentExactP0PreparePaths.add(exactPath)"))
         assertTrue(publish.contains("append_adjacent_exact_p0_prepare_join"))
         assertTrue(publish.contains("adjacentExactP0PreparePaths.remove(exactPath)"))
+        assertTrue(publish.contains("val publishedFallbackReady = !descriptorReady"))
         assertTrue(construction.contains("adjacentPrefetch && directWifiTransport"))
         assertTrue(construction.contains("!cellularResilientTransport"))
         assertTrue(construction.contains("planBinding.episodePath.startsWith(\"/webtoon/\")"))
@@ -120,7 +144,11 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(schedule.contains("exactWakeRegistry.register"))
         assertTrue(schedule.contains("adjacentStrictBodyDescriptors.containsKey(descriptorKey)"))
         assertTrue(schedule.contains("initialAdjacentRunwayAppendRetryDelayMs(target)"))
+        assertTrue(schedule.contains("initialAdjacentWebtoonP0EventWakeLane.get() == true"))
+        assertTrue(schedule.contains("if (directWebtoonEventWake || directManhwaEventWake)"))
         assertTrue(reader.contains("waitingInitialAdjacentExactP0Appends.cancelAll()"))
+        assertTrue(reader.contains("initialAdjacentWebtoonP0EventWakeLane.set(true)"))
+        assertTrue(reader.contains("initialAdjacentWebtoonP0EventWakeLane.remove()"))
     }
 
     @Test
@@ -145,7 +173,7 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(schedule.contains(
             "initialAdjacentManhwaRunwayEventWakeKeys.remove(exactP0WakeKey)"
         ))
-        assertTrue(schedule.contains("if (directManhwaEventWake)"))
+        assertTrue(schedule.contains("if (directWebtoonEventWake || directManhwaEventWake)"))
         assertTrue(schedule.contains("appendWork.run()"))
         assertTrue(reader.contains(
             "postImmediate = { runnable -> initialAdjacentRunwayNetwork.execute(runnable) }"

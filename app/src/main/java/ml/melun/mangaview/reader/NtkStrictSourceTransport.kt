@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import java.io.Closeable
 import java.io.File
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class NtkStrictPredecodedOriginal internal constructor(
     private val completion: CompletableFuture<Bitmap?>,
     private val abandoned: AtomicBoolean = AtomicBoolean(false),
+    private val started: AtomicBoolean = AtomicBoolean(completion.isDone),
 ) : Closeable {
     private val lock = Any()
     private var closed = false
@@ -43,6 +45,48 @@ class NtkStrictPredecodedOriginal internal constructor(
         val accepted = synchronized(lock) {
             if (closed || transferred || bitmap.isRecycled ||
                 bitmap.width != sourceWidth || bitmap.height != sourceHeight
+            ) {
+                null
+            } else {
+                transferred = true
+                bitmap
+            }
+        }
+        if (accepted == null) close()
+        return accepted
+    }
+
+    /**
+     * Bounded counterpart used only by the dedicated host-emulator adjacent-p0 decoder.
+     * A queued speculative task never parks the authoritative path; an already-running task gets
+     * only a few milliseconds to avoid launching a second JPEG decode of the same one-tile page.
+     */
+    fun takeIfReadyOrAwaitStarted(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        waitMs: Long,
+    ): Bitmap? {
+        require(waitMs >= 0L)
+        val bitmap = when {
+            completion.isDone -> runCatching { completion.getNow(null) }.getOrNull()
+            started.get() && waitMs > 0L -> try {
+                completion.get(waitMs, TimeUnit.MILLISECONDS)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                null
+            } catch (_: Exception) {
+                null
+            }
+            else -> null
+        }
+        if (bitmap == null) {
+            close()
+            return null
+        }
+        val accepted = synchronized(lock) {
+            if (closed || transferred || bitmap.isRecycled ||
+                bitmap.width != sourceWidth || bitmap.height != sourceHeight ||
+                bitmap.config != Bitmap.Config.ARGB_8888 || bitmap.isMutable
             ) {
                 null
             } else {

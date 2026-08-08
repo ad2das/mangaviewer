@@ -73,12 +73,16 @@ class NtkDirectWifiAdjacentRunwayTailHandoffTest {
             sources: List<Int> = listOf(0, 1, 2, 3),
             ready: List<Boolean> = listOf(true, true, true, true),
             direct: Boolean = true,
+            exactDescriptorOnly: Boolean = false,
+            sides: List<Int> = sources.map { 0 },
         ) = NtkDirectWifiAdjacentInitialAtomicRunwayPolicy.attachedImagePageCount(
             directWifiStrictAdjacent = direct,
             episodePath = path,
             sourceIndexes = sources,
             publishable = ready,
             maximumRunwayPages = 4,
+            strictExactDescriptorOnly = exactDescriptorOnly,
+            sourceSides = sides,
         )
 
         assertTrue(attached() == 4)
@@ -87,6 +91,54 @@ class NtkDirectWifiAdjacentRunwayTailHandoffTest {
         assertTrue(attached(sources = listOf(0, 2, 1, 3)) == 1)
         assertTrue(attached(path = "/webtoon/work/next") == 1)
         assertTrue(attached(direct = false) == 1)
+        assertTrue(attached(exactDescriptorOnly = true) == 4)
+        assertTrue(
+            attached(
+                ready = listOf(true, true, false, true),
+                exactDescriptorOnly = true,
+            ) == 0,
+        )
+        assertTrue(
+            attached(
+                sources = listOf(0, 1),
+                ready = listOf(true, true),
+                exactDescriptorOnly = true,
+            ) == 2,
+        )
+        assertTrue(
+            attached(
+                sources = listOf(0, 0, 1, 2),
+                sides = listOf(0, 1, 0, 0),
+                exactDescriptorOnly = true,
+            ) == 4,
+        )
+        assertTrue(
+            attached(
+                sources = listOf(0, 0, 1, 1),
+                sides = listOf(0, 1, 0, 1),
+                exactDescriptorOnly = true,
+            ) == 4,
+        )
+        assertTrue(
+            attached(
+                sources = listOf(0, 0, 0, 1),
+                sides = listOf(0, 1, 1, 0),
+                exactDescriptorOnly = true,
+            ) == 0,
+        )
+        assertTrue(
+            attached(
+                sources = listOf(0, 0, 1, 2),
+                sides = listOf(0, 0, 0, 0),
+                exactDescriptorOnly = true,
+            ) == 0,
+        )
+        assertTrue(
+            attached(
+                sources = listOf(0, 2, 3, 4),
+                exactDescriptorOnly = true,
+            ) == 0,
+        )
     }
 
     @Test

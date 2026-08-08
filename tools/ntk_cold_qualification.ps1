@@ -502,6 +502,24 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     if(-not $freshDevice.hostGpuEmulatorSatisfied) {
         throw "Restarted emulator did not retain host-GPU qualification"
     }
+    # This qualification profile measures the host's wired route through the emulator's wlan0
+    # NAT adapter. The AVD also exposes a synthetic cellular network which Android may briefly
+    # promote when a background Google HTTPS validation probe flakes, even after wlan0 has been
+    # continuously validated for the admission window below. That route change selects the real
+    # production cellular/SNI pipeline and invalidates a Wi-Fi qualification case. Disable only
+    # the disposable AVD's synthetic mobile data before any app process is started; production
+    # mobile behavior and physical-device qualification are untouched.
+    $mobileDataDisable = Invoke-Adb @(
+        "shell", "svc", "data", "disable"
+    ) -TimeoutSeconds 30
+    $mobileDataState = Invoke-Adb @(
+        "shell", "settings", "get", "global", "mobile_data"
+    ) -TimeoutSeconds 30
+    if($mobileDataDisable.ExitCode -ne 0 -or
+            $mobileDataState.ExitCode -ne 0 -or
+            $mobileDataState.Stdout.Trim() -cne "0") {
+        throw "Restarted host-GPU emulator did not disable its synthetic cellular fallback"
+    }
     # The original process policy cannot survive a QEMU replacement. Apply and prove the same
     # scheduler class before package verification or any case navigation; otherwise case 1 runs
     # at High while every isolated later case silently falls back to Normal and inherits host HWC
@@ -682,6 +700,8 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         hostGpuSatisfied = [bool]$freshDevice.hostGpuEmulatorSatisfied
         guestMemoryMiB = $guestMemoryMiB
         guestCpuCount = 5
+        syntheticCellularDisabled = $true
+        mobileDataState = $mobileDataState.Stdout.Trim()
         ipReachabilityProven = $true
         dnsReachabilityProven = $true
         wifiDefaultProven = [bool]$wifiRoute.ready

@@ -622,7 +622,8 @@ public:
                 directWifiImmediateResumeMaxPage_ = -1;
                 directWifiFullPrewarmResumeNanos_ = 0;
                 activeDirectWifiPrewarmSuppressed_ = false;
-            } else if (directWifiTextureProfile_.load(std::memory_order_acquire)) {
+            } else if (directWifiTextureProfile_.load(std::memory_order_acquire) &&
+                       !hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire)) {
                 const std::int64_t now = nowNanos();
                 // Repeated reading gestures leave roughly 0.6 s between flings. Waiting for the
                 // generic 750 ms quiet gate meant that newly decoded current-episode tiles were
@@ -641,7 +642,9 @@ public:
             } else {
                 // A display-period delay is insufficient on host-GPU emulators: a normal chain of
                 // forward flings contains 20-200 ms quiet gaps, and uploads started there remain
-                // ahead of the next visible buffer in gfxstream. Require a real UX pause.
+                // ahead of the next visible buffer in gfxstream. Require a real UX pause. This
+                // also covers the host-emulator direct-Wi-Fi profile; physical direct Wi-Fi keeps
+                // its established one-page release-gap behavior above.
                 nextPrewarmUploadNanos_ = std::max(
                     nextPrewarmUploadNanos_,
                     nowNanos() + kPrewarmResumeQuietNanos);
@@ -653,8 +656,11 @@ public:
         if (!paused) condition_.notify_one();
     }
 
-    void setDirectWifiTextureProfile(bool enabled) noexcept {
+    void setDirectWifiTextureProfile(bool enabled, bool hostGpuEmulator) noexcept {
         directWifiTextureProfile_.store(enabled, std::memory_order_release);
+        hostGpuEmulatorSurfaceProfile_.store(
+            enabled && hostGpuEmulator,
+            std::memory_order_release);
     }
 
 private:
@@ -713,7 +719,8 @@ private:
     /** Called only while [mutex_] is held by the renderer loop. */
     bool isActiveDirectWifiPrewarmLocked() const noexcept {
         return prewarmPaused_ && !activeDirectWifiPrewarmSuppressed_ &&
-            directWifiTextureProfile_.load(std::memory_order_acquire);
+            directWifiTextureProfile_.load(std::memory_order_acquire) &&
+            !hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire);
     }
 
     /** Called only while [mutex_] is held by the renderer loop. */
@@ -1540,10 +1547,9 @@ private:
         (void)eglGetConfigAttrib(
             display_, config_, EGL_MAX_SWAP_INTERVAL, &maximumSwapInterval);
         // Choreographer is the sole 60 Hz pacing authority. Keeping EGL itself at interval one
-        // made gfxstream queueBuffer block 23-30 ms per physical frame and reduced the measured
-        // SurfaceFlinger cadence to 37-39 fps. Interval zero does not synthesize or interpolate a
-        // viewport: Java still submits at most the latest exact MotionEvent coordinate once per
-        // Choreographer callback.
+        // makes gfxstream queueBuffer block behind the emulator compositor. Interval zero does
+        // not synthesize or interpolate a viewport: Java still submits only the latest exact
+        // MotionEvent coordinate once per Choreographer callback.
         const EGLBoolean asynchronous = eglSwapInterval(display_, 0);
         const int nativeAsyncResult = setNativeWindowSwapInterval(command.window, 0);
         const auto& bufferControls = nativeWindowBufferControls();
@@ -1567,12 +1573,14 @@ private:
         const int autoRefreshOffResult = bufferControls.setAutoRefresh != nullptr
             ? bufferControls.setAutoRefresh(command.window, false)
             : -3;
-        // Keep exactly front/queued/producer. The Java/native mailboxes are already depth one, so
-        // a fourth BufferQueue slot can only retain an older physical viewport after the producer
-        // has moved on. Capping the queue at three moves that backpressure to the latest-wins
-        // mailbox instead of letting SurfaceFlinger drain a stale extra frame.
+        // Headless gfxstream retains one additional internally-acquired buffer beyond the visible
+        // front/queued/producer set. Its fourth slot is transport capacity only: Java/native still
+        // accepts at most the newest viewport. Physical Wi-Fi, mobile, and SNI retain the existing
+        // three-slot front/queued/producer queue; the profile is frozen by Java before attachment.
+        const bool hostGpuEmulatorQueue =
+            hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire);
         const int bufferCountResult = bufferControls.setBufferCount != nullptr
-            ? bufferControls.setBufferCount(command.window, 3)
+            ? bufferControls.setBufferCount(command.window, hostGpuEmulatorQueue ? 4 : 3)
             : -3;
         // Allocate the finite queue before physical scrolling begins. Leaving this lazy made
         // host-GPU eglSwapBuffers repeatedly spend 55-70 ms growing/acquiring the queue during
@@ -1607,7 +1615,7 @@ private:
         height_ = command.height;
         refreshPeriodNanos_ = command.refreshPeriodNanos > 0
             ? command.refreshPeriodNanos : kDefaultRefreshPeriodNanos;
-        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount3=%d intervalRange=%d..%d durationMs=%.3f",
+        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d hostBuffer4=%d bufferCountResult=%d intervalRange=%d..%d durationMs=%.3f",
               static_cast<unsigned long long>(surfaceEpoch_), width_, height_,
               static_cast<long long>(refreshPeriodNanos_),
               preparedWidth_ == width_ && preparedHeight_ == height_ ? 1 : 0,
@@ -1617,6 +1625,7 @@ private:
               frameRateResult,
               sharedBufferOffResult,
               autoRefreshOffResult,
+              hostGpuEmulatorQueue ? 1 : 0,
               bufferCountResult,
               minimumSwapInterval, maximumSwapInterval,
               static_cast<double>(end - begin) / 1'000'000.0);
@@ -2261,6 +2270,7 @@ private:
     int directWifiImmediateResumeMaxPage_ = -1;
     std::int64_t directWifiFullPrewarmResumeNanos_ = 0;
     std::atomic<bool> directWifiTextureProfile_{false};
+    std::atomic<bool> hostGpuEmulatorSurfaceProfile_{false};
 
     ntk::present::SurfaceControlPresentBackend backend_{};
     ntk::present::FixedTransportProfile profile_{};
@@ -2364,9 +2374,13 @@ Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeSetPrewarmPaused(
 
 extern "C" JNIEXPORT void JNICALL
 Java_ml_melun_mangaview_reader_NtkRollingNativeBridge_nativeSetDirectWifiTextureProfile(
-        JNIEnv*, jobject, jlong handle, jboolean enabled) {
+        JNIEnv*, jobject, jlong handle, jboolean enabled, jboolean hostGpuEmulator) {
     RollingRenderer* value = renderer(handle);
-    if (value != nullptr) value->setDirectWifiTextureProfile(enabled == JNI_TRUE);
+    if (value != nullptr) {
+        value->setDirectWifiTextureProfile(
+            enabled == JNI_TRUE,
+            hostGpuEmulator == JNI_TRUE);
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL

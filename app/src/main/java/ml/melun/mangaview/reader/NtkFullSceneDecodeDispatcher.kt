@@ -233,7 +233,7 @@ internal class NtkFullSceneDecodeDispatcher(
         check(nowActive in 1..laneCount)
         afterActiveIncrementForTest(nowActive)
         activeMax.updateAndGet { maxOf(it, nowActive) }
-        if (nowActive == laneCount) {
+        if (nowActive == initialCohortLanes) {
             threeWideEntries.incrementAndGet()
             val startedAt = System.nanoTime().coerceAtLeast(1L)
             check(threeWideStarted.compareAndSet(0L, startedAt))
@@ -244,7 +244,7 @@ internal class NtkFullSceneDecodeDispatcher(
     private fun leaveActiveDecode() = synchronized(activeAccountingLock) {
         val before = active.get()
         check(before in 1..laneCount)
-        if (before == laneCount) {
+        if (before == initialCohortLanes) {
             val started = threeWideStarted.getAndSet(0L)
             check(started > 0L)
             threeWideOverlap.addAndGet(

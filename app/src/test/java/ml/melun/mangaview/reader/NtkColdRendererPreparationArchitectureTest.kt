@@ -195,21 +195,16 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
-    fun strictProducerQueuePreparationDoesNotDelayTheReaderPipelineOrPublishPixels() {
-        val setContent = activitySource.indexOf("setContentView(root)")
-        val prepare = activitySource.indexOf(
-            "renderView.prepareDeferredSurfaceProducerAfterRootFrame()"
-        )
-        val pipeline = activitySource.indexOf("startReaderPipeline.run()")
-        val preparation = functionBody("fun prepareDeferredSurfaceProducerAfterRootFrame()")
+    fun strictRendererPreparationCannotPrecedeTheFirstCompleteActualHwuiCommit() {
+        val attached = functionBody("override fun onAttachedToWindow()")
+        val commit = functionBody("private fun onFrameCommitted(")
+        val reveal = functionBody("private fun revealNativeSurfaceAfterFirstHwuiCommit(")
 
-        assertTrue(setContent >= 0)
-        assertTrue(prepare > setContent)
-        assertTrue(pipeline > prepare)
-        assertTrue(preparation.contains("registerFrameCommitCallback"))
-        assertFalse(preparation.contains("nativeSubmit("))
-        assertFalse(preparation.contains("ImageRequest"))
-        assertFalse(preparation.contains("Bitmap"))
+        assertFalse(activitySource.contains("prepareDeferredSurfaceProducerAfterRootFrame"))
+        assertFalse(attached.contains("prepareRollingNativeRendererLocked()"))
+        assertTrue(commit.contains("cleanCommittedHwuiActualPixels"))
+        assertTrue(commit.contains("revealNativeSurfaceAfterFirstHwuiCommit("))
+        assertTrue(reveal.contains("prepareRollingNativeRendererLocked()"))
     }
 
     @Test
@@ -294,14 +289,27 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
-    fun deferredStrictSurfacePreparesRendererAfterViewAttachment() {
+    fun deferredStrictSurfaceStartsOnlyItsIdleProducerThreadAfterAttachment() {
         val attached = functionBody("override fun onAttachedToWindow()")
 
         assertTrue(attached.contains("super.onAttachedToWindow()"))
         assertTrue(attached.contains("if (rollingNativePresentationEnabled)"))
         assertTrue(attached.contains("startRenderThreadLocked()"))
-        assertTrue(attached.contains("if (surfaceAttachmentDeferredUntilActualPixels)"))
-        assertTrue(attached.contains("prepareRollingNativeRendererLocked()"))
+        assertFalse(attached.contains("prepareRollingNativeRendererLocked()"))
+    }
+
+    @Test
+    fun firstExactVisiblePageRevealsProgressivelyWithoutWaitingForFullViewport() {
+        val visible = functionBody("private fun hasVisibleActualPixelsLocked()")
+        val reevaluate = functionBody("private fun reevaluateDeferredSurfaceRevealLocked(")
+        val reveal = functionBody("private fun postSurfaceRevealLocked()")
+
+        assertTrue(visible.contains("page.committedIdentity != null"))
+        assertTrue(visible.contains("pageHasCompleteActualPixelsLocked(page)"))
+        assertTrue(reevaluate.contains("hasVisibleActualPixelsLocked()"))
+        assertFalse(reevaluate.contains("hasContinuousActualViewportPixelsLocked()"))
+        assertTrue(reveal.contains("hasVisibleActualPixelsLocked()"))
+        assertFalse(reveal.contains("hasContinuousActualViewportPixelsLocked()"))
     }
 
     @Test
@@ -309,11 +317,28 @@ class NtkColdRendererPreparationArchitectureTest {
         val sizeChanged = functionBody("override fun onSizeChanged(")
 
         assertTrue(sizeChanged.contains("if (width > 0 && height > 0)"))
+        assertTrue(sizeChanged.contains("captureNativeRenderTargetGeometryLocked(width, height)"))
         assertTrue(
             sizeChanged.contains(
                 "prepareRollingNativeRenderTargetsLocked(width, height)"
             )
         )
+    }
+
+    @Test
+    fun measuredTargetGeometryIsFrozenWithoutStartingNativeOrPixelWork() {
+        val capture = functionBody("private fun captureNativeRenderTargetGeometryLocked(")
+        val selection = functionBody("private fun nativeRenderTargetSizeLocked(")
+        val preparation = functionBody("private fun prepareRollingNativeRenderTargetsLocked(")
+
+        assertTrue(capture.contains("computeNativeRenderTargetSizeLocked("))
+        assertTrue(capture.contains("rollingNativeFrozenTargetWidth = target.first"))
+        assertTrue(selection.contains("rollingNativeFrozenViewportWidth == viewportWidth"))
+        assertTrue(selection.contains("rollingNativeFrozenTargetWidth"))
+        assertFalse(capture.contains("NtkRollingNativeBridge"))
+        assertFalse(capture.contains("Bitmap"))
+        assertFalse(capture.contains("Surface"))
+        assertFalse(preparation.contains("surfaceAttachmentDeferredUntilActualPixels"))
     }
 
     @Test
@@ -579,6 +604,10 @@ class NtkColdRendererPreparationArchitectureTest {
             "override fun onAdjacentExactManifestRequired(",
             activitySource
         )
+        val exactManifestGenerationPost = functionBody(
+            "private fun postAdjacentExactManifestForGeneration(",
+            activitySource,
+        )
         val prefetch = functionBody(
             "private fun maybeStartInitialTailAdjacentPrefetch(",
             sessionSource
@@ -707,19 +736,26 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(physicalAdmission.contains("adjacentPredecessorComplete"))
         assertTrue(physicalAdmission.contains("adjacentRunwayRelease"))
         assertTrue(exactInstall.contains("if (flight.adjacentPredecessorGate)"))
+        assertTrue(exactInstall.contains("awaitAdjacentControlReady(flight)"))
         assertTrue(exactInstall.contains("awaitAdjacentPredecessorComplete(flight)"))
         assertTrue(exactInstall.contains("flight.directWifiAdjacentBodyGate,"))
-        val adjacentAwait = exactInstall.indexOf("awaitAdjacentPredecessorComplete(flight)")
-        assertTrue(adjacentAwait >= 0)
-        assertTrue(adjacentAwait < exactInstall.indexOf("enterForegroundNetworkIfNeeded(flight)"))
-        assertTrue(adjacentAwait < exactInstall.indexOf("startAckNetworkPrerequisites("))
+        val adjacentControlAwait = exactInstall.indexOf("awaitAdjacentControlReady(flight)")
+        val adjacentBodyAwait = exactInstall.indexOf("awaitAdjacentPredecessorComplete(flight)")
+        assertTrue(adjacentControlAwait >= 0)
+        assertTrue(adjacentBodyAwait >= 0)
+        assertTrue(adjacentControlAwait < exactInstall.indexOf("enterForegroundNetworkIfNeeded(flight)"))
+        assertTrue(adjacentControlAwait < exactInstall.indexOf("startAckNetworkPrerequisites("))
         assertTrue(
-            adjacentAwait <
+            adjacentControlAwait <
                 exactInstall.indexOf("NtkClickOwnedManhwaProbeFrontier.start(")
         )
-        assertTrue(adjacentAwait < exactInstall.indexOf("client.fetchExactNtkEpisodeDocument("))
+        assertTrue(adjacentControlAwait < exactInstall.indexOf("client.fetchExactNtkEpisodeDocument("))
+        assertTrue(
+            exactInstall.indexOf("client.fetchExactNtkEpisodeDocument(") < adjacentBodyAwait
+        )
+        assertTrue(adjacentBodyAwait < exactInstall.indexOf("streamedRequestSeed ="))
         assertTrue(exactInstall.contains("if (plan != null)"))
-        assertTrue(adjacentAwait < exactInstall.indexOf("\"document_plan_reserve\""))
+        assertTrue(adjacentBodyAwait < exactInstall.indexOf("\"document_plan_reserve\""))
         assertTrue(
             exactInstall.indexOf("awaitAdjacentPredecessorComplete(flight)") <
                 exactInstall.indexOf("\"exact_plan_reserve\"")
@@ -767,9 +803,16 @@ class NtkColdRendererPreparationArchitectureTest {
             )
         )
         assertTrue(strictDiscoveryStart.contains("ownerPath,\n                predecessorPath,"))
-        assertTrue(exactManifestCallback.contains("val capturedPredecessorPath ="))
-        assertTrue(exactManifestCallback.contains("capturedPredecessorPath,"))
-        assertFalse(exactManifestCallback.contains("currentManga"))
+        assertTrue(exactManifestCallback.contains("postAdjacentExactManifestForGeneration("))
+        assertTrue(exactManifestCallback.contains("generation,"))
+        assertTrue(exactManifestGenerationPost.contains("val capturedPredecessorPath ="))
+        assertTrue(exactManifestGenerationPost.contains("capturedPredecessorPath,"))
+        assertTrue(
+            exactManifestGenerationPost.contains(
+                "generation != activeReaderSessionGeneration.get()",
+            ),
+        )
+        assertFalse(exactManifestGenerationPost.contains("currentManga"))
         assertTrue(prefetch.contains("!isEpisodeFullyDrawableForAdjacent(source)"))
         assertTrue(preappend.contains("isEpisodeFullyDrawableForAdjacent(source)"))
         assertTrue(appendAdjacent.contains("direction < 0"))
@@ -1110,13 +1153,31 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(source.contains("Surface.CHANGE_FRAME_RATE_ALWAYS"))
         assertTrue(attach.contains("setSharedBufferMode(command.window, false)"))
         assertTrue(attach.contains("setAutoRefresh(command.window, false)"))
-        assertTrue(attach.contains("setBufferCount(command.window, 3)"))
+        assertTrue(attach.contains("hostGpuEmulatorSurfaceProfile_.load"))
+        assertTrue(
+            attach.contains(
+                "setBufferCount(command.window, hostGpuEmulatorQueue ? 4 : 3)",
+            ),
+        )
         assertTrue(attach.contains("tryAllocateBuffers(command.window)"))
         assertTrue(attach.contains("EGL_BUFFER_DESTROYED"))
         assertFalse(attach.contains("setNativeWindowSwapInterval(command.window, 1)"))
         assertFalse(attach.contains("setSharedBufferMode(command.window, true)"))
         assertFalse(attach.contains("setAutoRefresh(command.window, true)"))
         assertFalse(attach.contains("EGL_BUFFER_PRESERVED"))
+    }
+
+    @Test
+    fun hostGpuEmulatorNeverRunsNonPresentingTextureUploadsDuringContinuousInput() {
+        val pause = functionBody("void setPrewarmPaused(bool paused)", rollingRendererSource)
+        val active = functionBody(
+            "bool isActiveDirectWifiPrewarmLocked() const noexcept",
+            rollingRendererSource,
+        )
+
+        assertTrue(pause.contains("!hostGpuEmulatorSurfaceProfile_.load"))
+        assertTrue(pause.contains("nowNanos() + kPrewarmResumeQuietNanos"))
+        assertTrue(active.contains("!hostGpuEmulatorSurfaceProfile_.load"))
     }
 
     @Test
@@ -1213,8 +1274,9 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(completionDiscovery.contains("onResolvedForwardPath?.invoke(targetPath)"))
         assertTrue(
             completionDiscovery.indexOf("watchForwardAdjacentExactManifestForPreappend(") <
-                completionDiscovery.indexOf("listener.onAdjacentExactManifestRequired(")
+                completionDiscovery.lastIndexOf("listener.onAdjacentExactManifestRequired(")
         )
+        assertTrue(completionDiscovery.contains("if (controlOnly)"))
         assertTrue(completionDiscovery.contains("persistedExactAdjacentAuthority"))
         assertTrue(completionDiscovery.contains("isDirectWifiStrictAdjacentTransportActive()"))
         assertTrue(completionDiscovery.contains("providerAuthority || persistedAuthority"))
@@ -2277,7 +2339,9 @@ class NtkColdRendererPreparationArchitectureTest {
     @Test
     fun directWifiAdjacentRunwayPublishesResidentManhwaAtomicallyAndOtherwiseProgressively() {
         val runwayCount = functionBody(
-            "private fun initialAdjacentAppendRunwayRefCount(",
+            "private fun initialAdjacentAppendRunwayRefCount(\n" +
+                "        refs: List<PageRef>,\n" +
+                "        strictExactDescriptorOnly: Boolean,",
             sessionSource,
         )
         val runwayPreparation = functionBody(
@@ -2297,7 +2361,12 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(runwayCount.contains(
             "NtkDirectWifiAdjacentInitialAtomicRunwayPolicy.attachedImagePageCount("
         ))
-        assertTrue(runwayCount.contains("publishable = imageRefs.map(::isAdjacentRunwayRefPublishable)"))
+        assertTrue(runwayCount.contains("normalizedPath.startsWith(\"/webtoon/\")"))
+        assertTrue(runwayCount.contains("NTK_DIRECT_WIFI_INITIAL_ATTACHED_RUNWAY_PAGES"))
+        assertTrue(runwayCount.contains(".take(NTK_APPEND_INITIAL_RUNWAY_PAGES)"))
+        assertTrue(runwayCount.contains("val publishable = if (strictExactDescriptorOnly)"))
+        assertTrue(runwayCount.contains("imageRefs.map { strictAdjacentBodyDescriptor(it) != null }"))
+        assertTrue(runwayCount.contains("sourceSides = imageRefs.map { it.side }"))
         assertTrue(runwayPreparation.contains("val initialDrawablePages = directWifiInitialAttachedRunwayPages()"))
         assertTrue(runwayPreparation.contains(".take(initialDrawablePages)"))
         assertTrue(runwayPreparation.contains("strictBodiesReady = refs.all"))
@@ -2388,6 +2457,50 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(viewport.contains("directWifiExpandedNativeTextureEpisodePaths"))
         assertTrue(completed.contains("val launchPixelsVisible = identities.any"))
         assertTrue(completed.contains("if (!launchPixelsVisible)"))
+    }
+
+    @Test
+    fun directWifiInitialRestoreRepairsOnlyResolvedBookmarkGeometryWithoutRevealGating() {
+        val apply = functionBody("private fun applyLockedRestorePositionLocked(")
+        val repair = functionBody("private fun repairedDirectWifiInitialRestoreOffsetLocked(")
+
+        assertTrue(apply.contains("repairedDirectWifiInitialRestoreOffsetLocked(target)"))
+        assertTrue(apply.contains("preserveUntilBookmarkGeometryResolves"))
+        assertTrue(apply.contains("!pageHasCompleteActualPixelsLocked(pages[target])"))
+        assertTrue(repair.contains("directWifiForwardOnlyInitialResumeEnabled"))
+        assertFalse(repair.contains("surfaceAttachmentDeferredUntilActualPixels"))
+        assertFalse(repair.contains("hasDrawnContentFrame"))
+        assertTrue(repair.contains("page.pendingResolveType != PENDING_NONE"))
+        assertTrue(repair.contains("pageHasCompleteActualPixelsLocked(page)"))
+        assertFalse(repair.contains("adjacent"))
+        assertFalse(repair.contains("runway"))
+        assertFalse(repair.contains("postSurfaceRevealLocked"))
+    }
+
+    @Test
+    fun adjacentWebtoonH1RecoveryIsSequentialAfterH2AndExactProofBound() {
+        val h2 = functionBody("private fun executeDirectWifiWebtoonH2(", imageCacheSource)
+        val recovery = functionBody(
+            "private fun executeDirectWifiAdjacentWebtoonH1Recovery(",
+            imageCacheSource,
+        )
+        val recoveryClient = functionBody(
+            "private fun clickOwnedDirectWifiAdjacentWebtoonRecoveryClient(",
+            imageCacheSource,
+        )
+        val h2Ring = h2.indexOf("attempts.forEachIndexed")
+        val recoveryCall = h2.indexOf("executeDirectWifiAdjacentWebtoonH1Recovery(")
+
+        assertTrue(h2Ring >= 0)
+        assertTrue(recoveryCall > h2Ring)
+        assertTrue(recovery.contains("NtkExactApiReplicaRouteTag::class.java"))
+        assertTrue(recovery.contains("hasActiveAdjacentNtkForegroundViewerGrant(proof.path)"))
+        assertTrue(recovery.contains("sameNetwork ="))
+        assertTrue(recovery.contains("sameViewerGeneration ="))
+        assertTrue(recovery.contains("clickOwnedDirectWifiAdjacentWebtoonRecoveryClient("))
+        assertTrue(recoveryClient.contains("directWifiNetwork.socketFactory"))
+        assertTrue(recoveryClient.contains("protocols(listOf(Protocol.HTTP_1_1))"))
+        assertFalse(recovery.contains("currentEpisodeOwned"))
     }
 
     private fun functionBody(signature: String, text: String = source): String {

@@ -6,7 +6,7 @@ import org.junit.Test
 
 class ReaderForegroundCommitLifecycleTest {
     @Test
-    fun strictActualSemanticsRequireAFocusOwnedForegroundCommit() {
+    fun strictActualSemanticsRequireAnOwnedVisibleForegroundCommit() {
         val source = File(
             "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt"
         ).readText()
@@ -14,7 +14,8 @@ class ReaderForegroundCommitLifecycleTest {
         assertTrue(source.contains("strictTelemetryForegroundCommitArmed = false"))
         assertTrue(source.contains("if (!strictTelemetryForegroundCommitArmed)"))
         assertTrue(source.contains("renderView.invalidateCommittedPresentationProof()"))
-        assertTrue(source.contains("!renderView.hasWindowFocus()"))
+        assertTrue(source.contains("if (!strictTelemetryOwned || strictTelemetryClosed"))
+        assertTrue(source.contains("if (!renderView.isShown ||"))
         assertTrue(source.contains("renderView.windowVisibility != View.VISIBLE"))
     }
 }

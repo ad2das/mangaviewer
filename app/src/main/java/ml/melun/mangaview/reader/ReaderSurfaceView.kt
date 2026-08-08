@@ -21,6 +21,7 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.Choreographer
 import android.view.Surface
+import android.view.SurfaceControl
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -55,6 +56,53 @@ internal object NtkExpandedNativeTextureTransitionPolicy {
             nextErrorText == null &&
             !nextEpisodePath.isNullOrEmpty() &&
             nextEpisodePath in authorizedEpisodePaths
+}
+
+internal object NtkNativeSurfaceFrameRatePolicy {
+    fun isEmulatorRuntime(
+        fingerprint: String,
+        model: String,
+        hardware: String,
+        product: String,
+    ): Boolean {
+        return fingerprint.startsWith("generic", ignoreCase = true) ||
+            fingerprint.contains("emulator", ignoreCase = true) ||
+            model.contains("Emulator", ignoreCase = true) ||
+            model.contains("Android SDK built for", ignoreCase = true) ||
+            hardware.contains("ranchu", ignoreCase = true) ||
+            hardware.contains("goldfish", ignoreCase = true) ||
+            product.contains("sdk_gphone", ignoreCase = true)
+    }
+
+    fun shouldApplyLayerFrameRateVote(
+        emulatorRuntime: Boolean,
+        directWifiRendererProfile: Boolean,
+    ): Boolean = emulatorRuntime && directWifiRendererProfile
+}
+
+/**
+ * Replaces, rather than adds to, the one producer-vsync callback that already owns an exact
+ * adjacent-p0 content mutation. This is intentionally narrower than input catch-up: it requires
+ * the host-emulator direct-Wi-Fi runway and an admitted immutable frame token.
+ */
+internal object NtkAdjacentExactP0FrameCatchupPolicy {
+    fun shouldPost(
+        emulatorRuntime: Boolean,
+        directWifiRunway: Boolean,
+        authorizedEpisode: Boolean,
+        renderRunning: Boolean,
+        directSurfaceReady: Boolean,
+        frameSchedulingSuppressed: Boolean,
+        callbackPosted: Boolean,
+        contentCatchupPosted: Boolean,
+        inputCatchupPosted: Boolean,
+        hasAdmittedFrame: Boolean,
+        nativeAttached: Boolean,
+        surfaceValid: Boolean,
+    ): Boolean = emulatorRuntime && directWifiRunway && authorizedEpisode && renderRunning &&
+        directSurfaceReady && !frameSchedulingSuppressed && callbackPosted &&
+        !contentCatchupPosted && !inputCatchupPosted && hasAdmittedFrame && nativeAttached &&
+        surfaceValid
 }
 
 class ReaderSurfaceView @JvmOverloads constructor(
@@ -731,6 +779,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
      */
     private val rollingNativePresentationEnabled =
         !java.lang.Boolean.getBoolean(TEST_FORCE_HWUI_SYSTEM_PROPERTY)
+    private val emulatorNativeSurfaceRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+        Build.FINGERPRINT,
+        Build.MODEL,
+        Build.HARDWARE,
+        Build.PRODUCT,
+    )
     private var rollingTextureSurface: Surface? = null
     private var rollingNativeHandle = 0L
     private var rollingNativeCreatePending = false
@@ -745,6 +799,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var rollingNativeViewportHeight = 0
     private var rollingNativePreparedWidth = 0
     private var rollingNativePreparedHeight = 0
+    /**
+     * Pure geometry captured at the first measured viewport, before decoded page storage can turn
+     * an intended source-native target back into a full-window host-GPU buffer. No native object,
+     * Surface or pixel resource is created at this point.
+     */
+    private var rollingNativeFrozenViewportWidth = 0
+    private var rollingNativeFrozenViewportHeight = 0
+    private var rollingNativeFrozenTargetWidth = 0
+    private var rollingNativeFrozenTargetHeight = 0
     private var rollingNativeFatal = false
     private var nativePresentationVisible = false
     /** Content identity of the exact native buffer currently retained by SurfaceFlinger. */
@@ -764,6 +827,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var directChoreographer: Choreographer? = null
     private var directFrameCallbackPosted = false
     private var directLateInputCatchupPosted = false
+    private var directAdjacentExactP0CatchupPosted = false
+    private var directAdjacentExactP0CatchupEpoch = 0L
+    private var directAdjacentExactP0CatchupToken = 0L
+    private var directAdjacentExactP0CatchupAttachEpoch = 0L
+    private var directAdjacentExactP0CatchupOwner: NtkAdjacentExactP0Owner? = null
     private var dragTargetRevision = 0L
     private var directCallbackObservedDragTargetRevision = 0L
     private var physicalGestureRevision = 0L
@@ -912,18 +980,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private val hwuiPreparedBitmapKeys = HashSet<Long>()
     private var frameSchedulingSuppressed = false
     /**
-     * A brand-new opaque SurfaceView participates in ViewRoot's first-buffer sync. Attaching it
-     * while the strict page table still contains no real pixels blocks the main thread until the
-     * platform sync timeout, which also prevents the click-owned ACK WebView from starting. The
-     * strict reader keeps the ordinary Activity visible and measured, but does not create this
-     * child Surface until immutable actual pixels continuously cover the current viewport.
+     * The strict reader starts on the ordinary HWUI root. Its first exact visible image is allowed
+     * to draw progressively; the native child is created only after one complete real-pixel HWUI
+     * viewport has committed, so cold EGL/AHB work cannot block the Activity's first frame.
      */
     private var surfaceAttachmentDeferredUntilActualPixels = false
     private var surfaceRevealPosted = false
     private var nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+    private var nativeSurfaceRevealAfterPrepareEpoch = 0L
     private var deferredSurfaceIdentityActivated = false
-    private var deferredSurfacePreparationPosted = false
-    private var deferredSurfacePreparationGeneration = 0L
     private var lastSurfaceRevealProbeMs = 0L
 
     init {
@@ -1171,11 +1236,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 directWifiForwardOnlyInitialResumeOffset = 0
                 directWifiForwardOnlyInitialResumeRevealQualified = false
             } else if (surfaceAttachmentDeferredUntilActualPixels && !hasDrawnContentFrame &&
-                lockedRestorePage == pages.lastIndex && lockedRestorePage >= 0
+                lockedRestorePage >= 0
             ) {
-                directWifiForwardOnlyInitialResumePage = lockedRestorePage
-                lockedRestoreOffset = min(0, lockedRestoreOffset)
-                directWifiForwardOnlyInitialResumeOffset = lockedRestoreOffset
+                if (lockedRestorePage == pages.lastIndex) {
+                    directWifiForwardOnlyInitialResumePage = lockedRestorePage
+                    lockedRestoreOffset = min(0, lockedRestoreOffset)
+                    directWifiForwardOnlyInitialResumeOffset = lockedRestoreOffset
+                }
                 applyLockedRestorePositionLocked()
             }
             directWifiExpandedNativeTextureEpisodePaths.clear()
@@ -1188,6 +1255,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 NtkRollingNativeBridge.nativeSetDirectWifiTextureProfile(
                     rollingNativeHandle,
                     expanded,
+                    expanded && emulatorNativeSurfaceRuntime,
                 )
             }
             nativeTexturePrewarmAnchorPage = -1
@@ -1257,6 +1325,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 "source-native compositing must be selected before native attachment"
             }
             sourceNativeWebtoonCompositingEnabled = enabled
+            if (rollingNativeAttachEpoch == 0L) {
+                rollingNativeFrozenViewportWidth = 0
+                rollingNativeFrozenViewportHeight = 0
+                rollingNativeFrozenTargetWidth = 0
+                rollingNativeFrozenTargetHeight = 0
+                captureNativeRenderTargetGeometryLocked(width, height)
+            }
         }
     }
 
@@ -1277,6 +1352,53 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Makes the just-installed exact p0 visible without waiting an extra producer callback. The
+     * pending callback and its immutable token already exist; the producer-thread runnable below
+     * removes that callback and consumes the same token once, so this cannot manufacture a frame.
+     */
+    fun requestDirectWifiAdjacentExactP0ContentCatchup(owner: NtkAdjacentExactP0Owner): Boolean {
+        val normalizedPath = NtkStripDigests.normalizeEpisodePath(owner.normalizedEpisodePath)
+        if (normalizedPath.isEmpty()) return false
+        synchronized(stateLock) {
+            val authorizedEpisode = normalizedPath in directWifiExpandedNativeTextureEpisodePaths
+            val hasAdmittedFrame =
+                framePipe == FramePipe.INVALIDATION_POSTED && inFlightToken != 0L
+            val nativeAttached = rollingNativeHandle != 0L && rollingNativeAttachEpoch > 0L &&
+                !rollingNativeFatal
+            if (!NtkAdjacentExactP0FrameCatchupPolicy.shouldPost(
+                    emulatorRuntime = emulatorNativeSurfaceRuntime,
+                    directWifiRunway = directWifiExpandedNativeTextureRunway,
+                    authorizedEpisode = authorizedEpisode,
+                    renderRunning = renderRunning,
+                    directSurfaceReady = directSurfaceReady,
+                    frameSchedulingSuppressed = frameSchedulingSuppressed,
+                    callbackPosted = directFrameCallbackPosted,
+                    contentCatchupPosted = directAdjacentExactP0CatchupPosted,
+                    inputCatchupPosted = directLateInputCatchupPosted,
+                    hasAdmittedFrame = hasAdmittedFrame,
+                    nativeAttached = nativeAttached,
+                    surfaceValid = rollingTextureSurface?.isValid == true,
+                )
+            ) return false
+            val handler = directRenderHandler ?: return false
+            directAdjacentExactP0CatchupPosted = true
+            directAdjacentExactP0CatchupEpoch = inFlightEpoch
+            directAdjacentExactP0CatchupToken = inFlightToken
+            directAdjacentExactP0CatchupAttachEpoch = rollingNativeAttachEpoch
+            directAdjacentExactP0CatchupOwner = owner
+            if (!handler.postAtFrontOfQueue(directAdjacentExactP0Catchup)) {
+                directAdjacentExactP0CatchupPosted = false
+                directAdjacentExactP0CatchupEpoch = 0L
+                directAdjacentExactP0CatchupToken = 0L
+                directAdjacentExactP0CatchupAttachEpoch = 0L
+                directAdjacentExactP0CatchupOwner = null
+                return false
+            }
+            return true
+        }
+    }
+
     /** Must be enabled on the main thread before this view is attached to its reader root. */
     fun setSurfaceAttachmentDeferredUntilActualPixels(enabled: Boolean) {
         check(Looper.myLooper() == Looper.getMainLooper())
@@ -1284,9 +1406,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             surfaceAttachmentDeferredUntilActualPixels = enabled
             surfaceRevealPosted = false
             nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+            nativeSurfaceRevealAfterPrepareEpoch = 0L
             deferredSurfaceIdentityActivated = !enabled
-            deferredSurfacePreparationPosted = false
-            deferredSurfacePreparationGeneration += 1L
             directWifiForwardOnlyInitialResumeRevealQualified = false
             if (!enabled) {
                 directWifiForwardOnlyInitialResumePage = -1
@@ -1294,88 +1415,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             if (enabled) clearFramePipeLocked(preserveDirty = true)
         }
-        // An alpha-zero TextureView still creates a HWUI layer/BufferQueue. On a cold host-GPU
-        // emulator that made ReaderV2Activity's very first traversal wait for an empty producer
-        // for multiple seconds, preventing the already-arrived exact manifest from reaching the
-        // reader session. INVISIBLE keeps this child measured and attached (so the dedicated
-        // native producer can be created/prepared after the click), but HWUI does not allocate a
-        // TextureView layer until exact pixels cover the viewport. No placeholder is drawn and
-        // no content request is moved before the viewer click.
+        // Keep the native child absent from composition during progressive HWUI display. This is
+        // not a reveal gate for the parent reader: the first exact page can draw immediately.
         nativeSurfaceView.visibility =
             if (enabled || !rollingNativePresentationEnabled) View.GONE else View.VISIBLE
         nativeSurfaceView.alpha = 1f
     }
 
     /**
-     * Creates and settles the transparent native producer after the ordinary Activity root has
-     * committed one frame, but while the actual-pixel/identity gate still blocks every render.
-     * This overlaps only post-click GPU queue setup with network work; no image, placeholder or
-     * frame can be submitted until [activateDeferredSurfaceProducer] binds the exact session.
-     */
-    fun prepareDeferredSurfaceProducerAfterRootFrame() {
-        check(Looper.myLooper() == Looper.getMainLooper())
-        val generation = synchronized(stateLock) {
-            if (!rollingNativePresentationEnabled ||
-                !surfaceAttachmentDeferredUntilActualPixels ||
-                deferredSurfacePreparationPosted
-            ) {
-                return
-            }
-            deferredSurfacePreparationPosted = true
-            deferredSurfacePreparationGeneration
-        }
-        post {
-            val observer = viewTreeObserver
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                isAttachedToWindow && isHardwareAccelerated && observer.isAlive
-            ) {
-                observer.registerFrameCommitCallback {
-                    mainHandler.post {
-                        revealDeferredSurfaceProducerAfterRootCommit(generation)
-                    }
-                }
-                invalidate()
-                (parent as? View)?.invalidate()
-                postInvalidateOnAnimation()
-            } else {
-                postOnAnimation {
-                    revealDeferredSurfaceProducerAfterRootCommit(generation)
-                }
-            }
-        }
-    }
-
-    private fun revealDeferredSurfaceProducerAfterRootCommit(generation: Long) {
-        check(Looper.myLooper() == Looper.getMainLooper())
-        val reveal = synchronized(stateLock) {
-            if (generation != deferredSurfacePreparationGeneration) {
-                false
-            } else {
-                deferredSurfacePreparationPosted = false
-                // If actual pixels beat the root-frame callback, retain the two-stage HWUI
-                // fallback below instead of racing cold EGL work with that first image commit.
-                surfaceAttachmentDeferredUntilActualPixels &&
-                    nativeSurfaceView.visibility != View.VISIBLE &&
-                    renderRunning && isAttachedToWindow
-            }
-        }
-        if (!reveal) return
-        nativeSurfaceView.alpha = 1f
-        nativeSurfaceView.visibility = View.VISIBLE
-        nativeSurfaceView.requestLayout()
-        invalidate()
-        (parent as? View)?.invalidate()
-        postInvalidateOnAnimation()
-        Log.d(
-            TAG,
-            "reader_deferred_surface_producer_prepared_after_root_commit " +
-                "generation=$generation,size=${width}x$height"
-        )
-    }
-
-    /**
-     * Activates the reader drawing node only after the Activity's first window frame has completed
-     * and the exact click-owned session exists. The real-pixel gate still rejects empty draws.
+     * Activates progressive HWUI drawing only after the exact click-owned session exists. Empty
+     * frames remain blocked, but the first visible exact page no longer waits for a full viewport.
      */
     fun activateDeferredSurfaceProducer() {
         check(Looper.myLooper() == Looper.getMainLooper())
@@ -1386,7 +1435,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 deferredSurfaceIdentityActivated = true
                 if (renderRunning && pages.isNotEmpty()) {
                     renderRequested = true
-                    if (hasContinuousActualViewportPixelsLocked()) {
+                    if (hasVisibleActualPixelsLocked()) {
                         postSurfaceRevealLocked()
                     }
                     stateLock.notifyAll()
@@ -2909,6 +2958,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val accepted: Boolean,
         val complete: Boolean,
         val displayPageIndex: Int,
+        val firstInstall: Boolean,
     )
 
     /**
@@ -2919,7 +2969,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun installAdjacentExactP0Delta(
         delta: NtkAdjacentExactP0Delta,
     ): AdjacentExactP0InstallResult {
-        var outcome = AdjacentExactP0InstallResult(false, false, -1)
+        var outcome = AdjacentExactP0InstallResult(false, false, -1, false)
         val request = synchronized(stateLock) {
             if (delta.owner.normalizedEpisodePath.startsWith("/webtoon/").not()) {
                 return@synchronized null
@@ -3033,7 +3083,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
-            outcome = AdjacentExactP0InstallResult(true, full, pageIndex)
+            outcome = AdjacentExactP0InstallResult(true, full, pageIndex, firstInstall)
             windowRequestLocked(lastBusy)
         }
         dispatchWindowRequest(request)
@@ -5460,9 +5510,6 @@ class ReaderSurfaceView @JvmOverloads constructor(
             renderRunning = true
             if (rollingNativePresentationEnabled) {
                 startRenderThreadLocked()
-                if (surfaceAttachmentDeferredUntilActualPixels) {
-                    prepareRollingNativeRendererLocked()
-                }
             }
             renderRequested = pages.isNotEmpty() && !shouldBlockInitialEmptyFrameLocked()
             if (renderRequested) scheduleFrameLocked()
@@ -5504,9 +5551,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 clampScrollLocked()
             }
             if (width > 0 && height > 0) {
-                // Native creation can finish before this deferred SurfaceView receives its first
-                // measured size. Queue the geometry as soon as measurement catches up so attach
-                // observes the same prepared target as the size-before-create ordering.
+                // Freeze only arithmetic here. EGL/AHB creation remains forbidden until the first
+                // complete exact HWUI commit, but the later renderer must retain the same compact
+                // target that the former pre-pixel preparation path selected.
+                captureNativeRenderTargetGeometryLocked(width, height)
                 prepareRollingNativeRenderTargetsLocked(width, height)
             }
             lastAnchor = -1
@@ -5525,10 +5573,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var nativeHandleToDestroy = 0L
         var nativeDestroyPosted = false
         val retiringThread = synchronized(stateLock) {
-            deferredSurfacePreparationGeneration += 1L
-            deferredSurfacePreparationPosted = false
             deferredSurfaceIdentityActivated = false
             nativeSurfaceRevealAfterFirstHwuiCommitPending = false
+            nativeSurfaceRevealAfterPrepareEpoch = 0L
             noStateRetryPosted = false
             clearRetainedPageNodesStateLocked()
             clearPreparedStartAnchorLocked()
@@ -5550,6 +5597,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rollingNativeViewportHeight = 0
             rollingNativePreparedWidth = 0
             rollingNativePreparedHeight = 0
+            rollingNativeFrozenViewportWidth = 0
+            rollingNativeFrozenViewportHeight = 0
+            rollingNativeFrozenTargetWidth = 0
+            rollingNativeFrozenTargetHeight = 0
             nativePresentationVisible = false
             nativePresentedStructureEpoch = 0L
             rollingTextureSurface = null
@@ -5594,6 +5645,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
             )
         }
+        applyQualifiedNativeSurfaceFrameRateVote(refreshRate)
         attachRollingNativeSurface(surface, surfaceWidth, surfaceHeight)
     }
 
@@ -5613,6 +5665,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             stateLock.notifyAll()
             current
         }
+        val refreshRate = display?.refreshRate?.takeIf { it > 0f } ?: 60f
+        applyQualifiedNativeSurfaceFrameRateVote(refreshRate)
         attachRollingNativeSurface(surface, width, height)
     }
 
@@ -5671,6 +5725,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return rollingNativeSurfaceEpochCounter
     }
 
+    /**
+     * The host-gpu emulator's child SurfaceControl did not inherit the rate vote placed on the
+     * Java Surface/ANativeWindow and latched every second 60 Hz buffer. Vote on the actual child
+     * layer as well. This is deliberately limited to the emulator direct-Wi-Fi benchmark profile;
+     * physical devices and mobile/SNI sessions retain their existing composition policy.
+     */
+    private fun applyQualifiedNativeSurfaceFrameRateVote(refreshRate: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            !NtkNativeSurfaceFrameRatePolicy.shouldApplyLayerFrameRateVote(
+                emulatorRuntime = emulatorNativeSurfaceRuntime,
+                directWifiRendererProfile = synchronized(stateLock) {
+                    directWifiExpandedNativeTextureRunway
+                },
+            )
+        ) return
+        val surfaceControl = nativeSurfaceView.surfaceControl
+        if (!surfaceControl.isValid) return
+        SurfaceControl.Transaction().use { transaction ->
+            transaction.setFrameRate(
+                surfaceControl,
+                refreshRate,
+                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                Surface.CHANGE_FRAME_RATE_ALWAYS,
+            ).apply()
+        }
+        Log.i(TAG, "reader_native_surface_control_frame_rate rate=$refreshRate")
+    }
+
     private fun attachRollingNativeSurface(
         surface: Surface,
         surfaceWidth: Int,
@@ -5694,6 +5776,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     NtkRollingNativeBridge.nativeSetDirectWifiTextureProfile(
                         rollingNativeHandle,
                         directWifiExpandedNativeTextureRunway,
+                        directWifiExpandedNativeTextureRunway &&
+                            emulatorNativeSurfaceRuntime,
                     )
                     if (nativeTexturePrewarmPaused) {
                         NtkRollingNativeBridge.nativeSetPrewarmPaused(
@@ -5771,7 +5855,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     TAG,
                     "reader_native_surface_attached render=${rollingNativeWidth}x$rollingNativeHeight " +
                         "viewport=${surfaceWidth}x$surfaceHeight sourceNative=" +
-                        sourceNativeWebtoonCompositingEnabled
+                        "$sourceNativeWebtoonCompositingEnabled"
                 )
                 if (pages.isNotEmpty()) {
                     renderRequested = true
@@ -8257,7 +8341,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return false
         }
         if (surfaceAttachmentDeferredUntilActualPixels) {
-            if (hasContinuousActualViewportPixelsLocked()) postSurfaceRevealLocked()
+            if (hasVisibleActualPixelsLocked()) postSurfaceRevealLocked()
             return false
         }
         if (!isShown || windowVisibility != View.VISIBLE) {
@@ -8359,6 +8443,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return forwardOnlyResumeReady
     }
 
+    /** Must be called with [stateLock] held. */
+    private fun hasVisibleActualPixelsLocked(): Boolean {
+        if (width <= 0 || height <= 0 || pages.isEmpty()) return false
+        rebuildLayoutLocked()
+        val viewportTop = scrollOffset
+        val viewportBottom = viewportTop + height
+        for (index in pages.indices) {
+            val page = pages[index]
+            val top = pageTopOrElseLocked(index, 0f)
+            val bottom = top + pageDrawHeightLocked(page)
+            if (bottom <= viewportTop) continue
+            if (top >= viewportBottom) break
+            if (min(viewportBottom, bottom) <= max(viewportTop, top)) continue
+            if (page.committedIdentity != null && pageHasCompleteActualPixelsLocked(page)) {
+                return true
+            }
+        }
+        return false
+    }
+
     /**
      * Proof deliveries temporarily retain viewport-space layout bounds while their pending source
      * bounds settle. Validate completeness from the immutable tile source geometry itself.
@@ -8387,10 +8491,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     /** Re-checks the attachment gate after every complete image-resource installation. */
     private fun reevaluateDeferredSurfaceRevealLocked(reason: String, changedIndex: Int) {
         if (!surfaceAttachmentDeferredUntilActualPixels) return
-        if (hasContinuousActualViewportPixelsLocked()) {
+        if (hasVisibleActualPixelsLocked()) {
             Log.d(
                 TAG,
-                "reader_surface_reveal_ready reason=$reason,index=$changedIndex," +
+                "reader_surface_progressive_reveal_ready reason=$reason,index=$changedIndex," +
                     "scroll=${scrollOffset.toInt()},viewport=${width}x$height"
             )
             postSurfaceRevealLocked()
@@ -8441,14 +8545,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val reveal = synchronized(stateLock) {
                 surfaceRevealPosted = false
                 if (!surfaceAttachmentDeferredUntilActualPixels ||
-                    !hasContinuousActualViewportPixelsLocked()
+                    !hasVisibleActualPixelsLocked()
                 ) {
                     false
                 } else {
                     surfaceAttachmentDeferredUntilActualPixels = false
-                    // The normal cold path has already settled the transparent SurfaceView after
-                    // the Activity root frame. Only the ultra-fast fallback, where actual pixels
-                    // beat that root callback, needs an HWUI proof before making the child visible.
+                    // Reveal the parent HWUI scene immediately. The native child remains gone
+                    // until a complete exact HWUI viewport commits and its renderer is prepared.
                     nativeSurfaceRevealAfterFirstHwuiCommitPending =
                         rollingNativePresentationEnabled &&
                             nativeSurfaceView.visibility != View.VISIBLE
@@ -8457,9 +8560,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
             }
             if (!reveal) return@post
-            // If the transparent native queue is already prepared, scheduling can submit the
-            // first real frame directly. Otherwise this publishes the already-resident pixels
-            // through HWUI and the commit callback performs the fallback child reveal.
+            // Publish the first available exact pixels through HWUI without waiting for the rest
+            // of the viewport or any native producer setup.
             invalidate()
             (parent as? View)?.invalidate()
             postInvalidateOnAnimation()
@@ -8487,11 +8589,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
         check(Looper.myLooper() == Looper.getMainLooper())
         if (!rollingNativePresentationEnabled) return
         val reveal = synchronized(stateLock) {
-            renderRunning &&
+            val eligible = renderRunning &&
                 lifecycleEpoch == expectedLifecycleEpoch &&
                 !surfaceAttachmentDeferredUntilActualPixels &&
                 isAttachedToWindow &&
                 nativeSurfaceView.visibility != View.VISIBLE
+            if (!eligible) {
+                nativeSurfaceRevealAfterPrepareEpoch = 0L
+                false
+            } else if (rollingNativeHandle == 0L) {
+                nativeSurfaceRevealAfterPrepareEpoch = expectedLifecycleEpoch
+                prepareRollingNativeRendererLocked()
+                false
+            } else {
+                nativeSurfaceRevealAfterPrepareEpoch = 0L
+                true
+            }
         }
         if (!reveal) return
         nativeSurfaceView.alpha = 1f
@@ -8890,7 +9003,7 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         }
     }
 
-    private fun nativeRenderTargetSizeLocked(
+    private fun computeNativeRenderTargetSizeLocked(
         viewportWidth: Int,
         viewportHeight: Int
     ): Pair<Int, Int> {
@@ -8914,6 +9027,42 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         )
     }
 
+    /** Captures target dimensions only; it cannot allocate, attach, upload or publish pixels. */
+    private fun captureNativeRenderTargetGeometryLocked(
+        viewportWidth: Int,
+        viewportHeight: Int,
+    ) {
+        if (!rollingNativePresentationEnabled || rollingNativeAttachEpoch != 0L ||
+            viewportWidth <= 0 || viewportHeight <= 0 ||
+            (rollingNativeFrozenViewportWidth == viewportWidth &&
+                rollingNativeFrozenViewportHeight == viewportHeight &&
+                rollingNativeFrozenTargetWidth > 0 && rollingNativeFrozenTargetHeight > 0)
+        ) return
+        val target = computeNativeRenderTargetSizeLocked(viewportWidth, viewportHeight)
+        rollingNativeFrozenViewportWidth = viewportWidth
+        rollingNativeFrozenViewportHeight = viewportHeight
+        rollingNativeFrozenTargetWidth = target.first
+        rollingNativeFrozenTargetHeight = target.second
+        Log.d(
+            TAG,
+            "reader_native_target_geometry_frozen render=${target.first}x${target.second} " +
+                "viewport=${viewportWidth}x$viewportHeight"
+        )
+    }
+
+    private fun nativeRenderTargetSizeLocked(
+        viewportWidth: Int,
+        viewportHeight: Int,
+    ): Pair<Int, Int> {
+        if (rollingNativeFrozenViewportWidth == viewportWidth &&
+            rollingNativeFrozenViewportHeight == viewportHeight &&
+            rollingNativeFrozenTargetWidth > 0 && rollingNativeFrozenTargetHeight > 0
+        ) {
+            return Pair(rollingNativeFrozenTargetWidth, rollingNativeFrozenTargetHeight)
+        }
+        return computeNativeRenderTargetSizeLocked(viewportWidth, viewportHeight)
+    }
+
     /**
      * Queues the production GPU target allocation while the strict SurfaceView is still detached.
      * There is intentionally no Surface or Bitmap argument: this can allocate render targets but
@@ -8924,7 +9073,7 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         viewportHeight: Int
     ) {
         val target = nativeRenderTargetSizeLocked(viewportWidth, viewportHeight)
-        if (!surfaceAttachmentDeferredUntilActualPixels || !renderRunning || rollingNativeFatal ||
+        if (!renderRunning || rollingNativeFatal ||
             rollingNativeHandle == 0L || rollingNativeAttachEpoch != 0L ||
             viewportWidth <= 0 || viewportHeight <= 0 ||
             (rollingNativePreparedWidth == target.first &&
@@ -8954,12 +9103,9 @@ val lifecycleStillCurrent = synchronized(stateLock) {
     }
 
     /**
-     * Starts only the native renderer/EGL lane after the user has opened this reader.
-     *
-     * The strict SurfaceView remains unattached and invisible until real image pixels cover the
-     * viewport. This preparation therefore cannot submit a placeholder/fake frame and does not
-     * request or decode content; it merely overlaps cold library/EGL initialization with the
-     * already click-owned page requests. Must be called with [stateLock] held.
+     * Starts the native renderer/EGL lane only after a complete exact HWUI viewport committed.
+     * It cannot delay the first actual pixels and never submits a placeholder/fake frame. Must be
+     * called with [stateLock] held.
      */
     private fun prepareRollingNativeRendererLocked() {
         if (!rollingNativePresentationEnabled || !renderRunning || rollingNativeFatal ||
@@ -8988,6 +9134,8 @@ val lifecycleStillCurrent = synchronized(stateLock) {
                     NtkRollingNativeBridge.nativeSetDirectWifiTextureProfile(
                         createdHandle,
                         directWifiExpandedNativeTextureRunway,
+                        directWifiExpandedNativeTextureRunway &&
+                            emulatorNativeSurfaceRuntime,
                     )
                     if (nativeTexturePrewarmPaused) {
                         NtkRollingNativeBridge.nativeSetPrewarmPaused(createdHandle, true)
@@ -8995,9 +9143,8 @@ val lifecycleStillCurrent = synchronized(stateLock) {
                     val prepareWidth = width
                     val prepareHeight = height
                     if (prepareWidth > 0 && prepareHeight > 0) {
-                        // The invisible strict SurfaceView is already measured. Allocate the
-                        // fixed AHB ring now, while click-owned network work is in flight, instead
-                        // of serializing this post-click renderer work with the first real frame.
+                        // The first complete exact HWUI viewport has already committed. Allocate
+                        // the fixed AHB ring without competing with the first real frame.
                         prepareRollingNativeRenderTargetsLocked(prepareWidth, prepareHeight)
                     }
                     stateLock.notifyAll()
@@ -9018,9 +9165,16 @@ val lifecycleStillCurrent = synchronized(stateLock) {
                 // the same demand-bounded behavior by enqueueing only those resident pages now.
                 postResidentNativeTexturePrewarmLocked()
             }
-            // Surface creation normally happens later, once actual pixels cover the viewport. If
-            // it won the race with preparation, finish the real attachment on the main thread.
-            mainHandler.post { attachPreparedRollingNativeSurfaceIfReady(generation) }
+            mainHandler.post {
+                val revealEpoch = synchronized(stateLock) {
+                    nativeSurfaceRevealAfterPrepareEpoch
+                }
+                if (revealEpoch > 0L) {
+                    revealNativeSurfaceAfterFirstHwuiCommit(revealEpoch)
+                } else {
+                    attachPreparedRollingNativeSurfaceIfReady(generation)
+                }
+            }
         }
         if (!posted) {
             rollingNativeCreatePending = false
@@ -9046,12 +9200,18 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         directRenderHandler?.removeCallbacks(directFramePostRunnable)
         directRenderHandler?.removeCallbacks(directCadenceWatchdog)
         directRenderHandler?.removeCallbacks(directLateInputCatchup)
+        directRenderHandler?.removeCallbacks(directAdjacentExactP0Catchup)
         val choreographer = directChoreographer
         if (choreographer != null && directFrameCallbackPosted) {
             choreographer.removeFrameCallback(directFrameCallback)
         }
         directFrameCallbackPosted = false
         directLateInputCatchupPosted = false
+        directAdjacentExactP0CatchupPosted = false
+        directAdjacentExactP0CatchupEpoch = 0L
+        directAdjacentExactP0CatchupToken = 0L
+        directAdjacentExactP0CatchupAttachEpoch = 0L
+        directAdjacentExactP0CatchupOwner = null
         directCallbackObservedDragTargetRevision = 0L
         directCallbackObservedPhysicalGestureRevision = 0L
         directCallbackObservedAtNanos = 0L
@@ -9105,6 +9265,51 @@ val lifecycleStillCurrent = synchronized(stateLock) {
             if (shouldRender) {
                 renderDirectSurfaceFrame(System.nanoTime())
             }
+        } finally {
+            Trace.endSection()
+        }
+    }
+
+    /** Replaces one pending producer callback for the exact content token captured at install. */
+    private val directAdjacentExactP0Catchup: Runnable = Runnable {
+        Trace.beginSection("ViewerDirectAdjacentExactP0Catchup")
+        try {
+            val shouldRender = synchronized(stateLock) {
+                val expectedEpoch = directAdjacentExactP0CatchupEpoch
+                val expectedToken = directAdjacentExactP0CatchupToken
+                val expectedAttachEpoch = directAdjacentExactP0CatchupAttachEpoch
+                val expectedOwner = directAdjacentExactP0CatchupOwner
+                directAdjacentExactP0CatchupPosted = false
+                directAdjacentExactP0CatchupEpoch = 0L
+                directAdjacentExactP0CatchupToken = 0L
+                directAdjacentExactP0CatchupAttachEpoch = 0L
+                directAdjacentExactP0CatchupOwner = null
+                val ownerStillAuthorized = expectedOwner != null &&
+                    directWifiExpandedNativeTextureRunway &&
+                    expectedOwner.normalizedEpisodePath in
+                        directWifiExpandedNativeTextureEpisodePaths &&
+                    pages.any { it.adjacentExactOwner == expectedOwner }
+                val canReplaceCallback = emulatorNativeSurfaceRuntime && renderRunning &&
+                    directSurfaceReady && !frameSchedulingSuppressed &&
+                    directFrameCallbackPosted && !directLateInputCatchupPosted &&
+                    ownerStillAuthorized &&
+                    framePipe == FramePipe.INVALIDATION_POSTED &&
+                    inFlightEpoch == expectedEpoch && inFlightToken == expectedToken &&
+                    expectedToken != 0L && rollingNativeAttachEpoch == expectedAttachEpoch &&
+                    expectedAttachEpoch > 0L && rollingNativeHandle != 0L &&
+                    !rollingNativeFatal && rollingTextureSurface?.isValid == true
+                if (canReplaceCallback) {
+                    directChoreographer?.removeFrameCallback(directFrameCallback)
+                    // scheduleFrameLocked may still have its registration message queued. Remove
+                    // it before renderDirectSurfaceFrame reserves the moving successor; otherwise
+                    // the stale message can register that successor a second time.
+                    directRenderHandler?.removeCallbacks(directFramePostRunnable)
+                    directRenderHandler?.removeCallbacks(directCadenceWatchdog)
+                    directFrameCallbackPosted = false
+                }
+                canReplaceCallback
+            }
+            if (shouldRender) renderDirectSurfaceFrame(System.nanoTime())
         } finally {
             Trace.endSection()
         }
@@ -9229,7 +9434,8 @@ val lifecycleStillCurrent = synchronized(stateLock) {
                 directSurfaceReady = directSurfaceReady,
                 callbackPosted = directFrameCallbackPosted,
                 callbackHadAdmission = directCallbackHadAdmission,
-                catchupPosted = directLateInputCatchupPosted,
+                catchupPosted = directLateInputCatchupPosted ||
+                    directAdjacentExactP0CatchupPosted,
                 newPhysicalGesture =
                     physicalGestureRevision != directCallbackObservedPhysicalGestureRevision,
                 pointerDown = pointerDown,
@@ -9710,7 +9916,8 @@ val lifecycleStillCurrent = synchronized(stateLock) {
             return
         }
         rebuildLayoutLocked()
-        val desiredScroll = pageTopOrElseLocked(target, 0f) - lockedRestoreOffset
+        val restoreOffset = repairedDirectWifiInitialRestoreOffsetLocked(target)
+        val desiredScroll = pageTopOrElseLocked(target, 0f) - restoreOffset
         val maxScroll = maxScrollLocked()
         val restoredScroll = desiredScroll.coerceIn(0f, maxScroll)
         setScrollOffsetLocked(restoredScroll)
@@ -9718,8 +9925,16 @@ val lifecycleStillCurrent = synchronized(stateLock) {
             directWifiForwardOnlyInitialResumeEnabled &&
                 surfaceAttachmentDeferredUntilActualPixels &&
                 directWifiForwardOnlyInitialResumePage == target
+        // A different forward page can become drawable a few milliseconds before the bookmark
+        // page. Progressive HWUI must remain free to show those real pixels, but that unrelated
+        // draw must not retire the bookmark lock while its exact geometry is still unresolved.
+        // User input clears the lock independently, so this never fights an intentional scroll.
+        val preserveUntilBookmarkGeometryResolves =
+            directWifiForwardOnlyInitialResumeEnabled &&
+                !pageHasCompleteActualPixelsLocked(pages[target])
         if (
             !preserveForwardOnlyUntilPhysicalReveal &&
+            !preserveUntilBookmarkGeometryResolves &&
             hasDrawnContentFrame &&
             pageHasDrawableContentLocked(target) &&
             abs(restoredScroll - desiredScroll) <= RESTORE_POSITION_EPSILON_PX
@@ -9852,6 +10067,46 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         ) {
             scheduleBlockedForwardWindowRequestLocked()
         }
+    }
+
+    /**
+     * A bookmark page is selected by the progress probe, so a valid saved page/offset pair always
+     * leaves meaningful pixels from that page in the resumed viewport. Old placeholder geometry
+     * can violate that invariant after the original dimensions arrive (for example, a short manga
+     * page paired with a large negative offset). In the direct-Wi-Fi forward-only cold path there
+     * are intentionally no predecessor pixels to fill such a viewport. Keep the stable saved page
+     * identity and repair only the impossible offset after that page's complete original pixels
+     * establish its real draw height. Progressive HWUI admission is deliberately independent:
+     * another forward page may reveal first without invalidating the still-pending bookmark
+     * correction. This changes neither surface admission nor reveal timing.
+     */
+    private fun repairedDirectWifiInitialRestoreOffsetLocked(target: Int): Int {
+        val savedOffset = lockedRestoreOffset
+        if (!directWifiForwardOnlyInitialResumeEnabled ||
+            target != lockedRestorePage ||
+            target !in pages.indices || width <= 0 || height <= 0
+        ) return savedOffset
+        val page = pages[target]
+        if (page.pendingResolveType != PENDING_NONE ||
+            !pageHasCompleteActualPixelsLocked(page)
+        ) return savedOffset
+        val pageHeight = pageDrawHeightLocked(page)
+        val repairedOffset = repairForwardOnlyRestoreOffset(
+            savedOffset,
+            pageHeight,
+            height,
+        )
+        if (repairedOffset == savedOffset) return savedOffset
+        lockedRestoreOffset = repairedOffset
+        if (directWifiForwardOnlyInitialResumePage == target) {
+            directWifiForwardOnlyInitialResumeOffset = repairedOffset
+        }
+        Log.d(
+            TAG,
+            "reader_initial_restore_offset_repaired page=$target saved=$savedOffset " +
+                "repaired=$repairedOffset pageHeight=${pageHeight.toInt()} viewportHeight=$height"
+        )
+        return repairedOffset
     }
 
     private fun applyPreparedStartAnchorLocked(clearPending: Boolean) {
@@ -11737,6 +11992,38 @@ val lifecycleStillCurrent = synchronized(stateLock) {
             return currentOffset > contentMaxScroll + SCROLL_OFFSET_EPSILON_PX &&
                 requestedOffset <= contentMaxScroll + SCROLL_OFFSET_EPSILON_PX
         }
+
+        private fun repairForwardOnlyRestoreOffset(
+            savedOffsetPx: Int,
+            resolvedPageDrawHeightPx: Float,
+            viewportHeightPx: Int,
+        ): Int {
+            if (!resolvedPageDrawHeightPx.isFinite() || resolvedPageDrawHeightPx <= 0f ||
+                viewportHeightPx <= 0
+            ) return savedOffsetPx
+            // The ordinary progress probe owns 35% of the viewport. Preserve the exact bookmark
+            // whenever at least that much target-page context remains; otherwise retain either
+            // that context or the complete page when the page itself is shorter.
+            val minimumVisibleTargetPx = min(
+                resolvedPageDrawHeightPx,
+                viewportHeightPx * PROGRESS_PAGE_PROBE_SCREEN_RATIO,
+            )
+            val minimumOffsetPx = ceil(
+                minimumVisibleTargetPx - resolvedPageDrawHeightPx
+            ).toInt()
+            return min(0, savedOffsetPx).coerceAtLeast(minimumOffsetPx)
+        }
+
+        @JvmStatic
+        fun repairForwardOnlyRestoreOffsetForTest(
+            savedOffsetPx: Int,
+            resolvedPageDrawHeightPx: Float,
+            viewportHeightPx: Int,
+        ): Int = repairForwardOnlyRestoreOffset(
+            savedOffsetPx,
+            resolvedPageDrawHeightPx,
+            viewportHeightPx,
+        )
 
         private fun sourceNativeRenderTargetSize(
             enabled: Boolean,

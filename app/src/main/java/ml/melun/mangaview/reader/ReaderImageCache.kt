@@ -798,7 +798,6 @@ internal object NtkDirectWifiAdjacentWebtoonProjectedTailPolicy {
     const val MIN_TAIL_BYTES = 128L * 1024L
     private const val PRIMARY_SHARE_PERCENT = 40L
     const val P0_PRIMARY_SHARE_PERCENT = 65L
-
     fun matchesFrozenProfile(
         profile: NtkDirectWifiAdjacentWebtoonRunwayTailProfile,
         episodePath: String,
@@ -1237,6 +1236,9 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS = 1_500L
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_HOST = "xiaomichina.com"
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_MAX_CONCURRENT = 1
+    const val WIFI_DIRECT_ADJACENT_H1_RECOVERY_RUNWAY_PAGES = 4
+    const val WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT = 4
+    const val WIFI_DIRECT_ADJACENT_H1_RECOVERY_HEADER_MS = 1_500L
 
     /**
      * The first exact attempt preserves the measured three-ring fallback. A headerless host may
@@ -1268,6 +1270,15 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         return hostTimeoutCount >= 2
     }
 
+    fun hostEmulatorDirectWifiH2SourceSessionId(
+        strictSessionId: Long?,
+        quarantineSessionId: Long?,
+    ): Long? = strictSessionId ?: quarantineSessionId
+
+    fun isolateDefinitiveMissToLogicalCall(
+        hostGpuEmulatorRuntime: Boolean,
+    ): Boolean = hostGpuEmulatorRuntime
+
     fun shouldAttemptDirectWifiExplicitMissQuic(
         directWifiActive: Boolean,
         currentEpisodeOwned: Boolean,
@@ -1283,6 +1294,54 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         sameViewerGeneration &&
         logicalAttemptOrdinal == 1 &&
         preferredHostExplicitMiss
+
+    /**
+     * A failed H2 ring owns no response body. Only the exact, completion-gated next-episode
+     * runway may move that still-unowned request to a captured-Network H1 connection. Current
+     * episode work, later adjacent pages, carrier/SNI, and a changed viewer/network fail closed.
+     */
+    fun shouldAttemptDirectWifiAdjacentH1Recovery(
+        directWifiActive: Boolean,
+        cellularResilientTransport: Boolean,
+        exactAdjacentReplicaProof: Boolean,
+        adjacentForegroundGrantActive: Boolean,
+        sameNetwork: Boolean,
+        sameViewerGeneration: Boolean,
+        pageIndex: Int,
+        episodePageCount: Int,
+    ): Boolean = directWifiActive &&
+        !cellularResilientTransport &&
+        exactAdjacentReplicaProof &&
+        adjacentForegroundGrantActive &&
+        sameNetwork &&
+        sameViewerGeneration &&
+        pageIndex in 0 until minOf(
+            episodePageCount,
+            WIFI_DIRECT_ADJACENT_H1_RECOVERY_RUNWAY_PAGES,
+        )
+
+    /**
+     * A host emulator can expose an H2 reset storm that is specific to its translated socket
+     * stack even while the same exact CDN asset remains healthy over H1. Allow only the active,
+     * manifest-sealed current episode to move its still-unowned request to the captured-Network
+     * H1 recovery pool after the complete H2 ring has failed. Physical devices and carrier/SNI
+     * retain their existing transport byte-for-byte.
+     */
+    fun shouldAttemptDirectWifiCurrentH1Recovery(
+        directWifiActive: Boolean,
+        cellularResilientTransport: Boolean,
+        hostGpuEmulatorRuntime: Boolean,
+        productionStrictRequest: Boolean,
+        currentForegroundEpisode: Boolean,
+        sameNetwork: Boolean,
+        sameViewerGeneration: Boolean,
+    ): Boolean = directWifiActive &&
+        !cellularResilientTransport &&
+        hostGpuEmulatorRuntime &&
+        productionStrictRequest &&
+        currentForegroundEpisode &&
+        sameNetwork &&
+        sameViewerGeneration
 
     fun directWifiH2HostPriority(host: String): Int =
         if (host.equals(WIFI_DIRECT_H2_PREFERRED_HOST, ignoreCase = true)) 0 else 1
@@ -1688,6 +1747,12 @@ private val ntkWifiWebtoonReplicaPreferences =
     // a full failover round on the bad host, which dominated viewer image latency on the emulator.
     private val ntkWifiWebtoonSessionSuppressedHosts =
         ConcurrentHashMap<Long, MutableSet<String>>()
+    private data class HostEmulatorWebtoonTransportScopeKey(
+        val sourceSessionId: Long,
+        val networkHandle: Long,
+    )
+    private val ntkHostEmulatorWebtoonSessionSuppressedHosts =
+        ConcurrentHashMap<HostEmulatorWebtoonTransportScopeKey, MutableSet<String>>()
     private val ntkWifiExactQuicSessionPools =
         ConcurrentHashMap<Long, NtkWifiExactQuicSessionPool>()
     private val ntkWifiWebtoonExplicitMissQuicPermits = Semaphore(
@@ -2035,6 +2100,8 @@ private val ntkWifiWebtoonReplicaPreferences =
         ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
     private val clickOwnedDirectWifiShortWebtoonRangeClients =
         ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
+    private val clickOwnedDirectWifiAdjacentWebtoonRecoveryClients =
+        ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
     private val clickOwnedDirectWifiOrdinaryBodyClients =
         ConcurrentHashMap<DirectWifiClientKey, OkHttpClient>()
     private val clickOwnedDirectWifiOrdinaryDns =
@@ -2063,6 +2130,12 @@ private val ntkWifiWebtoonReplicaPreferences =
         maxRequests = NtkDirectWifiShortWebtoonTailProfile.GLOBAL_MAX_CONCURRENT_EXTRA_TAILS
         maxRequestsPerHost =
             NtkDirectWifiShortWebtoonTailProfile.GLOBAL_MAX_CONCURRENT_EXTRA_TAILS
+    }
+    private val clickOwnedDirectWifiAdjacentWebtoonRecoveryDispatcher = Dispatcher().apply {
+        maxRequests =
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT
+        maxRequestsPerHost =
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT
     }
     private const val CLICK_OWNED_EXTENSION_HEDGE_MS = 650L
     private val clickOwnedExtensionScheduler = Executors.newScheduledThreadPool(8) { runnable ->
@@ -4220,6 +4293,9 @@ data class NtkResolvedSourceRoute(
                 NtkWebtoonReplicaHeaderPolicy.directWifiH2HostPriority(it.url.host)
             }
             val strictTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
+            val quarantineTag = originalRequest.tag(
+                NtkQuarantineSourceCallIdentity::class.java,
+            )
             val logicalAttemptOrdinal = strictTag?.attemptOrdinal ?: 1
             val attempts = List(
                 NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
@@ -4230,20 +4306,66 @@ data class NtkResolvedSourceRoute(
             // Preserve one shorter-deadline fresh-pool retry in the next ring. A second header
             // timeout, or a definitive HTTP miss below, suppresses that host for the remainder of
             // this logical call so recovery cannot recreate the former repeated five-second tail.
-val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
-        .computeIfAbsent(viewerGeneration) {
-            java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
-        }
-    val headerTimeoutsByHost = ConcurrentHashMap<String, AtomicInteger>()
+            val hostGpuEmulatorRuntime =
+                NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                    Build.FINGERPRINT,
+                    Build.MODEL,
+                    Build.HARDWARE,
+                    Build.PRODUCT,
+                )
+            // A 404/410 is asset-local: another page on the same signed origin may still be
+            // healthy. On the host emulator keep those misses inside this logical call. Only a
+            // repeated zero-header transport timeout enters the strict-session circuit breaker,
+            // keyed by the source session so current work can never poison adjacent p0-p3.
+            // Physical Wi-Fi retains its existing viewer-generation behavior.
+            val hostEmulatorSourceSessionId =
+                NtkWebtoonReplicaHeaderPolicy.hostEmulatorDirectWifiH2SourceSessionId(
+                strictSessionId = strictTag?.sessionId,
+                quarantineSessionId = quarantineTag?.sessionId,
+            )
+            val sessionTransportSuppressedHosts = if (hostGpuEmulatorRuntime) {
+                val scopeKey = if (hostEmulatorSourceSessionId != null &&
+                    capturedDirectWifiNetworkHandle != null
+                ) {
+                    HostEmulatorWebtoonTransportScopeKey(
+                        hostEmulatorSourceSessionId,
+                        capturedDirectWifiNetworkHandle,
+                    )
+                } else {
+                    null
+                }
+                if (scopeKey == null) {
+                    Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+                } else {
+                    ReaderImageCache.ntkHostEmulatorWebtoonSessionSuppressedHosts
+                        .computeIfAbsent(scopeKey) {
+                            Collections.newSetFromMap(
+                                ConcurrentHashMap<String, Boolean>(),
+                            )
+                        }
+                }
+            } else {
+                ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
+                    .computeIfAbsent(viewerGeneration) {
+                        Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+                    }
+            }
+            val suppressedHosts = if (NtkWebtoonReplicaHeaderPolicy
+                    .isolateDefinitiveMissToLogicalCall(hostGpuEmulatorRuntime)
+            ) {
+                Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>()).apply {
+                    addAll(sessionTransportSuppressedHosts)
+                }
+            } else {
+                sessionTransportSuppressedHosts
+            }
+            val headerTimeoutsByHost = ConcurrentHashMap<String, AtomicInteger>()
             var explicitMissExactQuicAttempted = false
             var preferredHostExplicitMiss = false
             var lastFailure: IOException? = null
             fun attemptExplicitMissExactQuicRecovery(tcpFailure: IOException): Response? {
                 if (explicitMissExactQuicAttempted) return null
                 val strictTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
-                val quarantineTag = originalRequest.tag(
-                    NtkQuarantineSourceCallIdentity::class.java,
-                )
                 val episodePath = originalRequest
                     .tag(NtkStrictEpisodePathTag::class.java)
                     ?.path
@@ -4392,6 +4514,9 @@ val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
                                 .shouldSuppressDirectWifiH2HostAfterHeaderTimeout(hostTimeoutCount)
                         ) {
                             suppressedHosts += normalizedHost
+                            if (hostGpuEmulatorRuntime) {
+                                sessionTransportSuppressedHosts += normalizedHost
+                            }
                         }
                         val identity = originalRequest.tag(
                             NtkQuarantineSourceCallIdentity::class.java,
@@ -4482,7 +4607,177 @@ val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
                     deadline.cancel(false)
                 }
             }
+            executeDirectWifiAdjacentWebtoonH1Recovery(
+                candidates = orderedCandidates,
+                episodePageCount = episodePageCount,
+                capturedDirectWifiNetworkHandle = capturedDirectWifiNetworkHandle,
+                viewerGeneration = viewerGeneration,
+                h2Failure = lastFailure
+                    ?: IOException("Direct Wi-Fi H2 replica image Call exhausted"),
+            )?.let { return it }
             throw lastFailure ?: IOException("Direct Wi-Fi H2 replica image Call exhausted")
+        }
+
+        /**
+         * Sequential transport recovery for one exact adjacent p0-p3 body. The exhausted H2 ring
+         * is fully closed before this begins, so it neither duplicates bytes nor adds a competing
+         * wave. Four independent logical runway bodies share one four-call Network-bound H1 pool.
+         */
+        private fun executeDirectWifiAdjacentWebtoonH1Recovery(
+            candidates: List<Request>,
+            episodePageCount: Int,
+            capturedDirectWifiNetworkHandle: Long?,
+            viewerGeneration: Long,
+            h2Failure: IOException,
+        ): Response? {
+            val proof = originalRequest.tag(NtkExactApiReplicaRouteTag::class.java)
+            val strictTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
+            val quarantineTag = originalRequest.tag(
+                NtkQuarantineSourceCallIdentity::class.java,
+            )
+            val pageIndex = strictTag?.pageIndex ?: quarantineTag?.pageIndex ?: return null
+            if ((proof != null && pageIndex != proof.pageIndex) || candidates.isEmpty()) return null
+            val episodePath = originalRequest
+                .tag(NtkStrictEpisodePathTag::class.java)
+                ?.path
+                .orEmpty()
+            val httpClient = getHttpClient()
+            val liveNetwork = runCatching {
+                httpClient.getNtkDirectWifiNetwork()
+            }.getOrNull()
+            val liveWifi = runCatching {
+                httpClient.isNtkWifiTransportActive()
+            }.getOrDefault(false)
+            val cellular = runCatching {
+                httpClient.isNtkCellularResilientTransportActive()
+            }.getOrDefault(true)
+            val sameNetwork = capturedDirectWifiNetworkHandle != null &&
+                liveNetwork?.networkHandle == capturedDirectWifiNetworkHandle
+            val sameViewerGeneration = viewerGeneration > 0L &&
+                ViewerTelemetry.activeGeneration() == viewerGeneration
+            val adjacentEligible = proof != null && NtkWebtoonReplicaHeaderPolicy
+                .shouldAttemptDirectWifiAdjacentH1Recovery(
+                    directWifiActive = liveWifi,
+                    cellularResilientTransport = cellular,
+                    exactAdjacentReplicaProof = true,
+                    adjacentForegroundGrantActive =
+                        hasActiveAdjacentNtkForegroundViewerGrant(proof.path),
+                    sameNetwork = sameNetwork,
+                    sameViewerGeneration = sameViewerGeneration,
+                    pageIndex = pageIndex,
+                    episodePageCount = episodePageCount,
+                )
+            val currentEligible = NtkWebtoonReplicaHeaderPolicy
+                .shouldAttemptDirectWifiCurrentH1Recovery(
+                    directWifiActive = liveWifi,
+                    cellularResilientTransport = cellular,
+                    hostGpuEmulatorRuntime =
+                        NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                            Build.FINGERPRINT,
+                            Build.MODEL,
+                            Build.HARDWARE,
+                            Build.PRODUCT,
+                        ),
+                    productionStrictRequest = strictTag?.isProductionStrict == true,
+                    currentForegroundEpisode = episodePath.isNotEmpty() &&
+                        MainApplication.isNtkForegroundViewerPath(episodePath),
+                    sameNetwork = sameNetwork,
+                    sameViewerGeneration = sameViewerGeneration,
+                )
+            if ((!adjacentEligible && !currentEligible) ||
+                liveNetwork == null || cancelled.get()
+            ) return null
+            val recoveryMode = if (adjacentEligible) "adjacent_runway" else "current_emulator"
+            val recoveryPath = proof?.path ?: episodePath
+            val shared = httpClient.client ?: httpClient.imageClient
+            val h1Factory = clickOwnedDirectWifiAdjacentWebtoonRecoveryClient(
+                shared,
+                liveNetwork,
+            )
+            Log.w(
+                TAG,
+                "reader_strict_direct_wifi_adjacent_h1_recovery_start " +
+                    "mode=$recoveryMode,path=$recoveryPath,page=$pageIndex," +
+                    "h2Error=${h2Failure.javaClass.simpleName}",
+            )
+            var lastH1Failure: IOException? = null
+            candidates.forEachIndexed { candidateIndex, candidate ->
+                if (cancelled.get()) return null
+                val physicalRequest = candidate.newBuilder()
+                    .tag(
+                        CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                        CustomHttpClient.NtkExactImagePhysicalAttempt(candidateIndex + 1),
+                    )
+                    .build()
+                val call = h1Factory.newCall(physicalRequest)
+                active.set(call)
+                val headerResolved = AtomicBoolean(false)
+                val deadline = strictReplicaHeaderDeadlineScheduler.schedule({
+                    if (headerResolved.compareAndSet(false, true)) call.cancel()
+                }, NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_HEADER_MS,
+                    TimeUnit.MILLISECONDS)
+                try {
+                    val response = call.execute()
+                    if (!headerResolved.compareAndSet(false, true)) {
+                        response.close()
+                        throw java.net.SocketTimeoutException(
+                            "Direct Wi-Fi adjacent H1 response headers exceeded " +
+                                "${NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_HEADER_MS}ms"
+                        )
+                    }
+                    val emptySuccessfulBody = response.code in 200..299 &&
+                        response.body?.contentLength() == 0L
+                    if (response.code == 404 || response.code == 410 || emptySuccessfulBody) {
+                        response.close()
+                        Log.w(
+                            TAG,
+                            "reader_strict_direct_wifi_adjacent_h1_recovery_failover " +
+                                "page=$pageIndex,host=${candidate.url.host}," +
+                                "code=${response.code},empty=$emptySuccessfulBody",
+                        )
+                        return@forEachIndexed
+                    }
+                    val canonicalIndex = candidates.indexOfFirst {
+                        it.url == candidate.url
+                    }.coerceAtLeast(0)
+                    Log.d(
+                        TAG,
+                        "reader_strict_direct_wifi_adjacent_h1_recovery_headers " +
+                            "mode=$recoveryMode,path=$recoveryPath," +
+                            "page=$pageIndex,host=${candidate.url.host}",
+                    )
+                    return maybeWrapStalledReplicaBody(
+                        response,
+                        candidates,
+                        canonicalIndex,
+                        null,
+                        null,
+                        null,
+                        directWifiWebtoonBody = true,
+                        directWifiNetworkHandleAtCallStart = capturedDirectWifiNetworkHandle,
+                        viewerGenerationAtCallStart = viewerGeneration,
+                    )
+                } catch (failure: IOException) {
+                    if (cancelled.get()) return null
+                    lastH1Failure = failure
+                    Log.w(
+                        TAG,
+                        "reader_strict_direct_wifi_adjacent_h1_recovery_failover " +
+                            "page=$pageIndex,host=${candidate.url.host}," +
+                            "error=${failure.javaClass.simpleName}",
+                    )
+                } finally {
+                    headerResolved.set(true)
+                    deadline.cancel(false)
+                }
+            }
+            Log.w(
+                TAG,
+                "reader_strict_direct_wifi_adjacent_h1_recovery_exhausted " +
+                    "mode=$recoveryMode,path=$recoveryPath,page=$pageIndex," +
+                    "error=${lastH1Failure?.javaClass?.simpleName ?: "identity_miss"}",
+            )
+            return null
         }
 
         private fun executeSegmentedManhwa(candidates: List<Request>): Response {
@@ -6841,6 +7136,8 @@ val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
             ntkWifiExactQuicSessionPools.values.forEach { pool -> runCatching { pool.close() } }
             ntkWifiExactQuicSessionPools.clear()
             ntkWifiWebtoonReplicaPreferences.clear()
+            ntkWifiWebtoonSessionSuppressedHosts.clear()
+            ntkHostEmulatorWebtoonSessionSuppressedHosts.clear()
             NtkPhysicalConnectionObservationBridge.clear()
             protectedNativeStrictRestartAt.clear()
             suppressedPermitlessInitialGeneratedUntil.clear()
@@ -6932,6 +7229,18 @@ val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
                 client.connectionPool.evictAll()
             }
             clickOwnedDirectWifiShortWebtoonRangeClients.clear()
+            val adjacentWebtoonRecoveryClientIdentities =
+                clickOwnedDirectWifiAdjacentWebtoonRecoveryClients.values.mapTo(HashSet()) {
+                    System.identityHashCode(it)
+                }
+            adjacentWebtoonRecoveryClientIdentities.forEach { identity ->
+                strictInstrumentedClients.remove(identity)
+            }
+            clickOwnedDirectWifiAdjacentWebtoonRecoveryClients.values.forEach { client ->
+                client.dispatcher.cancelAll()
+                client.connectionPool.evictAll()
+            }
+            clickOwnedDirectWifiAdjacentWebtoonRecoveryClients.clear()
             ntkDirectWifiAdjacentReplicaOrigins.clear()
             ntkDirectWifiAdjacentReplicaProofs.clear()
             ntkGeneratedPageExtensions.clear()
@@ -9147,6 +9456,46 @@ val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
     }
 
     /**
+     * Independent recovery transport for only the exact next-episode p0-p3 runway. It is created
+     * lazily after an H2 ring has failed, remains bound to the captured Wi-Fi Network, and cannot
+     * consume more than four sockets or requests. Healthy H2 and every carrier/SNI request never
+     * touch this client.
+     */
+    private fun clickOwnedDirectWifiAdjacentWebtoonRecoveryClient(
+        shared: OkHttpClient,
+        directWifiNetwork: android.net.Network,
+    ): OkHttpClient {
+        val key = DirectWifiClientKey(
+            System.identityHashCode(shared),
+            directWifiNetwork.networkHandle,
+        )
+        val bounded = clickOwnedDirectWifiAdjacentWebtoonRecoveryClients.computeIfAbsent(key) {
+            val singleFlightDns = NtkSingleFlightDns(
+                object : Dns {
+                    override fun lookup(hostname: String) =
+                        directWifiNetwork.getAllByName(hostname).toList()
+                },
+            )
+            shared.newBuilder()
+                .dispatcher(clickOwnedDirectWifiAdjacentWebtoonRecoveryDispatcher)
+                .connectionPool(ConnectionPool(
+                    NtkWebtoonReplicaHeaderPolicy
+                        .WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT,
+                    2L,
+                    TimeUnit.MINUTES,
+                ))
+                .dns(singleFlightDns)
+                .socketFactory(directWifiNetwork.socketFactory)
+                .protocols(listOf(Protocol.HTTP_1_1))
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .build()
+        }
+        return strictInstrumentedClient(bounded)
+    }
+
+    /**
      * Selects transport only when the physical Call is created, after page admission. Route
      * preparation may precede the format-sample barrier or wait offscreen at the adjacent gate;
      * neither event may pin a stale Wi-Fi socket factory across mixed discovery or handoff.
@@ -10394,9 +10743,11 @@ val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
         executor: Executor,
     ): NtkStrictPredecodedOriginal {
         val abandoned = AtomicBoolean(false)
+        val started = AtomicBoolean(false)
         val completion: CompletableFuture<Bitmap?> = try {
             CompletableFuture.supplyAsync<Bitmap?>(
                 {
+                    started.set(true)
                     // An authoritative source worker may have reached these bytes before this
                     // speculative executor lane. Do not spend CPU or allocate a duplicate bitmap
                     // after that worker has chosen the immediate encoded-byte decode path.
@@ -10457,7 +10808,7 @@ val suppressedHosts = ReaderImageCache.ntkWifiWebtoonSessionSuppressedHosts
         } catch (_: RejectedExecutionException) {
             CompletableFuture.completedFuture(null)
         }
-        return NtkStrictPredecodedOriginal(completion, abandoned)
+        return NtkStrictPredecodedOriginal(completion, abandoned, started)
     }
 
     fun adoptQuarantinedEncodedOriginal(

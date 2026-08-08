@@ -1,5 +1,6 @@
 package ml.melun.mangaview.reader
 
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import ml.melun.mangaview.mangaview.CustomHttpClient
@@ -16,6 +17,23 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicBoolean
+
+internal object NtkHostGpuEmulatorWebtoonControlPlanePolicy {
+    fun isEligible(
+        directWebtoon: Boolean,
+        emulatorRuntime: Boolean,
+        directWifiAdjacent: Boolean,
+        directWifiCurrent: Boolean,
+        rollingAdmission: Boolean,
+        initialPageIndex: Int,
+    ): Boolean {
+        require(initialPageIndex >= 0)
+        return directWebtoon && emulatorRuntime && (
+            directWifiAdjacent ||
+                (directWifiCurrent && rollingAdmission && initialPageIndex > 0)
+            )
+    }
+}
 
 /**
  * The only StrictFresh document + server grant -> exact image manifest coordinator.
@@ -128,12 +146,18 @@ object NtkStrictEpisodeDiscoveryCoordinator {
          */
         val networkOwnershipRetiring = AtomicBoolean(false)
         /**
-         * An adjacent flight may reserve only its local lifecycle before this event.
-         * Its foreground route, grant/ACK, probe HEADs, document/API, image bodies, source
-         * promotion and decode all start only after every predecessor drawable is installed.
-         * Current flights receive an already-open event. Network-specific adjacent transport
-         * topology is selected separately and never weakens this predecessor ordering contract.
+         * The host-emulator direct-Wi-Fi resume path may overlap only the target document and its
+         * trusted challenge after every required predecessor image body has reached verified EOF.
+         * API, image bodies, source promotion and decode remain closed by
+         * [adjacentPredecessorComplete]. Every other adjacent profile opens both events together.
          */
+        val adjacentControlReady = CompletableFuture<Unit>().also { release ->
+            if (!adjacentPredecessorGate) {
+                release.complete(Unit)
+            }
+        }
+
+        /** Every required predecessor drawable has been installed in the native runway. */
         val adjacentPredecessorComplete = CompletableFuture<Unit>().also { release ->
             if (!adjacentPredecessorGate) {
                 release.complete(Unit)
@@ -151,7 +175,17 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     private val flights = ConcurrentHashMap<String, Flight>()
     private val flightLifecycleLocks = ConcurrentHashMap<String, Any>()
+    private data class AdjacentGateKey(
+        val predecessorPath: String,
+        val targetPath: String,
+    )
+
+    private val bodyResidentAdjacentTargets = ConcurrentHashMap<AdjacentGateKey, Long>()
+    private val completedAdjacentTargets = ConcurrentHashMap<AdjacentGateKey, Long>()
     private val completedAdjacentPredecessors = ConcurrentHashMap<String, Long>()
+
+    private fun adjacentGateKey(predecessorPath: String, targetPath: String): AdjacentGateKey =
+        AdjacentGateKey(predecessorPath, targetPath)
 
     @JvmStatic
     fun start(client: CustomHttpClient?, manga: Manga?): Boolean {
@@ -257,37 +291,58 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         }
         val viewerGeneration = ViewerTelemetry.activeGeneration()
         if (viewerGeneration <= 0L) return false
-        val flight = synchronized(flightLifecycleLock(path)) {
-            if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null ||
-                flights[path] != null
-            ) return false
-            val lease = if (rollingAdmission) {
-                NtkSourceSpoolRegistry.beginColdRollingDiscovery(
-                    client.context,
-                    manga,
-                    effectiveInitialPageIndexHint,
+        val adjacentAdmissionLock = flightLifecycleLock("adjacent-gate:$predecessorPath")
+        val flight = synchronized(adjacentAdmissionLock) {
+            if (adjacentOwned) {
+                val exactGateKey = adjacentGateKey(predecessorPath, path)
+                val predecessorReconciled = completedAdjacentTargets.entries.any { entry ->
+                    entry.value == viewerGeneration &&
+                        entry.key.predecessorPath == predecessorPath
+                }
+                if (predecessorReconciled &&
+                    completedAdjacentTargets[exactGateKey] != viewerGeneration
+                ) {
+                    Log.d(
+                        "ViewerPerf",
+                        "ntk_strict_adjacent_stale_target_suppressed " +
+                            "predecessor=$predecessorPath,target=$path," +
+                            "generation=$viewerGeneration",
+                    )
+                    return false
+                }
+            }
+            synchronized(flightLifecycleLock(path)) {
+                if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null ||
+                    flights[path] != null
+                ) return false
+                val lease = if (rollingAdmission) {
+                    NtkSourceSpoolRegistry.beginColdRollingDiscovery(
+                        client.context,
+                        manga,
+                        effectiveInitialPageIndexHint,
+                        viewerGeneration,
+                    )
+                } else {
+                    NtkSourceSpoolRegistry.beginDiscovery(client.context, manga)
+                } ?: return false
+                Flight(
+                    client,
+                    lease,
+                    SystemClock.elapsedRealtime(),
                     viewerGeneration,
-                )
-            } else {
-                NtkSourceSpoolRegistry.beginDiscovery(client.context, manga)
-            } ?: return false
-            Flight(
-                client,
-                lease,
-                SystemClock.elapsedRealtime(),
-                viewerGeneration,
-                path,
-                ownerPath,
-                predecessorPath,
-                adjacentPredecessorGate,
-                directWifiAdjacentBodyGate,
-                directWifiCurrentViewer,
-                rollingAdmission,
-                effectiveInitialPageIndexHint,
-                completedRouteRecoveryAttempts,
-                sameOriginFallbackConsumed,
-            ).also {
-                flights[path] = it
+                    path,
+                    ownerPath,
+                    predecessorPath,
+                    adjacentPredecessorGate,
+                    directWifiAdjacentBodyGate,
+                    directWifiCurrentViewer,
+                    rollingAdmission,
+                    effectiveInitialPageIndexHint,
+                    completedRouteRecoveryAttempts,
+                    sameOriginFallbackConsumed,
+                ).also {
+                    flights[path] = it
+                }
             }
         }
 
@@ -297,17 +352,48 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             // enter has one deterministic retirement owner and an early start rejection cannot
             // strand a process-wide gate. This retires already-running compatibility calls but
             // starts no viewer request by itself.
+            val exactAdjacentGateKey = adjacentGateKey(
+                flight.adjacentPredecessorEpisodePath,
+                flight.episodePath,
+            )
+            val predecessorHasReconciledTarget = completedAdjacentTargets.entries.any { entry ->
+                entry.value == viewerGeneration &&
+                    entry.key.predecessorPath == flight.adjacentPredecessorEpisodePath
+            }
+            if (flight.adjacentPredecessorGate &&
+                predecessorHasReconciledTarget &&
+                completedAdjacentTargets[exactAdjacentGateKey] != viewerGeneration
+            ) {
+                throw InterruptedIOException(
+                    "Adjacent target was replaced before discovery worker admission",
+                )
+            }
             if (!flight.adjacentPredecessorGate) {
                 enterForegroundNetworkIfNeeded(flight)
             } else if (
-                completedAdjacentPredecessors[flight.adjacentPredecessorEpisodePath] ==
-                    viewerGeneration
+                completedAdjacentTargets[exactAdjacentGateKey] == viewerGeneration
             ) {
                 // Completion can win just before the resolved neighbor creates this flight.
                 // Publish admission now; the worker still performs the foreground enter before
                 // starting any target-network prerequisite.
                 check(releaseAdjacentBodyGate(flight) != AdjacentBodyGateRelease.FAILED) {
+                    "Completed adjacent target could not release work admission"
+                }
+            } else if (
+                !predecessorHasReconciledTarget &&
+                completedAdjacentPredecessors[flight.adjacentPredecessorEpisodePath] ==
+                    viewerGeneration
+            ) {
+                check(releaseAdjacentBodyGate(flight) != AdjacentBodyGateRelease.FAILED) {
                     "Completed adjacent predecessor could not release work admission"
+                }
+            } else if (
+                bodyResidentAdjacentTargets[exactAdjacentGateKey] ==
+                    viewerGeneration
+            ) {
+                check(flight.directWifiAdjacentBodyGate && path.startsWith("/webtoon/"))
+                check(releaseAdjacentControlGate(flight) != AdjacentBodyGateRelease.FAILED) {
+                    "Body-resident adjacent predecessor could not release control admission"
                 }
             }
             // Bootstrap is local-only: it creates identity seeds but performs no network request.
@@ -397,32 +483,145 @@ object NtkStrictEpisodeDiscoveryCoordinator {
     }
 
     /**
+     * Opens only the target document/challenge overlap for the one exact current-resume profile.
+     * The caller has proved every required current image body reached EOF; it grants no target API,
+     * body, source or decode admission. The generation marker closes release-before-flight races.
+     */
+    @JvmStatic
+    fun releaseAdjacentControlAfterPredecessorBodiesResident(
+        predecessorPath: String?,
+        targetPath: String?,
+    ): Int {
+        val key = normalizedPath(predecessorPath) ?: return 0
+        val targetKey = normalizedPath(targetPath) ?: return 0
+        if (!targetKey.startsWith("/webtoon/") ||
+            !ntkAdjacentOwnerAllowsTarget(key, targetKey)
+        ) return 0
+        if (!NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                Build.FINGERPRINT,
+                Build.MODEL,
+                Build.HARDWARE,
+                Build.PRODUCT,
+            )
+        ) return 0
+        val generation = ViewerTelemetry.activeGeneration()
+        if (generation <= 0L || !ViewerTelemetry.hasActiveSession()) return 0
+        return synchronized(flightLifecycleLock("adjacent-gate:$key")) {
+            val predecessorReconciled = completedAdjacentTargets.entries.any { entry ->
+                entry.value == generation && entry.key.predecessorPath == key
+            }
+            if (predecessorReconciled &&
+                completedAdjacentTargets[adjacentGateKey(key, targetKey)] != generation
+            ) return@synchronized 0
+            bodyResidentAdjacentTargets[adjacentGateKey(key, targetKey)] = generation
+            var released = 0
+            flights.values.forEach { flight ->
+                if (flight.viewerGeneration == generation &&
+                    flight.adjacentPredecessorGate &&
+                    flight.directWifiAdjacentBodyGate &&
+                    flight.episodePath == targetKey &&
+                    flight.adjacentPredecessorEpisodePath == key
+                ) {
+                    if (releaseAdjacentControlGate(flight) == AdjacentBodyGateRelease.OPENED) {
+                        released++
+                    }
+                }
+            }
+            released
+        }
+    }
+
+    /**
      * Opens all target-work admission for adjacent flights whose immediate
      * predecessor is now completely drawable. The generation-scoped marker also covers the
      * normal ordering where completion wins just before the adjacent flight is created.
      */
     @JvmStatic
-    fun releaseAdjacentBodiesAfterPredecessorComplete(path: String?): Int {
+    @JvmOverloads
+    fun releaseAdjacentBodiesAfterPredecessorComplete(
+        path: String?,
+        expectedTargetPath: String? = null,
+    ): Int {
         val key = normalizedPath(path) ?: return 0
+        val expectedTarget = expectedTargetPath?.let(::normalizedPath)
+        if (expectedTargetPath != null && expectedTarget == null) return 0
+        if (expectedTarget != null && !ntkAdjacentOwnerAllowsTarget(key, expectedTarget)) return 0
         val generation = ViewerTelemetry.activeGeneration()
         // A continuously appended reader retains the launch episode as its telemetry owner, so an
         // appended predecessor is intentionally not ViewerTelemetry's active episode. The exact
         // path match plus the active generation keeps this release scoped to the foreground
         // Session while allowing B-complete to unlock B->C.
         if (generation <= 0L || !ViewerTelemetry.hasActiveSession()) return 0
-        completedAdjacentPredecessors[key] = generation
-        var released = 0
-        flights.values.forEach { flight ->
-            if (flight.viewerGeneration == generation &&
-                flight.adjacentPredecessorGate &&
-                flight.adjacentPredecessorEpisodePath.equals(key, ignoreCase = true)
-            ) {
-                if (releaseAdjacentBodyGate(flight) == AdjacentBodyGateRelease.OPENED) {
-                    released++
+        return synchronized(flightLifecycleLock("adjacent-gate:$key")) {
+            if (expectedTarget != null) {
+            // Publish the authoritative pair before sweeping stale markers/flights. A late main
+            // Handler callback for an older persisted target then observes this fence before it
+            // can reserve a lease, even if it races the cleanup snapshot below.
+            completedAdjacentTargets[adjacentGateKey(key, expectedTarget)] = generation
+            // A persisted early-control identity is only a bounded transport hint. Reconcile it
+            // with the provider/full-completion target before opening any API or image admission.
+            // Cancelling a mismatched control-only flight also prevents later broad completion
+            // maintenance from accidentally releasing its stale target.
+            val staleMarkerTargets = bodyResidentAdjacentTargets.entries
+                .filter { entry ->
+                    entry.value == generation &&
+                        entry.key.predecessorPath == key &&
+                        entry.key.targetPath != expectedTarget
+                }
+                .map { it.key.targetPath }
+                .toSet()
+            bodyResidentAdjacentTargets.entries.forEach { entry ->
+                if (entry.value == generation &&
+                    entry.key.predecessorPath == key &&
+                    entry.key.targetPath != expectedTarget
+                ) {
+                    bodyResidentAdjacentTargets.remove(entry.key, entry.value)
                 }
             }
+            val mismatches = flights.values.filter { flight ->
+                flight.viewerGeneration == generation &&
+                    flight.adjacentPredecessorGate &&
+                    flight.adjacentPredecessorEpisodePath == key &&
+                    flight.episodePath in staleMarkerTargets &&
+                    !flight.adjacentPredecessorComplete.isDone &&
+                    flight.episodePath != expectedTarget
+            }
+            mismatches.forEach { stale ->
+                retireAdjacentTargetForReplacement(
+                    stale.episodePath,
+                    stale.lease.generation.value,
+                    generation,
+                    "adjacent_target_reconciled",
+                )
+            }
+            }
+            val reconciledTargets = completedAdjacentTargets.entries
+                .filter { entry ->
+                    entry.value == generation && entry.key.predecessorPath == key
+                }
+                .map { it.key.targetPath }
+                .toSet()
+            if (expectedTarget == null && reconciledTargets.isEmpty()) {
+                completedAdjacentPredecessors[key] = generation
+            }
+            var released = 0
+            flights.values.forEach { flight ->
+                if (flight.viewerGeneration == generation &&
+                    flight.adjacentPredecessorGate &&
+                    (if (reconciledTargets.isEmpty()) {
+                        expectedTarget == null || flight.episodePath == expectedTarget
+                    } else {
+                        flight.episodePath in reconciledTargets
+                    }) &&
+                    flight.adjacentPredecessorEpisodePath == key
+                ) {
+                    if (releaseAdjacentBodyGate(flight) == AdjacentBodyGateRelease.OPENED) {
+                        released++
+                    }
+                }
+            }
+            released
         }
-        return released
     }
 
     private fun enterForegroundNetworkIfNeeded(flight: Flight) {
@@ -462,6 +661,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 return@synchronized AdjacentBodyGateRelease.FAILED
             }
             try {
+                flight.adjacentControlReady.complete(Unit)
                 if (!flight.adjacentPredecessorComplete.complete(Unit)) {
                     return@synchronized AdjacentBodyGateRelease.ALREADY_OPEN
                 }
@@ -481,6 +681,31 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 )
                 AdjacentBodyGateRelease.FAILED
             }
+        }
+    }
+
+    private fun releaseAdjacentControlGate(flight: Flight): AdjacentBodyGateRelease {
+        return synchronized(flight) {
+            if (flight.adjacentControlReady.isDone) {
+                return@synchronized AdjacentBodyGateRelease.ALREADY_OPEN
+            }
+            if (flight.networkOwnershipRetiring.get() ||
+                flight.retirement.isRetired() ||
+                flights[flight.episodePath] !== flight ||
+                !isViewerOwnerActive(flight)
+            ) {
+                return@synchronized AdjacentBodyGateRelease.FAILED
+            }
+            if (!flight.adjacentControlReady.complete(Unit)) {
+                return@synchronized AdjacentBodyGateRelease.ALREADY_OPEN
+            }
+            Log.d(
+                "ViewerPerf",
+                "ntk_adjacent_control_gate_release " +
+                    "predecessor=${flight.adjacentPredecessorEpisodePath}," +
+                    "target=${flight.episodePath},generation=${flight.viewerGeneration}",
+            )
+            AdjacentBodyGateRelease.OPENED
         }
     }
 
@@ -553,6 +778,16 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         completedAdjacentPredecessors.entries.forEach { entry ->
             if (entry.value == viewerGeneration) {
                 completedAdjacentPredecessors.remove(entry.key, entry.value)
+            }
+        }
+        bodyResidentAdjacentTargets.entries.forEach { entry ->
+            if (entry.value == viewerGeneration) {
+                bodyResidentAdjacentTargets.remove(entry.key, entry.value)
+            }
+        }
+        completedAdjacentTargets.entries.forEach { entry ->
+            if (entry.value == viewerGeneration) {
+                completedAdjacentTargets.remove(entry.key, entry.value)
             }
         }
         return retiredAny
@@ -640,6 +875,20 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             owned
         } ?: return false
         completedAdjacentPredecessors.remove(key, viewerGeneration)
+        bodyResidentAdjacentTargets.entries.forEach { entry ->
+            if (entry.value == viewerGeneration &&
+                (entry.key.predecessorPath == key || entry.key.targetPath == key)
+            ) {
+                bodyResidentAdjacentTargets.remove(entry.key, entry.value)
+            }
+        }
+        completedAdjacentTargets.entries.forEach { entry ->
+            if (entry.value == viewerGeneration &&
+                (entry.key.predecessorPath == key || entry.key.targetPath == key)
+            ) {
+                completedAdjacentTargets.remove(entry.key, entry.value)
+            }
+        }
         flight.client.leaveNtkStrictForegroundNetwork(key, viewerGeneration)
         Log.d(
             "ViewerPerf",
@@ -779,15 +1028,35 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         var restartSameOriginWithoutResolver = false
         try {
             requireDiscoveryOwnership(flight, "worker_start")
+            val directWebtoon = isDirectTrustedWebtoon(path)
+            val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                Build.FINGERPRINT,
+                Build.MODEL,
+                Build.HARDWARE,
+                Build.PRODUCT,
+            )
+            val hostGpuEmulatorDirectWifiAdjacentWebtoon =
+                directWebtoon && flight.directWifiAdjacentBodyGate && hostGpuEmulatorRuntime
             if (flight.adjacentPredecessorGate) {
-                // This is the single admission point for every target-network operation. The
-                // foreground route switch, grant/ACK, manhwa HEAD frontier and document/API all
-                // remain absent until the immediate predecessor is completely drawable.
-                awaitAdjacentPredecessorComplete(flight)
+                // Every profile uses this control gate. Only the scoped host-emulator webtoon can
+                // receive it before the full predecessor-drawable event.
+                awaitAdjacentControlReady(flight)
                 enterForegroundNetworkIfNeeded(flight)
                 startAckNetworkPrerequisites(client, flight, path, ackRoute)
             }
-            val directWebtoon = isDirectTrustedWebtoon(path)
+            // Keep the current resume and its exact forward neighbor on one strict OkHttp H2
+            // pool. The current episode still owns every resource until all of its required
+            // images are ready; only the already-authorized control transport is shared so the
+            // neighbor does not pay a second DNS/TLS connection after completion.
+            val hostGpuEmulatorDirectWifiWebtoonControlPlane =
+                NtkHostGpuEmulatorWebtoonControlPlanePolicy.isEligible(
+                    directWebtoon = directWebtoon,
+                    emulatorRuntime = hostGpuEmulatorRuntime,
+                    directWifiAdjacent = flight.directWifiAdjacentBodyGate,
+                    directWifiCurrent = flight.directWifiCurrentViewer,
+                    rollingAdmission = flight.rollingAdmission,
+                    initialPageIndex = flight.initialPageIndexHint,
+                )
             if (!directWebtoon) {
                 // Resolve a four-page format sample at the committed click. It downloads no image
                 // body and lets uncommon-format pages join the same bounded body race. Every body
@@ -879,6 +1148,17 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                                     path,
                                     flight.physicalCalls,
                                     object : CustomHttpClient.NtkStrictDocumentStreamObserver {
+                                        override fun initialBodyPrefixBytes(): Int =
+                                            if (hostGpuEmulatorDirectWifiWebtoonControlPlane) {
+                                                // The compact response is at most a few dozen KiB.
+                                                // Observe each small read boundary so the exact
+                                                // fresh token can start the already-authorized API
+                                                // without waiting for a later cadence threshold.
+                                                4 * 1024
+                                            } else {
+                                                112 * 1024
+                                            }
+
                                         override fun onResponseHeaders(
                                             responseHead: CustomHttpClient.NtkBoundHttpResponse,
                                         ) {
@@ -924,8 +1204,9 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                                             return true
                                         }
                                     },
-                                    flight.sameOriginFallbackConsumed,
-                                    flight.directWifiAdjacentBodyGate,
+                                    flight.sameOriginFallbackConsumed ||
+                                        hostGpuEmulatorDirectWifiWebtoonControlPlane,
+                                    hostGpuEmulatorDirectWifiWebtoonControlPlane,
                                 )
                             }
                         }
@@ -965,6 +1246,12 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     start()
                 }
 
+                // The exact document and trusted challenge may overlap only the verified-body
+                // render tail. Do not consume their seed into an API request until the native
+                // current runway has reached its existing complete-drawable gate.
+                if (flight.adjacentPredecessorGate) {
+                    awaitAdjacentPredecessorComplete(flight)
+                }
                 streamedRequestSeed = awaitFuture(requestSeedFuture)
                 val directGrant = streamedRequestSeed?.let {
                     awaitDirectTrustedGrantOrStartIsolated(
@@ -998,6 +1285,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             client.executeUnsignedExactNtkWebtoonImageApi(
                                 unsignedRequest,
                                 flight.physicalCalls,
+                                hostGpuEmulatorDirectWifiWebtoonControlPlane,
                             )
                         }
                     }
@@ -1353,6 +1641,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         client.executeUnsignedExactNtkWebtoonImageApi(
                             unsignedRequest,
                             flight.physicalCalls,
+                            hostGpuEmulatorDirectWifiWebtoonControlPlane,
                         )
                     }
                 }
@@ -1493,7 +1782,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     manga,
                     flight.lease,
                     boundPlan,
-                    envelope
+                    envelope,
+                    exactManifestPreview,
                 )
                 check(exactResult.accepted) {
                     "Exact manifest promotion rejected: ${exactResult.status}"
@@ -1525,7 +1815,14 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     failure,
                     flight.completedRouteRecoveryAttempts,
                     flight.directWifiCurrentViewer,
-                    flight.sameOriginFallbackConsumed,
+                    sameOriginFallbackConsumed = flight.sameOriginFallbackConsumed,
+                    directWifiAdjacentViewer = flight.directWifiAdjacentBodyGate,
+                    hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                        Build.FINGERPRINT,
+                        Build.MODEL,
+                        Build.HARDWARE,
+                        Build.PRODUCT,
+                    ),
                 )
             if (routeRecoveryRequested) {
                 // Keep the old lease/flight as a path reservation until domain recovery finishes.
@@ -1813,6 +2110,19 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         Log.d(
             "ViewerPerf",
             "ntk_adjacent_metadata_ready_wait_body_released " +
+                "predecessor=${flight.adjacentPredecessorEpisodePath}," +
+                "target=${flight.episodePath}," +
+                "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+        )
+    }
+
+    private fun awaitAdjacentControlReady(flight: Flight) {
+        if (!flight.adjacentPredecessorGate) return
+        awaitFuture(flight.adjacentControlReady)
+        requireDiscoveryOwnership(flight, "adjacent_control_ready")
+        Log.d(
+            "ViewerPerf",
+            "ntk_adjacent_control_ready " +
                 "predecessor=${flight.adjacentPredecessorEpisodePath}," +
                 "target=${flight.episodePath}," +
                 "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",

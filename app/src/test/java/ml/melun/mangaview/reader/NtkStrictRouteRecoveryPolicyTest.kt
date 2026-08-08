@@ -168,4 +168,70 @@ class NtkStrictRouteRecoveryPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun hostGpuEmulatorAdjacentApiTimeoutRestartsOnSameOriginBeforeResolver() {
+        val timeout = IOException(
+            "Strict unsigned_webtoon_image_api HttpEngine request failed",
+            SocketTimeoutException("timeout"),
+        )
+
+        assertTrue(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                timeout,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                directWifiAdjacentViewer = true,
+                hostGpuEmulatorRuntime = true,
+                sameOriginFallbackConsumed = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                timeout,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                directWifiAdjacentViewer = true,
+                hostGpuEmulatorRuntime = false,
+                sameOriginFallbackConsumed = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                timeout,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                directWifiAdjacentViewer = false,
+                hostGpuEmulatorRuntime = true,
+                sameOriginFallbackConsumed = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                timeout,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                directWifiAdjacentViewer = true,
+                hostGpuEmulatorRuntime = true,
+                sameOriginFallbackConsumed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun hostGpuEmulatorAdjacentSameOriginFallbackRejectsNonTimeoutFailures() {
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                IOException(
+                    "Strict unsigned_webtoon_image_api HttpEngine request failed",
+                    IOException("malformed response"),
+                ),
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                directWifiAdjacentViewer = true,
+                hostGpuEmulatorRuntime = true,
+                sameOriginFallbackConsumed = false,
+            ),
+        )
+    }
 }

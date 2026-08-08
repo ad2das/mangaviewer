@@ -118,6 +118,25 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
+    public void resumeNextIdentitySnapshotFreezesOneCompleteTuple() {
+        Title title = new Title("target", "", "", null, "", 8391, MTitle.base_webtoon);
+        title.setResumeNtkNextEpisodeIdentity(
+                "/webtoon/8391/66779", 66779, "next", "8391", "66779", 4);
+
+        MTitle.ResumeNtkNextEpisodeIdentitySnapshot snapshot =
+                title.snapshotResumeNtkNextEpisodeIdentity();
+        title.clearResumeNtkNextEpisodeIdentity();
+
+        assertTrue(snapshot.isComplete());
+        assertEquals("/webtoon/8391/66779", snapshot.path);
+        assertEquals(66779, snapshot.id);
+        assertEquals("8391", snapshot.workId);
+        assertEquals("66779", snapshot.episodeId);
+        assertEquals(4, snapshot.imageCount);
+        assertFalse(title.snapshotResumeNtkNextEpisodeIdentity().isComplete());
+    }
+
+    @Test
     public void progressEpisodeIndexMatchesNtkPathWhenEpisodeIdDiffers() {
         Manga first = new Manga(101, "Episode 10", "", MTitle.base_webtoon);
         first.setNtkEpisodePath("/webtoon/1/10");

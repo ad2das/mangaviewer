@@ -81,6 +81,11 @@ public final class NtkQuicFetcher {
     public interface ExactResponseObserver {
         void onResponseStarted(int code, Map<String, List<String>> headers) throws Exception;
         boolean onBodyPrefix(byte[] bytes) throws Exception;
+
+        /** Preferred first cumulative prefix size; EOF ownership is always unchanged. */
+        default int initialBodyPrefixBytes() {
+            return 112 * 1024;
+        }
     }
 
     public enum TerminalKind {
@@ -605,7 +610,10 @@ public final class NtkQuicFetcher {
                 boolean notifyPartialText;
                 boolean notifyPartialBytes;
                 boolean notifyExactPrefix = exactResponseObserver != null;
-                int nextExactPrefixObservation = 112 * 1024;
+                final int exactPrefixObservationBytes = exactResponseObserver == null
+                        ? 112 * 1024
+                        : Math.max(4 * 1024, exactResponseObserver.initialBodyPrefixBytes());
+                int nextExactPrefixObservation = exactPrefixObservationBytes;
                 int lastExactPrefixObservation = 0;
 
                 private boolean failExactObserver(UrlRequest request, Throwable failure) {
@@ -642,7 +650,7 @@ public final class NtkQuicFetcher {
                         if(complete) {
                             notifyExactPrefix = false;
                         } else {
-                            nextExactPrefixObservation += 112 * 1024;
+                            nextExactPrefixObservation += exactPrefixObservationBytes;
                         }
                         return true;
                     } catch (Throwable failure) {
@@ -715,7 +723,7 @@ public final class NtkQuicFetcher {
                     // first read contains the measured seed and leaves only one short terminal
                     // read, preserving prefix overlap and exact EOF validation with two callbacks.
                     int bufferBytes = exactResponseObserver != null
-                            ? 112 * 1024
+                            ? exactPrefixObservationBytes
                             : partialTextObserver != null
                             ? 256
                             : (notifyPartialText || notifyPartialBytes ? 1024 : 128 * 1024);

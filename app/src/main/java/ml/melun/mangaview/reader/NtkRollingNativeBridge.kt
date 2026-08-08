@@ -59,8 +59,12 @@ internal object NtkRollingNativeBridge {
     /** Prevents non-presenting texture uploads from sharing the EGL lane with physical input. */
     external fun nativeSetPrewarmPaused(handle: Long, paused: Boolean)
 
-    /** Selects the exact-current direct-Wi-Fi texture safety profile without changing input. */
-    external fun nativeSetDirectWifiTextureProfile(handle: Long, enabled: Boolean)
+    /** Selects exact-current texture safety and the narrower host-emulator queue profile. */
+    external fun nativeSetDirectWifiTextureProfile(
+        handle: Long,
+        enabled: Boolean,
+        hostGpuEmulator: Boolean,
+    )
 
     external fun nativeDestroy(handle: Long)
 }

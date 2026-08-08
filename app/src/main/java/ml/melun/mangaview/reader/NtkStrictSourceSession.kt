@@ -1,6 +1,7 @@
 package ml.melun.mangaview.reader
 
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
@@ -438,9 +439,12 @@ internal object NtkDirectWifiAdjacentHeadInstallGatePolicy {
         anchorBodyPublished: Boolean,
         anchorRequestHeadersSent: Boolean,
         headPixelsInstalled: Boolean,
+        prioritizeAnchorUntilEof: Boolean = false,
     ): Int {
         require(progressiveLaneCount >= 0 && preAnchorGateOperations >= 0)
         return when {
+            requiresHeadInstall && prioritizeAnchorUntilEof && !anchorBodyPublished ->
+                minOf(progressiveLaneCount, preAnchorGateOperations)
             requiresHeadInstall && anchorBodyPublished && !headPixelsInstalled -> 0
             requiresHeadInstall && headPixelsInstalled -> minOf(
                 progressiveLaneCount,
@@ -453,6 +457,42 @@ internal object NtkDirectWifiAdjacentHeadInstallGatePolicy {
             webtoon && !anchorBodyPublished ->
                 minOf(progressiveLaneCount, preAnchorGateOperations)
             else -> progressiveLaneCount
+        }
+    }
+}
+
+/**
+ * Prevents a host-emulator resume from turning one healthy current-webtoon wave into a replica
+ * failover storm. This is deliberately applied after the generic cohort/progressive calculation:
+ * cold-pool discovery and every non-emulator transport retain their established topology, while
+ * only newly admitted post-anchor bodies are bounded. Twenty-four keeps an even eight transfers
+ * on each of the three exact webtoon replica stripes.
+ */
+internal object NtkHostGpuEmulatorCurrentWebtoonLanePolicy {
+    private const val MAX_POST_ANCHOR_TRANSFERS = 24
+
+    fun cap(
+        progressiveLaneCount: Int,
+        emulatorRuntime: Boolean,
+        directWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        webtoon: Boolean,
+        rollingAdmission: Boolean,
+        initialPageIndex: Int,
+        currentForegroundEpisode: Boolean,
+        adjacentPrefetch: Boolean,
+        anchorBodyPublished: Boolean,
+    ): Int {
+        require(progressiveLaneCount >= 0)
+        require(initialPageIndex >= 0)
+        val eligible = emulatorRuntime && directWifiTransport &&
+            !cellularResilientTransport && webtoon && rollingAdmission &&
+            initialPageIndex > 0 && currentForegroundEpisode && !adjacentPrefetch &&
+            anchorBodyPublished
+        return if (eligible) {
+            minOf(progressiveLaneCount, MAX_POST_ANCHOR_TRANSFERS)
+        } else {
+            progressiveLaneCount
         }
     }
 }
@@ -1690,7 +1730,8 @@ internal class NtkStrictSourceSession(
     private sealed interface PhysicalResult {
         data class Quarantined(
             val body: NtkQuarantinedBody,
-            val tempLease: ReaderImageCache.NtkQuarantineFileLease
+            val tempLease: ReaderImageCache.NtkQuarantineFileLease,
+            val predecodedOriginal: NtkStrictPredecodedOriginal? = null,
         ) : PhysicalResult
 
         data class ResidentAdopted(
@@ -1743,6 +1784,7 @@ internal class NtkStrictSourceSession(
         var quarantineMetadata: NtkQuarantineMetadataEvidence? = null,
         var quarantinedBody: NtkQuarantinedBody? = null,
         var tempLease: ReaderImageCache.NtkQuarantineFileLease? = null,
+        var pendingPredecodedOriginal: NtkStrictPredecodedOriginal? = null,
         var adoptedExactContext: ReaderImageCache.NtkStrictCallContext? = null,
         var seededExactBody: ReaderImageCache.NtkStrictPublishedBody? = null,
         var streamedExactBodyPending: Boolean = false,
@@ -1943,8 +1985,16 @@ internal class NtkStrictSourceSession(
             adjacentPrefetch = adjacentPrefetch,
         )
     private var adjacentPrefetchReleased = false
+    private val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+        Build.FINGERPRINT,
+        Build.MODEL,
+        Build.HARDWARE,
+        Build.PRODUCT,
+    )
     private val requiresAdjacentHeadPixelsInstall = adjacentPrefetch && directWifiTransport &&
         !cellularResilientTransport && planBinding.episodePath.startsWith("/webtoon/")
+    private val hostGpuEmulatorAdjacentP0EofPriority =
+        requiresAdjacentHeadPixelsInstall && hostGpuEmulatorRuntime
     private var adjacentAnchorRequestHeadersSent =
         !requiresAdjacentHeadPixelsInstall
     private var adjacentHeadPixelsInstalled = !requiresAdjacentHeadPixelsInstall
@@ -2551,10 +2601,12 @@ internal class NtkStrictSourceSession(
             postPromotionStarted,
             installed.snapshot.physicalCallCount,
             installed.snapshot.duplicatePhysicalCallCount,
-            // The only zero-wave same-millisecond promotion we admit is the bounded direct-Wi-Fi
-            // adjacent runway. Cellular/SNI and the foreground episode retain strict positive
-            // overlap proof even when their timing happens to fall in one clock millisecond.
-            sameMillisecondSeededExactAllowed = adjacentPrefetch,
+            // Actor submission order is stronger than the millisecond clock on a bounded
+            // host-emulator adjacent runway. This applies to both exact webtoon and manhwa
+            // handoffs; physical devices, cellular/SNI and the foreground episode retain the
+            // strict positive millisecond proof.
+            sameMillisecondSeededExactAllowed = adjacentPrefetch &&
+                directWifiTransport && !cellularResilientTransport && hostGpuEmulatorRuntime,
         )
         logOverlapProofActor()
     }
@@ -2993,18 +3045,31 @@ internal class NtkStrictSourceSession(
             },
             anchorBodyPublished,
         )
+        val currentWebtoonLaneCount = NtkHostGpuEmulatorCurrentWebtoonLanePolicy.cap(
+            progressiveLaneCount = progressiveLaneCount,
+            emulatorRuntime = hostGpuEmulatorRuntime,
+            directWifiTransport = directWifiTransport,
+            cellularResilientTransport = cellularResilientTransport,
+            webtoon = planBinding.episodePath.startsWith("/webtoon/"),
+            rollingAdmission = rollingAdmission,
+            initialPageIndex = initialPageIndex,
+            currentForegroundEpisode = isCurrentForegroundViewerEpisode(),
+            adjacentPrefetch = adjacentPrefetch,
+            anchorBodyPublished = anchorBodyPublished,
+        )
         // Connection/header arrival is not body success. Wi-Fi keeps one body per replica origin
         // before page zero EOF. Carrier mode opens one demanded leader per finite host/pool cohort instead:
         // otherwise fifteen pools remain idle for about one second, then their leaders and
         // followers stampede those cold connections together.
         val usableLaneCount = NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
-            progressiveLaneCount = progressiveLaneCount,
+            progressiveLaneCount = currentWebtoonLaneCount,
             preAnchorGateOperations = webtoonPreAnchorGateOperations,
             webtoon = planBinding.episodePath.startsWith("/webtoon/"),
             requiresHeadInstall = requiresAdjacentHeadPixelsInstall,
             anchorBodyPublished = anchorBodyPublished,
             anchorRequestHeadersSent = adjacentAnchorRequestHeadersSent,
             headPixelsInstalled = adjacentHeadPixelsInstalled,
+            prioritizeAnchorUntilEof = hostGpuEmulatorAdjacentP0EofPriority,
         )
         val launchLimitThisTurn = when {
             initialWaveCount < initialQuarantineWaveTargetCount ->
@@ -3012,7 +3077,7 @@ internal class NtkStrictSourceSession(
             // Only the entry image needs actor latency protection. Once its complete body has
             // crossed the actor boundary, opening the remaining finite ring cannot delay that
             // publication and should happen at full speed for the all-images deadline.
-            anchorBodyPublished -> usefulPhysicalLaneCount.coerceAtLeast(1)
+            anchorBodyPublished -> currentWebtoonLaneCount.coerceAtLeast(1)
             else -> MAX_PRIMARY_LAUNCHES_PER_ACTOR_TURN
         }
         var launchedThisTurn = 0
@@ -3352,7 +3417,37 @@ internal class NtkStrictSourceSession(
                     // the corresponding network lane unavailable for its next GET. The source
                     // actor already has an exact, synchronous resident-adoption path, so transfer
                     // the sealed body immediately and let that path publish it exactly once.
-                    val physicalResult = PhysicalResult.Quarantined(body, openedLease)
+                    val sourceWidth = body.metadataEvidence.sourceWidth
+                    val sourceHeight = body.metadataEvidence.sourceHeight
+                    val decodedRgbaBytes = if (sourceWidth > 0 && sourceHeight > 0) {
+                        runCatching {
+                            Math.multiplyExact(
+                                Math.multiplyExact(sourceWidth.toLong(), sourceHeight.toLong()),
+                                4L,
+                            )
+                        }.getOrDefault(Long.MAX_VALUE)
+                    } else {
+                        Long.MAX_VALUE
+                    }
+                    val predecodedOriginal = if (
+                        hostGpuEmulatorAdjacentP0EofPriority &&
+                        initialPageIndex == 0 && pageIndex == 0 &&
+                        body.encodedBytes != null &&
+                        sourceHeight <= HOST_GPU_ADJACENT_P0_PREDECODE_MAX_SOURCE_HEIGHT &&
+                        decodedRgbaBytes in 1L..HOST_GPU_ADJACENT_P0_PREDECODE_MAX_RGBA_BYTES
+                    ) {
+                        ReaderImageCache.predecodeQuarantinedOriginalAsync(
+                            body,
+                            physicalLanes[work.laneIndex],
+                        )
+                    } else {
+                        null
+                    }
+                    val physicalResult = PhysicalResult.Quarantined(
+                        body,
+                        openedLease,
+                        predecodedOriginal,
+                    )
                     transferred = true
                     physicalResult
                 } finally {
@@ -3645,7 +3740,10 @@ internal class NtkStrictSourceSession(
             completion.work.quarantineLease?.close()
             completion.work.exactContext?.operationLease?.complete()
             when (val value = completion.result.getOrNull()) {
-                is PhysicalResult.Quarantined -> value.tempLease.close()
+                is PhysicalResult.Quarantined -> {
+                    value.predecodedOriginal?.close()
+                    value.tempLease.close()
+                }
                 is PhysicalResult.ResidentAdopted -> value.tempLease.close()
                 else -> Unit
             }
@@ -3746,7 +3844,10 @@ internal class NtkStrictSourceSession(
         val page = pages[work.pageIndex]
         if (activeWorks[work.laneIndex]?.workId != work.workId) {
             when (val stale = result.getOrNull()) {
-                is PhysicalResult.Quarantined -> stale.tempLease.close()
+                is PhysicalResult.Quarantined -> {
+                    stale.predecodedOriginal?.close()
+                    stale.tempLease.close()
+                }
                 is PhysicalResult.ResidentAdopted -> stale.tempLease.close()
                 else -> Unit
             }
@@ -3822,6 +3923,8 @@ internal class NtkStrictSourceSession(
         recordWifiWebtoonAdaptiveSuccessActor(work)
         when (val value = result.getOrThrow()) {
             is PhysicalResult.Quarantined -> {
+                page.pendingPredecodedOriginal?.close()
+                page.pendingPredecodedOriginal = value.predecodedOriginal
                 page.tempLease = value.tempLease
                 page.quarantinedBody = value.body
                 page.quarantineMetadata = value.body.metadataEvidence
@@ -3964,14 +4067,23 @@ internal class NtkStrictSourceSession(
             context = beginExactOperationActor(synthetic, manifest)
         }
         val proof = NtkQuarantineAdoptionProof.create(planBinding, body, manifest)
-        val published = ReaderImageCache.adoptQuarantinedEncodedOriginal(
-            appContext,
-            manga,
-            manifest.seal,
-            page.pageIndex,
-            body,
-            proof
-        )
+        val predecodedOriginal = page.pendingPredecodedOriginal
+        val published = try {
+            ReaderImageCache.adoptQuarantinedEncodedOriginal(
+                appContext,
+                manga,
+                manifest.seal,
+                page.pageIndex,
+                body,
+                proof,
+                predecodedOriginal,
+            )
+        } catch (failure: Throwable) {
+            predecodedOriginal?.close()
+            page.pendingPredecodedOriginal = null
+            throw failure
+        }
+        page.pendingPredecodedOriginal = null
         publishResidentBodyForRender(published)
         completeResidentAdoptionActor(page, body, tempLease, published, context)
     }
@@ -4532,6 +4644,8 @@ internal class NtkStrictSourceSession(
         pages.forEach { page ->
             page.adoptedExactContext?.operationLease?.complete()
             page.adoptedExactContext = null
+            page.pendingPredecodedOriginal?.close()
+            page.pendingPredecodedOriginal = null
             page.tempLease?.close()
             page.tempLease = null
         }
@@ -4962,6 +5076,8 @@ internal class NtkStrictSourceSession(
          * slice catches up to the bounded target while still interleaving EOF/adoption callbacks.
          */
         const val MAX_PRIMARY_LAUNCHES_PER_ACTOR_TURN = 4
+        const val HOST_GPU_ADJACENT_P0_PREDECODE_MAX_SOURCE_HEIGHT = 2_048
+        const val HOST_GPU_ADJACENT_P0_PREDECODE_MAX_RGBA_BYTES = 16L * 1024L * 1024L
         val SESSION_SEQUENCE = AtomicLong(1L)
         val CLOSE_BARRIER_SEQUENCE = AtomicLong(1L)
     }

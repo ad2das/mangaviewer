@@ -219,6 +219,10 @@ public class CustomHttpClient {
         void onResponseHeaders(NtkBoundHttpResponse response) throws Exception;
         /** Returns true once the observer has found everything it needs from subsequent bytes. */
         boolean onBodyPrefix(byte[] bodyPrefix) throws Exception;
+
+        default int initialBodyPrefixBytes() {
+            return 112 * 1024;
+        }
     }
 
     public static final class NtkBoundHttpRequest {
@@ -13000,6 +13004,11 @@ public class CustomHttpClient {
                         public boolean onBodyPrefix(byte[] bodyPrefix) throws Exception {
                             return documentObserver.onBodyPrefix(bodyPrefix);
                         }
+
+                        @Override
+                        public int initialBodyPrefixBytes() {
+                            return documentObserver.initialBodyPrefixBytes();
+                        }
                     };
             NtkQuicFetcher.Result result = NtkQuicFetcher.fetchWithEngineExactOwned(
                     sharedEngine,
@@ -13128,7 +13137,11 @@ public class CustomHttpClient {
         ByteArrayOutputStream out = new ByteArrayOutputStream(initialSize);
         byte[] buffer = new byte[8 * 1024];
         boolean observerComplete = false;
-        int nextPrefixObservation = 8 * 1024;
+        int preferredPrefixBytes = Math.max(4 * 1024, observer.initialBodyPrefixBytes());
+        boolean fixedCompactPrefixCadence = preferredPrefixBytes < 112 * 1024;
+        int nextPrefixObservation = fixedCompactPrefixCadence
+                ? preferredPrefixBytes
+                : 8 * 1024;
         try(InputStream input = responseBody.byteStream()) {
             int read;
             while((read = input.read(buffer)) != -1) {
@@ -13139,7 +13152,10 @@ public class CustomHttpClient {
                 // then stop copying as soon as the signed request seed has been found.
                 if(!observerComplete && out.size() >= nextPrefixObservation) {
                     observerComplete = observer.onBodyPrefix(out.toByteArray());
-                    nextPrefixObservation = Math.max(nextPrefixObservation + 1,
+                    nextPrefixObservation = fixedCompactPrefixCadence
+                            ? Math.min(Integer.MAX_VALUE / 2,
+                            nextPrefixObservation + preferredPrefixBytes)
+                            : Math.max(nextPrefixObservation + 1,
                             Math.min(Integer.MAX_VALUE / 2, nextPrefixObservation * 2));
                 }
             }
@@ -13280,8 +13296,9 @@ public class CustomHttpClient {
             /*
              * Next's own target-navigation request shape keeps the complete authoritative
              * episode segment while omitting unrelated root-layout Flight data. The flag is
-             * supplied only by the direct-host adjacent gate after its predecessor is complete;
-             * current, cellular/SNI and manhwa discovery retain the canonical full response.
+         * supplied only by the direct-host emulator resume/adjacent control-plane gate. The
+         * adjacent request still cannot start before its predecessor is complete; cellular/SNI,
+         * physical devices, cold page-zero opens and manhwa retain the canonical full response.
              */
             String routerState = "%5B%22%22%2C%7B%7D%5D";
             headers.put("next-router-state-tree", routerState);
@@ -14213,6 +14230,14 @@ public class CustomHttpClient {
             NtkUnsignedExactImageRequest unsigned,
             NtkStrictCallRegistry callRegistry
     ) throws Exception {
+        return executeUnsignedExactNtkWebtoonImageApi(unsigned, callRegistry, false);
+    }
+
+    public NtkBoundHttpResponse executeUnsignedExactNtkWebtoonImageApi(
+            NtkUnsignedExactImageRequest unsigned,
+            NtkStrictCallRegistry callRegistry,
+            boolean forceOkHttp
+    ) throws Exception {
         if(unsigned == null)
             throw new IllegalArgumentException("Strict webtoon image request is null");
         requireStrictCallRegistry(callRegistry, unsigned.episodePath);
@@ -14252,13 +14277,17 @@ public class CustomHttpClient {
         long startedAt = System.currentTimeMillis();
         Log.d(TAG, "ntk_strict_unsigned_webtoon_image_api_start path="
                 + unsigned.episodePath + ",endpoint=" + unsigned.endpoint);
-        OkHttpClient exactClient = ntkStrictDocumentClientForActiveNetwork();
+        OkHttpClient exactClient = forceOkHttp
+                ? ntkStrictExactImageApiClientForActiveNetwork()
+                : ntkStrictDocumentClientForActiveNetwork();
         NtkBoundHttpResponse exchange = executeStrictExactSameOriginRequest(
                 exactRequest,
                 callRegistry,
                 exactClient,
                 NTK_API_DIRECT_TIMEOUT_MS,
-                "unsigned_webtoon_image_api"
+                "unsigned_webtoon_image_api",
+                null,
+                forceOkHttp
         );
         {
             byte[] bytes = exchange.bodyBytes;

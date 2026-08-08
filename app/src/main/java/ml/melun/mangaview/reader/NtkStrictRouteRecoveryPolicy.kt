@@ -79,21 +79,32 @@ object NtkStrictRouteRecoveryPolicy {
         completedRecoveryAttempts: Int,
         directWifiCurrentViewer: Boolean,
         sameOriginFallbackConsumed: Boolean,
+        directWifiAdjacentViewer: Boolean = false,
+        hostGpuEmulatorRuntime: Boolean = false,
     ): Boolean {
-        if (!directWifiCurrentViewer || sameOriginFallbackConsumed ||
+        if ((!directWifiCurrentViewer &&
+                !(directWifiAdjacentViewer && hostGpuEmulatorRuntime)) ||
+            sameOriginFallbackConsumed ||
             completedRecoveryAttempts >= MAX_RECOVERY_ATTEMPTS
         ) {
             return false
         }
-        if (failure !is IOException ||
-            failure.message != "Strict document HttpEngine request failed"
-        ) return false
+        if (failure !is IOException) return false
+        val currentDocumentQuicFallback = directWifiCurrentViewer &&
+            failure.message == "Strict document HttpEngine request failed"
+        val adjacentHttpEngineTimeoutFallback = directWifiAdjacentViewer &&
+            hostGpuEmulatorRuntime &&
+            failure.message in retryableHttpEngineTransportFailures
+        if (!currentDocumentQuicFallback && !adjacentHttpEngineTimeoutFallback) return false
         var current: Throwable? = failure.cause
         var depth = 0
         while (current != null && depth++ < 16) {
             if (current is SocketTimeoutException &&
-                current.message == "QUIC fetch timed out"
-            ) return true
+                (adjacentHttpEngineTimeoutFallback ||
+                    current.message == "QUIC fetch timed out")
+            ) {
+                return true
+            }
             val next = current.cause
             if (next === current) break
             current = next

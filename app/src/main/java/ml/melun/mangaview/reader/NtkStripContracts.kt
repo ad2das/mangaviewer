@@ -107,13 +107,14 @@ data class NtkEpisodeManifestSeal(
         require(NtkStripDigests.isSha256(digestSha256))
     }
 
-    val computedDigestSha256: String
-        get() = computeDigestSha256(normalizedEpisodePath, pageCount, normalizedCanonicalAssets)
+    // The seal is immutable. Keep the verified digest with it so the four initial source
+    // routes do not each hash the complete episode manifest again on the critical path.
+    val computedDigestSha256: String =
+        computeDigestSha256(normalizedEpisodePath, pageCount, normalizedCanonicalAssets)
 
-    val isStructurallyComplete: Boolean
-        get() = pageCount > 0 &&
-            normalizedCanonicalAssets.size == pageCount &&
-            digestSha256 == computedDigestSha256
+    val isStructurallyComplete: Boolean = pageCount > 0 &&
+        normalizedCanonicalAssets.size == pageCount &&
+        digestSha256 == computedDigestSha256
 
     /** The ruling treats an identical digest as a no-op even if a source repeats a revision. */
     fun hasSameAuthority(other: NtkEpisodeManifestSeal): Boolean =
@@ -1574,12 +1575,14 @@ data class NtkAuthoritativeManifest(
     val seal: NtkEpisodeManifestSeal,
     val proof: NtkExactManifestProof
 ) {
+    // Both inputs are immutable response-bound value objects. Validation is deliberately eager,
+    // then cached so reserve, promotion and each physical route share the same proof result.
+    val isProductionClaimable: Boolean =
+        seal.isStructurallyComplete && proof.isValidFor(seal)
+
     init {
         require(isProductionClaimable)
     }
-
-    val isProductionClaimable: Boolean
-        get() = seal.isStructurallyComplete && proof.isValidFor(seal)
 }
 
 /** Evidence that the initial source wave overlapped exact discovery without duplicate producers. */
@@ -1604,12 +1607,12 @@ data class NtkSourceOverlapProof(
         require(initialQuarantineWaveSubmittedAtMs >= firstQuarantineSubmittedAtMs)
         // A fully click-owned exact body set legitimately needs no second physical source wave.
         require(initialWaveCount >= 0)
-        // A direct-Wi-Fi adjacent body set can seed the source session and install its exact seal
-        // in the same elapsed-realtime millisecond without opening a second physical source wave.
-        // Every other session and real quarantine work must still prove positive pre-exact
-        // overlap; relaxing those paths would hide a discovery/source ordering regression.
+        // A host-emulator direct-Wi-Fi adjacent session is actor-ordered: its quarantine
+        // submission is recorded before exact installation, although both events can share the
+        // same millisecond clock tick. Every other session must still prove a positive millisecond
+        // gap; relaxing those paths would hide a discovery/source ordering regression.
         require(
-            if (sameMillisecondSeededExactAllowed && initialWaveCount == 0) {
+            if (sameMillisecondSeededExactAllowed) {
                 exactSealAtMs >= firstQuarantineSubmittedAtMs
             } else {
                 exactSealAtMs > firstQuarantineSubmittedAtMs

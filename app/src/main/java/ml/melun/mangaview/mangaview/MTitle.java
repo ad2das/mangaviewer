@@ -7,6 +7,34 @@ import java.util.Locale;
 import java.util.List;
 
 public class MTitle{
+    public static final class ResumeNtkNextEpisodeIdentitySnapshot {
+        public final String path;
+        public final int id;
+        public final String name;
+        public final String workId;
+        public final String episodeId;
+        public final int imageCount;
+
+        ResumeNtkNextEpisodeIdentitySnapshot(
+                String path,
+                int id,
+                String name,
+                String workId,
+                String episodeId,
+                int imageCount) {
+            this.path = path;
+            this.id = id;
+            this.name = name;
+            this.workId = workId;
+            this.episodeId = episodeId;
+            this.imageCount = imageCount;
+        }
+
+        public boolean isComplete() {
+            return path.length() > 0 && id > 0 && workId.length() > 0
+                    && episodeId.length() > 0 && imageCount > 0;
+        }
+    }
     String name;
     int id;
     String thumb;
@@ -160,7 +188,7 @@ public class MTitle{
                 && getResumeNtkNextImageCount() > 0;
     }
 
-    public void setResumeNtkNextEpisodeIdentity(
+    public synchronized void setResumeNtkNextEpisodeIdentity(
             String path,
             int id,
             String name,
@@ -197,13 +225,24 @@ public class MTitle{
                 episode.getNtkImageCount());
     }
 
-    public void clearResumeNtkNextEpisodeIdentity() {
+    public synchronized void clearResumeNtkNextEpisodeIdentity() {
         resumeNtkNextEpisodePath = "";
         resumeNtkNextEpisodeId = -1;
         resumeNtkNextEpisodeName = "";
         resumeNtkNextImageWorkId = "";
         resumeNtkNextImageEpisodeId = "";
         resumeNtkNextImageCount = 0;
+    }
+
+    /** Atomically freezes the six-field exact neighbor tuple for non-main reader workers. */
+    public synchronized ResumeNtkNextEpisodeIdentitySnapshot snapshotResumeNtkNextEpisodeIdentity() {
+        return new ResumeNtkNextEpisodeIdentitySnapshot(
+                resumeNtkNextEpisodePath == null ? "" : resumeNtkNextEpisodePath.trim(),
+                resumeNtkNextEpisodeId,
+                resumeNtkNextEpisodeName == null ? "" : resumeNtkNextEpisodeName,
+                resumeNtkNextImageWorkId == null ? "" : resumeNtkNextImageWorkId.trim(),
+                resumeNtkNextImageEpisodeId == null ? "" : resumeNtkNextImageEpisodeId.trim(),
+                Math.max(0, resumeNtkNextImageCount));
     }
 
     public void inheritMissingResumeNtkNextEpisodeIdentity(MTitle source) {

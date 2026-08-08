@@ -445,12 +445,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 }
             }
         }
+        val generationBoundDownstream = object : ReaderSession.Listener by this@ReaderV2Activity {
+            override fun onAdjacentExactManifestRequired(
+                manga: Manga,
+                predecessorEpisodePath: String,
+            ) {
+                postAdjacentExactManifestForGeneration(
+                    generation,
+                    manga,
+                    predecessorEpisodePath,
+                )
+            }
+        }
         return ReaderSessionListenerGate(
             generation = generation,
             isActive = ::isReaderSessionGenerationActive,
             adopted = registry,
             installed = InstalledDrawableQuery { index -> renderView.hasPageDrawable(index) },
-            downstream = this
+            downstream = generationBoundDownstream,
         )
     }
     @Volatile
@@ -974,12 +986,6 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             }
         }
         setContentView(root)
-        if (strictNtkEpisode) {
-            // The first ordinary root frame proves the window is live. Settle only the transparent
-            // native producer after that point while the exact-session gate still forbids any
-            // pixel submission; current-episode network discovery below remains immediate.
-            renderView.prepareDeferredSurfaceProducerAfterRootFrame()
-        }
         if (
             !useHybridNtkBrowser &&
             ReaderWarmupCoordinator.ownsKnownUrlsDecode(preparedKey)
@@ -2028,7 +2034,9 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 "total=${publication.totalPageCount} card=${publication.cardIndex} activityCount=$oldCount",
         )
         renderView.setFrameSchedulingSuppressed(true)
-        return try {
+        var accepted = false
+        var catchupEligible = false
+        try {
             onPagesAppended(publication.totalPageCount)
             Log.d(
                 "ViewerPerf",
@@ -2051,7 +2059,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 renderView.setPageCount(oldCount)
                 syncRenderPageIdentities(oldCount)
             }
-            result.accepted
+            accepted = result.accepted
+            catchupEligible = result.accepted && result.firstInstall
         } catch (failure: Exception) {
             Log.e(
                 "ViewerPerf",
@@ -2063,6 +2072,10 @@ if (firstResumeArmedUptimeNanos == 0L) {
         } finally {
             renderView.setFrameSchedulingSuppressed(false)
         }
+        if (catchupEligible) {
+            renderView.requestDirectWifiAdjacentExactP0ContentCatchup(publication.delta.owner)
+        }
+        return accepted
     }
 
     override fun onAdjacentExactP0TailReady(delta: NtkAdjacentExactP0Delta): Boolean {
@@ -7081,6 +7094,18 @@ if (!renderView.isShown ||
         manga: Manga,
         predecessorEpisodePath: String,
     ) {
+        postAdjacentExactManifestForGeneration(
+            activeReaderSessionGeneration.get(),
+            manga,
+            predecessorEpisodePath,
+        )
+    }
+
+    private fun postAdjacentExactManifestForGeneration(
+        generation: Int,
+        manga: Manga,
+        predecessorEpisodePath: String,
+    ) {
         val capturedPredecessorPath = NtkStripDigests.normalizeEpisodePath(
             predecessorEpisodePath
         )
@@ -7093,7 +7118,15 @@ if (!renderView.isShown ||
             return
         }
         val startDiscovery = Runnable {
-            if (destroyed || isFinishing) return@Runnable
+            if (destroyed || isFinishing ||
+                generation != activeReaderSessionGeneration.get()
+            ) return@Runnable
+            val capturedSession = session ?: return@Runnable
+            val launchPath = strictExactLaunchSeal?.normalizedEpisodePath.orEmpty()
+            if (launchPath.isNotEmpty() &&
+                !launchPath.equals(capturedPredecessorPath, ignoreCase = true) &&
+                !capturedSession.canPrepareForwardAdjacentNow(capturedPredecessorPath)
+            ) return@Runnable
             startStrictNtkDiscovery(
                 manga,
                 "continuous_adjacent_exact_manifest",

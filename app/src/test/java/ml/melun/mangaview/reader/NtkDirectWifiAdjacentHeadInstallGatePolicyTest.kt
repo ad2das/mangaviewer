@@ -61,6 +61,49 @@ class NtkDirectWifiAdjacentHeadInstallGatePolicyTest {
     }
 
     @Test
+    fun hostGpuEmulatorKeepsP0ExclusiveUntilItsBodyReachesEof() {
+        assertEquals(
+            1,
+            NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
+                progressiveLaneCount = 120,
+                preAnchorGateOperations = 1,
+                webtoon = true,
+                requiresHeadInstall = true,
+                anchorBodyPublished = false,
+                anchorRequestHeadersSent = true,
+                headPixelsInstalled = false,
+                prioritizeAnchorUntilEof = true,
+            ),
+        )
+        assertEquals(
+            0,
+            NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
+                progressiveLaneCount = 120,
+                preAnchorGateOperations = 1,
+                webtoon = true,
+                requiresHeadInstall = true,
+                anchorBodyPublished = true,
+                anchorRequestHeadersSent = true,
+                headPixelsInstalled = false,
+                prioritizeAnchorUntilEof = true,
+            ),
+        )
+        assertEquals(
+            3,
+            NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
+                progressiveLaneCount = 120,
+                preAnchorGateOperations = 1,
+                webtoon = true,
+                requiresHeadInstall = true,
+                anchorBodyPublished = true,
+                anchorRequestHeadersSent = true,
+                headPixelsInstalled = true,
+                prioritizeAnchorUntilEof = true,
+            ),
+        )
+    }
+
+    @Test
     fun installedHeadReleasesOnlyTheDirectWifiAdjacentWebtoonTail() {
         assertEquals(
             3,

@@ -96,6 +96,28 @@ class NtkStrictSourceBodyPublishedTest {
     }
 
     @Test
+    fun actorOrderedHostEmulatorAdjacentWaveMaySealInTheSubmissionMillisecond() {
+        val proof = NtkSourceOverlapProof(
+            planReservedAtMs = 100L,
+            firstQuarantineSubmittedAtMs = 104L,
+            initialQuarantineWaveSubmittedAtMs = 104L,
+            initialWaveCount = 1,
+            exactSealAtMs = 104L,
+            ownerClaimedAtMs = 104L,
+            completedAtPromotion = 0,
+            activeAtPromotion = 1,
+            queuedAtPromotion = 0,
+            postPromotionStarted = 0,
+            physicalCallCount = 1,
+            duplicatePhysicalCallCount = 0,
+            sameMillisecondSeededExactAllowed = true,
+        )
+
+        assertEquals(0L, proof.overlapBeforeExactMs)
+        assertEquals(1, proof.initialWaveCount)
+    }
+
+    @Test
     fun physicalQuarantineWaveStillRequiresPositivePreExactOverlap() {
         assertRejected {
             NtkSourceOverlapProof(
