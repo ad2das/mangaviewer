@@ -156,6 +156,16 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
      */
     fun onAdjacentViewportActivated(episode: NtkEpisodeToken)
 
+    /**
+     * Releases the rest of the bounded adjacent webtoon wave only after p0's exact leading
+     * pixels are owned by the renderer. This is deliberately narrower than full-runway commit:
+     * it never releases p4+ and is a no-op for current, cellular/SNI, manhwa, and generic work.
+     */
+    fun onAdjacentHeadPixelsInstalled(episode: NtkEpisodeToken) = Unit
+
+    /** Reports that the bounded p0..p3 drawable runway has committed to the reader. */
+    fun onAdjacentDrawableRunwayCommitted(episode: NtkEpisodeToken)
+
     /** Completes only at the exact no-call/no-lease source drain boundary. */
     fun requestPreparationDrain(
         episode: NtkEpisodeToken,

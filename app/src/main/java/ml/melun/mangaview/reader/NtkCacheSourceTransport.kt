@@ -81,6 +81,12 @@ internal class NtkCacheSourceTransport(
     override fun onAdjacentViewportActivated(episode: NtkEpisodeToken) =
         strictSession.onAdjacentViewportActivated(episode)
 
+    override fun onAdjacentHeadPixelsInstalled(episode: NtkEpisodeToken) =
+        strictSession.onAdjacentHeadPixelsInstalled(episode)
+
+    override fun onAdjacentDrawableRunwayCommitted(episode: NtkEpisodeToken) =
+        strictSession.onAdjacentDrawableRunwayCommitted(episode)
+
     override fun requestPreparationDrain(
         episode: NtkEpisodeToken,
         completion: (NtkSourceDrainProof) -> Unit

@@ -489,10 +489,10 @@ class NtkWebtoonBodyWallPolicyTest {
     }
 
     @Test
-    fun directWifiWebtoonRangeRecoveryTriesAlternatesBeforeTheStalledOrigin() {
+    fun directWifiWebtoonRangeRecoveryTriesTheProvenOriginBeforeAlternates() {
         assertEquals(
-            listOf(2, 0, 1),
-            NtkDirectWifiWebtoonRangeCandidatePolicy.alternateFirstIndexes(
+            listOf(1, 2, 0),
+            NtkDirectWifiWebtoonRangeCandidatePolicy.responseFirstIndexes(
                 candidateCount = 3,
                 responseCandidateIndex = 1,
                 pageIndex = 57,
@@ -500,7 +500,7 @@ class NtkWebtoonBodyWallPolicyTest {
         )
         assertEquals(
             listOf(0),
-            NtkDirectWifiWebtoonRangeCandidatePolicy.alternateFirstIndexes(
+            NtkDirectWifiWebtoonRangeCandidatePolicy.responseFirstIndexes(
                 candidateCount = 1,
                 responseCandidateIndex = 0,
                 pageIndex = 57,
@@ -954,6 +954,81 @@ class NtkWebtoonBodyWallPolicyTest {
                 expectedLength = 777_864L,
                 segmentWallMs = directWall,
             )
+        )
+    }
+
+    @Test
+    fun shortDirectWifiCurrentLetsTheExclusiveAnchorFinishItsHealthyStream() {
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 0,
+                episodePageCount = 8,
+                contentLength = 6_645_127L,
+                currentForegroundEpisode = true,
+            ),
+        )
+    }
+
+    @Test
+    fun shortDirectWifiCurrentRecoversGiantTailBodiesAtTheGenericWall() {
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 5,
+                episodePageCount = 8,
+                contentLength = NtkWebtoonBodyWallPolicy.DIRECT_WIFI_GIANT_BODY_BYTES,
+                currentForegroundEpisode = true,
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 5,
+                episodePageCount = 8,
+                contentLength = NtkWebtoonBodyWallPolicy.DIRECT_WIFI_GIANT_BODY_BYTES - 1L,
+                currentForegroundEpisode = true,
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 1,
+                episodePageCount = 8,
+                contentLength = NtkWebtoonBodyWallPolicy.DIRECT_WIFI_GIANT_BODY_BYTES,
+                currentForegroundEpisode = true,
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 1,
+                episodePageCount = 8,
+                contentLength = NtkWebtoonBodyWallPolicy.DIRECT_WIFI_GIANT_BODY_BYTES - 1L,
+                currentForegroundEpisode = true,
+            ),
+        )
+    }
+
+    @Test
+    fun adjacentAndLongEpisodesRetainTheirExistingDirectWifiWalls() {
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.ENTRY_VIEWPORT_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 0,
+                episodePageCount = 8,
+                contentLength = 6_645_127L,
+                currentForegroundEpisode = false,
+            ),
+        )
+        assertEquals(
+            NtkWebtoonBodyWallPolicy.DIRECT_WIFI_INITIAL_SEGMENT_WALL_MS,
+            NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(
+                pageIndex = 5,
+                episodePageCount = 9,
+                contentLength = 6_645_127L,
+                currentForegroundEpisode = true,
+            ),
         )
     }
 

@@ -45,6 +45,18 @@ public final class ReaderLaunchPayloadStore {
     private static final String EXTRA_TITLE_SOURCE = COMPACT_PREFIX + "title.source";
     private static final String EXTRA_TITLE_NTK_STATUS = COMPACT_PREFIX + "title.ntkStatus";
     private static final String EXTRA_TITLE_RESUME_PATH = COMPACT_PREFIX + "title.resumePath";
+    private static final String EXTRA_TITLE_RESUME_NEXT_PATH =
+            COMPACT_PREFIX + "title.resumeNextPath";
+    private static final String EXTRA_TITLE_RESUME_NEXT_ID =
+            COMPACT_PREFIX + "title.resumeNextId";
+    private static final String EXTRA_TITLE_RESUME_NEXT_NAME =
+            COMPACT_PREFIX + "title.resumeNextName";
+    private static final String EXTRA_TITLE_RESUME_NEXT_IMAGE_WORK_ID =
+            COMPACT_PREFIX + "title.resumeNextImageWorkId";
+    private static final String EXTRA_TITLE_RESUME_NEXT_IMAGE_EPISODE_ID =
+            COMPACT_PREFIX + "title.resumeNextImageEpisodeId";
+    private static final String EXTRA_TITLE_RESUME_NEXT_IMAGE_COUNT =
+            COMPACT_PREFIX + "title.resumeNextImageCount";
     private static final String EXTRA_TITLE_BOOKMARK_ID = COMPACT_PREFIX + "title.bookmarkId";
     private static final String EXTRA_TITLE_BOOKMARK_INDEX = COMPACT_PREFIX + "title.bookmarkIndex";
     private static final String EXTRA_TITLE_EPISODE_COUNT = COMPACT_PREFIX + "title.episodeCount";
@@ -116,6 +128,18 @@ public final class ReaderLaunchPayloadStore {
         intent.putExtra(EXTRA_TITLE_SOURCE, title.getSourceSite());
         intent.putExtra(EXTRA_TITLE_NTK_STATUS, title.getNtkStatusLabel());
         intent.putExtra(EXTRA_TITLE_RESUME_PATH, title.getResumeNtkEpisodePath());
+        intent.putExtra(EXTRA_TITLE_RESUME_NEXT_PATH, title.getResumeNtkNextEpisodePath());
+        intent.putExtra(EXTRA_TITLE_RESUME_NEXT_ID, title.getResumeNtkNextEpisodeId());
+        intent.putExtra(EXTRA_TITLE_RESUME_NEXT_NAME, title.getResumeNtkNextEpisodeName());
+        intent.putExtra(
+                EXTRA_TITLE_RESUME_NEXT_IMAGE_WORK_ID,
+                title.getResumeNtkNextImageWorkId());
+        intent.putExtra(
+                EXTRA_TITLE_RESUME_NEXT_IMAGE_EPISODE_ID,
+                title.getResumeNtkNextImageEpisodeId());
+        intent.putExtra(
+                EXTRA_TITLE_RESUME_NEXT_IMAGE_COUNT,
+                title.getResumeNtkNextImageCount());
         intent.putExtra(EXTRA_TITLE_BOOKMARK_ID, title.getBookmarkEpisodeId());
         intent.putExtra(EXTRA_TITLE_BOOKMARK_INDEX, title.getBookmarkEpisodeIndex());
         intent.putExtra(EXTRA_TITLE_EPISODE_COUNT, title.getEpisodeCount());
@@ -190,6 +214,13 @@ public final class ReaderLaunchPayloadStore {
             title.setSourceSite(stringExtra(intent, EXTRA_TITLE_SOURCE));
             title.setNtkStatusLabel(stringExtra(intent, EXTRA_TITLE_NTK_STATUS));
             title.setResumeNtkEpisodePath(stringExtra(intent, EXTRA_TITLE_RESUME_PATH));
+            title.setResumeNtkNextEpisodeIdentity(
+                    stringExtra(intent, EXTRA_TITLE_RESUME_NEXT_PATH),
+                    intent.getIntExtra(EXTRA_TITLE_RESUME_NEXT_ID, -1),
+                    stringExtra(intent, EXTRA_TITLE_RESUME_NEXT_NAME),
+                    stringExtra(intent, EXTRA_TITLE_RESUME_NEXT_IMAGE_WORK_ID),
+                    stringExtra(intent, EXTRA_TITLE_RESUME_NEXT_IMAGE_EPISODE_ID),
+                    intent.getIntExtra(EXTRA_TITLE_RESUME_NEXT_IMAGE_COUNT, 0));
             title.setReadingProgress(
                     intent.getIntExtra(EXTRA_TITLE_BOOKMARK_ID, -1),
                     intent.getIntExtra(EXTRA_TITLE_BOOKMARK_INDEX, -1),

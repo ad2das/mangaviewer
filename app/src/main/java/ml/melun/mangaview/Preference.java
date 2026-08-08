@@ -1152,6 +1152,7 @@ public class Preference {
                 && !MTitle.isSuspiciousNtkThumbnail(existing.getThumb()))
             target.setThumb(existing.getThumb());
         target.inheritMissingResumeNtkImageIdentity(existing);
+        target.inheritMissingResumeNtkNextEpisodeIdentity(existing);
         int existingCount = existing.getEpisodeCount();
         int targetCount = target.getEpisodeCount();
         boolean targetHasCompleteProgress = target.getBookmarkEpisodeIndex() > 0

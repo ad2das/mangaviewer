@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Semaphore
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -77,6 +78,21 @@ internal object NtkStrictAdjacentRetryReadmissionPolicy {
 }
 
 /**
+ * Freezes the telemetry boundary with the source session's transport role. Direct wired/Wi-Fi
+ * strict retries are one logical page request, so an unsuccessful HTTP response is not published
+ * as a user-visible image cancellation before the actor has had a chance to retry it. A successful
+ * response still goes through the strict body/format proof and is reported as failed if that proof
+ * fails. Carrier/SNI keeps
+ * the established per-physical-attempt telemetry path unchanged.
+ */
+internal object NtkStrictLogicalImageTelemetryPolicy {
+    fun afterSuccessfulHeaders(
+        directWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+    ): Boolean = directWifiTransport && !cellularResilientTransport
+}
+
+/**
  * Serializes actor callback admission with the final close-barrier snapshot.
  *
  * The actor executor itself cannot provide this boundary: a producer can increment the pending
@@ -120,6 +136,493 @@ internal class NtkStrictSourceActorCallbackGate {
         admissionsClosed = true
         true
     }
+}
+
+/**
+ * One fair process-wide budget for optional disjoint suffix Calls. A batch lease is deliberately
+ * separate from the source-session lifecycle: the response body that starts the physical Range
+ * owns it and can release it from every EOF, failure, and cancellation path. Double-close is a
+ * no-op, so racing EOF/cancellation/outer-response closes cannot inflate capacity.
+ */
+internal class NtkDirectWifiShortWebtoonTailPermitGate(
+    val maximumPermits: Int,
+) {
+    init {
+        require(maximumPermits > 0)
+    }
+
+    private val permits = Semaphore(maximumPermits, true)
+
+    fun tryAcquire(): Lease? = tryAcquire(1)
+
+    /** Acquires one logical body's complete suffix group atomically or not at all. */
+    fun tryAcquire(permitCount: Int): Lease? {
+        require(permitCount in 1..maximumPermits)
+        if (!permits.tryAcquire(permitCount)) return null
+        return Lease(permits, permitCount)
+    }
+
+    internal fun availablePermitsForTest(): Int = permits.availablePermits()
+
+    internal class Lease(
+        private val permits: Semaphore,
+        private val permitCount: Int,
+    ) : Closeable {
+        private val closed = AtomicBoolean(false)
+
+        override fun close() {
+            if (closed.compareAndSet(false, true)) permits.release(permitCount)
+        }
+    }
+}
+
+/**
+ * Defers release of one frozen direct-Wi-Fi webtoon suffix lease until its owning response is done
+ * with the group and every admitted physical network fetch has terminated. Cancellation may
+ * request release before Call.execute() returns, so closing the lease from that request would let
+ * a replacement suffix exceed the process-wide physical-Call bound. Current and adjacent roles
+ * have separate gates, but share this physical lifecycle contract.
+ *
+ * A task reports its stable index. This makes a repeated terminal callback harmless without
+ * allowing one task's duplicate callback to stand in for a different task which is still running.
+ */
+internal class NtkDirectWifiWebtoonTailLeaseOwner(
+    private val lease: Closeable,
+    val physicalTaskCount: Int,
+) {
+    init {
+        require(physicalTaskCount > 0)
+    }
+
+    private val lock = Any()
+    private val physicalTerminated = BooleanArray(physicalTaskCount)
+    private var remainingPhysicalTasks = physicalTaskCount
+    private var releaseRequested = false
+    private var leaseCloseClaimed = false
+
+    fun requestRelease() {
+        val closeLease = synchronized(lock) {
+            releaseRequested = true
+            claimLeaseCloseLocked()
+        }
+        if (closeLease) lease.close()
+    }
+
+    fun physicalTerminated() {
+        require(physicalTaskCount == 1)
+        physicalTerminated(0)
+    }
+
+    fun physicalTerminated(physicalTaskIndex: Int) {
+        val closeLease = synchronized(lock) {
+            require(physicalTaskIndex in physicalTerminated.indices)
+            if (!physicalTerminated[physicalTaskIndex]) {
+                physicalTerminated[physicalTaskIndex] = true
+                remainingPhysicalTasks--
+                check(remainingPhysicalTasks >= 0)
+            }
+            claimLeaseCloseLocked()
+        }
+        if (closeLease) lease.close()
+    }
+
+    /** Retires a group which lost cancellation immediately after publication, before submission. */
+    fun retireAllUnstartedPhysicalTasks() {
+        repeat(physicalTaskCount, ::physicalTerminated)
+    }
+
+    private fun claimLeaseCloseLocked(): Boolean {
+        if (!releaseRequested || remainingPhysicalTasks != 0 || leaseCloseClaimed) return false
+        leaseCloseClaimed = true
+        return true
+    }
+}
+
+/**
+ * Two-sided cancellation handshake for one frozen direct-Wi-Fi suffix segment.
+ *
+ * Cancellation can win immediately before or after the worker publishes its physical Call. The
+ * cancelling thread records the request before looking for a registered Call, while the worker
+ * publishes the Call before rechecking that request. One of those two sides therefore owns the
+ * physical cancellation without making the healthy primary wait for the suffix worker to unwind.
+ */
+internal class NtkDirectWifiWebtoonTailSegmentCancellation<T : Any>(
+    private val cancelPhysical: (T) -> Unit,
+) {
+    private val cancellationRequested = AtomicBoolean(false)
+    private val registeredPhysical = AtomicReference<T?>(null)
+
+    /** Returns false after cancelling [physical] when cancellation won before registration. */
+    fun register(physical: T): Boolean {
+        check(registeredPhysical.compareAndSet(null, physical)) {
+            "Direct-Wi-Fi suffix registered overlapping physical work"
+        }
+        if (!cancellationRequested.get()) return true
+        cancelRegisteredPhysical(physical)
+        return false
+    }
+
+    fun clear(physical: T) {
+        registeredPhysical.compareAndSet(physical, null)
+    }
+
+    fun requestCancellation() {
+        cancellationRequested.set(true)
+        registeredPhysical.getAndSet(null)?.let(cancelPhysical)
+    }
+
+    internal fun isCancellationRequestedForTest(): Boolean = cancellationRequested.get()
+
+    private fun cancelRegisteredPhysical(physical: T) {
+        if (registeredPhysical.compareAndSet(physical, null)) cancelPhysical(physical)
+    }
+}
+
+/**
+ * Immutable per-request authorization for the bounded direct-Wi-Fi suffix experiment.
+ *
+ * This is not a routing decision. The session freezes all eligibility inputs before any source
+ * Call exists, then binds the tag to one exact manifest/page/asset tuple. ReaderImageCache may
+ * consume the tag only for validator-checked, byte-disjoint Range suffixes. Page zero never gets
+ * a tag, and one tag can claim at most one all-or-none physical Call group for its lifetime.
+ */
+internal class NtkDirectWifiShortWebtoonTailTag internal constructor(
+    val normalizedEpisodePath: String,
+    val manifestDigest: String,
+    val viewerGeneration: Long,
+    val pageIndex: Int,
+    val pageCount: Int,
+    val canonicalAssetDigest: String,
+    private val permitGate: NtkDirectWifiShortWebtoonTailPermitGate,
+) {
+    init {
+        require(normalizedEpisodePath.startsWith("/webtoon/"))
+        require(NtkStripDigests.normalizeEpisodePath(normalizedEpisodePath) ==
+            normalizedEpisodePath)
+        require(NtkStripDigests.isSha256(manifestDigest))
+        require(viewerGeneration > 0L)
+        require(pageIndex in 1 until pageCount)
+        require(pageCount in 2..NtkDirectWifiShortWebtoonTailProfile.MAX_EPISODE_PAGES)
+        require(NtkStripDigests.isSha256(canonicalAssetDigest))
+    }
+
+    // Fixed cold A/B runs showed that a two-socket suffix group was gated by its slowest H1 socket
+    // (3.51-3.72 s versus 2.94-3.05 s with one request). Preserve one exact, disjoint suffix for
+    // this current direct-Wi-Fi role; adjacent/mobile/SNI keep their independent policies.
+    val maximumExtraTailRequests: Int = 1
+    private val extraTailClaimed = AtomicBoolean(false)
+
+    /**
+     * Returns an idempotent global-budget lease or null without blocking the primary body.
+     * A cancellation observed on either side of permit acquisition cannot strand a permit.
+     */
+    fun tryAcquireExtraTail(cancelled: AtomicBoolean):
+        NtkDirectWifiShortWebtoonTailPermitGate.Lease? =
+        tryAcquireExtraTails(1, cancelled)
+
+    fun tryAcquireExtraTails(
+        requestCount: Int,
+        cancelled: AtomicBoolean,
+    ): NtkDirectWifiShortWebtoonTailPermitGate.Lease? {
+        if (requestCount !in 1..maximumExtraTailRequests) return null
+        if (cancelled.get() || !extraTailClaimed.compareAndSet(false, true)) return null
+        val lease = permitGate.tryAcquire(requestCount)
+        if (lease == null) {
+            // Capacity can become available while this responsive primary continues. Permit a
+            // later bounded checkpoint to retry, but never allow two concurrent claims.
+            extraTailClaimed.set(false)
+            return null
+        }
+        if (cancelled.get()) {
+            lease.close()
+            return null
+        }
+        return lease
+    }
+}
+
+/** Freezes the current direct-Wi-Fi short-webtoon identity at source-session construction. */
+internal class NtkDirectWifiShortWebtoonTailProfile private constructor(
+    internal val normalizedEpisodePath: String,
+    internal val manifestDigest: String,
+    internal val viewerGeneration: Long,
+    internal val pageCount: Int,
+    private val permitGate: NtkDirectWifiShortWebtoonTailPermitGate,
+) {
+    companion object {
+        const val MAX_EPISODE_PAGES = 8
+        const val GLOBAL_MAX_CONCURRENT_EXTRA_TAILS = 4
+
+        private val globalPermitGate = NtkDirectWifiShortWebtoonTailPermitGate(
+            GLOBAL_MAX_CONCURRENT_EXTRA_TAILS,
+        )
+
+        fun freeze(
+            episodePath: String,
+            manifestDigest: String,
+            pageCount: Int,
+            rollingAdmission: Boolean,
+            directWifiTransport: Boolean,
+            cellularResilientTransport: Boolean,
+            currentForegroundViewerGeneration: Long,
+            adjacentPrefetch: Boolean,
+            permitGate: NtkDirectWifiShortWebtoonTailPermitGate = globalPermitGate,
+        ): NtkDirectWifiShortWebtoonTailProfile? {
+            if (!rollingAdmission || !directWifiTransport || cellularResilientTransport ||
+                adjacentPrefetch || currentForegroundViewerGeneration <= 0L ||
+                !episodePath.startsWith("/webtoon/") || pageCount !in 2..MAX_EPISODE_PAGES ||
+                NtkStripDigests.normalizeEpisodePath(episodePath) != episodePath ||
+                !NtkStripDigests.isSha256(manifestDigest)
+            ) return null
+            return NtkDirectWifiShortWebtoonTailProfile(
+                episodePath,
+                manifestDigest,
+                currentForegroundViewerGeneration,
+                pageCount,
+                permitGate,
+            )
+        }
+    }
+
+    fun tagForPage(
+        pageIndex: Int,
+        canonicalAssetDigest: String,
+    ): NtkDirectWifiShortWebtoonTailTag? {
+        if (pageIndex !in 1 until pageCount ||
+            !NtkStripDigests.isSha256(canonicalAssetDigest)
+        ) return null
+        return NtkDirectWifiShortWebtoonTailTag(
+            normalizedEpisodePath,
+            manifestDigest,
+            viewerGeneration,
+            pageIndex,
+            pageCount,
+            canonicalAssetDigest,
+            permitGate,
+        )
+    }
+}
+
+/**
+ * Completion latch shared only by one frozen adjacent-session runway. The latch is monotonic:
+ * route preparation may bind tags ahead of time, but no extra physical suffix can claim capacity
+ * until the source actor has observed the predecessor's terminal completion event.
+ */
+internal class NtkDirectWifiAdjacentWebtoonPredecessorGate {
+    private val complete = AtomicBoolean(false)
+
+    fun markComplete() {
+        complete.set(true)
+    }
+
+    fun isComplete(): Boolean = complete.get()
+}
+
+/**
+ * Pure lane calculation for a direct-Wi-Fi adjacent webtoon.
+ *
+ * p0 is the only body admitted until OkHttp physically writes its exact request headers. At that
+ * point p0 owns the first H2 stream and the remaining p1-p3 runway may open on the established
+ * direct-Wi-Fi pool. This preserves p0's DNS/TLS/wire-order head start while giving a three-page current
+ * tail enough time to prepare the complete next runway. Once p0 reaches EOF, admissions pause only
+ * for its short decode/install ACK; afterwards the bounded p1-p3 lanes remain available. Rolling
+ * admission still caps this phase at p1-p3. Carrier/SNI, manhwa, generic, and current-episode
+ * sessions never set [requiresHeadInstall] and retain their established lane policy.
+ */
+internal object NtkDirectWifiAdjacentHeadInstallGatePolicy {
+    fun usableLaneCount(
+        progressiveLaneCount: Int,
+        preAnchorGateOperations: Int,
+        webtoon: Boolean,
+        requiresHeadInstall: Boolean,
+        anchorBodyPublished: Boolean,
+        anchorRequestHeadersSent: Boolean,
+        headPixelsInstalled: Boolean,
+    ): Int {
+        require(progressiveLaneCount >= 0 && preAnchorGateOperations >= 0)
+        return when {
+            requiresHeadInstall && anchorBodyPublished && !headPixelsInstalled -> 0
+            requiresHeadInstall && headPixelsInstalled -> minOf(
+                progressiveLaneCount,
+                NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES - 1,
+            )
+            requiresHeadInstall && anchorRequestHeadersSent -> minOf(
+                progressiveLaneCount,
+                NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+            )
+            webtoon && !anchorBodyPublished ->
+                minOf(progressiveLaneCount, preAnchorGateOperations)
+            else -> progressiveLaneCount
+        }
+    }
+}
+
+/**
+ * Monotonic three-signal gate for expanding a direct-Wi-Fi adjacent webtoon past p0..p3.
+ * Non-webtoon adjacent sessions opt out of the drawable signal and retain their old behavior.
+ */
+internal class NtkDirectWifiAdjacentWebtoonSourceReleaseGate(
+    predecessorAlreadyComplete: Boolean,
+    requireDrawableRunwayCommit: Boolean,
+) {
+    private var predecessorComplete = predecessorAlreadyComplete
+    private var viewportActual = false
+    private var drawableRunwayCommitted = !requireDrawableRunwayCommit
+    private var releaseClaimed = false
+
+    fun markPredecessorComplete() {
+        predecessorComplete = true
+    }
+
+    fun markViewportActual() {
+        viewportActual = true
+    }
+
+    fun markDrawableRunwayCommitted() {
+        drawableRunwayCommitted = true
+    }
+
+    fun tryClaimRelease(runwayBodiesComplete: Boolean): Boolean {
+        if (releaseClaimed || !predecessorComplete || !viewportActual ||
+            !drawableRunwayCommitted || !runwayBodiesComplete
+        ) return false
+        releaseClaimed = true
+        return true
+    }
+}
+
+/** Immutable p0..p3 authorization for one post-predecessor adjacent-webtoon Range group. */
+internal class NtkDirectWifiAdjacentWebtoonRunwayTailTag internal constructor(
+    val normalizedEpisodePath: String,
+    val manifestDigest: String,
+    val discoveryGeneration: Long,
+    val pageIndex: Int,
+    val pageCount: Int,
+    val canonicalAssetDigest: String,
+    private val predecessorGate: NtkDirectWifiAdjacentWebtoonPredecessorGate,
+    private val permitGate: NtkDirectWifiShortWebtoonTailPermitGate,
+) {
+    init {
+        require(normalizedEpisodePath.startsWith("/webtoon/"))
+        require(NtkStripDigests.normalizeEpisodePath(normalizedEpisodePath) ==
+            normalizedEpisodePath)
+        require(NtkStripDigests.isSha256(manifestDigest))
+        require(discoveryGeneration > 0L)
+        require(pageCount > 0)
+        require(pageIndex in 0 until minOf(
+            pageCount,
+            NtkDirectWifiAdjacentWebtoonRunwayTailProfile.RUNWAY_PAGE_COUNT,
+        ))
+        require(NtkStripDigests.isSha256(canonicalAssetDigest))
+    }
+
+    // Fixed cold runs showed the four-way p0 suffix was gated by its slowest H1 socket and was
+    // slower on average than one measured 65/35 suffix. Preserve one exact, disjoint hedge for
+    // every runway body; the global gate still bounds different logical bodies process-wide.
+    val maximumExtraTailRequests: Int = 1
+    private val extraTailClaimed = AtomicBoolean(false)
+
+    fun isPredecessorComplete(): Boolean = predecessorGate.isComplete()
+
+    fun tryAcquireExtraTail(cancelled: AtomicBoolean):
+        NtkDirectWifiShortWebtoonTailPermitGate.Lease? =
+        tryAcquireExtraTails(1, cancelled)
+
+    fun tryAcquireExtraTails(
+        requestCount: Int,
+        cancelled: AtomicBoolean,
+    ): NtkDirectWifiShortWebtoonTailPermitGate.Lease? {
+        // A pre-completion sample must remain retryable: do not burn this request's group claim.
+        if (requestCount !in 1..maximumExtraTailRequests ||
+            !predecessorGate.isComplete() || cancelled.get() ||
+            !extraTailClaimed.compareAndSet(false, true)
+        ) return null
+        val lease = permitGate.tryAcquire(requestCount)
+        if (lease == null) {
+            extraTailClaimed.set(false)
+            return null
+        }
+        if (cancelled.get()) {
+            lease.close()
+            return null
+        }
+        return lease
+    }
+}
+
+/**
+ * Frozen role for the next episode's initial runway. It is intentionally independent of the
+ * current-short profile: adjacent p0 is eligible, long episodes are eligible, and p4+ never is.
+ */
+internal class NtkDirectWifiAdjacentWebtoonRunwayTailProfile private constructor(
+    internal val normalizedEpisodePath: String,
+    internal val manifestDigest: String,
+    internal val discoveryGeneration: Long,
+    internal val pageCount: Int,
+    private val predecessorGate: NtkDirectWifiAdjacentWebtoonPredecessorGate,
+    private val permitGate: NtkDirectWifiShortWebtoonTailPermitGate,
+) {
+    companion object {
+        const val RUNWAY_PAGE_COUNT = 4
+        const val GLOBAL_MAX_CONCURRENT_EXTRA_TAILS = 4
+
+        private val globalPermitGate = NtkDirectWifiShortWebtoonTailPermitGate(
+            GLOBAL_MAX_CONCURRENT_EXTRA_TAILS,
+        )
+
+        fun freeze(
+            episodePath: String,
+            manifestDigest: String,
+            discoveryGeneration: Long,
+            pageCount: Int,
+            rollingAdmission: Boolean,
+            directWifiTransport: Boolean,
+            cellularResilientTransport: Boolean,
+            adjacentPrefetch: Boolean,
+            predecessorGate: NtkDirectWifiAdjacentWebtoonPredecessorGate =
+                NtkDirectWifiAdjacentWebtoonPredecessorGate(),
+            permitGate: NtkDirectWifiShortWebtoonTailPermitGate = globalPermitGate,
+        ): NtkDirectWifiAdjacentWebtoonRunwayTailProfile? {
+            if (!rollingAdmission || !directWifiTransport || cellularResilientTransport ||
+                !adjacentPrefetch || !episodePath.startsWith("/webtoon/") || pageCount <= 0 ||
+                discoveryGeneration <= 0L ||
+                NtkStripDigests.normalizeEpisodePath(episodePath) != episodePath ||
+                !NtkStripDigests.isSha256(manifestDigest)
+            ) return null
+            return NtkDirectWifiAdjacentWebtoonRunwayTailProfile(
+                episodePath,
+                manifestDigest,
+                discoveryGeneration,
+                pageCount,
+                predecessorGate,
+                permitGate,
+            )
+        }
+    }
+
+    fun markPredecessorComplete() {
+        predecessorGate.markComplete()
+    }
+
+    fun tagForPage(
+        pageIndex: Int,
+        canonicalAssetDigest: String,
+    ): NtkDirectWifiAdjacentWebtoonRunwayTailTag? {
+        if (pageIndex !in 0 until minOf(pageCount, RUNWAY_PAGE_COUNT) ||
+            !NtkStripDigests.isSha256(canonicalAssetDigest)
+        ) return null
+        return NtkDirectWifiAdjacentWebtoonRunwayTailTag(
+            normalizedEpisodePath,
+            manifestDigest,
+            discoveryGeneration,
+            pageIndex,
+            pageCount,
+            canonicalAssetDigest,
+            predecessorGate,
+            permitGate,
+        )
+    }
+
 }
 
 private fun prestartedStrictLane(
@@ -167,7 +670,47 @@ private const val NTK_STRICT_ROUTE_PREPARATION_LANES = 8
  * the whole ring. This keeps first-image priority while removing page-count tail waves.
  */
 internal const val NTK_STRICT_PHYSICAL_WORKER_LANES = 120
+internal const val NTK_DIRECT_WIFI_ADJACENT_PHYSICAL_WORKER_LANES = 12
+internal const val NTK_DIRECT_WIFI_ADJACENT_ROUTE_PREPARATION_LANES = 4
 
+/** Frozen topology decision; only the direct-Wi-Fi adjacent webtoon grant can shrink the ring. */
+internal object NtkDirectWifiAdjacentExecutionTopology {
+    fun shouldDeferBootstrap(
+        episodePath: String,
+        rollingAdmission: Boolean,
+        adjacentGrant: Boolean,
+        directWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+    ): Boolean = rollingAdmission && adjacentGrant && directWifiTransport &&
+        !cellularResilientTransport && episodePath.startsWith("/webtoon/")
+
+    fun physicalLaneCount(profileActive: Boolean, ordinaryCount: Int): Int {
+        require(ordinaryCount >= 0)
+        return if (profileActive) {
+            minOf(ordinaryCount, NTK_DIRECT_WIFI_ADJACENT_PHYSICAL_WORKER_LANES)
+        } else {
+            ordinaryCount
+        }
+    }
+
+    fun routeLaneCount(profileActive: Boolean, ordinaryCount: Int): Int {
+        require(ordinaryCount >= 0)
+        return if (profileActive) {
+            minOf(ordinaryCount, NTK_DIRECT_WIFI_ADJACENT_ROUTE_PREPARATION_LANES)
+        } else {
+            ordinaryCount
+        }
+    }
+}
+
+/**
+ * An adjacent direct-Wi-Fi webtoon can physically admit only p0..p3 before its drawable runway
+ * commits. Building the generic 120-body/8-route executor ring for that four-body session leaves
+ * more than a hundred idle Java threads alive during the physical fling and makes InputManager,
+ * SurfaceFlinger and the renderer compete for the emulator's four CPUs. Size only this immutable
+ * adjacent profile from its already-established admission bound. Current episodes, manhwa,
+ * carrier/SNI and every ordinary source keep their existing worker topology.
+ */
 /** Registers every started executor in a preallocated cleanup holder before starting the next. */
 private fun buildStrictBootstrapResources(
     physicalLaneCount: Int,
@@ -399,6 +942,12 @@ internal object NtkStrictInitialWavePolicy {
     // Three independent Wi-Fi leaders keep the entry route resilient to a slow/dead CDN pool.
     // A single leader was measured to stall for its full 10-second retry window.
     private const val WEBTOON_WIFI_ANCHOR_GATE_OPERATIONS = 3
+    // A short current direct-Wi-Fi chapter gives page zero one body-wide head start. The source
+    // actor opens the complete current-body ring immediately after that exact body reaches EOF,
+    // so this protects first-visible bandwidth without serializing the remaining chapter.
+    // Adjacent work has its separate exact four-body contract below.
+    private const val WEBTOON_DIRECT_WIFI_SHORT_CURRENT_ANCHOR_GATE_OPERATIONS = 1
+    private const val WEBTOON_DIRECT_WIFI_SHORT_CURRENT_MAX_EPISODE_PAGES = 8
     private const val WEBTOON_WIFI_LARGE_ANCHOR_GATE_OPERATIONS = 12
     private const val WEBTOON_WIFI_LARGE_ANCHOR_GATE_EPISODE_PAGES = 140
     private const val WEBTOON_CELLULAR_ANCHOR_GATE_OPERATIONS =
@@ -454,6 +1003,7 @@ internal object NtkStrictInitialWavePolicy {
     // the real viewport; carrier/SNI never enters this adjacent Wi-Fi-only cap.
     private const val MANHWA_WIFI_ADJACENT_PREFETCH_BODY_TRANSFERS = 4
     internal const val WIFI_ADJACENT_INITIAL_RUNWAY_BODIES = 4
+    private const val WIFI_ADJACENT_ANCHOR_GATE_OPERATIONS = 1
 
     /**
      * Carrier transport needs one actual demanded body to establish each finite host/pool cohort.
@@ -467,6 +1017,7 @@ internal object NtkStrictInitialWavePolicy {
         episodePageCount: Int = 0,
         directWifiTransport: Boolean = false,
         adjacentPrefetch: Boolean = false,
+        directWifiCurrentEpisode: Boolean = false,
     ): Int {
         require(cohortCount >= 0)
         require(episodePageCount >= 0)
@@ -479,7 +1030,14 @@ internal object NtkStrictInitialWavePolicy {
             // Match the physical opening wave to that existing four-body UI contract. Ordinary
             // Wi-Fi/current episodes, carrier/SNI, later pages, and previous episodes never enter
             // this branch.
-            WIFI_ADJACENT_INITIAL_RUNWAY_BODIES
+            // Give the boundary-visible first page the complete post-predecessor link. The
+            // remaining three admitted runway bodies open immediately after p0 reaches EOF.
+            WIFI_ADJACENT_ANCHOR_GATE_OPERATIONS
+        } else if (
+            directWifiCurrentEpisode &&
+            episodePageCount in 1..WEBTOON_DIRECT_WIFI_SHORT_CURRENT_MAX_EPISODE_PAGES
+        ) {
+            WEBTOON_DIRECT_WIFI_SHORT_CURRENT_ANCHOR_GATE_OPERATIONS
         } else if (
             directWifiTransport &&
             episodePageCount >= WEBTOON_WIFI_LARGE_ANCHOR_GATE_EPISODE_PAGES
@@ -1093,6 +1651,8 @@ internal class NtkStrictSourceSession(
     private val wifiQuicBulkTransport: Boolean = false,
     private val currentForegroundViewerGeneration: Long = 0L,
     private val adjacentPrefetch: Boolean = false,
+    private val adjacentRenderPublication: Boolean = false,
+    private val adjacentPredecessorAlreadyComplete: Boolean = false,
 ) : Closeable {
     private enum class WorkMode { QUARANTINE, EXACT }
 
@@ -1248,6 +1808,33 @@ internal class NtkStrictSourceSession(
         planBinding.discoveryGeneration,
         planBinding.normalizedOrderedCanonicalAssets
     )
+    // This profile is intentionally frozen once. A later network callback must not broaden a
+    // carrier/SNI or adjacent session into the direct-Wi-Fi optimization, and a transient live
+    // telemetry read must not silently retarget a request to another episode generation.
+    private val directWifiShortWebtoonTailProfile =
+        NtkDirectWifiShortWebtoonTailProfile.freeze(
+            episodePath = candidateSeal.normalizedEpisodePath,
+            manifestDigest = candidateSeal.digestSha256,
+            pageCount = candidateSeal.pageCount,
+            rollingAdmission = rollingAdmission,
+            directWifiTransport = directWifiTransport,
+            cellularResilientTransport = cellularResilientTransport,
+            currentForegroundViewerGeneration = currentForegroundViewerGeneration,
+            adjacentPrefetch = adjacentPrefetch,
+        )
+    private val directWifiAdjacentWebtoonRunwayTailProfile =
+        NtkDirectWifiAdjacentWebtoonRunwayTailProfile.freeze(
+            episodePath = candidateSeal.normalizedEpisodePath,
+            manifestDigest = candidateSeal.digestSha256,
+            discoveryGeneration = planBinding.discoveryGeneration,
+            pageCount = candidateSeal.pageCount,
+            rollingAdmission = rollingAdmission,
+            directWifiTransport = directWifiTransport,
+            cellularResilientTransport = cellularResilientTransport,
+            adjacentPrefetch = adjacentPrefetch,
+        ).also { profile ->
+            if (adjacentPredecessorAlreadyComplete) profile?.markPredecessorComplete()
+        }
     private val streamedExactBodyFutures = streamedExactBodies?.bodyFutures.orEmpty()
     private val externallyOwnedPageIndexes = streamedExactBodyFutures.keys
     private val bulkSourcePhysicalAdmissionReady =
@@ -1264,15 +1851,24 @@ internal class NtkStrictSourceSession(
     } else {
         missingInitialBodyCount
     }
-    private val executionEngines = executionBootstrap.adopt(
-        requiredPhysicalLanes = minOf(
+    private val ordinaryRequiredPhysicalLanes = minOf(
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS,
             NTK_STRICT_PHYSICAL_WORKER_LANES,
             requiredFallbackBodyLanes,
-        ),
-        requiredRoutePreparationLanes = if (requiredFallbackBodyLanes == 0) 0 else minOf(
+        )
+    private val ordinaryRequiredRoutePreparationLanes =
+        if (requiredFallbackBodyLanes == 0) 0 else minOf(
             NTK_STRICT_ROUTE_PREPARATION_LANES,
             requiredFallbackBodyLanes,
+        )
+    private val executionEngines = executionBootstrap.adopt(
+        requiredPhysicalLanes = NtkDirectWifiAdjacentExecutionTopology.physicalLaneCount(
+            directWifiAdjacentWebtoonRunwayTailProfile != null,
+            ordinaryRequiredPhysicalLanes,
+        ),
+        requiredRoutePreparationLanes = NtkDirectWifiAdjacentExecutionTopology.routeLaneCount(
+            directWifiAdjacentWebtoonRunwayTailProfile != null,
+            ordinaryRequiredRoutePreparationLanes,
         ),
     )
     private val actor = executionEngines.actor
@@ -1347,8 +1943,17 @@ internal class NtkStrictSourceSession(
             adjacentPrefetch = adjacentPrefetch,
         )
     private var adjacentPrefetchReleased = false
-    private var adjacentPredecessorCompleted = false
-    private var adjacentViewportActivated = false
+    private val requiresAdjacentHeadPixelsInstall = adjacentPrefetch && directWifiTransport &&
+        !cellularResilientTransport && planBinding.episodePath.startsWith("/webtoon/")
+    private var adjacentAnchorRequestHeadersSent =
+        !requiresAdjacentHeadPixelsInstall
+    private var adjacentHeadPixelsInstalled = !requiresAdjacentHeadPixelsInstall
+    private val adjacentPrefetchReleaseGate =
+        NtkDirectWifiAdjacentWebtoonSourceReleaseGate(
+            predecessorAlreadyComplete = adjacentPredecessorAlreadyComplete,
+            requireDrawableRunwayCommit = adjacentPrefetch && directWifiTransport &&
+                !cellularResilientTransport && planBinding.episodePath.startsWith("/webtoon/"),
+        )
     private val coldConnectionCohortLeaders =
         NtkStrictInitialWavePolicy.coldConnectionCohortLeaders(
             planBinding.episodePath,
@@ -1375,10 +1980,11 @@ internal class NtkStrictSourceSession(
             cohortCount = coldConnectionCohortLeaders.size,
             cellularResilientTransport = cellularResilientTransport,
             episodePageCount = pages.size,
-            // This new identity is consumed only by the adjacent four-body exception above. Keep
-            // ordinary/current webtoon entry on its already-qualified three-body policy.
+            // Keep the adjacent identity separate from the current short-scene exception below.
             directWifiTransport = directWifiTransport && adjacentPrefetch,
             adjacentPrefetch = adjacentPrefetch,
+            directWifiCurrentEpisode = directWifiTransport && !adjacentPrefetch &&
+                currentForegroundViewerGeneration > 0L,
         )
     private val settledColdConnectionCohortLeaders = ConcurrentHashMap.newKeySet<Int>()
     private val coldConnectionCohortByPage = Array(pages.size) { pageIndex ->
@@ -1675,7 +2281,7 @@ internal class NtkStrictSourceSession(
         val sourceRouteReady = streamedExactBodies?.sourceRoutePreparationReady
             ?: CompletableFuture.completedFuture(Unit)
         return sourceRouteReady.thenApplyAsync({
-            val route = ReaderImageCache.resolveStrictSourceRoute(
+            val resolvedRoute = ReaderImageCache.resolveStrictSourceRoute(
                 manga,
                 candidateSeal,
                 page.pageIndex,
@@ -1684,6 +2290,42 @@ internal class NtkStrictSourceSession(
             val canonicalAssetDigest = NtkStripDigests.canonicalAssetDigestSha256(
                 page.canonicalAsset,
             )
+            val frozenProfile = directWifiShortWebtoonTailProfile
+            val tailTag = frozenProfile?.tagForPage(
+                page.pageIndex,
+                canonicalAssetDigest,
+            )
+            val adjacentProfile = directWifiAdjacentWebtoonRunwayTailProfile
+            val adjacentTailTag = adjacentProfile?.tagForPage(
+                page.pageIndex,
+                canonicalAssetDigest,
+            )
+            val route = if (frozenProfile == null && adjacentTailTag == null) {
+                resolvedRoute
+            } else {
+                resolvedRoute.copy(
+                    requestTemplate = resolvedRoute.requestTemplate.newBuilder()
+                        .apply {
+                            frozenProfile?.let {
+                                tag(NtkDirectWifiShortWebtoonTailProfile::class.java, it)
+                            }
+                            tailTag?.let {
+                                tag(NtkDirectWifiShortWebtoonTailTag::class.java, it)
+                            }
+                            if (adjacentProfile != null && adjacentTailTag != null) {
+                                tag(
+                                    NtkDirectWifiAdjacentWebtoonRunwayTailProfile::class.java,
+                                    adjacentProfile,
+                                )
+                                tag(
+                                    NtkDirectWifiAdjacentWebtoonRunwayTailTag::class.java,
+                                    adjacentTailTag,
+                                )
+                            }
+                        }
+                        .build(),
+                )
+            }
             QuarantineRoutePreparation(
                 route,
                 canonicalAssetDigest,
@@ -2021,7 +2663,8 @@ internal class NtkStrictSourceSession(
         if (closeRequested.get()) return
         executeActor {
             if (!acceptsEpisode(episode)) return@executeActor
-            adjacentPredecessorCompleted = true
+            adjacentPrefetchReleaseGate.markPredecessorComplete()
+            directWifiAdjacentWebtoonRunwayTailProfile?.markPredecessorComplete()
             maybeReleaseAdjacentPrefetchAfterRunwayActor("predecessor_complete")
         }
     }
@@ -2030,22 +2673,40 @@ internal class NtkStrictSourceSession(
         if (closeRequested.get()) return
         executeActor {
             if (!acceptsEpisode(episode)) return@executeActor
-            adjacentViewportActivated = true
+            adjacentPrefetchReleaseGate.markViewportActual()
             streamedExactBodies?.onAdjacentViewportActivated()
             maybeReleaseAdjacentPrefetchAfterRunwayActor("viewport_activated")
         }
     }
 
+    fun onAdjacentHeadPixelsInstalled(episode: NtkEpisodeToken) {
+        if (closeRequested.get()) return
+        executeActor {
+            if (!acceptsEpisode(episode) || adjacentHeadPixelsInstalled) return@executeActor
+            adjacentHeadPixelsInstalled = true
+            refillLanesActor()
+        }
+    }
+
+    fun onAdjacentDrawableRunwayCommitted(episode: NtkEpisodeToken) {
+        if (closeRequested.get()) return
+        executeActor {
+            if (!acceptsEpisode(episode)) return@executeActor
+            adjacentPrefetchReleaseGate.markDrawableRunwayCommitted()
+            maybeReleaseAdjacentPrefetchAfterRunwayActor("drawable_runway_committed")
+        }
+    }
+
     private fun maybeReleaseAdjacentPrefetchAfterRunwayActor(reason: String) {
         assertActorThread()
-        if (!adjacentPrefetch || adjacentPrefetchReleased ||
-            !adjacentPredecessorCompleted || !adjacentViewportActivated
-        ) return
+        if (!adjacentPrefetch || adjacentPrefetchReleased) return
         val runwayEndExclusive = minOf(
             pages.size,
             initialPageIndex + NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
         )
-        if ((initialPageIndex until runwayEndExclusive).any { pages[it].publishedBody == null }) return
+        val runwayBodiesComplete = (initialPageIndex until runwayEndExclusive)
+            .all { pages[it].publishedBody != null }
+        if (!adjacentPrefetchReleaseGate.tryClaimRelease(runwayBodiesComplete)) return
         streamedExactBodies?.onAdjacentRunwayReady()
         releaseAdjacentPrefetchActor("${reason}_runway_ready")
     }
@@ -2332,17 +2993,19 @@ internal class NtkStrictSourceSession(
             },
             anchorBodyPublished,
         )
-        // Header arrival is not body success. Wi-Fi keeps one body per replica origin before page
-        // zero EOF. Carrier mode opens one demanded leader per finite host/pool cohort instead:
+        // Connection/header arrival is not body success. Wi-Fi keeps one body per replica origin
+        // before page zero EOF. Carrier mode opens one demanded leader per finite host/pool cohort instead:
         // otherwise fifteen pools remain idle for about one second, then their leaders and
         // followers stampede those cold connections together.
-        val usableLaneCount = if (
-            planBinding.episodePath.startsWith("/webtoon/") && !anchorBodyPublished
-        ) {
-            minOf(progressiveLaneCount, webtoonPreAnchorGateOperations)
-        } else {
-            progressiveLaneCount
-        }
+        val usableLaneCount = NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
+            progressiveLaneCount = progressiveLaneCount,
+            preAnchorGateOperations = webtoonPreAnchorGateOperations,
+            webtoon = planBinding.episodePath.startsWith("/webtoon/"),
+            requiresHeadInstall = requiresAdjacentHeadPixelsInstall,
+            anchorBodyPublished = anchorBodyPublished,
+            anchorRequestHeadersSent = adjacentAnchorRequestHeadersSent,
+            headPixelsInstalled = adjacentHeadPixelsInstalled,
+        )
         val launchLimitThisTurn = when {
             initialWaveCount < initialQuarantineWaveTargetCount ->
                 initialQuarantineWaveTargetCount
@@ -2592,6 +3255,25 @@ internal class NtkStrictSourceSession(
         page.activeWork = work
         page.quarantineState = NtkQuarantinePageState.CALL_ACTIVE
         activeWorks[laneIndex] = work
+        if (requiresAdjacentHeadPixelsInstall && page.pageIndex == initialPageIndex) {
+            check(
+                NtkPhysicalConnectionObservationBridge.registerAdjacentRequestHeadersEnd(
+                    work.operationId,
+                ) {
+                    executeActor {
+                        if (actorClosed || closeRequested.get() ||
+                            activeWorks.getOrNull(work.laneIndex)?.workId != work.workId
+                        ) return@executeActor
+                        adjacentAnchorRequestHeadersSent = true
+                        logSourceEvent(
+                            "reader_strip_adjacent_anchor_request_headers_sent",
+                            "pageIndex=${page.pageIndex},operationId=${work.operationId}",
+                        )
+                        refillLanesActor()
+                    }
+                },
+            ) { "Adjacent p0 registered more than one connection-ready callback" }
+        }
         val pageIndex = page.pageIndex
         val canonicalAsset = page.canonicalAsset
         val operation: () -> PhysicalResult = if (open != null) {
@@ -2700,6 +3382,12 @@ internal class NtkStrictSourceSession(
         val readyCount = settledColdConnectionCohortLeaders.size
         executeActor {
             if (actorClosed || closeRequested.get()) return@executeActor
+            if (requiresAdjacentHeadPixelsInstall && pageIndex == initialPageIndex) {
+                // Keep response headers as the conservative fallback when a transport cannot
+                // expose requestHeadersEnd. The direct OkHttp path normally opens p1..p3 earlier
+                // after p0 has won wire order, without moving any work before completion.
+                adjacentAnchorRequestHeadersSent = true
+            }
             if (firstColdConnectionCohortSettledAtMs == 0L) {
                 firstColdConnectionCohortSettledAtMs = SystemClock.elapsedRealtime()
             }
@@ -2868,7 +3556,15 @@ internal class NtkStrictSourceSession(
             episodeAuthority = authority,
             preclaim = authority == 0L
         )
-        return ReaderImageCache.NtkStrictCallContext(tag, lease)
+        return ReaderImageCache.NtkStrictCallContext(
+            tag,
+            lease,
+            telemetryAfterSuccessfulHeaders =
+                NtkStrictLogicalImageTelemetryPolicy.afterSuccessfulHeaders(
+                    directWifiTransport,
+                    cellularResilientTransport,
+                ),
+        )
     }
 
     private fun executePhysical(
@@ -3046,6 +3742,7 @@ internal class NtkStrictSourceSession(
         deferSuccessfulMaintenance: Boolean = false,
     ) {
         assertActorThread()
+        NtkPhysicalConnectionObservationBridge.cancelAdjacentRequestHeadersEnd(work.operationId)
         val page = pages[work.pageIndex]
         if (activeWorks[work.laneIndex]?.workId != work.workId) {
             when (val stale = result.getOrNull()) {
@@ -3317,6 +4014,9 @@ internal class NtkStrictSourceSession(
         } catch (failure: Throwable) {
             if (!retirementScheduled) acceptedContext.operationLease.complete()
             page.adoptedExactContext = null
+            if (page.publishedBody !== published) {
+                published.predecodedOriginal?.close()
+            }
             tempLease.close()
             if (page.tempLease === tempLease) page.tempLease = null
             page.quarantineState = NtkQuarantinePageState.FAILED
@@ -3356,7 +4056,9 @@ internal class NtkStrictSourceSession(
         assertActorThread()
         for (page in pages) {
             val seeded = page.seededExactBody ?: continue
-            if (adjacentPrefetch) publishResidentBodyForRender(seeded)
+            if (adjacentPrefetch || adjacentRenderPublication) {
+                publishResidentBodyForRender(seeded)
+            }
             acceptExactBody(page, seeded)
             page.seededExactBody = null
             page.primaryStarted = true

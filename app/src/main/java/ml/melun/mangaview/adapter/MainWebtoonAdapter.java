@@ -1806,8 +1806,13 @@ public class MainWebtoonAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     private void warmupVisibleContinueItems(List<Title> titles) {
         if(titles == null || titles.size() == 0 || context == null)
             return;
+        boolean ntkSite = p != null && p.isNtkSite();
+        boolean directWifiTransport = ntkSite
+                && getHttpClient() != null
+                && getHttpClient().isNtkWifiTransportActive()
+                && !getHttpClient().isNtkCellularResilientTransportActive();
         int limit = HomeContinueWarmupPolicy.visibleContinueWarmupLimit(
-                save, p != null && p.isNtkSite());
+                save, ntkSite, directWifiTransport);
         if(limit <= 0)
             return;
         int warmed = 0;

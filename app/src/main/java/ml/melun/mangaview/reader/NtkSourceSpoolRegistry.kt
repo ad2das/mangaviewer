@@ -476,14 +476,32 @@ object NtkSourceSpoolRegistry {
                 rollingAdmission,
             )
             val bootstrapStartedAt = SystemClock.elapsedRealtime()
+            val cellularResilientBootstrap = runCatching {
+                MainApplication.getHttpClient().isNtkCellularResilientTransportActive()
+            }.getOrDefault(false)
+            val directWifiBootstrap = !cellularResilientBootstrap && runCatching {
+                MainApplication.getHttpClient().isNtkWifiTransportActive()
+            }.getOrDefault(false)
+            val deferDirectWifiAdjacentBootstrap =
+                NtkDirectWifiAdjacentExecutionTopology.shouldDeferBootstrap(
+                    episodePath = path,
+                    rollingAdmission = rollingAdmission,
+                    adjacentGrant =
+                        ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(path),
+                    directWifiTransport = directWifiBootstrap,
+                    cellularResilientTransport = cellularResilientBootstrap,
+                )
             entry.executionBootstrapFuture = CompletableFuture.supplyAsync({
                 NtkStrictSourceExecutionBootstrap(
-                    deferWorkerLanes = path.startsWith("/manhwa/", ignoreCase = true),
+                    deferWorkerLanes =
+                        path.startsWith("/manhwa/", ignoreCase = true) ||
+                            deferDirectWifiAdjacentBootstrap,
                 ).also { bootstrap ->
                     Log.d(
                         "ViewerPerf",
                         "reader_source_execution_bootstrap_ready path=$path," +
                             "generation=${lease.generation.value}," +
+                            "adjacentFinite=$deferDirectWifiAdjacentBootstrap," +
                             "threads=${bootstrap.startedThreadCount()}," +
                             "elapsedMs=${SystemClock.elapsedRealtime() - bootstrapStartedAt}"
                     )
@@ -734,6 +752,24 @@ object NtkSourceSpoolRegistry {
                 ViewerTelemetry.isActiveEpisode(binding.episodePath) &&
                 ViewerTelemetry.activeGeneration() == it
         } ?: 0L
+        val adjacentViewerGrant =
+            currentForegroundViewerGeneration == 0L &&
+                ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(
+                    binding.episodePath,
+                )
+        // Render ownership is an exact-manifest/UI identity, not a Wi-Fi scheduling policy.  An
+        // emulator backed by wired host networking can transiently report no Wi-Fi transport even
+        // though it remains non-cellular.  Keep every transport optimization behind the original
+        // direct-Wi-Fi flag, but still expose already-validated adjacent resident bodies to the
+        // renderer for that exact non-cellular grant.  Carrier/SNI remains byte-for-byte on the
+        // existing path because cellularResilientTransport rejects this publication capability.
+        val adjacentRenderPublication = !cellularResilientTransport && adjacentViewerGrant
+        val adjacentPrefetch = directWifiTransport && adjacentViewerGrant
+        val adjacentPredecessorAlreadyComplete = adjacentPrefetch &&
+            NtkStrictEpisodeDiscoveryCoordinator.isAdjacentBodyGateOpen(
+                binding.episodePath,
+                observedViewerGeneration,
+            )
         // Resolve the optimization once, at the exact source-session construction edge. A raw
         // bookmark is not authority: direct Wi-Fi must still be live, cellular/SNI must be off,
         // and the requesting viewer generation/path must still own the foreground. Invalid or
@@ -794,11 +830,10 @@ object NtkSourceSpoolRegistry {
                         directWifiTransport &&
                         NtkQuicFetcher.isAvailable(),
                 currentForegroundViewerGeneration = currentForegroundViewerGeneration,
-                adjacentPrefetch = directWifiTransport &&
-                    currentForegroundViewerGeneration == 0L &&
-                    ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(
-                        binding.episodePath,
-                    ),
+                adjacentPrefetch = adjacentPrefetch,
+                adjacentRenderPublication = adjacentRenderPublication,
+                adjacentPredecessorAlreadyComplete =
+                    adjacentPredecessorAlreadyComplete,
             )
         } catch (failure: Throwable) {
             bootstrap.abortConstructionFailure()
@@ -2057,6 +2092,12 @@ object NtkSourceSpoolRegistry {
 
         override fun onAdjacentViewportActivated(episode: NtkEpisodeToken) =
             transport.onAdjacentViewportActivated(episode)
+
+        override fun onAdjacentHeadPixelsInstalled(episode: NtkEpisodeToken) =
+            transport.onAdjacentHeadPixelsInstalled(episode)
+
+        override fun onAdjacentDrawableRunwayCommitted(episode: NtkEpisodeToken) =
+            transport.onAdjacentDrawableRunwayCommitted(episode)
 
         override fun requestPreparationDrain(
             episode: NtkEpisodeToken,

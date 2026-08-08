@@ -171,6 +171,43 @@ class NtkClickOwnedManhwaWavePolicyTest {
     }
 
     @Test
+    fun restoredRunwayEarlyH1IsBoundedDeepCurrentDirectWifiJpegOnly() {
+        fun eligible(
+            adjacent: Boolean = false,
+            pageIndex: Int = 40,
+            forwardFirstPage: Int = 40,
+            extension: String = "jpg",
+            wifi: Boolean = true,
+            cellular: Boolean = false,
+            capturedHandle: Long? = 91L,
+            liveHandle: Long? = 91L,
+        ) = NtkClickOwnedManhwaWavePolicy
+            .shouldUseRestoredAnchorOrdinaryDirectWifiTransport(
+                directWifiAdjacentOwned = adjacent,
+                pageIndex = pageIndex,
+                forwardFirstPage = forwardFirstPage,
+                extension = extension,
+                liveWifiTransport = wifi,
+                cellularResilientTransport = cellular,
+                capturedNetworkHandle = capturedHandle,
+                liveNetworkHandle = liveHandle,
+            )
+
+        assertTrue(eligible(extension = "jpg"))
+        assertTrue(eligible(extension = "JPEG"))
+        assertTrue(eligible(pageIndex = 41))
+        assertTrue(eligible(pageIndex = 43))
+        assertTrue(!eligible(adjacent = true))
+        assertTrue(!eligible(pageIndex = 44))
+        assertTrue(!eligible(pageIndex = 11, forwardFirstPage = 11))
+        assertTrue(!eligible(extension = "png"))
+        assertTrue(!eligible(wifi = false))
+        assertTrue(!eligible(cellular = true))
+        assertTrue(!eligible(capturedHandle = null))
+        assertTrue(!eligible(liveHandle = 92L))
+    }
+
+    @Test
     fun verifiedEntryPriorityRequiresCurrentStableDirectWifiAndExactUncommonSuffix() {
         fun prioritize(
             pageIndex: Int = 1,

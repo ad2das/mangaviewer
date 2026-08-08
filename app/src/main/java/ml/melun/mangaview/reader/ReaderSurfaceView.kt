@@ -29,7 +29,9 @@ import android.view.ViewConfiguration
 import android.widget.FrameLayout
 import android.widget.OverScroller
 import androidx.annotation.Keep
+import ml.melun.mangaview.benchmark.BenchmarkAdjacentCommitSignal
 import ml.melun.mangaview.runtime.MainThreadStallMonitor
+import ml.melun.mangaview.runtime.ViewerTelemetry
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -406,6 +408,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var stripEpisode: Long = 0L,
         var stripAsset: String? = null,
         var stripSlots: List<ReaderTile?> = emptyList(),
+        var adjacentExactOwner: NtkAdjacentExactP0Owner? = null,
+        var adjacentExactPlan: NtkPreGeometryPagePlan? = null,
+        var adjacentExactSlots: List<ReaderTile?> = emptyList(),
+        var adjacentExactCycles: Map<Int, AdjacentExactResidentCycle> = emptyMap(),
         var committedIdentity: CommittedPageIdentity? = null
     )
 
@@ -418,6 +424,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val sourceHeight: Int,
         val originalProof: ReaderPreparedStore.PreparedOriginalProof?,
         val stripAuthoritative: Boolean,
+        val adjacentExactAuthoritative: Boolean,
         val stripAsset: String?,
         val committedIdentity: CommittedPageIdentity?,
         val loading: Boolean,
@@ -631,6 +638,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val installLease: Long,
         val rgbaBytes: Long
     )
+    private data class AdjacentExactResidentCycle(
+        val resourceRevision: Long,
+        val installLease: Long,
+        val rgbaBytes: Long,
+    )
     private val stripResidentCycles = HashMap<NtkStripTileKey, StripResidentCycle>()
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -651,6 +663,42 @@ class ReaderSurfaceView @JvmOverloads constructor(
         Handler.createAsync(Looper.getMainLooper())
     } else {
         Handler(Looper.getMainLooper())
+    }
+    private val benchmarkPhysicalMotionIdleRunnable = object : Runnable {
+        override fun run() {
+            var retryAfterPhysicalSettle = false
+            val idleProof = synchronized(stateLock) {
+                val enabled = BenchmarkAdjacentCommitSignal.isEnabled()
+                val physicalMotionActive = physicalScrollTraceCookie != 0 || dragging ||
+                    !scroller.isFinished
+                val pixelsStillPending = desiredVersion > committedVersion
+                // The trace can close with all requested pixels committed, then an adjacent image
+                // can advance desiredVersion during this 96 ms confirmation window. No later
+                // physical trace end exists to schedule another proof. A zero-pixel final edge
+                // gesture can also leave no trace cookie. After UP, poll without changing either
+                // the scroller or pixels; a new DOWN cancels this callback and its own UP rearms it.
+                retryAfterPhysicalSettle = enabled && !pointerDown &&
+                    (physicalMotionActive || pixelsStillPending)
+                if (!enabled || pointerDown || physicalMotionActive || pixelsStillPending) {
+                    null
+                } else {
+                    SystemClock.elapsedRealtimeNanos() to ViewerTelemetry.activeGeneration()
+                }
+            }
+            when {
+                idleProof != null -> {
+                    val (endedAtNanos, generation) = idleProof
+                    BenchmarkAdjacentCommitSignal.publishPhysicalMotionIdle(
+                        endedAtNanos,
+                        generation,
+                    )
+                }
+                retryAfterPhysicalSettle -> mainHandler.postDelayed(
+                    this,
+                    BENCHMARK_PHYSICAL_MOTION_IDLE_CONFIRM_MS,
+                )
+            }
+        }
     }
 
     private var velocityTracker: VelocityTracker? = null
@@ -847,6 +895,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var directWifiExpandedNativeTextureRunway = false
     private val directWifiExpandedNativeTextureEpisodePaths = linkedSetOf<String>()
     private var directWifiExpandedNativeTextureMinimumPage = 0
+    private var directWifiShortWebtoonPixelWindowPrewarm = false
     private var sourceNativeWebtoonCompositingEnabled = false
     private val hwuiPreparedBitmapKeys = HashSet<Long>()
     private var frameSchedulingSuppressed = false
@@ -1038,6 +1087,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 directWifiExpandedNativeTextureEpisodePaths += normalizedExpandedPath
             }
             directWifiExpandedNativeTextureMinimumPage = minimumPage
+            directWifiShortWebtoonPixelWindowPrewarm = false
             if (rollingNativeHandle != 0L) {
                 NtkRollingNativeBridge.nativeSetDirectWifiTextureProfile(
                     rollingNativeHandle,
@@ -1047,6 +1097,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             nativeTexturePrewarmAnchorPage = -1
             nativeTexturePrewarmDirty = enabled
             if (enabled) requestResidentNativeTexturePrewarmLocked()
+        }
+    }
+
+    fun setDirectWifiShortWebtoonPixelWindowPrewarmEnabled(enabled: Boolean) {
+        synchronized(stateLock) {
+            val qualified = enabled && directWifiExpandedNativeTextureRunway &&
+                directWifiExpandedNativeTextureEpisodePaths.isNotEmpty()
+            if (directWifiShortWebtoonPixelWindowPrewarm == qualified) return
+            directWifiShortWebtoonPixelWindowPrewarm = qualified
+            nativeTexturePrewarmAnchorPage = -1
+            nativeTexturePrewarmDirty = true
+            requestResidentNativeTexturePrewarmLocked()
         }
     }
 
@@ -2022,8 +2084,21 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val visibleFirst = effectiveNativeTexturePrewarmAnchorLocked(scrollOffset)
             val expandedDirectWifiRunway = directWifiExpandedNativeTextureRunway &&
                 directWifiExpandedNativeTextureEpisodePaths.isNotEmpty()
+            val shortWebtoonPixelWindow = expandedDirectWifiRunway &&
+                directWifiShortWebtoonPixelWindowPrewarm && width > 0 && height > 0
             val first = visibleFirst
-            val runwayEnd = if (expandedDirectWifiRunway) {
+            val runwayEnd = if (shortWebtoonPixelWindow) {
+                val endExclusive = min(
+                    contentHeight,
+                    scrollOffset + height.toFloat() *
+                        (1f + DIRECT_WIFI_SHORT_WEBTOON_PREWARM_AHEAD_VIEWPORTS)
+                )
+                val probe = min(
+                    max(0f, contentHeight - FORWARD_REQUEST_END_EPSILON_PX),
+                    max(0f, endExclusive - FORWARD_REQUEST_END_EPSILON_PX)
+                )
+                firstVisiblePageLocked(probe).coerceIn(first, pages.lastIndex)
+            } else if (expandedDirectWifiRunway) {
                 min(pages.lastIndex, first + DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES - 1)
             } else if (width > 0 && height > 0) {
                 val endExclusive = min(
@@ -2111,7 +2186,61 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 selectedBytes += bytes
             }
 
-            if (expandedDirectWifiRunway) {
+            if (shortWebtoonPixelWindow) {
+                val pixelWindowTop = scrollOffset
+                val pixelWindowBottom = min(
+                    contentHeight,
+                    scrollOffset + height.toFloat() *
+                        (1f + DIRECT_WIFI_SHORT_WEBTOON_PREWARM_AHEAD_VIEWPORTS)
+                )
+                fun appendPixelWindowTile(
+                    pageIndex: Int,
+                    slotIndex: Int,
+                    tile: ReaderTile,
+                ): Boolean {
+                    if (bitmapList.size >= maxTiles) return false
+                    val bytes = validatedTextureBytes(tile) ?: return true
+                    val pageTop = pageTopOrElseLocked(pageIndex, Float.MAX_VALUE)
+                    val pageHeight = pageDrawHeightLocked(pages[pageIndex])
+                    val sourceHeight = tile.sourceHeight.coerceAtLeast(1).toFloat()
+                    val tileTop = pageTop + pageHeight * (tile.sourceTop / sourceHeight)
+                    val tileBottom = pageTop + pageHeight * (tile.sourceBottom / sourceHeight)
+                    if (tileBottom <= pixelWindowTop || tileTop >= pixelWindowBottom) return true
+                    if (bytes > maxBytes - selectedBytes) return false
+                    appendTile(pageIndex, slotIndex, tile, bytes)
+                    if (selectedPages.lastOrNull() != pageIndex) selectedPages += pageIndex
+                    return true
+                }
+                pixelPages@ for (pageIndex in requestedPages) {
+                    if (bitmapList.size >= maxTiles) break
+                    val page = pages[pageIndex]
+                    val bitmap = page.bitmap
+                    when {
+                        bitmap != null && !bitmap.isRecycled -> {
+                            if (!appendPixelWindowTile(
+                                    pageIndex,
+                                    0,
+                                    ReaderTile(0, bitmap.height, bitmap.width, bitmap.height, bitmap),
+                                )
+                            ) break@pixelPages
+                        }
+                        page.stripSlots.isNotEmpty() -> {
+                            for ((slot, tile) in page.stripSlots.withIndex()) {
+                                if (tile != null &&
+                                    !appendPixelWindowTile(pageIndex, slot, tile)
+                                ) break@pixelPages
+                            }
+                        }
+                        page.tiles.isNotEmpty() -> {
+                            for ((slot, tile) in page.tiles.withIndex()) {
+                                if (!appendPixelWindowTile(pageIndex, slot, tile)) {
+                                    break@pixelPages
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (expandedDirectWifiRunway) {
                 for (pageIndex in requestedPages) {
                     if (bitmapList.size >= maxTiles) break
                     val page = pages[pageIndex]
@@ -2633,6 +2762,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                             sourceHeight = page.height,
                             originalProof = page.originalProof,
                             stripAuthoritative = true,
+                            adjacentExactAuthoritative = false,
                             stripAsset = page.stripAsset,
                             committedIdentity = page.committedIdentity,
                             loading = false,
@@ -2669,6 +2799,319 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         dispatchWindowRequest(request)
         return StripInstallResult(installed, rejected)
+    }
+
+    data class AdjacentExactP0InstallResult(
+        val accepted: Boolean,
+        val complete: Boolean,
+        val displayPageIndex: Int,
+    )
+
+    /**
+     * Installs p0 source-row resources without granting whole-page readiness. The immutable
+     * committed identity is resolved under the same lock as the slot mutation, so a card prune,
+     * lifecycle replacement, or duplicate append cannot redirect a late tail to another page.
+     */
+    fun installAdjacentExactP0Delta(
+        delta: NtkAdjacentExactP0Delta,
+    ): AdjacentExactP0InstallResult {
+        var outcome = AdjacentExactP0InstallResult(false, false, -1)
+        val request = synchronized(stateLock) {
+            if (delta.owner.normalizedEpisodePath.startsWith("/webtoon/").not()) {
+                return@synchronized null
+            }
+            val pageIndex = pages.indexOfFirst { page ->
+                val identity = page.committedIdentity ?: return@indexOfFirst false
+                identity.normalizedEpisodePath == delta.owner.normalizedEpisodePath &&
+                    identity.sourcePageIndex == 0 &&
+                    identity.canonicalAsset == delta.owner.canonicalAsset &&
+                    identity.manifestDigest == delta.owner.manifestDigest &&
+                    identity.manifestPageCount == delta.owner.manifestPageCount
+            }
+            val page = pages.getOrNull(pageIndex) ?: return@synchronized null
+            val plan = delta.plan
+            val owner = delta.owner
+            val proofValid = ReaderPreparedStore.isCanonicalOriginalProof(
+                delta.proof,
+                owner.canonicalAsset,
+                plan.sourceWidth,
+                plan.sourceHeight,
+            )
+            val firstInstall = page.adjacentExactOwner == null
+            if (!proofValid || plan.sourceKey.pageIndex != 0 ||
+                page.stripAuthority != 0L || page.stripSlots.isNotEmpty() ||
+                (firstInstall && (page.bitmap != null || page.tiles.isNotEmpty() ||
+                    page.cardBitmap != null || page.cardText != null || page.errorText != null)) ||
+                (!firstInstall && (page.adjacentExactOwner != owner ||
+                    page.adjacentExactPlan != plan))
+            ) return@synchronized null
+            val expectedHeadSlots = (0 until min(2, plan.tiles.size)).toList()
+            if (firstInstall && delta.installs.map { it.slotIndex }.sorted() != expectedHeadSlots) {
+                return@synchronized null
+            }
+            val workingSlots = if (firstInstall) {
+                MutableList<ReaderTile?>(plan.tiles.size) { null }
+            } else {
+                page.adjacentExactSlots.toMutableList()
+            }
+            if (workingSlots.size != plan.tiles.size) return@synchronized null
+            val workingCycles = page.adjacentExactCycles.toMutableMap()
+            for (install in delta.installs) {
+                val tilePlan = plan.tiles.getOrNull(install.slotIndex) ?: return@synchronized null
+                val tile = install.tile
+                val valid = tilePlan.key.episode == owner.episode &&
+                    tilePlan.key.pageIndex == 0 && tilePlan.key.slotIndex == install.slotIndex &&
+                    tile.sourceTop == tilePlan.sourceTop &&
+                    tile.sourceBottom == tilePlan.sourceBottom &&
+                    tile.sourceWidth == plan.sourceWidth && tile.sourceHeight == plan.sourceHeight &&
+                    !tile.bitmap.isRecycled && tile.bitmap.config == Bitmap.Config.ARGB_8888 &&
+                    !tile.bitmap.isMutable && tile.bitmap.width == plan.sourceWidth &&
+                    tile.bitmap.height == tile.sourceBottom - tile.sourceTop &&
+                    install.rgbaBytes == tilePlan.rgbaBytes &&
+                    install.rgbaBytes == tile.bitmap.width.toLong() * tile.bitmap.height * 4L
+                if (!valid) return@synchronized null
+                val existing = workingSlots[install.slotIndex]
+                if (existing != null) {
+                    val cycle = workingCycles[install.slotIndex]
+                    if (cycle == null || existing.bitmap !== tile.bitmap ||
+                        cycle.resourceRevision != install.resourceRevision ||
+                        cycle.installLease != install.installLease ||
+                        cycle.rgbaBytes != install.rgbaBytes
+                    ) return@synchronized null
+                } else {
+                    workingSlots[install.slotIndex] = tile
+                    workingCycles[install.slotIndex] = AdjacentExactResidentCycle(
+                        install.resourceRevision,
+                        install.installLease,
+                        install.rgbaBytes,
+                    )
+                }
+            }
+            val full = workingSlots.all { it != null }
+            if (delta.complete != full) return@synchronized null
+            if (!full && contiguousAdjacentExactSourceBottom(plan, workingSlots) <= 0) {
+                return@synchronized null
+            }
+
+            rebuildLayoutLocked()
+            val oldHeight = pageDrawHeightLocked(page)
+            val oldTop = pageTopOrElseLocked(pageIndex, 0f)
+            val viewportAnchor = progressPositionLocked()
+            page.adjacentExactOwner = owner
+            page.adjacentExactPlan = plan
+            page.adjacentExactSlots = workingSlots.toList()
+            page.adjacentExactCycles = workingCycles.toMap()
+            page.bitmap = null
+            page.tiles = workingSlots.filterNotNull()
+            page.width = plan.sourceWidth
+            page.height = plan.sourceHeight
+            page.originalProof = delta.proof
+            page.loading = false
+            page.cardText = null
+            page.errorText = null
+            clearPendingResolveLocked(page)
+            invalidateRetainedPageNodeStateLocked(pageIndex)
+            postNativeTexturePrewarmLocked(pageIndex, delta.installs.map { it.tile })
+            noteResolvedPageAspectLocked(page.width, page.height)
+            val newHeight = resolvedPageDrawHeightLocked(page.width, page.height)
+            applyPageHeightChangeLocked(pageIndex, oldTop, oldHeight, newHeight - oldHeight)
+            restoreViewportAnchorLocked(
+                viewportAnchor,
+                "adjacent_exact_p0_${if (full) "tail" else "head"}",
+                pageIndex,
+                oldHeight,
+                newHeight,
+            )
+            applyLockedRestorePositionLocked()
+            clampScrollLocked()
+            deferInitialEmptyDraw = false
+            lastVisibleCoverageSnapshot = null
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            outcome = AdjacentExactP0InstallResult(true, full, pageIndex)
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+        return outcome
+    }
+
+    data class AdjacentExactRunwayBatchInstallResult(
+        val accepted: Boolean,
+        val installedPages: Set<Int>,
+    )
+
+    /**
+     * Installs a contiguous adjacent forward batch without weakening the launch strip authority.
+     * Every page is identity/proof checked before the first mutation, so failure leaves the just
+     * appended Surface tail empty and safely rollbackable.
+     */
+    fun installAdjacentExactRunwayBatch(
+        publication: NtkAdjacentExactRunwayBatchPublication,
+    ): AdjacentExactRunwayBatchInstallResult {
+        var outcome = AdjacentExactRunwayBatchInstallResult(false, emptySet())
+        val request = synchronized(stateLock) {
+            if (pages.size != publication.totalPageCount) {
+                Log.e(
+                    TAG,
+                    "reader_adjacent_exact_runway_reject reason=count " +
+                        "surface=${pages.size} expected=${publication.totalPageCount}",
+                )
+                return@synchronized null
+            }
+            val ordered = publication.pages.sortedBy { it.displayPageIndex }
+            val resolved = ArrayList<Pair<NtkAdjacentExactRunwayTilePage, Page>>(ordered.size)
+            for (command in ordered) {
+                val page = pages.getOrNull(command.displayPageIndex)
+                val identity = page?.committedIdentity
+                val identityMatches = identity != null &&
+                    identity.displayPageIndex == command.displayPageIndex &&
+                    identity.normalizedEpisodePath == command.normalizedEpisodePath &&
+                    identity.sourcePageIndex == command.sourcePageIndex &&
+                    identity.canonicalAsset == command.canonicalAsset &&
+                    identity.manifestDigest == command.manifestDigest &&
+                    identity.manifestPageCount == command.manifestPageCount
+                val emptyOwner = page != null && page.stripAuthority == 0L &&
+                    page.stripSlots.isEmpty() && page.adjacentExactOwner == null &&
+                    page.adjacentExactPlan == null && page.adjacentExactSlots.isEmpty() &&
+                    page.bitmap == null && page.cardBitmap == null && page.tiles.isEmpty() &&
+                    page.cardText == null && page.errorText == null
+                val proofValid = usableAuthoritativeOriginalTilePage(
+                    command.pageWidth,
+                    command.pageHeight,
+                    command.tiles,
+                    command.proof,
+                ) && ReaderPreparedStore.isCanonicalOriginalProof(
+                    command.proof,
+                    command.canonicalAsset,
+                    command.pageWidth,
+                    command.pageHeight,
+                )
+                if (page == null || !identityMatches || !emptyOwner || !proofValid) {
+                    Log.e(
+                        TAG,
+                        "reader_adjacent_exact_runway_reject page=${command.displayPageIndex} " +
+                            "source=${command.sourcePageIndex} identity=$identityMatches " +
+                            "empty=$emptyOwner proof=$proofValid strip=${page?.stripAuthority ?: -1L}",
+                    )
+                    return@synchronized null
+                }
+                resolved += command to page
+            }
+
+            invalidatePreparedRenderSceneStateLocked()
+            rebuildLayoutLocked()
+            val viewportAnchor = progressPositionLocked()
+            var firstChangedIndex = -1
+            var firstOldHeight = 0f
+            var firstNewHeight = 0f
+            val installed = LinkedHashSet<Int>(resolved.size)
+            for ((command, page) in resolved) {
+                val index = command.displayPageIndex
+                val oldHeight = pageDrawHeightLocked(page)
+                val oldTop = pageTopOrElseLocked(index, 0f)
+                val targetWidth = max(1, command.pageWidth)
+                val targetHeight = max(1, command.pageHeight)
+                val newHeight = resolvedPageDrawHeightLocked(targetWidth, targetHeight)
+                if (firstChangedIndex < 0) {
+                    firstChangedIndex = index
+                    firstOldHeight = oldHeight
+                    firstNewHeight = newHeight
+                }
+                postNativeTexturePrewarmLocked(index, command.tiles)
+                invalidateRetainedPageNodeIfTilesChanged(index, page, command.tiles)
+                page.bitmap = null
+                page.cardBitmap = null
+                page.tiles = command.tiles
+                page.width = targetWidth
+                page.height = targetHeight
+                page.originalProof = command.proof
+                clearPendingResolveLocked(page)
+                noteResolvedPageAspectLocked(page.width, page.height)
+                page.loading = false
+                page.cardText = null
+                page.errorText = null
+                deferInitialEmptyDraw = false
+                markBlockedDrawableResolvedLocked(index)
+                applyPageHeightChangeLocked(index, oldTop, oldHeight, newHeight - oldHeight)
+                maybeReleasePrependedReadyHoldLocked(index)
+                installed += index
+            }
+            restoreViewportAnchorLocked(
+                viewportAnchor,
+                "adjacent_exact_runway_batch",
+                firstChangedIndex,
+                firstOldHeight,
+                firstNewHeight,
+            )
+            applyLockedRestorePositionLocked()
+            clampScrollLocked()
+            lastVisibleCoverageSnapshot = null
+            refreshVisibleCoverageAfterDrawableLocked(installed.last())
+            renderRequested = true
+            scheduleFrameLocked()
+            stateLock.notifyAll()
+            outcome = AdjacentExactRunwayBatchInstallResult(true, installed)
+            windowRequestLocked(lastBusy)
+        }
+        dispatchWindowRequest(request)
+        return outcome
+    }
+
+    /** Rolls back only an identity-only adjacent tail that the exact batch rejected pre-mutation. */
+    fun rollbackAdjacentExactAppendedTail(previousPageCount: Int, totalPageCount: Int): Boolean {
+        if (previousPageCount < 0 || totalPageCount <= previousPageCount) return false
+        var rolledBack = false
+        val request = synchronized(stateLock) {
+            if (pages.size != totalPageCount) return@synchronized null
+            val tail = pages.subList(previousPageCount, totalPageCount)
+            val emptyTail = tail.all { page ->
+                page.stripAuthority == 0L && page.stripSlots.isEmpty() &&
+                    page.adjacentExactOwner == null && page.adjacentExactPlan == null &&
+                    page.adjacentExactSlots.isEmpty() && page.bitmap == null &&
+                    page.cardBitmap == null && page.tiles.isEmpty() &&
+                    page.cardText == null && page.errorText == null
+            }
+            if (!emptyTail) return@synchronized null
+            rebuildLayoutLocked()
+            val viewportAnchor = progressPositionLocked()
+            repeat(totalPageCount - previousPageCount) { pages.removeAt(pages.lastIndex) }
+            resetTraversalProofLocked(previousPageCount)
+            layoutDirty = true
+            rebuildLayoutLocked()
+            if (viewportAnchor != null && viewportAnchor.page in pages.indices) {
+                setScrollOffsetLocked(
+                    pageTopOrElseLocked(viewportAnchor.page, 0f) - viewportAnchor.offset,
+                )
+            }
+            clampScrollLocked()
+            boundaryDispatchInFlight = false
+            lastVisibleCoverageSnapshot = null
+            renderRequested = pages.isNotEmpty()
+            if (renderRequested) scheduleFrameLocked()
+            stateLock.notifyAll()
+            rolledBack = true
+            if (renderRequested) windowRequestLocked(lastBusy) else null
+        }
+        dispatchWindowRequest(request)
+        return rolledBack
+    }
+
+    private fun contiguousAdjacentExactSourceBottom(
+        plan: NtkPreGeometryPagePlan,
+        slots: List<ReaderTile?>,
+    ): Int {
+        if (slots.size != plan.tiles.size) return 0
+        var bottom = 0
+        for (slot in plan.tiles.indices) {
+            val tile = slots[slot] ?: break
+            val tilePlan = plan.tiles[slot]
+            if (tile.sourceTop != bottom || tile.sourceTop != tilePlan.sourceTop ||
+                tile.sourceBottom != tilePlan.sourceBottom || tile.bitmap.isRecycled
+            ) return 0
+            bottom = tile.sourceBottom
+        }
+        return bottom
     }
 
     fun authoritativeStripCoverageSnapshot(): StripResidentCoverageSnapshot? = synchronized(stateLock) {
@@ -4681,6 +5124,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    /** Returns the first page intersecting the physical viewport. */
+    fun forwardRequestStartPage(): Int {
+        return synchronized(stateLock) {
+            if (pages.isEmpty() || width <= 0 || height <= 0) return@synchronized -1
+            rebuildLayoutLocked()
+            firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
+        }
+    }
+
     /**
      * Measures real, full-quality drawable pixels immediately beyond the physical viewport.
      * This reads the immutable bitmap/tile pages used by Canvas; it does not trigger work,
@@ -4740,6 +5192,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val overlapTop = max(start, pageTop)
             val overlapBottom = min(end, pageBottom)
             if (overlapBottom > overlapTop) {
+                val adjacentPrefixBottom = adjacentExactPrefixBottomLocked(index)
+                if (adjacentPrefixBottom != null) {
+                    val exactBottom = min(overlapBottom, adjacentPrefixBottom)
+                    if (exactBottom > overlapTop) {
+                        drawable += ceil(exactBottom - overlapTop).toInt()
+                    }
+                    if (exactBottom < overlapBottom && firstMissing < 0) firstMissing = index
+                    index++
+                    continue
+                }
                 val sourceWidth = completeFullQualityDrawableSourceWidth(
                     page,
                     requireOriginalProof = inlineRealPixelsOnly
@@ -5468,6 +5930,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
                         endPhysicalScrollTraceLocked()
                         setNativeTexturePrewarmPausedLocked(false)
                     }
+                    // Always arm the benchmark-only observer on UP/CANCEL. At the terminal edge a
+                    // valid gesture may move zero pixels, so there may be no trace cookie whose
+                    // later close could otherwise produce the final-idle proof.
+                    scheduleBenchmarkPhysicalMotionIdleCheckLocked()
                     dispatch
                 }
                 dispatchWindowRequest(result.first, fromInput = true)
@@ -5865,7 +6331,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val cleanPixels = state.hasDrawableContent && state.visibleLoading == 0 &&
             coverage.missingPx == 0 && coverage.placeholderPx == 0 &&
             coverage.lowResolutionItems == 0 && coverage.drawableItems > 0
+        var filterDirectWifiNativeTiles = false
         val nativeSnapshot = synchronized(stateLock) {
+            // Only source-qualified direct-Wi-Fi episode paths may omit dead native uploads.
+            // Requiring every real tiled item in this frame to carry one of those immutable
+            // identities leaves carrier/SNI, previous episodes and unbound state unchanged.
+            var sawTiledRealItem = false
+            var everyTiledItemAuthorized = true
+            for (item in state.items) {
+                if (item.cardText != null || item.bitmap != null || item.tiles.isEmpty()) continue
+                sawTiledRealItem = true
+                if (item.committedIdentity?.normalizedEpisodePath !in
+                    directWifiExpandedNativeTextureEpisodePaths
+                ) {
+                    everyTiledItemAuthorized = false
+                    break
+                }
+            }
+            filterDirectWifiNativeTiles = directWifiExpandedNativeTextureRunway &&
+                directWifiExpandedNativeTextureEpisodePaths.isNotEmpty() &&
+                sawTiledRealItem && everyTiledItemAuthorized
             longArrayOf(
                 rollingNativeHandle,
                 rollingNativeAttachEpoch,
@@ -5916,6 +6401,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     item.tiles.forEachIndexed { slot, tile ->
                         val bitmap = tile.bitmap
                         if (bitmap.isRecycled) return@forEachIndexed
+                        if (filterDirectWifiNativeTiles &&
+                            !nativeTileIntersectsViewport(
+                                item = item,
+                                tile = tile,
+                                geometryScaleY = geometryScaleY,
+                                nativeHeight = nativeHeight,
+                            )
+                        ) return@forEachIndexed
                         bitmaps += bitmap
                         integers += item.index
                         integers += slot
@@ -6011,6 +6504,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 submitEndNs
             )
         )
+    }
+
+    /** Mirrors the native renderer's draw-time rejection before its texture-upload loop. */
+    private fun nativeTileIntersectsViewport(
+        item: DrawItem,
+        tile: ReaderTile,
+        geometryScaleY: Float,
+        nativeHeight: Int,
+    ): Boolean {
+        if (nativeHeight <= 0 || item.pageHeight <= 0f || tile.sourceHeight <= 0 ||
+            tile.sourceTop < 0 || tile.sourceBottom <= tile.sourceTop ||
+            tile.sourceBottom > tile.sourceHeight
+        ) return true
+        val pageTop = item.top * geometryScaleY
+        val pageHeight = item.pageHeight * geometryScaleY
+        val tileTop = pageTop + pageHeight *
+            tile.sourceTop.toFloat() / tile.sourceHeight.toFloat()
+        val tileBottom = pageTop + pageHeight *
+            tile.sourceBottom.toFloat() / tile.sourceHeight.toFloat()
+        return tileBottom > 0f && tileTop < nativeHeight.toFloat()
     }
 
     private fun drawState(
@@ -6847,7 +7360,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     originalProof = page.originalProof,
                     stripAuthoritative = stripAuthorityToken != 0L &&
                         page.stripAuthority == stripAuthorityToken,
-                    stripAsset = page.stripAsset,
+                    adjacentExactAuthoritative = page.adjacentExactOwner != null,
+                    stripAsset = page.stripAsset ?: page.adjacentExactOwner?.canonicalAsset,
                     committedIdentity = page.committedIdentity,
                     loading = page.loading,
                     cardText = page.cardText,
@@ -7113,7 +7627,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (bottom <= top) continue
             val px = bottom - top
             coveredPx += px
-            if (state.realPixelsOnly && item.stripAuthoritative) {
+            if (state.realPixelsOnly &&
+                (item.stripAuthoritative || item.adjacentExactAuthoritative)
+            ) {
                 val sourceWidth = authoritativeStripSourceWidth(item)
                 val tilePx = if (sourceWidth > 0) authoritativeStripDrawablePx(item, top, bottom) else 0
                 drawablePx += tilePx
@@ -7190,7 +7706,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun authoritativeStripSourceWidth(item: DrawItem): Int {
-        if (!item.stripAuthoritative || item.sourceWidth <= 0 || item.sourceHeight <= 0 ||
+        if ((!item.stripAuthoritative && !item.adjacentExactAuthoritative) ||
+            item.sourceWidth <= 0 || item.sourceHeight <= 0 ||
             item.stripAsset.isNullOrBlank() ||
             !ReaderPreparedStore.isCanonicalOriginalProof(
                 item.originalProof,
@@ -7273,7 +7790,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             item.top < state.height.toFloat() && item.top + item.pageHeight > 0f
         }
         val authoritativeVisible = visibleItems.isNotEmpty() && visibleItems.all { item ->
-            if (item.cardText != null) true else if (item.stripAuthoritative) {
+            if (item.cardText != null) true else if (
+                item.stripAuthoritative || item.adjacentExactAuthoritative
+            ) {
                 authoritativeStripSourceWidth(item) > 0
             } else {
                 usableAuthoritativeOriginalTilePage(
@@ -7426,6 +7945,35 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val bitmap = page.bitmap
         if (bitmap != null && !bitmap.isRecycled) return true
         return page.tiles.any { !it.bitmap.isRecycled }
+    }
+
+    /** Null means this is not an adjacent sparse page; otherwise returns its drawable prefix Y. */
+    private fun adjacentExactPrefixBottomLocked(index: Int): Float? {
+        val page = pages.getOrNull(index) ?: return null
+        val owner = page.adjacentExactOwner ?: return null
+        val plan = page.adjacentExactPlan ?: return pageTopOrElseLocked(index, 0f)
+        if (owner.planDigest != plan.planDigest || owner.sourceKey != plan.sourceKey ||
+            page.adjacentExactSlots.size != plan.tiles.size ||
+            !ReaderPreparedStore.isCanonicalOriginalProof(
+                page.originalProof,
+                owner.canonicalAsset,
+                plan.sourceWidth,
+                plan.sourceHeight,
+            )
+        ) return pageTopOrElseLocked(index, 0f)
+        val sourceBottom = contiguousAdjacentExactSourceBottom(plan, page.adjacentExactSlots)
+        return pageTopOrElseLocked(index, 0f) +
+            pageDrawHeightLocked(page) * sourceBottom / plan.sourceHeight.toFloat()
+    }
+
+    private fun pageHasCompleteDrawableContentLocked(index: Int): Boolean {
+        val page = pages.getOrNull(index) ?: return false
+        val plan = page.adjacentExactPlan
+        if (page.adjacentExactOwner != null && plan != null) {
+            return contiguousAdjacentExactSourceBottom(plan, page.adjacentExactSlots) ==
+                plan.sourceHeight
+        }
+        return pageHasDrawableContentLocked(index)
     }
 
     private fun pageHasDrawablePrefixContentLocked(index: Int): Boolean {
@@ -7990,15 +8538,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             stateLock.notifyAll()
         }
+if (completed != null) {
+            Log.d(
+                "ViewerPerf",
+                "reader_ntk_strict_proof_created token=" + completed!!.frameToken +
+                    ",epoch=" + completed!!.structureEpoch + ",visible=" +
+                    completed!!.visiblePageIndexes.joinToString("|") +
+                    ",register=${completed!!.registeredHwuiFrameCommitCallbackObserved}," +
+                    "queue=${completed!!.surfaceQueueSubmissionObserved}," +
+                    "latch=${completed!!.surfaceControlLatchObserved},items=${completed!!.coverage.drawableItems}"
+            )
+        }
         completed?.let { proof ->
+            publishBenchmarkAdjacentP0CandidateIfEligible(proof)
             mainHandler.post {
                 // A pause/configuration change may retire the surface after the HWUI callback but
                 // before this listener dispatch runs. Never let that queued proof republish stale
                 // `actual:` semantics in the next foreground lifecycle.
-                val lifecycleStillCurrent = synchronized(stateLock) {
+val lifecycleStillCurrent = synchronized(stateLock) {
                     isCompletedDrawProofLifecycleCurrent(
                         proof.surfaceLifecycleEpoch,
                         lifecycleEpoch
+                    )
+                }
+                if (!lifecycleStillCurrent) {
+                    Log.w(
+                        "ViewerPerf",
+                        "reader_ntk_strict_proof_lifecycle_skip " +
+                            "proofEpoch=${proof.surfaceLifecycleEpoch},currentEpoch=$lifecycleEpoch"
                     )
                 }
                 if (lifecycleStillCurrent) {
@@ -8011,6 +8578,60 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Stops benchmark input from the native-present producer instead of waiting behind the main
+     * listener queue. The benchmark receiver still requires the later strict Activity/UI proof
+     * and its identical presented timestamp, so this fast candidate cannot weaken qualification.
+     * The non-benchmark implementation returns false and R8 removes this path from release.
+     */
+    private fun publishBenchmarkAdjacentP0CandidateIfEligible(proof: CompletedDrawProof) {
+        if (!BenchmarkAdjacentCommitSignal.isEnabled()) return
+        val presentedAtNanos = proof.presentedUptimeNanos
+        if (presentedAtNanos <= 0L || proof.frameToken <= 0L || proof.drawnVersion <= 0L ||
+            proof.committedVersion < proof.drawnVersion || proof.structureEpoch <= 0L
+        ) return
+        val exactPresentationProofs = listOf(
+            proof.hardwareAccelerated && proof.registeredHwuiFrameCommitCallbackObserved,
+            proof.surfaceQueueSubmissionObserved,
+            proof.surfaceControlLatchObserved,
+        ).count { it }
+        if (exactPresentationProofs != 1) return
+        val coverage = proof.coverage
+        if (coverage.physicalViewportPx <= 0 ||
+            coverage.viewportPx < coverage.physicalViewportPx ||
+            coverage.drawablePx < coverage.physicalViewportPx ||
+            coverage.drawableItems <= 0 || coverage.missingPx != 0 ||
+            coverage.placeholderPx != 0 || coverage.visibleLoading != 0 ||
+            coverage.visibleErrors != 0 || coverage.widthFillFailures != 0 ||
+            coverage.lowResolutionItems != 0
+        ) return
+        val lifecycleAndStructureCurrent = synchronized(stateLock) {
+            proof.surfaceLifecycleEpoch == lifecycleEpoch &&
+                proof.structureEpoch == traversalStructureEpoch
+        }
+        if (!lifecycleAndStructureCurrent) return
+        val visible = proof.visiblePageIndexes
+            .filter { it >= 0 }
+            .distinct()
+            .sorted()
+        val identities = proof.visiblePageIdentities
+        if (visible.isEmpty() || identities.size != visible.size ||
+            identities.map { it.displayPageIndex } != visible
+        ) return
+        val generation = ViewerTelemetry.activeGeneration()
+        if (generation <= 0L) return
+        identities.asSequence()
+            .filter { it.sourcePageIndex == 0 }
+            .forEach { identity ->
+                BenchmarkAdjacentCommitSignal.publish(
+                    identity.normalizedEpisodePath,
+                    identity.sourcePageIndex,
+                    presentedAtNanos,
+                    generation,
+                )
+            }
     }
 
     private fun releasePostedAdmissionLocked(preserveDirty: Boolean) {
@@ -9167,6 +9788,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return scrollOffset.coerceIn(0f, fullMaxScroll)
         }
         for (index in start..pages.lastIndex) {
+            val adjacentPrefixBottom = adjacentExactPrefixBottomLocked(index)
+            if (adjacentPrefixBottom != null &&
+                !pageHasCompleteDrawableContentLocked(index)
+            ) {
+                if (scheduleBlocked) scheduleBlockedForwardWindowRequestLocked()
+                return min(
+                    fullMaxScroll,
+                    adjacentPrefixBottom - height + COVERAGE_EDGE_FILL_PX,
+                ).coerceAtLeast(0f)
+            }
             if (!pageHasDrawableContentLocked(index)) {
                 if (scheduleBlocked) scheduleBlockedForwardWindowRequestLocked()
                 val missingTop = pageTopOrElseLocked(index, fullMaxScroll + height)
@@ -9219,7 +9850,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun firstMissingDrawablePageLocked(): Int {
         for (index in pages.indices) {
-            if (!pageHasDrawableContentLocked(index)) return index
+            if (!pageHasCompleteDrawableContentLocked(index)) return index
         }
         return -1
     }
@@ -9228,7 +9859,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (pages.isEmpty()) return -1
         val visible = firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
         return (visible..pages.lastIndex).firstOrNull { index ->
-            !pageHasDrawableContentLocked(index)
+            !pageHasCompleteDrawableContentLocked(index)
         } ?: -1
     }
 
@@ -9254,8 +9885,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (pageTop >= viewBottom) break
             if (pageBottom > position && pageTop < viewBottom) {
                 if (!pageHasDrawableContentLocked(index)) return false
+                val adjacentPrefixBottom = adjacentExactPrefixBottomLocked(index)
+                if (adjacentPrefixBottom != null &&
+                    min(viewBottom, pageBottom) > adjacentPrefixBottom + COVERAGE_EDGE_FILL_PX
+                ) return false
                 sawDrawable = true
-                coveredBottom = max(coveredBottom, min(viewBottom, pageBottom))
+                coveredBottom = max(
+                    coveredBottom,
+                    min(viewBottom, min(pageBottom, adjacentPrefixBottom ?: pageBottom)),
+                )
                 if (coveredBottom >= viewBottom - COVERAGE_EDGE_FILL_PX) return true
             }
             index++
@@ -9349,7 +9987,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun markBlockedDrawableResolvedLocked(index: Int) {
-        if (index == lastBlockedForwardPage && pageHasDrawableContentLocked(index)) {
+        if (index == lastBlockedForwardPage && pageHasCompleteDrawableContentLocked(index)) {
             lastBlockedForwardPage = -1
             lastBlockedForwardRequestAtMs = 0L
         }
@@ -9366,7 +10004,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private fun allPagesHaveDrawableContentLocked(): Boolean {
         if (pages.isEmpty()) return false
         for (index in pages.indices) {
-            if (!pageHasDrawableContentLocked(index)) return false
+            if (!pageHasCompleteDrawableContentLocked(index)) return false
         }
         return true
     }
@@ -10663,6 +11301,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun beginPhysicalScrollTraceLocked() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || physicalScrollTraceCookie != 0) return
+        if (BenchmarkAdjacentCommitSignal.isEnabled()) {
+            mainHandler.removeCallbacks(benchmarkPhysicalMotionIdleRunnable)
+        }
         // Each interval starts with actual motion. Never bridge a completed motion segment and a
         // later MOVE across a stationary finger hold in the native cadence statistics.
         statsLastCallbackStartNs = 0L
@@ -10678,12 +11319,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
         Trace.beginAsyncSection(PHYSICAL_SCROLL_TRACE_NAME, cookie)
     }
 
+    private fun scheduleBenchmarkPhysicalMotionIdleCheckLocked() {
+        if (!BenchmarkAdjacentCommitSignal.isEnabled()) return
+        mainHandler.removeCallbacks(benchmarkPhysicalMotionIdleRunnable)
+        mainHandler.postDelayed(
+            benchmarkPhysicalMotionIdleRunnable,
+            BENCHMARK_PHYSICAL_MOTION_IDLE_CONFIRM_MS,
+        )
+    }
+
     private fun endPhysicalScrollTraceLocked() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         val cookie = physicalScrollTraceCookie
-        if (cookie == 0) return
-        physicalScrollTraceCookie = 0
-        Trace.endAsyncSection(PHYSICAL_SCROLL_TRACE_NAME, cookie)
+        if (cookie != 0) {
+            physicalScrollTraceCookie = 0
+            Trace.endAsyncSection(PHYSICAL_SCROLL_TRACE_NAME, cookie)
+        }
+        if (BenchmarkAdjacentCommitSignal.isEnabled()) {
+            // A final edge gesture can be physically valid but move zero pixels. Its preceding
+            // trace may have closed while the finger was still down; arm the confirmation again
+            // on UP even when there is no live trace cookie, otherwise the pointer-down sample
+            // consumes the only pending callback and the harness never observes final idle.
+            scheduleBenchmarkPhysicalMotionIdleCheckLocked()
+        }
     }
 
     private fun percentile(sorted: List<Float>, percentile: Float): Float {
@@ -11075,6 +11733,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val PHYSICAL_SCROLL_TRACE_NAME = "ViewerPhysicalScrollMotion"
         private const val PHYSICAL_SCROLL_REFRESH_PERIOD_COUNTER =
             "ViewerPhysicalScrollRefreshPeriodNs"
+        private const val BENCHMARK_PHYSICAL_MOTION_IDLE_CONFIRM_MS = 96L
         private const val NANOS_PER_MILLISECOND = 1_000_000L
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
         private const val MISSED_VSYNC_FACTOR = 2.0f
@@ -11095,6 +11754,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 16
         private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES = 48
         private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES = 288L * 1024L * 1024L
+        private const val DIRECT_WIFI_SHORT_WEBTOON_PREWARM_AHEAD_VIEWPORTS = 6f
         // Kept in one production policy point while the exact no-sampling NTK proof is bound.
         private const val FORWARD_REQUEST_END_EPSILON_PX = 0.01f
         private const val TILE_SEAM_OVERLAP_PX = 1f

@@ -34,12 +34,14 @@ import com.google.gson.reflect.TypeToken
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import java.util.Locale
 import ml.melun.mangaview.MainApplication
 import ml.melun.mangaview.MainApplication.p
 import ml.melun.mangaview.MainApplication.getHttpClient
 import ml.melun.mangaview.R
 import ml.melun.mangaview.Utils
+import ml.melun.mangaview.benchmark.BenchmarkAdjacentCommitSignal
 import ml.melun.mangaview.activity.CaptchaActivity.REQUEST_CAPTCHA
 import ml.melun.mangaview.activity.CaptchaActivity.RESULT_CAPTCHA
 import ml.melun.mangaview.mangaview.MTitle
@@ -54,7 +56,9 @@ import ml.melun.mangaview.reader.AdoptedDrawableIdentity
 import ml.melun.mangaview.reader.InstalledDrawableQuery
 import ml.melun.mangaview.reader.NtkAuthoritativeManifest
 import ml.melun.mangaview.reader.NtkAuthoritativeManifestListener
-import ml.melun.mangaview.reader.NtkSourceState
+import ml.melun.mangaview.reader.NtkAdjacentExactP0Delta
+import ml.melun.mangaview.reader.NtkAdjacentExactP0HeadPublication
+import ml.melun.mangaview.reader.NtkAdjacentExactRunwayBatchPublication
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry
 import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator
 import ml.melun.mangaview.reader.NtkStripDigests
@@ -153,6 +157,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val strictRenderReadyLock = Any()
     private val strictRenderReadyPages = LinkedHashSet<Int>()
     private var strictRenderReadyGeneration = -1
+    @Volatile private var strictAllImagesReadyQueueScheduled = false
     @Volatile private var strictAllImagesReadyPublished = false
     @Volatile private var strictForwardReadyFirstPage = 0
     @Volatile private var strictRollingHistoricalScene = false
@@ -174,6 +179,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var strictTelemetryClosed = false
     private var strictTelemetryGeneration = 0L
     private var strictTelemetryEpisodePath = ""
+    private val strictActivityOwnerToken = Any()
+    private var strictActivityOwnerRecord: StrictActivityOwner? = null
     private var strictTelemetryManifestDigest = ""
     private var strictTelemetryLifecycleEpoch = 0L
     private var strictTelemetryActualInLifecycle = false
@@ -221,6 +228,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var adjacentNavigationInFlight = false
     private var cachedPreviousEpisode: Manga? = null
     private var cachedNextEpisode: Manga? = null
+    private var cachedNextHasPersistedExactAuthority = false
     private var episodeListFetchAttempted = false
     private var episodePickerLoadTask: AppDispatchers.TaskHandle? = null
     private var episodePickerCancellation: MangaRepository.Cancellation? = null
@@ -648,18 +656,19 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         initialStartAtFirstPage = startAtFirstPage
         if (strictNtkEpisode) {
             strictTelemetryEpisodePath = NtkStripDigests.normalizeEpisodePath(ntkPath)
-            val hasActiveTelemetry = ViewerTelemetry.hasActiveSession()
-            val activeEpisodeMatches = hasActiveTelemetry &&
-                (ViewerTelemetry.isActiveEpisode(ntkPath) ||
-                    ViewerTelemetry.isActiveEpisode(strictTelemetryEpisodePath))
-            val existingSourceState =
-                NtkSourceSpoolRegistry.currentSnapshot(strictTelemetryEpisodePath)?.state
-            val reuseClickGeneration = shouldReuseStrictTelemetryForActivityCreate(
-                hasActiveTelemetry,
-                activeEpisodeMatches,
-                existingSourceState
+            // Claim path + ViewerTelemetry generation + Activity token under one fence. Source
+            // state is intentionally absent: DISCOVERING can advance to OWNED_BINDING after any
+            // read. A paused old reader whose generation was already superseded by a new home
+            // click is stale and must not force that fresh click/preflight to rotate again.
+            val activityClaim = claimStrictActivityTelemetry(
+                strictActivityOwnerToken,
+                strictTelemetryWorkId(manga),
+                ntkPath,
+                strictTelemetryEpisodePath,
+                manga.mode.toString(),
             )
-            if (activeEpisodeMatches && !reuseClickGeneration) {
+            strictActivityOwnerRecord = activityClaim.owner
+            if (activityClaim.replacedCurrentOwner) {
                 // Home continue can open a second ReaderActivity while the previous reader still
                 // owns this exact source port. Reusing its telemetry generation also reuses its
                 // already-claimed manifest, so the replacement ReaderSession deterministically
@@ -668,23 +677,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 Log.d(
                     "ViewerPerf",
                     "reader_ntk_reentry_replace_claimed_source path=$strictTelemetryEpisodePath," +
-                        "state=$existingSourceState,generation=${ViewerTelemetry.activeGeneration()}"
+                        "ownerGeneration=${activityClaim.previousOwnerGeneration}," +
+                        "generation=${activityClaim.generation}"
+                )
+            } else if (activityClaim.replacedStaleOwner) {
+                Log.d(
+                    "ViewerPerf",
+                    "reader_ntk_reentry_replace_stale_activity_owner path=$strictTelemetryEpisodePath," +
+                        "ownerGeneration=${activityClaim.previousOwnerGeneration}," +
+                        "generation=${activityClaim.generation}"
                 )
             }
-            strictTelemetryGeneration = if (reuseClickGeneration) {
-                PerformanceMonitor.viewerStarted(
-                    strictTelemetryWorkId(manga),
-                    strictTelemetryEpisodePath,
-                    manga.mode.toString()
-                )
-                ViewerTelemetry.activeGeneration()
-            } else {
-                ViewerTelemetry.viewerOpen(
-                    strictTelemetryWorkId(manga),
-                    strictTelemetryEpisodePath,
-                    manga.mode.toString()
-                )
-            }
+            strictTelemetryGeneration = activityClaim.generation
             strictTelemetryOwned = strictTelemetryGeneration > 0L
         }
         if (ntkPath.startsWith("/webtoon/") || ntkPath.startsWith("/manhwa/")) {
@@ -1369,9 +1373,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             readerRoot?.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         }
-        if (firstResumeArmedUptimeNanos == 0L) {
+if (firstResumeArmedUptimeNanos == 0L) {
             firstResumeArmedUptimeNanos = SystemClock.elapsedRealtimeNanos()
         }
+        // gfxstream/host-GPU emulators can deliver the reader task without a subsequent
+        // onWindowFocusChanged(true) (isFocused=false at transition). onResume is the reliable
+        // foreground entry point; arm the strict commit gate here as well so a genuinely visible
+        // foreground draw is never silently discarded. Arming is unconditional of the reader view
+        // (which can be lazily initialized after onResume) and of strictTelemetryOwned (set later);
+        // the shown/VISIBLE check and the separate owned guard still reject background buffers.
+        strictTelemetryForegroundCommitArmed = true
         renderView.requestRender()
     }
 
@@ -1478,6 +1489,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onDestroy() {
+        strictActivityOwnerRecord?.let { strictActivityOwner.compareAndSet(it, null) }
+        strictActivityOwnerRecord = null
         val retiringPath = strictTelemetryEpisodePath.ifBlank {
             currentManga?.ntkEpisodePath.orEmpty()
         }
@@ -1511,6 +1524,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         synchronized(strictRenderReadyLock) {
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = -1
+            strictAllImagesReadyQueueScheduled = false
             strictAllImagesReadyPublished = false
             strictForwardReadyFirstPage = 0
             strictRollingHistoricalScene = false
@@ -1986,6 +2000,163 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 }
                 updateCurrentEpisode(currentPage)
             }
+        }
+    }
+
+    override fun onAdjacentExactP0HeadReady(
+        publication: NtkAdjacentExactP0HeadPublication,
+    ): Boolean {
+        if (!::renderView.isInitialized || isFinishing || isDestroyed) return false
+        val oldCount = pageCount
+        val structuralCount = session?.structuralPageCount() ?: -1
+        if (oldCount != publication.previousPageCount ||
+            publication.totalPageCount != publication.previousPageCount + 2 ||
+            publication.cardIndex != publication.previousPageCount ||
+            structuralCount != publication.totalPageCount
+        ) {
+            Log.e(
+                "ViewerPerf",
+                "append_adjacent_exact_p0_activity_reject reason=stale_structure " +
+                    "previous=${publication.previousPageCount} total=${publication.totalPageCount} " +
+                    "card=${publication.cardIndex} activity=$oldCount structural=$structuralCount",
+            )
+            return false
+        }
+        Log.d(
+            "ViewerPerf",
+            "append_adjacent_exact_p0_activity_enter previous=${publication.previousPageCount} " +
+                "total=${publication.totalPageCount} card=${publication.cardIndex} activityCount=$oldCount",
+        )
+        renderView.setFrameSchedulingSuppressed(true)
+        return try {
+            onPagesAppended(publication.totalPageCount)
+            Log.d(
+                "ViewerPerf",
+                "append_adjacent_exact_p0_activity_pages total=${publication.totalPageCount} activityCount=$pageCount",
+            )
+            renderView.setPageCard(publication.cardIndex, publication.cardTitle)
+            Log.d(
+                "ViewerPerf",
+                "append_adjacent_exact_p0_activity_card index=${publication.cardIndex}",
+            )
+            val result = renderView.installAdjacentExactP0Delta(publication.delta)
+            Log.d(
+                "ViewerPerf",
+                "append_adjacent_exact_p0_head_install accepted=${result.accepted} " +
+                    "complete=${result.complete} display=${result.displayPageIndex} " +
+                    "path=${publication.delta.owner.normalizedEpisodePath}",
+            )
+            if (!result.accepted) {
+                pageCount = oldCount
+                renderView.setPageCount(oldCount)
+                syncRenderPageIdentities(oldCount)
+            }
+            result.accepted
+        } catch (failure: Exception) {
+            Log.e(
+                "ViewerPerf",
+                "append_adjacent_exact_p0_activity_error path=${publication.delta.owner.normalizedEpisodePath} " +
+                    "stageCount=$pageCount error=${failure.javaClass.simpleName}:${failure.message}",
+                failure,
+            )
+            throw failure
+        } finally {
+            renderView.setFrameSchedulingSuppressed(false)
+        }
+    }
+
+    override fun onAdjacentExactP0TailReady(delta: NtkAdjacentExactP0Delta): Boolean {
+        if (!::renderView.isInitialized || isFinishing || isDestroyed) return false
+        val result = renderView.installAdjacentExactP0Delta(delta)
+        Log.d(
+            "ViewerPerf",
+            "append_adjacent_exact_p0_tail_install accepted=${result.accepted} " +
+                "complete=${result.complete} display=${result.displayPageIndex} " +
+                "path=${delta.owner.normalizedEpisodePath}",
+        )
+        return result.accepted && result.complete
+    }
+
+    override fun onAdjacentExactRunwayBatchReady(
+        publication: NtkAdjacentExactRunwayBatchPublication,
+    ): Boolean {
+        if (!::renderView.isInitialized || isFinishing || isDestroyed) return false
+        val oldCount = pageCount
+        val structuralCount = session?.structuralPageCount() ?: -1
+        val identities = session?.pageIdentities(
+            publication.previousPageCount,
+            publication.pages.size,
+        ).orEmpty()
+        val identityMatches = identities.size == publication.pages.size &&
+            publication.pages.sortedBy { it.displayPageIndex }.zip(identities).all { (page, identity) ->
+                identity != null &&
+                    identity.normalizedEpisodePath == page.normalizedEpisodePath &&
+                    identity.sourcePageIndex == page.sourcePageIndex &&
+                    identity.canonicalAsset == page.canonicalAsset &&
+                    identity.manifestDigest == page.manifestDigest &&
+                    identity.manifestPageCount == page.manifestPageCount
+            }
+        if (oldCount != publication.previousPageCount ||
+            publication.totalPageCount != oldCount + publication.pages.size ||
+            structuralCount != publication.totalPageCount || !identityMatches
+        ) {
+            Log.e(
+                "ViewerPerf",
+                "append_adjacent_exact_runway_activity_reject reason=stale_structure " +
+                    "previous=${publication.previousPageCount} total=${publication.totalPageCount} " +
+                    "activity=$oldCount structural=$structuralCount identities=$identityMatches",
+            )
+            return false
+        }
+        renderView.setFrameSchedulingSuppressed(true)
+        return try {
+            onPagesAppended(publication.totalPageCount)
+            if (pageCount != publication.totalPageCount) {
+                val rolledBack = renderView.rollbackAdjacentExactAppendedTail(
+                    publication.previousPageCount,
+                    publication.totalPageCount,
+                )
+                pageCount = oldCount
+                Log.e(
+                    "ViewerPerf",
+                    "append_adjacent_exact_runway_activity_reject reason=page_count " +
+                        "actual=$pageCount expected=${publication.totalPageCount} rollback=$rolledBack",
+                )
+                return false
+            }
+            val result = renderView.installAdjacentExactRunwayBatch(publication)
+            Log.d(
+                "ViewerPerf",
+                "append_adjacent_exact_runway_install accepted=${result.accepted} " +
+                    "pages=${result.installedPages.joinToString(",")} " +
+                    "path=${publication.pages.first().normalizedEpisodePath} " +
+                    "sources=${publication.pages.joinToString(",") { it.sourcePageIndex.toString() }}",
+            )
+            if (!result.accepted) {
+                val rolledBack = renderView.rollbackAdjacentExactAppendedTail(
+                    publication.previousPageCount,
+                    publication.totalPageCount,
+                )
+                pageCount = oldCount
+                syncRenderPageIdentities(oldCount)
+                Log.e(
+                    "ViewerPerf",
+                    "append_adjacent_exact_runway_activity_rollback accepted=$rolledBack " +
+                        "previous=$oldCount total=${publication.totalPageCount}",
+                )
+            }
+            result.accepted
+        } catch (failure: Exception) {
+            Log.e(
+                "ViewerPerf",
+                "append_adjacent_exact_runway_activity_error " +
+                    "path=${publication.pages.first().normalizedEpisodePath} " +
+                    "error=${failure.javaClass.simpleName}:${failure.message}",
+                failure,
+            )
+            throw failure
+        } finally {
+            renderView.setFrameSchedulingSuppressed(false)
         }
     }
 
@@ -2805,8 +2976,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             val count = strictRenderReadyPages.count { it in requiredFirstPage until seal.pageCount }
             val complete = count == requiredPageCount &&
                 (requiredFirstPage until seal.pageCount).all(strictRenderReadyPages::contains)
-            if (complete) strictAllImagesReadyPublished = true
-            count to complete
+            val shouldQueue = complete && !strictAllImagesReadyQueueScheduled
+            if (shouldQueue) strictAllImagesReadyQueueScheduled = true
+            count to shouldQueue
         }
         val readyCount = state.first
         val publish = state.second
@@ -2839,6 +3011,21 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ) return@Runnable
             val requiredFirstPage = strictForwardReadyFirstPage.coerceIn(0, seal.pageCount - 1)
             val requiredPageCount = seal.pageCount - requiredFirstPage
+            val mayPublish = synchronized(strictRenderReadyLock) {
+                if (strictRenderReadyGeneration != generation ||
+                    strictAllImagesReadyPublished ||
+                    !strictAllImagesReadyQueueScheduled
+                ) {
+                    false
+                } else {
+                    // This callback runs only after the complete current forward scene has been
+                    // queued to the native renderer. Keep every adjacent entry point closed until
+                    // that physical runway is ready, not merely until its CPU Bitmaps exist.
+                    strictAllImagesReadyPublished = true
+                    true
+                }
+            }
+            if (!mayPublish) return@Runnable
             Log.d(
                 "ViewerPerf",
                 "reader_all_images_render_ready_progress generation=$generation," +
@@ -2849,6 +3036,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             // Publish the contractual timestamp/event before any next-episode work, but keep the
             // expensive image/network summary and accessibility refresh off the critical edge.
             ViewerTelemetry.markAllImagesRenderReady(requiredPageCount)
+            val persistedNext = if (cachedNextEpisode == null) {
+                restorePersistedDirectWifiStrictNextAfterCurrentComplete(
+                    seal.normalizedEpisodePath,
+                    currentTitle,
+                )
+            } else {
+                null
+            }
+            if (persistedNext != null) {
+                cachedNextEpisode = persistedNext
+                cachedNextHasPersistedExactAuthority = true
+            }
             // [lastInstalledPage] is the exact authoritative page that completed this seal. A
             // synchronous native currentProgressPosition() read measured ~250 ms on the emulator;
             // it is needed for reading-position bookkeeping, not for identifying the completed
@@ -2857,6 +3056,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 seal.normalizedEpisodePath,
                 cachedNextEpisode,
                 authoritativeCompletionProof = true,
+                persistedExactAdjacentAuthority = cachedNextHasPersistedExactAuthority,
                 onResolvedForwardPath =
                     renderView::authorizeCompletedForwardNativeTextureEpisode,
             )
@@ -3078,6 +3278,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         synchronized(strictRenderReadyLock) {
             strictRenderReadyPages.remove(index)
             if (index >= strictForwardReadyFirstPage) {
+                strictAllImagesReadyQueueScheduled = false
                 strictAllImagesReadyPublished = false
             }
         }
@@ -3097,7 +3298,22 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         synchronized(strictAuthoritativeInstallLock) {
             acceptedStrictAuthoritativeIdentities.remove(index)
         }
-        if (pagesReady) renderView.clearRollingAuthoritativePage(index)
+        if (pagesReady) {
+            renderView.clearRollingAuthoritativePage(index)
+            val activeSession = session
+            if (activeSession?.usesDirectWifiShortWebtoonRollingResidency() == true) {
+                // Identity retirement and Surface clearing are main-thread ordered. Reissue the
+                // exact forward window only after both complete, so a replacement cannot lose a
+                // race as a late duplicate and leave a permanent blank page.
+                val first = renderView.forwardRequestStartPage()
+                val last = renderView.forwardRequestEndPage(
+                    NTK_DIRECT_WIFI_SHORT_WEBTOON_FORWARD_VIEWPORTS
+                )
+                if (first >= 0 && last >= first) {
+                    activeSession.requestWindowAsync(first, last, first, false)
+                }
+            }
+        }
     }
 
     override fun onInitialPageDecoded(index: Int, bitmap: Bitmap): ReaderSession.InitialPrerenderResult {
@@ -5092,20 +5308,28 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             ) {
                 val restorePage = activeInitialRestorePage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
                 val restoreOffset = activeInitialRestoreOffset
-                renderView.lockRestoredPageOffset(restorePage, restoreOffset)
-                MainThreadStallMonitor.trace("reader_request_window_async") {
-                    activeSession?.requestWindowAsync(
-                        restorePage,
-                        minOf(pageCount - 1, restorePage + 2),
-                        restorePage,
-                        false
+                if (!directWifiStrictWebtoonRestoreOwnedBySurface()) {
+                    // Legacy/mobile/SNI readers retain their established retry. The direct-Wi-Fi
+                    // strict resume already installed one immutable Surface restore lock before
+                    // this callback. Re-locking and requesting a window here synchronously emits
+                    // another callback against placeholder geometry, creating a self-sustaining
+                    // main/render loop until the exact page arrives. Geometry mutations already
+                    // call applyLockedRestorePositionLocked(), so wait for that one real event.
+                    renderView.lockRestoredPageOffset(restorePage, restoreOffset)
+                    MainThreadStallMonitor.trace("reader_request_window_async") {
+                        activeSession?.requestWindowAsync(
+                            restorePage,
+                            minOf(pageCount - 1, restorePage + 2),
+                            restorePage,
+                            false
+                        )
+                    }
+                    Log.d(
+                        TAG,
+                        "window_changed_initial_restore_retry progress=$progressPage," +
+                            "offset=$progressOffset,target=$restorePage,targetOffset=$restoreOffset"
                     )
                 }
-                Log.d(
-                    TAG,
-                    "window_changed_initial_restore_retry progress=$progressPage," +
-                        "offset=$progressOffset,target=$restorePage,targetOffset=$restoreOffset"
-                )
                 return@trace
             }
             if (activeInitialRestorePage >= 0) {
@@ -5165,24 +5389,55 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                         "adjusted=$adjustedProgressPage,count=$pageCount,busy=$busy"
                 )
             }
-            val requestFirstPage = if (adjustedWindow) {
+            val baseRequestFirstPage = if (adjustedWindow) {
                 minOf(firstPage, adjustedProgressPage)
             } else {
                 firstPage
             }
-            val requestLastPage = if (adjustedWindow) {
+            val baseRequestLastPage = if (adjustedWindow) {
                 maxOf(lastPage, minOf(pageCount - 1, adjustedProgressPage + NTK_ACK_INITIAL_CONTINUOUS_PAGES - 1))
             } else {
                 lastPage
             }
-            val requestAnchorPage = if (adjustedWindow) adjustedProgressPage else anchorPage
+            val shortWebtoonRolling =
+                activeSession?.usesDirectWifiShortWebtoonRollingResidency() == true
+            val exactPhysicalFirstPage = if (shortWebtoonRolling) {
+                renderView.forwardRequestStartPage()
+            } else {
+                -1
+            }
+            val requestFirstPage = if (shortWebtoonRolling && exactPhysicalFirstPage >= 0) {
+                activeSession?.directWifiShortWebtoonForwardRequestStartPage(
+                    exactPhysicalFirstPage
+                ) ?: exactPhysicalFirstPage
+            } else {
+                baseRequestFirstPage
+            }
+            val requestLastPage = if (shortWebtoonRolling) {
+                renderView.setDirectWifiShortWebtoonPixelWindowPrewarmEnabled(true)
+                maxOf(
+                    requestFirstPage,
+                    baseRequestLastPage,
+                    renderView.forwardRequestEndPage(
+                        NTK_DIRECT_WIFI_SHORT_WEBTOON_FORWARD_VIEWPORTS
+                    )
+                )
+            } else {
+                baseRequestLastPage
+            }
+            val baseRequestAnchorPage = if (adjustedWindow) adjustedProgressPage else anchorPage
+            val requestAnchorPage = if (shortWebtoonRolling) {
+                baseRequestAnchorPage.coerceIn(requestFirstPage, requestLastPage)
+            } else {
+                baseRequestAnchorPage
+            }
             val pageChanged = adjustedProgressPage != currentPage
             currentPage = adjustedProgressPage
             // Episode-label/progress writes are deliberately deferred during a fling, but native
             // pixel retirement must follow the real viewport. Feeding the coalesced session lane
             // here lets consumed episodes release their pixels at the third image of the new
             // episode instead of retaining them until scrolling becomes quiet.
-            activeSession?.noteForwardReadingPosition(adjustedProgressPage)
+            activeSession?.noteForwardReadingPosition(adjustedProgressPage, busy)
             MainThreadStallMonitor.trace("reader_request_window_async") {
                 activeSession?.requestWindowAsync(requestFirstPage, requestLastPage, requestAnchorPage, busy)
             }
@@ -5215,6 +5470,32 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             MainThreadStallMonitor.trace("reader_update_current_episode") {
                 updateCurrentEpisode(adjustedProgressPage, progressOffset, saveProgress = true)
             }
+        }
+    }
+
+    private fun directWifiStrictWebtoonRestoreOwnedBySurface(): Boolean {
+        val path = currentManga?.ntkEpisodePath?.trim().orEmpty()
+        val client = getHttpClient()
+        return shouldLetSurfaceOwnDirectWifiStrictWebtoonRestore(
+            path,
+            client.isNtkWifiTransportActive,
+            client.isNtkCellularResilientTransportActive,
+        )
+    }
+
+    private fun updateStrictActivityOwnerRecord(generation: Long, path: String) {
+        val current = strictActivityOwnerRecord ?: return
+        val updated = StrictActivityOwner(
+            token = strictActivityOwnerToken,
+            viewerGeneration = generation,
+            normalizedEpisodePath = NtkStripDigests.normalizeEpisodePath(path),
+        )
+        if (strictActivityOwner.compareAndSet(current, updated)) {
+            strictActivityOwnerRecord = updated
+        } else {
+            // A newer ReaderActivity atomically took ownership. This Activity must never clear or
+            // retarget that successor's generation during its later teardown/navigation callback.
+            strictActivityOwnerRecord = null
         }
     }
 
@@ -5568,6 +5849,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPhysicalScrollMotionEnded() {
+        session?.noteForwardSurfaceMotionEnded()
         resetStrictPhysicalPresentationCadence()
     }
 
@@ -5768,6 +6050,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         attachEpisodeList(currentTitle, target, episodes)
         cachedPreviousEpisode = adjacentEpisodeFastPrepared(target, currentTitle, episodes, false)
         cachedNextEpisode = adjacentEpisodeFastPrepared(target, currentTitle, episodes, true)
+        cachedNextHasPersistedExactAuthority = false
         val targetPath = target.ntkEpisodePath?.trim().orEmpty()
         if (target.isOnline && isStrictNtkEpisodePath(targetPath)) {
             beginStrictAdjacentEpisodeTransition(source, target, targetPath)
@@ -6071,6 +6354,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             targetPath,
             target.mode.toString()
         )
+        updateStrictActivityOwnerRecord(strictTelemetryGeneration, targetPath)
         strictTelemetryOwned = strictTelemetryGeneration > 0L
 
         if (oldPath.isNotBlank() && !oldPath.equals(targetPath, ignoreCase = true)) {
@@ -6084,15 +6368,29 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         )
     }
 
-    private fun handleStrictRollingCompletedDraw(proof: ReaderSurfaceView.CompletedDrawProof) {
+private fun handleStrictRollingCompletedDraw(proof: ReaderSurfaceView.CompletedDrawProof) {
+        if (strictTelemetryOwned && !destroyed && !isFinishing) {
+            Log.d(
+                "ViewerPerf",
+                "reader_ntk_strict_handle_enter token=${proof.frameToken}," +
+                    "armed=$strictTelemetryForegroundCommitArmed," +
+                    "focus=${renderView.hasWindowFocus()},shown=${renderView.isShown}," +
+                    "visibility=${renderView.windowVisibility},owned=$strictTelemetryOwned," +
+                    "closed=$strictTelemetryClosed,hardware=${proof.hardwareAccelerated}," +
+                    "drawn=${proof.drawnVersion},committed=${proof.committedVersion},coverage=${proof.coverage.drawableItems}"
+            )
+        }
         if (!strictTelemetryOwned || strictTelemetryClosed || destroyed || isFinishing) return
-        if (!strictTelemetryForegroundCommitArmed ||
-            !renderView.hasWindowFocus() ||
-            !renderView.isShown ||
+if (!renderView.isShown ||
             renderView.windowVisibility != View.VISIBLE
         ) {
             // Never turn a background/transition buffer into user-visible draw evidence. A new
-            // focus edge invalidates this proof and requests a foreground-owned frame.
+            // visibility edge invalidates this proof and requests a foreground-owned frame.
+            // Window focus and the armed flag are intentionally not part of this gate: host-GPU
+            // emulator transitions can deliver a fully foreground reader with no focus callback at
+            // all (isFocused=false) and arm/reset the lifecycle-armed mark in an unstable order.
+            // shown+VISIBLE is already the precise foreground-visibility signal, and ownership is
+            // still enforced by the guard above.
             return
         }
         val coverage = proof.coverage
@@ -6160,17 +6458,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val physicalEpisodePath = physicalIdentity?.normalizedEpisodePath.orEmpty()
         val physicalManifestDigest = physicalIdentity?.manifestDigest.orEmpty()
         val physicalManifestPageCount = physicalIdentity?.manifestPageCount ?: 0
+        val visibleIdentityClaims = identities.map { (_, identity) ->
+            NtkVisibleIdentityPolicy.Identity(
+                episodePath = identity.normalizedEpisodePath,
+                sourcePageIndex = identity.sourcePageIndex,
+                canonicalAsset = identity.canonicalAsset,
+                manifestDigest = identity.manifestDigest,
+                manifestPageCount = identity.manifestPageCount
+            )
+        }
         val identityValid = identities.size == visible.size &&
             NtkVisibleIdentityPolicy.isValid(
-                identities.map { (_, identity) ->
-                    NtkVisibleIdentityPolicy.Identity(
-                        episodePath = identity.normalizedEpisodePath,
-                        sourcePageIndex = identity.sourcePageIndex,
-                        canonicalAsset = identity.canonicalAsset,
-                        manifestDigest = identity.manifestDigest,
-                        manifestPageCount = identity.manifestPageCount
-                    )
-                },
+                visibleIdentityClaims,
                 NtkVisibleIdentityPolicy.LaunchManifest(
                     episodePath = launchSeal.normalizedEpisodePath,
                     manifestDigest = launchSeal.manifestDigest,
@@ -6267,10 +6566,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictTelemetryInvalidCommittedFrames++
             return
         }
-        if (physicalEpisodePath == launchSeal.normalizedEpisodePath) {
-            identities.forEach { (_, identity) ->
-                strictTelemetryObservedSources[identity.sourcePageIndex] = true
-            }
+        NtkVisibleIdentityPolicy.traversalSourceIndexesForEpisode(
+            visibleIdentityClaims,
+            launchSeal.normalizedEpisodePath,
+        ).forEach { sourceIndex ->
+            strictTelemetryObservedSources[sourceIndex] = true
         }
         strictTelemetryLastCleanSourcePage = identities.maxOf { (_, identity) ->
             identity.sourcePageIndex
@@ -6317,6 +6617,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
         val firstVisibleSource = identities.minOf { (_, identity) -> identity.sourcePageIndex }
         val lastVisibleSource = identities.maxOf { (_, identity) -> identity.sourcePageIndex }
+        var actualStateEpisodePath = physicalEpisodePath
+        var actualStateFirstSource = firstVisibleSource
+        var actualStateLastSource = lastVisibleSource
+        var benchmarkSemanticEpisodePath = ""
+        var benchmarkSemanticSourceIndexes = emptyList<Int>()
         val ntkAdjacentCompletionPolicy =
             activeSession.isNtkForwardAdjacentCompletionPolicyActive()
         // A prepared next-episode runway extends the surface before the reader reaches the launch
@@ -6352,6 +6657,32 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     adjacentIdentity.normalizedEpisodePath,
                     presentedUptimeNanos
                 )
+                benchmarkSemanticEpisodePath = adjacentIdentity.normalizedEpisodePath
+                // A single committed viewport can contain more than one short manga page. The
+                // accessibility node intentionally exposes one representative identity, but the
+                // benchmark must retain every exact p0-p3 identity that was physically present in
+                // this immutable, defect-free frame. Otherwise p2 and p3 in the same frame can be
+                // collapsed to p2 and a fast following frame can advance directly to p4.
+                benchmarkSemanticSourceIndexes =
+                    NtkVisibleIdentityPolicy.traversalSourceIndexesForEpisode(
+                        visibleIdentityClaims,
+                        benchmarkSemanticEpisodePath,
+                    ).filter { sourceIndex -> sourceIndex in 0 until 4 }
+                benchmarkSemanticSourceIndexes.forEach { sourceIndex ->
+                    BenchmarkAdjacentCommitSignal.publish(
+                        benchmarkSemanticEpisodePath,
+                        sourceIndex,
+                        presentedUptimeNanos,
+                        strictTelemetryGeneration,
+                    )
+                }
+                // Publish the same forward-most episode transition identity selected for the
+                // physical IPC, even when the viewport still contains launch-tail pixels. Using
+                // the launch episode plus a max source from a different episode would not be an
+                // exact semantic identity and could never satisfy the three-way timestamp bind.
+                actualStateEpisodePath = adjacentIdentity.normalizedEpisodePath
+                actualStateFirstSource = adjacentIdentity.sourcePageIndex
+                actualStateLastSource = adjacentIdentity.sourcePageIndex
                 adoptPhysicallyPresentedAdjacentEpisode(
                     activeSession,
                     displayPage,
@@ -6365,9 +6696,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         ViewerTelemetry.actualImageDrawCommittedForEpisode(
             renderView,
             strictTelemetryGeneration,
-            physicalEpisodePath,
-            firstVisibleSource,
-            lastVisibleSource,
+            actualStateEpisodePath,
+            actualStateFirstSource,
+            actualStateLastSource,
             presentedUptimeNanos,
             true,
             -1L,
@@ -6383,6 +6714,22 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 viewportDefectReasons
             )
         )
+        if (benchmarkSemanticSourceIndexes.isNotEmpty()) {
+            // This callback runs on main. `actualImageDrawCommittedForEpisode` has synchronously
+            // updated the representative render node and both stable nodes above have emitted
+            // their accessibility changes. Publish every exact source carried by the same
+            // immutable viewport proof so Android event coalescing cannot erase a short page.
+            // The benchmark-only phase timestamps app publication, never receiver scheduling or
+            // a later UiAutomator poll.
+            benchmarkSemanticSourceIndexes.forEach { sourceIndex ->
+                BenchmarkAdjacentCommitSignal.publishSemanticCommit(
+                    benchmarkSemanticEpisodePath,
+                    sourceIndex,
+                    presentedUptimeNanos,
+                    strictTelemetryGeneration,
+                )
+            }
+        }
     }
 
     /**
@@ -6907,6 +7254,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     synchronized(strictRenderReadyLock) {
                         strictRenderReadyPages.clear()
                         strictRenderReadyGeneration = generation
+                        strictAllImagesReadyQueueScheduled = false
                         strictAllImagesReadyPublished = false
                         strictRollingHistoricalScene = false
                     }
@@ -7056,6 +7404,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         synchronized(strictRenderReadyLock) {
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = strictReaderSessionGeneration
+            strictAllImagesReadyQueueScheduled = false
             strictAllImagesReadyPublished = false
             strictRollingHistoricalScene = false
         }
@@ -9703,9 +10052,23 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val episodes = if (manga == null) null else ViewerEpisodeResolver.episodeListFor(manga, null, title)
         if (manga != null) attachEpisodeList(title, manga, episodes)
         val previous = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, false)
-        val next = if (manga == null) null else adjacentEpisodeFastPrepared(manga, title, episodes, true)
+        val listedNext = if (manga == null) {
+            null
+        } else {
+            adjacentEpisodeFastPrepared(manga, title, episodes, true)
+        }
+        val persistedNext = if (listedNext == null && strictAllImagesReadyPublished && manga != null) {
+            restorePersistedDirectWifiStrictNextAfterCurrentComplete(
+                manga.ntkEpisodePath.orEmpty(),
+                title,
+            )
+        } else {
+            null
+        }
+        val next = listedNext ?: persistedNext
         cachedPreviousEpisode = previous
         cachedNextEpisode = next
+        cachedNextHasPersistedExactAuthority = listedNext == null && persistedNext != null
         if (shouldPrimeAdjacentNow()) {
             // The renderer can finish the current episode before the asynchronous episode list
             // has supplied its exact next neighbor. The completion callback then performs a
@@ -9719,6 +10082,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 session?.prepareForwardAdjacentAfterCurrentComplete(
                     manga?.ntkEpisodePath.orEmpty(),
                     next,
+                    persistedExactAdjacentAuthority = cachedNextHasPersistedExactAuthority,
                     onResolvedForwardPath =
                         renderView::authorizeCompletedForwardNativeTextureEpisode,
                 )
@@ -9735,6 +10099,24 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         )
         prevButton.alpha = if (prevButton.isEnabled) 1f else 0.35f
         nextButton.alpha = if (nextButton.isEnabled) 1f else 0.35f
+    }
+
+    private fun restorePersistedDirectWifiStrictNextAfterCurrentComplete(
+        predecessorPath: String,
+        title: Title?,
+    ): Manga? {
+        // This is intentionally a completion-only local reconstruction. It must never resolve a
+        // document, create a Call, decode an image, or prime a Session before the current native
+        // runway has published its authoritative all-ready edge.
+        if (!strictAllImagesReadyPublished) return null
+        val client = getHttpClient()
+        return persistedDirectWifiStrictNextSnapshot(
+            title,
+            predecessorPath,
+            client.isNtkWifiTransportActive,
+            client.isNtkCellularResilientTransportActive,
+            currentComplete = true,
+        )
     }
 
     private fun setAdjacentButtonState(previous: Boolean, next: Boolean) {
@@ -10134,6 +10516,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private fun saveReadingProgressNow(info: ReaderSession.PageInfo, offset: Int) {
         if (info.transitionCard || !info.manga.useBookmark()) return
         val title = currentTitle ?: info.manga.title ?: return
+        val ntkProgressTitle = isNtkProgressTitle(title)
+        val resumeSnapshotBefore = if (ntkProgressTitle) {
+            resumeNtkProgressSnapshot(title)
+        } else {
+            emptyList()
+        }
         info.manga.title = title
         info.manga.titleId = title.id
         if (Utils.snapshotEpisodes(title).isEmpty()) {
@@ -10146,19 +10534,37 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val progressManga = progressEpisodeForIndex(episodes, episodeIndex) ?: info.manga
         val progressEpisodeId = progressManga.id.takeIf { it > 0 } ?: info.manga.id
         val ntkPath = (progressManga.ntkEpisodePath ?: "").ifBlank { info.manga.ntkEpisodePath ?: "" }
-        if (isNtkProgressTitle(title) && ntkPath.isNotBlank()) {
+        if (ntkProgressTitle && ntkPath.isNotBlank()) {
             title.resumeNtkEpisodePath = ntkPath
+            val exactNext = adjacentEpisodeFastPrepared(
+                progressManga,
+                title,
+                episodes,
+                true,
+            )
+            if (exactNext != null &&
+                exactNext.ntkEpisodePath?.isNotBlank() == true &&
+                exactNext.id > 0 &&
+                exactNext.ntkImageWorkId.isNotBlank() &&
+                exactNext.ntkImageEpisodeId.isNotBlank() &&
+                exactNext.ntkImageCount > 0
+            ) {
+                title.setResumeNtkNextEpisodeIdentity(exactNext)
+            }
         }
         val episodeCount = maxOf(episodes.size, title.episodeCount, title.ntkReleaseEpisodeCount)
         if (episodeCount > 0) {
             title.setReadingProgress(progressEpisodeId, episodeIndex, episodeCount)
         }
         val zeroBasedPage = info.sourcePageIndex.coerceAtLeast(0)
+        val resumeSnapshotChanged = ntkProgressTitle &&
+            resumeSnapshotBefore != resumeNtkProgressSnapshot(title)
         if (
             lastSavedEpisodeId == progressEpisodeId &&
             lastSavedPage == zeroBasedPage &&
             lastSavedOffset == offset &&
-            lastSavedSide == info.side
+            lastSavedSide == info.side &&
+            !resumeSnapshotChanged
         ) return
         lastSavedEpisodeId = progressEpisodeId
         lastSavedPage = zeroBasedPage
@@ -10168,6 +10574,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         p?.setBookmark(title, progressEpisodeId)
         p?.setViewerBookmark(info.manga, zeroBasedPage, offset, info.side)
     }
+
+    private fun resumeNtkProgressSnapshot(title: MTitle): List<Any> = listOf(
+        title.resumeNtkEpisodePath,
+        title.resumeNtkNextEpisodePath,
+        title.resumeNtkNextEpisodeId,
+        title.resumeNtkNextEpisodeName,
+        title.resumeNtkNextImageWorkId,
+        title.resumeNtkNextImageEpisodeId,
+        title.resumeNtkNextImageCount,
+    )
 
     private fun updateResultEpisode(manga: Manga?, transitionCard: Boolean = false) {
         if (transitionCard || manga == null || manga.id <= 0) return
@@ -10497,6 +10913,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         synchronized(strictRenderReadyLock) {
             strictRenderReadyPages.clear()
             strictRenderReadyGeneration = -1
+            strictAllImagesReadyQueueScheduled = false
             strictAllImagesReadyPublished = false
             strictForwardReadyFirstPage = 0
             strictRollingHistoricalScene = false
@@ -10921,6 +11338,22 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     companion object {
+        private data class StrictActivityOwner(
+            val token: Any,
+            val viewerGeneration: Long,
+            val normalizedEpisodePath: String,
+        )
+
+        private data class StrictActivityTelemetryClaim(
+            val generation: Long,
+            val owner: StrictActivityOwner,
+            val replacedCurrentOwner: Boolean,
+            val replacedStaleOwner: Boolean,
+            val previousOwnerGeneration: Long,
+        )
+
+        private val strictActivityOwner = AtomicReference<StrictActivityOwner?>(null)
+        private val strictActivityOwnerLock = Any()
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val STRICT_ALL_IMAGES_NATIVE_QUEUE_RETRY_MS = 16L
         private const val INITIAL_STATUS_DELAY_MS = 450L
@@ -10974,6 +11407,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private const val NTK_ACK_PREFLIGHT_INITIAL_CHALLENGE_WAIT_MAX_ATTEMPTS = 10
         private const val NTK_ACK_PREFLIGHT_INITIAL_IMAGES_READY_HARDBLOCK_ATTEMPTS = 2
         private const val NTK_ACK_INITIAL_CONTINUOUS_PAGES = 3
+        private const val NTK_DIRECT_WIFI_SHORT_WEBTOON_FORWARD_VIEWPORTS = 6f
         private const val NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS = 1
         private const val READER_LOADING_DESCRIPTION = "reader-loading"
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
@@ -11040,11 +11474,53 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         fun shouldReuseStrictTelemetryForActivityCreateForTest(
             hasActiveTelemetry: Boolean,
             activeEpisodeMatches: Boolean,
-            sourceState: NtkSourceState?
+            hasExistingActivityOwner: Boolean,
         ): Boolean = shouldReuseStrictTelemetryForActivityCreate(
             hasActiveTelemetry,
             activeEpisodeMatches,
-            sourceState
+            hasExistingActivityOwner,
+        )
+
+        @JvmStatic
+        fun strictActivityOwnerOverlapsForTest(
+            activeGeneration: Long,
+            activePath: String,
+            ownerGeneration: Long,
+            ownerPath: String,
+        ): Boolean = strictActivityOwnerOverlaps(
+            activeGeneration,
+            NtkStripDigests.normalizeEpisodePath(activePath),
+            StrictActivityOwner(
+                Any(),
+                ownerGeneration,
+                NtkStripDigests.normalizeEpisodePath(ownerPath),
+            ),
+        )
+
+        @JvmStatic
+        fun shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+            path: String,
+            wifiTransportActive: Boolean,
+            cellularResilientTransportActive: Boolean,
+        ): Boolean = shouldLetSurfaceOwnDirectWifiStrictWebtoonRestore(
+            path,
+            wifiTransportActive,
+            cellularResilientTransportActive,
+        )
+
+        @JvmStatic
+        fun persistedDirectWifiStrictNextSnapshotForTest(
+            title: Title?,
+            predecessorPath: String,
+            wifiTransportActive: Boolean,
+            cellularResilientTransportActive: Boolean,
+            currentComplete: Boolean,
+        ): Manga? = persistedDirectWifiStrictNextSnapshot(
+            title,
+            predecessorPath,
+            wifiTransportActive,
+            cellularResilientTransportActive,
+            currentComplete,
         )
 
         @JvmStatic
@@ -11162,11 +11638,115 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         private fun shouldReuseStrictTelemetryForActivityCreate(
             hasActiveTelemetry: Boolean,
             activeEpisodeMatches: Boolean,
-            sourceState: NtkSourceState?
+            hasExistingActivityOwner: Boolean,
         ): Boolean {
-            if (!hasActiveTelemetry || !activeEpisodeMatches) return false
-            if (sourceState == null) return true
-            return sourceState.ordinal < NtkSourceState.OWNED_BINDING.ordinal
+            return hasActiveTelemetry && activeEpisodeMatches && !hasExistingActivityOwner
+        }
+
+        private fun claimStrictActivityTelemetry(
+            token: Any,
+            workId: String,
+            rawEpisodePath: String,
+            normalizedEpisodePath: String,
+            mode: String,
+        ): StrictActivityTelemetryClaim = synchronized(strictActivityOwnerLock) {
+            val hasActiveTelemetry = ViewerTelemetry.hasActiveSession()
+            val activeGeneration = ViewerTelemetry.activeGeneration()
+            val activeEpisodeMatches = hasActiveTelemetry &&
+                (ViewerTelemetry.isActiveEpisode(rawEpisodePath) ||
+                    ViewerTelemetry.isActiveEpisode(normalizedEpisodePath))
+            val previousOwner = strictActivityOwner.get()
+            val currentOwnerOverlap = activeEpisodeMatches && strictActivityOwnerOverlaps(
+                activeGeneration,
+                normalizedEpisodePath,
+                previousOwner,
+            )
+            val reuseClickGeneration = shouldReuseStrictTelemetryForActivityCreate(
+                hasActiveTelemetry,
+                activeEpisodeMatches,
+                currentOwnerOverlap,
+            )
+            val generation = if (reuseClickGeneration) {
+                PerformanceMonitor.viewerStarted(workId, normalizedEpisodePath, mode)
+                ViewerTelemetry.activeGeneration()
+            } else {
+                ViewerTelemetry.viewerOpen(workId, normalizedEpisodePath, mode)
+            }
+            val owner = StrictActivityOwner(token, generation, normalizedEpisodePath)
+            strictActivityOwner.set(owner)
+            StrictActivityTelemetryClaim(
+                generation = generation,
+                owner = owner,
+                replacedCurrentOwner = currentOwnerOverlap,
+                replacedStaleOwner = previousOwner != null && !currentOwnerOverlap,
+                previousOwnerGeneration = previousOwner?.viewerGeneration ?: 0L,
+            )
+        }
+
+        private fun strictActivityOwnerOverlaps(
+            activeGeneration: Long,
+            normalizedEpisodePath: String,
+            owner: StrictActivityOwner?,
+        ): Boolean {
+            return owner != null &&
+                activeGeneration > 0L &&
+                owner.viewerGeneration == activeGeneration &&
+                owner.normalizedEpisodePath.equals(normalizedEpisodePath, ignoreCase = true)
+        }
+
+        private fun shouldLetSurfaceOwnDirectWifiStrictWebtoonRestore(
+            path: String,
+            wifiTransportActive: Boolean,
+            cellularResilientTransportActive: Boolean,
+        ): Boolean {
+            return path.startsWith("/webtoon/") &&
+                wifiTransportActive &&
+                !cellularResilientTransportActive
+        }
+
+        private fun persistedDirectWifiStrictNextSnapshot(
+            title: Title?,
+            predecessorPath: String,
+            wifiTransportActive: Boolean,
+            cellularResilientTransportActive: Boolean,
+            currentComplete: Boolean,
+        ): Manga? {
+            if (!currentComplete || !wifiTransportActive || cellularResilientTransportActive ||
+                title == null || !title.sourceSite.equals("ntk", ignoreCase = true) ||
+                !title.hasCompleteResumeNtkNextEpisodeIdentity()
+            ) return null
+            val normalizedPredecessor = NtkStripDigests.normalizeEpisodePath(predecessorPath)
+            val persistedPredecessor = NtkStripDigests.normalizeEpisodePath(
+                title.resumeNtkEpisodePath,
+            )
+            val persistedNext = NtkStripDigests.normalizeEpisodePath(
+                title.resumeNtkNextEpisodePath,
+            )
+            val strictPath = Regex("^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$")
+            if (normalizedPredecessor.isBlank() ||
+                normalizedPredecessor != persistedPredecessor ||
+                persistedNext.isBlank() || persistedNext == normalizedPredecessor ||
+                !strictPath.matches(normalizedPredecessor) ||
+                !strictPath.matches(persistedNext) ||
+                !NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(
+                    normalizedPredecessor,
+                    persistedNext,
+                )
+            ) return null
+            return Manga(
+                title.resumeNtkNextEpisodeId,
+                title.resumeNtkNextEpisodeName,
+                "",
+                title.baseMode,
+            ).apply {
+                mode = 0
+                this.title = title
+                titleId = title.id
+                ntkEpisodePath = persistedNext
+                ntkImageWorkId = title.resumeNtkNextImageWorkId
+                ntkImageEpisodeId = title.resumeNtkNextImageEpisodeId
+                ntkImageCount = title.resumeNtkNextImageCount
+            }
         }
 
         private fun shouldRevealPrependedBoundary(

@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader
 import java.io.IOException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.cert.CertificateException
 import javax.net.ssl.SSLHandshakeException
@@ -59,6 +60,40 @@ object NtkStrictRouteRecoveryPolicy {
             ) {
                 return true
             }
+            val next = current.cause
+            if (next === current) break
+            current = next
+        }
+        return false
+    }
+
+    /**
+     * A terminal QUIC timeout does not prove that the already-selected HTTPS origin is bad.
+     * The strict transport marks that exact host unhealthy before throwing, so an immediate fresh
+     * flight uses the existing OkHttp/H2 fallback. This exception is deliberately narrower than
+     * general route recovery: current direct Wi-Fi only, document only, and only the first attempt.
+     */
+    @JvmStatic
+    fun shouldRestartSameOriginWithoutResolver(
+        failure: Throwable,
+        completedRecoveryAttempts: Int,
+        directWifiCurrentViewer: Boolean,
+        sameOriginFallbackConsumed: Boolean,
+    ): Boolean {
+        if (!directWifiCurrentViewer || sameOriginFallbackConsumed ||
+            completedRecoveryAttempts >= MAX_RECOVERY_ATTEMPTS
+        ) {
+            return false
+        }
+        if (failure !is IOException ||
+            failure.message != "Strict document HttpEngine request failed"
+        ) return false
+        var current: Throwable? = failure.cause
+        var depth = 0
+        while (current != null && depth++ < 16) {
+            if (current is SocketTimeoutException &&
+                current.message == "QUIC fetch timed out"
+            ) return true
             val next = current.cause
             if (next === current) break
             current = next

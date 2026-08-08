@@ -5,6 +5,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.HashSet;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import org.junit.Test;
 
@@ -64,6 +67,32 @@ public final class NtkExactImageShardPolicyTest {
     public void openingViewportUsesDistinctPoolsOnItsSharedOrigin() {
         assertEquals(0, CustomHttpClient.ntkWebtoonExactImageShardIndex(0, 8));
         assertEquals(1, CustomHttpClient.ntkWebtoonExactImageShardIndex(1, 8));
+    }
+
+    @Test
+    public void directWifiAdjacentRunwayReusesTheProvenP0H2PoolOnlyForFirstAttempt() {
+        for(int page = 0; page < 4; page++) {
+            assertEquals(0, CustomHttpClient.ntkWebtoonExactImageShardIndex(
+                    page, 16, 0, true));
+        }
+        assertEquals(
+                CustomHttpClient.ntkWebtoonExactImageShardIndex(4, 16, 0),
+                CustomHttpClient.ntkWebtoonExactImageShardIndex(4, 16, 0, true));
+        assertEquals(
+                CustomHttpClient.ntkWebtoonExactImageShardIndex(1, 16, 1),
+                CustomHttpClient.ntkWebtoonExactImageShardIndex(1, 16, 1, true));
+    }
+
+    @Test
+    public void directWifiAdjacentRunwayStripesOnlyAcrossRecentlyProvenWarmPools() {
+        List<Integer> recent = Arrays.asList(14, 0, 14, 13, 15, -1, 99);
+        assertEquals(14, CustomHttpClient.ntkDirectWifiAdjacentWarmShardIndex(0, 16, recent));
+        assertEquals(0, CustomHttpClient.ntkDirectWifiAdjacentWarmShardIndex(1, 16, recent));
+        assertEquals(13, CustomHttpClient.ntkDirectWifiAdjacentWarmShardIndex(2, 16, recent));
+        assertEquals(15, CustomHttpClient.ntkDirectWifiAdjacentWarmShardIndex(3, 16, recent));
+        assertEquals(14, CustomHttpClient.ntkDirectWifiAdjacentWarmShardIndex(4, 16, recent));
+        assertEquals(0, CustomHttpClient.ntkDirectWifiAdjacentWarmShardIndex(
+                3, 16, Collections.emptyList()));
     }
 
     @Test

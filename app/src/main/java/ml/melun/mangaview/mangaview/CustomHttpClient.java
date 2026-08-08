@@ -86,11 +86,13 @@ import javax.net.ssl.X509TrustManager;
 
 import okhttp3.Call;
 import okhttp3.Callback;
+import okhttp3.Connection;
 import okhttp3.ConnectionPool;
 import okhttp3.ConnectionSpec;
 import okhttp3.Cookie;
 import okhttp3.Dispatcher;
 import okhttp3.Dns;
+import okhttp3.EventListener;
 import okhttp3.Headers;
 import okhttp3.HttpUrl;
 import okhttp3.MediaType;
@@ -122,8 +124,11 @@ import ml.melun.mangaview.ntkack.NtkAckTrustedGrantValidator;
 import ml.melun.mangaview.reader.NtkProvisionalEpisodePlan;
 import ml.melun.mangaview.reader.NtkQuarantineSourceCallIdentity;
 import ml.melun.mangaview.reader.NtkDocumentRouteResponseException;
+import ml.melun.mangaview.reader.NtkDirectWifiAdjacentWebtoonRunwayTailTag;
+import ml.melun.mangaview.reader.NtkPhysicalConnectionObservationBridge;
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry;
 import ml.melun.mangaview.reader.NtkStrictRouteRecoveryPolicy;
+import ml.melun.mangaview.reader.NtkStrictEpisodePathTag;
 import ml.melun.mangaview.reader.NtkStrictSourceCallTag;
 import ml.melun.mangaview.reader.NtkStripDigests;
 import ml.melun.mangaview.reader.ReaderImageCache;
@@ -1721,6 +1726,18 @@ public class CustomHttpClient {
     private OkHttpClient[] ntkDemandBoundExactImageHttp1RecoveryShards;
     private OkHttpClient[] ntkCellularDemandBoundExactImageHttp1RecoveryShards;
     private Call.Factory ntkDemandBoundExactImageFactory;
+    /** Cached telemetry-only wrappers around the demand-bound fallback pools. */
+    private final ConcurrentHashMap<Integer, OkHttpClient>
+            ntkDemandBoundExactImageTelemetryFallbackClients = new ConcurrentHashMap<>();
+    /**
+     * Most recently proven direct-Wi-Fi webtoon H2 pools for the foreground episode. The next
+     * episode's p0..p3 may reuse these already-connected pools only after its immutable adjacent
+     * tag proves that the predecessor is complete. Carrier/SNI work never records or reads this
+     * state.
+     */
+    private final Object ntkDirectWifiWebtoonWarmShardLock = new Object();
+    private final ArrayList<Integer> ntkDirectWifiWebtoonWarmShards = new ArrayList<>();
+    private long ntkDirectWifiWebtoonWarmShardNetworkHandle = -1L;
     private volatile String lastReachableNtkRedirectRoot = "";
     private OkHttpClient wolfPageFastClient;
     private OkHttpClient unsafeWolfPageFastClient;
@@ -1731,6 +1748,9 @@ public class CustomHttpClient {
     /** ViewerTelemetry generation paired atomically with {@link #ntkStrictForegroundNetworkPath}. */
     private volatile long ntkStrictForegroundNetworkGeneration = 0L;
     private final Object ntkStrictForegroundNetworkLock = new Object();
+    /** Monotonic provenance fence for legacy speculative work that spans a strict cutover. */
+    private final AtomicLong ntkStrictLegacySpeculationCutoverEpoch = new AtomicLong(1L);
+    public static final int NTK_IMAGE_HEADER_REACHABILITY_SUPERSEDED = -2;
     /** Dynamic domain-probe clients inherit uneven dispatchers; own their physical calls directly. */
     private final Set<Call> activeNtkDomainProbeCalls =
             Collections.newSetFromMap(new ConcurrentHashMap<Call, Boolean>());
@@ -2316,6 +2336,7 @@ public class CustomHttpClient {
                 // a UrlRequest exists, so there is still exactly one physical source request.
                 OkHttpClient fallbackTransport = exactImageFallbackTransport(
                         wireRequest, cellularResilientTransport);
+                fallbackTransport = exactImageFallbackTelemetryClient(fallbackTransport);
                 Call physical = fallbackTransport.newCall(wireRequest);
                 if(!fallbackCall.compareAndSet(null, physical))
                     throw new IOException("Exact image fallback owner conflict");
@@ -2559,8 +2580,15 @@ public class CustomHttpClient {
                         attemptOrdinal,
                         strictTag == null ? 1 : strictTag.getAttemptOrdinal(),
                         rotateAcrossLogicalAttempts);
-                int shardIndex = ntkWebtoonExactImageShardIndex(
-                        pageIndex, shardCount, routeAttemptOrdinal);
+                boolean directWifiAdjacentRunway = directWifiExact
+                        && request.tag(NtkDirectWifiAdjacentWebtoonRunwayTailTag.class) != null;
+                int shardIndex = directWifiAdjacentRunway
+                        && pageIndex < 4
+                        && routeAttemptOrdinal == 0
+                        ? directWifiAdjacentWarmShardIndex(pageIndex, shardCount)
+                        : ntkWebtoonExactImageShardIndex(
+                                pageIndex, shardCount, routeAttemptOrdinal,
+                                directWifiAdjacentRunway);
                 if(shouldUseNtkExactImageHttp1Recovery(
                           request, routeAttemptOrdinal, cellularResilientTransport,
                           rotateAcrossLogicalAttempts)) {
@@ -2593,6 +2621,121 @@ public class CustomHttpClient {
                 return shards[shardIndex];
             }
             return shards[ntkExactImageShardIndex(pageIndex, shardCount)];
+        }
+
+        /**
+         * The demand-bound factory selects this OkHttp transport only inside execute(). Keep the
+         * actual selection, pool, dispatcher, protocol and request untouched, then add the same
+         * connection-acquired evidence used by the reader's visible strict clients. This clone
+         * shares the selected base client's pool and dispatcher, is cached per base client, and
+         * only records requests that already carry a valid strict/quarantine operation identity.
+         */
+        private OkHttpClient exactImageFallbackTelemetryClient(OkHttpClient base) {
+            final int identity = System.identityHashCode(base);
+            return ntkDemandBoundExactImageTelemetryFallbackClients.computeIfAbsent(
+                    identity, ignored -> base.newBuilder()
+                            .eventListenerFactory(call -> new EventListener() {
+                                @Override
+                                public void connectionAcquired(Call call, Connection connection) {
+                                    NtkStrictSourceCallTag strict = call.request().tag(
+                                            NtkStrictSourceCallTag.class);
+                                    NtkQuarantineSourceCallIdentity quarantine = call.request().tag(
+                                            NtkQuarantineSourceCallIdentity.class);
+                                    long operationId = strict != null && strict.isProductionStrict()
+                                            ? strict.getOperationId()
+                                            : quarantine != null && quarantine.isValid()
+                                            ? quarantine.getOperationId() : 0L;
+                                    if(operationId > 0L) {
+                                        NtkPhysicalConnectionObservationBridge.record(
+                                                operationId, connection, base);
+                                    }
+                                }
+
+                                @Override
+                                public void requestHeadersEnd(Call call, Request request) {
+                                    rememberDirectWifiForegroundWebtoonWarmShard(request, base);
+                                    NtkStrictSourceCallTag strict = request.tag(
+                                            NtkStrictSourceCallTag.class);
+                                    NtkQuarantineSourceCallIdentity quarantine = request.tag(
+                                            NtkQuarantineSourceCallIdentity.class);
+                                    long operationId = strict != null && strict.isProductionStrict()
+                                            ? strict.getOperationId()
+                                            : quarantine != null && quarantine.isValid()
+                                            ? quarantine.getOperationId() : 0L;
+                                    if(operationId > 0L) {
+                                        NtkPhysicalConnectionObservationBridge
+                                                .signalAdjacentRequestHeadersEnd(operationId);
+                                    }
+                                }
+                            })
+                            .build());
+        }
+
+        private void rememberDirectWifiForegroundWebtoonWarmShard(Request request,
+                                                                   OkHttpClient base) {
+            if(request == null || base == null
+                    || request.tag(NtkDirectWifiAdjacentWebtoonRunwayTailTag.class) != null
+                    || shouldUseNtkCellularResilientTransport()
+                    || !CustomHttpClient.this.isNtkWifiTransportActive()
+                    || !isNtkWebtoonImageOriginHost(request.url().host()))
+                return;
+            NtkStrictSourceCallTag strict = request.tag(NtkStrictSourceCallTag.class);
+            NtkQuarantineSourceCallIdentity quarantine =
+                    request.tag(NtkQuarantineSourceCallIdentity.class);
+            boolean exactIdentity = strict != null && strict.isProductionStrict()
+                    || quarantine != null && quarantine.isValid();
+            if(!exactIdentity)
+                return;
+            NtkStrictEpisodePathTag episodeTag = request.tag(NtkStrictEpisodePathTag.class);
+            String episodePath = episodeTag == null ? "" : episodeTag.getPath();
+            if(episodePath.length() == 0
+                    || !MainApplication.isNtkForegroundViewerPath(episodePath))
+                return;
+            int shardIndex = -1;
+            OkHttpClient[] shards = ntkDemandBoundExactImageFallbackShards;
+            if(shards != null) {
+                for(int index = 0; index < shards.length; index++) {
+                    if(shards[index] == base) {
+                        shardIndex = index;
+                        break;
+                    }
+                }
+            }
+            if(shardIndex < 0)
+                return;
+            Network network = CustomHttpClient.this.getNtkDirectWifiNetwork();
+            if(network == null)
+                return;
+            long networkHandle = network.getNetworkHandle();
+            synchronized(ntkDirectWifiWebtoonWarmShardLock) {
+                if(ntkDirectWifiWebtoonWarmShardNetworkHandle != networkHandle) {
+                    ntkDirectWifiWebtoonWarmShards.clear();
+                    ntkDirectWifiWebtoonWarmShardNetworkHandle = networkHandle;
+                }
+                ntkDirectWifiWebtoonWarmShards.remove(Integer.valueOf(shardIndex));
+                ntkDirectWifiWebtoonWarmShards.add(0, shardIndex);
+                while(ntkDirectWifiWebtoonWarmShards.size()
+                        > NTK_DIRECT_WIFI_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS) {
+                    ntkDirectWifiWebtoonWarmShards.remove(
+                            ntkDirectWifiWebtoonWarmShards.size() - 1);
+                }
+            }
+        }
+
+        private int directWifiAdjacentWarmShardIndex(int pageIndex, int shardCount) {
+            Network network = CustomHttpClient.this.getNtkDirectWifiNetwork();
+            if(network == null)
+                return ntkWebtoonExactImageShardIndex(pageIndex, shardCount, 0, true);
+            List<Integer> snapshot;
+            long networkHandle = network.getNetworkHandle();
+            synchronized(ntkDirectWifiWebtoonWarmShardLock) {
+                if(ntkDirectWifiWebtoonWarmShardNetworkHandle != networkHandle) {
+                    ntkDirectWifiWebtoonWarmShards.clear();
+                    ntkDirectWifiWebtoonWarmShardNetworkHandle = networkHandle;
+                }
+                snapshot = new ArrayList<>(ntkDirectWifiWebtoonWarmShards);
+            }
+            return ntkDirectWifiAdjacentWarmShardIndex(pageIndex, shardCount, snapshot);
         }
 
         private boolean shouldUseNtkExactImageHttp1Recovery(Request request,
@@ -2707,12 +2850,27 @@ public class CustomHttpClient {
 
     static int ntkWebtoonExactImageShardIndex(int pageIndex, int shardCount,
                                                int physicalAttemptOrdinal) {
+        return ntkWebtoonExactImageShardIndex(
+                pageIndex, shardCount, physicalAttemptOrdinal, false);
+    }
+
+    /**
+     * A completion-gated adjacent runway opens p1-p3 only after p0 has received exact response
+     * headers. Reusing p0's now-established H2 pool avoids three fresh DNS/TLS handshakes on the
+     * very short post-completion runway. Current episodes retain the balanced pool ring, and the
+     * immutable adjacent tag cannot exist on carrier/SNI work.
+     */
+    static int ntkWebtoonExactImageShardIndex(int pageIndex, int shardCount,
+                                               int physicalAttemptOrdinal,
+                                               boolean directWifiAdjacentRunway) {
         if(pageIndex < 0)
             throw new IllegalArgumentException("Exact image page index must be non-negative");
         if(shardCount <= 0)
             throw new IllegalArgumentException("Exact image shard count must be positive");
         if(physicalAttemptOrdinal < 0)
             throw new IllegalArgumentException("Physical attempt ordinal must be non-negative");
+        if(directWifiAdjacentRunway && pageIndex < 4 && physicalAttemptOrdinal == 0)
+            return 0;
         final int hostLocalOrdinal;
         if(pageIndex <= 1) {
             hostLocalOrdinal = pageIndex;
@@ -2726,6 +2884,26 @@ public class CustomHttpClient {
                 hostLocalOrdinal = pageIndex / NTK_WEBTOON_IMAGE_ORIGINS.length;
         }
         return Math.floorMod(hostLocalOrdinal + physicalAttemptOrdinal, shardCount);
+    }
+
+    /** Pure selector for the adjacent-only reuse path; invalid/stale shard entries fail closed. */
+    static int ntkDirectWifiAdjacentWarmShardIndex(int pageIndex, int shardCount,
+                                                    List<Integer> recentWarmShards) {
+        if(pageIndex < 0)
+            throw new IllegalArgumentException("Exact image page index must be non-negative");
+        if(shardCount <= 0)
+            throw new IllegalArgumentException("Exact image shard count must be positive");
+        LinkedHashSet<Integer> valid = new LinkedHashSet<>();
+        if(recentWarmShards != null) {
+            for(Integer shard : recentWarmShards) {
+                if(shard != null && shard >= 0 && shard < shardCount)
+                    valid.add(shard);
+            }
+        }
+        if(valid.isEmpty())
+            return ntkWebtoonExactImageShardIndex(pageIndex, shardCount, 0, true);
+        ArrayList<Integer> ordered = new ArrayList<>(valid);
+        return ordered.get(Math.floorMod(pageIndex, ordered.size()));
     }
 
     /**
@@ -2775,9 +2953,19 @@ public class CustomHttpClient {
             throw new IllegalArgumentException("Invalid strict foreground path");
         if(viewerGeneration <= 0L)
             throw new IllegalArgumentException("Invalid strict foreground generation");
+        boolean directWifiWebtoonFence = normalized.startsWith("/webtoon/")
+                && isNtkWifiTransportActive()
+                && !isNtkCellularResilientTransportActive();
         synchronized(ntkStrictForegroundNetworkLock) {
             ntkStrictForegroundNetworkPath = normalized;
             ntkStrictForegroundNetworkGeneration = viewerGeneration;
+            if(directWifiWebtoonFence) {
+                long cutoverEpoch = ntkStrictLegacySpeculationCutoverEpoch.incrementAndGet();
+                // Legacy FutureTasks are registered under this same lock. Cancelling them before
+                // release closes the enqueue-to-run gap without holding the lock during I/O.
+                ReaderImageCache.cancelNtkLegacyForegroundStreamsForStrictCutover(
+                        normalized, cutoverEpoch, "direct_wifi_strict_enter");
+            }
         }
         int cancelledDomainProbes = 0;
         for(Call probe : new ArrayList<>(activeNtkDomainProbeCalls)) {
@@ -2805,10 +2993,14 @@ public class CustomHttpClient {
             if(lowerPriority != null && cancelled.add(lowerPriority.dispatcher()))
                 lowerPriority.dispatcher().cancelAll();
         }
+        // Existing HttpEngine work is fenced from publishing by the generation/path checks below.
+        // Do not tear engines down here: an in-flight create can otherwise resurrect a stale map
+        // entry, leak its losing engine, or block strict startup while executors terminate.
         Log.d(TAG, "ntk_strict_foreground_network_enter path=" + normalized
                 + ",viewerGeneration=" + viewerGeneration
                 + ",cancelledDomainProbes=" + cancelledDomainProbes
-                + ",cancelledDispatchers=" + cancelled.size());
+                + ",cancelledDispatchers=" + cancelled.size()
+                + ",directWifiWebtoonFence=" + directWifiWebtoonFence);
     }
 
     public void leaveNtkStrictForegroundNetwork(String episodePath,
@@ -11728,11 +11920,25 @@ public class CustomHttpClient {
     }
 
     public int ntkImageHeaderReachability(String url, Map<String, String> headers, long timeoutMs) {
+        return ntkImageHeaderReachability(url, headers, timeoutMs, null);
+    }
+
+    public int ntkImageHeaderReachability(String url, Map<String, String> headers, long timeoutMs,
+                                          String strictEpisodePath) {
+        long speculationEpoch = captureNtkStrictLegacySpeculationEpoch();
+        if(shouldSkipOwnedDirectWifiStrictLegacyImageProbe(strictEpisodePath))
+            return NTK_IMAGE_HEADER_REACHABILITY_SUPERSEDED;
         if(isNtkGeneratedImageCdnUrl(url)) {
             int okhttpReachable = ntkImageHeaderReachabilityOkHttp(url, headers);
+            if(!canPublishNtkStrictLegacySpeculation(speculationEpoch, strictEpisodePath))
+                return NTK_IMAGE_HEADER_REACHABILITY_SUPERSEDED;
             if(okhttpReachable >= 0)
                 return okhttpReachable;
         }
+        // The strict owner may have published while the bounded OkHttp header probe was active.
+        // Recheck before a failed legacy probe is allowed to fan out into QUIC.
+        if(shouldSkipOwnedDirectWifiStrictLegacyImageProbe(strictEpisodePath))
+            return NTK_IMAGE_HEADER_REACHABILITY_SUPERSEDED;
         if(context == null || url == null || url.length() == 0
                 || !NtkQuicFetcher.isAvailable() || !shouldUseNtkQuicPrimaryUrl(url))
             return -1;
@@ -11771,6 +11977,8 @@ public class CustomHttpClient {
                     + ",url=" + safeLogUrl(url));
             if(result == null || result.error != null)
                 return -1;
+            if(!canPublishNtkStrictLegacySpeculation(speculationEpoch, strictEpisodePath))
+                return NTK_IMAGE_HEADER_REACHABILITY_SUPERSEDED;
             return reachable[0] ? 1 : 0;
         } catch(Exception e) {
             Log.d(TAG, "ntk_image_header_probe_error error=" + e.getClass().getSimpleName()
@@ -11875,6 +12083,63 @@ public class CustomHttpClient {
         } catch(Exception ignored) {
             return false;
         }
+    }
+
+    /**
+     * A direct-Wi-Fi webtoon strict click globally retires generated guesses, including guesses
+     * carrying a stale/wrong episode id whose path cannot yet have an authoritative manifest.
+     * The manifest-owned fallback remains for the post-discovery state. Mobile/SNI and manhwa do
+     * not enter the global branch.
+     */
+    public boolean shouldSkipDirectWifiStrictLegacySpeculation(String path) {
+        boolean directWifiWebtoonOwner = isNtkWifiTransportActive()
+                && !isNtkCellularResilientTransportActive()
+                && ntkStrictForegroundNetworkPath != null
+                && ntkStrictForegroundNetworkPath.startsWith("/webtoon/");
+        if(directWifiWebtoonOwner)
+            return true;
+        return ReaderImageCache.shouldSkipDirectWifiStrictLegacySpeculation(
+                path,
+                isNtkWifiTransportActive(),
+                isNtkCellularResilientTransportActive());
+    }
+
+    public long captureNtkStrictLegacySpeculationEpoch() {
+        return ntkStrictLegacySpeculationCutoverEpoch.get();
+    }
+
+    /**
+     * A result can publish only if no direct-Wi-Fi strict cutover occurred since its producer
+     * started and no strict owner currently suppresses it. The epoch is intentionally not reset on
+     * leave or transport change, preserving provenance for late callbacks forever.
+     */
+    public boolean canPublishNtkStrictLegacySpeculation(long producerEpoch, String path) {
+        synchronized(ntkStrictForegroundNetworkLock) {
+            return producerEpoch == ntkStrictLegacySpeculationCutoverEpoch.get()
+                    && !shouldSkipDirectWifiStrictLegacySpeculation(path);
+        }
+    }
+
+    /**
+     * Commits legacy cache/publication state under the same lock used by strict cutover. The
+     * cutover therefore happens wholly before this publication (which rejects) or wholly after it
+     * (which immediately cancels/fences the started legacy work); check-then-write is impossible.
+     */
+    public boolean commitNtkStrictLegacySpeculation(long producerEpoch, String path,
+                                                     Runnable publication) {
+        if(publication == null)
+            return false;
+        synchronized(ntkStrictForegroundNetworkLock) {
+            if(producerEpoch != ntkStrictLegacySpeculationCutoverEpoch.get()
+                    || shouldSkipDirectWifiStrictLegacySpeculation(path))
+                return false;
+            publication.run();
+            return true;
+        }
+    }
+
+    private boolean shouldSkipOwnedDirectWifiStrictLegacyImageProbe(String path) {
+        return shouldSkipDirectWifiStrictLegacySpeculation(path);
     }
 
     private static boolean looksLikeNtkImageHeader(byte[] bytes) {
@@ -12673,6 +12938,20 @@ public class CustomHttpClient {
             String stage,
             NtkStrictDocumentStreamObserver documentObserver
     ) throws Exception {
+        return executeStrictExactSameOriginRequest(
+                boundRequest, callRegistry, fallbackClient, timeoutMs, stage,
+                documentObserver, false);
+    }
+
+    private NtkBoundHttpResponse executeStrictExactSameOriginRequest(
+            NtkBoundHttpRequest boundRequest,
+            NtkStrictCallRegistry callRegistry,
+            OkHttpClient fallbackClient,
+            long timeoutMs,
+            String stage,
+            NtkStrictDocumentStreamObserver documentObserver,
+            boolean forceOkHttp
+    ) throws Exception {
         if(boundRequest == null || callRegistry == null || fallbackClient == null || stage == null
                 || stage.trim().length() == 0) {
             throw new IllegalArgumentException("Invalid strict exact transport request");
@@ -12693,12 +12972,35 @@ public class CustomHttpClient {
         ExecutorService sharedExecutor = sharedEngine == null
                 ? null
                 : getOrCreateNtkQuicExecutor(baseUrl);
-        if(sharedEngine != null && sharedExecutor != null
+        if(!forceOkHttp && sharedEngine != null && sharedExecutor != null
                 && isNtkQuicStrictTransportEligible(baseUrl)
                 && shouldUseSharedHttpEngineForStrictTransport(
                 stage, shouldUseNtkCellularResilientTransport())) {
             long startedAt = System.currentTimeMillis();
             String cookieHeader = headerValue(boundRequest.headers, "cookie");
+            NtkQuicFetcher.ExactResponseObserver exactResponseObserver =
+                    documentObserver == null ? null : new NtkQuicFetcher.ExactResponseObserver() {
+                        @Override
+                        public void onResponseStarted(
+                                int code,
+                                Map<String, List<String>> responseHeaders
+                        ) throws Exception {
+                            documentObserver.onResponseHeaders(new NtkBoundHttpResponse(
+                                    boundRequest,
+                                    boundRequest.url,
+                                    boundRequest.url,
+                                    code,
+                                    new byte[0],
+                                    responseHeaders,
+                                    false
+                            ));
+                        }
+
+                        @Override
+                        public boolean onBodyPrefix(byte[] bodyPrefix) throws Exception {
+                            return documentObserver.onBodyPrefix(bodyPrefix);
+                        }
+                    };
             NtkQuicFetcher.Result result = NtkQuicFetcher.fetchWithEngineExactOwned(
                     sharedEngine,
                     sharedExecutor,
@@ -12711,7 +13013,8 @@ public class CustomHttpClient {
                     boundRequest.method,
                     boundRequest.bodyBytes,
                     Math.max(1L, timeoutMs),
-                    callRegistry
+                    callRegistry,
+                    exactResponseObserver
             );
             if(result == null || result.error != null) {
                 Throwable cause = result == null
@@ -12738,20 +13041,8 @@ public class CustomHttpClient {
                     result.headers,
                     true
             );
-            // HttpEngine returns a consumed, immutable body. Preserve the same observer contract
-            // as the streaming OkHttp path without copying the document once per network chunk.
-            if(documentObserver != null) {
-                documentObserver.onResponseHeaders(new NtkBoundHttpResponse(
-                        boundRequest,
-                        boundRequest.url,
-                        boundRequest.url,
-                        result.code,
-                        new byte[0],
-                        result.headers,
-                        false
-                ));
-                documentObserver.onBodyPrefix(result.bodyBytes);
-            }
+            // ExactResponseObserver already forwarded headers and bounded cumulative prefixes
+            // while HttpEngine continued to EOF. Do not duplicate either callback here.
             Log.d(TAG, "ntk_strict_exact_transport stage=" + stage
                     + ",transport=httpengine"
                     + ",code=" + result.code
@@ -12942,6 +13233,27 @@ public class CustomHttpClient {
             NtkStrictCallRegistry callRegistry,
             NtkStrictDocumentStreamObserver streamObserver
     ) throws Exception {
+        return fetchExactNtkEpisodeDocument(
+                episodePath, callRegistry, streamObserver, false);
+    }
+
+    public NtkBoundHttpResponse fetchExactNtkEpisodeDocument(
+            String episodePath,
+            NtkStrictCallRegistry callRegistry,
+            NtkStrictDocumentStreamObserver streamObserver,
+            boolean forceOkHttp
+    ) throws Exception {
+        return fetchExactNtkEpisodeDocument(
+                episodePath, callRegistry, streamObserver, forceOkHttp, false);
+    }
+
+    public NtkBoundHttpResponse fetchExactNtkEpisodeDocument(
+            String episodePath,
+            NtkStrictCallRegistry callRegistry,
+            NtkStrictDocumentStreamObserver streamObserver,
+            boolean forceOkHttp,
+            boolean compactAdjacentRsc
+    ) throws Exception {
         String normalized = normalizeComparableNtkPath(episodePath);
         if(context == null || !normalized.matches(
                 "(?i)^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$")) {
@@ -12950,7 +13262,8 @@ public class CustomHttpClient {
         requireStrictCallRegistry(callRegistry, normalized);
         String baseUrl = getBaseUrl(normalized).replaceAll("/+$", "");
         String encodedNormalized = ntkNativeAckScopePath(normalized);
-        String requestUrl = baseUrl + encodedNormalized;
+        String canonicalRequestUrl = baseUrl + encodedNormalized;
+        String requestUrl = canonicalRequestUrl;
         Map<String, String> headers = buildHeaders(baseUrl, true, null);
         applyNtkApiHeaders(headers, baseUrl, normalized);
         /*
@@ -12963,8 +13276,20 @@ public class CustomHttpClient {
         headers.put("accept", "text/x-component");
         headers.put("rsc", "1");
         headers.put("next-url", encodedNormalized);
+        if(compactAdjacentRsc) {
+            /*
+             * Next's own target-navigation request shape keeps the complete authoritative
+             * episode segment while omitting unrelated root-layout Flight data. The flag is
+             * supplied only by the direct-host adjacent gate after its predecessor is complete;
+             * current, cellular/SNI and manhwa discovery retain the canonical full response.
+             */
+            String routerState = "%5B%22%22%2C%7B%7D%5D";
+            headers.put("next-router-state-tree", routerState);
+            requestUrl = canonicalRequestUrl + "?_rsc="
+                    + ntkCompactAdjacentRscHash(routerState, encodedNormalized);
+        }
         headers.put("origin", baseUrl);
-        headers.put("referer", requestUrl);
+        headers.put("referer", canonicalRequestUrl);
         headers.put("Sec-Fetch-Dest", "empty");
         headers.put("Sec-Fetch-Mode", "cors");
         headers.put("Sec-Fetch-Site", "same-origin");
@@ -12979,8 +13304,23 @@ public class CustomHttpClient {
                 exactClient,
                 NTK_PAGE_DIRECT_TIMEOUT_MS,
                 "document",
-                streamObserver
+                streamObserver,
+                forceOkHttp
         );
+    }
+
+    static String ntkCompactAdjacentRscHash(String encodedRouterState, String nextUrl) {
+        if(encodedRouterState == null || encodedRouterState.length() == 0
+                || nextUrl == null || nextUrl.length() == 0) {
+            throw new IllegalArgumentException("Compact RSC hash input is empty");
+        }
+        String input = "0,0," + encodedRouterState + "," + nextUrl;
+        long hash = 5381L;
+        for(int i = 0; i < input.length(); i++) {
+            hash = ((hash * 33L) + input.charAt(i)) & 0xffffffffL;
+        }
+        String base36 = Long.toString(hash, 36);
+        return base36.substring(0, Math.min(5, base36.length()));
     }
 
     /**

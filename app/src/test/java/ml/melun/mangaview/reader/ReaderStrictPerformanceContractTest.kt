@@ -23,7 +23,7 @@ class ReaderStrictPerformanceContractTest {
     }
 
     @Test
-    fun onlyMultiGibNumericBooksUseBoundedRollingPixelResidency() {
+    fun onlyOversizedNumericOrDirectWifiShortWebtoonsUseRollingPixels() {
         assertTrue(
             ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
                 "/manhwa/3360/18755",
@@ -46,6 +46,42 @@ class ReaderStrictPerformanceContractTest {
                 200,
                 690,
                 1_600,
+            )
+        )
+        assertTrue(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/webtoon/12868/1346337",
+                8,
+                1_440,
+                28_800,
+                directWifiCurrentWebtoon = true,
+            )
+        )
+        assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/webtoon/12868/1346337",
+                8,
+                1_440,
+                28_800,
+                directWifiCurrentWebtoon = false,
+            )
+        )
+        assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/webtoon/12868/1346337",
+                9,
+                1_440,
+                28_800,
+                directWifiCurrentWebtoon = true,
+            )
+        )
+        assertFalse(
+            ReaderExactDecodeStoragePolicy.useBoundedRollingResidency(
+                "/webtoon/ordinary/episode",
+                8,
+                690,
+                1_600,
+                directWifiCurrentWebtoon = true,
             )
         )
         assertFalse(

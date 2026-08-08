@@ -117,11 +117,16 @@ android {
     // launcher/splash/navigation stack. Keep that host out of release and the real-UI
     // Macrobenchmark target; expose it only to debug and the explicit diagnostic variant.
     sourceSets {
+        release {
+            java.srcDir 'src/nonBenchmark/java'
+        }
         debug {
+            java.srcDir 'src/nonBenchmark/java'
             java.srcDir 'src/ntkTestHost/java'
             manifest.srcFile 'src/ntkTestHost/AndroidManifest.xml'
         }
         ntkDiagnostic {
+            java.srcDir 'src/nonBenchmark/java'
             java.srcDir 'src/ntkTestHost/java'
             manifest.srcFile 'src/ntkTestHost/AndroidManifest.xml'
         }

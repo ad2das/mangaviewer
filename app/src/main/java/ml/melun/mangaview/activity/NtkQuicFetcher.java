@@ -74,6 +74,15 @@ public final class NtkQuicFetcher {
         boolean onPartialBytes(int code, Map<String, List<String>> headers, byte[] bytes);
     }
 
+    /**
+     * Non-cancelling cumulative-prefix observer for one exact-owned response. Returning true stops
+     * further prefix copies but never stops the physical request; EOF remains mandatory.
+     */
+    public interface ExactResponseObserver {
+        void onResponseStarted(int code, Map<String, List<String>> headers) throws Exception;
+        boolean onBodyPrefix(byte[] bytes) throws Exception;
+    }
+
     public enum TerminalKind {
         UNKNOWN,
         SUCCEEDED,
@@ -503,7 +512,7 @@ public final class NtkQuicFetcher {
                                           PartialBytesObserver partialBytesObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                 method, body, timeoutMs, partialTextObserver, partialBytesObserver, null, null, null,
-                null, true);
+                null, true, null);
     }
 
     /**
@@ -523,11 +532,28 @@ public final class NtkQuicFetcher {
             long timeoutMs,
             RequestOwner requestOwner
     ) throws InterruptedException {
+        return fetchWithEngineExactOwned(engine, executor, url, userAgent, cookieHeader,
+                requestHeaders, method, body, timeoutMs, requestOwner, null);
+    }
+
+    public static Result fetchWithEngineExactOwned(
+            HttpEngine engine,
+            ExecutorService executor,
+            String url,
+            String userAgent,
+            String cookieHeader,
+            Map<String, String> requestHeaders,
+            String method,
+            byte[] body,
+            long timeoutMs,
+            RequestOwner requestOwner,
+            ExactResponseObserver exactResponseObserver
+    ) throws InterruptedException {
         if(requestOwner == null)
             throw new IllegalArgumentException("Exact HttpEngine request owner is null");
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader,
                 requestHeaders, method, body, timeoutMs, null, null, null,
-                null, null, requestOwner, false);
+                null, null, requestOwner, false, exactResponseObserver);
     }
 
     public static Result fetchWithEngineUntilText(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -535,7 +561,7 @@ public final class NtkQuicFetcher {
                                                   String method, byte[] body, long timeoutMs,
                                                   EarlyTextObserver earlyTextObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
-                method, body, timeoutMs, null, null, earlyTextObserver, null, null, null, true);
+                method, body, timeoutMs, null, null, earlyTextObserver, null, null, null, true, null);
     }
 
     public static Result fetchWithEngineObserve(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -545,7 +571,7 @@ public final class NtkQuicFetcher {
                                                 ResponseStartedObserver responseStartedObserver) throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                 method, body, timeoutMs, null, null, earlyTextObserver, responseStartedObserver,
-                null, null, true);
+                null, null, true, null);
     }
 
     public static Result fetchWithEngineUntilResponseStarted(HttpEngine engine, ExecutorService executor,
@@ -558,7 +584,7 @@ public final class NtkQuicFetcher {
             throws InterruptedException {
         return fetchWithEngineInternal(engine, executor, url, userAgent, cookieHeader, requestHeaders,
                 method, body, timeoutMs, null, null, null, null, earlyResponseStartedObserver,
-                null, true);
+                null, true, null);
     }
 
     private static Result fetchWithEngineInternal(HttpEngine engine, ExecutorService executor, String url, String userAgent,
@@ -570,12 +596,59 @@ public final class NtkQuicFetcher {
                                                   ResponseStartedObserver responseStartedObserver,
                                                   EarlyResponseStartedObserver earlyResponseStartedObserver,
                                                   RequestOwner requestOwner,
-                                                  boolean followRedirects) throws InterruptedException {
+                                                  boolean followRedirects,
+                                                  ExactResponseObserver exactResponseObserver)
+            throws InterruptedException {
         CountDownLatch done = new CountDownLatch(1);
         State state = new State();
         UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
                 boolean notifyPartialText;
                 boolean notifyPartialBytes;
+                boolean notifyExactPrefix = exactResponseObserver != null;
+                int nextExactPrefixObservation = 112 * 1024;
+                int lastExactPrefixObservation = 0;
+
+                private boolean failExactObserver(UrlRequest request, Throwable failure) {
+                    state.error = failure;
+                    state.terminalKind = TerminalKind.FAILED;
+                    done.countDown();
+                    request.cancel();
+                    return false;
+                }
+
+                private boolean notifyExactResponseStarted(UrlRequest request) {
+                    if(exactResponseObserver == null)
+                        return true;
+                    try {
+                        exactResponseObserver.onResponseStarted(state.code, state.headers);
+                        return true;
+                    } catch (Throwable failure) {
+                        return failExactObserver(request, failure);
+                    }
+                }
+
+                private boolean notifyExactBodyPrefix(UrlRequest request, boolean terminal) {
+                    if(!notifyExactPrefix || exactResponseObserver == null)
+                        return true;
+                    int available = state.responseSize();
+                    if(!terminal && available < nextExactPrefixObservation)
+                        return true;
+                    if(available == lastExactPrefixObservation)
+                        return true;
+                    try {
+                        boolean complete = exactResponseObserver.onBodyPrefix(
+                                state.responseSnapshot());
+                        lastExactPrefixObservation = available;
+                        if(complete) {
+                            notifyExactPrefix = false;
+                        } else {
+                            nextExactPrefixObservation += 112 * 1024;
+                        }
+                        return true;
+                    } catch (Throwable failure) {
+                        return failExactObserver(request, failure);
+                    }
+                }
 
                 private boolean cancelIfOwnerRetired(UrlRequest request) {
                     if(requestOwner == null || requestOwner.isStillAdmitted())
@@ -610,6 +683,8 @@ public final class NtkQuicFetcher {
                     state.headers = new HashMap<>(info.getHeaders().getAsMap());
                     state.updateExactIdentityResponseInvariant();
                     state.negotiatedProtocol = info.getNegotiatedProtocol();
+                    if(!notifyExactResponseStarted(request))
+                        return;
                     if(responseStartedObserver != null) {
                         try {
                             responseStartedObserver.onResponseStarted(state.code, state.headers);
@@ -633,7 +708,15 @@ public final class NtkQuicFetcher {
                             && Result.shouldDecodeBodyAsText(state.headers);
                     notifyPartialBytes = partialBytesObserver != null
                             && !Result.shouldDecodeBodyAsText(state.headers);
-                    int bufferBytes = partialTextObserver != null
+                    // The viewer token lives near the final RSC chunk (roughly 104 KiB in the
+                    // measured 118 KiB documents, with the complete request seed ending around
+                    // 113.5 KiB). Small cumulative reads could not expose a usable seed earlier
+                    // but amplified a reused H3 response into 4-15 executor callbacks. A 112-KiB
+                    // first read contains the measured seed and leaves only one short terminal
+                    // read, preserving prefix overlap and exact EOF validation with two callbacks.
+                    int bufferBytes = exactResponseObserver != null
+                            ? 112 * 1024
+                            : partialTextObserver != null
                             ? 256
                             : (notifyPartialText || notifyPartialBytes ? 1024 : 128 * 1024);
                     request.read(ByteBuffer.allocateDirect(bufferBytes));
@@ -649,6 +732,8 @@ public final class NtkQuicFetcher {
                     byte[] bytes = new byte[byteBuffer.remaining()];
                     byteBuffer.get(bytes);
                     state.appendResponse(bytes);
+                    if(!notifyExactBodyPrefix(request, false))
+                        return;
                     if(notifyPartialText) {
                         try {
                             String text = state.responseText();
@@ -692,6 +777,8 @@ public final class NtkQuicFetcher {
                     state.headers = new HashMap<>(info.getHeaders().getAsMap());
                     state.updateExactIdentityResponseInvariant();
                     state.negotiatedProtocol = info.getNegotiatedProtocol();
+                    if(!notifyExactBodyPrefix(request, true))
+                        return;
                     state.bodyBytes = state.responseSnapshot();
                     state.terminalKind = TerminalKind.SUCCEEDED;
                     done.countDown();
@@ -1011,6 +1098,10 @@ public final class NtkQuicFetcher {
 
         synchronized byte[] responseSnapshot() {
             return response.toByteArray();
+        }
+
+        synchronized int responseSize() {
+            return response.size();
         }
 
         synchronized String responseText() {

@@ -51,6 +51,13 @@ class NtkClickOwnedExactBodyStream(
      * is required; absence means this stream was created without the early probe.
      */
     val sampledAnchorCandidate: CompletableFuture<String?>? = null,
+    /**
+     * A completion-gated direct-Wi-Fi adjacent p0 GET has already been admitted from the
+     * predecessor-proven physical route. Once that resident response is bound to the fresh
+     * token document manifest, its header + EOF + digest proof is stronger than a still-pending
+     * metadata-only HEAD. No current-episode, cellular, SNI, or non-inherited stream sets this.
+     */
+    val residentAnchorProofMayPrecedeSampledCandidate: Boolean = false,
     val bulkSourcePhysicalAdmissionReady: CompletableFuture<Unit> =
         sourceRoutePreparationReady,
     val manhwaWaveRecoveryState: NtkManhwaWaveRecoveryState? = null,
@@ -100,6 +107,34 @@ class NtkClickOwnedExactBodyStream(
     }
 }
 
+/**
+ * A completed adjacent runway body may beat its sampled per-page HEAD. Once the target document
+ * has produced the exact manifest, that manifest is stronger identity evidence than the still
+ * pending HEAD. Permit only the frozen direct-Wi-Fi adjacent p0-p3 cohort, and only when the
+ * resident response names the exact canonical asset. Current episodes and every cellular/SNI
+ * flight retain the normal candidate-reconciliation path.
+ */
+internal object NtkDirectWifiAdjacentResidentExactAdoptionPolicy {
+    fun shouldAdopt(
+        directWifiAdjacentOwned: Boolean,
+        forwardFirstPage: Int,
+        pageIndex: Int,
+        runwayPageCount: Int,
+        candidateReconciliationComplete: Boolean,
+        expectedCanonicalAsset: String?,
+        residentCanonicalAsset: String?,
+    ): Boolean {
+        if (!directWifiAdjacentOwned || candidateReconciliationComplete) return false
+        if (runwayPageCount <= 0 || pageIndex - forwardFirstPage !in 0 until runwayPageCount) {
+            return false
+        }
+        val expected = expectedCanonicalAsset.orEmpty()
+        val resident = residentCanonicalAsset.orEmpty()
+        return expected.isNotEmpty() && resident.isNotEmpty() &&
+            ReaderImageCache.areEquivalentManhwaReplicaAssets(expected, resident)
+    }
+}
+
 /** Authority-free request plan; publication still requires the fresh exact viewer manifest. */
 private data class NtkClickOwnedQuarantinePlan(
     val normalizedEpisodePath: String,
@@ -134,6 +169,126 @@ private data class NtkClickOwnedQuarantinePlan(
             candidates,
         )
     }
+}
+
+/**
+ * A completion-gated adjacent flight begins only after its predecessor is fully drawable. Its
+ * first four bodies already start from the predecessor-proven physical suffix, so immediately
+ * opening the other sixteen extension HEADs only divides the same cold CDN interval with the
+ * boundary runway. Keep the established JPG-first hedge here too; a real uncommon target still
+ * opens the unchanged bounded alternative race after 150 ms. Every non-adjacent/mobile path is
+ * unchanged.
+ */
+internal object NtkDirectWifiAdjacentExtensionHedgePolicy {
+    const val DEFAULT_DELAY_MS = 150L
+
+    fun delayMs(
+        directWifiCompletionGatedAdjacent: Boolean,
+        pageIndex: Int,
+        forwardFirstPage: Int,
+    ): Long = if (
+        directWifiCompletionGatedAdjacent &&
+        pageIndex - forwardFirstPage in
+            0 until NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES
+    ) {
+        DEFAULT_DELAY_MS
+    } else {
+        DEFAULT_DELAY_MS
+    }
+}
+
+/**
+ * Volatile, generation-scoped evidence for one ordinary physical suffix observed on every adopted
+ * body of a completed predecessor. This is only a request hint: target HEAD reconciliation and the
+ * normal exact-manifest quarantine adoption remain authoritative.
+ */
+internal object NtkDirectWifiPredecessorPhysicalExtensionRegistry {
+    data class Evidence(
+        val extension: String,
+        val warmReplicaHosts: List<String>,
+    )
+
+    private data class Key(
+        val predecessorEpisodePath: String,
+        val viewerGeneration: Long,
+        val networkHandle: Long,
+    )
+
+    private val entries = ConcurrentHashMap<Key, Evidence>()
+
+    fun ownedForwardPages(forwardFirstPage: Int, exactPageCount: Int): IntRange {
+        require(exactPageCount > 0)
+        require(forwardFirstPage in 0 until exactPageCount)
+        return forwardFirstPage until exactPageCount
+    }
+
+    fun record(
+        predecessorEpisodePath: String,
+        viewerGeneration: Long,
+        capturedNetworkHandle: Long?,
+        liveWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        liveNetworkHandle: Long?,
+        observedCandidates: List<String>,
+        ordinaryH1WarmCandidates: List<String> = emptyList(),
+    ): Boolean {
+        val path = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        val handle = capturedNetworkHandle
+        if (path.isBlank() || viewerGeneration <= 0L || handle == null ||
+            !liveWifiTransport || cellularResilientTransport || liveNetworkHandle != handle
+        ) return false
+        val key = Key(path, viewerGeneration, handle)
+        // Re-evaluating a completed predecessor replaces, rather than coexists with, old evidence.
+        entries.remove(key)
+        val extensions = observedCandidates.map { candidate ->
+            candidate.substringBefore('?').substringBefore('#')
+                .substringAfterLast('.', "")
+                .lowercase(Locale.ROOT)
+        }.toSet()
+        val extension = extensions.singleOrNull()
+            ?.takeIf { it == "jpg" || it == "jpeg" }
+            ?: return false
+        if (observedCandidates.isEmpty()) return false
+        if (ordinaryH1WarmCandidates.any { it !in observedCandidates }) return false
+        val warmReplicaHosts = ordinaryH1WarmCandidates.mapNotNull { candidate ->
+            candidate.substringAfter("://", "")
+                .substringBefore('/')
+                .substringBefore(':')
+                .lowercase(Locale.ROOT)
+                .takeIf(NtkClickOwnedManhwaWavePolicy::isReplicaHost)
+        }.distinct()
+        entries.keys
+            .filter { existing -> existing.predecessorEpisodePath == path && existing != key }
+            .forEach(entries::remove)
+        entries[key] = Evidence(extension, warmReplicaHosts)
+        if (entries.size > MAX_ENTRIES) {
+            entries.keys.firstOrNull { it != key }?.let(entries::remove)
+        }
+        return true
+    }
+
+    fun consume(
+        predecessorEpisodePath: String,
+        viewerGeneration: Long,
+        capturedNetworkHandle: Long?,
+        directWifiCompletionGatedAdjacent: Boolean,
+        predecessorComplete: Boolean,
+        liveWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        liveNetworkHandle: Long?,
+    ): Evidence? {
+        val path = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        val handle = capturedNetworkHandle
+        if (!directWifiCompletionGatedAdjacent || !predecessorComplete || path.isBlank() ||
+            viewerGeneration <= 0L || handle == null || !liveWifiTransport ||
+            cellularResilientTransport || liveNetworkHandle != handle
+        ) return null
+        return entries.remove(Key(path, viewerGeneration, handle))
+    }
+
+    internal fun resetForTest() = entries.clear()
+
+    private const val MAX_ENTRIES = 16
 }
 
 /**
@@ -274,6 +429,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
             manga: Manga,
             normalizedEpisodePath: String,
             initialPageIndexHint: Int = 0,
+            directWifiCompletionGatedAdjacent: Boolean = false,
         ): NtkClickOwnedManhwaProbeFrontier? {
             val parts = normalizedEpisodePath.trim('/').split('/')
             if (parts.size != 3 || !parts[0].equals("manhwa", ignoreCase = true) ||
@@ -345,7 +501,12 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                                 candidateAsset(workId, episodeId, pageIndex, extension)
                             },
                             checkNotNull(pageCancellations[pageIndex]),
-                            extensionHedgeDelayMs = 150L,
+                            extensionHedgeDelayMs =
+                                NtkDirectWifiAdjacentExtensionHedgePolicy.delayMs(
+                                    directWifiCompletionGatedAdjacent,
+                                    pageIndex,
+                                    forwardFirstPage,
+                                ),
                             onUsableResponse = { asset, byteCount ->
                                 rememberProbeSize(pageIndex, asset, byteCount)
                             },
@@ -710,6 +871,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private val earlyProbeOwner: NtkClickOwnedManhwaProbeFrontier?,
     private val directWifiAdjacentOwned: Boolean,
     private val adjacentPredecessorComplete: CompletableFuture<Unit>,
+    private val viewerGeneration: Long,
+    private val adjacentPredecessorEpisodePath: String,
 ) : Closeable {
     init {
         require(forwardFirstPage in 0 until plan.pageCount)
@@ -751,10 +914,41 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private val capturedDirectWifiNetworkHandle = runCatching {
         getHttpClient().getNtkDirectWifiNetwork()?.networkHandle
     }.getOrNull()
+    private val predecessorPhysicalEvidence:
+        CompletableFuture<NtkDirectWifiPredecessorPhysicalExtensionRegistry.Evidence?> =
+        if (directWifiAdjacentOwned) {
+            adjacentPredecessorComplete.handle { _, predecessorFailure ->
+                if (predecessorFailure != null || closed.get()) {
+                    null
+                } else {
+                    val httpClient = getHttpClient()
+                    NtkDirectWifiPredecessorPhysicalExtensionRegistry.consume(
+                        predecessorEpisodePath = adjacentPredecessorEpisodePath,
+                        viewerGeneration = viewerGeneration,
+                        capturedNetworkHandle = capturedDirectWifiNetworkHandle,
+                        directWifiCompletionGatedAdjacent = true,
+                        predecessorComplete = adjacentPredecessorComplete.isDone,
+                        liveWifiTransport = runCatching {
+                            httpClient.isNtkWifiTransportActive
+                        }.getOrDefault(false),
+                        cellularResilientTransport = runCatching {
+                            httpClient.isNtkCellularResilientTransportActive
+                        }.getOrDefault(true),
+                        liveNetworkHandle = runCatching {
+                            httpClient.getNtkDirectWifiNetwork()?.networkHandle
+                        }.getOrNull(),
+                    )
+                }
+            }
+        } else {
+            CompletableFuture.completedFuture(null)
+        }
     private val directWifiEarlyUncommonEnabled =
         capturedDirectWifiNetworkHandle != null && runCatching {
             !getHttpClient().isNtkCellularResilientTransportActive
         }.getOrDefault(false)
+    private val physicalExtensionRecordingEligible = viewerGeneration > 0L &&
+        wifiEntryPriorityMode && directWifiEarlyUncommonEnabled
     private val initialSpeculationPages = minOf(
         if (directWifiAdjacentOwned) {
             DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
@@ -771,6 +965,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         .associateWith { ReaderImageCache.Cancellation() }
     private val observedCandidates = (0 until plan.pageCount)
         .associateWith { CompletableFuture<String>() }
+    private val adoptedPhysicalCandidates = if (physicalExtensionRecordingEligible) {
+        (0 until plan.pageCount).associateWith { CompletableFuture<String>() }
+    } else {
+        emptyMap()
+    }
+    private val physicalExtensionEvidenceArmed = AtomicBoolean(false)
     private val dominantTailExtension: CompletableFuture<String?> =
         if (plan.maximumNumericBound && earlyJpgCandidates.isNotEmpty()) {
             val sample = earlyJpgCandidates.entries
@@ -788,6 +988,24 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             CompletableFuture.completedFuture(null)
         }
     private val retained = ConcurrentHashMap<Int, HeldBody>()
+    private val directWifiAdjacentInheritedResidentBodies =
+        if (directWifiAdjacentOwned) {
+            (forwardFirstPage until minOf(
+                plan.pageCount,
+                forwardFirstPage + DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
+            )).associateWith { CompletableFuture<HeldBody>() }
+        } else {
+            emptyMap()
+        }
+    // The target's exact manifest may bind an already-resident adjacent p0-p3 body before its
+    // sampled per-page HEAD completes. Remember that stronger decision so the later HEAD cannot
+    // launch a redundant mismatch-reconciliation request for the already-adopted exact asset.
+    private val manifestBoundResidentRunwayPages = ConcurrentHashMap.newKeySet<Int>()
+    // Completion-gated adjacent p0-p3 share the same captured H1 pool. Consecutive canonical
+    // stripes place p0 and p3 on the same replica; opening both together forces a second cold TLS
+    // connection. Chain only equal-host inherited bodies so p3 can reuse p0's just-idled socket.
+    private val inheritedAdjacentPageReleases =
+        ConcurrentHashMap<Int, CompletableFuture<Unit>>()
     // Every common JPG transfer binds the same immutable maximum numeric table. Rebuilding that
     // full table and its digest in every body worker was O(pageCount^2) allocation on the cold
     // path. One session-owned binding preserves the identical authority checks and lets only the
@@ -869,6 +1087,11 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private val waveFuture = CompletableFuture.supplyAsync(::startForwardWave, COORDINATOR_EXECUTOR)
 
     init {
+        documentValidated.whenComplete { _, documentFailure ->
+            if (documentFailure == null && !closed.get()) {
+                armPredecessorPhysicalExtensionEvidence()
+            }
+        }
         if (plan.maximumNumericBound) {
             val seedStart = forwardFirstPage
             val seedEnd = rollingSpeculationFrontier.get()
@@ -1057,6 +1280,52 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 held.predecodedOriginal?.close()
                 held.fileLease.close()
             }
+        }
+    }
+
+    /** Records only one suffix after every exact body has reached EOF and passed adoption. */
+    private fun armPredecessorPhysicalExtensionEvidence() {
+        if (!physicalExtensionRecordingEligible) return
+        if (!physicalExtensionEvidenceArmed.compareAndSet(false, true)) return
+        val exactCount = effectivePageCount.get()
+        val ownedPages = NtkDirectWifiPredecessorPhysicalExtensionRegistry
+            .ownedForwardPages(forwardFirstPage, exactCount)
+        val exactCandidates = ownedPages.map { pageIndex ->
+            checkNotNull(adoptedPhysicalCandidates[pageIndex])
+        }
+        CompletableFuture.allOf(*exactCandidates.toTypedArray()).whenComplete { _, failure ->
+            if (failure != null || closed.get()) return@whenComplete
+            val httpClient = getHttpClient()
+            val recorded = NtkDirectWifiPredecessorPhysicalExtensionRegistry.record(
+                predecessorEpisodePath = plan.normalizedEpisodePath,
+                viewerGeneration = viewerGeneration,
+                capturedNetworkHandle = capturedDirectWifiNetworkHandle,
+                liveWifiTransport = runCatching {
+                    httpClient.isNtkWifiTransportActive
+                }.getOrDefault(false),
+                cellularResilientTransport = runCatching {
+                    httpClient.isNtkCellularResilientTransportActive
+                }.getOrDefault(true),
+                liveNetworkHandle = runCatching {
+                    httpClient.getNtkDirectWifiNetwork()?.networkHandle
+                }.getOrNull(),
+                observedCandidates = exactCandidates.map(CompletableFuture<String>::join),
+                ordinaryH1WarmCandidates = if (
+                    forwardFirstPage >= NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_SPECULATION_PAGES
+                ) {
+                    exactCandidates
+                        .take(NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES)
+                        .map(CompletableFuture<String>::join)
+                } else {
+                    emptyList()
+                },
+            )
+            Log.d(
+                TAG,
+                "click_predecessor_physical_extension path=${plan.normalizedEpisodePath}," +
+                    "pages=${exactCandidates.size},forwardFirst=$forwardFirstPage," +
+                    "exactPages=$exactCount,recorded=$recorded",
+            )
         }
     }
 
@@ -1292,23 +1561,29 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         if (closed.get()) {
             return null
         }
-
         val exactFutures = wave.futures
             .filterKeys { it < effectivePageCount.get() }
             .toSortedMap()
             .mapValues { (pageIndex, future) ->
-            future.handle { held, transferFailure ->
+            val residentAdoption = tryAdoptDirectWifiAdjacentResidentExactBody(
+                pageIndex,
+                future,
+                exactManifest,
+            )
+            val reconciled = future.handle { held, transferFailure ->
                 if (transferFailure != null || held == null || closed.get()) {
-                    held?.let {
-                        retained.remove(pageIndex, it)
-                        it.predecodedOriginal?.close()
-                        it.fileLease.close()
-                    }
+                    held?.let(::discardHeldBody)
                     null
                 } else {
                     adoptHeldBody(pageIndex, held, exactManifest)
                 }
             }
+            residentAdoption?.let { adoption ->
+                CompletableFuture.completedFuture(adoption.published)
+            } ?: directWifiAdjacentResidentExactAdoptionFuture(
+                pageIndex,
+                exactManifest,
+            )?.applyToEither(reconciled) { it } ?: reconciled
         }
         val extensionRouteReady =
             earlySourceRoutePreparationReady ?: CompletableFuture.completedFuture(Unit)
@@ -1328,6 +1603,9 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             // what makes the streamed anchor renderable.
             sourceRoutePreparationReady = extensionRouteReady,
             sampledAnchorCandidate = earlyJpgCandidates[forwardFirstPage],
+            residentAnchorProofMayPrecedeSampledCandidate =
+                directWifiAdjacentOwned &&
+                    directWifiAdjacentInheritedResidentBodies.containsKey(forwardFirstPage),
             // Only physical GET admission for pages outside the click-owned wave waits for the
             // real frame. This protects the forward anchor from bulk socket/decode contention without
             // delaying source-session promotion or route preparation.
@@ -1360,7 +1638,130 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         return stream
     }
 
+    private data class ResidentExactAdoption(
+        val published: ReaderImageCache.NtkStrictPublishedBody?,
+    )
+
+    private fun tryAdoptDirectWifiAdjacentResidentExactBody(
+        pageIndex: Int,
+        candidateFuture: CompletableFuture<HeldBody?>,
+        exactManifest: NtkAuthoritativeManifest,
+    ): ResidentExactAdoption? {
+        val held = retained[pageIndex] ?: return null
+        return tryAdoptDirectWifiAdjacentResidentExactBody(
+            pageIndex = pageIndex,
+            candidateReconciliationComplete = candidateFuture.isDone,
+            held = held,
+            exactManifest = exactManifest,
+        )
+    }
+
+    private fun directWifiAdjacentResidentExactAdoptionFuture(
+        pageIndex: Int,
+        exactManifest: NtkAuthoritativeManifest,
+    ): CompletableFuture<ReaderImageCache.NtkStrictPublishedBody?>? {
+        val residentReady = directWifiAdjacentInheritedResidentBodies[pageIndex] ?: return null
+        val adoption = CompletableFuture<ReaderImageCache.NtkStrictPublishedBody?>()
+        residentReady.whenComplete { held, failure ->
+            if (failure != null || held == null || closed.get()) return@whenComplete
+            val preparedHeld = attachDirectWifiAdjacentResidentPredecode(pageIndex, held)
+            Log.d(
+                TAG,
+                "click_adjacent_resident_exact_signal path=${plan.normalizedEpisodePath}," +
+                    "page=$pageIndex,asset=${preparedHeld.body.canonicalAsset.substringAfterLast('/')}",
+            )
+            val result = tryAdoptDirectWifiAdjacentResidentExactBody(
+                pageIndex = pageIndex,
+                candidateReconciliationComplete = false,
+                held = preparedHeld,
+                exactManifest = exactManifest,
+            )
+            result?.published?.let(adoption::complete)
+        }
+        return adoption
+    }
+
+    private fun attachDirectWifiAdjacentResidentPredecode(
+        pageIndex: Int,
+        held: HeldBody,
+    ): HeldBody {
+        if (held.predecodedOriginal != null || closed.get()) return held
+        val executor = if (
+            directWifiAdjacentOwned &&
+            pageIndex - forwardFirstPage in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+        ) {
+            DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR
+        } else if (pageIndex == forwardFirstPage) {
+            ANCHOR_PREDECODE_EXECUTOR
+        } else {
+            BULK_PREDECODE_EXECUTOR
+        }
+        val prepared = held.copy(
+            predecodedOriginal = ReaderImageCache.predecodeQuarantinedOriginalAsync(
+                held.body,
+                executor,
+            ),
+        )
+        return if (retained.replace(pageIndex, held, prepared)) {
+            prepared
+        } else {
+            retained[pageIndex] ?: held
+        }
+    }
+
+    private fun tryAdoptDirectWifiAdjacentResidentExactBody(
+        pageIndex: Int,
+        candidateReconciliationComplete: Boolean,
+        held: HeldBody,
+        exactManifest: NtkAuthoritativeManifest,
+    ): ResidentExactAdoption? {
+        val expectedCanonicalAsset = exactManifest.seal.normalizedCanonicalAssets
+            .getOrNull(pageIndex)
+        if (!NtkDirectWifiAdjacentResidentExactAdoptionPolicy.shouldAdopt(
+                directWifiAdjacentOwned = directWifiAdjacentOwned,
+                forwardFirstPage = forwardFirstPage,
+                pageIndex = pageIndex,
+                runwayPageCount = minOf(
+                    DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
+                    exactManifest.seal.pageCount - forwardFirstPage,
+                ),
+                candidateReconciliationComplete = candidateReconciliationComplete,
+                expectedCanonicalAsset = expectedCanonicalAsset,
+                residentCanonicalAsset = held.body.canonicalAsset,
+            )
+        ) {
+            Log.d(
+                TAG,
+                "click_adjacent_resident_exact_skip path=${plan.normalizedEpisodePath}," +
+                    "page=$pageIndex,candidateComplete=$candidateReconciliationComplete," +
+                    "expected=${expectedCanonicalAsset.orEmpty().substringAfterLast('/')}," +
+                    "resident=${held.body.canonicalAsset.substringAfterLast('/')}",
+            )
+            return null
+        }
+        if (!retained.remove(pageIndex, held)) return null
+        val published = adoptClaimedHeldBody(pageIndex, held, exactManifest)
+        if (published != null) {
+            manifestBoundResidentRunwayPages.add(pageIndex)
+            Log.d(
+                TAG,
+                "click_adjacent_resident_exact_adopt path=${plan.normalizedEpisodePath}," +
+                    "page=$pageIndex,bytes=${published.proof.encodedLength}",
+            )
+        }
+        return ResidentExactAdoption(published)
+    }
+
     private fun adoptHeldBody(
+        pageIndex: Int,
+        held: HeldBody,
+        exactManifest: NtkAuthoritativeManifest,
+    ): ReaderImageCache.NtkStrictPublishedBody? {
+        if (!retained.remove(pageIndex, held)) return null
+        return adoptClaimedHeldBody(pageIndex, held, exactManifest)
+    }
+
+    private fun adoptClaimedHeldBody(
         pageIndex: Int,
         held: HeldBody,
         exactManifest: NtkAuthoritativeManifest,
@@ -1376,7 +1777,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             held.predecodedOriginal,
         )
     }.onSuccess { exactBody ->
-        retained.remove(pageIndex, held)
+        adoptedPhysicalCandidates[pageIndex]?.complete(held.body.canonicalAsset)
         held.fileLease.consume()
         Log.d(
             TAG,
@@ -1384,7 +1785,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 "page=$pageIndex,bytes=${exactBody.proof.encodedLength}",
         )
     }.onFailure { failure ->
-        retained.remove(pageIndex, held)
         held.predecodedOriginal?.close()
         held.fileLease.close()
         Log.d(
@@ -1407,7 +1807,23 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         defaultJpgBinding
         if (earlyJpgCandidates.isEmpty()) {
             val directBodies = (forwardFirstPage until pageLimit).associateWith { pageIndex ->
-                startBoundedNumericCandidate(pageIndex)
+                if (directWifiAdjacentOwned &&
+                    pageIndex - forwardFirstPage in
+                        0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+                ) {
+                    val targetCandidate = adjacentPredecessorComplete.thenCompose {
+                        probeCandidates(
+                            pageIndex,
+                            NtkClickOwnedManhwaWavePolicy.CANDIDATE_EXTENSIONS,
+                        )
+                    }
+                    startDirectWifiAdjacentInheritedCandidate(
+                        pageIndex,
+                        targetCandidate,
+                    )
+                } else {
+                    startBoundedNumericCandidate(pageIndex)
+                }
             }
             Log.d(
                 TAG,
@@ -1466,8 +1882,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             }
         }
         val initialBodyFutures = candidateFutures.toSortedMap().mapValues { (pageIndex, candidateFuture) ->
-            if (plan.maximumNumericBound) {
-                val forwardOffset = pageIndex - forwardFirstPage
+            val forwardOffset = pageIndex - forwardFirstPage
+            if (directWifiAdjacentOwned &&
+                forwardOffset in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+            ) {
+                startDirectWifiAdjacentInheritedCandidate(pageIndex, candidateFuture)
+            } else if (plan.maximumNumericBound) {
                 // The head frontier starts at the committed click. Tail pages use this same race,
                 // but startClickPrimaryCandidateRace keeps their body behind documentValidated.
                 // Waiting for a slow metadata-only HEAD after the exact document was already
@@ -1640,9 +2060,217 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }
 
     private fun discardHeldBody(held: HeldBody) {
-        retained.remove(held.body.pageIndex, held)
+        if (!retained.remove(held.body.pageIndex, held)) return
         held.predecodedOriginal?.close()
         held.fileLease.close()
+    }
+
+    /**
+     * Opens at most one predecessor-proven ordinary candidate for an adjacent runway page. The
+     * target's own HEAD remains independent: a different physical suffix cancels and drains this
+     * body before its exact candidate starts, while a miss uses the unchanged exhaustive fallback.
+     */
+    private fun startDirectWifiAdjacentInheritedCandidate(
+        pageIndex: Int,
+        candidateFuture: CompletableFuture<String?>,
+    ): CompletableFuture<HeldBody?> = predecessorPhysicalEvidence.thenCompose { evidence ->
+        val extension = evidence?.extension
+        if (extension == null || closed.get()) {
+            if (pageIndex == forwardFirstPage) {
+                startClickPrimaryCandidateRace(pageIndex, candidateFuture)
+            } else {
+                startVerifiedFrontierCandidate(pageIndex, candidateFuture)
+            }
+        } else {
+            val primaryCancellation = checkNotNull(pageCancellations[pageIndex])
+            val exactCancellation = checkNotNull(speculativeUncommonCancellations[pageIndex])
+            val inheritedAdmissionHandoff = AtomicBoolean(false)
+            val inheritedCandidate = candidateAsset(pageIndex, extension)
+            val preferredWarmReplicaHost = NtkClickOwnedManhwaWavePolicy
+                .preferredWarmAdjacentReplicaHost(
+                    runwayPageIndex = pageIndex - forwardFirstPage,
+                    predecessorWarmHosts = evidence.warmReplicaHosts,
+                )
+            val httpClient = getHttpClient()
+            val predecessorProvenOrdinaryDirectWifi = NtkClickOwnedManhwaWavePolicy
+                .shouldUseInheritedOrdinaryDirectWifiTransport(
+                    directWifiAdjacentOwned = directWifiAdjacentOwned,
+                    runwayPageIndex = pageIndex - forwardFirstPage,
+                    inheritedExtension = extension,
+                    liveWifiTransport = runCatching {
+                        httpClient.isNtkWifiTransportActive
+                    }.getOrDefault(false),
+                    cellularResilientTransport = runCatching {
+                        httpClient.isNtkCellularResilientTransportActive
+                    }.getOrDefault(true),
+                    capturedNetworkHandle = capturedDirectWifiNetworkHandle,
+                    liveNetworkHandle = runCatching {
+                        httpClient.getNtkDirectWifiNetwork()?.networkHandle
+                    }.getOrNull(),
+                )
+            val inheritedHostHandoff = reserveInheritedAdjacentHostHandoff(
+                inheritedCandidate,
+                predecessorProvenOrdinaryDirectWifi,
+                preferredWarmReplicaHost,
+                pageIndex - forwardFirstPage,
+                evidence.warmReplicaHosts,
+            )
+            val inheritedFollower = !inheritedHostHandoff.first.isDone
+            if (!inheritedHostHandoff.first.isDone) {
+                val inheritedHost = inheritedCandidate.substringAfter("://")
+                    .substringBefore('/')
+                Log.d(
+                    TAG,
+                    "click_adjacent_inherited_host_reuse_handoff " +
+                        "path=${plan.normalizedEpisodePath},page=$pageIndex," +
+                        "host=$inheritedHost",
+                )
+            }
+            val inheritedExecutor = if (inheritedFollower) {
+                // The predecessor page has already returned its H1 connection to the pool. Run the
+                // bounded same-host follower in that completion turn instead of paying another
+                // executor hop before reacquiring the just-idled connection.
+                Executor { runnable -> runnable.run() }
+            } else {
+                primaryBodyExecutor(
+                    inheritedCandidate,
+                    predecessorProvenOrdinaryDirectWifi,
+                )
+            }
+            val inherited = primaryAdmissionFuture(pageIndex, primaryCancellation)
+                .thenCombine(inheritedHostHandoff.first) { admitted, _ -> admitted }
+                .thenApplyAsync({ admitted ->
+                    if (!admitted || closed.get()) {
+                        null
+                    } else if (!isCapturedDirectWifiTransportLive()) {
+                        inheritedAdmissionHandoff.set(true)
+                        null
+                    } else {
+                        val held = fetchOwnedCandidate(
+                            pageIndex,
+                            inheritedCandidate,
+                            primaryCancellation,
+                            telemetryAfterImageHeaders = true,
+                            requireCapturedDirectWifi = true,
+                            predecessorProvenOrdinaryDirectWifi =
+                                predecessorProvenOrdinaryDirectWifi,
+                            preferredOrdinaryDirectWifiReplicaHost =
+                                preferredWarmReplicaHost,
+                        )
+                        if (held == null && !isCapturedDirectWifiTransportLive()) {
+                            inheritedAdmissionHandoff.set(true)
+                        }
+                        held
+                    }
+                }, inheritedExecutor)
+                .handle { held, _ -> held }
+            inherited.whenComplete { held, inheritedFailure ->
+                if (inheritedFailure == null && held != null && !closed.get()) {
+                    val signaled = directWifiAdjacentInheritedResidentBodies[pageIndex]
+                        ?.complete(held) == true
+                    Log.d(
+                        TAG,
+                        "click_adjacent_inherited_resident_ready path=${plan.normalizedEpisodePath}," +
+                            "page=$pageIndex,signaled=$signaled",
+                    )
+                }
+            }
+            inheritedHostHandoff.second?.let { release ->
+                inherited.whenComplete { _, _ -> release.complete(Unit) }
+            }
+            val started = SpeculativeBody(inheritedCandidate, inherited)
+
+            fun startExactBody(candidate: String): CompletableFuture<HeldBody?> =
+                primaryAdmissionFuture(pageIndex, exactCancellation)
+                    .thenApplyAsync({ admitted ->
+                        if (!admitted || closed.get()) {
+                            null
+                        } else {
+                            fetchOwnedCandidate(
+                                pageIndex,
+                                candidate,
+                                exactCancellation,
+                                telemetryAfterImageHeaders = true,
+                            )
+                        }
+                    }, verifiedExactBodyExecutor(pageIndex, candidate))
+                    .handle { held, _ -> held }
+
+            candidateFuture.handle { candidate, failure ->
+                if (failure == null) candidate else null
+            }.thenCompose { candidate ->
+                if (manifestBoundResidentRunwayPages.contains(pageIndex)) {
+                    // The fresh target manifest has already bound and adopted this exact body.
+                    // A later sampled HEAD is weaker evidence and must not create a duplicate GET.
+                    started.future
+                } else if (inheritedAdmissionHandoff.get()) {
+                    started.future.thenCompose { held ->
+                        held?.let(::discardHeldBody)
+                        when {
+                            closed.get() -> CompletableFuture.completedFuture(null)
+                            candidate != null -> startResolvedCandidate(pageIndex, candidate)
+                            else -> CompletableFuture.completedFuture(null)
+                        }
+                    }
+                } else if (candidate == null || started.candidate == candidate) {
+                    started.future
+                } else {
+                    primaryCancellation.cancel()
+                    // Never overlap two same-page ownership sessions. The predecessor candidate
+                    // must leave quarantine before the target-HEAD candidate begins.
+                    started.future.thenCompose { held ->
+                        held?.let(::discardHeldBody)
+                        if (closed.get()) {
+                            CompletableFuture.completedFuture(null)
+                        } else {
+                            startExactBody(candidate)
+                        }
+                    }
+                }
+            }.thenCompose { held ->
+                if (held != null || closed.get() || pageIndex >= effectivePageCount.get()) {
+                    CompletableFuture.completedFuture(held)
+                } else {
+                    startCompletedHeadMissCandidate(pageIndex)
+                }
+            }
+        }
+    }
+
+    private fun reserveInheritedAdjacentHostHandoff(
+        candidate: String,
+        enabled: Boolean,
+        preferredWarmReplicaHost: String? = null,
+        runwayPageIndex: Int = 0,
+        predecessorWarmHosts: List<String> = emptyList(),
+    ): Pair<CompletableFuture<Unit>, CompletableFuture<Unit>?> {
+        if (!enabled) return CompletableFuture.completedFuture(Unit) to null
+        val host = preferredWarmReplicaHost
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf(NtkClickOwnedManhwaWavePolicy::isReplicaHost)
+            ?: candidate.substringAfter("://", "").substringBefore('/').lowercase(Locale.ROOT)
+        if (host.isBlank()) return CompletableFuture.completedFuture(Unit) to null
+        val runwayPageCount = minOf(
+            DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
+            effectivePageCount.get(),
+        )
+        val previousPage = NtkClickOwnedManhwaWavePolicy.previousWarmAdjacentReplicaPage(
+            runwayPageIndex,
+            runwayPageCount,
+            predecessorWarmHosts,
+        )
+        synchronized(inheritedAdjacentPageReleases) {
+            val release = inheritedAdjacentPageReleases.computeIfAbsent(runwayPageIndex) {
+                CompletableFuture()
+            }
+            val admission = previousPage?.let { page ->
+                inheritedAdjacentPageReleases.computeIfAbsent(page) {
+                    CompletableFuture()
+                }
+            } ?: CompletableFuture.completedFuture(Unit)
+            return admission to release
+        }
     }
 
     /**
@@ -1722,6 +2350,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                                 candidate,
                                 earlyVerifiedCancellation,
                                 telemetryAfterImageHeaders = true,
+                                restoredAnchorOrdinaryDirectWifi =
+                                    isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                             )
                         },
                         fallbackBodyExecutor(pageIndex),
@@ -1738,6 +2368,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         candidate,
                         primaryCancellation,
                         telemetryAfterImageHeaders = true,
+                        restoredAnchorOrdinaryDirectWifi =
+                            isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                     )
                 },
                 verifiedExactBodyExecutor(pageIndex, candidate),
@@ -1812,6 +2444,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             if (held == null || closed.get()) {
                 held?.let(::discardHeldBody)
                 null
+            } else if (manifestBoundResidentRunwayPages.contains(pageIndex)) {
+                // The raw inherited completion already won the exact-manifest race. Its lease was
+                // consumed by that adoption; never retain or predecode the later HEAD wrapper.
+                null
             } else if (pageIndex - forwardFirstPage >= PRIVATE_PREDECODE_RUNWAY_PAGES) {
                 // Exact-manifest promotion normally precedes the bulk body tail. Starting a
                 // second speculative full-size Bitmap for every one of 100-200 pages therefore
@@ -1880,6 +2516,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         primaryCancellation,
                         telemetryAfterImageHeaders = true,
                         preparedCandidate = prepared,
+                        restoredAnchorOrdinaryDirectWifi =
+                            isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                     )
                 }
             }, primaryBodyExecutor(canonicalCandidate))
@@ -1913,6 +2551,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                                 candidate,
                                 alternativeCancellation,
                                 telemetryAfterImageHeaders = true,
+                                restoredAnchorOrdinaryDirectWifi =
+                                    isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                             )
                         }
                     }, fallbackBodyExecutor(pageIndex))
@@ -1949,6 +2589,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         candidate,
                         primaryCancellation,
                         telemetryAfterImageHeaders = true,
+                        restoredAnchorOrdinaryDirectWifi =
+                            isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                     )
             },
             primaryBodyExecutor(candidate),
@@ -1982,6 +2624,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                                     candidate,
                                     fallbackCancellation,
                                     telemetryAfterImageHeaders = true,
+                                    restoredAnchorOrdinaryDirectWifi =
+                                        isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                                 )
                             },
                             fallbackBodyExecutor(pageIndex),
@@ -2024,6 +2668,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         candidateAsset(pageIndex, DEFAULT_EXTENSION),
                         primaryCancellation,
                         telemetryAfterImageHeaders = true,
+                        restoredAnchorOrdinaryDirectWifi =
+                            isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                     )
                 }
             },
@@ -2061,6 +2707,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                                         candidate,
                                         fallbackCancellation,
                                         telemetryAfterImageHeaders = true,
+                                        restoredAnchorOrdinaryDirectWifi =
+                                            isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                                     )
                                 },
                                 fallbackBodyExecutor(pageIndex),
@@ -2090,9 +2738,11 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                             {
                                 fetchOwnedCandidate(
                                     pageIndex,
-                                    candidate,
-                                    fallbackCancellation,
-                                    telemetryAfterImageHeaders = true,
+                                candidate,
+                                fallbackCancellation,
+                                telemetryAfterImageHeaders = true,
+                                restoredAnchorOrdinaryDirectWifi =
+                                    isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                                 )
                             },
                             fallbackBodyExecutor(pageIndex),
@@ -2166,8 +2816,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         telemetryAfterImageHeaders: Boolean = false,
         onValidImageHeaders: () -> Unit = {},
         preparedCandidate: PreparedCandidate? = null,
+        requireCapturedDirectWifi: Boolean = false,
+        predecessorProvenOrdinaryDirectWifi: Boolean = false,
+        restoredAnchorOrdinaryDirectWifi: Boolean = false,
+        preferredOrdinaryDirectWifiReplicaHost: String? = null,
     ): HeldBody? {
         val prepared = preparedCandidate ?: prepareOwnedCandidate(pageIndex, candidate)
+        if (requireCapturedDirectWifi && !isCapturedDirectWifiTransportLive()) return null
         val binding = prepared.binding
         val sourceSessionId = SESSION_IDS.getAndIncrement()
         NtkQuarantineSourceOwnershipRegistry.beginSession(binding, sourceSessionId)
@@ -2181,6 +2836,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 telemetryAfterImageHeaders,
                 onValidImageHeaders,
                 prepared.route,
+                requireCapturedDirectWifi,
+                predecessorProvenOrdinaryDirectWifi,
+                restoredAnchorOrdinaryDirectWifi,
+                preferredOrdinaryDirectWifiReplicaHost,
             )
         } finally {
             closeOwnership(binding, sourceSessionId)
@@ -2294,14 +2953,29 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         candidate: String,
         callCancellation: ReaderImageCache.Cancellation,
         route: ReaderImageCache.NtkResolvedSourceRoute,
+        predecessorProvenOrdinaryDirectWifi: Boolean = false,
+        restoredAnchorOrdinaryDirectWifi: Boolean = false,
+        preferredOrdinaryDirectWifiReplicaHost: String? = null,
     ): Closeable? {
-        if (!isLiveOrdinaryDirectWifiCandidate(candidate)) {
+        if (!isLiveOrdinaryDirectWifiCandidate(
+                pageIndex,
+                candidate,
+                predecessorProvenOrdinaryDirectWifi,
+                restoredAnchorOrdinaryDirectWifi,
+            )
+        ) {
             ReaderImageCache.selectDirectWifiOrdinaryNetworkBoundH1(route, false)
             return null
         }
         while (!closed.get()) {
             callCancellation.throwIfCancelled()
-            if (!isLiveOrdinaryDirectWifiCandidate(candidate)) {
+            if (!isLiveOrdinaryDirectWifiCandidate(
+                    pageIndex,
+                    candidate,
+                    predecessorProvenOrdinaryDirectWifi,
+                    restoredAnchorOrdinaryDirectWifi,
+                )
+            ) {
                 ReaderImageCache.selectDirectWifiOrdinaryNetworkBoundH1(route, false)
                 return null
             }
@@ -2330,12 +3004,36 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 else -> null
             }
             if (acquiredPermits != null) {
-                if (!isLiveOrdinaryDirectWifiCandidate(candidate)) {
+                if (!isLiveOrdinaryDirectWifiCandidate(
+                        pageIndex,
+                        candidate,
+                        predecessorProvenOrdinaryDirectWifi,
+                        restoredAnchorOrdinaryDirectWifi,
+                    )
+                ) {
                     acquiredPermits.release()
                     ReaderImageCache.selectDirectWifiOrdinaryNetworkBoundH1(route, false)
                     return null
                 }
-                ReaderImageCache.selectDirectWifiOrdinaryNetworkBoundH1(route, true)
+                ReaderImageCache.selectDirectWifiOrdinaryNetworkBoundH1(
+                    route,
+                    true,
+                    preferredOrdinaryDirectWifiReplicaHost,
+                )
+                if (predecessorProvenOrdinaryDirectWifi) {
+                    Log.d(
+                        TAG,
+                        "click_adjacent_inherited_ordinary_h1_admit " +
+                            "path=${plan.normalizedEpisodePath},page=$pageIndex",
+                    )
+                }
+                if (restoredAnchorOrdinaryDirectWifi) {
+                    Log.d(
+                        TAG,
+                        "click_restored_anchor_ordinary_h1_admit " +
+                            "path=${plan.normalizedEpisodePath},page=$pageIndex",
+                    )
+                }
                 val released = AtomicBoolean(false)
                 return Closeable {
                     if (released.compareAndSet(false, true)) {
@@ -2347,25 +3045,77 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         throw InterruptedException("Click-owned ordinary direct-WiFi admission closed")
     }
 
-    private fun isLiveOrdinaryDirectWifiCandidate(candidate: String): Boolean {
+    private fun isLiveOrdinaryDirectWifiCandidate(
+        pageIndex: Int,
+        candidate: String,
+        predecessorProvenOrdinaryDirectWifi: Boolean = false,
+        restoredAnchorOrdinaryDirectWifi: Boolean = false,
+    ): Boolean {
         val capturedHandle = capturedDirectWifiNetworkHandle ?: return false
-        if (!ReaderImageCache.isKnownDirectWifiOrdinaryManhwaEpisode(candidate) ||
-            ReaderImageCache.isKnownDirectWifiMixedManhwaEpisode(candidate)
-        ) return false
+        val inheritedRunway = predecessorProvenOrdinaryDirectWifi &&
+            directWifiAdjacentOwned &&
+            pageIndex - forwardFirstPage in
+                0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
         val extension = candidate.substringAfterLast('.', "").lowercase(Locale.ROOT)
-        if (extension != "jpg" && extension != "jpeg") return false
         val httpClient = getHttpClient()
-        if (httpClient.isNtkCellularResilientTransportActive ||
-            !httpClient.isNtkWifiTransportActive
-        ) return false
         val liveHandle = runCatching {
             httpClient.getNtkDirectWifiNetwork()?.networkHandle
         }.getOrNull()
+        val restoredAnchor = restoredAnchorOrdinaryDirectWifi &&
+            NtkClickOwnedManhwaWavePolicy.shouldUseRestoredAnchorOrdinaryDirectWifiTransport(
+                directWifiAdjacentOwned = directWifiAdjacentOwned,
+                pageIndex = pageIndex,
+                forwardFirstPage = forwardFirstPage,
+                extension = extension,
+                liveWifiTransport = httpClient.isNtkWifiTransportActive,
+                cellularResilientTransport =
+                    httpClient.isNtkCellularResilientTransportActive,
+                capturedNetworkHandle = capturedHandle,
+                liveNetworkHandle = liveHandle,
+            )
+        if ((!ReaderImageCache.isKnownDirectWifiOrdinaryManhwaEpisode(candidate) &&
+                !inheritedRunway && !restoredAnchor) ||
+            ReaderImageCache.isKnownDirectWifiMixedManhwaEpisode(candidate)
+        ) return false
+        if (extension != "jpg" && extension != "jpeg") return false
+        if (httpClient.isNtkCellularResilientTransportActive ||
+            !httpClient.isNtkWifiTransportActive
+        ) return false
         return liveHandle == capturedHandle
     }
 
-    private fun primaryBodyExecutor(candidate: String): Executor = Executor { runnable ->
-        if (isLiveOrdinaryDirectWifiCandidate(candidate)) {
+    private fun isRestoredOrdinaryDirectWifiRunwayPage(pageIndex: Int): Boolean =
+        !directWifiAdjacentOwned &&
+            pageIndex - forwardFirstPage in
+                0 until NtkClickOwnedManhwaWavePolicy.DIRECT_EXTENSION_RACE_PAGES
+
+    private fun isLiveOrdinaryDirectWifiCandidate(candidate: String): Boolean =
+        isLiveOrdinaryDirectWifiCandidate(
+            pageIndex = -1,
+            candidate = candidate,
+            predecessorProvenOrdinaryDirectWifi = false,
+            restoredAnchorOrdinaryDirectWifi = false,
+        )
+
+    /** Re-reads transport state immediately before an inherited guessed body may open. */
+    private fun isCapturedDirectWifiTransportLive(): Boolean {
+        val capturedHandle = capturedDirectWifiNetworkHandle ?: return false
+        val httpClient = getHttpClient()
+        if (!runCatching { httpClient.isNtkWifiTransportActive }.getOrDefault(false) ||
+            runCatching { httpClient.isNtkCellularResilientTransportActive }.getOrDefault(true)
+        ) return false
+        return runCatching {
+            httpClient.getNtkDirectWifiNetwork()?.networkHandle
+        }.getOrNull() == capturedHandle
+    }
+
+    private fun primaryBodyExecutor(
+        candidate: String,
+        predecessorProvenOrdinaryDirectWifi: Boolean = false,
+    ): Executor = Executor { runnable ->
+        if ((predecessorProvenOrdinaryDirectWifi && isCapturedDirectWifiTransportLive()) ||
+            isLiveOrdinaryDirectWifiCandidate(candidate)
+        ) {
             DIRECT_WIFI_ORDINARY_BODY_EXECUTOR.execute(runnable)
         } else {
             BODY_EXECUTOR.execute(runnable)
@@ -2583,6 +3333,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         telemetryAfterImageHeaders: Boolean,
         onValidImageHeaders: () -> Unit,
         route: ReaderImageCache.NtkResolvedSourceRoute,
+        requireCapturedDirectWifi: Boolean,
+        predecessorProvenOrdinaryDirectWifi: Boolean,
+        restoredAnchorOrdinaryDirectWifi: Boolean,
+        preferredOrdinaryDirectWifiReplicaHost: String?,
     ): HeldBody? {
         var stage = "create_identity"
         val operationId = NtkStrictSourceOwnershipRegistry.nextOperationId()
@@ -2624,6 +3378,9 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 candidateAsset,
                 callCancellation,
             )
+            if (requireCapturedDirectWifi && !isCapturedDirectWifiTransportLive()) {
+                throw InterruptedException("Inherited direct-Wi-Fi candidate transport changed")
+            }
             val body = ReaderImageCache.spoolQuarantinedEncodedOriginal(
                 appContext,
                 manga,
@@ -2666,6 +3423,9 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         candidateAsset,
                         callCancellation,
                         route,
+                        predecessorProvenOrdinaryDirectWifi,
+                        restoredAnchorOrdinaryDirectWifi,
+                        preferredOrdinaryDirectWifiReplicaHost,
                     )
                     try {
                         val baseLease =
@@ -2687,7 +3447,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             val held = HeldBody(body, opened, binding)
             retained[pageIndex] = held
             if (closed.get() && retained.remove(pageIndex, held)) {
-                discardHeldBody(held)
+                held.predecodedOriginal?.close()
+                held.fileLease.close()
                 null
             } else {
                 Log.d(
@@ -2754,6 +3515,16 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         observedCandidates.values.forEach { candidate ->
             candidate.completeExceptionally(
                 InterruptedException("Click-owned observed candidate flight closed")
+            )
+        }
+        adoptedPhysicalCandidates.values.forEach { candidate ->
+            candidate.completeExceptionally(
+                InterruptedException("Click-owned adopted physical candidate flight closed")
+            )
+        }
+        directWifiAdjacentInheritedResidentBodies.values.forEach { resident ->
+            resident.completeExceptionally(
+                InterruptedException("Click-owned adjacent resident-body flight closed")
             )
         }
         retained.entries.toList().forEach { (pageIndex, held) ->
@@ -2871,6 +3642,14 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 Process.THREAD_PRIORITY_BACKGROUND,
             )
         }
+        private val DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR =
+            Executors.newFixedThreadPool(DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES) { runnable ->
+                ntkClickWorkerThread(
+                    runnable,
+                    "ntk-click-adjacent-runway-predecode",
+                    Process.THREAD_PRIORITY_DISPLAY,
+                )
+            }
 
         fun start(
             context: Context,
@@ -2881,6 +3660,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             adjacentPredecessorComplete: CompletableFuture<Unit> =
                 CompletableFuture.completedFuture(Unit),
             initialPageIndexHint: Int = 0,
+            viewerGeneration: Long = 0L,
+            adjacentPredecessorEpisodePath: String = draft.normalizedEpisodePath,
         ): NtkClickOwnedAnchorQuarantine? {
             val parts = draft.normalizedEpisodePath.trim('/').split('/')
             if (parts.size != 3 || !parts[0].equals("manhwa", ignoreCase = true) ||
@@ -2907,6 +3688,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 directWifiAdjacentOwned,
                 adjacentPredecessorComplete,
                 initialPageIndexHint,
+                viewerGeneration,
+                adjacentPredecessorEpisodePath,
             )
         }
 
@@ -2920,6 +3703,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             adjacentPredecessorComplete: CompletableFuture<Unit> =
                 CompletableFuture.completedFuture(Unit),
             initialPageIndexHint: Int = 0,
+            viewerGeneration: Long = 0L,
+            adjacentPredecessorEpisodePath: String = normalizedEpisodePath,
         ): NtkClickOwnedAnchorQuarantine? {
             val parts = normalizedEpisodePath.trim('/').split('/')
             if (parts.size != 3 || !parts[0].equals("manhwa", ignoreCase = true) ||
@@ -2961,6 +3746,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 directWifiAdjacentOwned,
                 adjacentPredecessorComplete,
                 initialPageIndexHint,
+                viewerGeneration,
+                adjacentPredecessorEpisodePath,
             )
         }
 
@@ -2974,6 +3761,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             adjacentPredecessorComplete: CompletableFuture<Unit> =
                 CompletableFuture.completedFuture(Unit),
             initialPageIndexHint: Int = 0,
+            viewerGeneration: Long = 0L,
+            adjacentPredecessorEpisodePath: String = normalizedEpisodePath,
         ): NtkClickOwnedAnchorQuarantine? {
             val parts = normalizedEpisodePath.trim('/').split('/')
             if (parts.size != 3 || !parts[0].equals("manhwa", ignoreCase = true) ||
@@ -3012,6 +3801,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 directWifiAdjacentOwned,
                 adjacentPredecessorComplete,
                 initialPageIndexHint,
+                viewerGeneration,
+                adjacentPredecessorEpisodePath,
             )
         }
 
@@ -3025,6 +3816,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             directWifiAdjacentOwned: Boolean,
             adjacentPredecessorComplete: CompletableFuture<Unit>,
             initialPageIndexHint: Int,
+            viewerGeneration: Long,
+            adjacentPredecessorEpisodePath: String,
         ): NtkClickOwnedAnchorQuarantine = NtkClickOwnedAnchorQuarantine(
             context,
             manga,
@@ -3038,6 +3831,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             earlyClaim?.owner,
             directWifiAdjacentOwned,
             adjacentPredecessorComplete,
+            viewerGeneration,
+            NtkStripDigests.normalizeEpisodePath(adjacentPredecessorEpisodePath),
         )
     }
 }

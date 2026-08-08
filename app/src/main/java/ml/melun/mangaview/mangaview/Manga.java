@@ -1657,6 +1657,8 @@ public class Manga {
                             + ",path=" + path);
                     return;
                 }
+                if(shouldSkipDirectWifiStrictLegacySpeculation(client, path, "page_fetch"))
+                    return;
                 Log.d(TAG, "ntk_page_fetch_start mode="
                         + (fetchMode == CustomHttpClient.FetchMode.DIRECT_ONLY ? "direct" : "allow")
                         + ",path=" + path);
@@ -1931,6 +1933,10 @@ public class Manga {
             CustomHttpClient client, String path) {
         if(path == null || path.length() == 0)
             return false;
+        if(client != null && client.shouldSkipDirectWifiStrictLegacySpeculation(path)) {
+            Log.d(TAG, "ntk_viewer_api_skip_owned_direct_wifi_strict_source path=" + path);
+            return true;
+        }
         if(!isNumericNtkGeneratedEpisodePath(path))
             return false;
         int earlyGenerated = ReaderImageCache.INSTANCE.earlyNtkImageUrls(
@@ -3785,12 +3791,16 @@ public class Manga {
             pageCount = ntkGeneratedImageCandidateCount();
         int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
         int validationPageCount = validateInitialPages ? ntkGeneratedInitialValidationPageCount(safePageCount) : 1;
+        final long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
         for(String workId : workIds) {
             if(!workId.matches("\\d+"))
                 return "webtoon".equals(segment)
                         && addNtkSlugWebtoonGeneratedImageCandidates(
                         client, path, seenImages, pageCount, validateInitialPages);
-            String extension = reachableNtkGeneratedImageExtension(client, segment, workId, episodeId, 1);
+            String extension = reachableNtkGeneratedImageExtension(
+                    client, segment, workId, episodeId, 1, null,
+                    ReaderImageCache.INSTANCE.cacheGenerationForProducer(), speculationEpoch);
             if(extension.length() == 0) {
                 if(slugEpisodePath)
                     Log.d(TAG, "ntk_slug_generated_extension_miss path=" + path
@@ -3813,11 +3823,18 @@ public class Manga {
                 }
                 if(!isNtkGeneratedImageReachable(client,
                         ntkGeneratedImageUrl(segment, workId, episodeId, page, extension))) {
-                    cacheNtkGeneratedImageExtension(cacheKey, "");
+                    cacheNtkGeneratedImageExtensionMissUnlessStrictCutover(
+                            client, path, speculationEpoch, cacheKey,
+                            "candidate_validation_miss");
                     reachable = false;
                     break;
                 }
-                cacheNtkGeneratedImageExtension(cacheKey, extension);
+                if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                        client, path, speculationEpoch, cacheKey, extension,
+                        "candidate_validation_hit")) {
+                    reachable = false;
+                    break;
+                }
             }
             if(!reachable)
                 continue;
@@ -4187,6 +4204,7 @@ public class Manga {
                                               long producerGeneration) {
         if(client == null || urls == null || urls.isEmpty())
             return;
+        final long speculationEpoch = client.captureNtkStrictLegacySpeculationEpoch();
         if(isStrictSourceAuthorityManaged(path)) {
             Log.d(TAG, "ntk_first_api_image_stream_fenced_by_strict_authority path=" + path);
             return;
@@ -4233,43 +4251,53 @@ public class Manga {
         }
         if(streamPositions.isEmpty())
             return;
+        final List<String> selectedUrls = urls;
         int startedStreams = 0;
         if(startNtkInitialForegroundStreamIfAbsent(
-                client, path, urls, 0, streamPositions.get(0), producerGeneration))
+                client, path, selectedUrls, 0, streamPositions.get(0), producerGeneration,
+                speculationEpoch))
             startedStreams++;
         if(publishEarlyUrls) {
-            try {
-                if(isNtkKpWebtoonEpisodePath(path) && containsNtkUploadCdnImageUrl(urls)) {
-                    ReaderImageCache.INSTANCE.rememberAuthoritativeNtkImageUrlsFromBrowser(
-                            path, urls, "native-api-stream", producerGeneration);
-                    NtkBrowserSessionBroker.INSTANCE.publishAuthoritativeImageUrls(
-                            path, urls, "native-api-stream");
-                } else {
-                    ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(
-                            path, urls, producerGeneration);
-                }
-            } catch(Exception e) {
-                Log.d(TAG, "ntk_early_api_image_urls_error path=" + path + "," + e);
-            }
+            boolean committed = client.commitNtkStrictLegacySpeculation(
+                    speculationEpoch, path, () -> {
+                        try {
+                            if(isNtkKpWebtoonEpisodePath(path)
+                                    && containsNtkUploadCdnImageUrl(selectedUrls)) {
+                                ReaderImageCache.INSTANCE.rememberAuthoritativeNtkImageUrlsFromBrowser(
+                                        path, selectedUrls, "native-api-stream", producerGeneration);
+                                NtkBrowserSessionBroker.INSTANCE.publishAuthoritativeImageUrls(
+                                        path, selectedUrls, "native-api-stream");
+                            } else {
+                                ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(
+                                        path, selectedUrls, producerGeneration);
+                            }
+                        } catch(Exception e) {
+                            Log.d(TAG, "ntk_early_api_image_urls_error path=" + path + "," + e);
+                        }
+                    });
+            if(!committed)
+                canPublishNtkLegacySpeculation(
+                        client, path, speculationEpoch, "first_api_early_url_publish");
         }
         for(int orderIndex = 1; orderIndex < streamPositions.size(); orderIndex++) {
             if(startNtkInitialForegroundStreamIfAbsent(
-                    client, path, urls, orderIndex, streamPositions.get(orderIndex),
-                    producerGeneration))
+                    client, path, selectedUrls, orderIndex, streamPositions.get(orderIndex),
+                    producerGeneration, speculationEpoch))
                 startedStreams++;
         }
-        if(urls.size() > streamPositions.size()) {
+        if(selectedUrls.size() > streamPositions.size()) {
             Log.d(TAG, "ntk_first_api_image_stream_defer_adjacent path=" + path
                     + ",selected=" + streamPositions.size()
                     + ",started=" + startedStreams
-                    + ",deferred=" + (urls.size() - streamPositions.size()));
+                    + ",deferred=" + (selectedUrls.size() - streamPositions.size()));
         }
     }
 
     private boolean startNtkInitialForegroundStreamIfAbsent(CustomHttpClient client, String path,
                                                             List<String> urls, int orderIndex,
                                                             int urlIndex,
-                                                            long producerGeneration) {
+                                                            long producerGeneration,
+                                                            long speculationEpoch) {
         if(urlIndex < 0 || urlIndex >= urls.size())
             return false;
         String image = urls.get(urlIndex);
@@ -4279,7 +4307,8 @@ public class Manga {
         if(firstNtkApiImageStreamStarts().putIfAbsent(key, Boolean.TRUE) != null)
             return false;
         startNtkInitialForegroundStream(
-                client, path, image, orderIndex, key, true, producerGeneration);
+                client, path, image, orderIndex, key, true, producerGeneration,
+                speculationEpoch);
         expireFirstNtkApiImageStreamStart(key, 1800L);
         return true;
     }
@@ -4387,19 +4416,30 @@ public class Manga {
     private void startNtkInitialForegroundStream(CustomHttpClient client, String path,
                                                  String image, int index, String startKey,
                                                  boolean allowConditionRetry,
-                                                 long producerGeneration) {
+                                                 long producerGeneration,
+                                                 long speculationEpoch) {
         long delayMs = ntkInitialApiImageStreamDelayMs(path, index);
         Runnable start = () -> {
             try {
                 Context context = client.getContext();
                 if(context != null) {
-                    boolean started = ReaderImageCache.INSTANCE.startForegroundStreamFetch(
-                            context, this, image, null, false, null, index,
-                            isNtkWebtoonEpisodePath(path)
-                                    ? index < NTK_EARLY_WEBTOON_HEAD_STREAM_COUNT
-                                    : index < NTK_EARLY_INITIAL_STREAM_START_COUNT,
-                            false,
-                            producerGeneration);
+                    final boolean[] streamStarted = {false};
+                    boolean committed = client.commitNtkStrictLegacySpeculation(
+                            speculationEpoch, path,
+                            () -> streamStarted[0] =
+                                    ReaderImageCache.INSTANCE.startForegroundStreamFetch(
+                                            context, this, image, null, false, null, index,
+                                            isNtkWebtoonEpisodePath(path)
+                                                    ? index < NTK_EARLY_WEBTOON_HEAD_STREAM_COUNT
+                                                    : index < NTK_EARLY_INITIAL_STREAM_START_COUNT,
+                                            false,
+                                            producerGeneration,
+                                            speculationEpoch));
+                    boolean started = committed && streamStarted[0];
+                    if(!committed)
+                        canPublishNtkLegacySpeculation(
+                                client, path, speculationEpoch,
+                                "initial_foreground_stream_enqueue");
                     Log.d(TAG, "ntk_first_api_image_stream_start path=" + path
                             + ",started=" + started
                             + ",index=" + index
@@ -4415,7 +4455,8 @@ public class Manga {
                     firstNtkApiImageStreamStarts().remove(startKey);
                 if(allowConditionRetry)
                     retryNtkInitialForegroundStream(
-                            client, path, image, index, startKey, producerGeneration);
+                            client, path, image, index, startKey, producerGeneration,
+                            speculationEpoch);
             }
         };
         if(delayMs <= 0L) {
@@ -4466,14 +4507,16 @@ public class Manga {
 
     private void retryNtkInitialForegroundStream(CustomHttpClient client, String path,
                                                  String image, int index, String startKey,
-                                                 long producerGeneration) {
+                                                 long producerGeneration,
+                                                 long speculationEpoch) {
         Thread thread = new Thread(() -> {
             try {
                 Thread.sleep(NTK_EARLY_INITIAL_STREAM_RETRY_MS);
                 if(firstNtkApiImageStreamStarts().putIfAbsent(startKey, Boolean.TRUE) != null)
                     return;
                 startNtkInitialForegroundStream(
-                        client, path, image, index, startKey, false, producerGeneration);
+                        client, path, image, index, startKey, false, producerGeneration,
+                        speculationEpoch);
             } catch(InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch(Exception e) {
@@ -4508,10 +4551,12 @@ public class Manga {
         }
         if(!started.compareAndSet(false, true))
             return;
+        final long speculationEpoch = client.captureNtkStrictLegacySpeculationEpoch();
         Thread thread = new Thread(() -> {
             try {
                 List<String> urls = earlyGeneratedNtkImageUrlsFromPartial(
-                        client, path, partialText, NTK_EARLY_SPECULATIVE_PAGE_PUBLISH_COUNT);
+                        client, path, partialText, NTK_EARLY_SPECULATIVE_PAGE_PUBLISH_COUNT,
+                        speculationEpoch);
                 if(urls.isEmpty()) {
                     started.set(false);
                     return;
@@ -4520,7 +4565,14 @@ public class Manga {
                         + ",count=" + urls.size()
                         + ",partialLen=" + partialText.length()
                         + ",first=" + safeLogImage(urls.get(0)));
-                startFirstNtkApiImageStream(client, path, urls);
+                boolean committed = client.commitNtkStrictLegacySpeculation(
+                        speculationEpoch, path,
+                        () -> startFirstNtkApiImageStream(client, path, urls));
+                if(!committed) {
+                    started.set(false);
+                    canPublishNtkLegacySpeculation(
+                            client, path, speculationEpoch, "partial_generated_stream_start");
+                }
             } catch(Exception e) {
                 started.set(false);
                 Log.d(TAG, "ntk_generated_direct_image_url_early_error path=" + path + "," + e);
@@ -4653,16 +4705,23 @@ public class Manga {
             return false;
         NtkBrowserSessionBroker.publishViewerPayload(path, normalized,
                 "kp-ack-ready-" + source);
+        final long speculationEpoch = client.captureNtkStrictLegacySpeculationEpoch();
         List<String> partialUrls = earlyGeneratedNtkImageUrlsFromPartial(
-                client, path, normalized, NTK_EARLY_INITIAL_PUBLISH_PAGES);
+                client, path, normalized, NTK_EARLY_INITIAL_PUBLISH_PAGES,
+                speculationEpoch);
         if(!partialUrls.isEmpty()) {
             Log.d(TAG, "ntk_kp_ack_payload_prefetch_urls path=" + path
                     + ",source=" + source
                     + ",count=" + partialUrls.size()
                     + ",first=" + safeLogImage(partialUrls.get(0)));
-            if(isCanonicalKpSignedTokenDirectSource(source))
-                startFirstNtkApiImageStream(client, path, partialUrls, false);
-            else
+            if(isCanonicalKpSignedTokenDirectSource(source)) {
+                boolean committed = client.commitNtkStrictLegacySpeculation(
+                        speculationEpoch, path,
+                        () -> startFirstNtkApiImageStream(client, path, partialUrls, false));
+                if(!committed)
+                    canPublishNtkLegacySpeculation(
+                            client, path, speculationEpoch, "kp_ack_partial_stream_start");
+            } else
                 Log.d(TAG, "ntk_kp_ack_payload_prefetch_urls_hold_visible path=" + path
                         + ",source=" + source
                         + ",count=" + partialUrls.size());
@@ -5299,11 +5358,13 @@ public class Manga {
         String startKey = path + "|known-count-generated-manifest|" + knownCount;
         if(firstNtkApiImageStreamStarts().putIfAbsent(startKey, Boolean.TRUE) != null)
             return;
+        final long speculationEpoch = client.captureNtkStrictLegacySpeculationEpoch();
         Thread thread = new Thread(() -> {
             long startedAt = System.currentTimeMillis();
             try {
                 String extension = reachableEarlyNtkGeneratedImageExtension(
-                        client, segment, pathWorkId, pathEpisodeId, knownCount);
+                        client, segment, pathWorkId, pathEpisodeId, knownCount,
+                        speculationEpoch);
                 if(extension.length() == 0) {
                     firstNtkApiImageStreamStarts().remove(startKey);
                     Log.d(TAG, "ntk_known_count_generated_manifest_probe_miss path=" + path
@@ -5316,7 +5377,8 @@ public class Manga {
                 // verified finite manifest explicitly; active stream keys make this idempotent
                 // when the resolver already published it on the cold path.
                 publishVerifiedEarlyNtkGeneratedImages(
-                        client, segment, pathWorkId, pathEpisodeId, extension, 1, 1);
+                        client, segment, pathWorkId, pathEpisodeId, extension, 1, 1,
+                        ReaderImageCache.INSTANCE.cacheGenerationForProducer(), speculationEpoch);
                 Log.d(TAG, "ntk_known_count_generated_manifest_probe_ready path=" + path
                         + ",count=" + knownCount
                         + ",extension=" + extension
@@ -6045,9 +6107,13 @@ public class Manga {
     }
 
     private List<String> earlyGeneratedNtkImageUrlsFromPartial(CustomHttpClient client, String path,
-                                                              String partialText, int limit) {
+                                                              String partialText, int limit,
+                                                              long speculationEpoch) {
         ArrayList<String> urls = new ArrayList<>();
         if(client == null || path == null || partialText == null || limit <= 0)
+            return urls;
+        if(!canPublishNtkLegacySpeculation(
+                client, path, speculationEpoch, "partial_generated_start"))
             return urls;
         if(shouldUseProtectedNtkViewerApi(client, path)) {
             Log.d(TAG, "ntk_generated_partial_skip_protected_api path=" + path);
@@ -6268,12 +6334,21 @@ public class Manga {
                             + ",workId=" + tokenWorkId
                             + ",episodeId=" + tokenEpisodeId
                             + ",first=" + safeLogImage(speculativeUrls.get(0)));
-                    try {
-                        ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, speculativeUrls);
-                    } catch(Exception e) {
-                        Log.d(TAG, "ntk_generated_speculative_urls_remember_error path=" + path + "," + e);
-                    }
-                    startFirstNtkApiImageStream(client, path, speculativeUrls);
+                    boolean committed = client.commitNtkStrictLegacySpeculation(
+                            speculationEpoch, path, () -> {
+                                try {
+                                    ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(
+                                            path, speculativeUrls);
+                                } catch(Exception e) {
+                                    Log.d(TAG, "ntk_generated_speculative_urls_remember_error path="
+                                            + path + "," + e);
+                                }
+                                startFirstNtkApiImageStream(client, path, speculativeUrls);
+                            });
+                    if(!committed)
+                        canPublishNtkLegacySpeculation(
+                                client, path, speculationEpoch,
+                                "partial_cached_generated_stream_start");
                 }
             } else {
                 Log.d(TAG, "ntk_generated_speculative_urls_skip_unverified_extension path=" + path
@@ -6296,12 +6371,23 @@ public class Manga {
                                 + ",workId=" + speculativeWorkId
                                 + ",episodeId=" + speculativeEpisodeId
                                 + ",first=" + safeLogImage(speculativeUrls.get(0)));
-                        try {
-                            ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, speculativeUrls);
-                        } catch(Exception e) {
-                            Log.d(TAG, "ntk_generated_speculative_urls_canonical_remember_error path=" + path + "," + e);
-                        }
-                        return speculativeUrls;
+                        boolean committed = client.commitNtkStrictLegacySpeculation(
+                                speculationEpoch, path, () -> {
+                                    try {
+                                        ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(
+                                                path, speculativeUrls);
+                                    } catch(Exception e) {
+                                        Log.d(TAG,
+                                                "ntk_generated_speculative_urls_canonical_remember_error path="
+                                                        + path + "," + e);
+                                    }
+                                });
+                        if(committed)
+                            return speculativeUrls;
+                        canPublishNtkLegacySpeculation(
+                                client, path, speculationEpoch,
+                                "partial_cached_canonical_generated_publish");
+                        return urls;
                     }
                 }
             }
@@ -6313,7 +6399,7 @@ public class Manga {
         for(String workId : workIds) {
             for(String episodeId : episodeIds) {
                 String extension = reachableEarlyNtkGeneratedImageExtension(client, segment, workId,
-                        episodeId, pageCount);
+                        episodeId, pageCount, speculationEpoch);
                 if(extension.length() == 0)
                     continue;
                 Log.d(TAG, "ntk_generated_direct_extension_identity path=" + path
@@ -6326,7 +6412,7 @@ public class Manga {
                         + ",tokenWorkId=" + tokenWorkId);
                 int startPage = ntkInitialGeneratedStartPage(segment, workId, episodeId, extension);
                 startAsyncNtkGeneratedInitialExtensionValidation(client, segment, workId,
-                        episodeId, extension, safeLimit);
+                        episodeId, extension, safeLimit, speculationEpoch);
                 urls.addAll(ntkInitialGeneratedImageUrlsWithKnownExtensions(segment, workId,
                         episodeId, extension, startPage, safeLimit));
                 return urls;
@@ -6451,15 +6537,29 @@ public class Manga {
     }
 
     private String reachableEarlyNtkGeneratedImageExtension(CustomHttpClient client, String segment,
-                                                            String workId, String episodeId,
-                                                            int pageCountHint) {
+                                                             String workId, String episodeId,
+                                                             int pageCountHint) {
+        long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
+        return reachableEarlyNtkGeneratedImageExtension(
+                client, segment, workId, episodeId, pageCountHint, speculationEpoch);
+    }
+
+    private String reachableEarlyNtkGeneratedImageExtension(CustomHttpClient client, String segment,
+                                                             String workId, String episodeId,
+                                                             int pageCountHint,
+                                                             long speculationEpoch) {
         int primaryProbePage = 1;
-        String extension = reachableEarlyNtkGeneratedImageExtensionForPage(client, segment,
-                workId, episodeId, primaryProbePage);
+        long producerGeneration = ReaderImageCache.INSTANCE.cacheGenerationForProducer();
+        String extension = reachableEarlyNtkGeneratedImageExtensionForPage(
+                client, segment, workId, episodeId, primaryProbePage,
+                producerGeneration, speculationEpoch);
         if(extension.length() > 0)
             return extension;
         if(pageCountHint != 1)
-            return reachableEarlyNtkGeneratedImageExtensionForPage(client, segment, workId, episodeId, 2);
+            return reachableEarlyNtkGeneratedImageExtensionForPage(
+                    client, segment, workId, episodeId, 2,
+                    producerGeneration, speculationEpoch);
         return "";
     }
 
@@ -6475,9 +6575,24 @@ public class Manga {
                                                                    String workId, String episodeId,
                                                                    int probePage,
                                                                    long producerGeneration) {
+        long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
+        return reachableEarlyNtkGeneratedImageExtensionForPage(
+                client, segment, workId, episodeId, probePage,
+                producerGeneration, speculationEpoch);
+    }
+
+    private String reachableEarlyNtkGeneratedImageExtensionForPage(CustomHttpClient client, String segment,
+                                                                   String workId, String episodeId,
+                                                                   int probePage,
+                                                                   long producerGeneration,
+                                                                   long speculationEpoch) {
         if(client == null || segment == null || workId == null || episodeId == null)
             return "";
         String path = getNtkEpisodePath();
+        if(!canPublishNtkLegacySpeculation(
+                client, path, speculationEpoch, "generated_extension_start"))
+            return "";
         if(shouldDeferModernNtkGeneratedProbeUntilAck(client, path)) {
             Log.d(TAG, "ntk_generated_direct_extension_probe_defer_ack path=" + path
                     + ",segment=" + segment
@@ -6501,14 +6616,15 @@ public class Manga {
         if("webtoon".equalsIgnoreCase(segment)
                 && shouldPreferNtkApiForCanonicalWebtoonPath(path)
                 && !isTrustedKnownNtkGeneratedCandidate(workId, episodeId)) {
-            cacheNtkGeneratedImageExtension(cacheKey, "");
+            cacheNtkGeneratedImageExtensionMissUnlessStrictCutover(
+                    client, path, speculationEpoch, cacheKey, "canonical_policy_miss");
             return "";
         }
         final FutureTask<String>[] taskHolder = new FutureTask[1];
         FutureTask<String> task = new FutureTask<String>(() ->
                 reachableEarlyNtkGeneratedImageExtensionForPageUnshared(
                         client, segment, workId, episodeId, probePage, cacheKey,
-                        producerGeneration)) {
+                        producerGeneration, speculationEpoch)) {
             @Override
             protected void done() {
                 NTK_GENERATED_EXTENSION_FLIGHTS.remove(cacheKey, taskHolder[0]);
@@ -6527,8 +6643,14 @@ public class Manga {
         }
         try {
             String result = running.get(NTK_EARLY_GENERATED_EXTENSION_WAIT_MS, TimeUnit.MILLISECONDS);
+            if(!canPublishNtkLegacySpeculation(
+                    client, path, speculationEpoch, "generated_extension_join_result"))
+                return "";
             return result == null ? "" : result;
         } catch(Exception ignored) {
+            if(!canPublishNtkLegacySpeculation(
+                    client, path, speculationEpoch, "generated_extension_join_fallback"))
+                return "";
             cached = cachedFreshNtkGeneratedImageExtension(cacheKey);
             return cached == null ? "" : cached;
         }
@@ -6536,15 +6658,16 @@ public class Manga {
 
     private String reachableEarlyNtkGeneratedImageExtensionForPageUnshared(CustomHttpClient client, String segment,
                                                                            String workId, String episodeId,
-                                                                           int probePage, String cacheKey,
-                                                                           long producerGeneration) {
+                                                                            int probePage, String cacheKey,
+                                                                            long producerGeneration,
+                                                                            long speculationEpoch) {
         CountDownLatch done = new CountDownLatch(1);
         CountDownLatch remaining = new CountDownLatch(NTK_GENERATED_IMAGE_EXTENSIONS.length);
         AtomicBoolean winner = new AtomicBoolean(false);
         String[] hit = new String[]{""};
         long startedAt = System.currentTimeMillis();
         startSpeculativeNtkGeneratedInitialStreams(
-                client, segment, workId, episodeId, producerGeneration);
+                client, segment, workId, episodeId, producerGeneration, speculationEpoch);
         for(String extension : NTK_GENERATED_IMAGE_EXTENSIONS) {
             Thread thread = new Thread(() -> {
                 try {
@@ -6553,21 +6676,27 @@ public class Manga {
                     String probe = ntkGeneratedImageUrl(segment, workId, episodeId, probePage, extension);
                     if(awaitCachedNtkGeneratedImageAvailable(client, probe, 80L)
                             && winner.compareAndSet(false, true)) {
+                        if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                                client, getNtkEpisodePath(), speculationEpoch, cacheKey, extension,
+                                "direct_extension_cached_hit"))
+                            return;
                         hit[0] = extension;
-                        cacheNtkGeneratedImageExtension(cacheKey, extension);
                         publishVerifiedEarlyNtkGeneratedImages(
                                 client, segment, workId, episodeId, extension, probePage, 1,
-                                producerGeneration);
+                                producerGeneration, speculationEpoch);
                         done.countDown();
                         return;
                     }
                     if(isNtkGeneratedImageReachableFast(client, probe, winner)
                             && winner.compareAndSet(false, true)) {
+                        if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                                client, getNtkEpisodePath(), speculationEpoch, cacheKey, extension,
+                                "direct_extension_probe_hit"))
+                            return;
                         hit[0] = extension;
-                        cacheNtkGeneratedImageExtension(cacheKey, extension);
                         publishVerifiedEarlyNtkGeneratedImages(
                                 client, segment, workId, episodeId, extension, probePage, 1,
-                                producerGeneration);
+                                producerGeneration, speculationEpoch);
                         done.countDown();
                     }
                 } catch(Exception ignored) {
@@ -6588,7 +6717,8 @@ public class Manga {
         String result = hit[0] == null ? "" : hit[0];
         if(result.length() == 0) {
             result = reachableNtkGeneratedImageExtensionConfirmPass(
-                    client, segment, workId, episodeId, probePage, cacheKey);
+                    client, segment, workId, episodeId, probePage, cacheKey,
+                    speculationEpoch);
         }
         Log.d(TAG, "ntk_generated_direct_extension_probe path=" + segment + "/" + workId + "/" + episodeId
                 + ",extension=" + result
@@ -6597,7 +6727,7 @@ public class Manga {
         if(result.length() > 0)
             publishVerifiedEarlyNtkGeneratedImages(
                     client, segment, workId, episodeId, result, probePage, 1,
-                    producerGeneration);
+                    producerGeneration, speculationEpoch);
         return result;
     }
 
@@ -6613,6 +6743,18 @@ public class Manga {
                                                          String workId, String episodeId,
                                                          String extension, int startPage, int verifiedCount,
                                                          long producerGeneration) {
+        long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
+        publishVerifiedEarlyNtkGeneratedImages(
+                client, segment, workId, episodeId, extension, startPage, verifiedCount,
+                producerGeneration, speculationEpoch);
+    }
+
+    private void publishVerifiedEarlyNtkGeneratedImages(CustomHttpClient client, String segment,
+                                                         String workId, String episodeId,
+                                                         String extension, int startPage, int verifiedCount,
+                                                         long producerGeneration,
+                                                         long speculationEpoch) {
         String safeExtension = normalizeNtkGeneratedImageExtension(extension);
         if(client == null || segment == null || workId == null || episodeId == null
                 || safeExtension.length() == 0 || verifiedCount <= 0)
@@ -6637,6 +6779,21 @@ public class Manga {
                 episodeId, safeExtension, safeStartPage, safeStartPage + limit - 1, false);
         if(urls.isEmpty())
             urls.add(ntkGeneratedImageUrl(segment, workId, episodeId, safeStartPage, safeExtension));
+        boolean committed = client.commitNtkStrictLegacySpeculation(
+                speculationEpoch,
+                path,
+                () -> commitVerifiedEarlyNtkGeneratedImages(
+                        client, segment, safeExtension, safeStartPage, declaredCount,
+                        path, urls, producerGeneration, speculationEpoch));
+        if(!committed)
+            canPublishNtkLegacySpeculation(
+                    client, path, speculationEpoch, "publish_verified_generated_pages");
+    }
+
+    private void commitVerifiedEarlyNtkGeneratedImages(
+            CustomHttpClient client, String segment, String safeExtension, int safeStartPage,
+            int declaredCount, String path, ArrayList<String> urls, long producerGeneration,
+            long speculationEpoch) {
         Log.d(TAG, "ntk_generated_verified_urls_early path=" + path
                 + ",count=" + urls.size()
                 + ",extension=" + safeExtension
@@ -6672,7 +6829,7 @@ public class Manga {
                 try {
                     boolean started = ReaderImageCache.INSTANCE.startForegroundStreamFetch(
                             context, this, url, null, false, null, i, true, true,
-                            producerGeneration);
+                            producerGeneration, speculationEpoch);
                     Log.d(TAG, "ntk_generated_verified_stream_start path=" + path
                             + ",started=" + started
                             + ",index=" + i
@@ -6699,9 +6856,21 @@ public class Manga {
     }
 
     private void startAsyncNtkGeneratedInitialExtensionValidation(CustomHttpClient client,
-                                                                  String segment, String workId,
-                                                                  String episodeId, String defaultExtension,
-                                                                  int pageCount) {
+                                                                   String segment, String workId,
+                                                                   String episodeId, String defaultExtension,
+                                                                   int pageCount) {
+        long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
+        startAsyncNtkGeneratedInitialExtensionValidation(
+                client, segment, workId, episodeId, defaultExtension, pageCount,
+                speculationEpoch);
+    }
+
+    private void startAsyncNtkGeneratedInitialExtensionValidation(CustomHttpClient client,
+                                                                   String segment, String workId,
+                                                                   String episodeId, String defaultExtension,
+                                                                   int pageCount,
+                                                                   long speculationEpoch) {
         if(client == null || segment == null || workId == null || episodeId == null
                 || normalizeNtkGeneratedImageExtension(defaultExtension).length() == 0)
             return;
@@ -6718,7 +6887,7 @@ public class Manga {
         Thread thread = new Thread(() -> {
             try {
                 validateNtkGeneratedInitialPageExtensions(client, segment, workId, episodeId,
-                        defaultExtension, validationPageCount);
+                        defaultExtension, validationPageCount, speculationEpoch);
             } catch(Exception e) {
                 Log.d(TAG, "ntk_generated_initial_validation_async_error path="
                         + getNtkEpisodePath() + "," + e);
@@ -6775,7 +6944,37 @@ public class Manga {
     private void startSpeculativeNtkGeneratedInitialStreams(CustomHttpClient client, String segment,
                                                             String workId, String episodeId,
                                                             long producerGeneration) {
+        long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
+        startSpeculativeNtkGeneratedInitialStreams(
+                client, segment, workId, episodeId, producerGeneration, speculationEpoch);
+    }
+
+    private void startSpeculativeNtkGeneratedInitialStreams(CustomHttpClient client, String segment,
+                                                            String workId, String episodeId,
+                                                            long producerGeneration,
+                                                            long speculationEpoch) {
         if(client == null || segment == null || workId == null || episodeId == null)
+            return;
+        String path = getNtkEpisodePath();
+        boolean committed = client.commitNtkStrictLegacySpeculation(
+                speculationEpoch,
+                path,
+                () -> startSpeculativeNtkGeneratedInitialStreamsCommitted(
+                        client, segment, workId, episodeId, producerGeneration,
+                        speculationEpoch));
+        if(!committed)
+            canPublishNtkLegacySpeculation(
+                    client, path, speculationEpoch, "initial_stream_commit");
+    }
+
+    private void startSpeculativeNtkGeneratedInitialStreamsCommitted(
+            CustomHttpClient client, String segment, String workId, String episodeId,
+            long producerGeneration, long speculationEpoch) {
+        if(client == null || segment == null || workId == null || episodeId == null)
+            return;
+        String path = getNtkEpisodePath();
+        if(shouldSkipDirectWifiStrictLegacySpeculation(client, path, "initial_stream"))
             return;
         Context context = client.getContext();
         if(context == null)
@@ -6784,7 +6983,6 @@ public class Manga {
         int knownCount = getNtkImageCount();
         if(knownCount > 0)
             limit = Math.min(limit, knownCount);
-        String path = getNtkEpisodePath();
         if(path != null && path.matches(
                 "(?i)^/manhwa/\\d{1,12}/\\d{1,12}(?:[/?#].*)?$")) {
             // Numeric manhwa has an explicit extension-authority probe. Guessed .jpg streams
@@ -6810,7 +7008,8 @@ public class Manga {
                     isMetadataBackedInitialGeneratedCandidate(segment, workId, episodeId);
             if(firstNtkApiImageStreamStarts().putIfAbsent(firstKey, Boolean.TRUE) == null) {
                 startNtkInitialForegroundStream(
-                        client, path, firstImage, 0, firstKey, true, producerGeneration);
+                        client, path, firstImage, 0, firstKey, true, producerGeneration,
+                        speculationEpoch);
                 if(!metadataBackedFirstImage) {
                     try {
                         ArrayList<String> firstOnly = new ArrayList<>();
@@ -6953,7 +7152,7 @@ public class Manga {
                 try {
                     boolean started = ReaderImageCache.INSTANCE.startForegroundStreamFetch(
                             context, this, image, null, false, null, -1, true, false,
-                            producerGeneration);
+                            producerGeneration, speculationEpoch);
                     if(started && page == 1 && path != null && path.length() > 0
                             && !metadataBackedFirstImage) {
                         ArrayList<String> initialEarlyUrls = new ArrayList<>();
@@ -7052,13 +7251,15 @@ public class Manga {
         if(firstNtkApiImageStreamStarts().putIfAbsent(probeKey, Boolean.TRUE) != null)
             return;
         final long producerGeneration = ReaderImageCache.INSTANCE.cacheGenerationForProducer();
+        final long speculationEpoch = client.captureNtkStrictLegacySpeculationEpoch();
         Thread thread = new Thread(() -> {
             try {
                 long startedAt = System.currentTimeMillis();
                 for(String workId : workIds) {
                     for(String episodeId : episodeIds) {
-                        String extension = reachableNtkGeneratedImageExtension(client, segment, workId,
-                                episodeId, 1, null, producerGeneration);
+                        String extension = reachableNtkGeneratedImageExtension(
+                                client, segment, workId, episodeId, 1, null,
+                                producerGeneration, speculationEpoch);
                         if(extension.length() == 0)
                             continue;
                         Log.d(TAG, "ntk_generated_early_publish_probe path=" + path
@@ -7069,10 +7270,19 @@ public class Manga {
                         ArrayList<String> urls = ntkInitialGeneratedImageUrls(segment, workId,
                                 episodeId, extension);
                         if(!urls.isEmpty()) {
-                            ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(
-                                    path, urls, producerGeneration);
-                            startFirstNtkApiImageStream(
-                                    client, path, urls, true, producerGeneration);
+                            boolean committed = client.commitNtkStrictLegacySpeculation(
+                                    speculationEpoch,
+                                    path,
+                                    () -> {
+                                        ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(
+                                                path, urls, producerGeneration);
+                                        startFirstNtkApiImageStream(
+                                                client, path, urls, true, producerGeneration);
+                                    });
+                            if(!committed)
+                                canPublishNtkLegacySpeculation(
+                                        client, path, speculationEpoch,
+                                        "early_publish_probe_result");
                         }
                         return;
                     }
@@ -7208,8 +7418,9 @@ public class Manga {
     }
 
     private String reachableNtkGeneratedImageExtensionConfirmPass(CustomHttpClient client, String segment,
-                                                                  String workId, String episodeId,
-                                                                  int probePage, String cacheKey) {
+                                                                   String workId, String episodeId,
+                                                                   int probePage, String cacheKey,
+                                                                   long speculationEpoch) {
         CountDownLatch done = new CountDownLatch(1);
         CountDownLatch remaining = new CountDownLatch(NTK_GENERATED_IMAGE_EXTENSIONS.length);
         AtomicBoolean winner = new AtomicBoolean(false);
@@ -7223,8 +7434,11 @@ public class Manga {
                     String probe = ntkGeneratedImageUrl(segment, workId, episodeId, probePage, extension);
                     if(isNtkGeneratedImageReachable(client, probe, false)
                             && winner.compareAndSet(false, true)) {
+                        if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                                client, getNtkEpisodePath(), speculationEpoch, cacheKey, extension,
+                                "confirm_extension_hit"))
+                            return;
                         hit[0] = extension;
-                        cacheNtkGeneratedImageExtension(cacheKey, extension);
                         done.countDown();
                     }
                 } catch(Exception ignored) {
@@ -7693,6 +7907,10 @@ public class Manga {
         int safePageCount = Math.min(pageCount, NTK_MAX_GENERATED_PAGE_COUNT);
         if(client == null)
             return false;
+        final long speculationEpoch = client.captureNtkStrictLegacySpeculationEpoch();
+        if(!canPublishNtkLegacySpeculation(
+                client, path, speculationEpoch, "generated_path_start"))
+            return false;
         LinkedHashSet<String> workIds = ntkGeneratedWorkIdCandidatesForPath(segment, pathWorkId);
         LinkedHashSet<String> episodeIds = ntkGeneratedEpisodeIdCandidatesForPath(path, pathEpisodeId);
         if(shouldSkipNtkGeneratedForEpisodePath(path)
@@ -7726,17 +7944,22 @@ public class Manga {
                         pathEpisodeId, candidateWorkId, candidateEpisodeId);
                 if(extension.length() > 0) {
                     String cacheKey = ntkGeneratedExtensionCacheKey(segment, candidateWorkId, candidateEpisodeId, 1);
-                    cacheNtkGeneratedImageExtension(cacheKey, extension);
+                    if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                            client, path, speculationEpoch, cacheKey, extension,
+                            "trusted_primary_extension"))
+                        return false;
                     publishVerifiedEarlyNtkGeneratedImages(client, segment, candidateWorkId, candidateEpisodeId,
-                            extension, 1, 1);
+                            extension, 1, 1,
+                            ReaderImageCache.INSTANCE.cacheGenerationForProducer(), speculationEpoch);
                     Log.d(TAG, "ntk_generated_primary_extension_trusted path=" + path
                             + ",segment=" + segment
                             + ",workId=" + candidateWorkId
                             + ",episodeId=" + candidateEpisodeId
                             + ",extension=" + extension);
                 } else {
-                    extension = reachableNtkGeneratedImageExtension(client, segment, candidateWorkId,
-                            candidateEpisodeId, 1, primaryMiss);
+                    extension = reachableNtkGeneratedImageExtension(
+                            client, segment, candidateWorkId, candidateEpisodeId, 1, primaryMiss,
+                            ReaderImageCache.INSTANCE.cacheGenerationForProducer(), speculationEpoch);
                 }
                 if(extension.length() == 0)
                     continue;
@@ -7767,7 +7990,11 @@ public class Manga {
                     ? 1
                     : ntkGeneratedInitialValidationPageCount(safePageCount);
             Map<Integer, String> checkedPageExtensions = validateNtkGeneratedInitialPageExtensions(
-                    client, segment, workId, imageEpisodeId, imageExtension, validationPageCount);
+                    client, segment, workId, imageEpisodeId, imageExtension, validationPageCount,
+                    speculationEpoch);
+            if(!canPublishNtkLegacySpeculation(
+                    client, path, speculationEpoch, "generated_validation_result"))
+                return false;
             for(int page = 2; page <= validationPageCount; page++) {
                 String pageExtension = checkedPageExtensions.get(page);
                 if(pageExtension == null)
@@ -7778,7 +8005,8 @@ public class Manga {
                         if(partialPageCount >= NTK_EARLY_INITIAL_PUBLISH_PAGES
                                 && safePageCount > validationPageCount) {
                             rememberEarlyValidatedNtkGeneratedPages(client, path, segment, workId, imageEpisodeId,
-                                    imageExtension, validatedPageExtensions, partialPageCount);
+                                    imageExtension, validatedPageExtensions, partialPageCount,
+                                    speculationEpoch);
                             String pageTwoExtension = validatedPageExtensions.get(2);
                             String pageCountExtension = pageTwoExtension != null && !pageTwoExtension.equals(imageExtension)
                                     ? pageTwoExtension
@@ -7790,7 +8018,8 @@ public class Manga {
                         logNtkViewerParse("generated-trim-pages-" + safePageCount + "-to-" + partialPageCount,
                                 null, getNtkEpisodePath(), 0, 0);
                         rememberEarlyValidatedNtkGeneratedPages(client, path, segment, workId, imageEpisodeId,
-                                imageExtension, validatedPageExtensions, validationPageCount);
+                                imageExtension, validatedPageExtensions, validationPageCount,
+                                speculationEpoch);
                         addValidatedNtkGeneratedPages(client, seenImages, segment, workId, imageEpisodeId,
                                 imageExtension, validatedPageExtensions, validationPageCount);
                         publishValidatedNtkGeneratedTailProof(path, segment, workId, imageEpisodeId,
@@ -7807,7 +8036,8 @@ public class Manga {
                 validatedPageExtensions.put(page, pageExtension);
             }
             rememberEarlyValidatedNtkGeneratedPages(client, path, segment, workId, imageEpisodeId,
-                    imageExtension, validatedPageExtensions, validationPageCount);
+                    imageExtension, validatedPageExtensions, validationPageCount,
+                    speculationEpoch);
             String pageTwoExtension = validatedPageExtensions.get(2);
             String pageCountExtension = pageTwoExtension != null && !pageTwoExtension.equals(imageExtension)
                     ? pageTwoExtension
@@ -7899,11 +8129,12 @@ public class Manga {
     }
 
     private void rememberEarlyValidatedNtkGeneratedPages(CustomHttpClient client, String path,
-                                                         String segment, String workId,
-                                                         String imageEpisodeId, String defaultExtension,
-                                                         Map<Integer, String> validatedPageExtensions,
-                                                         int validationPageCount) {
-        if(path == null || segment == null || workId == null || imageEpisodeId == null
+                                                          String segment, String workId,
+                                                          String imageEpisodeId, String defaultExtension,
+                                                          Map<Integer, String> validatedPageExtensions,
+                                                          int validationPageCount,
+                                                          long speculationEpoch) {
+        if(client == null || path == null || segment == null || workId == null || imageEpisodeId == null
                 || validatedPageExtensions == null || validationPageCount <= 0)
             return;
         int safeCount = Math.min(validationPageCount, NTK_EARLY_INITIAL_PUBLISH_PAGES);
@@ -7921,19 +8152,28 @@ public class Manga {
         }
         if(urls.isEmpty())
             return;
-        Log.d(TAG, "ntk_generated_validated_urls_early path=" + path
-                + ",count=" + urls.size()
-                + ",first=" + safeLogImage(urls.get(0)));
-        ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, urls);
-        startFirstNtkApiImageStream(client, path, urls);
+        boolean committed = client.commitNtkStrictLegacySpeculation(
+                speculationEpoch,
+                path,
+                () -> {
+                    Log.d(TAG, "ntk_generated_validated_urls_early path=" + path
+                            + ",count=" + urls.size()
+                            + ",first=" + safeLogImage(urls.get(0)));
+                    ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, urls);
+                    startFirstNtkApiImageStream(client, path, urls);
+                });
+        if(!committed)
+            canPublishNtkLegacySpeculation(
+                    client, path, speculationEpoch, "remember_validated_pages");
     }
 
     private Map<Integer, String> validateNtkGeneratedInitialPageExtensions(CustomHttpClient client,
                                                                            String segment,
                                                                            String workId,
                                                                            String imageEpisodeId,
-                                                                           String imageExtension,
-                                                                           int validationPageCount) {
+                                                                            String imageExtension,
+                                                                            int validationPageCount,
+                                                                            long speculationEpoch) {
         Map<Integer, String> result = new ConcurrentHashMap<>();
         if(validationPageCount <= 1)
             return result;
@@ -7943,6 +8183,11 @@ public class Manga {
             final int probePage = page;
             Thread thread = new Thread(() -> {
                 try {
+                    String producerPath = getNtkEpisodePath();
+                    if(!canPublishNtkLegacySpeculation(
+                            client, producerPath, speculationEpoch,
+                            "initial_validation_start"))
+                        return;
                     String cacheKey = ntkGeneratedExtensionCacheKey(segment, workId, imageEpisodeId, probePage);
                     String cachedExtension = cachedFreshNtkGeneratedImageExtension(cacheKey);
                     if(cachedExtension != null) {
@@ -7951,39 +8196,58 @@ public class Manga {
                     }
                     String primaryUrl = ntkGeneratedImageUrl(segment, workId, imageEpisodeId, probePage, imageExtension);
                     if(awaitCachedNtkGeneratedImageAvailable(client, primaryUrl, 360L)) {
-                        cacheNtkGeneratedImageExtension(cacheKey, imageExtension);
+                        if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                                client, producerPath, speculationEpoch, cacheKey, imageExtension,
+                                "initial_validation_cached_hit"))
+                            return;
                         result.put(probePage, imageExtension);
                         publishValidatedEarlyNtkGeneratedImages(client, segment, workId, imageEpisodeId,
-                                imageExtension, result);
+                                imageExtension, result, speculationEpoch);
                         return;
                     }
                     int quickHeaderReachability = ntkGeneratedImageQuickHeaderReachability(client, primaryUrl);
+                    if(quickHeaderReachability ==
+                            CustomHttpClient.NTK_IMAGE_HEADER_REACHABILITY_SUPERSEDED)
+                        return;
                     if(quickHeaderReachability > 0) {
-                        cacheNtkGeneratedImageExtension(cacheKey, imageExtension);
+                        if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                                client, producerPath, speculationEpoch, cacheKey, imageExtension,
+                                "initial_validation_header_hit"))
+                            return;
                         result.put(probePage, imageExtension);
                         publishValidatedEarlyNtkGeneratedImages(client, segment, workId, imageEpisodeId,
-                                imageExtension, result);
+                                imageExtension, result, speculationEpoch);
                         return;
                     }
                     if(quickHeaderReachability == 0) {
-                        cacheNtkGeneratedImageExtension(cacheKey, "");
+                        if(!cacheNtkGeneratedImageExtensionMissUnlessStrictCutover(
+                                client, producerPath, speculationEpoch, cacheKey,
+                                "initial_validation_header_miss"))
+                            return;
                         result.put(probePage, "");
                         return;
                     }
                     if(isNtkGeneratedImageReachable(client, primaryUrl)) {
-                        cacheNtkGeneratedImageExtension(cacheKey, imageExtension);
+                        if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                                client, producerPath, speculationEpoch, cacheKey, imageExtension,
+                                "initial_validation_range_hit"))
+                            return;
                         result.put(probePage, imageExtension);
                         publishValidatedEarlyNtkGeneratedImages(client, segment, workId, imageEpisodeId,
-                                imageExtension, result);
+                                imageExtension, result, speculationEpoch);
                         return;
                     }
                     String pageExtension = reachableNtkGeneratedImageExtension(
-                            client, segment, workId, imageEpisodeId, probePage);
-                    if(pageExtension.length() == 0)
-                        cacheNtkGeneratedImageExtension(cacheKey, "");
+                            client, segment, workId, imageEpisodeId, probePage, null,
+                            ReaderImageCache.INSTANCE.cacheGenerationForProducer(), speculationEpoch);
+                    if(pageExtension.length() == 0 &&
+                            !cacheNtkGeneratedImageExtensionMissUnlessStrictCutover(
+                                    client, producerPath, speculationEpoch, cacheKey,
+                                    "initial_validation_extension_miss"))
+                        return;
                     result.put(probePage, pageExtension);
                     publishValidatedEarlyNtkGeneratedImages(client, segment, workId, imageEpisodeId,
-                            imageExtension, result);
+                            imageExtension, result, speculationEpoch);
                 } catch(Exception ignored) {
                 } finally {
                     done.countDown();
@@ -8032,9 +8296,10 @@ public class Manga {
 
     private void publishValidatedEarlyNtkGeneratedImages(CustomHttpClient client, String segment,
                                                          String workId, String imageEpisodeId,
-                                                         String defaultExtension,
-                                                         Map<Integer, String> pageExtensions) {
-        if(pageExtensions == null || pageExtensions.isEmpty())
+                                                          String defaultExtension,
+                                                          Map<Integer, String> pageExtensions,
+                                                          long speculationEpoch) {
+        if(client == null || pageExtensions == null || pageExtensions.isEmpty())
             return;
         int maxCount = 1;
         for(int page = 2; page <= NTK_EARLY_INITIAL_PUBLISH_PAGES; page++) {
@@ -8061,11 +8326,19 @@ public class Manga {
         }
         if(urls.size() <= 1)
             return;
-        Log.d(TAG, "ntk_generated_validated_urls_incremental path=" + path
-                + ",count=" + urls.size()
-                + ",first=" + safeLogImage(urls.get(0)));
-        ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, urls);
-        startFirstNtkApiImageStream(client, path, urls);
+        boolean committed = client.commitNtkStrictLegacySpeculation(
+                speculationEpoch,
+                path,
+                () -> {
+                    Log.d(TAG, "ntk_generated_validated_urls_incremental path=" + path
+                            + ",count=" + urls.size()
+                            + ",first=" + safeLogImage(urls.get(0)));
+                    ReaderImageCache.INSTANCE.rememberEarlyNtkImageUrls(path, urls);
+                    startFirstNtkApiImageStream(client, path, urls);
+                });
+        if(!committed)
+            canPublishNtkLegacySpeculation(
+                    client, path, speculationEpoch, "publish_validated_pages");
     }
 
     private int ntkGeneratedImageQuickHeaderReachability(CustomHttpClient client, String src) {
@@ -8089,7 +8362,8 @@ public class Manga {
         headers.put("Sec-Fetch-Mode", "no-cors");
         headers.put("Sec-Fetch-Site", secFetchSiteForImageReferer(referer, src));
         headers.put("Accept-Encoding", "identity");
-        return client.ntkImageHeaderReachability(src, headers, NTK_EARLY_GENERATED_HEADER_PROBE_MS);
+        return client.ntkImageHeaderReachability(
+                src, headers, NTK_EARLY_GENERATED_HEADER_PROBE_MS, getNtkEpisodePath());
     }
 
     private List<String> fetchNaverWebtoonImageUrlsForNvEpisode(CustomHttpClient client,
@@ -8897,6 +9171,25 @@ public class Manga {
                                                        String episodeId, int page,
                                                        Runnable onPrimaryValidationMiss,
                                                        long producerGeneration) {
+        long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
+        return reachableNtkGeneratedImageExtension(
+                client, segment, workId, episodeId, page, onPrimaryValidationMiss,
+                producerGeneration, speculationEpoch);
+    }
+
+    private String reachableNtkGeneratedImageExtension(CustomHttpClient client, String segment, String workId,
+                                                       String episodeId, int page,
+                                                       Runnable onPrimaryValidationMiss,
+                                                       long producerGeneration,
+                                                       long speculationEpoch) {
+        String path = getNtkEpisodePath();
+        if(!canPublishNtkLegacySpeculation(
+                client, path, speculationEpoch, "generated_extension_lookup")) {
+            if(onPrimaryValidationMiss != null)
+                onPrimaryValidationMiss.run();
+            return "";
+        }
         String cacheKey = ntkGeneratedExtensionCacheKey(segment, workId, episodeId, page);
         String cached = cachedFreshNtkGeneratedImageExtension(cacheKey);
         if(cached != null) {
@@ -8919,16 +9212,23 @@ public class Manga {
                 return cached;
             }
         }
-        String path = getNtkEpisodePath();
+        if(shouldSkipDirectWifiStrictLegacySpeculation(client, path, "generated_extension")) {
+            if(onPrimaryValidationMiss != null)
+                onPrimaryValidationMiss.run();
+            return "";
+        }
         if(shouldSkipUnverifiedCanonicalWebtoonPathWorkSpeculation(path, segment, workId, episodeId)) {
-            cacheNtkGeneratedImageExtension(cacheKey, "");
+            cacheNtkGeneratedImageExtensionMissUnlessStrictCutover(
+                    client, path, speculationEpoch, cacheKey, "unverified_canonical_miss");
             if(onPrimaryValidationMiss != null)
                 onPrimaryValidationMiss.run();
             return "";
         }
         String extension = reachableEarlyNtkGeneratedImageExtensionForPage(
-                client, segment, workId, episodeId, page, producerGeneration);
-        if(extension.length() > 0)
+                client, segment, workId, episodeId, page,
+                producerGeneration, speculationEpoch);
+        if(extension.length() > 0 && canPublishNtkLegacySpeculation(
+                client, path, speculationEpoch, "generated_extension_result"))
             return extension;
         if(onPrimaryValidationMiss != null)
             onPrimaryValidationMiss.run();
@@ -8937,12 +9237,21 @@ public class Manga {
 
     private String reachableNtkSlugWebtoonImageExtension(CustomHttpClient client, String cdnWorkId,
                                                          String episodeId, int page) {
+        String producerPath = getNtkEpisodePath();
+        long speculationEpoch = client == null
+                ? 0L : client.captureNtkStrictLegacySpeculationEpoch();
+        if(!canPublishNtkLegacySpeculation(
+                client, producerPath, speculationEpoch, "slug_extension_lookup"))
+            return "";
         String safeCdnWorkId = cdnWorkId == null ? "" : cdnWorkId.trim();
         String cacheSegment = safeCdnWorkId.matches("\\d+") ? "wt-num-v2" : "wt";
         String cacheKey = ntkGeneratedExtensionCacheKey(cacheSegment, safeCdnWorkId, episodeId, page);
         String cached = cachedFreshNtkGeneratedImageExtension(cacheKey);
         if(cached != null)
             return cached;
+        if(shouldSkipDirectWifiStrictLegacySpeculation(
+                client, producerPath, "slug_extension"))
+            return "";
         CountDownLatch done = new CountDownLatch(1);
         CountDownLatch remaining = new CountDownLatch(NTK_GENERATED_IMAGE_EXTENSIONS.length);
         AtomicBoolean winner = new AtomicBoolean(false);
@@ -8961,8 +9270,11 @@ public class Manga {
                             + ",url=" + safeLogImageUrl(probe));
                     if(isNtkGeneratedImageReachableFast(client, probe, winner)
                             && winner.compareAndSet(false, true)) {
+                        if(!cacheNtkGeneratedImageExtensionIfCurrent(
+                                client, producerPath, speculationEpoch, cacheKey, extension,
+                                "slug_extension_hit"))
+                            return;
                         hit[0] = extension;
-                        cacheNtkGeneratedImageExtension(cacheKey, extension);
                         done.countDown();
                     }
                 } catch(Exception ignored) {
@@ -8987,8 +9299,75 @@ public class Manga {
                 + ",page=" + page
                 + ",ms=" + (System.currentTimeMillis() - startedAt));
         if(result.length() == 0)
-            cacheNtkGeneratedImageExtension(cacheKey, "");
+            cacheNtkGeneratedImageExtensionMissUnlessStrictCutover(
+                    client, producerPath, speculationEpoch, cacheKey, "slug_extension_miss");
+        else if(!canPublishNtkLegacySpeculation(
+                client, producerPath, speculationEpoch, "slug_extension_result"))
+            return "";
         return result;
+    }
+
+    /**
+     * A probe suppressed by the direct-Wi-Fi strict owner is unknown, not unreachable. Recheck at
+     * publication time because the owner may cut over while a legacy probe is already running.
+     * Empty-extension cache entries are transport-agnostic, so publishing one here would poison a
+     * later mobile/SNI read for the full cache TTL.
+     */
+    private boolean canPublishNtkLegacySpeculation(CustomHttpClient client, String path,
+                                                   long speculationEpoch, String operation) {
+        if(client == null)
+            return true;
+        boolean allowed = client.canPublishNtkStrictLegacySpeculation(speculationEpoch, path);
+        if(!allowed) {
+            Log.d(TAG, "ntk_legacy_speculation_stale_publication_skip path=" + path
+                    + ",operation=" + operation
+                    + ",producerEpoch=" + speculationEpoch
+                    + ",currentEpoch=" + client.captureNtkStrictLegacySpeculationEpoch());
+        }
+        return allowed;
+    }
+
+    private boolean cacheNtkGeneratedImageExtensionIfCurrent(
+            CustomHttpClient client, String path, long speculationEpoch,
+            String cacheKey, String extension, String operation) {
+        if(client == null) {
+            cacheNtkGeneratedImageExtension(cacheKey, extension);
+            return true;
+        }
+        boolean committed = client.commitNtkStrictLegacySpeculation(
+                speculationEpoch, path,
+                () -> cacheNtkGeneratedImageExtension(cacheKey, extension));
+        if(!committed)
+            canPublishNtkLegacySpeculation(client, path, speculationEpoch, operation);
+        return committed;
+    }
+
+    private boolean cacheNtkGeneratedImageExtensionMissUnlessStrictCutover(
+            CustomHttpClient client, String path, long speculationEpoch,
+            String cacheKey, String operation) {
+        if(client == null) {
+            cacheNtkGeneratedImageExtension(cacheKey, "");
+            return true;
+        }
+        boolean committed = client.commitNtkStrictLegacySpeculation(
+                speculationEpoch, path,
+                () -> cacheNtkGeneratedImageExtension(cacheKey, ""));
+        if(!committed)
+            canPublishNtkLegacySpeculation(client, path, speculationEpoch, operation);
+        return committed;
+    }
+
+    private boolean shouldSkipDirectWifiStrictLegacySpeculation(CustomHttpClient client,
+                                                                 String path,
+                                                                 String operation) {
+        if(client == null)
+            return false;
+        boolean skip = client.shouldSkipDirectWifiStrictLegacySpeculation(path);
+        if(skip) {
+            Log.d(TAG, "ntk_direct_wifi_strict_legacy_speculation_skip path=" + path
+                    + ",operation=" + operation);
+        }
+        return skip;
     }
 
     private static void cacheNtkGeneratedImageExtension(String cacheKey, String extension) {
@@ -9312,6 +9691,9 @@ public class Manga {
     private boolean isNtkGeneratedImageReachable(CustomHttpClient client, String src, boolean logMiss) {
         if(client == null || src == null || src.length() == 0)
             return false;
+        if(shouldSkipDirectWifiStrictLegacySpeculation(
+                client, getNtkEpisodePath(), "reachability"))
+            return false;
         if(shouldSkipCanonicalWebtoonNonWtImageProbe(src))
             return false;
         if(shouldDeferModernNtkGeneratedProbeUntilAck(client, getNtkEpisodePath()))
@@ -9345,6 +9727,9 @@ public class Manga {
             if(!ok && code == 403) {
                 response.close();
                 response = null;
+                if(shouldSkipDirectWifiStrictLegacySpeculation(
+                        client, getNtkEpisodePath(), "reachability_retry"))
+                    return false;
                 headers.remove("range");
                 response = client.get(src, headers);
                 code = response == null ? 0 : response.code();
@@ -9383,6 +9768,9 @@ public class Manga {
                                                      AtomicBoolean stopSignal) {
         if(client == null || src == null || src.length() == 0)
             return false;
+        if(shouldSkipDirectWifiStrictLegacySpeculation(
+                client, getNtkEpisodePath(), "reachability_fast"))
+            return false;
         if(shouldSkipCanonicalWebtoonNonWtImageProbe(src))
             return false;
         if(shouldDeferModernNtkGeneratedProbeUntilAck(client, getNtkEpisodePath()))
@@ -9396,6 +9784,9 @@ public class Manga {
                 return false;
             }
             if(localDone.get() || (stopSignal != null && stopSignal.get()))
+                return false;
+            if(shouldSkipDirectWifiStrictLegacySpeculation(
+                    client, getNtkEpisodePath(), "reachability_range_delayed"))
                 return false;
             return isNtkGeneratedImageReachableRange(client, src, stopSignal);
         });
@@ -9423,7 +9814,7 @@ public class Manga {
             headers.put("Accept-Encoding", "identity");
             int headerReachability = client.ntkImageHeaderReachability(
                     src, headers, Math.min(NTK_EARLY_GENERATED_HEADER_PROBE_MS,
-                            NTK_EARLY_GENERATED_EXTENSION_WAIT_MS));
+                            NTK_EARLY_GENERATED_EXTENSION_WAIT_MS), getNtkEpisodePath());
             if(headerReachability > 0) {
                 localDone.set(true);
                 return true;
@@ -9433,6 +9824,9 @@ public class Manga {
                 return false;
             }
             if(stopSignal != null && stopSignal.get())
+                return false;
+            if(shouldSkipDirectWifiStrictLegacySpeculation(
+                    client, getNtkEpisodePath(), "reachability_range_after_header"))
                 return false;
             try {
                 return rangeProbe.get(Math.max(1L, NTK_EARLY_GENERATED_EXTENSION_WAIT_MS
@@ -9450,6 +9844,9 @@ public class Manga {
     private boolean isNtkGeneratedImageReachableRange(CustomHttpClient client, String src,
                                                       AtomicBoolean stopSignal) {
         if(client == null || src == null || src.length() == 0)
+            return false;
+        if(shouldSkipDirectWifiStrictLegacySpeculation(
+                client, getNtkEpisodePath(), "reachability_range"))
             return false;
         if(shouldDeferModernNtkGeneratedProbeUntilAck(client, getNtkEpisodePath()))
             return false;

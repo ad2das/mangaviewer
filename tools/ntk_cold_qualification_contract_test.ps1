@@ -10,6 +10,8 @@ $reportScript = Join-Path $PSScriptRoot "ntk_cold_report.ps1"
 $schemaFile = Join-Path $PSScriptRoot "ntk_cold_result.schema.json"
 $macroSourceFile = Join-Path (Split-Path $PSScriptRoot -Parent) `
     "macrobenchmark/src/main/java/ml/melun/mangaview/macrobenchmark/NtkColdViewerMacrobenchmark.kt"
+$resumePlanSourceFile = Join-Path (Split-Path $PSScriptRoot -Parent) `
+    "macrobenchmark/src/main/java/ml/melun/mangaview/macrobenchmark/ResumeTraversalPlan.kt"
 $tokens = $null
 $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile(
@@ -52,7 +54,23 @@ $finalSource = [IO.File]::ReadAllText($finalQualificationScript)
 $hostSource = [IO.File]::ReadAllText($hostGpuQualificationScript)
 $reportSource = [IO.File]::ReadAllText($reportScript)
 $macroSource = [IO.File]::ReadAllText($macroSourceFile)
+$resumePlanSource = [IO.File]::ReadAllText($resumePlanSourceFile)
 $schema = [IO.File]::ReadAllText($schemaFile) | ConvertFrom-Json
+foreach($functionName in @(
+        "Get-OptionalProperty",
+        "Get-ExactMacroResultArtifact",
+        "Find-InstrumentationMeasurementInvalidReason",
+        "Resolve-ColdCaseClassification")) {
+    $functionAst = @($ast.FindAll({
+        param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq $functionName
+    }, $true))
+    if($functionAst.Count -ne 1) {
+        throw "Expected one qualification helper function: $functionName"
+    }
+    Invoke-Expression $functionAst[0].Extent.Text
+}
 function Assert-SourceContains([string]$Needle) {
     if(-not $source.Contains($Needle, [StringComparison]::Ordinal)) {
         throw "Qualification contract token missing: $Needle"
@@ -93,6 +111,42 @@ Assert-SourceContains 'mAssociatedNetworkSelectionOverride=2(?:,|$)'
 Assert-SourceContains 'Restore-HostGpuEmulatorConnectedScanIsolation'
 Assert-SourceContains '"enabled", "enabled", "-a", "0"'
 Assert-SourceContains 'hostGpuConnectedScanRestoration = $hostGpuConnectedScanRestoration'
+Assert-SourceContains 'Get-HostGpuEmulatorDefaultWifiState'
+Assert-SourceContains 'Active default network:\s+(\d+)'
+Assert-SourceContains '$wifiRoute.ready -and $ipReachability.ExitCode -eq 0'
+Assert-SourceContains 'wifiDefaultProven = [bool]$wifiRoute.ready'
+Assert-SourceContains '[int]$MeasurementInvalidRetryCount = 1'
+Assert-SourceContains '$maximumInfrastructureAttempts = 1 + $MeasurementInvalidRetryCount'
+Assert-SourceContains '"INFRA_INVALID"'
+Assert-SourceContains '$violations.Clear()'
+Assert-SourceContains 'infrastructure measurement invalid:'
+Assert-SourceContains 'Get-ExactMacroResultArtifact'
+Assert-SourceContains 'Find-InstrumentationMeasurementInvalidReason'
+Assert-SourceContains '$macroResultTransportInvalid = -not $exactMacroResultArtifact.valid'
+if(-not $macroSource.Contains(
+        'AtomicFile(File(outputDirectory, MACRO_RESULT_FILE_NAME))',
+        [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains(
+            'const val MACRO_RESULT_FILE_NAME = "macro-result.json"',
+            [StringComparison]::Ordinal) -or
+        $macroSource.Contains('Log.i(RESULT_TAG, result.toString())',
+            [StringComparison]::Ordinal)) {
+    throw "Macro result is not transported as an atomic exact file"
+}
+if(-not $macroSource.Contains(
+        'adjacentP0Timing.status ==',
+        [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains(
+            'AdjacentP0MeasurementStatus.MEASUREMENT_INVALID',
+            [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains(
+            '"measurementInvalid",',
+            [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains(
+            'p0SignalChannel?.infrastructureInvalidReason',
+            [StringComparison]::Ordinal)) {
+    throw "Semantic/IPC measurement invalidation is not composed into the macro JSON"
+}
 
 foreach($formalGatePattern in @(
         '(?s)\$diagnosticOnly\s*=.*?\$freshRandomSeedRequirementSatisfied\)',
@@ -134,15 +188,45 @@ if(-not $reportSource.Contains(
 }
 foreach($failFastReportToken in @(
         '$cases.Count -le $expectedCaseCount',
-        '$webtoonCases.Count -le [int]$summary.expectedWebtoon',
-        '$manhwaCases.Count -le [int]$summary.expectedManhwa',
-        '$selectedEpisodePairs.Count -eq $expectedCaseCount')) {
+        '[int]$summary.expectedWebtoon * $resumePercents.Count',
+        '[int]$summary.expectedManhwa * $resumePercents.Count',
+        '$selectedEpisodePairs.Count -eq $expectedPairCount')) {
     if(-not $reportSource.Contains($failFastReportToken, [StringComparison]::Ordinal)) {
         throw "Fail-fast partial report contract is missing: $failFastReportToken"
     }
 }
 if(-not $macroSource.Contains('const val MAX_EDGE_GESTURES = 500', [StringComparison]::Ordinal)) {
     throw "Cold qualification cannot traverse the longest canonical episodes"
+}
+foreach($eventObserverToken in @(
+        'setOnAccessibilityEventListener(accessibilityListener)',
+        'event.eventTime * 1_000_000L + accessibilityElapsedOffsetNanos',
+        'hasPresentedCheckpoint(source).not()',
+        'completedGestureCountAt(semanticAt)',
+        'pendingSemanticDescriptions(proof.observedSourceIndices)')) {
+    if(-not $macroSource.Contains($eventObserverToken, [StringComparison]::Ordinal)) {
+        throw "Event-timestamp semantic observer contract is missing: $eventObserverToken"
+    }
+}
+foreach($semanticPolicyToken in @(
+        'internal object AdjacentSemanticObservationPolicy',
+        'const val EVENT_TIME = "ACCESSIBILITY_EVENT_TIME"',
+        'const val CALLBACK_FLOOR = "CALLBACK_FLOOR"',
+        'eventPublishedAtNanos >= presentedAtNanos',
+        'maxOf(eventCallbackAtNanos, acceptedAtNanos)')) {
+    if(-not $resumePlanSource.Contains($semanticPolicyToken, [StringComparison]::Ordinal)) {
+        throw "Monotonic semantic observation policy is missing: $semanticPolicyToken"
+    }
+}
+foreach($lateAllReadyToken in @(
+        '$allImagesReadyTelemetryEvents.Count -eq 1',
+        '$telemetryEpisode -ceq [string]$Target.episodePath',
+        '$allImagesEvidenceSource = "SESSION_TELEMETRY_RECOVERY"',
+        '$allImagesEvidenceConflict = $true',
+        '($telemetryAllImagesReadyAtNanos - $macroClickElapsedNanos) / 1000000.0')) {
+    if(-not $source.Contains($lateAllReadyToken, [StringComparison]::Ordinal)) {
+        throw "Late all-images telemetry recovery contract is missing: $lateAllReadyToken"
+    }
 }
 if(([regex]::Matches(
             $source,
@@ -164,7 +248,7 @@ if(-not $macroSource.Contains(
         'TraceSectionMetric("ViewerAllImagesReady", TraceSectionMetric.Mode.First)',
         [StringComparison]::Ordinal) -or
         -not $source.Contains('ViewerAllImagesReadyFirstMs', [StringComparison]::Ordinal) -or
-        -not $source.Contains('allImagesReadyPageCount -ne $authoritativePageCount',
+        -not $source.Contains('allImagesReadyPageCount -ne $expectedForwardPageCount',
             [StringComparison]::Ordinal)) {
     throw "All-canonical-images type SLA is not fail-closed across trace and manifest evidence"
 }
@@ -242,6 +326,9 @@ foreach($pairField in @(
         throw "Selected episode-pair schema field is optional: $pairField"
     }
 }
+$fixturePairHashBytes = [Security.Cryptography.SHA256]::HashData(
+    [Text.Encoding]::UTF8.GetBytes("42|webtoon|fixture-work|100|101"))
+$fixturePairSelectionHash = [Convert]::ToHexString($fixturePairHashBytes).ToLowerInvariant()
 $schemaFixture = [pscustomobject][ordered]@{
     schema = 1
     profile = "ntk-real-ui-cold-20-plus-20-v1"
@@ -257,13 +344,16 @@ $schemaFixture = [pscustomobject][ordered]@{
         workId = "fixture-work"
         currentEpisodeId = "100"
         currentEpisodePath = "/webtoon/fixture-work/100"
+        currentPageCount = 8
         nextEpisodeId = "101"
         nextEpisodePath = "/webtoon/fixture-work/101"
         nextEpisodePageCount = 4
-        pairSelectionHash = "0" * 64
+        pairSelectionHash = $fixturePairSelectionHash
         pairRankOrdinal = 1
         pairCandidateCount = 3
     })
+    resumePercents = @(90)
+    resumeQualificationSatisfied = $false
     expectedWebtoon = 1
     expectedManhwa = 0
     completedCases = 1
@@ -321,14 +411,26 @@ $schemaFixture = [pscustomobject][ordered]@{
     cases = @([pscustomobject][ordered]@{
         schema = 1
         caseId = "fixture-1"
+        baseCaseId = "fixture-1"
+        infrastructureAttempt = 1
+        classification = "PRODUCT_INVALID"
         ordinal = 1
         workType = "webtoon"
         workId = "fixture-work"
+        currentPageCount = 8
+        resumePercent = 90
+        resumePercentBasis = "canonical_page_ordinal"
+        resumePage = 7
+        resumeOffset = -420
+        expectedForwardPageCount = 1
         episodeId = "100"
         episodePath = "/webtoon/fixture-work/100"
         expectedAdjacentEpisodePath = "/webtoon/fixture-work/101"
         expectedAdjacentPageCount = 4
         passed = $false
+        measurementInvalid = $false
+        measurementInvalidReason = $null
+        invalidMeasurementDiagnostics = @()
         violations = @("fixture")
     })
     reproducibility = [pscustomobject][ordered]@{
@@ -351,6 +453,123 @@ $schemaFixtureJson = $schemaFixture | ConvertTo-Json -Depth 20
 if(-not (Test-Json -Json $schemaFixtureJson -SchemaFile $schemaFile -ErrorAction Stop)) {
     throw "Exact episode-pair schema fixture did not validate"
 }
+$infraFixture = $schemaFixtureJson | ConvertFrom-Json
+$infraCase = $infraFixture.cases[0]
+$infraCase.classification = "INFRA_INVALID"
+$infraCase.measurementInvalid = $true
+$infraCase.measurementInvalidReason =
+    "MEASUREMENT_INVALID: source=0 semanticLag=786.0985ms>240ms"
+$infraCase.invalidMeasurementDiagnostics = @(
+    "forward-adjacent p0 seam exceeded the 200ms physical UX bound",
+    "all canonical images exceeded 8000ms"
+)
+$infraCase.violations = @(
+    "infrastructure measurement invalid: $($infraCase.measurementInvalidReason)"
+)
+$infraFixtureJson = $infraFixture | ConvertTo-Json -Depth 20
+if(-not (Test-Json -Json $infraFixtureJson -SchemaFile $schemaFile -ErrorAction Stop)) {
+    throw "Infrastructure-invalid case fixture did not validate"
+}
+$reportFixtureRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ("ntk-report-classification-contract-" + [Guid]::NewGuid().ToString("N"))
+[void](New-Item -ItemType Directory -Path $reportFixtureRoot)
+try {
+    foreach($reportFixture in @(
+            [pscustomobject]@{ Name = "product"; Json = $schemaFixtureJson },
+            [pscustomobject]@{ Name = "infra"; Json = $infraFixtureJson })) {
+        $fixtureSummaryPath = Join-Path $reportFixtureRoot `
+            "$($reportFixture.Name)-summary.json"
+        $fixtureReportPath = Join-Path $reportFixtureRoot `
+            "$($reportFixture.Name)-report.md"
+        [IO.File]::WriteAllText(
+            $fixtureSummaryPath,
+            [string]$reportFixture.Json,
+            [Text.UTF8Encoding]::new($false))
+        $reportOutput = & pwsh -NoProfile -File $reportScript `
+            -SummaryPath $fixtureSummaryPath -OutputPath $fixtureReportPath 2>&1
+        if($LASTEXITCODE -ne 0 -or
+                -not (Test-Path -LiteralPath $fixtureReportPath -PathType Leaf)) {
+            throw "Classification report fixture failed ($($reportFixture.Name)): " +
+                ($reportOutput -join [Environment]::NewLine)
+        }
+        if($reportFixture.Name -ceq "infra") {
+            $renderedInfraReport = [IO.File]::ReadAllText($fixtureReportPath)
+            if(-not $renderedInfraReport.Contains(
+                    "MEASUREMENT_INVALID: source=0 semanticLag=786.0985ms>240ms",
+                    [StringComparison]::Ordinal) -or
+                    -not $renderedInfraReport.Contains(
+                        "forward-adjacent p0 seam exceeded the 200ms physical UX bound",
+                        [StringComparison]::Ordinal) -or
+                    -not $renderedInfraReport.Contains(
+                        "all canonical images exceeded 8000ms",
+                        [StringComparison]::Ordinal)) {
+                throw "Infrastructure-invalid report hid the seam/SLA diagnostics"
+            }
+        }
+    }
+} finally {
+    if(Test-Path -LiteralPath $reportFixtureRoot) {
+        Remove-Item -LiteralPath $reportFixtureRoot -Recurse -Force
+    }
+}
+$classificationMismatchFixture = $infraFixtureJson | ConvertFrom-Json
+$classificationMismatchFixture.cases[0].classification = "PRODUCT_INVALID"
+if(Test-Json -Json ($classificationMismatchFixture | ConvertTo-Json -Depth 20) `
+        -SchemaFile $schemaFile -ErrorAction SilentlyContinue) {
+    throw "Schema accepted PRODUCT_INVALID with measurementInvalid=true"
+}
+$exactResultFixtureRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ("ntk-macro-result-contract-" + [Guid]::NewGuid().ToString("N"))
+[void](New-Item -ItemType Directory -Path $exactResultFixtureRoot)
+try {
+    $exactResultFixturePath = Join-Path $exactResultFixtureRoot "macro-result.json"
+    $exactResultFixtureJson = [pscustomobject][ordered]@{
+        schema = 1
+        caseId = "fixture-case"
+        payload = "x" * 5000
+        measurementInvalid = $true
+        measurementInvalidReason =
+            "MEASUREMENT_INVALID: source=0 semanticLag=786.0985ms>240ms"
+    } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText(
+        $exactResultFixturePath,
+        $exactResultFixtureJson,
+        [Text.UTF8Encoding]::new($false))
+    $exactArtifact = Get-ExactMacroResultArtifact `
+        @([IO.FileInfo]::new($exactResultFixturePath)) "fixture-case"
+    if(-not $exactArtifact.valid -or $exactArtifact.candidateCount -ne 1 -or
+            $exactArtifact.bytes -le 4096L -or
+            [string]$exactArtifact.result.caseId -cne "fixture-case" -or
+            [string]$exactArtifact.sha256 -notmatch '^[0-9a-f]{64}$') {
+        throw "Exact >4 KiB macro result artifact validation failed"
+    }
+    $wrongCaseArtifact = Get-ExactMacroResultArtifact `
+        @([IO.FileInfo]::new($exactResultFixturePath)) "wrong-case"
+    if($wrongCaseArtifact.valid -or $wrongCaseArtifact.problems.Count -eq 0) {
+        throw "Exact macro result accepted the wrong case identity"
+    }
+} finally {
+    if(Test-Path -LiteralPath $exactResultFixtureRoot) {
+        Remove-Item -LiteralPath $exactResultFixtureRoot -Recurse -Force
+    }
+}
+$instrumentationInvalidReason = Find-InstrumentationMeasurementInvalidReason @'
+INSTRUMENTATION_STATUS: stack=ml.melun.mangaview.macrobenchmark.NtkColdViewerMacrobenchmark$MeasurementInvalidException: MEASUREMENT_INVALID: source=0 semanticLag=786.0985ms>240ms
+    at benchmark.Source(Source.kt:1)
+'@
+if([string]$instrumentationInvalidReason -cne
+        "MEASUREMENT_INVALID: source=0 semanticLag=786.0985ms>240ms") {
+    throw "Instrumentation MeasurementInvalidException fallback parsing failed"
+}
+if($null -ne (Find-InstrumentationMeasurementInvalidReason `
+        "java.lang.AssertionError: product seam exceeded")) {
+    throw "Instrumentation fallback mislabeled a product assertion as infrastructure invalid"
+}
+if([string](Resolve-ColdCaseClassification $true 99) -cne "INFRA_INVALID" -or
+        [string](Resolve-ColdCaseClassification $false 0) -cne "VALID" -or
+        [string](Resolve-ColdCaseClassification $false 1) -cne "PRODUCT_INVALID") {
+    throw "Cold case classification did not prioritize measurement invalidation"
+}
 if(-not $macroSource.Contains(
         'require(expectedAdjacentEpisodePath.isNotBlank())',
         [StringComparison]::Ordinal) -or
@@ -358,42 +577,179 @@ if(-not $macroSource.Contains(
             'require(expectedAdjacentPageCount >= ADJACENT_REQUIRED_RUNWAY_PAGES)',
             [StringComparison]::Ordinal) -or
         $macroSource.Contains('expectedEpisodePath.isBlank()', [StringComparison]::Ordinal) -or
-        -not $macroSource.Contains('runwayReadyBeforeTail', [StringComparison]::Ordinal) -or
-        -not $macroSource.Contains('allRequiredDrawablesObserved',
+        -not $resumePlanSource.Contains(
+            'runwayDrawableCount == requiredRunwayPageCount',
             [StringComparison]::Ordinal) -or
-        -not $macroSource.Contains('ADJACENT_BOUNDARY_WAIT_SLA_MS = 500L',
+        -not $macroSource.Contains('ADJACENT_P0_SEAM_SLA_MS = 200L',
+            [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains('MAX_INPUT_INTER_GESTURE_GAP_MS = 64L',
+            [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains(
+            'requireReaderRateInput(inputMetrics, "resume-through-adjacent-p3")',
+            [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains('inputMetrics.gestureCount > gesturesAtP0Signal',
+            [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains('channel.requireCompleteCrossCheck(',
+            [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains('adjacentProof.observedSourceIndices.joinToString(",")',
+            [StringComparison]::Ordinal) -or
+        -not $resumePlanSource.Contains('maxDetectionLagMs: Long = 240L',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$requiredAdjacentRunwayPages = 4',
             [StringComparison]::Ordinal) -or
-        -not $source.Contains('$ProductionMaxAdjacentBoundaryWaitMs = 500.0',
+        -not $source.Contains('$ProductionMaxAdjacentP0SeamMs = 200.0',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('$ProductionMaxP0DetectionLagMs = 240.0',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('$ProductionMaxInputInterGestureGapMs = 64L',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('"adjacentObservedRunwayDrawableCount"',
             [StringComparison]::Ordinal)) {
-    throw "Forward-adjacent qualification is not fail-closed on identity/count/runway/tail timing"
+    throw "Forward-adjacent qualification is not fail-closed on physical p0-p3/IPC/input timing"
+}
+if($macroSource.Contains('ADJACENT_BOUNDARY_WAIT_SLA_MS', [StringComparison]::Ordinal) -or
+        $source.Contains('adjacentBoundaryWaitMs', [StringComparison]::Ordinal) -or
+        $source.Contains('adjacentAttachMs', [StringComparison]::Ordinal) -or
+        $reportSource.Contains('adjacentBoundaryWaitMs', [StringComparison]::Ordinal) -or
+        $reportSource.Contains('adjacentAttachMs', [StringComparison]::Ordinal) -or
+        $source.Contains(
+            '(Get-OptionalProperty $macroResult "runwayReadyBeforeTail") -ne $true',
+            [StringComparison]::Ordinal) -or
+        $reportSource.Contains('$case.runwayReadyBeforeTail -eq $true',
+            [StringComparison]::Ordinal)) {
+    throw "Historical pre-tail runway diagnostics must not be used as pass gates"
 }
 $formalPassContract = $schema.allOf[3].then.properties
 if([int]$formalPassContract.expectedWebtoon.const -ne 20 -or
         [int]$formalPassContract.expectedManhwa.const -ne 20 -or
-        [int]$formalPassContract.completedCases.const -ne 40 -or
-        [int]$formalPassContract.passedCases.const -ne 40 -or
+        [int]$formalPassContract.completedCases.const -ne 120 -or
+        [int]$formalPassContract.passedCases.const -ne 120 -or
         [int]$formalPassContract.allImagesSlaMs.const -ne 8000) {
     throw "Formal result schema is not fixed to random 20+20 and the 8000ms all-images SLA"
 }
 $passedCaseRequired = @($schema.'$defs'.case.allOf[0].then.required)
 $passedCaseProperties = $schema.'$defs'.case.allOf[0].then.properties
 foreach($adjacentField in @(
+        "baseCaseId",
+        "infrastructureAttempt",
+        "classification",
+        "resumeMode",
+        "homeContinueSeeded",
+        "homeContinueColdForceStopped",
+        "firstActualResumePage",
+        "inputSampleCount",
+        "inputStartElapsedNanos",
+        "inputEndElapsedNanos",
+        "allImagesReadyAtNanos",
+        "allImagesEvidenceSource",
+        "allImagesEvidenceConflict",
         "expectedAdjacentEpisodePath",
         "expectedAdjacentPageCount",
         "adjacentRunwayTargetEpisode",
         "adjacentRunwayPageCount",
         "adjacentObservedRunwayDrawableCount",
         "adjacentTotalPageCount",
-        "adjacentBoundaryWaitMs",
-        "runwayReadyBeforeTail",
-        "adjacentAttachMs")) {
+        "adjacentTraversalGestureCount",
+        "adjacentP0TraversalGestureCount",
+        "adjacentRunwayTraversalGestureCount",
+        "adjacentLastSourceIndex",
+        "adjacentPhysicallyObservedSources",
+        "adjacentPhysicalRunwayPassed",
+        "adjacentSourcePresentedAtNanos",
+        "adjacentSourceIpcAcceptedAtNanos",
+        "adjacentSourceGesturesAtPresentation",
+        "adjacentSourceSemanticObservedAtNanos",
+        "adjacentSourceSemanticEventPublishedAtNanos",
+        "adjacentSourceSemanticEventLeadMs",
+        "adjacentSourceSemanticCallbackAtNanos",
+        "adjacentSourceSemanticObserverModes",
+        "adjacentSourceGesturesAtSemanticProof",
+        "adjacentSourceProgressPassed",
+        "adjacentSourceProgressFailure",
+        "adjacentWorkStartedAtNanos",
+        "adjacentRunwayReadyAtNanos",
+        "forwardBoundaryReachedAtNanos",
+        "firstAdjacentActualAtNanos",
+        "firstAdjacentActualEpisode",
+        "adjacentP0SeamMs",
+        "p0EmbeddedFirstAdjacentActualAtNanos",
+        "p0HarnessObservedAtNanos",
+        "p0GesturesAtObservation",
+        "p0DetectionLagMs",
+        "p0ActualToInputEndMs",
+        "p0SemanticObservationStatus",
+        "p0MeasurementStatus",
+        "p0IpcAccepted",
+        "p0IpcPresentedAtNanos",
+        "p0IpcSenderAtNanos",
+        "p0IpcReceivedAtNanos",
+        "p0IpcAcceptedAtNanos",
+        "p0IpcPresentedToSenderLagMs",
+        "p0IpcSenderToReceiverLagMs",
+        "p0IpcReceiverToAcceptanceLagMs",
+        "p0IpcDeliveryLagMs",
+        "p0IpcAcceptanceLagMs",
+        "p0IpcGesturesAtSignal",
+        "p0IpcGesturesAfterSignal",
+        "p0IpcContinuousInputPreserved",
+        "p0IpcEpisodePath",
+        "p0IpcSourceIndex",
+        "p0IpcViewerGeneration",
+        "p0IpcRejectedSignalCount",
+        "p0IpcFirstRejectReason",
+        "p0IpcSemanticObservedAtNanos",
+        "p0SemanticCallbackAtNanos",
+        "p0SemanticEventPublishedAtNanos",
+        "p0SemanticEventLeadMs",
+        "p0SemanticObserverMode",
+        "p0SemanticCallbackSchedulerLagMs",
+        "p0IpcTimestampCrossCheckPassed",
+        "measurementInvalid",
+        "measurementInvalidReason")) {
     if($passedCaseRequired -cnotcontains $adjacentField) {
         throw "Passed-case schema does not require adjacent evidence: $adjacentField"
     }
+    if(-not $source.Contains("$adjacentField =", [StringComparison]::Ordinal)) {
+        throw "Qualification case summary does not copy adjacent evidence: $adjacentField"
+    }
+}
+if([double]$passedCaseProperties.adjacentP0SeamMs.maximum -ne 200.0 -or
+        [string]$passedCaseProperties.classification.const -cne "VALID" -or
+        [string]$passedCaseProperties.adjacentPhysicallyObservedSources.const -cne
+            "0,1,2,3" -or
+        [int]$passedCaseProperties.adjacentLastSourceIndex.const -ne 3 -or
+        $passedCaseProperties.adjacentPhysicalRunwayPassed.const -ne $true -or
+        [int]$passedCaseProperties.inputMaxInterGestureGapMs.maximum -ne 64 -or
+        [double]$passedCaseProperties.p0DetectionLagMs.maximum -ne 240.0 -or
+        [double]$passedCaseProperties.p0IpcAcceptanceLagMs.maximum -ne 240.0 -or
+        [string]$passedCaseProperties.p0SemanticObservationStatus.const -cne "VALID" -or
+        [string]$passedCaseProperties.p0MeasurementStatus.const -cne "VALID" -or
+        $passedCaseProperties.p0IpcContinuousInputPreserved.const -ne $true -or
+        [int]$passedCaseProperties.p0IpcRejectedSignalCount.const -ne 0 -or
+        [string]$passedCaseProperties.p0IpcFirstRejectReason.const -cne "NONE" -or
+        $passedCaseProperties.p0IpcTimestampCrossCheckPassed.const -ne $true -or
+        $passedCaseProperties.adjacentSourceProgressPassed.const -ne $true -or
+        [int]$passedCaseProperties.adjacentSourcePresentedAtNanos.minItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourcePresentedAtNanos.maxItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceIpcAcceptedAtNanos.minItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceIpcAcceptedAtNanos.maxItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticObservedAtNanos.minItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticObservedAtNanos.maxItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticEventPublishedAtNanos.minItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticEventPublishedAtNanos.maxItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticCallbackAtNanos.minItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticCallbackAtNanos.maxItems -ne 4 -or
+        @($passedCaseProperties.adjacentSourceSemanticObserverModes.items.enum) -cnotcontains
+            "ACCESSIBILITY_EVENT_TIME" -or
+        @($passedCaseProperties.adjacentSourceSemanticObserverModes.items.enum) -cnotcontains
+            "CALLBACK_FLOOR" -or
+        @($passedCaseProperties.p0SemanticObserverMode.enum) -cnotcontains
+            "ACCESSIBILITY_EVENT_TIME" -or
+        @($passedCaseProperties.p0SemanticObserverMode.enum) -cnotcontains
+            "CALLBACK_FLOOR" -or
+        $passedCaseProperties.allImagesEvidenceConflict.const -ne $false -or
+        $passedCaseProperties.measurementInvalid.const -ne $false) {
+    throw "Passed-case schema weakened the physical p0-p3/IPC/input contract"
 }
 foreach($frameField in @(
         "activePresentedFrameCount",
@@ -440,9 +796,30 @@ if(-not $reportSource.Contains(
         'exact four-drawable forward-adjacent proof missing',
         [StringComparison]::Ordinal) -or
         -not $reportSource.Contains(
-            'forward-adjacent tail transition timing proof failed',
+            'forward-adjacent p0-p3 physical runway proof missing',
+            [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains(
+            'forward-adjacent p0 seam timing proof failed',
+            [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains(
+            'adjacent p0 IPC identity or semantic measurement invalid',
+            [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains(
+            'resume-to-next physical input cadence contract failed',
             [StringComparison]::Ordinal)) {
-    throw "Final report does not recompute the adjacent drawable/tail contract"
+    throw "Final report does not recompute the physical p0-p3/IPC/input contract"
+}
+foreach($classificationContractToken in @(
+        '"PRODUCT_INVALID" {',
+        '"INFRA_INVALID" {',
+        'INFRA_INVALID case classification mismatch:',
+        'passed case lacked one exact atomic macro result:',
+        'invalidMeasurementDiagnostics')) {
+    if(-not $reportSource.Contains(
+            $classificationContractToken,
+            [StringComparison]::Ordinal)) {
+        throw "Final report classification contract missing: $classificationContractToken"
+    }
 }
 if(([regex]::Matches($macroSource, '(?m)^\s*startActivityAndWait\(\)\s*$')).Count -ne 1) {
     throw "Cold qualification must launch the target exactly once"

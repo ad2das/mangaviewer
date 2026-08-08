@@ -1567,10 +1567,12 @@ private:
         const int autoRefreshOffResult = bufferControls.setAutoRefresh != nullptr
             ? bufferControls.setAutoRefresh(command.window, false)
             : -3;
-        // Front/queued/producer plus one spare is sufficient because Java and native mailboxes
-        // remain depth one and Choreographer never admits a free-running producer burst.
+        // Keep exactly front/queued/producer. The Java/native mailboxes are already depth one, so
+        // a fourth BufferQueue slot can only retain an older physical viewport after the producer
+        // has moved on. Capping the queue at three moves that backpressure to the latest-wins
+        // mailbox instead of letting SurfaceFlinger drain a stale extra frame.
         const int bufferCountResult = bufferControls.setBufferCount != nullptr
-            ? bufferControls.setBufferCount(command.window, 4)
+            ? bufferControls.setBufferCount(command.window, 3)
             : -3;
         // Allocate the finite queue before physical scrolling begins. Leaving this lazy made
         // host-GPU eglSwapBuffers repeatedly spend 55-70 ms growing/acquiring the queue during
@@ -1605,7 +1607,7 @@ private:
         height_ = command.height;
         refreshPeriodNanos_ = command.refreshPeriodNanos > 0
             ? command.refreshPeriodNanos : kDefaultRefreshPeriodNanos;
-        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount4=%d intervalRange=%d..%d durationMs=%.3f",
+        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d bufferCount3=%d intervalRange=%d..%d durationMs=%.3f",
               static_cast<unsigned long long>(surfaceEpoch_), width_, height_,
               static_cast<long long>(refreshPeriodNanos_),
               preparedWidth_ == width_ && preparedHeight_ == height_ ? 1 : 0,

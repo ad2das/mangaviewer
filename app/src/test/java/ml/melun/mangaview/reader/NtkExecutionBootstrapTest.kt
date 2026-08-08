@@ -7,6 +7,35 @@ import org.junit.Test
 import java.util.concurrent.ExecutorService
 
 class NtkExecutionBootstrapTest {
+
+    @Test
+    fun finiteTopologyIsExclusiveToTheDirectWifiAdjacentWebtoonGrant() {
+        val policy = NtkDirectWifiAdjacentExecutionTopology
+
+        assertTrue(policy.shouldDeferBootstrap(
+            "/webtoon/work/next", true, true, true, false,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/webtoon/work/next", true, true, false, false,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/webtoon/work/next", true, true, true, true,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/webtoon/work/next", true, false, true, false,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/manhwa/work/next", true, true, true, false,
+        ))
+        assertFalse(policy.shouldDeferBootstrap(
+            "/webtoon/work/next", false, true, true, false,
+        ))
+        assertEquals(12, policy.physicalLaneCount(true, 61))
+        assertEquals(61, policy.physicalLaneCount(false, 61))
+        assertEquals(4, policy.routeLaneCount(true, 8))
+        assertEquals(8, policy.routeLaneCount(false, 8))
+    }
+
     @Test
     fun strictSourceBootstrapPrestartsTheCompleteBoundedPhysicalRing() {
         val bootstrap = NtkStrictSourceExecutionBootstrap()

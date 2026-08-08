@@ -21,7 +21,9 @@ param(
     [int]$CaseTimeoutSeconds = 360,
     [switch]$SkipInstall,
     [switch]$RequireBaselineProfile,
-    [switch]$StandalonePerfetto
+    [switch]$StandalonePerfetto,
+    [string]$HostGpuAvdName = "",
+    [string]$HostGpuEmulatorPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -48,7 +50,7 @@ $arguments = @{
     FirstImageSlaMs = 4000
     ManhwaImageSlaMs = 4000
     # The entry deadline remains four seconds; every canonical image must be drawable within the
-    # separate six-second complete-work UX deadline.
+    # separate eight-second complete-work UX deadline.
     AllImagesSlaMs = 8000
     CaseTimeoutSeconds = $CaseTimeoutSeconds
     QualificationDeviceMode = "HOST_GPU_EMULATOR"
@@ -61,6 +63,12 @@ $arguments = @{
 if($SkipInstall) { $arguments.SkipInstall = $true }
 if($RequireBaselineProfile) { $arguments.RequireBaselineProfile = $true }
 if($StandalonePerfetto) { $arguments.StandalonePerfetto = $true }
+if(-not [string]::IsNullOrWhiteSpace($HostGpuAvdName)) {
+    $arguments.HostGpuAvdName = $HostGpuAvdName
+}
+if(-not [string]::IsNullOrWhiteSpace($HostGpuEmulatorPath)) {
+    $arguments.HostGpuEmulatorPath = $HostGpuEmulatorPath
+}
 
 Write-Host "NTK host-GPU emulator qualification: fresh random 20+20, cold, first image=4000ms, all images=8000ms"
 & $runner @arguments

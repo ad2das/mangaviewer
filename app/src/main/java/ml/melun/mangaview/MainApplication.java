@@ -20,6 +20,7 @@ import androidx.work.WorkManager;
 
 import ml.melun.mangaview.ClassificationDbUpdater;
 import ml.melun.mangaview.ClassificationDbStore;
+import ml.melun.mangaview.benchmark.BenchmarkAdjacentCommitSignal;
 import ml.melun.mangaview.activity.NtkQuicFetcher;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.NtkWebViewFallbackManager;
@@ -81,6 +82,7 @@ public class MainApplication extends MultiDexApplication implements Configuratio
         ViewerColdStateSnapshot.captureAtProcessStart(this).record();
         long appStartedAt = PerfTrace.start("app_on_create_ms");
         appContext = this;
+        BenchmarkAdjacentCommitSignal.initialize(this);
         MainThreadStallMonitor.install(Log.isLoggable("MainStall", Log.DEBUG));
         long crashReporterStartedAt = PerfTrace.start("app_crash_reporter_install_ms");
         CrashReporter.install(this);

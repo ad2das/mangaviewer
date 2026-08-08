@@ -1,5 +1,6 @@
 package ml.melun.mangaview.runtime;
 
+import ml.melun.mangaview.benchmark.BenchmarkAdjacentCommitSignal;
 import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator;
 import android.os.Handler;
 import android.os.Debug;
@@ -353,10 +354,13 @@ public final class ViewerTelemetry {
 
     public static void networkObservation(
             int pageIndex,
+            String requestEpisodePath,
+            String requestRole,
             String protocol,
             String connectionId,
             boolean connectionReused,
-            String clientInstanceId) {
+            String clientInstanceId,
+            boolean clientInstanceMeasured) {
         Session session = SESSION.get();
         if(session != null) {
             session.networkObservationCount.incrementAndGet();
@@ -368,10 +372,13 @@ public final class ViewerTelemetry {
             return;
         event("network_observation", SESSION.get(),
                 "pageIndex=" + pageIndex
+                        + ",requestEpisodePath=" + clean(requestEpisodePath)
+                        + ",requestRole=" + clean(requestRole)
                         + ",protocol=" + clean(protocol)
                         + ",connectionId=" + clean(connectionId)
                         + ",connectionReused=" + connectionReused
-                        + ",clientInstanceId=" + clean(clientInstanceId));
+                        + ",clientInstanceId=" + clean(clientInstanceId)
+                        + ",clientInstanceMeasured=" + clientInstanceMeasured);
     }
 
     /**
@@ -537,10 +544,21 @@ public final class ViewerTelemetry {
                 velocityPxPerSecond,
                 refreshRate);
 
-        if(session.firstActualFrame.compareAndSet(false, true)) {
-            session.firstActualFrameAtNanos = evidenceAtNanos > 0L
-                    ? evidenceAtNanos
-                    : SystemClock.elapsedRealtimeNanos();
+        boolean firstActualFrame;
+        synchronized(session) {
+            firstActualFrame = session.firstActualFrame.compareAndSet(false, true);
+            if(firstActualFrame) {
+                session.firstActualFrameAtNanos = evidenceAtNanos > 0L
+                        ? evidenceAtNanos
+                        : SystemClock.elapsedRealtimeNanos();
+                session.firstActualEpisodeId = physicalEpisodeId == null
+                        || physicalEpisodeId.trim().isEmpty()
+                        ? session.episodeId
+                        : physicalEpisodeId.trim();
+                session.firstActualSourcePage = firstVisiblePage;
+            }
+        }
+        if(firstActualFrame) {
             PerfTrace.endAsync("ViewerOpen", session.openCookie);
             if(session.scrollTraceOpen.compareAndSet(false, true))
                 PerfTrace.beginAsync("ViewerScrollSession", session.scrollCookie);
@@ -573,6 +591,12 @@ public final class ViewerTelemetry {
                     ? evidenceAtNanos
                     : SystemClock.elapsedRealtimeNanos();
         session.latestActualAtNanos = actualStateAtNanos;
+        // Keep the one-shot first-actual clock above for launch timing, but also publish the
+        // timestamp of this exact identity-valid physical frame. Benchmark semantic proof must
+        // bind its accessibility state to the matching compositor IPC rather than a prior frame.
+        session.latestActualPresentedAtNanos = evidenceAtNanos > 0L
+                ? evidenceAtNanos
+                : SystemClock.elapsedRealtimeNanos();
         publishActualState(renderView, session, physicalEpisodeId, actualStatePage);
 
         String direction = velocityPxPerSecond > 25f
@@ -724,17 +748,20 @@ public final class ViewerTelemetry {
         Session session = SESSION.get();
         if(session == null || pageCount <= 0 || totalPageCount < pageCount)
             return;
+        String targetEpisode = clean(targetEpisodeId);
         long now = SystemClock.elapsedRealtimeNanos();
         synchronized(session) {
             if(session.adjacentRunwayReadyAtNanos > 0L)
                 return;
             session.adjacentRunwayReadyAtNanos = now;
-            session.adjacentRunwayTargetEpisode = clean(targetEpisodeId);
+            session.adjacentRunwayTargetEpisode = targetEpisode;
             session.adjacentRunwayPageCount = pageCount;
             session.adjacentTotalPageCount = totalPageCount;
         }
+        BenchmarkAdjacentCommitSignal.publishRunwayReady(
+                targetEpisode, pageCount, totalPageCount, now, session.generation);
         event("adjacent_runway_ready", session,
-                "targetEpisode=" + clean(targetEpisodeId)
+                "targetEpisode=" + targetEpisode
                         + ",pageCount=" + pageCount
                         + ",totalPageCount=" + totalPageCount
                         + ",atNanos=" + now);
@@ -1186,7 +1213,15 @@ public final class ViewerTelemetry {
                 : physicalEpisodeId.trim();
         String description =
                 "actual:" + clean(episodeId) + ':' + pageIndex + ':' + session.generation
-                    + ";actualAtNanos=" + Math.max(0L, session.latestActualAtNanos);
+                    + ";actualAtNanos=" + Math.max(0L, session.latestActualAtNanos)
+                    + ";actualPresentedAtNanos="
+                    + Math.max(0L, session.latestActualPresentedAtNanos)
+                    // The main actual identity intentionally advances to the furthest visible
+                    // canonical source. Preserve the first qualified physical identity separately
+                    // so Continue can prove its exact restored anchor after that advance.
+                    + ";firstActualEpisode=" + clean(session.firstActualEpisodeId)
+                    + ";firstActualSourcePage="
+                    + Math.max(-1, session.firstActualSourcePage);
         session.latestActualDescription = description;
         // Once the launch episode is fully render-ready, keep that one-shot evidence attached
         // to every later physical commit. Continuous reading legitimately replaces the root
@@ -1381,7 +1416,10 @@ public final class ViewerTelemetry {
         final ConcurrentHashMap<String, Boolean> imageHosts = new ConcurrentHashMap<>();
         final ConcurrentHashMap<String, Boolean> networkProtocols = new ConcurrentHashMap<>();
         volatile long firstActualFrameAtNanos;
+        volatile String firstActualEpisodeId = "";
+        volatile int firstActualSourcePage = -1;
         volatile long latestActualAtNanos;
+        volatile long latestActualPresentedAtNanos;
         volatile long allImagesReadyAtNanos;
         volatile long adjacentWorkStartedAtNanos;
         volatile long adjacentRunwayReadyAtNanos;

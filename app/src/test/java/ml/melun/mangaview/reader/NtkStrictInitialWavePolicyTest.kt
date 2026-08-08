@@ -204,9 +204,9 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
-    fun directWifiAdjacentWebtoonStartsItsExactFourBodyRunwayTogether() {
+    fun directWifiAdjacentWebtoonGivesItsFirstBoundaryPageTheBodyHeadStart() {
         assertEquals(
-            4,
+            1,
             NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
                 cohortCount = 4,
                 cellularResilientTransport = false,
@@ -224,6 +224,24 @@ class NtkStrictInitialWavePolicyTest {
                 episodePageCount = 8,
                 directWifiTransport = true,
                 adjacentPrefetch = false,
+            ),
+        )
+        assertEquals(
+            1,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 8,
+                cellularResilientTransport = false,
+                episodePageCount = 8,
+                directWifiCurrentEpisode = true,
+            ),
+        )
+        assertEquals(
+            3,
+            NtkStrictInitialWavePolicy.webtoonPreAnchorGateOperations(
+                cohortCount = 9,
+                cellularResilientTransport = false,
+                episodePageCount = 9,
+                directWifiCurrentEpisode = true,
             ),
         )
         // Carrier/SNI retains its independent finite-cohort wave.

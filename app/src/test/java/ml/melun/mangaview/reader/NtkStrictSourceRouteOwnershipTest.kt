@@ -11,6 +11,17 @@ import java.nio.file.Path
 import java.nio.file.Paths
 
 class NtkStrictSourceRouteOwnershipTest {
+
+    @Test
+    fun nonCellularAdjacentRenderPublicationIsIndependentFromWifiScheduling() {
+        val registry = readSource("NtkSourceSpoolRegistry.kt")
+        val session = readSource("NtkStrictSourceSession.kt")
+
+        assertTrue(registry.contains("val adjacentRenderPublication = !cellularResilientTransport && adjacentViewerGrant"))
+        assertTrue(registry.contains("val adjacentPrefetch = directWifiTransport && adjacentViewerGrant"))
+        assertTrue(registry.contains("adjacentRenderPublication = adjacentRenderPublication"))
+        assertTrue(session.contains("if (adjacentPrefetch || adjacentRenderPublication)"))
+    }
     @Test
     fun exactOpenSessionOwnsSealedRouteBeforeCompatibilityMirror() {
         val session = readSource("NtkStrictSourceSession.kt")
@@ -358,7 +369,7 @@ class NtkStrictSourceRouteOwnershipTest {
 
         val directWall = wrapper.indexOf(
             "webtoonReplica && directWifiWebtoonBody ->\n                        " +
-                "NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs(pageIndex)"
+                "NtkWebtoonBodyWallPolicy.directWifiSegmentWallMs("
         )
         val genericWall = wrapper.indexOf(
             "webtoonReplica -> NtkWebtoonBodyWallPolicy.segmentWallMs(pageIndex)"

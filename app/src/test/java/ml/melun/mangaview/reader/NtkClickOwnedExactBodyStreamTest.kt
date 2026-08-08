@@ -14,6 +14,364 @@ import java.util.concurrent.atomic.AtomicInteger
 class NtkClickOwnedExactBodyStreamTest {
 
     @Test
+    fun predecessorPhysicalExtensionEvidenceIsUniformOrdinaryAndConsumeOnce() {
+        NtkDirectWifiPredecessorPhysicalExtensionRegistry.resetForTest()
+        try {
+            assertTrue(
+                NtkDirectWifiPredecessorPhysicalExtensionRegistry.record(
+                    predecessorEpisodePath = "/manhwa/work/episode-a",
+                    viewerGeneration = 71L,
+                    capturedNetworkHandle = 411L,
+                    liveWifiTransport = true,
+                    cellularResilientTransport = false,
+                    liveNetworkHandle = 411L,
+                    observedCandidates = listOf(
+                        "https://booktoki9.org/manhwa/work/episode-a/p001.jpeg",
+                        "https://booktoki8.org/manhwa/work/episode-a/p002.JPEG",
+                    ),
+                    ordinaryH1WarmCandidates = listOf(
+                        "https://booktoki9.org/manhwa/work/episode-a/p001.jpeg",
+                        "https://booktoki8.org/manhwa/work/episode-a/p002.JPEG",
+                    ),
+                )
+            )
+            // A premature/current consumer is fail-closed and does not burn the evidence.
+            assertEquals(
+                null,
+                NtkDirectWifiPredecessorPhysicalExtensionRegistry.consume(
+                    predecessorEpisodePath = "/manhwa/work/episode-a",
+                    viewerGeneration = 71L,
+                    capturedNetworkHandle = 411L,
+                    directWifiCompletionGatedAdjacent = true,
+                    predecessorComplete = false,
+                    liveWifiTransport = true,
+                    cellularResilientTransport = false,
+                    liveNetworkHandle = 411L,
+                ),
+            )
+            val evidence = NtkDirectWifiPredecessorPhysicalExtensionRegistry.consume(
+                    predecessorEpisodePath = "/manhwa/work/episode-a",
+                    viewerGeneration = 71L,
+                    capturedNetworkHandle = 411L,
+                    directWifiCompletionGatedAdjacent = true,
+                    predecessorComplete = true,
+                    liveWifiTransport = true,
+                    cellularResilientTransport = false,
+                    liveNetworkHandle = 411L,
+                )
+            assertEquals("jpeg", evidence?.extension)
+            assertEquals(listOf("booktoki9.org", "booktoki8.org"), evidence?.warmReplicaHosts)
+            assertEquals(
+                null,
+                NtkDirectWifiPredecessorPhysicalExtensionRegistry.consume(
+                    predecessorEpisodePath = "/manhwa/work/episode-a",
+                    viewerGeneration = 71L,
+                    capturedNetworkHandle = 411L,
+                    directWifiCompletionGatedAdjacent = true,
+                    predecessorComplete = true,
+                    liveWifiTransport = true,
+                    cellularResilientTransport = false,
+                    liveNetworkHandle = 411L,
+                ),
+            )
+        } finally {
+            NtkDirectWifiPredecessorPhysicalExtensionRegistry.resetForTest()
+        }
+    }
+
+    @Test
+    fun predecessorEvidenceWaitsOnlyForTheActuallyOwnedForwardRange() {
+        assertEquals(
+            listOf(33, 34, 35, 36),
+            NtkDirectWifiPredecessorPhysicalExtensionRegistry
+                .ownedForwardPages(forwardFirstPage = 33, exactPageCount = 37)
+                .toList(),
+        )
+        assertEquals(
+            listOf(0, 1, 2, 3),
+            NtkDirectWifiPredecessorPhysicalExtensionRegistry
+                .ownedForwardPages(forwardFirstPage = 0, exactPageCount = 4)
+                .toList(),
+        )
+    }
+
+    @Test
+    fun predecessorPhysicalExtensionRejectsMixedNonOrdinaryAndNetworkChanges() {
+        NtkDirectWifiPredecessorPhysicalExtensionRegistry.resetForTest()
+        try {
+            fun record(candidates: List<String>) =
+                NtkDirectWifiPredecessorPhysicalExtensionRegistry.record(
+                    predecessorEpisodePath = "/manhwa/work/episode-a",
+                    viewerGeneration = 72L,
+                    capturedNetworkHandle = 412L,
+                    liveWifiTransport = true,
+                    cellularResilientTransport = false,
+                    liveNetworkHandle = 412L,
+                    observedCandidates = candidates,
+                )
+
+            assertFalse(record(listOf("https://x/p001.jpg", "https://x/p002.jpeg")))
+            assertFalse(record(listOf("https://x/p001.png", "https://x/p002.png")))
+            assertFalse(record(emptyList()))
+            assertTrue(record(listOf("https://x/p001.jpg", "https://x/p002.jpg")))
+
+            fun consume(
+                adjacent: Boolean = true,
+                wifi: Boolean = true,
+                cellular: Boolean = false,
+                liveHandle: Long? = 412L,
+            ) = NtkDirectWifiPredecessorPhysicalExtensionRegistry.consume(
+                predecessorEpisodePath = "/manhwa/work/episode-a",
+                viewerGeneration = 72L,
+                capturedNetworkHandle = 412L,
+                directWifiCompletionGatedAdjacent = adjacent,
+                predecessorComplete = true,
+                liveWifiTransport = wifi,
+                cellularResilientTransport = cellular,
+                liveNetworkHandle = liveHandle,
+            )
+
+            assertEquals(null, consume(adjacent = false))
+            assertEquals(null, consume(wifi = false))
+            assertEquals(null, consume(cellular = true))
+            assertEquals(null, consume(liveHandle = 413L))
+            assertEquals("jpg", consume()?.extension)
+        } finally {
+            NtkDirectWifiPredecessorPhysicalExtensionRegistry.resetForTest()
+        }
+    }
+
+    @Test
+    fun inheritedOrdinaryTransportIsLimitedToCompletionGatedDirectWifiRunway() {
+        fun eligible(
+            adjacent: Boolean = true,
+            page: Int = 0,
+            extension: String = "jpg",
+            wifi: Boolean = true,
+            cellular: Boolean = false,
+            capturedHandle: Long? = 412L,
+            liveHandle: Long? = 412L,
+        ) = NtkClickOwnedManhwaWavePolicy
+            .shouldUseInheritedOrdinaryDirectWifiTransport(
+                directWifiAdjacentOwned = adjacent,
+                runwayPageIndex = page,
+                inheritedExtension = extension,
+                liveWifiTransport = wifi,
+                cellularResilientTransport = cellular,
+                capturedNetworkHandle = capturedHandle,
+                liveNetworkHandle = liveHandle,
+            )
+
+        assertTrue(eligible(page = 0, extension = "jpg"))
+        assertTrue(eligible(page = 3, extension = "JPEG"))
+        assertFalse(eligible(adjacent = false))
+        assertFalse(eligible(page = 4))
+        assertFalse(eligible(extension = "png"))
+        assertFalse(eligible(wifi = false))
+        assertFalse(eligible(cellular = true))
+        assertFalse(eligible(capturedHandle = null))
+        assertFalse(eligible(liveHandle = 413L))
+    }
+
+    @Test
+    fun residentExactAdoptionIsLimitedToPendingDirectWifiAdjacentRunwayIdentity() {
+        fun eligible(
+            adjacent: Boolean = true,
+            page: Int = 3,
+            reconciliationComplete: Boolean = false,
+            expected: String = "https://booktoki8.org/manhwa/32685/1659488/p004.jpeg",
+            resident: String = expected,
+        ) = NtkDirectWifiAdjacentResidentExactAdoptionPolicy.shouldAdopt(
+            directWifiAdjacentOwned = adjacent,
+            forwardFirstPage = 0,
+            pageIndex = page,
+            runwayPageCount = 4,
+            candidateReconciliationComplete = reconciliationComplete,
+            expectedCanonicalAsset = expected,
+            residentCanonicalAsset = resident,
+        )
+
+        assertTrue(eligible(page = 0))
+        assertTrue(eligible(page = 3))
+        assertFalse(eligible(adjacent = false))
+        assertFalse(eligible(page = 4))
+        assertFalse(eligible(reconciliationComplete = true))
+        assertFalse(eligible(expected = ""))
+        assertTrue(eligible(resident = "https://booktoki9.org/manhwa/32685/1659488/p004.jpg"))
+        assertFalse(eligible(resident = "https://booktoki8.org/manhwa/32685/1659488/p005.jpeg"))
+        assertFalse(eligible(resident = "https://example.org/manhwa/32685/1659488/p004.jpeg"))
+    }
+
+    @Test
+    fun inheritedRunwayUsesCanonicalWarmHostsAndBalancesOnlyMissingStripe() {
+        val policy = NtkClickOwnedManhwaWavePolicy
+        val warm = listOf("booktoki9.org", "booktoki8.org")
+        assertEquals("booktoki8.org", policy.preferredWarmAdjacentReplicaHost(0, warm))
+        assertEquals("booktoki9.org", policy.preferredWarmAdjacentReplicaHost(1, warm))
+        assertEquals("booktoki9.org", policy.preferredWarmAdjacentReplicaHost(2, warm))
+        assertEquals("booktoki8.org", policy.preferredWarmAdjacentReplicaHost(3, warm))
+        assertEquals(null, policy.previousWarmAdjacentReplicaPage(0, 4, warm))
+        assertEquals(2, policy.previousWarmAdjacentReplicaPage(1, 4, warm))
+        assertEquals(null, policy.previousWarmAdjacentReplicaPage(2, 4, warm))
+        assertEquals(0, policy.previousWarmAdjacentReplicaPage(3, 4, warm))
+        assertEquals(null, policy.preferredWarmAdjacentReplicaHost(0, emptyList()))
+        assertEquals(
+            null,
+            policy.preferredWarmAdjacentReplicaHost(0, listOf("not-a-replica.example")),
+        )
+    }
+
+    @Test
+    fun inheritedPhysicalExtensionUsesOneBodyAndNeverManifestSuffixAuthority() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val coordinator = readSource("NtkStrictEpisodeDiscoveryCoordinator.kt")
+        val wave = quarantine.substringAfter("private fun startForwardWave()")
+            .substringBefore("private fun startPreferredTailCandidate(")
+        val inherited = quarantine.substringAfter(
+            "private fun startDirectWifiAdjacentInheritedCandidate("
+        ).substringBefore("private fun startVerifiedFrontierCandidate(")
+        val adoption = quarantine.substringAfter("private fun adoptHeldBody(")
+            .substringBefore("private fun startForwardWave()")
+        val residentAdoption = quarantine.substringAfter(
+            "private fun tryAdoptDirectWifiAdjacentResidentExactBody("
+        ).substringBefore("private fun adoptHeldBody(")
+        val evidence = quarantine.substringAfter(
+            "private fun armPredecessorPhysicalExtensionEvidence()"
+        ).substringBefore("fun observedDocumentAuthorityFuture(")
+
+        assertTrue(inherited.contains("predecessorPhysicalEvidence"))
+        assertTrue(inherited.contains("candidateAsset(pageIndex, extension)"))
+        assertTrue(inherited.contains("candidateFuture"))
+        assertTrue(inherited.contains("started.candidate == candidate"))
+        assertTrue(inherited.contains("started.future.thenCompose"))
+        assertTrue(inherited.contains("startExactBody(candidate)"))
+        assertTrue(inherited.contains("inheritedAdmissionHandoff"))
+        assertTrue(inherited.indexOf("isCapturedDirectWifiTransportLive()") <
+            inherited.indexOf("fetchOwnedCandidate("))
+        assertTrue(inherited.contains("requireCapturedDirectWifi = true"))
+        assertTrue(inherited.contains(
+            "predecessorProvenOrdinaryDirectWifi ="
+        ))
+        assertTrue(inherited.contains(
+            "shouldUseInheritedOrdinaryDirectWifiTransport("
+        ))
+        assertTrue(inherited.contains("reserveInheritedAdjacentHostHandoff("))
+        assertTrue(inherited.contains("preferredWarmAdjacentReplicaHost("))
+        assertTrue(inherited.contains("preferredOrdinaryDirectWifiReplicaHost ="))
+        assertTrue(inherited.contains(".thenCombine(inheritedHostHandoff.first)"))
+        assertTrue(inherited.contains("inherited.whenComplete"))
+        assertTrue(inherited.contains(
+            "primaryBodyExecutor(\n                    inheritedCandidate,\n" +
+                "                    predecessorProvenOrdinaryDirectWifi,"
+        ))
+        assertTrue(inherited.contains("val inheritedFollower = !inheritedHostHandoff.first.isDone"))
+        assertTrue(inherited.contains("Executor { runnable -> runnable.run() }"))
+        assertTrue(inherited.contains("click_adjacent_inherited_host_reuse_handoff"))
+        assertFalse(inherited.contains("rememberNtkDirectWifiOrdinaryManhwaEpisode"))
+        assertTrue(inherited.contains("startResolvedCandidate(pageIndex, candidate)"))
+        assertFalse(inherited.contains("NtkAuthoritativeManifest"))
+        assertFalse(inherited.contains("normalizedCanonicalAssets"))
+        assertFalse(inherited.contains("listOf(\"jpg\", \"jpeg\")"))
+        assertTrue(wave.contains("directWifiAdjacentOwned &&"))
+        assertTrue(wave.contains("0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES"))
+        assertTrue(coordinator.contains("viewerGeneration = flight.viewerGeneration"))
+        assertTrue(coordinator.contains(
+            "adjacentPredecessorEpisodePath = flight.adjacentPredecessorEpisodePath"
+        ))
+        assertTrue(adoption.indexOf("ReaderImageCache.adoptQuarantinedEncodedOriginal(") <
+            adoption.indexOf("adoptedPhysicalCandidates[pageIndex]?.complete("))
+        assertTrue(adoption.contains("held.body.canonicalAsset"))
+        assertTrue(residentAdoption.contains(
+            "NtkDirectWifiAdjacentResidentExactAdoptionPolicy.shouldAdopt("
+        ))
+        assertTrue(residentAdoption.contains("exactManifest.seal.normalizedCanonicalAssets"))
+        assertTrue(residentAdoption.contains("manifestBoundResidentRunwayPages.add(pageIndex)"))
+        assertTrue(residentAdoption.contains("attachDirectWifiAdjacentResidentPredecode("))
+        assertTrue(residentAdoption.contains("predecodeQuarantinedOriginalAsync("))
+        assertTrue(residentAdoption.contains("DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR"))
+        assertTrue(quarantine.contains(
+            "residentAnchorProofMayPrecedeSampledCandidate =\n" +
+                "                directWifiAdjacentOwned &&"
+        ))
+        assertTrue(coordinator.contains(
+            "tokenBoundStream.residentAnchorProofMayPrecedeSampledCandidate"
+        ))
+        assertTrue(coordinator.contains("val residentExactAnchorBody = if ("))
+        assertTrue(
+            coordinator.indexOf("val residentExactAnchorBody = if (") <
+                coordinator.indexOf("val sampledCandidate = if (residentExactAnchorBody == null)")
+        )
+        assertTrue(inherited.contains("manifestBoundResidentRunwayPages.contains(pageIndex)"))
+        assertTrue(evidence.contains("checkNotNull(adoptedPhysicalCandidates[pageIndex])"))
+        assertTrue(evidence.contains(".ownedForwardPages(forwardFirstPage, exactCount)"))
+        assertTrue(evidence.contains("ordinaryH1WarmCandidates ="))
+        assertFalse(evidence.contains("normalizedCanonicalAssets"))
+
+        val primary = quarantine.substringAfter("private fun startClickPrimaryCandidateRace(")
+            .substringBefore("private fun startResolvedCandidate(")
+        assertTrue(primary.contains("restoredAnchorOrdinaryDirectWifi ="))
+        assertTrue(primary.contains("isRestoredOrdinaryDirectWifiRunwayPage(pageIndex)"))
+        assertTrue(quarantine.contains("click_restored_anchor_ordinary_h1_admit"))
+
+        val fetch = quarantine.substringAfter("private fun fetchOwnedCandidate(")
+            .substringBefore("private fun prepareOwnedCandidate(")
+        assertTrue(fetch.contains("requireCapturedDirectWifi"))
+        assertTrue(fetch.contains("!isCapturedDirectWifiTransportLive()"))
+    }
+
+    @Test
+    fun directWifiCompletionGatedAdjacentProtectsOnlyTheFourPageRunwayFromHeadFanout() {
+        assertEquals(
+            150L,
+            NtkDirectWifiAdjacentExtensionHedgePolicy.delayMs(
+                directWifiCompletionGatedAdjacent = true,
+                pageIndex = 9,
+                forwardFirstPage = 9,
+            ),
+        )
+        assertEquals(
+            150L,
+            NtkDirectWifiAdjacentExtensionHedgePolicy.delayMs(
+                directWifiCompletionGatedAdjacent = true,
+                pageIndex = 10,
+                forwardFirstPage = 9,
+            ),
+        )
+        assertEquals(
+            150L,
+            NtkDirectWifiAdjacentExtensionHedgePolicy.delayMs(
+                directWifiCompletionGatedAdjacent = true,
+                pageIndex = 12,
+                forwardFirstPage = 9,
+            ),
+        )
+        assertEquals(
+            150L,
+            NtkDirectWifiAdjacentExtensionHedgePolicy.delayMs(
+                directWifiCompletionGatedAdjacent = true,
+                pageIndex = 13,
+                forwardFirstPage = 9,
+            ),
+        )
+        assertEquals(
+            150L,
+            NtkDirectWifiAdjacentExtensionHedgePolicy.delayMs(
+                directWifiCompletionGatedAdjacent = false,
+                pageIndex = 9,
+                forwardFirstPage = 9,
+            ),
+        )
+        assertEquals(
+            150L,
+            NtkDirectWifiAdjacentExtensionHedgePolicy.delayMs(
+                directWifiCompletionGatedAdjacent = false,
+                pageIndex = 12,
+                forwardFirstPage = 9,
+            ),
+        )
+    }
+
+    @Test
     fun telemetryClientIdentityFollowsFactoryObjectInsteadOfRouteLabel() {
         val sharedFactory = Call.Factory {
             throw AssertionError("Telemetry identity must not create a Call")
@@ -39,15 +397,17 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
-    fun cancelledCandidateWithoutAnAcquiredConnectionIsNotAClientInstance() {
+    fun missingPhysicalObservationIsExplicitlyUnmeasured() {
         val cache = readSource("ReaderImageCache.kt")
         val report = cache.substringAfter("private fun reportNetworkObservation(")
             .substringBefore("private fun takeQuarantineConnectionObservation(")
 
         assertTrue(report.contains("observation.connectionId.isBlank()"))
         assertTrue(report.contains("protocol.equals(\"unknown\", ignoreCase = true)"))
-        assertTrue(report.indexOf("observation.connectionId.isBlank()") <
-            report.indexOf("observation.physicalClientInstanceId.ifBlank"))
+        assertTrue(report.contains("val clientInstanceMeasured = observation.connectionId.isNotBlank()"))
+        assertTrue(report.contains("observation.clientInstanceId.isNotBlank()"))
+        assertTrue(report.contains("\"unmeasured\""))
+        assertFalse(report.contains("telemetryClientInstanceId(callFactory)"))
     }
 
     @Test
@@ -58,10 +418,21 @@ class NtkClickOwnedExactBodyStreamTest {
         val report = cache.substringAfter("private fun reportNetworkObservation(")
             .substringBefore("private fun takeQuarantineConnectionObservation(")
 
-        assertTrue(instrumented.contains("telemetryClientInstanceId(base)"))
-        assertTrue(instrumented.contains("physicalClientInstanceId = physicalClientInstanceId"))
-        assertTrue(report.contains("observation.physicalClientInstanceId.ifBlank"))
-        assertTrue(report.contains("telemetryClientInstanceId(callFactory)"))
+        assertTrue(instrumented.contains("NtkPhysicalConnectionObservationBridge.record("))
+        assertTrue(instrumented.contains("connection,"))
+        assertTrue(instrumented.contains("base,"))
+        assertTrue(report.contains("observation.clientInstanceId"))
+        assertTrue(report.contains("clientInstanceMeasured"))
+        assertTrue(report.contains("NtkStripDigests.normalizeEpisodePath(requestEpisodePath)"))
+        assertTrue(report.contains("requestRole"))
+        assertFalse(report.contains("telemetryClientInstanceId(callFactory)"))
+
+        val httpClient = readSource("../mangaview/CustomHttpClient.java")
+        assertTrue(httpClient.contains(
+            "fallbackTransport = exactImageFallbackTelemetryClient(fallbackTransport);"
+        ))
+        assertTrue(httpClient.contains("private OkHttpClient exactImageFallbackTelemetryClient"))
+        assertTrue(httpClient.contains("NtkPhysicalConnectionObservationBridge.record("))
     }
 
     @Test
@@ -401,7 +772,8 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(quarantine.contains("private val DIRECT_WIFI_ORDINARY_BODY_EXECUTOR"))
         assertTrue(quarantine.contains("isKnownDirectWifiOrdinaryManhwaEpisode(candidate)"))
         assertTrue(quarantine.contains("liveHandle == capturedHandle"))
-        assertTrue(quarantine.contains("if (!isLiveOrdinaryDirectWifiCandidate(candidate))"))
+        assertTrue(quarantine.contains("isLiveOrdinaryDirectWifiCandidate("))
+        assertTrue(quarantine.contains("predecessorProvenOrdinaryDirectWifi"))
         assertTrue(
             quarantine.contains(
                 "if (ordinaryWifiLease != null && pageIndex != forwardFirstPage)"
@@ -411,12 +783,13 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(cache.contains("clickOwnedDirectWifiOrdinaryRouteFactory("))
         assertTrue(cache.contains("NtkDirectWifiOrdinaryTransportSelection"))
         assertTrue(cache.contains("selectedNetworkBoundH1() == true"))
+        assertTrue(cache.contains("selectedPreferredReplicaHost()"))
         assertTrue(cache.contains("selectDirectWifiOrdinaryNetworkBoundH1("))
         assertTrue(cache.contains("selected.newCall(request)"))
         assertTrue(quarantine.contains("liveHandle == capturedHandle"))
         assertTrue(quarantine.contains("httpClient.isNtkCellularResilientTransportActive"))
         assertTrue(quarantine.contains("isKnownDirectWifiMixedManhwaEpisode(candidate)"))
-        assertTrue(quarantine.contains("selectDirectWifiOrdinaryNetworkBoundH1(route, true)"))
+        assertTrue(quarantine.contains("preferredOrdinaryDirectWifiReplicaHost"))
         assertTrue(quarantine.contains("rememberNtkDirectWifiMixedManhwaEpisode("))
     }
 
@@ -435,6 +808,8 @@ class NtkClickOwnedExactBodyStreamTest {
             )
         )
         assertTrue(branch.contains("tokenBoundStream.sampledAnchorCandidate"))
+        assertTrue(branch.contains("residentAnchorProofMayPrecedeSampledCandidate"))
+        assertTrue(branch.contains("sampledCandidate = if (residentExactAnchorBody == null)"))
         assertTrue(branch.contains("tokenBoundStream.bodyFutures[forwardFirstPage]"))
         assertTrue(branch.contains("tokenBoundStream.close()"))
         assertTrue(branch.contains("clickOwnedAnchor = null"))

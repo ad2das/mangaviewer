@@ -18,6 +18,9 @@ param(
     [string]$ReplayTargetKeys = "",
     [ValidateRange(1, 100)]
     [int]$CountPerType = 20,
+    [ValidateCount(1, 3)]
+    [ValidateSet(25, 50, 90)]
+    [int[]]$ResumePercents = @(25, 50, 90),
     [ValidateRange(250, 30000)]
     [int]$FirstImageSlaMs = 4000,
     [ValidateRange(250, 30000)]
@@ -36,14 +39,26 @@ param(
     [string]$HostGpuEmulatorPath = "",
     [string]$HostGpuAvdName = "",
     [switch]$FastFunctionalTriage,
+    [ValidateRange(0, 3)]
+    [int]$MeasurementInvalidRetryCount = 1,
     [bool]$IncludeWarmReopen = $false
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:HostGpuAvdName = $HostGpuAvdName
+$script:HostGpuEmulatorPath = $HostGpuEmulatorPath
 if($FastFunctionalTriage) {
     # A warm reopen is a separate diagnostic and doubles neither cold coverage nor triage value.
     # The canonical path keeps its caller-selected setting unchanged.
+    $IncludeWarmReopen = $false
+}
+$ResumePercents = @($ResumePercents | Sort-Object -Unique)
+if($ResumePercents.Count -eq 0) {
+    throw "At least one Continue resume percent is required"
+}
+if($IncludeWarmReopen) {
+    Write-Warning "Same-process warm reopen is disabled for cold home Continue qualification"
     $IncludeWarmReopen = $false
 }
 
@@ -78,8 +93,9 @@ $ProductionMinForwardGestures = 1
 $ProductionMaxForwardGestures = 500
 $ProductionWarmRetainedPssFloorLimitKb = 16384L
 $ProductionWarmRetainedPssRatioLimit = 0.10
-$ProductionMaxAdjacentBoundaryWaitMs = 500.0
-$ProductionMaxAdjacentAttachMs = 200.0
+$ProductionMaxAdjacentP0SeamMs = 200.0
+$ProductionMaxP0DetectionLagMs = 240.0
+$ProductionMaxInputInterGestureGapMs = 64L
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $siteRoot = $NtkSiteRoot.TrimEnd('/')
 $perfettoConfig = Join-Path $PSScriptRoot "ntk_perfetto.textproto"
@@ -173,9 +189,12 @@ function Set-HostGpuEmulatorPerformancePolicy {
     if(-not $IsWindows) {
         throw "HOST_GPU_EMULATOR performance policy currently requires Windows process identity"
     }
-    $avdProbe = Invoke-Adb @("emu", "avd", "name") -AllowFailure
-    $avdName = @($avdProbe.Stdout -split "`r?`n" | ForEach-Object { $_.Trim() } |
-        Where-Object { $_ -and $_ -cne "OK" }) | Select-Object -First 1
+    $avdName = $script:HostGpuAvdName.Trim()
+    if([string]::IsNullOrWhiteSpace($avdName)) {
+        $avdProbe = Invoke-Adb @("emu", "avd", "name") -AllowFailure
+        $avdName = @($avdProbe.Stdout -split "`r?`n" | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and $_ -cne "OK" }) | Select-Object -First 1
+    }
     if([string]::IsNullOrWhiteSpace($avdName) -or
             $avdName -notmatch '^[A-Za-z0-9._-]+$') {
         throw "Could not resolve the host-GPU AVD name for process-priority policy"
@@ -335,6 +354,43 @@ function Restore-HostGpuEmulatorConnectedScanIsolation($Policies) {
         effectiveConfig = $effectiveConfig
         exitCode = $restore.ExitCode
         output = $restore.Text
+    }
+}
+
+function Get-HostGpuEmulatorDefaultWifiState {
+    $probe = Invoke-Adb @("shell", "dumpsys", "connectivity") `
+        -TimeoutSeconds 30 -AllowFailure
+    $defaultNetworkId = ""
+    $agent = ""
+    if($probe.ExitCode -eq 0) {
+        $defaultMatch = [regex]::Match(
+            $probe.Stdout,
+            '(?m)^\s*Active default network:\s+(\d+)\s*$'
+        )
+        if($defaultMatch.Success) {
+            $defaultNetworkId = $defaultMatch.Groups[1].Value
+            $agentNeedle = "NetworkAgentInfo{network{$defaultNetworkId}"
+            $agent = @($probe.Stdout -split "`r?`n" | Where-Object {
+                $_.Contains($agentNeedle, [StringComparison]::Ordinal)
+            } | Select-Object -First 1)
+            if($agent.Count -eq 1) { $agent = [string]$agent[0] } else { $agent = "" }
+        }
+    }
+    $wifi = $agent.Contains("ni{WIFI CONNECTED", [StringComparison]::Ordinal)
+    $validated = $agent -match '(?:^|&)VALIDATED(?:&|\s|])'
+    $interface = if($agent -match 'InterfaceName:\s+([^\s]+)') {
+        $Matches[1]
+    } else {
+        ""
+    }
+    return [pscustomobject][ordered]@{
+        ready = $probe.ExitCode -eq 0 -and $wifi -and $validated -and
+            $interface -ceq "wlan0"
+        defaultNetworkId = $defaultNetworkId
+        transport = if($wifi) { "WIFI" } elseif($agent) { "NON_WIFI" } else { "UNKNOWN" }
+        validated = $validated
+        interfaceName = $interface
+        probeExitCode = $probe.ExitCode
     }
 }
 
@@ -509,31 +565,37 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
             'mCurrentFocus=.*com\.google\.android\.apps\.nexuslauncher') {
         throw "Restarted emulator did not publish a focused launcher within 30 seconds"
     }
-    # A boot-complete, focused emulator can still expose an unvalidated or half-initialized NAT
-    # route. That state produced thousands of replica failovers and 15-second waves while the app
-    # itself remained healthy. Prove both raw-IP TCP reachability and guest DNS before admitting a
-    # case. The documented legacy Wi-Fi backend does not proxy ICMP, so ping would reject a healthy
-    # validated route; TCP/443 exercises the same transport the image pipeline actually needs.
+    # A boot-complete, focused emulator can still expose an unvalidated or half-initialized Wi-Fi
+    # NAT route while its emulated cellular fallback is already usable. Overall reachability alone
+    # then silently measures the production cellular/SNI branch instead of the host-wired fixture.
+    # Prove the active default is the validated wlan0 Wi-Fi agent as well as raw-IP TCP and guest
+    # DNS before admitting a case. The legacy Wi-Fi backend does not proxy ICMP, so TCP/443
+    # exercises the same transport the image pipeline actually needs.
     $networkReadyDeadline = [DateTime]::UtcNow.AddSeconds(15)
     $ipReachability = $null
     $dnsReachability = $null
+    $wifiRoute = $null
     do {
+        $wifiRoute = Get-HostGpuEmulatorDefaultWifiState
         $ipReachability = Invoke-Adb @(
             "shell", "nc", "-z", "-w", "3", "1.1.1.1", "443"
         ) -TimeoutSeconds 10 -AllowFailure
         $dnsReachability = Invoke-Adb @(
             "shell", "nc", "-z", "-w", "3", "sbxh9.com", "443"
         ) -TimeoutSeconds 10 -AllowFailure
-        if($ipReachability.ExitCode -eq 0 -and $dnsReachability.ExitCode -eq 0) {
+        if($wifiRoute.ready -and $ipReachability.ExitCode -eq 0 -and
+                $dnsReachability.ExitCode -eq 0) {
             break
         }
         Start-Sleep -Seconds 1
     } while([DateTime]::UtcNow -lt $networkReadyDeadline)
     $wifiRecoveryApplied = $false
-    if($ipReachability.ExitCode -ne 0 -or $dnsReachability.ExitCode -ne 0) {
+    if(-not $wifiRoute.ready -or $ipReachability.ExitCode -ne 0 -or
+            $dnsReachability.ExitCode -ne 0) {
         # Ranchu occasionally publishes boot-complete while its restored Wi-Fi NetworkAgent has no
-        # usable NAT route. Re-associate that exact emulator interface once; this is test-fixture
-        # recovery before app launch, not application warm-up or a production-network mutation.
+        # usable NAT route or before it outranks the emulated cellular fallback. Re-associate that
+        # exact emulator interface once; this is test-fixture recovery before app launch, not
+        # application warm-up or a production-network mutation.
         [void](Invoke-Adb @("shell", "svc", "wifi", "disable") -TimeoutSeconds 30 -AllowFailure)
         Start-Sleep -Seconds 3
         [void](Invoke-Adb @("shell", "svc", "wifi", "enable") -TimeoutSeconds 30 -AllowFailure)
@@ -541,19 +603,22 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         $networkReadyDeadline = [DateTime]::UtcNow.AddSeconds(45)
         do {
             Start-Sleep -Seconds 1
+            $wifiRoute = Get-HostGpuEmulatorDefaultWifiState
             $ipReachability = Invoke-Adb @(
                 "shell", "nc", "-z", "-w", "3", "1.1.1.1", "443"
             ) -TimeoutSeconds 10 -AllowFailure
             $dnsReachability = Invoke-Adb @(
                 "shell", "nc", "-z", "-w", "3", "sbxh9.com", "443"
             ) -TimeoutSeconds 10 -AllowFailure
-            if($ipReachability.ExitCode -eq 0 -and $dnsReachability.ExitCode -eq 0) {
+            if($wifiRoute.ready -and $ipReachability.ExitCode -eq 0 -and
+                    $dnsReachability.ExitCode -eq 0) {
                 break
             }
         } while([DateTime]::UtcNow -lt $networkReadyDeadline)
     }
-    if($ipReachability.ExitCode -ne 0 -or $dnsReachability.ExitCode -ne 0) {
-        throw "Restarted emulator did not establish tested IP and DNS reachability after one Wi-Fi recovery"
+    if(-not $wifiRoute.ready -or $ipReachability.ExitCode -ne 0 -or
+            $dnsReachability.ExitCode -ne 0) {
+        throw "Restarted emulator did not establish a validated default wlan0 route with tested IP and DNS reachability after one Wi-Fi recovery"
     }
     # The emulator Wi-Fi driver can answer one probe and then report BEACON-LOSS while its boot
     # association is still settling. Android destroys every live TCP socket at that transition,
@@ -564,13 +629,15 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
     $networkStableForMs = 0L
     do {
         Start-Sleep -Seconds 1
+        $wifiRoute = Get-HostGpuEmulatorDefaultWifiState
         $ipReachability = Invoke-Adb @(
             "shell", "nc", "-z", "-w", "3", "1.1.1.1", "443"
         ) -TimeoutSeconds 10 -AllowFailure
         $dnsReachability = Invoke-Adb @(
             "shell", "nc", "-z", "-w", "3", "sbxh9.com", "443"
         ) -TimeoutSeconds 10 -AllowFailure
-        if($ipReachability.ExitCode -eq 0 -and $dnsReachability.ExitCode -eq 0) {
+        if($wifiRoute.ready -and $ipReachability.ExitCode -eq 0 -and
+                $dnsReachability.ExitCode -eq 0) {
             $networkStableForMs = [long]([DateTime]::UtcNow - $networkStableSince).TotalMilliseconds
             if($networkStableForMs -ge 15000L) { break }
         } else {
@@ -579,7 +646,7 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         }
     } while([DateTime]::UtcNow -lt $networkStabilityDeadline)
     if($networkStableForMs -lt 15000L) {
-        throw "Restarted emulator Wi-Fi did not remain continuously reachable for 15 seconds"
+        throw "Restarted emulator validated default Wi-Fi did not remain continuously reachable for 15 seconds"
     }
     $socketState = Invoke-Adb @("shell", "cat", "/proc/net/sockstat") -TimeoutSeconds 30
     $orphanSockets = if($socketState.Stdout -match '(?m)^TCP:\s+.*\borphan\s+(\d+)\b') {
@@ -617,6 +684,9 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         guestCpuCount = 5
         ipReachabilityProven = $true
         dnsReachabilityProven = $true
+        wifiDefaultProven = [bool]$wifiRoute.ready
+        defaultNetworkId = [string]$wifiRoute.defaultNetworkId
+        defaultNetworkInterface = [string]$wifiRoute.interfaceName
         wifiRecoveryApplied = $wifiRecoveryApplied
         networkStableForMs = $networkStableForMs
         orphanSocketsBeforeCase = $orphanSockets
@@ -735,6 +805,12 @@ function Get-CaseAllImagesSlaMs([string]$WorkType) {
         return [int]$script:AllImagesSlaMs
     }
     throw "Unsupported work type for all-images SLA: $WorkType"
+}
+
+function Get-ResumePage([int]$PageCount, [int]$Percent) {
+    if($PageCount -le 0) { throw "Current episode page count must be positive" }
+    if($Percent -notin @(25, 50, 90)) { throw "Resume percent must be 25, 50, or 90" }
+    return [Math]::Min($PageCount - 1, [Math]::Floor($PageCount * $Percent / 100.0))
 }
 
 function ConvertTo-PowerShellLiteral([string]$Value) {
@@ -1032,6 +1108,7 @@ function Get-EpisodeMetadata($Work) {
                 expectedAdjacentEpisodeId = ""
                 expectedAdjacentEpisodeTitle = ""
                 expectedAdjacentPageCount = 0
+                currentPageCount = 0
                 episodePairSelectionSeed = $script:Seed
                 episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
                 episodePairSelectionHash = ""
@@ -1057,6 +1134,7 @@ function Get-EpisodeMetadata($Work) {
             expectedAdjacentEpisodeId = ""
             expectedAdjacentEpisodeTitle = ""
             expectedAdjacentPageCount = 0
+            currentPageCount = 0
             episodePairSelectionSeed = $script:Seed
             episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
             episodePairSelectionHash = ""
@@ -1076,6 +1154,7 @@ function Get-EpisodeMetadata($Work) {
     $value = $original
     $expectedAdjacent = $null
     $expectedAdjacentPageCount = 0
+    $currentPageCount = 0
     $episodePairSelectionHash = ""
     $episodePairRankOrdinal = 0
     $accessReplacementReason = $null
@@ -1115,9 +1194,23 @@ function Get-EpisodeMetadata($Work) {
             )
             continue
         }
+        $currentPageEvidence = Get-EpisodePageCountMetadata `
+            ([string]$pair.currentEpisode.episodePath)
+        if(-not $currentPageEvidence.proven -or [int]$currentPageEvidence.pageCount -lt 1) {
+            $adjacentPageCountErrors.Add(
+                "$([string]$pair.currentEpisode.episodePath): " +
+                    $(if($currentPageEvidence.proven) {
+                        "no structural current pages"
+                    } else {
+                        [string]$currentPageEvidence.error
+                    })
+            )
+            continue
+        }
         $value = $pair.currentEpisode
         $expectedAdjacent = $adjacentCandidate
         $expectedAdjacentPageCount = [int]$pageEvidence.pageCount
+        $currentPageCount = [int]$currentPageEvidence.pageCount
         $episodePairSelectionHash = [string]$rankedPair.pairSelectionHash
         $episodePairRankOrdinal = $pairRankIndex + 1
         $accessReplacementReason =
@@ -1177,6 +1270,7 @@ function Get-EpisodeMetadata($Work) {
             [string]$expectedAdjacent.episodeTitle
         } else { "" }
         expectedAdjacentPageCount = $expectedAdjacentPageCount
+        currentPageCount = $currentPageCount
         episodePairSelectionSeed = $script:Seed
         episodePairSelectionAlgorithm = $script:EpisodePairSelectionAlgorithm
         episodePairSelectionHash = $episodePairSelectionHash
@@ -1680,6 +1774,64 @@ function Find-MacroResult([string[]]$Lines) {
     return $null
 }
 
+function Get-ExactMacroResultArtifact(
+    [AllowNull()][AllowEmptyCollection()][IO.FileInfo[]]$Files,
+    [string]$ExpectedCaseId
+) {
+    $candidates = @($Files | Where-Object { $_.Name -ceq "macro-result.json" })
+    $problems = [Collections.Generic.List[string]]::new()
+    $result = $null
+    if($candidates.Count -ne 1) {
+        $problems.Add("expected exactly one pulled macro-result.json; found $($candidates.Count)")
+    } else {
+        try {
+            $raw = [IO.File]::ReadAllText($candidates[0].FullName, [Text.Encoding]::UTF8)
+            if([string]::IsNullOrWhiteSpace($raw)) {
+                throw "exact macro result was empty"
+            }
+            $candidateResult = $raw | ConvertFrom-Json -ErrorAction Stop
+            if([int](Get-OptionalProperty $candidateResult "schema") -ne 1) {
+                throw "exact macro result schema was not 1"
+            }
+            if([string](Get-OptionalProperty $candidateResult "caseId") -cne $ExpectedCaseId) {
+                throw "exact macro result caseId did not match $ExpectedCaseId"
+            }
+            $result = $candidateResult
+        } catch {
+            $problems.Add("exact macro result invalid: $($_.Exception.Message)")
+        }
+    }
+    return [pscustomobject][ordered]@{
+        valid = ($problems.Count -eq 0 -and $null -ne $result)
+        result = $result
+        candidateCount = $candidates.Count
+        path = if($candidates.Count -eq 1) { $candidates[0].FullName } else { $null }
+        bytes = if($candidates.Count -eq 1) { $candidates[0].Length } else { 0L }
+        sha256 = if($candidates.Count -eq 1 -and $candidates[0].Length -gt 0L) {
+            (Get-FileHash -LiteralPath $candidates[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        } else { $null }
+        problems = @($problems)
+    }
+}
+
+function Find-InstrumentationMeasurementInvalidReason([AllowNull()][string]$Text) {
+    if([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $matches = [regex]::Matches(
+        $Text,
+        '(?m)MeasurementInvalidException:[ \t]*(MEASUREMENT_INVALID:[^\r\n]+)')
+    if($matches.Count -eq 0) { return $null }
+    return $matches[$matches.Count - 1].Groups[1].Value.Trim()
+}
+
+function Resolve-ColdCaseClassification(
+    [bool]$MeasurementInvalid,
+    [ValidateRange(0, 2147483647)][int]$ViolationCount
+) {
+    if($MeasurementInvalid) { return "INFRA_INVALID" }
+    if($ViolationCount -eq 0) { return "VALID" }
+    return "PRODUCT_INVALID"
+}
+
 function Get-EventValues(
     [AllowNull()][AllowEmptyCollection()][object[]]$Events,
     [Parameter(Mandatory)][string]$Name
@@ -1695,6 +1847,30 @@ function Get-OptionalProperty($Value, [string]$Name) {
     return $property.Value
 }
 
+function Test-NetworkObservationInClientScope(
+    $Observation,
+    [string]$CurrentEpisodePath,
+    [string]$SelectedAdjacentEpisodePath
+) {
+    $requestEpisodePath = [string](
+        Get-OptionalProperty $Observation "requestEpisodePath"
+    )
+    if([string]::IsNullOrWhiteSpace($requestEpisodePath)) { return $false }
+    return $requestEpisodePath -ceq $CurrentEpisodePath -or
+        $requestEpisodePath -ceq $SelectedAdjacentEpisodePath
+}
+
+function Test-PhysicalNetworkObservation($Observation) {
+    $connectionId = [string](Get-OptionalProperty $Observation "connectionId")
+    $clientInstanceId = [string](
+        Get-OptionalProperty $Observation "clientInstanceId"
+    )
+    return -not [string]::IsNullOrWhiteSpace($connectionId) -and
+        $connectionId -ine "none" -and
+        -not [string]::IsNullOrWhiteSpace($clientInstanceId) -and
+        $clientInstanceId -ine "unmeasured"
+}
+
 function ConvertTo-FiniteDouble($Value) {
     if($null -eq $Value -or $Value -is [bool]) { return $null }
     $number = 0.0
@@ -1707,6 +1883,17 @@ function ConvertTo-FiniteDouble($Value) {
     }
     if([double]::IsNaN($number) -or [double]::IsInfinity($number)) { return $null }
     return [double]$number
+}
+
+function Test-NumericApproximatelyEqual(
+    $Actual,
+    $Expected,
+    [double]$Tolerance = 0.001
+) {
+    $actualNumber = ConvertTo-FiniteDouble $Actual
+    $expectedNumber = ConvertTo-FiniteDouble $Expected
+    return $null -ne $actualNumber -and $null -ne $expectedNumber -and
+        [Math]::Abs($actualNumber - $expectedNumber) -le $Tolerance
 }
 
 function ConvertTo-FiniteDoubleArray($Value) {
@@ -1934,13 +2121,20 @@ function Stop-StandalonePerfetto(
     [void](Invoke-Adb @("shell", "rm", "-f", $RemoteTrace) -AllowFailure)
 }
 
-function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAdditional) {
+function Invoke-MacroInstrumentation(
+    $Target,
+    [string]$CaseId,
+    [string]$RemoteAdditional,
+    [int]$ResumePercent
+) {
     $caseImageSlaMs = Get-CaseImageSlaMs ([string]$Target.workType)
     $caseAllImagesSlaMs = Get-CaseAllImagesSlaMs ([string]$Target.workType)
     $expectedAdjacentPath =
         [string](Get-OptionalProperty $Target "expectedAdjacentEpisodePath")
     $expectedAdjacentPageCount =
         [int](Get-OptionalProperty $Target "expectedAdjacentPageCount")
+    $currentPageCount = [int](Get-OptionalProperty $Target "currentPageCount")
+    $resumePage = [int](Get-ResumePage $currentPageCount $ResumePercent)
     if([string]::IsNullOrWhiteSpace($expectedAdjacentPath) -or
             $expectedAdjacentPageCount -lt 4) {
         throw "Cold qualification target lacks an exact four-page forward adjacent proof: $([string]$Target.workType):$([string]$Target.workId)"
@@ -1959,6 +2153,11 @@ function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAd
         "-e", "ntkEpisodePath", [string]$Target.episodePath,
         "-e", "ntkExpectedAdjacentEpisodePath", $expectedAdjacentPath,
         "-e", "ntkExpectedAdjacentPageCount", [string]$expectedAdjacentPageCount,
+        "-e", "ntkCurrentPageCount", [string]$currentPageCount,
+        "-e", "ntkResumePercent", [string]$ResumePercent,
+        "-e", "ntkResumePage", [string]$resumePage,
+        "-e", "ntkResumeOffset", "-420",
+        "-e", "ntkSiteRoot", $script:siteRoot,
         "-e", "ntkCaseId", $CaseId,
         "-e", "ntkFirstImageSlaMs", [string]$caseImageSlaMs,
         "-e", "ntkAllImagesSlaMs", [string]$caseAllImagesSlaMs,
@@ -1977,12 +2176,27 @@ function Invoke-MacroInstrumentation($Target, [string]$CaseId, [string]$RemoteAd
     return Invoke-Adb $instrumentArgs -TimeoutSeconds $script:CaseTimeoutSeconds -AllowFailure
 }
 
-function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
+function Invoke-ColdCase(
+    $Target,
+    [int]$Ordinal,
+    [string]$RunRemoteRoot,
+    [int]$ResumePercent,
+    [ValidateRange(1, 4)][int]$InfrastructureAttempt = 1
+) {
     $caseStartedAt = [DateTimeOffset]::Now.ToString("o")
     $caseImageSlaMs = Get-CaseImageSlaMs ([string]$Target.workType)
     $caseAllImagesSlaMs = Get-CaseAllImagesSlaMs ([string]$Target.workType)
     $safeId = ([string]$Target.workId -replace '[^A-Za-z0-9._-]', '_')
-    $caseId = '{0}-{1:D2}-{2}' -f $Target.workType, $Ordinal, $safeId
+    $currentPageCount = [int](Get-OptionalProperty $Target "currentPageCount")
+    $resumePage = [int](Get-ResumePage $currentPageCount $ResumePercent)
+    $expectedForwardPageCount = $currentPageCount - $resumePage
+    $baseCaseId = '{0}-{1:D2}-{2}-r{3}' -f `
+        $Target.workType, $Ordinal, $safeId, $ResumePercent
+    $caseId = if($InfrastructureAttempt -eq 1) {
+        $baseCaseId
+    } else {
+        "$baseCaseId-retry$InfrastructureAttempt"
+    }
     $caseDir = Join-Path $script:runDir $caseId
     [void](New-Item -ItemType Directory -Path $caseDir)
     $remoteCase = "$RunRemoteRoot/$caseId"
@@ -1997,6 +2211,27 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
 
     $forceApp = Invoke-Adb @("shell", "am", "force-stop", $script:AppPackage) -AllowFailure
     $forceTest = Invoke-Adb @("shell", "am", "force-stop", $script:BenchmarkPackage) -AllowFailure
+    # The reader enters immersive (fullscreen) mode. A host/emulator can raise the system
+    # "ImmersiveModeConfirmation" overlay on that transition, which steals window focus and
+    # swallows the benchmark's final pressBack() -- leaving the viewer on the reader instead of the
+    # home screen and failing "Continue viewer did not return to the home screen". Suppress that
+    # one-time confirmation (secure, so it persists across cached-app restarts) before every case.
+    [void](Invoke-Adb @(
+        "shell", "settings", "put", "secure", "immersive_mode_confirmations", "confirmed"
+    ) -AllowFailure)
+    # The replica CDN hosts publish AAAA (IPv6) records. The host-GPU emulator's guest stack tries
+    # IPv6 first and falls back to IPv4 after a multi-second stall per connection, which pinned
+    # image TTFB at ~1.9s (tails >5s) and blew both the first-image and all-images SLA. Force IPv4
+    # by disabling IPv6 in the guest; this alone recovered the all-images SLA on HOST_GPU_EMULATOR.
+    $rooted = Invoke-Adb @("root") -AllowFailure
+    if($rooted.ExitCode -eq 0) { Start-Sleep -Milliseconds 500 }
+    [void](Invoke-Adb @(
+        "shell", "su", "0", "sh", "-c",
+        "echo 1 >/proc/sys/net/ipv6/conf/all/disable_ipv6;" +
+        " echo 1 >/proc/sys/net/ipv6/conf/default/disable_ipv6;" +
+        " echo 1 >/proc/sys/net/ipv6/conf/eth0/disable_ipv6;" +
+        " echo 1 >/proc/sys/net/ipv6/conf/wlan0/disable_ipv6"
+    ) -AllowFailure)
     $androidxTraceCleanupBefore = Reset-AndroidxPerfettoTraceOutput "before-case"
     $clearApp = Invoke-Adb @("shell", "pm", "clear", $script:AppPackage) -TimeoutSeconds 30 -AllowFailure
     $clearTest = Invoke-Adb @("shell", "pm", "clear", $script:BenchmarkPackage) -TimeoutSeconds 30 -AllowFailure
@@ -2070,7 +2305,8 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     $androidxTraceCleanupAfter = $null
     try {
         $perfettoPid = Start-StandalonePerfetto $remoteTrace
-        $instrumentation = Invoke-MacroInstrumentation $Target $caseId $remoteAdditional
+        $instrumentation = Invoke-MacroInstrumentation `
+            $Target $caseId $remoteAdditional $ResumePercent
     } catch {
         $caseException = $_.Exception.Message
     } finally {
@@ -2198,6 +2434,8 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         Sort-Object FullName -Unique)
     $nonEmptyVisualArtifactFiles = @($visualArtifactFiles | Where-Object { $_.Length -gt 0L })
     $emptyVisualArtifactFiles = @($visualArtifactFiles | Where-Object { $_.Length -le 0L })
+    $exactMacroResultArtifact = Get-ExactMacroResultArtifact `
+        $screenshotArtifactFiles $caseId
     $remoteArtifactCleanup = Remove-RemoteCaseArtifacts `
         $RunRemoteRoot $caseId $remoteCase $screenshotRemote
     Write-Json (Join-Path $caseDir "remote-artifact-cleanup.json") $remoteArtifactCleanup
@@ -2208,7 +2446,13 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
 
     $lines = @($logcat.Text -split "`r?`n")
     $telemetry = @(Parse-ViewerTelemetry $lines)
-    $macroResult = Find-MacroResult $lines
+    # The exact result is a pulled AtomicFile artifact. Logcat is intentionally diagnostic-only:
+    # Android truncates a single entry near 4 KiB and cannot transport this result losslessly.
+    $macroResult = if($exactMacroResultArtifact.valid) {
+        $exactMacroResultArtifact.result
+    } else {
+        $null
+    }
     $coldStates = @(Get-EventValues -Events @($telemetry) -Name "cold_state")
     $viewerClicks = @($telemetry | Where-Object {
         [string]$_.value.event -ceq "viewer_open" -and
@@ -2250,6 +2494,9 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
                 "generation" -in $_.value.PSObject.Properties.Name -and
                 [string]$_.value.generation -ceq [string]$viewerGeneration
         }
+    })
+    $allImagesReadyTelemetryEvents = @($sessionTelemetry | Where-Object {
+        [string]$_.value.event -ceq "all_images_render_ready"
     })
     $requestStarts = @($sessionTelemetry | Where-Object {
         [string]$_.value.event -ceq "image_request" -and
@@ -2543,12 +2790,52 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     $networkObservations = @($sessionTelemetry | Where-Object {
         [string]$_.value.event -ceq "network_observation"
     })
-    $firstNetworkObservation = if($networkObservations.Count -gt 0) {
-        $networkObservations[0].value
+    $clientScopeCurrentEpisodePath = [string](
+        Get-OptionalProperty $Target "episodePath"
+    )
+    $clientScopeSelectedAdjacentEpisodePath = [string](
+        Get-OptionalProperty $Target "expectedAdjacentEpisodePath"
+    )
+    $clientScopeEpisodePaths = @(
+        $clientScopeCurrentEpisodePath,
+        $clientScopeSelectedAdjacentEpisodePath
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $scopedNetworkObservations = @($networkObservations | Where-Object {
+        Test-NetworkObservationInClientScope $_.value `
+            $clientScopeCurrentEpisodePath $clientScopeSelectedAdjacentEpisodePath
+    })
+    $physicalScopedNetworkObservations = @($scopedNetworkObservations | Where-Object {
+        Test-PhysicalNetworkObservation $_.value
+    })
+    $unmeasuredScopedNetworkObservations = @($scopedNetworkObservations | Where-Object {
+        -not (Test-PhysicalNetworkObservation $_.value)
+    })
+    $ignoredOutOfScopeNetworkObservations = @($networkObservations | Where-Object {
+        -not (Test-NetworkObservationInClientScope $_.value `
+            $clientScopeCurrentEpisodePath $clientScopeSelectedAdjacentEpisodePath)
+    })
+    $firstNetworkObservation = if($physicalScopedNetworkObservations.Count -gt 0) {
+        $physicalScopedNetworkObservations[0].value
     } else { $null }
-    $clientInstanceIds = @($networkObservations | ForEach-Object {
+    $clientInstanceIds = @($physicalScopedNetworkObservations | ForEach-Object {
         [string]$_.value.clientInstanceId
     } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $unmeasuredNetworkObservationDiagnostics = @(
+        $unmeasuredScopedNetworkObservations | ForEach-Object {
+            [pscustomobject][ordered]@{
+                requestEpisodePath = [string](
+                    Get-OptionalProperty $_.value "requestEpisodePath"
+                )
+                requestRole = [string](Get-OptionalProperty $_.value "requestRole")
+                pageIndex = Get-OptionalProperty $_.value "pageIndex"
+                protocol = [string](Get-OptionalProperty $_.value "protocol")
+                connectionId = [string](Get-OptionalProperty $_.value "connectionId")
+                clientInstanceId = [string](
+                    Get-OptionalProperty $_.value "clientInstanceId"
+                )
+            }
+        }
+    )
     $encodedByteValues = @($metadataByPage | ForEach-Object {
         if($null -ne $_.encodedBytes) { [int64]$_.encodedBytes }
     })
@@ -2630,14 +2917,88 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     $firstActualMs = if($null -ne $macroResult -and $null -ne $macroResult.firstActualMs) {
         [double]$macroResult.firstActualMs
     } else { $null }
-    $allImagesReadyMsValue = Get-OptionalProperty $macroResult "allImagesReadyMs"
-    $allImagesReadyMs = if($null -ne $allImagesReadyMsValue) {
-        [double]$allImagesReadyMsValue
-    } else { $null }
-    $allImagesReadyPageCountValue = Get-OptionalProperty $macroResult "allImagesReadyPageCount"
-    $allImagesReadyPageCount = if($null -ne $allImagesReadyPageCountValue) {
-        [int64]$allImagesReadyPageCountValue
-    } else { $null }
+    # An infrastructure exception can terminate the instrumentation method after the target has
+    # already emitted its exact, generation-scoped resume-to-tail completion event but before the
+    # macro catch/finally path copies that late event into macro-result.json. Recover only that
+    # independently timestamped event. The AtomicFile result remains authoritative whenever it
+    # contains a complete value, and any disagreement is fail-closed instead of selecting the
+    # faster clock.
+    $macroAllImagesReadyMsValue = Get-OptionalProperty $macroResult "allImagesReadyMs"
+    $macroAllImagesReadyAtValue = Get-OptionalProperty $macroResult "allImagesReadyAtNanos"
+    $macroAllImagesReadyPageCountValue =
+        Get-OptionalProperty $macroResult "allImagesReadyPageCount"
+    $macroAllImagesReadyAtNanos = 0L
+    $macroAllImagesReadyPageCount = 0L
+    $macroAllImagesReadyComplete =
+        $null -ne $macroAllImagesReadyMsValue -and
+        [int64]::TryParse([string]$macroAllImagesReadyAtValue,
+            [ref]$macroAllImagesReadyAtNanos) -and
+        [int64]::TryParse([string]$macroAllImagesReadyPageCountValue,
+            [ref]$macroAllImagesReadyPageCount) -and
+        $macroAllImagesReadyAtNanos -gt 0L -and $macroAllImagesReadyPageCount -gt 0L
+    $macroAllImagesReadyEmpty =
+        $null -eq $macroAllImagesReadyMsValue -and
+        ([string]::IsNullOrWhiteSpace([string]$macroAllImagesReadyAtValue) -or
+            [int64]$macroAllImagesReadyAtValue -eq 0L) -and
+        ([string]::IsNullOrWhiteSpace([string]$macroAllImagesReadyPageCountValue) -or
+            [int64]$macroAllImagesReadyPageCountValue -eq 0L)
+
+    $telemetryAllImagesReadyAtNanos = 0L
+    $telemetryAllImagesReadyPageCount = 0L
+    $telemetryAllImagesReadyValid = $false
+    if($allImagesReadyTelemetryEvents.Count -eq 1) {
+        $telemetryReady = $allImagesReadyTelemetryEvents[0].value
+        $telemetryEpisode = [string](Get-OptionalProperty $telemetryReady "episodeId")
+        $telemetryWork = [string](Get-OptionalProperty $telemetryReady "workId")
+        $telemetryAllImagesReadyValid =
+            [int64]::TryParse(
+                [string](Get-OptionalProperty $telemetryReady "timestampNanos"),
+                [ref]$telemetryAllImagesReadyAtNanos) -and
+            [int64]::TryParse(
+                [string](Get-OptionalProperty $telemetryReady "pageCount"),
+                [ref]$telemetryAllImagesReadyPageCount) -and
+            $telemetryAllImagesReadyAtNanos -gt 0L -and
+            $telemetryAllImagesReadyPageCount -gt 0L -and
+            $telemetryEpisode -ceq [string]$Target.episodePath -and
+            ($telemetryWork -ceq [string]$Target.workId -or
+                $telemetryWork.StartsWith("$([string]$Target.workId):",
+                    [StringComparison]::Ordinal))
+    }
+
+    $macroClickElapsedNanos = 0L
+    $macroClickTimestampValid = [int64]::TryParse(
+        [string](Get-OptionalProperty $macroResult "clickElapsedNanos"),
+        [ref]$macroClickElapsedNanos) -and $macroClickElapsedNanos -gt 0L
+    $allImagesEvidenceSource = "UNMEASURED"
+    $allImagesEvidenceConflict = $false
+    $allImagesReadyMs = $null
+    $allImagesReadyAtNanos = 0L
+    $allImagesReadyPageCount = $null
+    if($macroAllImagesReadyComplete) {
+        $allImagesEvidenceSource = "MACRO_EXACT"
+        $allImagesReadyMs = [double]$macroAllImagesReadyMsValue
+        $allImagesReadyAtNanos = $macroAllImagesReadyAtNanos
+        $allImagesReadyPageCount = $macroAllImagesReadyPageCount
+        if($telemetryAllImagesReadyValid -and
+                ($telemetryAllImagesReadyPageCount -ne $macroAllImagesReadyPageCount -or
+                    [Math]::Abs(
+                        $telemetryAllImagesReadyAtNanos - $macroAllImagesReadyAtNanos
+                    ) -gt 5000000L)) {
+            $allImagesEvidenceConflict = $true
+        }
+    } elseif($macroAllImagesReadyEmpty -and $telemetryAllImagesReadyValid -and
+            $macroClickTimestampValid -and
+            $telemetryAllImagesReadyAtNanos -ge $macroClickElapsedNanos) {
+        $allImagesEvidenceSource = "SESSION_TELEMETRY_RECOVERY"
+        $allImagesReadyAtNanos = $telemetryAllImagesReadyAtNanos
+        $allImagesReadyPageCount = $telemetryAllImagesReadyPageCount
+        $allImagesReadyMs =
+            ($telemetryAllImagesReadyAtNanos - $macroClickElapsedNanos) / 1000000.0
+    } elseif(-not $macroAllImagesReadyEmpty) {
+        # A half-written logical value is not eligible for telemetry recovery even though the
+        # physical AtomicFile itself was valid.
+        $allImagesEvidenceConflict = $true
+    }
     $telemetryOpenToCommitMs = if($null -ne $firstActualDrawCommit -and
             $null -ne $firstActualDrawCommit.openToCommittedDrawMs) {
         [double]$firstActualDrawCommit.openToCommittedDrawMs
@@ -2827,6 +3188,31 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         $responseNanos -le $drawNanos -and
         $decodeNanos -le $drawNanos
 
+    $macroReportedMeasurementInvalid = $null -ne $macroResult -and
+        (Get-OptionalProperty $macroResult "measurementInvalid") -eq $true
+    $instrumentationFailureText = if($null -ne $instrumentation) {
+        $instrumentation.Text
+    } else {
+        [string]$caseException
+    }
+    $instrumentationMeasurementInvalidReason =
+        Find-InstrumentationMeasurementInvalidReason $instrumentationFailureText
+    $macroResultTransportInvalid = -not $exactMacroResultArtifact.valid
+    $macroMeasurementInvalid = $macroReportedMeasurementInvalid -or
+        -not [string]::IsNullOrWhiteSpace($instrumentationMeasurementInvalidReason) -or
+        $macroResultTransportInvalid
+    $macroMeasurementInvalidReason = if($macroReportedMeasurementInvalid) {
+        [string](Get-OptionalProperty $macroResult "measurementInvalidReason")
+    } elseif(-not [string]::IsNullOrWhiteSpace($instrumentationMeasurementInvalidReason)) {
+        $instrumentationMeasurementInvalidReason
+    } elseif($macroResultTransportInvalid) {
+        "MEASUREMENT_INVALID: " + (@($exactMacroResultArtifact.problems) -join "; ")
+    } else { "" }
+    if($macroMeasurementInvalid -and
+            [string]::IsNullOrWhiteSpace($macroMeasurementInvalidReason)) {
+        $macroMeasurementInvalidReason =
+            "MEASUREMENT_INVALID: unspecified benchmark infrastructure invalidation"
+    }
     $violations = [Collections.Generic.List[string]]::new()
     if($androidxTraceParserIsolationAccepted) {
         # Retain the trace and exact parser signature as diagnostics, but never turn missing
@@ -3021,6 +3407,34 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     }
     if($null -eq $macroResult) { $violations.Add("NtkColdMacro result missing") }
     elseif($macroResult.passed -ne $true) { $violations.Add("real-UI scenario failed") }
+    elseif((Get-OptionalProperty $macroResult "resumeMode") -ne $true -or
+            [int](Get-OptionalProperty $macroResult "resumePercent") -ne $ResumePercent -or
+            [int](Get-OptionalProperty $macroResult "currentPageCount") -ne $currentPageCount -or
+            [int](Get-OptionalProperty $macroResult "resumePage") -ne $resumePage -or
+            [int](Get-OptionalProperty $macroResult "expectedForwardPageCount") -ne
+                $expectedForwardPageCount -or
+            [string](Get-OptionalProperty $macroResult "resumePercentBasis") -cne
+                "canonical_page_ordinal") {
+        $violations.Add("Macrobenchmark Continue resume contract did not match the host selection")
+    } elseif((Get-OptionalProperty $macroResult "homeContinueSeeded") -ne $true -or
+            (Get-OptionalProperty $macroResult "homeContinueColdForceStopped") -ne $true) {
+        $violations.Add("benchmark-only home Continue seed was not force-stopped before cold launch")
+    } elseif((Get-OptionalProperty $macroResult "resumeFirstActualMatched") -ne $true -or
+            [int](Get-OptionalProperty $macroResult "firstActualResumePage") -ne $resumePage) {
+        $violations.Add("home Continue did not first commit the exact saved resume page")
+    } elseif([Math]::Abs(
+                [double](Get-OptionalProperty $macroResult "inputViewportDistance") -
+                    ([int](Get-OptionalProperty $macroResult "inputGestureCount") * 0.72)
+            ) -ge 0.0001 -or
+            [double](Get-OptionalProperty $macroResult "inputPlannedViewportPerSecond") -lt 2.99 -or
+            [double](Get-OptionalProperty $macroResult "inputPlannedViewportPerSecond") -gt 3.01 -or
+            [double](Get-OptionalProperty $macroResult "inputAchievedViewportPerSecond") -lt 2.75 -or
+            [double](Get-OptionalProperty $macroResult "inputAchievedViewportPerSecond") -gt 3.35 -or
+            [int](Get-OptionalProperty $macroResult "inputGestureCount") -lt 1 -or
+            [long](Get-OptionalProperty $macroResult "inputMaxInterGestureGapMs") -gt
+                $ProductionMaxInputInterGestureGapMs) {
+        $violations.Add("resume-to-next physical input did not sustain approximately 3 viewport/s")
+    }
     $expectedAdjacentPath = [string](
         Get-OptionalProperty $Target "expectedAdjacentEpisodePath"
     )
@@ -3031,6 +3445,69 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         [int](Get-OptionalProperty $macroResult "adjacentTotalPageCount")
     } else { 0 }
     $requiredAdjacentRunwayPages = 4
+    $adjacentWorkStartedAtNanos = [long](
+        Get-OptionalProperty $macroResult "adjacentWorkStartedAtNanos"
+    )
+    $adjacentRunwayReadyAtNanos = [long](
+        Get-OptionalProperty $macroResult "adjacentRunwayReadyAtNanos"
+    )
+    $forwardBoundaryReachedAtNanos = [long](
+        Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos"
+    )
+    $firstAdjacentActualAtNanos = [long](
+        Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos"
+    )
+    $p0EmbeddedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0EmbeddedFirstAdjacentActualAtNanos"
+    )
+    $p0HarnessObservedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0HarnessObservedAtNanos"
+    )
+    $p0IpcPresentedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0IpcPresentedAtNanos"
+    )
+    $p0IpcSenderAtNanos = [long](Get-OptionalProperty $macroResult "p0IpcSenderAtNanos")
+    $p0IpcReceivedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0IpcReceivedAtNanos"
+    )
+    $p0IpcAcceptedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0IpcAcceptedAtNanos"
+    )
+    $p0IpcSemanticObservedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0IpcSemanticObservedAtNanos"
+    )
+    $p0SemanticCallbackAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0SemanticCallbackAtNanos"
+    )
+    $p0SemanticEventPublishedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0SemanticEventPublishedAtNanos"
+    )
+    $p0SemanticCommitPublishedAtNanos = [long](
+        Get-OptionalProperty $macroResult "p0SemanticCommitPublishedAtNanos"
+    )
+    $p0SemanticObserverMode = [string](
+        Get-OptionalProperty $macroResult "p0SemanticObserverMode"
+    )
+    $inputStartElapsedNanos = [long](
+        Get-OptionalProperty $macroResult "inputStartElapsedNanos"
+    )
+    $inputEndElapsedNanos = [long](Get-OptionalProperty $macroResult "inputEndElapsedNanos")
+    $inputGestureCount = [int](Get-OptionalProperty $macroResult "inputGestureCount")
+    $adjacentTraversalGestureCount = [int](
+        Get-OptionalProperty $macroResult "adjacentTraversalGestureCount"
+    )
+    $adjacentP0TraversalGestureCount = [int](
+        Get-OptionalProperty $macroResult "adjacentP0TraversalGestureCount"
+    )
+    $adjacentRunwayTraversalGestureCount = [int](
+        Get-OptionalProperty $macroResult "adjacentRunwayTraversalGestureCount"
+    )
+    $p0IpcGesturesAtSignal = [int](
+        Get-OptionalProperty $macroResult "p0IpcGesturesAtSignal"
+    )
+    $p0IpcGesturesAfterSignal = [int](
+        Get-OptionalProperty $macroResult "p0IpcGesturesAfterSignal"
+    )
     if([string]::IsNullOrWhiteSpace($expectedAdjacentPath)) {
         $violations.Add("exact forward-adjacent episode was not configured")
     } elseif($expectedAdjacentPageCount -lt $requiredAdjacentRunwayPages) {
@@ -3039,9 +3516,8 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
             [string](Get-OptionalProperty $macroResult "expectedAdjacentEpisodePath") -cne
                 $expectedAdjacentPath) {
         $violations.Add("exact forward-adjacent episode identity was not proven")
-    } elseif([long](Get-OptionalProperty $macroResult "adjacentRunwayReadyAtNanos") -le 0 -or
-            [long](Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos") -le 0 -or
-            [long](Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos") -le 0) {
+    } elseif($adjacentRunwayReadyAtNanos -le 0 -or
+            $forwardBoundaryReachedAtNanos -le 0 -or $firstAdjacentActualAtNanos -le 0) {
         $violations.Add("forward-adjacent timing evidence was incomplete")
     } elseif([string](Get-OptionalProperty $macroResult "adjacentRunwayTargetEpisode") -cne
             $expectedAdjacentPath -or
@@ -3058,26 +3534,268 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     } elseif([int](Get-OptionalProperty $macroResult "adjacentObservedRunwayDrawableCount") -ne
             $requiredAdjacentRunwayPages) {
         $violations.Add("four forward-adjacent drawables were not physically observed")
-    } elseif((Get-OptionalProperty $macroResult "runwayReadyBeforeTail") -ne $true) {
-        $violations.Add("adjacent runway was not ready before the launch tail")
-    } elseif([double](Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs") -lt 0.0 -or
-            [double](Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs") -gt
-                $ProductionMaxAdjacentBoundaryWaitMs) {
-        $violations.Add("adjacent runway exceeded the ${ProductionMaxAdjacentBoundaryWaitMs}ms tail boundary bound")
-    } elseif([double](Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs") -gt
-            $ProductionMaxAdjacentAttachMs) {
-        $violations.Add("adjacent atomic attachment exceeded the ${ProductionMaxAdjacentAttachMs}ms UX bound")
+    }
+    if($null -eq $macroResult -or
+            (Get-OptionalProperty $macroResult "adjacentPhysicalRunwayPassed") -ne $true -or
+            [string](Get-OptionalProperty $macroResult "adjacentPhysicallyObservedSources") -cne
+                "0,1,2,3" -or
+            [int](Get-OptionalProperty $macroResult "adjacentLastSourceIndex") -ne 3) {
+        $violations.Add("forward-adjacent p0-p3 physical runway proof was incomplete")
+    }
+    $sourcePresentedAt = @(Get-OptionalProperty $macroResult "adjacentSourcePresentedAtNanos")
+    $sourceAcceptedAt = @(
+        Get-OptionalProperty $macroResult "adjacentSourceIpcAcceptedAtNanos"
+    )
+    $sourceGesturesAtPresentation = @(
+        Get-OptionalProperty $macroResult "adjacentSourceGesturesAtPresentation"
+    )
+    $sourceSemanticObservedAt = @(
+        Get-OptionalProperty $macroResult "adjacentSourceSemanticObservedAtNanos"
+    )
+    $sourceSemanticEventPublishedAt = @(
+        Get-OptionalProperty $macroResult "adjacentSourceSemanticEventPublishedAtNanos"
+    )
+    $sourceSemanticEventLeadMs = @(
+        Get-OptionalProperty $macroResult "adjacentSourceSemanticEventLeadMs"
+    )
+    $sourceSemanticCommitPublishedAt = @(
+        Get-OptionalProperty $macroResult "adjacentSourceSemanticCommitPublishedAtNanos"
+    )
+    $sourceSemanticCallbackAt = @(
+        Get-OptionalProperty $macroResult "adjacentSourceSemanticCallbackAtNanos"
+    )
+    $sourceSemanticObserverModes = @(
+        Get-OptionalProperty $macroResult "adjacentSourceSemanticObserverModes"
+    )
+    $sourceGesturesAtSemantic = @(
+        Get-OptionalProperty $macroResult "adjacentSourceGesturesAtSemanticProof"
+    )
+    $sourceProgressValid = $null -ne $macroResult -and
+        (Get-OptionalProperty $macroResult "adjacentSourceProgressPassed") -eq $true -and
+        $null -eq (Get-OptionalProperty $macroResult "adjacentSourceProgressFailure") -and
+        $sourcePresentedAt.Count -eq 4 -and
+        $sourceAcceptedAt.Count -eq 4 -and
+        $sourceGesturesAtPresentation.Count -eq 4 -and
+        $sourceSemanticObservedAt.Count -eq 4 -and
+        $sourceSemanticEventPublishedAt.Count -eq 4 -and
+        $sourceSemanticEventLeadMs.Count -eq 4 -and
+        $sourceSemanticCommitPublishedAt.Count -eq 4 -and
+        $sourceSemanticCallbackAt.Count -eq 4 -and
+        $sourceSemanticObserverModes.Count -eq 4 -and
+        $sourceGesturesAtSemantic.Count -eq 4
+    if($sourceProgressValid) {
+        for($sourceIndex = 0; $sourceIndex -lt 4; $sourceIndex++) {
+            $presentedAt = [long]$sourcePresentedAt[$sourceIndex]
+            $acceptedAt = [long]$sourceAcceptedAt[$sourceIndex]
+            $semanticAt = [long]$sourceSemanticObservedAt[$sourceIndex]
+            $semanticEventAt = [long]$sourceSemanticEventPublishedAt[$sourceIndex]
+            $semanticCommitAt = [long]$sourceSemanticCommitPublishedAt[$sourceIndex]
+            $semanticCallbackAt = [long]$sourceSemanticCallbackAt[$sourceIndex]
+            $semanticMode = [string]$sourceSemanticObserverModes[$sourceIndex]
+            $signalGesture = [int]$sourceGesturesAtPresentation[$sourceIndex]
+            $semanticGesture = [int]$sourceGesturesAtSemantic[$sourceIndex]
+            $expectedSemanticAt = if($semanticMode -ceq "ACCESSIBILITY_EVENT_TIME" -and
+                    $semanticEventAt -ge $presentedAt) {
+                $semanticEventAt
+            } elseif($semanticMode -ceq "CALLBACK_FLOOR" -and
+                    $semanticEventAt -gt 0 -and $semanticEventAt -lt $presentedAt -and
+                    $semanticCallbackAt -ge $presentedAt) {
+                [Math]::Max($semanticCallbackAt, $acceptedAt)
+            } elseif($semanticMode -ceq "SEMANTIC_COMMIT_TIME" -and
+                    $semanticCommitAt -ge $presentedAt) {
+                $semanticCommitAt
+            } else {
+                0L
+            }
+            $eventDiagnosticsValid = if($semanticEventAt -gt 0) {
+                $semanticCallbackAt -ge $semanticEventAt -and
+                    (Test-NumericApproximatelyEqual `
+                        $sourceSemanticEventLeadMs[$sourceIndex] `
+                        (($semanticEventAt - $presentedAt) / 1000000.0))
+            } else {
+                $null -eq $sourceSemanticEventLeadMs[$sourceIndex]
+            }
+            if($presentedAt -le 0 -or $acceptedAt -lt $presentedAt -or
+                    ($acceptedAt - $presentedAt) -gt 240000000L -or
+                    -not $eventDiagnosticsValid -or
+                    $expectedSemanticAt -le 0 -or $semanticAt -ne $expectedSemanticAt -or
+                    $semanticAt -lt $presentedAt -or
+                    ($semanticAt - $presentedAt) -gt 240000000L -or
+                    $signalGesture -lt 0 -or $semanticGesture -lt $signalGesture -or
+                    ($semanticGesture - $signalGesture) -gt 1 -or
+                    ($sourceIndex -gt 0 -and
+                        $presentedAt -le [long]$sourcePresentedAt[$sourceIndex - 1])) {
+                $sourceProgressValid = $false
+                break
+            }
+        }
+    }
+    if(-not $sourceProgressValid) {
+        $violations.Add(
+            "forward-adjacent p0-p3 source presentation/progress deadlines were not proven"
+        )
+    }
+    $adjacentP0SeamMs = Get-OptionalProperty $macroResult "adjacentP0SeamMs"
+    $expectedAdjacentP0SeamMs =
+        ($firstAdjacentActualAtNanos - $forwardBoundaryReachedAtNanos) / 1000000.0
+    if($allImagesReadyAtNanos -le 0 -or $adjacentWorkStartedAtNanos -lt
+            $allImagesReadyAtNanos) {
+        $violations.Add("forward-adjacent work competed with the current resume-to-tail images")
+    }
+    if($forwardBoundaryReachedAtNanos -le 0 -or
+            $firstAdjacentActualAtNanos -lt $forwardBoundaryReachedAtNanos -or
+            [string](Get-OptionalProperty $macroResult "firstAdjacentActualEpisode") -cne
+                $expectedAdjacentPath -or
+            $null -eq $adjacentP0SeamMs -or [double]$adjacentP0SeamMs -lt 0.0 -or
+            [double]$adjacentP0SeamMs -gt $ProductionMaxAdjacentP0SeamMs -or
+            -not (Test-NumericApproximatelyEqual `
+                $adjacentP0SeamMs $expectedAdjacentP0SeamMs)) {
+        $violations.Add("forward-adjacent p0 seam exceeded the 200ms physical UX bound")
+    }
+    $runwayReadyBeforeTail = Get-OptionalProperty $macroResult "runwayReadyBeforeTail"
+    if($runwayReadyBeforeTail -ne $true -or
+            $adjacentRunwayReadyAtNanos -le 0 -or
+            $forwardBoundaryReachedAtNanos -le 0 -or
+            $adjacentRunwayReadyAtNanos -gt $forwardBoundaryReachedAtNanos) {
+        $violations.Add("forward-adjacent p0-p3 were not all ready before the boundary")
+    }
+    if($null -eq $macroResult -or
+            (Get-OptionalProperty $macroResult "measurementInvalid") -ne $false -or
+            $null -ne (Get-OptionalProperty $macroResult "measurementInvalidReason") -or
+            [string](Get-OptionalProperty $macroResult "p0SemanticObservationStatus") -cne
+                "VALID" -or
+            [string](Get-OptionalProperty $macroResult "p0MeasurementStatus") -cne "VALID" -or
+            (Get-OptionalProperty $macroResult "p0IpcAccepted") -ne $true -or
+            [string](Get-OptionalProperty $macroResult "p0IpcEpisodePath") -cne
+                $expectedAdjacentPath -or
+            [int](Get-OptionalProperty $macroResult "p0IpcSourceIndex") -ne 0 -or
+            [long](Get-OptionalProperty $macroResult "p0IpcViewerGeneration") -le 0 -or
+            $p0SemanticObserverMode -cnotin @(
+                "ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME") -or
+            [int](Get-OptionalProperty $macroResult "p0IpcRejectedSignalCount") -ne 0 -or
+            [string](Get-OptionalProperty $macroResult "p0IpcFirstRejectReason") -cne "NONE" -or
+            (Get-OptionalProperty $macroResult "p0IpcTimestampCrossCheckPassed") -ne $true) {
+        $violations.Add("adjacent p0 IPC identity or semantic measurement was invalid")
+    }
+    $expectedP0SemanticObservedAtNanos =
+        if($p0SemanticObserverMode -ceq "ACCESSIBILITY_EVENT_TIME" -and
+                $p0SemanticEventPublishedAtNanos -ge $p0IpcPresentedAtNanos) {
+            $p0SemanticEventPublishedAtNanos
+        } elseif($p0SemanticObserverMode -ceq "CALLBACK_FLOOR" -and
+                $p0SemanticEventPublishedAtNanos -gt 0 -and
+                $p0SemanticEventPublishedAtNanos -lt $p0IpcPresentedAtNanos -and
+                $p0SemanticCallbackAtNanos -ge $p0IpcPresentedAtNanos) {
+            [Math]::Max($p0SemanticCallbackAtNanos, $p0IpcAcceptedAtNanos)
+        } elseif($p0SemanticObserverMode -ceq "SEMANTIC_COMMIT_TIME" -and
+                $p0SemanticCommitPublishedAtNanos -ge $p0IpcPresentedAtNanos) {
+            $p0SemanticCommitPublishedAtNanos
+        } else {
+            0L
+        }
+    $p0EventDiagnosticsValid = if($p0SemanticEventPublishedAtNanos -gt 0) {
+        $p0SemanticCallbackAtNanos -ge $p0SemanticEventPublishedAtNanos -and
+            (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0SemanticEventLeadMs"
+            ) (($p0SemanticEventPublishedAtNanos - $p0IpcPresentedAtNanos) / 1000000.0))
+    } else {
+        $null -eq (Get-OptionalProperty $macroResult "p0SemanticEventLeadMs")
+    }
+    if($p0EmbeddedAtNanos -le 0 -or
+            $p0EmbeddedAtNanos -ne $firstAdjacentActualAtNanos -or
+            $p0IpcPresentedAtNanos -ne $p0EmbeddedAtNanos -or
+            $p0IpcSenderAtNanos -lt $p0IpcPresentedAtNanos -or
+            $p0IpcReceivedAtNanos -lt $p0IpcSenderAtNanos -or
+            $p0IpcAcceptedAtNanos -lt $p0IpcReceivedAtNanos -or
+            $expectedP0SemanticObservedAtNanos -le 0 -or
+            $p0IpcSemanticObservedAtNanos -ne $expectedP0SemanticObservedAtNanos -or
+            $p0HarnessObservedAtNanos -lt $p0EmbeddedAtNanos -or
+            $p0IpcSemanticObservedAtNanos -ne $p0HarnessObservedAtNanos -or
+            -not $p0EventDiagnosticsValid -or
+            $inputStartElapsedNanos -le 0 -or $inputStartElapsedNanos -gt $p0EmbeddedAtNanos -or
+            $inputEndElapsedNanos -lt $p0IpcSemanticObservedAtNanos) {
+        $violations.Add("adjacent p0 IPC/semantic timestamps were incomplete or non-monotonic")
+    }
+    $expectedP0PresentedToSenderLagMs =
+        ($p0IpcSenderAtNanos - $p0IpcPresentedAtNanos) / 1000000.0
+    $expectedP0SenderToReceiverLagMs =
+        ($p0IpcReceivedAtNanos - $p0IpcSenderAtNanos) / 1000000.0
+    $expectedP0ReceiverToAcceptanceLagMs =
+        ($p0IpcAcceptedAtNanos - $p0IpcReceivedAtNanos) / 1000000.0
+    $expectedP0DeliveryLagMs =
+        ($p0IpcReceivedAtNanos - $p0IpcPresentedAtNanos) / 1000000.0
+    $expectedP0AcceptanceLagMs =
+        ($p0IpcAcceptedAtNanos - $p0IpcPresentedAtNanos) / 1000000.0
+    $expectedP0DetectionLagMs =
+        ($p0HarnessObservedAtNanos - $p0EmbeddedAtNanos) / 1000000.0
+    $p0SemanticCallbackSchedulerLagValid =
+        if($p0SemanticEventPublishedAtNanos -gt 0) {
+            Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0SemanticCallbackSchedulerLagMs"
+            ) (($p0SemanticCallbackAtNanos - $p0SemanticEventPublishedAtNanos) / 1000000.0)
+        } else {
+            $null -eq (Get-OptionalProperty $macroResult "p0SemanticCallbackSchedulerLagMs")
+        }
+    $expectedP0ActualToInputEndMs =
+        ($inputEndElapsedNanos - $p0EmbeddedAtNanos) / 1000000.0
+    if($expectedP0AcceptanceLagMs -lt 0.0 -or
+            $expectedP0AcceptanceLagMs -gt $ProductionMaxP0DetectionLagMs -or
+            $expectedP0DetectionLagMs -lt 0.0 -or
+            $expectedP0DetectionLagMs -gt $ProductionMaxP0DetectionLagMs -or
+            -not (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0IpcPresentedToSenderLagMs"
+            ) $expectedP0PresentedToSenderLagMs) -or
+            -not (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0IpcSenderToReceiverLagMs"
+            ) $expectedP0SenderToReceiverLagMs) -or
+            -not (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0IpcReceiverToAcceptanceLagMs"
+            ) $expectedP0ReceiverToAcceptanceLagMs) -or
+            -not (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0IpcDeliveryLagMs"
+            ) $expectedP0DeliveryLagMs) -or
+            -not (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0IpcAcceptanceLagMs"
+            ) $expectedP0AcceptanceLagMs) -or
+            -not (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0DetectionLagMs"
+            ) $expectedP0DetectionLagMs) -or
+            -not $p0SemanticCallbackSchedulerLagValid -or
+            -not (Test-NumericApproximatelyEqual (
+                Get-OptionalProperty $macroResult "p0ActualToInputEndMs"
+            ) $expectedP0ActualToInputEndMs)) {
+        $violations.Add("adjacent p0 IPC/semantic lag decomposition was invalid")
+    }
+    if($inputGestureCount -lt 1 -or
+            [int](Get-OptionalProperty $macroResult "inputSampleCount") -lt $inputGestureCount -or
+            $adjacentTraversalGestureCount -ne $inputGestureCount -or
+            $adjacentP0TraversalGestureCount -lt 0 -or
+            $adjacentRunwayTraversalGestureCount -lt 0 -or
+            $adjacentP0TraversalGestureCount + $adjacentRunwayTraversalGestureCount -ne
+                $adjacentTraversalGestureCount -or
+            [int](Get-OptionalProperty $macroResult "p0GesturesAtObservation") -ne
+                $adjacentP0TraversalGestureCount -or
+            $p0IpcGesturesAtSignal -lt 0 -or
+            $inputGestureCount -le $p0IpcGesturesAtSignal -or
+            $p0IpcGesturesAfterSignal -ne ($inputGestureCount - $p0IpcGesturesAtSignal) -or
+            $p0IpcGesturesAfterSignal -lt 1 -or
+            (Get-OptionalProperty $macroResult "p0IpcContinuousInputPreserved") -ne $true) {
+        $violations.Add("physical reader-rate input did not continue after adjacent p0")
     }
     if($null -eq $allImagesReadyMs -or $allImagesReadyMs -gt $caseAllImagesSlaMs) {
         $violations.Add("all canonical images exceeded ${caseAllImagesSlaMs}ms or were unmeasured")
     }
-    if($null -eq $allImagesReadyPageCount -or $null -eq $authoritativePageCount -or
-            $allImagesReadyPageCount -ne $authoritativePageCount) {
-        $violations.Add("all-images render-ready page count did not equal the authoritative manifest")
+    if($null -eq $allImagesReadyPageCount -or
+            $allImagesReadyPageCount -ne $expectedForwardPageCount) {
+        $violations.Add("all-images render-ready page count did not equal the resume-to-tail range")
     }
-    if($null -eq $macroResult -or
+    if($allImagesEvidenceConflict) {
+        $violations.Add("macro and session telemetry all-images evidence conflicted")
+    }
+    if($allImagesEvidenceSource -ceq "MACRO_EXACT" -and
             (Get-OptionalProperty $macroResult "allImagesSlaPassed") -ne $true) {
         $violations.Add("Macrobenchmark did not prove the type-specific all-images SLA")
+    } elseif($allImagesEvidenceSource -ceq "UNMEASURED") {
+        $violations.Add("neither macro nor exact session telemetry proved all-images readiness")
     }
     if(-not $coldZero) { $violations.Add("cold_state proof missing or non-zero") }
     $maximumExpectedViewerClicks = if($script:IncludeWarmReopen) { 2 } else { 1 }
@@ -3097,16 +3815,14 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     if([string]$firstActualEvidenceKind -cne "hwui_frame_commit") {
         $violations.Add("actual image draw lacks HWUI frame-commit evidence")
     }
-    if(-not $firstActualPageValid -or $firstActualPageIndex -ne 0L) {
-        $violations.Add("fresh viewer did not first commit an actual page-zero draw")
+    if(-not $firstActualPageValid -or $firstActualPageIndex -ne $resumePage) {
+        $violations.Add("home Continue did not first commit the saved resume page")
     }
-    if(-not $firstImageTimelineComplete) {
-        $violations.Add("first image request/response/decode/draw timeline proof missing")
-    } elseif(-not $firstImageTimelineOrdered) {
+    # Successful non-zero request/decode detail is intentionally sampled out by production
+    # telemetry to avoid logd contention. ViewerOpen, the committed actual timestamp and the
+    # aggregate image-pipeline counters remain authoritative for a resumed page.
+    if($firstImageTimelineComplete -and -not $firstImageTimelineOrdered) {
         $violations.Add("first image request/response/decode/draw timeline was out of order")
-    }
-    if($preFirstRequestPageMissingCount -gt 0) {
-        $violations.Add("pre-first image request page index was unmeasured")
     }
     if($null -eq $firstDrawCommit -or $firstDrawCommit.actual -ne $true) {
         $violations.Add("first HWUI-committed draw was not an actual work image")
@@ -3118,8 +3834,8 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
             $telemetryOpenToCommitMs -gt $caseImageSlaMs) {
         $violations.Add("telemetry click-to-committed-draw exceeded ${caseImageSlaMs}ms or was unmeasured")
     }
-    if($null -eq $responseToCommitMs -or $responseToCommitMs -lt 0.0) {
-        $violations.Add("response-to-committed-draw was negative or unmeasured")
+    if($null -ne $responseToCommitMs -and $responseToCommitMs -lt 0.0) {
+        $violations.Add("response-to-committed-draw was negative")
     }
     # Reader pixels are produced by a dedicated Surface/BufferQueue, so a perfectly stationary
     # ViewRoot can legitimately give JankStats zero frames while the child layer presents every
@@ -3172,6 +3888,8 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     if($null -eq $manifestSummary -or $null -eq $authoritativePageCount -or
             $authoritativePageCount -le 0 -or $manifestDigest -notmatch '^[0-9a-f]{64}$') {
         $violations.Add("authoritative manifest summary missing or invalid")
+    } elseif($authoritativePageCount -ne $currentPageCount) {
+        $violations.Add("authoritative manifest page count did not match structural selection")
     }
     if($null -eq $traversalSummary) {
         $violations.Add("full traversal summary missing")
@@ -3180,8 +3898,15 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
                 $traversalInitialBlankFrames -ne $initialBlankFrames) {
             $violations.Add("traversal initial blank frame telemetry missing or inconsistent")
         }
-        if($traversalPageCount -ne $authoritativePageCount) {
-            $violations.Add("traversal authority did not cover every canonical source page")
+        $expectedMissingSourceIndexes = if($resumePage -gt 0) {
+            (0..($resumePage - 1)) -join "|"
+        } else {
+            "none"
+        }
+        if($traversalPageCount -ne $authoritativePageCount -or
+                $observedSourceCount -ne $expectedForwardPageCount -or
+                $missingSourceIndexes -cne $expectedMissingSourceIndexes) {
+            $violations.Add("traversal did not cover exactly the saved position through the current tail")
         }
         if($traversalManifestDigest -cne $manifestDigest) {
             $violations.Add("traversal manifest digest did not match launch authority")
@@ -3193,13 +3918,12 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     }
     if($null -eq $imagePipelineSummary) {
         $violations.Add("image pipeline aggregate summary was missing")
-    } elseif($null -eq $authoritativePageCount -or
-            $pipelineRequestStarted -ne $authoritativePageCount -or
-            $pipelineRequestSucceeded -ne $authoritativePageCount -or
-            $pipelineMetadataCount -ne $authoritativePageCount -or
+    } elseif($pipelineRequestStarted -ne $expectedForwardPageCount -or
+            $pipelineRequestSucceeded -ne $expectedForwardPageCount -or
+            $pipelineMetadataCount -ne $expectedForwardPageCount -or
             $pipelineRequestCancelled -ne 0L -or $pipelineRequestFailed -ne 0L -or
             $pipelineEncodedBytes -le 0L -or $pipelineResponseBytes -ne $pipelineEncodedBytes) {
-        $violations.Add("image pipeline aggregate did not prove one successful body and metadata record per canonical page")
+        $violations.Add("image pipeline aggregate did not prove one successful body and metadata record per resume-to-tail page")
     }
     if($null -eq $memorySummary) { $violations.Add("memory_summary telemetry missing") }
     else {
@@ -3259,7 +3983,15 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     if($decodeCancellations.Count -gt 0) {
         $violations.Add("image decodes were cancelled during continuous forward reading")
     }
-    if($networkObservations.Count -eq 0) { $violations.Add("network_observation telemetry missing") }
+    if($networkObservations.Count -eq 0) {
+        $violations.Add("network_observation telemetry missing")
+    } elseif($scopedNetworkObservations.Count -eq 0) {
+        $violations.Add("current/selected-adjacent network_observation telemetry missing")
+    }
+    if($scopedNetworkObservations.Count -gt 0 -and
+            $physicalScopedNetworkObservations.Count -eq 0) {
+        $violations.Add("current/selected-adjacent physical HTTP client observation unmeasured")
+    }
     if($clientInstanceIds.Count -gt 1) { $violations.Add("multiple viewer HTTP client instances detected") }
     if($viewerClosedEvents.Count -eq 0) {
         $violations.Add("viewer_closed telemetry missing")
@@ -3282,9 +4014,30 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
     }
     if(-not [string]::IsNullOrWhiteSpace($caseException)) { $violations.Add($caseException) }
 
+    # A corrupt input producer or delayed semantic observer invalidates the measurement, not the
+    # target app. Preserve every raw product field in the case JSON, but do not relabel missing
+    # AndroidX output or a delayed p0 observation as product violations. The outer orchestrator
+    # retries this exact cold case with a new benchmark process and retains this attempt's artifacts.
+    $invalidMeasurementDiagnostics = if($macroMeasurementInvalid) {
+        @($violations)
+    } else {
+        @()
+    }
+    $caseClassification = Resolve-ColdCaseClassification `
+        $macroMeasurementInvalid $violations.Count
+    if($macroMeasurementInvalid) {
+        $violations.Clear()
+        $violations.Add(
+            "infrastructure measurement invalid: $macroMeasurementInvalidReason"
+        )
+    }
+
     $caseSummary = [pscustomobject][ordered]@{
         schema = 1
         caseId = $caseId
+        baseCaseId = $baseCaseId
+        infrastructureAttempt = $InfrastructureAttempt
+        classification = $caseClassification
         ordinal = $Ordinal
         workType = [string]$Target.workType
         workId = [string]$Target.workId
@@ -3292,6 +4045,20 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         episodeId = [string]$Target.episodeId
         episodeTitle = [string]$Target.episodeTitle
         episodePath = [string]$Target.episodePath
+        currentPageCount = $currentPageCount
+        resumePercent = $ResumePercent
+        resumePercentBasis = "canonical_page_ordinal"
+        resumePage = $resumePage
+        resumeOffset = -420
+        expectedForwardPageCount = $expectedForwardPageCount
+        resumeFirstActualMatched = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "resumeFirstActualMatched"
+        } else { $null }
+        resumeMode = Get-OptionalProperty $macroResult "resumeMode"
+        homeContinueSeeded = Get-OptionalProperty $macroResult "homeContinueSeeded"
+        homeContinueColdForceStopped =
+            Get-OptionalProperty $macroResult "homeContinueColdForceStopped"
+        firstActualResumePage = Get-OptionalProperty $macroResult "firstActualResumePage"
         expectedAdjacentEpisodePath = $expectedAdjacentPath
         expectedAdjacentPageCount = $expectedAdjacentPageCount
         adjacentRunwayTargetEpisode = if($null -ne $macroResult) {
@@ -3306,26 +4073,142 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         adjacentTotalPageCount = if($null -ne $macroResult) {
             Get-OptionalProperty $macroResult "adjacentTotalPageCount"
         } else { $null }
-        adjacentBoundaryWaitMs = if($null -ne $macroResult) {
-            Get-OptionalProperty $macroResult "adjacentBoundaryWaitMs"
+        adjacentTraversalGestureCount =
+            Get-OptionalProperty $macroResult "adjacentTraversalGestureCount"
+        adjacentP0TraversalGestureCount =
+            Get-OptionalProperty $macroResult "adjacentP0TraversalGestureCount"
+        adjacentRunwayTraversalGestureCount =
+            Get-OptionalProperty $macroResult "adjacentRunwayTraversalGestureCount"
+        adjacentLastSourceIndex = Get-OptionalProperty $macroResult "adjacentLastSourceIndex"
+        adjacentPhysicallyObservedSources =
+            Get-OptionalProperty $macroResult "adjacentPhysicallyObservedSources"
+        adjacentPhysicalRunwayPassed =
+            Get-OptionalProperty $macroResult "adjacentPhysicalRunwayPassed"
+        adjacentSourcePresentedAtNanos = @(
+            Get-OptionalProperty $macroResult "adjacentSourcePresentedAtNanos"
+        )
+        adjacentSourceIpcAcceptedAtNanos = @(
+            Get-OptionalProperty $macroResult "adjacentSourceIpcAcceptedAtNanos"
+        )
+        adjacentSourceGesturesAtPresentation = @(
+            Get-OptionalProperty $macroResult "adjacentSourceGesturesAtPresentation"
+        )
+        adjacentSourceSemanticObservedAtNanos = @(
+            Get-OptionalProperty $macroResult "adjacentSourceSemanticObservedAtNanos"
+        )
+        adjacentSourceSemanticEventPublishedAtNanos = @(
+            Get-OptionalProperty $macroResult "adjacentSourceSemanticEventPublishedAtNanos"
+        )
+        adjacentSourceSemanticEventLeadMs = @(
+            Get-OptionalProperty $macroResult "adjacentSourceSemanticEventLeadMs"
+        )
+        adjacentSourceSemanticCommitPublishedAtNanos = @(
+            Get-OptionalProperty $macroResult "adjacentSourceSemanticCommitPublishedAtNanos"
+        )
+        adjacentSourceSemanticCallbackAtNanos = @(
+            Get-OptionalProperty $macroResult "adjacentSourceSemanticCallbackAtNanos"
+        )
+        adjacentSourceSemanticObserverModes = @(
+            Get-OptionalProperty $macroResult "adjacentSourceSemanticObserverModes"
+        )
+        adjacentSourceGesturesAtSemanticProof = @(
+            Get-OptionalProperty $macroResult "adjacentSourceGesturesAtSemanticProof"
+        )
+        adjacentSourceProgressPassed =
+            Get-OptionalProperty $macroResult "adjacentSourceProgressPassed"
+        adjacentSourceProgressFailure =
+            Get-OptionalProperty $macroResult "adjacentSourceProgressFailure"
+        adjacentWorkStartedAtNanos =
+            Get-OptionalProperty $macroResult "adjacentWorkStartedAtNanos"
+        adjacentRunwayReadyAtNanos =
+            Get-OptionalProperty $macroResult "adjacentRunwayReadyAtNanos"
+        forwardBoundaryReachedAtNanos =
+            Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos"
+        firstAdjacentActualAtNanos =
+            Get-OptionalProperty $macroResult "firstAdjacentActualAtNanos"
+        firstAdjacentActualEpisode =
+            Get-OptionalProperty $macroResult "firstAdjacentActualEpisode"
+        adjacentP0SeamMs = Get-OptionalProperty $macroResult "adjacentP0SeamMs"
+        # Production UX contract: p0-p3 must all be ready before the launch-episode boundary.
+        runwayReadyBeforeTail = Get-OptionalProperty $macroResult "runwayReadyBeforeTail"
+        p0EmbeddedFirstAdjacentActualAtNanos =
+            Get-OptionalProperty $macroResult "p0EmbeddedFirstAdjacentActualAtNanos"
+        p0HarnessObservedAtNanos =
+            Get-OptionalProperty $macroResult "p0HarnessObservedAtNanos"
+        p0GesturesAtObservation = Get-OptionalProperty $macroResult "p0GesturesAtObservation"
+        p0DetectionLagMs = Get-OptionalProperty $macroResult "p0DetectionLagMs"
+        p0ActualToInputEndMs = Get-OptionalProperty $macroResult "p0ActualToInputEndMs"
+        p0SemanticObservationStatus =
+            Get-OptionalProperty $macroResult "p0SemanticObservationStatus"
+        p0MeasurementStatus = Get-OptionalProperty $macroResult "p0MeasurementStatus"
+        p0IpcAccepted = Get-OptionalProperty $macroResult "p0IpcAccepted"
+        p0IpcPresentedAtNanos = Get-OptionalProperty $macroResult "p0IpcPresentedAtNanos"
+        p0IpcSenderAtNanos = Get-OptionalProperty $macroResult "p0IpcSenderAtNanos"
+        p0IpcReceivedAtNanos = Get-OptionalProperty $macroResult "p0IpcReceivedAtNanos"
+        p0IpcAcceptedAtNanos = Get-OptionalProperty $macroResult "p0IpcAcceptedAtNanos"
+        p0IpcPresentedToSenderLagMs =
+            Get-OptionalProperty $macroResult "p0IpcPresentedToSenderLagMs"
+        p0IpcSenderToReceiverLagMs =
+            Get-OptionalProperty $macroResult "p0IpcSenderToReceiverLagMs"
+        p0IpcReceiverToAcceptanceLagMs =
+            Get-OptionalProperty $macroResult "p0IpcReceiverToAcceptanceLagMs"
+        p0IpcDeliveryLagMs = Get-OptionalProperty $macroResult "p0IpcDeliveryLagMs"
+        p0IpcAcceptanceLagMs = Get-OptionalProperty $macroResult "p0IpcAcceptanceLagMs"
+        p0IpcGesturesAtSignal = Get-OptionalProperty $macroResult "p0IpcGesturesAtSignal"
+        p0IpcGesturesAfterSignal =
+            Get-OptionalProperty $macroResult "p0IpcGesturesAfterSignal"
+        p0IpcContinuousInputPreserved =
+            Get-OptionalProperty $macroResult "p0IpcContinuousInputPreserved"
+        p0IpcEpisodePath = Get-OptionalProperty $macroResult "p0IpcEpisodePath"
+        p0IpcSourceIndex = Get-OptionalProperty $macroResult "p0IpcSourceIndex"
+        p0IpcViewerGeneration = Get-OptionalProperty $macroResult "p0IpcViewerGeneration"
+        p0IpcRejectedSignalCount =
+            Get-OptionalProperty $macroResult "p0IpcRejectedSignalCount"
+        p0IpcFirstRejectReason = Get-OptionalProperty $macroResult "p0IpcFirstRejectReason"
+        p0IpcSemanticObservedAtNanos =
+            Get-OptionalProperty $macroResult "p0IpcSemanticObservedAtNanos"
+        p0SemanticCallbackAtNanos =
+            Get-OptionalProperty $macroResult "p0SemanticCallbackAtNanos"
+        p0SemanticEventPublishedAtNanos =
+            Get-OptionalProperty $macroResult "p0SemanticEventPublishedAtNanos"
+        p0SemanticCommitPublishedAtNanos =
+            Get-OptionalProperty $macroResult "p0SemanticCommitPublishedAtNanos"
+        p0SemanticEventLeadMs =
+            Get-OptionalProperty $macroResult "p0SemanticEventLeadMs"
+        p0SemanticObserverMode =
+            Get-OptionalProperty $macroResult "p0SemanticObserverMode"
+        p0SemanticCallbackSchedulerLagMs =
+            Get-OptionalProperty $macroResult "p0SemanticCallbackSchedulerLagMs"
+        p0IpcTimestampCrossCheckPassed =
+            Get-OptionalProperty $macroResult "p0IpcTimestampCrossCheckPassed"
+        measurementInvalid = $macroMeasurementInvalid
+        measurementInvalidReason = if($macroMeasurementInvalid) {
+            $macroMeasurementInvalidReason
         } else { $null }
-        runwayReadyBeforeTail = if($null -ne $macroResult) {
-            Get-OptionalProperty $macroResult "runwayReadyBeforeTail"
+        invalidMeasurementDiagnostics = @($invalidMeasurementDiagnostics)
+        inputGestureCount = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "inputGestureCount"
         } else { $null }
-        # The exact next pixels remain a mandatory identity/physical-render proof. Their timestamp
-        # depends on when automation (or a reader) performs the next gesture, however, so it cannot
-        # measure attachment latency. The runway-ready timestamp is published only after the page
-        # table and its complete four-drawable cohort are installed atomically.
-        adjacentAttachMs = if($null -ne $macroResult -and
-                [long](Get-OptionalProperty $macroResult "adjacentRunwayReadyAtNanos") -gt 0 -and
-                [long](Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos") -gt 0) {
-            [Math]::Max(
-                0.0,
-                (
-                    [long](Get-OptionalProperty $macroResult "adjacentRunwayReadyAtNanos") -
-                    [long](Get-OptionalProperty $macroResult "forwardBoundaryReachedAtNanos")
-                ) / 1000000.0
-            )
+        inputSampleCount = Get-OptionalProperty $macroResult "inputSampleCount"
+        inputStartElapsedNanos = Get-OptionalProperty $macroResult "inputStartElapsedNanos"
+        inputEndElapsedNanos = Get-OptionalProperty $macroResult "inputEndElapsedNanos"
+        inputViewportDistance = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "inputViewportDistance"
+        } else { $null }
+        inputPlannedViewportPerSecond = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "inputPlannedViewportPerSecond"
+        } else { $null }
+        inputAchievedViewportPerSecond = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "inputAchievedViewportPerSecond"
+        } else { $null }
+        inputMaxScheduleLatenessMs = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "inputMaxScheduleLatenessMs"
+        } else { $null }
+        inputMaxInjectionCallMs = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "inputMaxInjectionCallMs"
+        } else { $null }
+        inputMaxInterGestureGapMs = if($null -ne $macroResult) {
+            Get-OptionalProperty $macroResult "inputMaxInterGestureGapMs"
         } else { $null }
         episodeMetadataSource = [string]$Target.metadataSource
         catalogPage = $Target.catalogPage
@@ -3343,7 +4226,10 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         allImagesSlaMs = $caseAllImagesSlaMs
         firstActualMs = $firstActualMs
         allImagesReadyMs = $allImagesReadyMs
+        allImagesReadyAtNanos = $allImagesReadyAtNanos
         allImagesReadyPageCount = $allImagesReadyPageCount
+        allImagesEvidenceSource = $allImagesEvidenceSource
+        allImagesEvidenceConflict = $allImagesEvidenceConflict
         androidxAllImagesReadyMs = $androidxAllImagesReadyMs
         androidxFrameCommitTraceKind = $androidxFrameCommitTraceKind
         androidxFrameCommitMaxMs = if($null -ne $androidxFrameCommitMaxMs) {
@@ -3472,7 +4358,14 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         preFirstRequestMissingPageCount = $preFirstRequestPageMissingCount
         preFirstEscapedRequestCount = $preFirstEscapedRequests.Count
         networkObservationCount = $networkObservations.Count
+        clientScopeEpisodePaths = @($clientScopeEpisodePaths)
+        scopedNetworkObservationCount = $scopedNetworkObservations.Count
+        physicalScopedNetworkObservationCount = $physicalScopedNetworkObservations.Count
+        unmeasuredScopedNetworkObservationCount = $unmeasuredScopedNetworkObservations.Count
+        unmeasuredScopedNetworkObservations = @($unmeasuredNetworkObservationDiagnostics)
+        ignoredOutOfScopeNetworkObservationCount = $ignoredOutOfScopeNetworkObservations.Count
         httpClientInstanceCount = $clientInstanceIds.Count
+        httpClientInstanceIds = @($clientInstanceIds)
         firstRequestProtocol = if($null -ne $firstNetworkObservation) {
             [string]$firstNetworkObservation.protocol
         } else { $null }
@@ -3516,6 +4409,7 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         warmFirstActualMs = if($null -ne $warmSummary) { $warmSummary.firstActualMs } else { $null }
         coldState = $cold
         macroResult = $macroResult
+        macroResultArtifact = $exactMacroResultArtifact
         androidxBenchmark = $androidxBenchmark
         androidxTraceParserIsolationAccepted = $androidxTraceParserIsolationAccepted
         telemetryEventCount = $telemetry.Count
@@ -3587,6 +4481,13 @@ function Invoke-ColdCase($Target, [int]$Ordinal, [string]$RunRemoteRoot) {
         firstImageResponseElapsedNanos = $firstImageResponseElapsedNanos
         firstImageDecodeElapsedNanos = $firstImageDecodeElapsedNanos
         firstImageDrawElapsedNanos = $firstImageDrawElapsedNanos
+        clientScopeEpisodePaths = @($clientScopeEpisodePaths)
+        networkObservationCount = $networkObservations.Count
+        scopedNetworkObservationCount = $scopedNetworkObservations.Count
+        physicalScopedNetworkObservationCount = $physicalScopedNetworkObservations.Count
+        unmeasuredScopedNetworkObservationCount = $unmeasuredScopedNetworkObservations.Count
+        unmeasuredScopedNetworkObservations = @($unmeasuredNetworkObservationDiagnostics)
+        ignoredOutOfScopeNetworkObservationCount = $ignoredOutOfScopeNetworkObservations.Count
         httpClientInstanceIds = $clientInstanceIds
         firstRequestProtocol = $caseSummary.firstRequestProtocol
         firstRequestConnectionId = $caseSummary.firstRequestConnectionId
@@ -3742,6 +4643,7 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
             expectedAdjacentEpisodeId = $episode.expectedAdjacentEpisodeId
             expectedAdjacentEpisodeTitle = $episode.expectedAdjacentEpisodeTitle
             expectedAdjacentPageCount = $episode.expectedAdjacentPageCount
+            currentPageCount = $episode.currentPageCount
             episodePairSelectionSeed = $episode.episodePairSelectionSeed
             episodePairSelectionAlgorithm = $episode.episodePairSelectionAlgorithm
             episodePairSelectionHash = $episode.episodePairSelectionHash
@@ -3879,6 +4781,7 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
                 expectedAdjacentEpisodeId = $episode.expectedAdjacentEpisodeId
                 expectedAdjacentEpisodeTitle = $episode.expectedAdjacentEpisodeTitle
                 expectedAdjacentPageCount = $episode.expectedAdjacentPageCount
+                currentPageCount = $episode.currentPageCount
                 episodePairSelectionSeed = $episode.episodePairSelectionSeed
                 episodePairSelectionAlgorithm = $episode.episodePairSelectionAlgorithm
                 episodePairSelectionHash = $episode.episodePairSelectionHash
@@ -3939,6 +4842,7 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
 foreach($target in @($targets)) {
     $launchPath = [string](Get-OptionalProperty $target "episodePath")
     $adjacentPath = [string](Get-OptionalProperty $target "expectedAdjacentEpisodePath")
+    $currentCount = [int](Get-OptionalProperty $target "currentPageCount")
     $adjacentCount = [int](Get-OptionalProperty $target "expectedAdjacentPageCount")
     $pairSeed = [long](Get-OptionalProperty $target "episodePairSelectionSeed")
     $pairAlgorithm =
@@ -3952,7 +4856,8 @@ foreach($target in @($targets)) {
     )
     if([string]::IsNullOrWhiteSpace($launchPath) -or
             [string]::IsNullOrWhiteSpace($adjacentPath) -or
-            $launchPath -ceq $adjacentPath -or $adjacentCount -lt 4) {
+            $launchPath -ceq $adjacentPath -or $currentCount -lt 1 -or
+            $adjacentCount -lt 4) {
         throw "Selected target is not a non-latest episode with an exact four-page forward adjacent proof: $([string]$target.workType):$([string]$target.workId)"
     }
     if($pairSeed -ne $Seed -or
@@ -3974,53 +4879,100 @@ $hostGpuNotificationRestoration = $null
 $hostGpuConnectedScanIsolations = [Collections.Generic.List[object]]::new()
 $hostGpuConnectedScanRestoration = $null
 try {
+    $caseOrdinal = 0
+    $stopAllCases = $false
     for($index = 0; $index -lt $targets.Count; $index++) {
         $target = $targets[$index]
-        Write-Host ("[{0}/{1}] {2} {3} {4}" -f ($index + 1), $targets.Count,
-            $target.workType, $target.workId, $target.title)
-        try {
-            if($RestartHostGpuProcessPerCase) {
-                $hostGpuReset = Restart-HostGpuEmulatorForCase ($index + 1)
+        foreach($resumePercent in $ResumePercents) {
+            $caseOrdinal++
+            $totalCaseCount = $targets.Count * $ResumePercents.Count
+            Write-Host ("[{0}/{1}] {2} {3} {4} resume={5}%" -f `
+                $caseOrdinal, $totalCaseCount, $target.workType, $target.workId,
+                $target.title, $resumePercent)
+            try {
+                if($RestartHostGpuProcessPerCase) {
+                    $hostGpuReset = Restart-HostGpuEmulatorForCase $caseOrdinal
+                    Write-Json (Join-Path $runDir (
+                        "host-gpu-reset-{0:D2}.json" -f $caseOrdinal
+                    )) $hostGpuReset
+                }
+                $hostGpuConnectedScanIsolation = Set-HostGpuEmulatorConnectedScanIsolation
+                $hostGpuConnectedScanIsolations.Add($hostGpuConnectedScanIsolation)
                 Write-Json (Join-Path $runDir (
-                    "host-gpu-reset-{0:D2}.json" -f ($index + 1)
-                )) $hostGpuReset
-            }
-            $hostGpuConnectedScanIsolation = Set-HostGpuEmulatorConnectedScanIsolation
-            $hostGpuConnectedScanIsolations.Add($hostGpuConnectedScanIsolation)
-            Write-Json (Join-Path $runDir (
-                "host-gpu-connected-scan-isolation-{0:D2}.json" -f ($index + 1)
-            )) $hostGpuConnectedScanIsolation
-            $caseResult = Invoke-ColdCase $target ($index + 1) $remoteRunRoot
-            $caseResults.Add($caseResult)
-            if($StopOnFirstFailure -and -not [bool]$caseResult.passed) {
-                Write-Warning "Stopping after first failed case: $([string]$caseResult.caseId)"
-                break
-            }
-        } catch {
-            $failure = [pscustomobject][ordered]@{
-                schema = 1
-                caseId = "unstarted-$($index + 1)"
-                ordinal = $index + 1
-                workType = $target.workType
-                workId = $target.workId
-                workTitle = $target.title
-                episodeId = $target.episodeId
-                episodeTitle = $target.episodeTitle
-                episodePath = $target.episodePath
-                expectedAdjacentEpisodePath = $target.expectedAdjacentEpisodePath
-                expectedAdjacentPageCount = $target.expectedAdjacentPageCount
-                passed = $false
-                violations = @("host orchestration exception: $($_.Exception.Message)")
-                hostScriptStackTrace = $_.ScriptStackTrace
-                hostPosition = $_.InvocationInfo.PositionMessage
-            }
-            $caseResults.Add($failure)
-            Write-Json (Join-Path $runDir ("unstarted-{0:D2}-summary.json" -f ($index + 1))) $failure
-            if($StopOnFirstFailure) {
-                Write-Warning "Stopping after first host orchestration failure: $([string]$failure.caseId)"
-                break
+                    "host-gpu-connected-scan-isolation-{0:D2}.json" -f $caseOrdinal
+                )) $hostGpuConnectedScanIsolation
+                $caseResult = $null
+                $maximumInfrastructureAttempts = 1 + $MeasurementInvalidRetryCount
+                for($infrastructureAttempt = 1;
+                        $infrastructureAttempt -le $maximumInfrastructureAttempts;
+                        $infrastructureAttempt++) {
+                    $caseResult = Invoke-ColdCase `
+                        $target $caseOrdinal $remoteRunRoot $resumePercent $infrastructureAttempt
+                    if([string](Get-OptionalProperty $caseResult "classification") -cne
+                            "INFRA_INVALID") {
+                        break
+                    }
+                    if($infrastructureAttempt -lt $maximumInfrastructureAttempts) {
+                        Write-Warning (
+                            "Retrying infrastructure-invalid case {0}: attempt={1}/{2}, reason={3}" -f
+                                [string]$caseResult.baseCaseId,
+                                $infrastructureAttempt,
+                                $maximumInfrastructureAttempts,
+                                [string]$caseResult.measurementInvalidReason
+                        )
+                    }
+                }
+                $caseResults.Add($caseResult)
+                if($StopOnFirstFailure -and -not [bool]$caseResult.passed) {
+                    Write-Warning "Stopping after first failed case: $([string]$caseResult.caseId)"
+                    $stopAllCases = $true
+                    break
+                }
+            } catch {
+                $hostFailureReason =
+                    "MEASUREMENT_INVALID: host orchestration exception: $($_.Exception.Message)"
+                $failureSafeId = ([string]$target.workId -replace '[^A-Za-z0-9._-]', '_')
+                $failureBaseCaseId = '{0}-{1:D2}-{2}-r{3}' -f `
+                    $target.workType, $caseOrdinal, $failureSafeId, $resumePercent
+                $failure = [pscustomobject][ordered]@{
+                    schema = 1
+                    caseId = "unstarted-$caseOrdinal-r$resumePercent"
+                    baseCaseId = $failureBaseCaseId
+                    infrastructureAttempt = 1
+                    classification = "INFRA_INVALID"
+                    ordinal = $caseOrdinal
+                    workType = $target.workType
+                    workId = $target.workId
+                    workTitle = $target.title
+                    episodeId = $target.episodeId
+                    episodeTitle = $target.episodeTitle
+                    episodePath = $target.episodePath
+                    currentPageCount = $target.currentPageCount
+                    resumePercent = $resumePercent
+                    resumePage = Get-ResumePage `
+                        ([int]$target.currentPageCount) ([int]$resumePercent)
+                    expectedAdjacentEpisodePath = $target.expectedAdjacentEpisodePath
+                    expectedAdjacentPageCount = $target.expectedAdjacentPageCount
+                    passed = $false
+                    measurementInvalid = $true
+                    measurementInvalidReason = $hostFailureReason
+                    invalidMeasurementDiagnostics = @()
+                    violations = @("infrastructure measurement invalid: $hostFailureReason")
+                    hostScriptStackTrace = $_.ScriptStackTrace
+                    hostPosition = $_.InvocationInfo.PositionMessage
+                }
+                $caseResults.Add($failure)
+                Write-Json (Join-Path $runDir (
+                    "unstarted-{0:D2}-r{1}-summary.json" -f $caseOrdinal, $resumePercent
+                )) $failure
+                if($StopOnFirstFailure) {
+                    Write-Warning "Stopping after first host orchestration failure: $([string]$failure.caseId)"
+                    $stopAllCases = $true
+                    break
+                }
             }
         }
+        if($stopAllCases) { break }
     }
 } finally {
     $hostGpuConnectedScanRestoration =
@@ -4040,10 +4992,16 @@ $expectedWebtoonCount = @($targets | Where-Object {
 $expectedManhwaCount = @($targets | Where-Object {
     ([string]$_.workType) -ceq "manhwa"
 }).Count
-$expectedCaseCount = $expectedWebtoonCount + $expectedManhwaCount
+$expectedCaseCount = ($expectedWebtoonCount + $expectedManhwaCount) * $ResumePercents.Count
+$resumeQualificationSatisfied =
+    $ResumePercents.Count -eq 3 -and
+    $ResumePercents[0] -eq 25 -and
+    $ResumePercents[1] -eq 50 -and
+    $ResumePercents[2] -eq 90
 $qualificationTargetSatisfied = $CountPerType -eq 20 -and
     $expectedWebtoonCount -eq 20 -and
-    $expectedManhwaCount -eq 20
+    $expectedManhwaCount -eq 20 -and
+    $resumeQualificationSatisfied
 # Same-process warm reopen is intentionally reported as a diagnostic only. The product contract
 # and the canonical verdict are cold-only, so an unavailable/failed warm sample must not turn a
 # valid cold case into a configuration failure (or dereference a missing field on an unstarted
@@ -4068,6 +5026,7 @@ $rerunParts = [Collections.Generic.List[string]]::new()
 [void]$rerunParts.Add("-OutDir $(ConvertTo-PowerShellLiteral $OutDir)")
 [void]$rerunParts.Add("-Seed $Seed")
 [void]$rerunParts.Add("-CountPerType $CountPerType")
+[void]$rerunParts.Add("-ResumePercents $($ResumePercents -join ',')")
 [void]$rerunParts.Add("-FirstImageSlaMs $FirstImageSlaMs")
 [void]$rerunParts.Add("-ManhwaImageSlaMs $ManhwaImageSlaMs")
 [void]$rerunParts.Add("-AllImagesSlaMs $AllImagesSlaMs")
@@ -4092,6 +5051,10 @@ $macroReproTarget = $targets[0]
 $macroReproCaseId = "repro-$($macroReproTarget.workType)-$($macroReproTarget.workId)"
 $macroReproImageSlaMs = Get-CaseImageSlaMs ([string]$macroReproTarget.workType)
 $macroReproAllImagesSlaMs = Get-CaseAllImagesSlaMs ([string]$macroReproTarget.workType)
+$macroReproResumePercent = [int]$ResumePercents[0]
+$macroReproCurrentPageCount = [int]$macroReproTarget.currentPageCount
+$macroReproResumePage = [int](Get-ResumePage `
+    $macroReproCurrentPageCount $macroReproResumePercent)
 $macroReproParts = @(
     "adb -s $(ConvertTo-PowerShellLiteral $DeviceSerial) shell am instrument -w -r",
     "-e class $(ConvertTo-PowerShellLiteral $TestClass)",
@@ -4102,6 +5065,11 @@ $macroReproParts = @(
     "-e ntkEpisodePath $(ConvertTo-PowerShellLiteral ([string]$macroReproTarget.episodePath))",
     "-e ntkExpectedAdjacentEpisodePath $(ConvertTo-PowerShellLiteral ([string]$macroReproTarget.expectedAdjacentEpisodePath))",
     "-e ntkExpectedAdjacentPageCount $([int]$macroReproTarget.expectedAdjacentPageCount)",
+    "-e ntkCurrentPageCount $macroReproCurrentPageCount",
+    "-e ntkResumePercent $macroReproResumePercent",
+    "-e ntkResumePage $macroReproResumePage",
+    "-e ntkResumeOffset -420",
+    "-e ntkSiteRoot $(ConvertTo-PowerShellLiteral $siteRoot)",
     "-e ntkCaseId $(ConvertTo-PowerShellLiteral $macroReproCaseId)",
     "-e ntkFirstImageSlaMs $macroReproImageSlaMs",
     "-e ntkAllImagesSlaMs $macroReproAllImagesSlaMs",
@@ -4122,6 +5090,7 @@ $selectedEpisodePairs = @($targets | ForEach-Object {
         workId = [string]$_.workId
         currentEpisodeId = [string]$_.episodeId
         currentEpisodePath = [string]$_.episodePath
+        currentPageCount = [int]$_.currentPageCount
         nextEpisodeId = [string]$_.expectedAdjacentEpisodeId
         nextEpisodePath = [string]$_.expectedAdjacentEpisodePath
         nextEpisodePageCount = [int]$_.expectedAdjacentPageCount
@@ -4141,6 +5110,8 @@ $summary = [pscustomobject][ordered]@{
     selectedEpisodePairs = $selectedEpisodePairs
     expectedWebtoon = $expectedWebtoonCount
     expectedManhwa = $expectedManhwaCount
+    resumePercents = @($ResumePercents)
+    resumeQualificationSatisfied = $resumeQualificationSatisfied
     completedCases = $caseResults.Count
     passedCases = $passedCount
     smokePassed = ($caseResults.Count -eq $expectedCaseCount -and

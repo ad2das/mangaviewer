@@ -77,6 +77,13 @@ public class Title extends MTitle {
                 title.getResumeNtkImageWorkId(),
                 title.getResumeNtkImageEpisodeId(),
                 title.getResumeNtkImageCount());
+        setResumeNtkNextEpisodeIdentity(
+                title.getResumeNtkNextEpisodePath(),
+                title.getResumeNtkNextEpisodeId(),
+                title.getResumeNtkNextEpisodeName(),
+                title.getResumeNtkNextImageWorkId(),
+                title.getResumeNtkNextImageEpisodeId(),
+                title.getResumeNtkNextImageCount());
         setReadingProgress(title.getBookmarkEpisodeId(), title.getBookmarkEpisodeIndex(), title.getEpisodeCount());
         if(title instanceof Title) {
             ntkEpisodeListConfirmedEmpty = ((Title) title).isNtkEpisodeListConfirmedEmpty();
@@ -2012,6 +2019,7 @@ public class Title extends MTitle {
         copy.setNtkStatusLabel(getNtkStatusLabel());
         copy.setResumeNtkEpisodePath(getResumeNtkEpisodePath());
         copyResumeNtkImageIdentityTo(copy);
+        copyResumeNtkNextEpisodeIdentityTo(copy);
         copy.setReadingProgress(getBookmarkEpisodeId(), getBookmarkEpisodeIndex(), getEpisodeCount());
         copy.bookmark = bookmark;
         copy.bookmarked = bookmarked;
@@ -2047,6 +2055,7 @@ public class Title extends MTitle {
         title.setNtkStatusLabel(getNtkStatusLabel());
         title.setResumeNtkEpisodePath(getResumeNtkEpisodePath());
         copyResumeNtkImageIdentityTo(title);
+        copyResumeNtkNextEpisodeIdentityTo(title);
         title.ntkEpisodeListConfirmedEmpty = ntkEpisodeListConfirmedEmpty;
         return title;
     }
@@ -2084,6 +2093,55 @@ public class Title extends MTitle {
                 idMatch = episode;
         }
         return idMatch;
+    }
+
+    private void copyResumeNtkNextEpisodeIdentityTo(MTitle target) {
+        if(target == null)
+            return;
+        Manga nextEpisode = findResumeNtkNextEpisodeMetadata();
+        if(nextEpisode != null
+                && nextEpisode.getNtkEpisodePath().trim().length() > 0
+                && nextEpisode.getId() > 0
+                && nextEpisode.getNtkImageWorkId().trim().length() > 0
+                && nextEpisode.getNtkImageEpisodeId().trim().length() > 0
+                && nextEpisode.getNtkImageCount() > 0) {
+            target.setResumeNtkNextEpisodeIdentity(nextEpisode);
+            return;
+        }
+        target.setResumeNtkNextEpisodeIdentity(
+                getResumeNtkNextEpisodePath(),
+                getResumeNtkNextEpisodeId(),
+                getResumeNtkNextEpisodeName(),
+                getResumeNtkNextImageWorkId(),
+                getResumeNtkNextImageEpisodeId(),
+                getResumeNtkNextImageCount());
+    }
+
+    private Manga findResumeNtkNextEpisodeMetadata() {
+        if(eps == null || eps.isEmpty())
+            return null;
+        Manga current = findResumeNtkEpisodeMetadata();
+        if(current == null)
+            return null;
+        int currentIndex = -1;
+        for(int i = 0; i < eps.size(); i++) {
+            Manga candidate = eps.get(i);
+            if(candidate != null && Manga.sameEpisodeIdentity(current, candidate)) {
+                currentIndex = i;
+                break;
+            }
+        }
+        if(currentIndex < 0)
+            return null;
+        Manga adjacent = null;
+        for(int i = currentIndex - 1; i >= 0; i--) {
+            Manga candidate = eps.get(i);
+            if(candidate != null && !Manga.sameEpisodeIdentity(current, candidate)) {
+                adjacent = candidate;
+                break;
+            }
+        }
+        return Manga.preferCloserVisibleEpisode(eps, current, adjacent, true);
     }
 
     public int getBookmarkIndex() {

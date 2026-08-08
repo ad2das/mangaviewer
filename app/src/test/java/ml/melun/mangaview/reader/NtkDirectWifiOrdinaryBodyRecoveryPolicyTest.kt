@@ -80,7 +80,10 @@ class NtkDirectWifiOrdinaryBodyRecoveryPolicyTest {
         assertTrue(wrapper.contains(
             "NtkDirectWifiOrdinaryBodyRecoveryPolicy.MAX_CONTINUATIONS_PER_BODY"
         ))
-        assertTrue(wrapper.contains("capturedDirectWifiNetwork = directWifiIdleSuffixNetwork"))
+        assertTrue(wrapper.contains("capturedDirectWifiNetwork ="))
+        assertTrue(wrapper.contains(
+            "directWifiIdleSuffixNetwork ?: directWifiProjectedWebtoonTailNetwork"
+        ))
         assertTrue(wrapper.contains("MainApplication.activeNtkForegroundViewerPath()"))
 
         val bodyStart = source.indexOf("private class NtkStalledReplicaResponseBody(")

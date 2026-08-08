@@ -135,6 +135,119 @@ internal object NtkClickOwnedManhwaWavePolicy {
     }
 
     /**
+     * Lets the bounded deep-continue runway use the captured direct-Wi-Fi H1 pool before the
+     * document has classified the whole episode as ordinary. All four bodies remain private and
+     * exact-manifest gated; this only changes transport for a physical JPG/JPEG candidate. Covering
+     * the three replica hosts also leaves the just-finished current-tail connections available to
+     * the completion-gated adjacent p0-p3 wave. Mobile/SNI and the offscreen current wave retain
+     * their existing transport.
+     */
+    fun shouldUseRestoredAnchorOrdinaryDirectWifiTransport(
+        directWifiAdjacentOwned: Boolean,
+        pageIndex: Int,
+        forwardFirstPage: Int,
+        extension: String,
+        liveWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        capturedNetworkHandle: Long?,
+        liveNetworkHandle: Long?,
+    ): Boolean {
+        require(pageIndex >= 0)
+        require(forwardFirstPage >= 0)
+        val normalizedExtension = extension.trim().lowercase()
+        return !directWifiAdjacentOwned &&
+            pageIndex - forwardFirstPage in 0 until DIRECT_EXTENSION_RACE_PAGES &&
+            forwardFirstPage >= WIFI_ENTRY_SPECULATION_PAGES &&
+            (normalizedExtension == "jpg" || normalizedExtension == "jpeg") &&
+            liveWifiTransport &&
+            !cellularResilientTransport &&
+            capturedNetworkHandle != null &&
+            liveNetworkHandle == capturedNetworkHandle
+    }
+
+    /**
+     * Lets only the completion-gated adjacent p0-p3 wave reuse the direct-Wi-Fi ordinary body
+     * pool when the completed predecessor proved one physical JPEG suffix for every owned page.
+     * The inherited suffix remains a request hint: target HEAD reconciliation and exact-manifest
+     * quarantine adoption still reject a different target suffix before publication.
+     */
+    fun shouldUseInheritedOrdinaryDirectWifiTransport(
+        directWifiAdjacentOwned: Boolean,
+        runwayPageIndex: Int,
+        inheritedExtension: String,
+        liveWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        capturedNetworkHandle: Long?,
+        liveNetworkHandle: Long?,
+    ): Boolean {
+        require(runwayPageIndex >= 0)
+        val extension = inheritedExtension.trim().lowercase()
+        return directWifiAdjacentOwned &&
+            runwayPageIndex < DIRECT_EXTENSION_RACE_PAGES &&
+            (extension == "jpg" || extension == "jpeg") &&
+            liveWifiTransport &&
+            !cellularResilientTransport &&
+            capturedNetworkHandle != null &&
+            liveNetworkHandle == capturedNetworkHandle
+    }
+
+    /**
+     * Keeps the normal target stripe when that host was warmed by the completed deep-resume tail.
+     * If a very short tail covered fewer than three hosts, place the missing runway stripe on the
+     * least-loaded proven-warm host. The logical immutable path and strict replica validation do
+     * not change; this selects only the first physical replica inside the existing finite ring.
+     */
+    fun preferredWarmAdjacentReplicaHost(
+        runwayPageIndex: Int,
+        predecessorWarmHosts: List<String>,
+    ): String? {
+        require(runwayPageIndex >= 0)
+        val warmHosts = predecessorWarmHosts
+            .map { it.trim().lowercase() }
+            .filter(::isReplicaHost)
+            .distinct()
+        if (warmHosts.isEmpty()) return null
+        val loads = warmHosts.associateWith { 0 }.toMutableMap()
+        for (page in 0..runwayPageIndex) {
+            val canonicalHost = replicaHost(page)
+            val selectedHost = if (canonicalHost in loads) {
+                canonicalHost
+            } else {
+                warmHosts.minWithOrNull(
+                    compareBy<String> { loads.getValue(it) }
+                        .thenBy { warmHosts.indexOf(it) },
+                ) ?: return null
+            }
+            if (page == runwayPageIndex) return selectedHost
+            loads[selectedHost] = loads.getValue(selectedHost) + 1
+        }
+        return null
+    }
+
+    fun previousWarmAdjacentReplicaPage(
+        runwayPageIndex: Int,
+        runwayPageCount: Int,
+        predecessorWarmHosts: List<String>,
+    ): Int? {
+        require(runwayPageCount > 0)
+        require(runwayPageIndex in 0 until runwayPageCount)
+        val assignments = (0 until runwayPageCount).associateWith { page ->
+            preferredWarmAdjacentReplicaHost(page, predecessorWarmHosts)
+                ?: replicaHost(page)
+        }
+        val host = assignments.getValue(runwayPageIndex)
+        val hostOrder = assignments.keys
+            .filter { assignments.getValue(it) == host }
+            .sortedWith(
+                compareBy<Int> { page ->
+                    replicaHost(page) != host
+                }.thenBy { it },
+            )
+        val position = hostOrder.indexOf(runwayPageIndex)
+        return if (position > 0) hostOrder[position - 1] else null
+    }
+
+    /**
      * Prioritizes only an already HEAD-proven uncommon body needed by the current Wi-Fi viewport.
      *
      * This does not authorize another candidate race or body transfer. The caller merely chooses

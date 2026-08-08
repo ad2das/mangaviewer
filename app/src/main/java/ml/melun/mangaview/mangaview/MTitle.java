@@ -20,6 +20,12 @@ public class MTitle{
     String resumeNtkImageEpisodeId;
     String resumeNtkImageWorkId;
     int resumeNtkImageCount;
+    String resumeNtkNextEpisodePath;
+    int resumeNtkNextEpisodeId = -1;
+    String resumeNtkNextEpisodeName;
+    String resumeNtkNextImageEpisodeId;
+    String resumeNtkNextImageWorkId;
+    int resumeNtkNextImageCount;
     int bookmarkEpisodeId = -1;
     int bookmarkEpisodeIndex = -1;
     int episodeCount = 0;
@@ -82,8 +88,10 @@ public class MTitle{
 
     public void setResumeNtkEpisodePath(String resumeNtkEpisodePath) {
         String normalized = resumeNtkEpisodePath == null ? "" : resumeNtkEpisodePath.trim();
-        if(!normalized.equals(getResumeNtkEpisodePath()))
+        if(!normalized.equals(getResumeNtkEpisodePath())) {
             setResumeNtkImageIdentity("", "", 0);
+            clearResumeNtkNextEpisodeIdentity();
+        }
         this.resumeNtkEpisodePath = normalized;
     }
 
@@ -118,6 +126,98 @@ public class MTitle{
         if(imageCount <= 0)
             imageCount = source.getResumeNtkImageCount();
         setResumeNtkImageIdentity(workId, episodeId, imageCount);
+    }
+
+    public String getResumeNtkNextEpisodePath() {
+        return resumeNtkNextEpisodePath == null ? "" : resumeNtkNextEpisodePath.trim();
+    }
+
+    public int getResumeNtkNextEpisodeId() {
+        return resumeNtkNextEpisodeId;
+    }
+
+    public String getResumeNtkNextEpisodeName() {
+        return resumeNtkNextEpisodeName == null ? "" : resumeNtkNextEpisodeName;
+    }
+
+    public String getResumeNtkNextImageEpisodeId() {
+        return resumeNtkNextImageEpisodeId == null ? "" : resumeNtkNextImageEpisodeId.trim();
+    }
+
+    public String getResumeNtkNextImageWorkId() {
+        return resumeNtkNextImageWorkId == null ? "" : resumeNtkNextImageWorkId.trim();
+    }
+
+    public int getResumeNtkNextImageCount() {
+        return Math.max(0, resumeNtkNextImageCount);
+    }
+
+    public boolean hasCompleteResumeNtkNextEpisodeIdentity() {
+        return getResumeNtkNextEpisodePath().length() > 0
+                && getResumeNtkNextEpisodeId() > 0
+                && getResumeNtkNextImageWorkId().length() > 0
+                && getResumeNtkNextImageEpisodeId().length() > 0
+                && getResumeNtkNextImageCount() > 0;
+    }
+
+    public void setResumeNtkNextEpisodeIdentity(
+            String path,
+            int id,
+            String name,
+            String workId,
+            String episodeId,
+            int imageCount) {
+        String normalizedPath = path == null ? "" : path.trim();
+        String normalizedWorkId = workId == null ? "" : workId.trim();
+        String normalizedEpisodeId = episodeId == null ? "" : episodeId.trim();
+        if(normalizedPath.length() == 0 || id <= 0 || normalizedWorkId.length() == 0
+                || normalizedEpisodeId.length() == 0 || imageCount <= 0) {
+            clearResumeNtkNextEpisodeIdentity();
+            return;
+        }
+        resumeNtkNextEpisodePath = normalizedPath;
+        resumeNtkNextEpisodeId = id;
+        resumeNtkNextEpisodeName = name == null ? "" : name;
+        resumeNtkNextImageWorkId = normalizedWorkId;
+        resumeNtkNextImageEpisodeId = normalizedEpisodeId;
+        resumeNtkNextImageCount = imageCount;
+    }
+
+    public void setResumeNtkNextEpisodeIdentity(Manga episode) {
+        if(episode == null) {
+            clearResumeNtkNextEpisodeIdentity();
+            return;
+        }
+        setResumeNtkNextEpisodeIdentity(
+                episode.getNtkEpisodePath(),
+                episode.getId(),
+                episode.getName(),
+                episode.getNtkImageWorkId(),
+                episode.getNtkImageEpisodeId(),
+                episode.getNtkImageCount());
+    }
+
+    public void clearResumeNtkNextEpisodeIdentity() {
+        resumeNtkNextEpisodePath = "";
+        resumeNtkNextEpisodeId = -1;
+        resumeNtkNextEpisodeName = "";
+        resumeNtkNextImageWorkId = "";
+        resumeNtkNextImageEpisodeId = "";
+        resumeNtkNextImageCount = 0;
+    }
+
+    public void inheritMissingResumeNtkNextEpisodeIdentity(MTitle source) {
+        if(source == null || hasCompleteResumeNtkNextEpisodeIdentity()
+                || !getResumeNtkEpisodePath().equals(source.getResumeNtkEpisodePath())
+                || !source.hasCompleteResumeNtkNextEpisodeIdentity())
+            return;
+        setResumeNtkNextEpisodeIdentity(
+                source.getResumeNtkNextEpisodePath(),
+                source.getResumeNtkNextEpisodeId(),
+                source.getResumeNtkNextEpisodeName(),
+                source.getResumeNtkNextImageWorkId(),
+                source.getResumeNtkNextImageEpisodeId(),
+                source.getResumeNtkNextImageCount());
     }
 
     public int getBaseMode() {
@@ -269,6 +369,13 @@ public class MTitle{
                 getResumeNtkImageWorkId(),
                 getResumeNtkImageEpisodeId(),
                 getResumeNtkImageCount());
+        clone.setResumeNtkNextEpisodeIdentity(
+                getResumeNtkNextEpisodePath(),
+                getResumeNtkNextEpisodeId(),
+                getResumeNtkNextEpisodeName(),
+                getResumeNtkNextImageWorkId(),
+                getResumeNtkNextImageEpisodeId(),
+                getResumeNtkNextImageCount());
         return clone;
     }
 

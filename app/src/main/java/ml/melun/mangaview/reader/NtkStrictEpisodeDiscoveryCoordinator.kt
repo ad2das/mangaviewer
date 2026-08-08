@@ -103,9 +103,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val adjacentPredecessorEpisodePath: String,
         val adjacentPredecessorGate: Boolean,
         val directWifiAdjacentBodyGate: Boolean,
+        val directWifiCurrentViewer: Boolean,
         val rollingAdmission: Boolean,
         val initialPageIndexHint: Int,
         val completedRouteRecoveryAttempts: Int,
+        val sameOriginFallbackConsumed: Boolean,
     ) {
         val retirement = NtkStrictDiscoveryRetirementFence(
             episodePath,
@@ -214,6 +216,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         completedRouteRecoveryAttempts: Int,
         viewerOwnerEpisodePath: String?,
         adjacentPredecessorEpisodePath: String?,
+        sameOriginFallbackConsumed: Boolean = false,
     ): Boolean {
         if (client == null || manga == null) return false
         val path = normalizedPath(manga.ntkEpisodePath) ?: return false
@@ -243,6 +246,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         )
         val adjacentPredecessorGate = adjacentAdmission.predecessorCompletionRequired
         val directWifiAdjacentBodyGate = adjacentAdmission.directWifiPhysicalRunway
+        val directWifiCurrentViewer = !adjacentOwned &&
+            transportState.first && !transportState.second
         if (!ViewerTelemetry.hasActiveSession() ||
             !ViewerTelemetry.isActiveEpisode(ownerPath) ||
             (ownerPath != path && !adjacentOwned)
@@ -276,9 +281,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 predecessorPath,
                 adjacentPredecessorGate,
                 directWifiAdjacentBodyGate,
+                directWifiCurrentViewer,
                 rollingAdmission,
                 effectiveInitialPageIndexHint,
                 completedRouteRecoveryAttempts,
+                sameOriginFallbackConsumed,
             ).also {
                 flights[path] = it
             }
@@ -370,6 +377,24 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         normalizedPath(path)?.let { key ->
             flights[key]?.let { !it.completed.get() && !it.retirement.isRetired() } == true
         } == true
+
+    /**
+     * Source-session construction can race ahead of the later resident-body claim callback. Carry
+     * the already-open discovery gate into that new session so its first 600 ms sample does not
+     * wait for a redundant actor round trip. This is observation only and cannot open a gate.
+     */
+    internal fun isAdjacentBodyGateOpen(
+        path: String?,
+        viewerGeneration: Long,
+    ): Boolean {
+        val key = normalizedPath(path) ?: return false
+        if (viewerGeneration <= 0L) return false
+        val flight = flights[key] ?: return false
+        return flight.viewerGeneration == viewerGeneration &&
+            flight.adjacentPredecessorGate &&
+            flight.adjacentPredecessorComplete.isDone &&
+            !flight.retirement.isRetired()
+    }
 
     /**
      * Opens all target-work admission for adjacent flights whose immediate
@@ -751,6 +776,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         var clickOwnedManhwaProbe: NtkClickOwnedManhwaProbeFrontier? = null
         var streamingDocumentThread: Thread? = null
         var routeRecoveryRequested = false
+        var restartSameOriginWithoutResolver = false
         try {
             requireDiscoveryOwnership(flight, "worker_start")
             if (flight.adjacentPredecessorGate) {
@@ -770,6 +796,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     manga,
                     path,
                     flight.initialPageIndexHint,
+                    flight.directWifiAdjacentBodyGate,
                 )
                 clickOwnedAnchor = NtkClickOwnedAnchorQuarantine.startFromTrustedPayloadHint(
                     client.context,
@@ -780,6 +807,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     flight.directWifiAdjacentBodyGate,
                     flight.adjacentPredecessorComplete,
                     initialPageIndexHint = flight.initialPageIndexHint,
+                    viewerGeneration = flight.viewerGeneration,
+                    adjacentPredecessorEpisodePath = flight.adjacentPredecessorEpisodePath,
                 )
                 if (clickOwnedAnchor != null) {
                     clickOwnedManhwaProbe = null
@@ -801,6 +830,9 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             flight.directWifiAdjacentBodyGate,
                             flight.adjacentPredecessorComplete,
                             initialPageIndexHint = flight.initialPageIndexHint,
+                            viewerGeneration = flight.viewerGeneration,
+                            adjacentPredecessorEpisodePath =
+                                flight.adjacentPredecessorEpisodePath,
                         )
                     if (clickOwnedAnchor != null) {
                         clickOwnedManhwaProbe = null
@@ -892,6 +924,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                                             return true
                                         }
                                     },
+                                    flight.sameOriginFallbackConsumed,
+                                    flight.directWifiAdjacentBodyGate,
                                 )
                             }
                         }
@@ -1049,6 +1083,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         flight.directWifiAdjacentBodyGate,
                         flight.adjacentPredecessorComplete,
                         initialPageIndexHint = flight.initialPageIndexHint,
+                        viewerGeneration = flight.viewerGeneration,
+                        adjacentPredecessorEpisodePath = flight.adjacentPredecessorEpisodePath,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                 }
@@ -1063,17 +1099,41 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         // and its exact page-zero body have proved real bytes. This waits for no
                         // extra request and does not delay a drawable: page zero could not render
                         // before the same body completion.
-                        val sampledCandidate = tokenBoundStream.sampledAnchorCandidate?.let {
-                            runCatching { awaitFuture(it) }
+                        val forwardFirstPage = anchor.forwardFirstPage()
+                        val residentExactAnchorBody = if (
+                            tokenBoundStream.residentAnchorProofMayPrecedeSampledCandidate
+                        ) {
+                            runCatching {
+                                awaitFuture(checkNotNull(
+                                    tokenBoundStream.bodyFutures[forwardFirstPage]
+                                ) {
+                                    "Token-bound numeric stream omitted forward anchor"
+                                })
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
+                        // A successful inherited resident GET has response identity, image
+                        // metadata, EOF and digest bound to this fresh token-document manifest.
+                        // Waiting for its older metadata-only HEAD after that stronger proof adds
+                        // no identity evidence and can consume the entire short-tail runway.
+                        // Every other route retains the established HEAD-first fallback check.
+                        val sampledCandidate = if (residentExactAnchorBody == null) {
+                            tokenBoundStream.sampledAnchorCandidate?.let {
+                                runCatching { awaitFuture(it) }
+                            }
+                        } else {
+                            null
                         }
                         val sampledRouteMissing =
                             sampledCandidate?.isSuccess == true &&
                                 sampledCandidate.getOrNull() == null
-                        val exactAnchorBody = if (sampledRouteMissing) {
+                        val exactAnchorBody = if (residentExactAnchorBody != null) {
+                            residentExactAnchorBody
+                        } else if (sampledRouteMissing) {
                             null
                         } else {
                             runCatching {
-                                val forwardFirstPage = anchor.forwardFirstPage()
                                 awaitFuture(checkNotNull(
                                     tokenBoundStream.bodyFutures[forwardFirstPage]
                                 ) {
@@ -1159,6 +1219,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         flight.directWifiAdjacentBodyGate,
                         flight.adjacentPredecessorComplete,
                         initialPageIndexHint = flight.initialPageIndexHint,
+                        viewerGeneration = flight.viewerGeneration,
+                        adjacentPredecessorEpisodePath = flight.adjacentPredecessorEpisodePath,
                     )
                     if (clickOwnedAnchor != null) clickOwnedManhwaProbe = null
                     clickOwnedAnchor?.let { anchor ->
@@ -1458,6 +1520,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     flight.completedRouteRecoveryAttempts,
                 ) &&
                 isViewerOwnerActive(flight)
+            restartSameOriginWithoutResolver = routeRecoveryRequested &&
+                NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                    failure,
+                    flight.completedRouteRecoveryAttempts,
+                    flight.directWifiCurrentViewer,
+                    flight.sameOriginFallbackConsumed,
+                )
             if (routeRecoveryRequested) {
                 // Keep the old lease/flight as a path reservation until domain recovery finishes.
                 // This prevents UI watchdogs from starting a competing flight in the gap.
@@ -1518,7 +1587,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             }
         }
         if (routeRecoveryRequested) {
-            recoverStrictRouteAndRestart(client, manga, path, flight)
+            recoverStrictRouteAndRestart(
+                client,
+                manga,
+                path,
+                flight,
+                skipDomainResolution = restartSameOriginWithoutResolver,
+            )
         }
     }
 
@@ -1527,17 +1602,35 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         manga: Manga,
         path: String,
         failedFlight: Flight,
+        skipDomainResolution: Boolean,
     ) {
         val originBefore = client.getUrl(path)
-        val changed = client.resolveNtkDomainAfterRouteFailure()
+        val changed = if (skipDomainResolution) {
+            Log.d(
+                "ViewerPerf",
+                "ntk_strict_same_origin_h2_failover path=$path," +
+                    "viewerGeneration=${failedFlight.viewerGeneration}," +
+                    "attempt=${failedFlight.completedRouteRecoveryAttempts + 1}," +
+                    "origin=$originBefore",
+            )
+            false
+        } else {
+            client.resolveNtkDomainAfterRouteFailure()
+        }
         val originAfter = client.getUrl(path)
         val stillOwned = isViewerOwnerActive(failedFlight)
+        val nextRouteRecoveryAttempts = failedFlight.completedRouteRecoveryAttempts +
+            if (skipDomainResolution) 0 else 1
         var releasedForReplacement = false
         synchronized(flightLifecycleLock(path)) {
             if (flights[path] === failedFlight) {
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                     failedFlight.lease,
-                    "strict_route_recovery_${failedFlight.completedRouteRecoveryAttempts + 1}",
+                    if (skipDomainResolution) {
+                        "strict_same_origin_transport_fallback"
+                    } else {
+                        "strict_route_recovery_$nextRouteRecoveryAttempts"
+                    },
                 )
                 flights.remove(path, failedFlight)
                 releasedForReplacement = true
@@ -1557,9 +1650,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             manga,
             failedFlight.rollingAdmission,
             failedFlight.initialPageIndexHint,
-            failedFlight.completedRouteRecoveryAttempts + 1,
+            nextRouteRecoveryAttempts,
             failedFlight.viewerOwnerEpisodePath,
             failedFlight.adjacentPredecessorEpisodePath,
+            sameOriginFallbackConsumed =
+                failedFlight.sameOriginFallbackConsumed || skipDomainResolution,
         )
         val joined = restarted ||
             isInFlight(path) ||
@@ -1568,7 +1663,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             "ViewerPerf",
             "ntk_strict_route_recovery_result path=$path," +
                 "viewerGeneration=${failedFlight.viewerGeneration}," +
-                "attempt=${failedFlight.completedRouteRecoveryAttempts + 1}," +
+                "routeAttempt=$nextRouteRecoveryAttempts," +
+                "sameOriginFallback=$skipDomainResolution," +
                 "changed=$changed,restarted=$restarted,joined=$joined," +
                 "originBefore=$originBefore,originAfter=$originAfter",
         )

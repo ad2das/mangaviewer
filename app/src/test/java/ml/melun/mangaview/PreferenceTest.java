@@ -11,6 +11,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import ml.melun.mangaview.mangaview.MTitle;
+import ml.melun.mangaview.mangaview.Manga;
+import ml.melun.mangaview.mangaview.Title;
 
 public class PreferenceTest {
     @Test
@@ -184,6 +186,74 @@ public class PreferenceTest {
         assertEquals("25694", merged.getResumeNtkImageWorkId());
         assertEquals("1767091", merged.getResumeNtkImageEpisodeId());
         assertEquals(4, merged.getResumeNtkImageCount());
+    }
+
+    @Test
+    public void progressMergeKeepsExactNextIdentityOnlyForSamePredecessor() {
+        MTitle incoming = new MTitle("target", 25694, "", "", null, "", MTitle.base_comic);
+        incoming.setSourceSite("ntk");
+        incoming.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+
+        MTitle existing = new MTitle("target", 25694, "", "", null, "", MTitle.base_comic);
+        existing.setSourceSite("ntk");
+        existing.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+        existing.setResumeNtkNextEpisodeIdentity(
+                "/manhwa/25694/1767100", 1767100, "다음 화", "25694", "1767100", 12);
+
+        MTitle merged = Preference.preserveMoreCompleteProgressForTest(incoming, existing);
+
+        assertTrue(merged.hasCompleteResumeNtkNextEpisodeIdentity());
+        assertEquals("/manhwa/25694/1767100", merged.getResumeNtkNextEpisodePath());
+
+        incoming.setResumeNtkEpisodePath("/manhwa/25694/1767200");
+        Preference.preserveMoreCompleteProgressForTest(incoming, existing);
+        assertFalse(incoming.hasCompleteResumeNtkNextEpisodeIdentity());
+    }
+
+    @Test
+    public void changingResumePredecessorClearsStaleNextIdentity() {
+        MTitle title = new MTitle("target", 25694, "", "", null, "", MTitle.base_comic);
+        title.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+        title.setResumeNtkNextEpisodeIdentity(
+                "/manhwa/25694/1767100", 1767100, "다음 화", "25694", "1767100", 12);
+
+        title.setResumeNtkEpisodePath("/manhwa/25694/1767200");
+
+        assertFalse(title.hasCompleteResumeNtkNextEpisodeIdentity());
+        assertEquals("", title.getResumeNtkNextEpisodePath());
+    }
+
+    @Test
+    public void titleMinimizeDurablyCapturesExactResumeNextIdentity() {
+        Title title = new Title("target", "", "", null, "", 25694, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setResumeNtkEpisodePath("/manhwa/25694/1767091");
+        title.setBookmark(1767091);
+        Manga current = new Manga(1767091, "10화", "", MTitle.base_comic);
+        current.setTitle(title);
+        current.setTitleId(title.getId());
+        current.setNtkEpisodePath("/manhwa/25694/1767091");
+        current.setNtkImageWorkId("25694");
+        current.setNtkImageEpisodeId("1767091");
+        current.setNtkImageCount(10);
+        Manga next = new Manga(1767100, "11화", "", MTitle.base_comic);
+        next.setTitle(title);
+        next.setTitleId(title.getId());
+        next.setNtkEpisodePath("/manhwa/25694/1767100");
+        next.setNtkImageWorkId("25694");
+        next.setNtkImageEpisodeId("1767100");
+        next.setNtkImageCount(12);
+        title.setEps(java.util.Arrays.asList(next, current));
+
+        MTitle minimized = title.minimize();
+
+        assertEquals("/manhwa/25694/1767091", minimized.getResumeNtkEpisodePath());
+        assertEquals("/manhwa/25694/1767100", minimized.getResumeNtkNextEpisodePath());
+        assertEquals(1767100, minimized.getResumeNtkNextEpisodeId());
+        assertEquals("11화", minimized.getResumeNtkNextEpisodeName());
+        assertEquals("25694", minimized.getResumeNtkNextImageWorkId());
+        assertEquals("1767100", minimized.getResumeNtkNextImageEpisodeId());
+        assertEquals(12, minimized.getResumeNtkNextImageCount());
     }
 
     @Test

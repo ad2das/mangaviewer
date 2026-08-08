@@ -7,12 +7,14 @@ import java.util.List;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
-import ml.melun.mangaview.reader.NtkSourceState;
+import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.reader.ReaderSurfaceView;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
 public class ReaderV2ActivityTest {
     @Test
@@ -58,20 +60,61 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
-    public void newReaderReusesOnlyUnclaimedClickGeneration() {
+    public void newReaderReusesClickGenerationOnlyBeforeAnyActivityClaimsIt() {
         assertTrue(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
-                true, true, null));
-        assertTrue(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
-                true, true, NtkSourceState.DISCOVERING));
-        assertTrue(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
-                true, true, NtkSourceState.OWNED_PRECLAIM));
+                true, true, false));
 
         assertFalse(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
-                true, true, NtkSourceState.OWNED_BINDING));
+                true, true, true));
         assertFalse(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
-                true, true, NtkSourceState.OWNED_ACTIVE));
+                false, true, false));
         assertFalse(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
-                false, false, NtkSourceState.OWNED_BINDING));
+                true, false, false));
+
+        assertTrue(ReaderV2Activity.strictActivityOwnerOverlapsForTest(
+                42L, "/webtoon/12868/1348822", 42L, "/webtoon/12868/1348822"));
+        assertFalse(ReaderV2Activity.strictActivityOwnerOverlapsForTest(
+                43L, "/webtoon/12868/1348822", 42L, "/webtoon/12868/1348822"));
+        assertFalse(ReaderV2Activity.strictActivityOwnerOverlapsForTest(
+                42L, "/webtoon/12868/1348822", 42L, "/webtoon/12868/other"));
+    }
+
+    @Test
+    public void surfaceOwnsRestoreOnlyForDirectWifiWebtoon() {
+        assertTrue(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+                "/webtoon/12868/1348822", true, false));
+        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+                "/webtoon/12868/1348822", true, true));
+        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+                "/webtoon/12868/1348822", false, false));
+        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+                "/manhwa/12868/1348822", true, false));
+    }
+
+    @Test
+    public void persistedNextSnapshotRestoresOnlyAfterExactDirectWifiCompletion() {
+        Title title = new Title("target", "", "", null, "", 8391, MTitle.base_comic);
+        title.setSourceSite("ntk");
+        title.setResumeNtkEpisodePath("/manhwa/8391/66773");
+        title.setResumeNtkNextEpisodeIdentity(
+                "/manhwa/8391/66779", 66779, "next", "8391", "66779", 4);
+
+        Manga restored = ReaderV2Activity.persistedDirectWifiStrictNextSnapshotForTest(
+                title, "/manhwa/8391/66773", true, false, true);
+
+        assertNotNull(restored);
+        assertEquals("/manhwa/8391/66779", restored.getNtkEpisodePath());
+        assertEquals("8391", restored.getNtkImageWorkId());
+        assertEquals("66779", restored.getNtkImageEpisodeId());
+        assertEquals(4, restored.getNtkImageCount());
+        assertNull(ReaderV2Activity.persistedDirectWifiStrictNextSnapshotForTest(
+                title, "/manhwa/8391/66773", true, false, false));
+        assertNull(ReaderV2Activity.persistedDirectWifiStrictNextSnapshotForTest(
+                title, "/manhwa/8391/other", true, false, true));
+        assertNull(ReaderV2Activity.persistedDirectWifiStrictNextSnapshotForTest(
+                title, "/manhwa/8391/66773", false, false, true));
+        assertNull(ReaderV2Activity.persistedDirectWifiStrictNextSnapshotForTest(
+                title, "/manhwa/8391/66773", true, true, true));
     }
 
     @Test

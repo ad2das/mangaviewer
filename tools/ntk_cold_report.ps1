@@ -57,6 +57,29 @@ function Get-DeltaMs($Start, $End) {
     return [Math]::Round(($endValue - $startValue) / 1000000.0, 3)
 }
 
+function Test-NumericApproximatelyEqual(
+    $Actual,
+    $Expected,
+    [double]$Tolerance = 0.001
+) {
+    if($null -eq $Actual -or $null -eq $Expected) { return $false }
+    $actualNumber = 0.0
+    $expectedNumber = 0.0
+    if(-not [double]::TryParse(
+            [string]$Actual,
+            [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref]$actualNumber) -or
+            -not [double]::TryParse(
+                [string]$Expected,
+                [Globalization.NumberStyles]::Float,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$expectedNumber)) {
+        return $false
+    }
+    return [Math]::Abs($actualNumber - $expectedNumber) -le $Tolerance
+}
+
 $summaryFile = Get-Item -LiteralPath $SummaryPath -ErrorAction Stop
 $summaryJson = Get-Content -LiteralPath $summaryFile.FullName -Raw
 $schemaPath = Join-Path $PSScriptRoot "ntk_cold_result.schema.json"
@@ -75,12 +98,18 @@ $summary = $summaryJson | ConvertFrom-Json
 # cannot turn a diagnostic run, wrong renderer/device mode, or partial case set into a formal PASS.
 $cases = @($summary.cases)
 $selectedEpisodePairs = @($summary.selectedEpisodePairs)
+$resumePercents = @($summary.resumePercents | ForEach-Object { [int]$_ } | Sort-Object -Unique)
 $webtoonCases = @($cases | Where-Object { [string]$_.workType -ceq "webtoon" })
 $manhwaCases = @($cases | Where-Object { [string]$_.workType -ceq "manhwa" })
 $actualPassedCases = @($cases | Where-Object { $_.passed -eq $true }).Count
-$expectedCaseCount = [int]$summary.expectedWebtoon + [int]$summary.expectedManhwa
+$expectedPairCount = [int]$summary.expectedWebtoon + [int]$summary.expectedManhwa
+$expectedCaseCount = $expectedPairCount * $resumePercents.Count
+$resumeSatisfied = $resumePercents.Count -eq 3 -and
+    $resumePercents[0] -eq 25 -and $resumePercents[1] -eq 50 -and
+    $resumePercents[2] -eq 90
 $targetSatisfied = [int]$summary.requestedCountPerType -eq 20 -and
-    [int]$summary.expectedWebtoon -eq 20 -and [int]$summary.expectedManhwa -eq 20
+    [int]$summary.expectedWebtoon -eq 20 -and [int]$summary.expectedManhwa -eq 20 -and
+    $resumeSatisfied
 # Warm reopen is an out-of-verdict diagnostic. Cold qualification is never gated by whether that
 # optional second opening was available; measured retained-memory growth is asserted per case.
 $warmSatisfied = $true
@@ -129,11 +158,15 @@ Assert-Contract ($cases.Count -eq [int]$summary.completedCases) "completedCases 
 # become a PASS because smokePassed still requires the complete expected case count, but the first
 # failed case must remain reportable instead of losing its diagnosis to a report-contract error.
 Assert-Contract ($cases.Count -le $expectedCaseCount) "case count exceeded expected types"
-Assert-Contract ($webtoonCases.Count -le [int]$summary.expectedWebtoon) "webtoon count exceeded selection"
-Assert-Contract ($manhwaCases.Count -le [int]$summary.expectedManhwa) "manhwa count exceeded selection"
+Assert-Contract ($webtoonCases.Count -le
+    ([int]$summary.expectedWebtoon * $resumePercents.Count)) "webtoon count exceeded selection"
+Assert-Contract ($manhwaCases.Count -le
+    ([int]$summary.expectedManhwa * $resumePercents.Count)) "manhwa count exceeded selection"
 Assert-Contract ($actualPassedCases -eq [int]$summary.passedCases) "passedCases mismatch"
 Assert-Contract ($summary.qualificationTargetSatisfied -eq $targetSatisfied) `
-    "qualificationTargetSatisfied was not derived from exact 20+20"
+    "qualificationTargetSatisfied was not derived from exact 20+20 x 25/50/90%"
+Assert-Contract ($summary.resumeQualificationSatisfied -eq $resumeSatisfied) `
+    "resumeQualificationSatisfied mismatch"
 Assert-Contract ($summary.warmReopenRequirementSatisfied -eq $warmSatisfied) `
     "warmReopenRequirementSatisfied mismatch"
 Assert-Contract ($summary.firstImageSlaRequirementSatisfied -eq $firstSlaSatisfied) `
@@ -168,28 +201,61 @@ Assert-Contract ([string]$summary.finalDeviceStatus -ceq $derivedDeviceStatus) `
 Assert-Contract ([string]$summary.selectionAlgorithm -ceq
         "work: sha256(seed|type|id) lexical rank; episode-pair: sha256(seed|type|workId|currentEpisodeId|nextEpisodeId) lexical rank") `
     "work/episode-pair selection algorithm mismatch"
-Assert-Contract ($selectedEpisodePairs.Count -eq $expectedCaseCount) `
+Assert-Contract ($selectedEpisodePairs.Count -eq $expectedPairCount) `
     "selected exact episode-pair count did not match expected selection"
 
 $caseIds = @($cases | ForEach-Object { [string]$_.caseId })
-$workKeys = @($cases | ForEach-Object { "$($_.workType)|$($_.workId)" })
+$workResumeKeys = @($cases | ForEach-Object {
+    "$($_.workType)|$($_.workId)|$($_.episodePath)|$($_.resumePercent)"
+})
 Assert-Contract ((@($caseIds | Sort-Object -Unique)).Count -eq $caseIds.Count) `
     "duplicate caseId"
-Assert-Contract ((@($workKeys | Sort-Object -Unique)).Count -eq $workKeys.Count) `
-    "duplicate selected work within a run"
+Assert-Contract ((@($workResumeKeys | Sort-Object -Unique)).Count -eq $workResumeKeys.Count) `
+    "duplicate selected work/resume percentage within a run"
+for($pairIndex = 0; $pairIndex -lt $selectedEpisodePairs.Count; $pairIndex++) {
+    $pair = $selectedEpisodePairs[$pairIndex]
+    Assert-Contract ([int]$pair.ordinal -eq ($pairIndex + 1)) `
+        "selected episode-pair ordinal mismatch at index $pairIndex"
+    $pairCases = @($cases | Where-Object {
+        [string]$_.workType -ceq [string]$pair.workType -and
+        [string]$_.workId -ceq [string]$pair.workId -and
+        [string]$_.episodePath -ceq [string]$pair.currentEpisodePath
+    })
+    $pairResumePercents = @($pairCases | ForEach-Object {
+        [int]$_.resumePercent
+    } | Sort-Object -Unique)
+    $unexpectedPairResumePercents = @($pairResumePercents | Where-Object {
+        $_ -notin $resumePercents
+    })
+    Assert-Contract ($pairCases.Count -le $resumePercents.Count -and
+        $pairResumePercents.Count -eq $pairCases.Count -and
+        $unexpectedPairResumePercents.Count -eq 0) `
+        "selected episode-pair had duplicate or unexpected resume percentages"
+    if($cases.Count -eq $expectedCaseCount) {
+        Assert-Contract (($pairResumePercents -join ',') -ceq
+            ($resumePercents -join ',')) `
+            "complete run lacked one case at each resume percentage for a selected pair"
+    }
+}
 for($index = 0; $index -lt $cases.Count; $index++) {
     $case = $cases[$index]
-    $pair = $selectedEpisodePairs[$index]
+    $matchingPairs = @($selectedEpisodePairs | Where-Object {
+        [string]$_.workType -ceq [string]$case.workType -and
+        [string]$_.workId -ceq [string]$case.workId -and
+        [string]$_.currentEpisodePath -ceq [string]$case.episodePath
+    })
+    Assert-Contract ($matchingPairs.Count -eq 1) `
+        "case did not map to exactly one recorded current/next pair at index $index"
+    $pair = $matchingPairs[0]
     Assert-Contract ([int]$case.ordinal -eq ($index + 1)) `
         "case ordinal mismatch at index $index"
-    Assert-Contract ([int]$pair.ordinal -eq ($index + 1)) `
-        "selected episode-pair ordinal mismatch at index $index"
     Assert-Contract ([int64]$pair.seed -eq [int64]$summary.seed) `
         "selected episode-pair seed mismatch at index $index"
     Assert-Contract ([string]$pair.workType -ceq [string]$case.workType -and
         [string]$pair.workId -ceq [string]$case.workId -and
         [string]$pair.currentEpisodeId -ceq [string]$case.episodeId -and
         [string]$pair.currentEpisodePath -ceq [string]$case.episodePath -and
+        [int]$pair.currentPageCount -eq [int](Get-Property $case "currentPageCount") -and
         [string]$pair.nextEpisodePath -ceq
             [string](Get-Property $case "expectedAdjacentEpisodePath") -and
         [int]$pair.nextEpisodePageCount -eq
@@ -213,12 +279,60 @@ for($index = 0; $index -lt $cases.Count; $index++) {
     $violations = @((Get-Property $case "violations"))
     Assert-Contract (($case.passed -eq $true) -eq ($violations.Count -eq 0)) `
         "case pass/violation mismatch: $($case.caseId)"
+    $classification = [string](Get-Property $case "classification")
+    $measurementInvalid = (Get-Property $case "measurementInvalid") -eq $true
+    $measurementInvalidReason = Get-Property $case "measurementInvalidReason"
+    $invalidMeasurementDiagnostics = @(
+        Get-Property $case "invalidMeasurementDiagnostics"
+    )
+    Assert-Contract (-not [string]::IsNullOrWhiteSpace([string]$case.baseCaseId) -and
+        [int]$case.infrastructureAttempt -ge 1 -and
+        [int]$case.infrastructureAttempt -le 4) `
+        "case infrastructure-attempt provenance invalid: $($case.caseId)"
+    switch($classification) {
+        "VALID" {
+            Assert-Contract ($case.passed -eq $true -and -not $measurementInvalid -and
+                $null -eq $measurementInvalidReason -and
+                $invalidMeasurementDiagnostics.Count -eq 0) `
+                "VALID case classification mismatch: $($case.caseId)"
+        }
+        "PRODUCT_INVALID" {
+            Assert-Contract ($case.passed -eq $false -and -not $measurementInvalid -and
+                $null -eq $measurementInvalidReason -and
+                $invalidMeasurementDiagnostics.Count -eq 0) `
+                "PRODUCT_INVALID case classification mismatch: $($case.caseId)"
+        }
+        "INFRA_INVALID" {
+            $hasInfrastructureViolation = @($violations | Where-Object {
+                [string]$_ -clike "infrastructure measurement invalid:*"
+            }).Count -gt 0
+            Assert-Contract ($case.passed -eq $false -and $measurementInvalid -and
+                [string]$measurementInvalidReason -cmatch '^MEASUREMENT_INVALID:' -and
+                $hasInfrastructureViolation) `
+                "INFRA_INVALID case classification mismatch: $($case.caseId)"
+        }
+        default {
+            throw "Unknown case classification '$classification': $($case.caseId)"
+        }
+    }
     if($null -ne (Get-Property $case "randomSeed")) {
         Assert-Contract ([int64]$case.randomSeed -eq [int64]$summary.seed) `
             "case seed mismatch: $($case.caseId)"
     }
 
     if($case.passed -eq $true) {
+        Assert-Contract ([string]$case.classification -ceq "VALID" -and
+            [int]$case.infrastructureAttempt -ge 1 -and
+            [int]$case.infrastructureAttempt -le 4) `
+            "passed case was not a valid measurement: $($case.caseId)"
+        $macroResultArtifact = Get-Property $case "macroResultArtifact"
+        Assert-Contract ($null -ne $macroResultArtifact -and
+            $macroResultArtifact.valid -eq $true -and
+            [int]$macroResultArtifact.candidateCount -eq 1 -and
+            [int64]$macroResultArtifact.bytes -gt 0L -and
+            [string]$macroResultArtifact.sha256 -cmatch '^[0-9a-f]{64}$' -and
+            @($macroResultArtifact.problems).Count -eq 0) `
+            "passed case lacked one exact atomic macro result: $($case.caseId)"
         $caseImageSlaMs = if([string]$case.workType -ceq "webtoon") {
             [int]$summary.webtoonImageSlaMs
         } else {
@@ -232,9 +346,33 @@ for($index = 0; $index -lt $cases.Count; $index++) {
             [double]$case.allImagesReadyMs -le [int]$summary.allImagesSlaMs -and
             [double]$case.androidxAllImagesReadyMs -le [int]$summary.allImagesSlaMs) `
             "first/all-images timing exceeded their respective SLA: $($case.caseId)"
+        Assert-Contract ([string]$case.allImagesEvidenceSource -cin @(
+                "MACRO_EXACT", "SESSION_TELEMETRY_RECOVERY") -and
+            $case.allImagesEvidenceConflict -eq $false) `
+            "all-images evidence was missing or conflicted: $($case.caseId)"
+        $expectedResumePage = [Math]::Min(
+            [int]$case.currentPageCount - 1,
+            [Math]::Max(0, [int][Math]::Floor(
+                [int]$case.currentPageCount * [int]$case.resumePercent / 100.0
+            ))
+        )
+        Assert-Contract ([int]$case.resumePercent -in $resumePercents -and
+            [string]$case.resumePercentBasis -ceq "canonical_page_ordinal" -and
+            [int]$case.resumePage -eq $expectedResumePage -and
+            [int]$case.resumeOffset -eq -420 -and
+            [int]$case.expectedForwardPageCount -eq
+                ([int]$case.currentPageCount - $expectedResumePage) -and
+            $case.resumeMode -eq $true -and
+            $case.homeContinueSeeded -eq $true -and
+            $case.homeContinueColdForceStopped -eq $true -and
+            [int]$case.firstActualResumePage -eq $expectedResumePage -and
+            $case.resumeFirstActualMatched -eq $true) `
+            "Continue resume identity contract failed: $($case.caseId)"
         Assert-Contract ([int64]$case.allImagesReadyPageCount -eq
-            [int64]$case.authoritativePageCount) `
-            "render-ready page count mismatch: $($case.caseId)"
+            [int64]$case.expectedForwardPageCount -and
+            [int64]$case.authoritativePageCount -eq [int64]$case.currentPageCount -and
+            [int64]$case.observedSourceCount -eq [int64]$case.expectedForwardPageCount) `
+            "resume-to-tail render-ready page count mismatch: $($case.caseId)"
         Assert-Contract (-not [string]::IsNullOrWhiteSpace(
                 [string]$case.expectedAdjacentEpisodePath) -and
             [string]$case.adjacentRunwayTargetEpisode -ceq
@@ -244,22 +382,245 @@ for($index = 0; $index -lt $cases.Count; $index++) {
             [int]$case.adjacentRunwayPageCount -eq 4 -and
             [int]$case.adjacentObservedRunwayDrawableCount -eq 4) `
             "exact four-drawable forward-adjacent proof missing: $($case.caseId)"
-        Assert-Contract ($case.runwayReadyBeforeTail -eq $true -and
-            [double]$case.adjacentBoundaryWaitMs -ge 0.0 -and
-            [double]$case.adjacentBoundaryWaitMs -le 500.0 -and
-            [double]$case.adjacentAttachMs -ge 0.0 -and
-            [double]$case.adjacentAttachMs -le 200.0) `
-            "forward-adjacent tail transition timing proof failed: $($case.caseId)"
-        Assert-Contract ($case.macroResult.allImagesSlaPassed -eq $true) `
-            "Macrobenchmark all-images SLA proof missing: $($case.caseId)"
+        Assert-Contract ($case.adjacentPhysicalRunwayPassed -eq $true -and
+            [string]$case.adjacentPhysicallyObservedSources -ceq "0,1,2,3" -and
+            [int]$case.adjacentLastSourceIndex -eq 3) `
+            "forward-adjacent p0-p3 physical runway proof missing: $($case.caseId)"
+        $sourcePresentedAt = @($case.adjacentSourcePresentedAtNanos)
+        $sourceAcceptedAt = @($case.adjacentSourceIpcAcceptedAtNanos)
+        $sourceGesturesAtPresentation = @($case.adjacentSourceGesturesAtPresentation)
+        $sourceSemanticObservedAt = @($case.adjacentSourceSemanticObservedAtNanos)
+        $sourceSemanticEventPublishedAt = @(
+            $case.adjacentSourceSemanticEventPublishedAtNanos
+        )
+        $sourceSemanticEventLeadMs = @($case.adjacentSourceSemanticEventLeadMs)
+        $sourceSemanticCommitPublishedAt = @(
+            $case.adjacentSourceSemanticCommitPublishedAtNanos
+        )
+        $sourceSemanticCallbackAt = @($case.adjacentSourceSemanticCallbackAtNanos)
+        $sourceSemanticObserverModes = @($case.adjacentSourceSemanticObserverModes)
+        $sourceGesturesAtSemantic = @($case.adjacentSourceGesturesAtSemanticProof)
+        Assert-Contract ($case.adjacentSourceProgressPassed -eq $true -and
+            $null -eq $case.adjacentSourceProgressFailure -and
+            $sourcePresentedAt.Count -eq 4 -and
+            $sourceAcceptedAt.Count -eq 4 -and
+            $sourceGesturesAtPresentation.Count -eq 4 -and
+            $sourceSemanticObservedAt.Count -eq 4 -and
+            $sourceSemanticEventPublishedAt.Count -eq 4 -and
+            $sourceSemanticEventLeadMs.Count -eq 4 -and
+            $sourceSemanticCommitPublishedAt.Count -eq 4 -and
+            $sourceSemanticCallbackAt.Count -eq 4 -and
+            $sourceSemanticObserverModes.Count -eq 4 -and
+            $sourceGesturesAtSemantic.Count -eq 4) `
+            "forward-adjacent source progress proof missing: $($case.caseId)"
+        for($sourceIndex = 0; $sourceIndex -lt 4; $sourceIndex++) {
+            $presentedAt = [long]$sourcePresentedAt[$sourceIndex]
+            $acceptedAt = [long]$sourceAcceptedAt[$sourceIndex]
+            $semanticAt = [long]$sourceSemanticObservedAt[$sourceIndex]
+            $semanticEventAt = [long]$sourceSemanticEventPublishedAt[$sourceIndex]
+            $semanticCommitAt = [long]$sourceSemanticCommitPublishedAt[$sourceIndex]
+            $semanticCallbackAt = [long]$sourceSemanticCallbackAt[$sourceIndex]
+            $semanticMode = [string]$sourceSemanticObserverModes[$sourceIndex]
+            $signalGesture = [int]$sourceGesturesAtPresentation[$sourceIndex]
+            $semanticGesture = [int]$sourceGesturesAtSemantic[$sourceIndex]
+            $expectedSemanticAt = if($semanticMode -ceq "ACCESSIBILITY_EVENT_TIME" -and
+                    $semanticEventAt -ge $presentedAt) {
+                $semanticEventAt
+            } elseif($semanticMode -ceq "CALLBACK_FLOOR" -and
+                    $semanticEventAt -gt 0 -and $semanticEventAt -lt $presentedAt -and
+                    $semanticCallbackAt -ge $presentedAt) {
+                [Math]::Max($semanticCallbackAt, $acceptedAt)
+            } elseif($semanticMode -ceq "SEMANTIC_COMMIT_TIME" -and
+                    $semanticCommitAt -ge $presentedAt) {
+                $semanticCommitAt
+            } else {
+                0L
+            }
+            $eventDiagnosticsValid = if($semanticEventAt -gt 0) {
+                $semanticCallbackAt -ge $semanticEventAt -and
+                    (Test-NumericApproximatelyEqual `
+                        $sourceSemanticEventLeadMs[$sourceIndex] `
+                        (($semanticEventAt - $presentedAt) / 1000000.0))
+            } else {
+                $null -eq $sourceSemanticEventLeadMs[$sourceIndex]
+            }
+            Assert-Contract ($presentedAt -gt 0 -and
+                $acceptedAt -ge $presentedAt -and
+                ($acceptedAt - $presentedAt) -le 240000000L -and
+                $eventDiagnosticsValid -and
+                $expectedSemanticAt -gt 0 -and $semanticAt -eq $expectedSemanticAt -and
+                $semanticAt -ge $presentedAt -and
+                ($semanticAt - $presentedAt) -le 240000000L -and
+                $signalGesture -ge 0 -and $semanticGesture -ge $signalGesture -and
+                ($semanticGesture - $signalGesture) -le 1 -and
+                ($sourceIndex -eq 0 -or
+                    $presentedAt -gt [long]$sourcePresentedAt[$sourceIndex - 1])) `
+                "forward-adjacent source $sourceIndex deadline invalid: $($case.caseId)"
+        }
+        $allImagesReadyAtNanos = [long]$case.allImagesReadyAtNanos
+        $adjacentWorkStartedAtNanos = [long]$case.adjacentWorkStartedAtNanos
+        $forwardBoundaryReachedAtNanos = [long]$case.forwardBoundaryReachedAtNanos
+        $firstAdjacentActualAtNanos = [long]$case.firstAdjacentActualAtNanos
+        $p0EmbeddedAtNanos = [long]$case.p0EmbeddedFirstAdjacentActualAtNanos
+        $p0HarnessObservedAtNanos = [long]$case.p0HarnessObservedAtNanos
+        $p0IpcPresentedAtNanos = [long]$case.p0IpcPresentedAtNanos
+        $p0IpcSenderAtNanos = [long]$case.p0IpcSenderAtNanos
+        $p0IpcReceivedAtNanos = [long]$case.p0IpcReceivedAtNanos
+        $p0IpcAcceptedAtNanos = [long]$case.p0IpcAcceptedAtNanos
+        $p0IpcSemanticObservedAtNanos = [long]$case.p0IpcSemanticObservedAtNanos
+        $p0SemanticCallbackAtNanos = [long]$case.p0SemanticCallbackAtNanos
+        $p0SemanticEventPublishedAtNanos = [long]$case.p0SemanticEventPublishedAtNanos
+        $p0SemanticCommitPublishedAtNanos = [long]$case.p0SemanticCommitPublishedAtNanos
+        $p0SemanticObserverMode = [string]$case.p0SemanticObserverMode
+        $inputStartElapsedNanos = [long]$case.inputStartElapsedNanos
+        $inputEndElapsedNanos = [long]$case.inputEndElapsedNanos
+        $expectedAdjacentP0SeamMs =
+            ($firstAdjacentActualAtNanos - $forwardBoundaryReachedAtNanos) / 1000000.0
+        Assert-Contract ($allImagesReadyAtNanos -gt 0 -and
+            $adjacentWorkStartedAtNanos -ge $allImagesReadyAtNanos -and
+            [long]$case.adjacentRunwayReadyAtNanos -gt 0) `
+            "adjacent work competed with current resume-to-tail images: $($case.caseId)"
+        Assert-Contract ($forwardBoundaryReachedAtNanos -gt 0 -and
+            $firstAdjacentActualAtNanos -ge $forwardBoundaryReachedAtNanos -and
+            [string]$case.firstAdjacentActualEpisode -ceq
+                [string]$case.expectedAdjacentEpisodePath -and
+            [double]$case.adjacentP0SeamMs -ge 0.0 -and
+            [double]$case.adjacentP0SeamMs -le 200.0 -and
+            (Test-NumericApproximatelyEqual `
+                $case.adjacentP0SeamMs $expectedAdjacentP0SeamMs)) `
+            "forward-adjacent p0 seam timing proof failed: $($case.caseId)"
+        Assert-Contract ($case.measurementInvalid -eq $false -and
+            $null -eq $case.measurementInvalidReason -and
+            [string]$case.p0SemanticObservationStatus -ceq "VALID" -and
+            [string]$case.p0MeasurementStatus -ceq "VALID" -and
+            $case.p0IpcAccepted -eq $true -and
+            [string]$case.p0IpcEpisodePath -ceq [string]$case.expectedAdjacentEpisodePath -and
+            [int]$case.p0IpcSourceIndex -eq 0 -and
+            [long]$case.p0IpcViewerGeneration -gt 0 -and
+            $p0SemanticObserverMode -cin @(
+                "ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME") -and
+            [int]$case.p0IpcRejectedSignalCount -eq 0 -and
+            [string]$case.p0IpcFirstRejectReason -ceq "NONE" -and
+            $case.p0IpcTimestampCrossCheckPassed -eq $true) `
+            "adjacent p0 IPC identity or semantic measurement invalid: $($case.caseId)"
+        $expectedP0SemanticObservedAtNanos =
+            if($p0SemanticObserverMode -ceq "ACCESSIBILITY_EVENT_TIME" -and
+                    $p0SemanticEventPublishedAtNanos -ge $p0IpcPresentedAtNanos) {
+                $p0SemanticEventPublishedAtNanos
+            } elseif($p0SemanticObserverMode -ceq "CALLBACK_FLOOR" -and
+                    $p0SemanticEventPublishedAtNanos -gt 0 -and
+                    $p0SemanticEventPublishedAtNanos -lt $p0IpcPresentedAtNanos -and
+                    $p0SemanticCallbackAtNanos -ge $p0IpcPresentedAtNanos) {
+                [Math]::Max($p0SemanticCallbackAtNanos, $p0IpcAcceptedAtNanos)
+            } elseif($p0SemanticObserverMode -ceq "SEMANTIC_COMMIT_TIME" -and
+                    $p0SemanticCommitPublishedAtNanos -ge $p0IpcPresentedAtNanos) {
+                $p0SemanticCommitPublishedAtNanos
+            } else {
+                0L
+            }
+        $p0EventDiagnosticsValid = if($p0SemanticEventPublishedAtNanos -gt 0) {
+            $p0SemanticCallbackAtNanos -ge $p0SemanticEventPublishedAtNanos -and
+                (Test-NumericApproximatelyEqual $case.p0SemanticEventLeadMs `
+                    (($p0SemanticEventPublishedAtNanos - $p0IpcPresentedAtNanos) / 1000000.0))
+        } else {
+            $null -eq $case.p0SemanticEventLeadMs
+        }
+        Assert-Contract ($p0EmbeddedAtNanos -gt 0 -and
+            $p0EmbeddedAtNanos -eq $firstAdjacentActualAtNanos -and
+            $p0IpcPresentedAtNanos -eq $p0EmbeddedAtNanos -and
+            $p0IpcSenderAtNanos -ge $p0IpcPresentedAtNanos -and
+            $p0IpcReceivedAtNanos -ge $p0IpcSenderAtNanos -and
+            $p0IpcAcceptedAtNanos -ge $p0IpcReceivedAtNanos -and
+            $expectedP0SemanticObservedAtNanos -gt 0 -and
+            $p0IpcSemanticObservedAtNanos -eq $expectedP0SemanticObservedAtNanos -and
+            $p0HarnessObservedAtNanos -ge $p0EmbeddedAtNanos -and
+            $p0IpcSemanticObservedAtNanos -eq $p0HarnessObservedAtNanos -and
+            $p0EventDiagnosticsValid -and
+            $inputStartElapsedNanos -gt 0 -and $inputStartElapsedNanos -le $p0EmbeddedAtNanos -and
+            $inputEndElapsedNanos -ge $p0IpcSemanticObservedAtNanos) `
+            "adjacent p0 IPC/semantic timestamp order invalid: $($case.caseId)"
+        $expectedP0PresentedToSenderLagMs =
+            ($p0IpcSenderAtNanos - $p0IpcPresentedAtNanos) / 1000000.0
+        $expectedP0SenderToReceiverLagMs =
+            ($p0IpcReceivedAtNanos - $p0IpcSenderAtNanos) / 1000000.0
+        $expectedP0ReceiverToAcceptanceLagMs =
+            ($p0IpcAcceptedAtNanos - $p0IpcReceivedAtNanos) / 1000000.0
+        $expectedP0DeliveryLagMs =
+            ($p0IpcReceivedAtNanos - $p0IpcPresentedAtNanos) / 1000000.0
+        $expectedP0AcceptanceLagMs =
+            ($p0IpcAcceptedAtNanos - $p0IpcPresentedAtNanos) / 1000000.0
+        $expectedP0DetectionLagMs =
+            ($p0HarnessObservedAtNanos - $p0EmbeddedAtNanos) / 1000000.0
+        $p0SemanticCallbackSchedulerLagValid =
+            if($p0SemanticEventPublishedAtNanos -gt 0) {
+                Test-NumericApproximatelyEqual $case.p0SemanticCallbackSchedulerLagMs `
+                    (($p0SemanticCallbackAtNanos - $p0SemanticEventPublishedAtNanos) / 1000000.0)
+            } else {
+                $null -eq $case.p0SemanticCallbackSchedulerLagMs
+            }
+        $expectedP0ActualToInputEndMs =
+            ($inputEndElapsedNanos - $p0EmbeddedAtNanos) / 1000000.0
+        Assert-Contract ($expectedP0AcceptanceLagMs -ge 0.0 -and
+            $expectedP0AcceptanceLagMs -le 240.0 -and
+            $expectedP0DetectionLagMs -ge 0.0 -and
+            $expectedP0DetectionLagMs -le 240.0 -and
+            (Test-NumericApproximatelyEqual $case.p0IpcPresentedToSenderLagMs `
+                $expectedP0PresentedToSenderLagMs) -and
+            (Test-NumericApproximatelyEqual $case.p0IpcSenderToReceiverLagMs `
+                $expectedP0SenderToReceiverLagMs) -and
+            (Test-NumericApproximatelyEqual $case.p0IpcReceiverToAcceptanceLagMs `
+                $expectedP0ReceiverToAcceptanceLagMs) -and
+            (Test-NumericApproximatelyEqual $case.p0IpcDeliveryLagMs `
+                $expectedP0DeliveryLagMs) -and
+            (Test-NumericApproximatelyEqual $case.p0IpcAcceptanceLagMs `
+                $expectedP0AcceptanceLagMs) -and
+            (Test-NumericApproximatelyEqual $case.p0DetectionLagMs `
+                $expectedP0DetectionLagMs) -and
+            $p0SemanticCallbackSchedulerLagValid -and
+            (Test-NumericApproximatelyEqual $case.p0ActualToInputEndMs `
+                $expectedP0ActualToInputEndMs)) `
+            "adjacent p0 IPC/semantic lag decomposition invalid: $($case.caseId)"
+        Assert-Contract (
+            ([string]$case.allImagesEvidenceSource -ceq "MACRO_EXACT" -and
+                $case.macroResult.allImagesSlaPassed -eq $true) -or
+            [string]$case.allImagesEvidenceSource -ceq "SESSION_TELEMETRY_RECOVERY"
+        ) `
+            "all-images SLA proof missing: $($case.caseId)"
         Assert-Contract (-not [string]::IsNullOrWhiteSpace(
                 [string]$case.androidxFrameCommitTraceKind) -and
             [double]$case.androidxFrameCommitMaxMs -lt 100.0) `
             "renderer-specific frame commit exceeded 100ms or was unmeasured: $($case.caseId)"
-        Assert-Contract ([int64]$case.firstActualPageIndex -eq 0L -and
+        Assert-Contract ([int64]$case.firstActualPageIndex -eq [int64]$case.resumePage -and
             [int64]$case.validCommittedFrames -gt 0L -and
             [int64]$case.invalidCommittedFrames -eq 0L) `
             "committed frame identity proof failed: $($case.caseId)"
+        Assert-Contract ([int]$case.inputGestureCount -ge 1 -and
+            [Math]::Abs(
+                [double]$case.inputViewportDistance -
+                    ([int]$case.inputGestureCount * 0.72)
+            ) -lt 0.0001 -and
+            [Math]::Abs([double]$case.inputPlannedViewportPerSecond - 3.0) -lt 0.01 -and
+            [double]$case.inputAchievedViewportPerSecond -ge 2.75 -and
+            [double]$case.inputAchievedViewportPerSecond -le 3.35 -and
+            [double]$case.inputMaxScheduleLatenessMs -ge 0.0 -and
+            [double]$case.inputMaxInjectionCallMs -ge 0.0 -and
+            [int]$case.inputMaxInterGestureGapMs -le 64 -and
+            [int]$case.inputSampleCount -ge [int]$case.inputGestureCount -and
+            [int]$case.adjacentTraversalGestureCount -eq [int]$case.inputGestureCount -and
+            [int]$case.adjacentP0TraversalGestureCount -ge 0 -and
+            [int]$case.adjacentRunwayTraversalGestureCount -ge 0 -and
+            [int]$case.adjacentP0TraversalGestureCount +
+                [int]$case.adjacentRunwayTraversalGestureCount -eq
+                    [int]$case.adjacentTraversalGestureCount -and
+            [int]$case.p0GesturesAtObservation -eq
+                [int]$case.adjacentP0TraversalGestureCount -and
+            [int]$case.p0IpcGesturesAtSignal -ge 0 -and
+            [int]$case.inputGestureCount -gt [int]$case.p0IpcGesturesAtSignal -and
+            [int]$case.p0IpcGesturesAfterSignal -eq
+                ([int]$case.inputGestureCount - [int]$case.p0IpcGesturesAtSignal) -and
+            [int]$case.p0IpcGesturesAfterSignal -ge 1 -and
+            $case.p0IpcContinuousInputPreserved -eq $true) `
+            "resume-to-next physical input cadence contract failed: $($case.caseId)"
         Assert-Contract ([string]$case.manifestDigest -match '^[0-9a-f]{64}$' -and
             [string]$case.traversalManifestDigest -ceq [string]$case.manifestDigest) `
             "manifest/traversal authority mismatch: $($case.caseId)"
@@ -391,12 +752,13 @@ for($index = 0; $index -lt $cases.Count; $index++) {
 }
 
 $lines = [Collections.Generic.List[string]]::new()
-$lines.Add("# NTK 뷰어 콜드 20+20 결과")
+$lines.Add("# NTK 홈 이어보기 콜드 20+20 × 25/50/90% 결과")
 $lines.Add("")
 $lines.Add("- 실행 시각: $($summary.generatedAt)")
 $lines.Add("- 랜덤 시드: $($summary.seed)")
 $lines.Add("- 시드 선택 모드: $($summary.seedSelectionMode) (정식 자격 충족=$($summary.freshRandomSeedRequirementSatisfied))")
 $lines.Add("- 작품/회차 pair 선택: $($summary.selectionAlgorithm)")
+$lines.Add("- 이어보기 중단 위치: $($resumePercents -join '/')% (충족=$($summary.resumeQualificationSatisfied)); 각 위치에서 실제 저장 페이지 확인 후 약 3 viewport/s로 tail→next 진행")
 $lines.Add("- 기기: $($summary.device.manufacturer) $($summary.device.model), Android $($summary.device.androidRelease), $($summary.device.refreshHz)Hz")
 $lines.Add("- 기기 자격 모드: $($summary.qualificationDeviceMode) (충족=$($summary.deviceRequirementSatisfied), 판정=$($summary.finalDeviceStatus))")
 $lines.Add("- GPU: $($summary.device.surfaceFlingerGles); HWUI=$($summary.device.hwuiRenderer); software=$($summary.device.softwareGpuDetected)")
@@ -419,15 +781,15 @@ if(-not $summary.deviceRequirementSatisfied) {
     $lines.Add("- 선택 기기 자격 판정: **FAIL** — $($summary.qualificationDeviceMode) 증거를 충족하지 않았다.")
 }
 if($summary.diagnosticOnly) {
-    $lines.Add("- 형식 자격 판정: **DIAGNOSTIC ONLY** — 새 무작위 시드, 정확히 20+20, 첫 이미지 4000ms 및 전체 이미지 완료 8000ms SLA가 모두 필요하다. 웜 재개방은 선택 진단이며 콜드 판정에 포함되지 않는다.")
+    $lines.Add("- 형식 자격 판정: **DIAGNOSTIC ONLY** — 새 무작위 시드, 정확히 20+20 작품 pair의 25/50/90% 이어보기 120 cases, 첫 이미지 4000ms 및 resume→tail 전체 이미지 완료 8000ms SLA가 모두 필요하다.")
 }
 $lines.Add("- Schema 검증: ``$schemaPath`` 및 cross-field 재계산 PASS")
 $lines.Add("")
 
 $lines.Add("## 시드로 선정된 정확한 current → next 회차 pair")
 $lines.Add("")
-$lines.Add("순번 | seed | 유형 | 작품 ID | current 회차 | next 회차 | next 페이지 | pair rank | pair hash")
-$lines.Add("---: | ---: | --- | --- | --- | --- | ---: | ---: | ---")
+$lines.Add("순번 | seed | 유형 | 작품 ID | current 회차 | current 페이지 | next 회차 | next 페이지 | pair rank | pair hash")
+$lines.Add("---: | ---: | --- | --- | --- | ---: | --- | ---: | ---: | ---")
 foreach($pair in $selectedEpisodePairs) {
     $lines.Add((@(
         [string]$pair.ordinal
@@ -435,6 +797,7 @@ foreach($pair in $selectedEpisodePairs) {
         Escape-Table ([string]$pair.workType)
         Escape-Table ([string]$pair.workId)
         Escape-Table ([string]$pair.currentEpisodePath)
+        [string]$pair.currentPageCount
         Escape-Table ([string]$pair.nextEpisodePath)
         [string]$pair.nextEpisodePageCount
         ("{0}/{1}" -f $pair.pairRankOrdinal, $pair.pairCandidateCount)
@@ -445,25 +808,31 @@ $lines.Add("")
 
 $lines.Add("## 작품별 결과")
 $lines.Add("")
-$lines.Add("유형 | 작품 ID | 회차 ID | 이미지 수 | 첫 이미지 draw | 전체 이미지 ready | 첫/전체 SLA | Active jank | 최대 present gap | Active FPS | Native FPS | 빈 영역/Runway | 요청/디코드 오류 | 최대 PSS | 결과")
-$lines.Add("--- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---")
+$lines.Add("유형 | 작품 ID | 회차 ID | resume | resume→tail 이미지 | 첫 이미지 draw | 전체 이미지 ready | 입력 속도 | p0 seam | p0-p3 실제 표시 | IPC accept | p0 후 입력 | Active jank | 최대 present gap | Active FPS | 빈 영역/Runway | 요청/디코드 오류 | 최대 PSS | 결과")
+$lines.Add("--- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---")
 foreach($case in $cases) {
     $lines.Add((@(
         Escape-Table ([string]$case.workType)
         Escape-Table ([string]$case.workId)
         Escape-Table ([string](Get-Property $case "episodeId"))
+        ("{0}%@p{1}" -f
+            (Show-Value (Get-Property $case "resumePercent")),
+            (Show-Value (Get-Property $case "resumePage")))
         ("{0}/{1}" -f
             (Show-Value (Get-Property $case "imageCount")),
-            (Show-Value (Get-Property $case "authoritativePageCount")))
+            (Show-Value (Get-Property $case "expectedForwardPageCount")))
         Show-Value (Get-Property $case "firstActualMs") "ms"
         Show-Value (Get-Property $case "allImagesReadyMs") "ms"
+        Show-Value (Get-Property $case "inputAchievedViewportPerSecond") "vp/s"
+        Show-Value (Get-Property $case "adjacentP0SeamMs") "ms"
         ("{0}/{1}" -f
-            (Show-Value (Get-Property $case "imageSlaMs") "ms"),
-            (Show-Value (Get-Property $case "allImagesSlaMs") "ms"))
+            (Show-Value (Get-Property $case "adjacentPhysicallyObservedSources")),
+            (Show-Value (Get-Property $case "adjacentPhysicalRunwayPassed")))
+        Show-Value (Get-Property $case "p0IpcAcceptanceLagMs") "ms"
+        Show-Value (Get-Property $case "p0IpcGesturesAfterSignal")
         Show-Value (Get-Property $case "activePresentationJankPercent") "%"
         Show-Value (Get-Property $case "activePresentationGapMaxMs") "ms"
         Show-Value (Get-Property $case "activePresentationFps") "fps"
-        Show-Value (Get-Property $case "nativeScrollFps") "fps"
         ("{0}/{1}" -f
             (Show-Value (Get-Property $case "blankAreaCount")),
             (Show-Value (Get-Property $case "runwayDefectFrames")))
@@ -472,10 +841,32 @@ foreach($case in $cases) {
             (Show-Value (Get-Property $case "decodeFailureCount")),
             (Show-Value (Get-Property $case "pageListFailureCount")))
         Show-Value (Get-Property $case "maxPssMb") "MB"
-        $(if($case.passed) { "PASS" } else { "FAIL" })
+        $(if($case.passed) { "PASS" } else { Escape-Table ([string]$case.classification) })
     ) -join ' | '))
 }
 $lines.Add("")
+
+$infraInvalidCases = @($cases | Where-Object {
+    [string]$_.classification -ceq "INFRA_INVALID"
+})
+if($infraInvalidCases.Count -gt 0) {
+    $lines.Add("## 측정 무효 진단")
+    $lines.Add("")
+    $lines.Add("아래 항목은 제품 합격/실패 판정에서 제외되고 동일 cold case 재시도 대상으로 분류됐다. 원시 seam/SLA 값과 당시 잠정 위반은 진단용으로 보존한다.")
+    $lines.Add("")
+    foreach($case in $infraInvalidCases) {
+        $diagnostics = @((Get-Property $case "invalidMeasurementDiagnostics"))
+        $lines.Add(("- ``{0}``: {1}; 판정 제외 진단={2}" -f
+            [string]$case.caseId,
+            (Escape-Table ([string]$case.measurementInvalidReason)),
+            $(if($diagnostics.Count -gt 0) {
+                Escape-Table ($diagnostics -join '; ')
+            } else {
+                "없음"
+            })))
+    }
+    $lines.Add("")
+}
 
 $lines.Add("## 병목 분석")
 $lines.Add("")
@@ -625,8 +1016,8 @@ $lines.Add("")
 $lines.Add("- 프로덕션 APK: ``$($summary.apks.app)`` (SHA-256 ``$($summary.apks.appSha256)``)")
 $lines.Add("- 측정 APK: ``$($summary.apks.benchmark)`` (SHA-256 ``$($summary.apks.benchmarkSha256)``)")
 $lines.Add("- 변경 전 자격 경로: 고정 작품·에뮬레이터·전체 페이지 선행 staging 경로가 존재했다.")
-$lines.Add("- 변경 후 자격 경로: ``ntk_emulator_host_qualification.ps1`` → ``ntk_cold_qualification.ps1`` 한 경로만 사용하며, 실행 시 새 무작위 시드로 작품과 current→next 회차 pair를 각각 hash-rank하고 20+20·첫 이미지 4000ms·전체 이미지 완료 8000ms·Host GPU 에뮬레이터를 고정한다. 기록된 selection.json 고정 시드 재현과 선택적 웜 재개방은 진단 전용이다.")
-$lines.Add("- 테스트용 변경: Macrobenchmark는 production ``#작품ID`` 검색 UI, 회차 행 탭, 순방향 스크롤을 수행한다. viewer Activity나 이미지 URL을 직접 실행하지 않는다.")
+$lines.Add("- 변경 후 자격 경로: ``ntk_emulator_host_qualification.ps1`` → ``ntk_cold_qualification.ps1`` 한 경로만 사용하며, 새 무작위 current→next 20+20 pair 각각을 25/50/90% 중단 위치에서 콜드 이어보기한다. 첫 이미지 4000ms·resume→tail 완료 8000ms·Host GPU 에뮬레이터를 고정한다.")
+$lines.Add("- 테스트용 변경: benchmark build 전용 receiver가 같은 작품/current→next pair와 bookmark/recent를 저장한다. Macrobenchmark는 앱을 force-stop한 뒤 production 홈 이어보기 카드를 눌러 정확한 저장 페이지를 확인하고, 별도 direct-input producer로 약 3 viewport/s를 유지하며 next 실제 픽셀까지 관찰한다.")
 $lines.Add("- 프로덕션 변경: 이 측정 보고서는 APK에서 소스 diff를 역추정하지 않는다. 위 APK hash와 별도 VCS diff를 함께 보관해야 하며, 측정값이 없는 before/after 수치는 작성하지 않는다.")
 $lines.Add("- 테스트 통과 전용 분기 확인: 특정 작품 ID 분기 없이 모든 사용자가 쓸 수 있는 production 정확 검색과 production UI를 사용한다. 클릭 전 image/page-list/decode 작업은 1건이라도 case FAIL이다.")
 $lines.Add("")

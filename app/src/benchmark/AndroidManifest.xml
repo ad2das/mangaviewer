@@ -2,5 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <profileable android:shell="true" />
+        <receiver
+            android:name=".benchmark.BenchmarkResumeSeedReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="ml.melun.mangaview.benchmark.SEED_RESUME" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

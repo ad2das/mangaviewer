@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://mangaviewer.local/schemas/ntk-cold-result-v1.json",
-  "title": "NTK true-cold 20+20 qualification summary",
+  "title": "NTK true-cold Continue 20+20 x 25/50/90 qualification summary",
   "type": "object",
   "required": [
     "schema",
@@ -11,6 +11,8 @@
     "seedSelectionMode",
     "selectionAlgorithm",
     "selectedEpisodePairs",
+    "resumePercents",
+    "resumeQualificationSatisfied",
     "expectedWebtoon",
     "expectedManhwa",
     "completedCases",
@@ -59,6 +61,14 @@
       "maxItems": 200,
       "items": { "$ref": "#/$defs/selectedEpisodePair" }
     },
+    "resumePercents": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "enum": [25, 50, 90] }
+    },
+    "resumeQualificationSatisfied": { "type": "boolean" },
     "expectedWebtoon": { "type": "integer", "minimum": 0 },
     "expectedManhwa": { "type": "integer", "minimum": 0 },
     "completedCases": { "type": "integer", "minimum": 0 },
@@ -213,8 +223,10 @@
           "expectedWebtoon": { "const": 20 },
           "expectedManhwa": { "const": 20 },
           "requestedCountPerType": { "const": 20 },
-          "completedCases": { "const": 40 },
-          "passedCases": { "const": 40 },
+          "resumePercents": { "const": [25, 50, 90] },
+          "resumeQualificationSatisfied": { "const": true },
+          "completedCases": { "const": 120 },
+          "passedCases": { "const": 120 },
           "smokePassed": { "const": true },
           "qualificationTargetSatisfied": { "const": true },
           "warmReopenRequirementSatisfied": { "const": true },
@@ -227,7 +239,7 @@
           "webtoonImageSlaMs": { "const": 4000 },
           "manhwaImageSlaMs": { "const": 4000 },
           "allImagesSlaMs": { "const": 8000 },
-          "cases": { "minItems": 40, "maxItems": 40 },
+          "cases": { "minItems": 120, "maxItems": 120 },
           "selectedEpisodePairs": { "minItems": 40, "maxItems": 40 }
         }
       }
@@ -385,6 +397,7 @@
         "currentEpisodePath",
         "nextEpisodeId",
         "nextEpisodePath",
+        "currentPageCount",
         "nextEpisodePageCount",
         "pairSelectionHash",
         "pairRankOrdinal",
@@ -399,6 +412,7 @@
         "currentEpisodePath": { "type": "string", "pattern": "^/(webtoon|manhwa)/[^/]+/[^/]+$" },
         "nextEpisodeId": { "type": "string", "minLength": 1 },
         "nextEpisodePath": { "type": "string", "pattern": "^/(webtoon|manhwa)/[^/]+/[^/]+$" },
+        "currentPageCount": { "type": "integer", "minimum": 1 },
         "nextEpisodePageCount": { "type": "integer", "minimum": 4 },
         "pairSelectionHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "pairRankOrdinal": { "type": "integer", "minimum": 1 },
@@ -445,18 +459,51 @@
       "required": [
         "schema",
         "caseId",
+        "baseCaseId",
+        "infrastructureAttempt",
+        "classification",
         "ordinal",
         "workType",
         "workId",
         "passed",
+        "measurementInvalid",
+        "measurementInvalidReason",
+        "invalidMeasurementDiagnostics",
         "violations"
       ],
       "properties": {
         "schema": { "const": 1 },
         "caseId": { "type": "string", "minLength": 1 },
+        "baseCaseId": { "type": "string", "minLength": 1 },
+        "infrastructureAttempt": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "classification": {
+          "type": "string",
+          "enum": ["VALID", "PRODUCT_INVALID", "INFRA_INVALID"]
+        },
         "ordinal": { "type": "integer", "minimum": 1 },
         "workType": { "enum": ["webtoon", "manhwa"] },
         "workId": { "type": "string", "minLength": 1 },
+        "currentPageCount": { "type": ["integer", "null"], "minimum": 1 },
+        "resumePercent": { "type": ["integer", "null"], "enum": [25, 50, 90, null] },
+        "resumePercentBasis": { "type": ["string", "null"] },
+        "resumePage": { "type": ["integer", "null"], "minimum": 0 },
+        "resumeOffset": { "type": ["integer", "null"] },
+        "expectedForwardPageCount": { "type": ["integer", "null"], "minimum": 1 },
+        "resumeFirstActualMatched": { "type": ["boolean", "null"] },
+        "resumeMode": { "type": ["boolean", "null"] },
+        "homeContinueSeeded": { "type": ["boolean", "null"] },
+        "homeContinueColdForceStopped": { "type": ["boolean", "null"] },
+        "firstActualResumePage": { "type": ["integer", "null"], "minimum": -1 },
+        "inputGestureCount": { "type": ["integer", "null"], "minimum": 0 },
+        "inputSampleCount": { "type": ["integer", "null"], "minimum": 0 },
+        "inputStartElapsedNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "inputEndElapsedNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "inputViewportDistance": { "type": ["number", "null"], "minimum": 0 },
+        "inputPlannedViewportPerSecond": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "inputAchievedViewportPerSecond": { "type": ["number", "null"], "minimum": 0 },
+        "inputMaxScheduleLatenessMs": { "type": ["number", "null"], "minimum": 0 },
+        "inputMaxInjectionCallMs": { "type": ["number", "null"], "minimum": 0 },
+        "inputMaxInterGestureGapMs": { "type": ["integer", "null"], "minimum": 0 },
         "episodeId": { "type": ["string", "null"] },
         "episodePath": { "type": ["string", "null"] },
         "expectedAdjacentEpisodePath": { "type": ["string", "null"] },
@@ -465,9 +512,126 @@
         "adjacentRunwayPageCount": { "type": ["integer", "null"], "minimum": 0 },
         "adjacentObservedRunwayDrawableCount": { "type": ["integer", "null"], "minimum": 0 },
         "adjacentTotalPageCount": { "type": ["integer", "null"], "minimum": 0 },
-        "adjacentBoundaryWaitMs": { "type": ["number", "null"] },
+        "adjacentTraversalGestureCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentP0TraversalGestureCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentRunwayTraversalGestureCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentLastSourceIndex": { "type": ["integer", "null"], "minimum": -1 },
+        "adjacentPhysicallyObservedSources": { "type": ["string", "null"] },
+        "adjacentPhysicalRunwayPassed": { "type": ["boolean", "null"] },
+        "adjacentSourcePresentedAtNanos": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceIpcAcceptedAtNanos": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceGesturesAtPresentation": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": -1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceSemanticObservedAtNanos": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceSemanticEventPublishedAtNanos": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceSemanticEventLeadMs": {
+          "type": ["array", "null"],
+          "items": { "type": ["number", "null"] },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceSemanticCommitPublishedAtNanos": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceSemanticCallbackAtNanos": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceSemanticObserverModes": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string",
+            "enum": ["ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME", "UIAUTOMATOR_POLL_FALLBACK", "UNMEASURED"]
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceGesturesAtSemanticProof": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": -1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "adjacentSourceProgressPassed": { "type": ["boolean", "null"] },
+        "adjacentSourceProgressFailure": { "type": ["string", "null"] },
+        "adjacentWorkStartedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentRunwayReadyAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "forwardBoundaryReachedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "firstAdjacentActualAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "firstAdjacentActualEpisode": { "type": ["string", "null"] },
+        "adjacentP0SeamMs": { "type": ["number", "null"] },
         "runwayReadyBeforeTail": { "type": ["boolean", "null"] },
-        "adjacentAttachMs": { "type": ["number", "null"] },
+        "p0EmbeddedFirstAdjacentActualAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0HarnessObservedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0GesturesAtObservation": { "type": ["integer", "null"], "minimum": -1 },
+        "p0DetectionLagMs": { "type": ["number", "null"] },
+        "p0ActualToInputEndMs": { "type": ["number", "null"] },
+        "p0SemanticObservationStatus": { "type": ["string", "null"] },
+        "p0MeasurementStatus": { "type": ["string", "null"] },
+        "p0IpcAccepted": { "type": ["boolean", "null"] },
+        "p0IpcPresentedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0IpcSenderAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0IpcReceivedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0IpcAcceptedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0IpcPresentedToSenderLagMs": { "type": ["number", "null"], "minimum": 0 },
+        "p0IpcSenderToReceiverLagMs": { "type": ["number", "null"], "minimum": 0 },
+        "p0IpcReceiverToAcceptanceLagMs": { "type": ["number", "null"], "minimum": 0 },
+        "p0IpcDeliveryLagMs": { "type": ["number", "null"], "minimum": 0 },
+        "p0IpcAcceptanceLagMs": { "type": ["number", "null"], "minimum": 0 },
+        "p0IpcGesturesAtSignal": { "type": ["integer", "null"], "minimum": -1 },
+        "p0IpcGesturesAfterSignal": { "type": ["integer", "null"] },
+        "p0IpcContinuousInputPreserved": { "type": ["boolean", "null"] },
+        "p0IpcEpisodePath": { "type": ["string", "null"] },
+        "p0IpcSourceIndex": { "type": ["integer", "null"] },
+        "p0IpcViewerGeneration": { "type": ["integer", "null"] },
+        "p0IpcRejectedSignalCount": { "type": ["integer", "null"], "minimum": 0 },
+        "p0IpcFirstRejectReason": { "type": ["string", "null"] },
+        "p0IpcSemanticObservedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0SemanticCallbackAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0SemanticEventPublishedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0SemanticCommitPublishedAtNanos": { "type": ["integer", "null"], "minimum": 0 },
+        "p0SemanticEventLeadMs": { "type": ["number", "null"] },
+        "p0SemanticObserverMode": {
+          "type": ["string", "null"],
+          "enum": ["ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME", "UIAUTOMATOR_POLL_FALLBACK", "UNMEASURED", null]
+        },
+        "p0SemanticCallbackSchedulerLagMs": { "type": ["number", "null"], "minimum": 0 },
+        "p0IpcTimestampCrossCheckPassed": { "type": ["boolean", "null"] },
+        "measurementInvalid": { "type": "boolean" },
+        "measurementInvalidReason": { "type": ["string", "null"] },
+        "invalidMeasurementDiagnostics": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "testedAt": { "type": ["string", "null"], "format": "date-time" },
         "completedAt": { "type": ["string", "null"], "format": "date-time" },
         "networkType": { "type": ["string", "null"] },
@@ -484,7 +648,13 @@
         "imageSlaMs": { "type": ["integer", "null"], "minimum": 250, "maximum": 30000 },
         "allImagesSlaMs": { "type": ["integer", "null"], "minimum": 250, "maximum": 30000 },
         "allImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
+        "allImagesReadyAtNanos": { "type": ["integer", "null"], "minimum": 0 },
         "allImagesReadyPageCount": { "type": ["integer", "null"], "minimum": 0 },
+        "allImagesEvidenceSource": {
+          "type": ["string", "null"],
+          "enum": ["MACRO_EXACT", "SESSION_TELEMETRY_RECOVERY", "UNMEASURED", null]
+        },
+        "allImagesEvidenceConflict": { "type": ["boolean", "null"] },
         "androidxAllImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
         "androidxFrameCommitTraceKind": { "type": ["string", "null"] },
         "androidxFrameCommitMaxMs": { "type": ["number", "null"], "minimum": 0 },
@@ -575,7 +745,8 @@
         "coldState": { "type": ["object", "null"] },
         "artifacts": { "type": ["object", "null"] },
         "androidxBenchmark": { "type": ["object", "null"] },
-        "macroResult": { "type": ["object", "null"] }
+        "macroResult": { "type": ["object", "null"] },
+        "macroResultArtifact": { "type": ["object", "null"] }
       },
       "allOf": [
         {
@@ -587,15 +758,95 @@
             "required": [
               "episodeId",
               "episodePath",
+              "baseCaseId",
+              "infrastructureAttempt",
+              "classification",
+              "currentPageCount",
+              "resumePercent",
+              "resumePercentBasis",
+              "resumePage",
+              "resumeOffset",
+              "expectedForwardPageCount",
+              "resumeFirstActualMatched",
+              "resumeMode",
+              "homeContinueSeeded",
+              "homeContinueColdForceStopped",
+              "firstActualResumePage",
+              "inputGestureCount",
+              "inputSampleCount",
+              "inputStartElapsedNanos",
+              "inputEndElapsedNanos",
+              "inputViewportDistance",
+              "inputPlannedViewportPerSecond",
+              "inputAchievedViewportPerSecond",
+              "inputMaxScheduleLatenessMs",
+              "inputMaxInjectionCallMs",
+              "inputMaxInterGestureGapMs",
               "expectedAdjacentEpisodePath",
               "expectedAdjacentPageCount",
               "adjacentRunwayTargetEpisode",
               "adjacentRunwayPageCount",
               "adjacentObservedRunwayDrawableCount",
               "adjacentTotalPageCount",
-              "adjacentBoundaryWaitMs",
-              "runwayReadyBeforeTail",
-              "adjacentAttachMs",
+              "adjacentTraversalGestureCount",
+              "adjacentP0TraversalGestureCount",
+              "adjacentRunwayTraversalGestureCount",
+              "adjacentLastSourceIndex",
+              "adjacentPhysicallyObservedSources",
+              "adjacentPhysicalRunwayPassed",
+              "adjacentSourcePresentedAtNanos",
+              "adjacentSourceIpcAcceptedAtNanos",
+              "adjacentSourceGesturesAtPresentation",
+              "adjacentSourceSemanticObservedAtNanos",
+              "adjacentSourceSemanticEventPublishedAtNanos",
+              "adjacentSourceSemanticEventLeadMs",
+              "adjacentSourceSemanticCommitPublishedAtNanos",
+              "adjacentSourceSemanticCallbackAtNanos",
+              "adjacentSourceSemanticObserverModes",
+              "adjacentSourceGesturesAtSemanticProof",
+              "adjacentSourceProgressPassed",
+              "adjacentSourceProgressFailure",
+              "adjacentWorkStartedAtNanos",
+              "adjacentRunwayReadyAtNanos",
+              "forwardBoundaryReachedAtNanos",
+              "firstAdjacentActualAtNanos",
+              "firstAdjacentActualEpisode",
+              "adjacentP0SeamMs",
+              "p0EmbeddedFirstAdjacentActualAtNanos",
+              "p0HarnessObservedAtNanos",
+              "p0GesturesAtObservation",
+              "p0DetectionLagMs",
+              "p0ActualToInputEndMs",
+              "p0SemanticObservationStatus",
+              "p0MeasurementStatus",
+              "p0IpcAccepted",
+              "p0IpcPresentedAtNanos",
+              "p0IpcSenderAtNanos",
+              "p0IpcReceivedAtNanos",
+              "p0IpcAcceptedAtNanos",
+              "p0IpcPresentedToSenderLagMs",
+              "p0IpcSenderToReceiverLagMs",
+              "p0IpcReceiverToAcceptanceLagMs",
+              "p0IpcDeliveryLagMs",
+              "p0IpcAcceptanceLagMs",
+              "p0IpcGesturesAtSignal",
+              "p0IpcGesturesAfterSignal",
+              "p0IpcContinuousInputPreserved",
+              "p0IpcEpisodePath",
+              "p0IpcSourceIndex",
+              "p0IpcViewerGeneration",
+              "p0IpcRejectedSignalCount",
+              "p0IpcFirstRejectReason",
+              "p0IpcSemanticObservedAtNanos",
+              "p0SemanticCallbackAtNanos",
+              "p0SemanticEventPublishedAtNanos",
+              "p0SemanticCommitPublishedAtNanos",
+              "p0SemanticEventLeadMs",
+              "p0SemanticObserverMode",
+              "p0SemanticCallbackSchedulerLagMs",
+              "p0IpcTimestampCrossCheckPassed",
+              "measurementInvalid",
+              "measurementInvalidReason",
               "testedAt",
               "completedAt",
               "randomSeed",
@@ -603,7 +854,10 @@
               "imageSlaMs",
               "allImagesSlaMs",
               "allImagesReadyMs",
+              "allImagesReadyAtNanos",
               "allImagesReadyPageCount",
+              "allImagesEvidenceSource",
+              "allImagesEvidenceConflict",
               "androidxAllImagesReadyMs",
               "androidxFrameCommitTraceKind",
               "androidxFrameCommitMaxMs",
@@ -667,27 +921,170 @@
               "coldState",
               "artifacts",
               "androidxBenchmark",
-              "macroResult"
+              "macroResult",
+              "macroResultArtifact"
             ],
             "properties": {
               "violations": { "maxItems": 0 },
+              "classification": { "const": "VALID" },
+              "infrastructureAttempt": { "type": "integer", "minimum": 1, "maximum": 4 },
               "episodeId": { "type": "string", "minLength": 1 },
               "episodePath": { "type": "string", "minLength": 1 },
+              "currentPageCount": { "type": "integer", "minimum": 1 },
+              "resumePercent": { "enum": [25, 50, 90] },
+              "resumePercentBasis": { "const": "canonical_page_ordinal" },
+              "resumePage": { "type": "integer", "minimum": 0 },
+              "resumeOffset": { "const": -420 },
+              "expectedForwardPageCount": { "type": "integer", "minimum": 1 },
+              "resumeFirstActualMatched": { "const": true },
+              "resumeMode": { "const": true },
+              "homeContinueSeeded": { "const": true },
+              "homeContinueColdForceStopped": { "const": true },
+              "firstActualResumePage": { "type": "integer", "minimum": 0 },
+              "inputGestureCount": { "type": "integer", "minimum": 1 },
+              "inputSampleCount": { "type": "integer", "minimum": 1 },
+              "inputStartElapsedNanos": { "type": "integer", "minimum": 1 },
+              "inputEndElapsedNanos": { "type": "integer", "minimum": 1 },
+              "inputViewportDistance": { "type": "number", "exclusiveMinimum": 0 },
+              "inputPlannedViewportPerSecond": { "const": 3.0 },
+              "inputAchievedViewportPerSecond": {
+                "type": "number",
+                "minimum": 2.75,
+                "maximum": 3.35
+              },
+              "inputMaxScheduleLatenessMs": { "type": "number", "minimum": 0 },
+              "inputMaxInjectionCallMs": { "type": "number", "minimum": 0 },
+              "inputMaxInterGestureGapMs": { "type": "integer", "minimum": 0, "maximum": 64 },
               "expectedAdjacentEpisodePath": { "type": "string", "minLength": 1 },
               "expectedAdjacentPageCount": { "type": "integer", "minimum": 4 },
               "adjacentRunwayTargetEpisode": { "type": "string", "minLength": 1 },
               "adjacentRunwayPageCount": { "const": 4 },
               "adjacentObservedRunwayDrawableCount": { "const": 4 },
               "adjacentTotalPageCount": { "type": "integer", "minimum": 4 },
-              "adjacentBoundaryWaitMs": { "type": "number", "minimum": 0, "maximum": 500 },
-              "runwayReadyBeforeTail": { "const": true },
-              "adjacentAttachMs": { "type": "number", "minimum": 0, "maximum": 200 },
+              "adjacentTraversalGestureCount": { "type": "integer", "minimum": 1 },
+              "adjacentP0TraversalGestureCount": { "type": "integer", "minimum": 0 },
+              "adjacentRunwayTraversalGestureCount": { "type": "integer", "minimum": 0 },
+              "adjacentLastSourceIndex": { "const": 3 },
+              "adjacentPhysicallyObservedSources": { "const": "0,1,2,3" },
+              "adjacentPhysicalRunwayPassed": { "const": true },
+              "adjacentSourcePresentedAtNanos": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 1 }
+              },
+              "adjacentSourceIpcAcceptedAtNanos": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 1 }
+              },
+              "adjacentSourceGesturesAtPresentation": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 0 }
+              },
+              "adjacentSourceSemanticObservedAtNanos": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 1 }
+              },
+              "adjacentSourceSemanticEventPublishedAtNanos": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 0 }
+              },
+              "adjacentSourceSemanticEventLeadMs": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": ["number", "null"] }
+              },
+              "adjacentSourceSemanticCommitPublishedAtNanos": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 0 }
+              },
+              "adjacentSourceSemanticCallbackAtNanos": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 1 }
+              },
+              "adjacentSourceSemanticObserverModes": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": {
+                  "enum": ["ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME"]
+                }
+              },
+              "adjacentSourceGesturesAtSemanticProof": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": { "type": "integer", "minimum": 0 }
+              },
+              "adjacentSourceProgressPassed": { "const": true },
+              "adjacentSourceProgressFailure": { "type": "null" },
+              "adjacentWorkStartedAtNanos": { "type": "integer", "minimum": 1 },
+              "adjacentRunwayReadyAtNanos": { "type": "integer", "minimum": 1 },
+              "forwardBoundaryReachedAtNanos": { "type": "integer", "minimum": 1 },
+              "firstAdjacentActualAtNanos": { "type": "integer", "minimum": 1 },
+              "firstAdjacentActualEpisode": { "type": "string", "minLength": 1 },
+              "adjacentP0SeamMs": { "type": "number", "minimum": 0, "maximum": 200 },
+              "p0EmbeddedFirstAdjacentActualAtNanos": { "type": "integer", "minimum": 1 },
+              "p0HarnessObservedAtNanos": { "type": "integer", "minimum": 1 },
+              "p0GesturesAtObservation": { "type": "integer", "minimum": 0 },
+              "p0DetectionLagMs": { "type": "number", "minimum": 0, "maximum": 240 },
+              "p0ActualToInputEndMs": { "type": "number", "minimum": 0 },
+              "p0SemanticObservationStatus": { "const": "VALID" },
+              "p0MeasurementStatus": { "const": "VALID" },
+              "p0IpcAccepted": { "const": true },
+              "p0IpcPresentedAtNanos": { "type": "integer", "minimum": 1 },
+              "p0IpcSenderAtNanos": { "type": "integer", "minimum": 1 },
+              "p0IpcReceivedAtNanos": { "type": "integer", "minimum": 1 },
+              "p0IpcAcceptedAtNanos": { "type": "integer", "minimum": 1 },
+              "p0IpcPresentedToSenderLagMs": { "type": "number", "minimum": 0 },
+              "p0IpcSenderToReceiverLagMs": { "type": "number", "minimum": 0 },
+              "p0IpcReceiverToAcceptanceLagMs": { "type": "number", "minimum": 0 },
+              "p0IpcDeliveryLagMs": { "type": "number", "minimum": 0 },
+              "p0IpcAcceptanceLagMs": { "type": "number", "minimum": 0, "maximum": 240 },
+              "p0IpcGesturesAtSignal": { "type": "integer", "minimum": 0 },
+              "p0IpcGesturesAfterSignal": { "type": "integer", "minimum": 1 },
+              "p0IpcContinuousInputPreserved": { "const": true },
+              "p0IpcEpisodePath": { "type": "string", "minLength": 1 },
+              "p0IpcSourceIndex": { "const": 0 },
+              "p0IpcViewerGeneration": { "type": "integer", "minimum": 1 },
+              "p0IpcRejectedSignalCount": { "const": 0 },
+              "p0IpcFirstRejectReason": { "const": "NONE" },
+              "p0IpcSemanticObservedAtNanos": { "type": "integer", "minimum": 1 },
+              "p0SemanticCallbackAtNanos": { "type": "integer", "minimum": 1 },
+              "p0SemanticEventPublishedAtNanos": { "type": "integer", "minimum": 0 },
+              "p0SemanticCommitPublishedAtNanos": { "type": "integer", "minimum": 0 },
+              "p0SemanticEventLeadMs": { "type": ["number", "null"] },
+              "p0SemanticObserverMode": {
+                "enum": ["ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME"]
+              },
+              "p0SemanticCallbackSchedulerLagMs": { "type": ["number", "null"], "minimum": 0 },
+              "p0IpcTimestampCrossCheckPassed": { "const": true },
+              "measurementInvalid": { "const": false },
+              "measurementInvalidReason": { "type": "null" },
               "firstActualMs": { "type": "number", "minimum": 0 },
               "imageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
               "allImagesReadyMs": { "type": "number", "minimum": 0 },
+              "allImagesReadyAtNanos": { "type": "integer", "minimum": 1 },
               "allImagesReadyPageCount": { "type": "integer", "minimum": 1 },
+              "allImagesEvidenceSource": {
+                "enum": ["MACRO_EXACT", "SESSION_TELEMETRY_RECOVERY"]
+              },
+              "allImagesEvidenceConflict": { "const": false },
               "androidxAllImagesReadyMs": { "type": "number", "minimum": 0 },
-              "firstActualPageIndex": { "const": 0 },
+              "firstActualPageIndex": { "type": "integer", "minimum": 0 },
               "observedSourceCount": { "type": "integer", "minimum": 1 },
               "manifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
               "traversalManifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -751,10 +1148,75 @@
                 "type": "object",
                 "required": ["passed"],
                 "properties": { "passed": { "const": true } }
+              },
+              "macroResultArtifact": {
+                "type": "object",
+                "required": ["valid", "candidateCount", "bytes", "sha256", "problems"],
+                "properties": {
+                  "valid": { "const": true },
+                  "candidateCount": { "const": 1 },
+                  "bytes": { "type": "integer", "minimum": 1 },
+                  "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                  "problems": { "type": "array", "maxItems": 0 }
+                }
               }
             }
           },
           "else": { "properties": { "violations": { "minItems": 1 } } }
+        },
+        {
+          "if": {
+            "properties": { "classification": { "const": "VALID" } },
+            "required": ["classification"]
+          },
+          "then": {
+            "properties": {
+              "passed": { "const": true },
+              "measurementInvalid": { "const": false },
+              "measurementInvalidReason": { "type": "null" },
+              "invalidMeasurementDiagnostics": { "maxItems": 0 },
+              "violations": { "maxItems": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "classification": { "const": "PRODUCT_INVALID" } },
+            "required": ["classification"]
+          },
+          "then": {
+            "properties": {
+              "passed": { "const": false },
+              "measurementInvalid": { "const": false },
+              "measurementInvalidReason": { "type": "null" },
+              "invalidMeasurementDiagnostics": { "maxItems": 0 },
+              "violations": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "classification": { "const": "INFRA_INVALID" } },
+            "required": ["classification"]
+          },
+          "then": {
+            "properties": {
+              "passed": { "const": false },
+              "measurementInvalid": { "const": true },
+              "measurementInvalidReason": {
+                "type": "string",
+                "pattern": "^MEASUREMENT_INVALID:",
+                "minLength": 21
+              },
+              "violations": {
+                "minItems": 1,
+                "contains": {
+                  "type": "string",
+                  "pattern": "^infrastructure measurement invalid:"
+                }
+              }
+            }
+          }
         }
       ],
       "additionalProperties": true

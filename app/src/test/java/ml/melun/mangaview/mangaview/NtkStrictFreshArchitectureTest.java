@@ -9,6 +9,7 @@ import java.nio.file.Paths;
 import java.util.Iterator;
 import java.util.stream.Stream;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -250,6 +251,9 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(document.contains("headers.put(\"accept\", \"text/x-component\")"));
         assertTrue(document.contains("headers.put(\"rsc\", \"1\")"));
         assertTrue(document.contains("headers.put(\"next-url\", encodedNormalized)"));
+        assertTrue(document.contains("if(compactAdjacentRsc)"));
+        assertTrue(document.contains("headers.put(\"next-router-state-tree\", routerState)"));
+        assertTrue(document.contains("ntkCompactAdjacentRscHash(routerState, encodedNormalized)"));
         assertTrue(document.contains("headers.put(\"Sec-Fetch-Dest\", \"empty\")"));
         assertFalse(document.contains("text/html,application/xhtml+xml"));
 
@@ -283,6 +287,15 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(registry.contains("call.cancel()"));
         assertTrue(registry.contains("request.cancel()"));
         assertTrue(registry.contains("boolean publishIfActive(Runnable publication)"));
+    }
+
+    @Test
+    public void compactAdjacentRscUsesNextNavigationCacheKey() {
+        assertEquals(
+                "28hdg",
+                CustomHttpClient.ntkCompactAdjacentRscHash(
+                        "%5B%22%22%2C%7B%7D%5D",
+                        "/webtoon/395442/1440648"));
     }
 
     @Test
@@ -587,15 +600,30 @@ public final class NtkStrictFreshArchitectureTest {
     @Test
     public void coldExactHandoffDropsPreparedImageAndPageHints() throws Exception {
         String store = read(activitySourcePath("ReaderLaunchPayloadStore.java"));
+        String compact = method(store,
+                "public static void attachCompactReaderPayload(",
+                "public static void attachColdExactReaderPayload(");
         String cold = method(store,
                 "public static void attachColdExactReaderPayload(",
                 "/** Restores the compact payload");
+        String restore = method(store,
+                "public static Entry restoreCompactReaderPayload(",
+                "private static String compactAuthoritativeNtkEpisodeMetadata(");
         int discardProcessEntry = cold.indexOf("intent.removeExtra(EXTRA_READER_KEY);");
         int dropImageHint = cold.indexOf("intent.removeExtra(EXTRA_MANGA_NTK_PAYLOAD_HINT);");
         int dropPageHint = cold.indexOf("intent.removeExtra(EXTRA_MANGA_NTK_IMAGE_COUNT);");
         assertTrue(discardProcessEntry >= 0);
         assertTrue(dropImageHint > discardProcessEntry);
         assertTrue(dropPageHint > dropImageHint);
+        // The cold handoff drops prepared image content, but it must retain the one durable
+        // current->next identity used only after the current native runway is complete.
+        assertTrue(compact.contains("EXTRA_TITLE_RESUME_NEXT_PATH"));
+        assertTrue(compact.contains("EXTRA_TITLE_RESUME_NEXT_ID"));
+        assertTrue(compact.contains("EXTRA_TITLE_RESUME_NEXT_IMAGE_WORK_ID"));
+        assertTrue(compact.contains("EXTRA_TITLE_RESUME_NEXT_IMAGE_EPISODE_ID"));
+        assertTrue(compact.contains("EXTRA_TITLE_RESUME_NEXT_IMAGE_COUNT"));
+        assertTrue(restore.contains("title.setResumeNtkNextEpisodeIdentity("));
+        assertFalse(cold.contains("removeExtra(EXTRA_TITLE_RESUME_NEXT"));
 
         String telemetry = read(projectPath("src", "main", "java", "ml", "melun",
                 "mangaview", "runtime", "ViewerTelemetry.java"));

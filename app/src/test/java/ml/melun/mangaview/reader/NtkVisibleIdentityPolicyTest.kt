@@ -1,6 +1,7 @@
 package ml.melun.mangaview.reader
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -47,6 +48,42 @@ class NtkVisibleIdentityPolicyTest {
                     identity("/manhwa/1/11", 1, digest = DIGEST_B, count = 4, asset = "b1")
                 ),
                 launch
+            )
+        )
+    }
+
+    @Test
+    fun attributesTraversalOnlyToTheRequestedEpisodeAcrossPhysicalBoundary() {
+        val resumeAssets = (0..7).map { index -> "resume-$index" }
+        val resumeLaunch = NtkVisibleIdentityPolicy.LaunchManifest(
+            episodePath = "/webtoon/12868/1346337",
+            manifestDigest = DIGEST_A,
+            canonicalAssets = resumeAssets
+        )
+        val boundary = listOf(
+            NtkVisibleIdentityPolicy.Identity(
+                resumeLaunch.episodePath,
+                7,
+                resumeAssets[7],
+                DIGEST_A,
+                resumeAssets.size
+            ),
+            identity("/webtoon/12868/1348822", 0, digest = DIGEST_B, count = 8, asset = "next-0")
+        )
+
+        assertTrue(NtkVisibleIdentityPolicy.isValid(boundary, resumeLaunch))
+        assertEquals(
+            listOf(7),
+            NtkVisibleIdentityPolicy.traversalSourceIndexesForEpisode(
+                boundary,
+                resumeLaunch.episodePath
+            )
+        )
+        assertEquals(
+            listOf(0),
+            NtkVisibleIdentityPolicy.traversalSourceIndexesForEpisode(
+                boundary,
+                "/webtoon/12868/1348822"
             )
         )
     }

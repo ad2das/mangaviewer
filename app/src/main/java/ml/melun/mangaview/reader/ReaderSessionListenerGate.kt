@@ -376,6 +376,44 @@ class ReaderSessionListenerGate(
         if (active()) downstream.onPagesAppended(count)
     }
 
+    override fun onAdjacentExactP0HeadReady(
+        publication: NtkAdjacentExactP0HeadPublication,
+    ): Boolean = active() && downstream.onAdjacentExactP0HeadReady(publication)
+
+    override fun onAdjacentExactP0TailReady(
+        delta: NtkAdjacentExactP0Delta,
+    ): Boolean = active() && downstream.onAdjacentExactP0TailReady(delta)
+
+    override fun onAdjacentExactRunwayBatchReady(
+        publication: NtkAdjacentExactRunwayBatchPublication,
+    ): Boolean {
+        if (!active() ||
+            adopted.policy != AdoptedDrawableRegistry.Policy.FIRST_VALID_FULL_QUALITY_TILE
+        ) return false
+        if (!downstream.onAdjacentExactRunwayBatchReady(publication)) return false
+        publication.pages.forEach { page ->
+            val identity = AdoptedDrawableIdentity.fullQualityTiles(
+                page.pageWidth,
+                page.pageHeight,
+                page.tiles,
+            ) ?: return false
+            if (!adopted.replaceWithCurrentAuthoritative(
+                    page.displayPageIndex,
+                    DrawableOrigin.READER_SESSION,
+                    identity,
+                )
+            ) return false
+        }
+        return publication.pages.all { page ->
+            downstream.isPageAuthoritativeDrawableInstalled(
+                page.displayPageIndex,
+                page.pageWidth,
+                page.pageHeight,
+                page.tiles,
+            )
+        }
+    }
+
     override fun onPagesPrepended(count: Int, insertedCount: Int, holdUntilReadyCount: Int) {
         if (!active()) return
         adopted.onPagesPrepended(insertedCount)

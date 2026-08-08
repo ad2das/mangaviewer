@@ -24,6 +24,26 @@ internal object NtkVisibleIdentityPolicy {
         val canonicalAssets: List<String>
     )
 
+    /**
+     * Returns only the source indexes owned by one episode from a validated physical viewport.
+     *
+     * A boundary frame deliberately retains both the launch tail and adjacent p0 identities so
+     * presentation/readiness evidence can be published for the next episode. Traversal coverage,
+     * however, belongs to one manifest and must never reinterpret adjacent p0 as launch source 0.
+     */
+    fun traversalSourceIndexesForEpisode(
+        identities: List<Identity>,
+        episodePath: String
+    ): List<Int> {
+        if (episodePath.isBlank()) return emptyList()
+        return identities.asSequence()
+            .filter { identity -> identity.episodePath == episodePath }
+            .map { identity -> identity.sourcePageIndex }
+            .distinct()
+            .sorted()
+            .toList()
+    }
+
     fun isValid(
         identities: List<Identity>,
         launch: LaunchManifest

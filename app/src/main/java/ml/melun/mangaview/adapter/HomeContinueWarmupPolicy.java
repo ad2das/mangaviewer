@@ -4,14 +4,16 @@ final class HomeContinueWarmupPolicy {
     private HomeContinueWarmupPolicy() {
     }
 
-    static int visibleContinueWarmupLimit(boolean dataSave, boolean ntkSite) {
-        // One NTK episode already fills the native reader's useful preparation window.
-        // Preparing adjacent continue cards launches full manifest/image work (and, on an
-        // explicit server challenge, a WebView fallback) that competes with the episode the
-        // user is actually opening. Keep the selected/top continue immediately ready and do
-        // not spend the same cold-start budget on off-screen NTK episodes.
+    static int visibleContinueWarmupLimit(boolean dataSave,
+                                          boolean ntkSite,
+                                          boolean directWifiTransport) {
+        // On the direct-Wi-Fi NTK path a continue card can resume near the tail, but this home
+        // warmup starts at p001 and may attach a WebView fallback before the user clicks. Besides
+        // fetching pages behind the saved position, that WebView can stall the home HWUI frame
+        // and delay delivery of the click itself. ReaderV2 owns the saved-position-first strict
+        // fetch after the committed click. Keep the cellular/SNI policy unchanged.
         if(ntkSite)
-            return 1;
+            return directWifiTransport ? 0 : 1;
         return dataSave ? 1 : 3;
     }
 
@@ -19,8 +21,10 @@ final class HomeContinueWarmupPolicy {
         return 0L;
     }
 
-    static int visibleContinueWarmupLimitForTest(boolean dataSave, boolean ntkSite) {
-        return visibleContinueWarmupLimit(dataSave, ntkSite);
+    static int visibleContinueWarmupLimitForTest(boolean dataSave,
+                                                 boolean ntkSite,
+                                                 boolean directWifiTransport) {
+        return visibleContinueWarmupLimit(dataSave, ntkSite, directWifiTransport);
     }
 
     static long visibleHomeWarmupDelayMsForTest(boolean dataSave) {
