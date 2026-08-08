@@ -625,7 +625,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
     }
 
     private fun enterForegroundNetworkIfNeeded(flight: Flight) {
-        synchronized(flight) {
+        val entered = synchronized(flight) {
             if (flight.foregroundNetworkEntered.get()) return
             if (flight.networkOwnershipRetiring.get() ||
                 flight.retirement.isRetired() ||
@@ -640,10 +640,36 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     flight.episodePath,
                     flight.viewerGeneration,
                 )
-                flight.client.cancelNtkWebViewFallbacks()
+                true
             } catch (failure: Throwable) {
                 flight.foregroundNetworkEntered.set(false)
                 throw failure
+            }
+        }
+        if (!entered) return
+        try {
+            // WebView teardown is marshalled to main and may wait for that callback. Never retain
+            // the flight monitor across this compatibility barrier: the main thread can be behind
+            // the ReaderControl body-gate release, which owns the same monitor briefly. Holding it
+            // here creates a deterministic two-second lock inversion on short resume tails.
+            flight.client.cancelNtkWebViewFallbacks()
+        } catch (failure: Throwable) {
+            flight.client.leaveNtkStrictForegroundNetwork(
+                flight.episodePath,
+                flight.viewerGeneration,
+            )
+            synchronized(flight) {
+                flight.foregroundNetworkEntered.set(false)
+            }
+            throw failure
+        }
+        synchronized(flight) {
+            if (flight.networkOwnershipRetiring.get() ||
+                flight.retirement.isRetired() ||
+                flights[flight.episodePath] !== flight ||
+                !isViewerOwnerActive(flight)
+            ) {
+                throw InterruptedIOException("Viewer ownership retired during foreground enter")
             }
         }
     }

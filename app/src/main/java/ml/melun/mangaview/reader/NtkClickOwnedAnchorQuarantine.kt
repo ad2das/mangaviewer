@@ -1,6 +1,7 @@
 package ml.melun.mangaview.reader
 
 import android.content.Context
+import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -914,6 +915,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     private val capturedDirectWifiNetworkHandle = runCatching {
         getHttpClient().getNtkDirectWifiNetwork()?.networkHandle
     }.getOrNull()
+    private val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+        Build.FINGERPRINT,
+        Build.MODEL,
+        Build.HARDWARE,
+        Build.PRODUCT,
+    )
     private val predecessorPhysicalEvidence:
         CompletableFuture<NtkDirectWifiPredecessorPhysicalExtensionRegistry.Evidence?> =
         if (directWifiAdjacentOwned) {
@@ -2255,11 +2262,28 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
             effectivePageCount.get(),
         )
-        val previousPage = NtkClickOwnedManhwaWavePolicy.previousWarmAdjacentReplicaPage(
+        val warmPreviousPage = NtkClickOwnedManhwaWavePolicy.previousWarmAdjacentReplicaPage(
             runwayPageIndex,
             runwayPageCount,
             predecessorWarmHosts,
         )
+        val parallelHostGpuFollower = NtkClickOwnedManhwaWavePolicy
+            .shouldParallelizeHostGpuAdjacentFollower(
+                hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+                directWifiAdjacentOwned = directWifiAdjacentOwned,
+                runwayPageIndex = runwayPageIndex,
+                runwayPageCount = runwayPageCount,
+                previousWarmPage = warmPreviousPage,
+            )
+        val previousPage = warmPreviousPage.takeUnless { parallelHostGpuFollower }
+        if (parallelHostGpuFollower) {
+            Log.d(
+                TAG,
+                "click_adjacent_host_gpu_follower_parallel " +
+                    "path=${plan.normalizedEpisodePath},page=$runwayPageIndex," +
+                    "previous=$warmPreviousPage,host=$host",
+            )
+        }
         synchronized(inheritedAdjacentPageReleases) {
             val release = inheritedAdjacentPageReleases.computeIfAbsent(runwayPageIndex) {
                 CompletableFuture()

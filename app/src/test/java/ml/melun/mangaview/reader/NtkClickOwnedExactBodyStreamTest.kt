@@ -214,6 +214,23 @@ class NtkClickOwnedExactBodyStreamTest {
         assertEquals(2, policy.previousWarmAdjacentReplicaPage(1, 4, warm))
         assertEquals(null, policy.previousWarmAdjacentReplicaPage(2, 4, warm))
         assertEquals(0, policy.previousWarmAdjacentReplicaPage(3, 4, warm))
+        fun parallel(
+            emulator: Boolean = true,
+            adjacent: Boolean = true,
+            page: Int = 3,
+            previous: Int? = 0,
+        ) = policy.shouldParallelizeHostGpuAdjacentFollower(
+            hostGpuEmulatorRuntime = emulator,
+            directWifiAdjacentOwned = adjacent,
+            runwayPageIndex = page,
+            runwayPageCount = 4,
+            previousWarmPage = previous,
+        )
+        assertTrue(parallel())
+        assertFalse(parallel(emulator = false))
+        assertFalse(parallel(adjacent = false))
+        assertFalse(parallel(page = 2, previous = null))
+        assertFalse(parallel(page = 0, previous = null))
         assertEquals(null, policy.preferredWarmAdjacentReplicaHost(0, emptyList()))
         assertEquals(
             null,
@@ -267,6 +284,9 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(inherited.contains("val inheritedFollower = !inheritedHostHandoff.first.isDone"))
         assertTrue(inherited.contains("Executor { runnable -> runnable.run() }"))
         assertTrue(inherited.contains("click_adjacent_inherited_host_reuse_handoff"))
+        assertTrue(inherited.contains("shouldParallelizeHostGpuAdjacentFollower("))
+        assertTrue(inherited.contains("warmPreviousPage.takeUnless { parallelHostGpuFollower }"))
+        assertTrue(inherited.contains("click_adjacent_host_gpu_follower_parallel"))
         assertFalse(inherited.contains("rememberNtkDirectWifiOrdinaryManhwaEpisode"))
         assertTrue(inherited.contains("startResolvedCandidate(pageIndex, candidate)"))
         assertFalse(inherited.contains("NtkAuthoritativeManifest"))

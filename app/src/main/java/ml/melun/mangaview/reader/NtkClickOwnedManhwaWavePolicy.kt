@@ -248,6 +248,28 @@ internal object NtkClickOwnedManhwaWavePolicy {
     }
 
     /**
+     * A host-GPU emulator can reach a very short resumed tail before a same-host p3 follower gets
+     * the p0 H1 connection back. Current bodies are already complete at this adjacent-only gate, so
+     * admit that one existing GET on another pooled H1 connection instead of serializing the four
+     * atomic runway bodies. This changes neither the candidate nor the number of physical requests.
+     */
+    fun shouldParallelizeHostGpuAdjacentFollower(
+        hostGpuEmulatorRuntime: Boolean,
+        directWifiAdjacentOwned: Boolean,
+        runwayPageIndex: Int,
+        runwayPageCount: Int,
+        previousWarmPage: Int?,
+    ): Boolean {
+        require(runwayPageCount > 0)
+        require(runwayPageIndex in 0 until runwayPageCount)
+        return hostGpuEmulatorRuntime &&
+            directWifiAdjacentOwned &&
+            runwayPageIndex < DIRECT_EXTENSION_RACE_PAGES &&
+            previousWarmPage != null &&
+            previousWarmPage in 0 until runwayPageIndex
+    }
+
+    /**
      * Prioritizes only an already HEAD-proven uncommon body needed by the current Wi-Fi viewport.
      *
      * This does not authorize another candidate race or body transfer. The caller merely chooses

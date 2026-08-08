@@ -796,6 +796,18 @@ class NtkColdRendererPreparationArchitectureTest {
         assertFalse(completionGateRelease.contains("flight.directWifiAdjacentBodyGate"))
         assertTrue(foregroundEntry.contains("synchronized(flight)"))
         assertTrue(foregroundEntry.contains("flight.networkOwnershipRetiring.get()"))
+        val foregroundMonitorStart = foregroundEntry.indexOf("val entered = synchronized(flight) {")
+        val foregroundMonitorExit = foregroundEntry.indexOf("if (!entered) return")
+        val compatibilityCancel = foregroundEntry.indexOf("flight.client.cancelNtkWebViewFallbacks()")
+        assertTrue(foregroundMonitorStart >= 0)
+        assertTrue(foregroundMonitorExit > foregroundMonitorStart)
+        assertTrue(
+            compatibilityCancel > foregroundMonitorExit
+        )
+        assertTrue(
+            foregroundEntry.indexOf("Viewer ownership retired during foreground enter") >
+                compatibilityCancel
+        )
         assertTrue(strictDiscoveryStart.contains("val explicitPredecessorPath ="))
         assertTrue(
             strictDiscoveryStart.contains(
