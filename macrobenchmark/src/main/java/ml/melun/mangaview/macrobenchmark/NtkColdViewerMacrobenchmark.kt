@@ -2129,6 +2129,10 @@ class NtkColdViewerMacrobenchmark {
                 nonce = intent.getStringExtra(P0_SIGNAL_EXTRA_NONCE).orEmpty(),
                 caseId = intent.getStringExtra(P0_SIGNAL_EXTRA_CASE_ID).orEmpty(),
                 episodePath = intent.getStringExtra(P0_SIGNAL_EXTRA_EPISODE_PATH).orEmpty(),
+                adjacentWorkStartedAtNanos = intent.getLongExtra(
+                    P0_SIGNAL_EXTRA_ADJACENT_WORK_STARTED_AT_NANOS,
+                    0L,
+                ),
                 readyAtNanos = intent.getLongExtra(
                     P0_SIGNAL_EXTRA_RUNWAY_READY_AT_NANOS,
                     0L,
@@ -3468,6 +3472,8 @@ class NtkColdViewerMacrobenchmark {
         const val P0_SIGNAL_EXTRA_PHASE = "phase"
         const val P0_SIGNAL_EXTRA_MOTION_ENDED_AT_NANOS = "motionEndedAtNanos"
         const val P0_SIGNAL_EXTRA_RUNWAY_READY_AT_NANOS = "runwayReadyAtNanos"
+        const val P0_SIGNAL_EXTRA_ADJACENT_WORK_STARTED_AT_NANOS =
+            "adjacentWorkStartedAtNanos"
         const val P0_SIGNAL_EXTRA_RUNWAY_PAGE_COUNT = "runwayPageCount"
         const val P0_SIGNAL_EXTRA_TOTAL_PAGE_COUNT = "totalPageCount"
         const val P0_SIGNAL_EXTRA_SEMANTIC_PUBLISHED_AT_NANOS =

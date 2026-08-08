@@ -759,7 +759,12 @@ public final class ViewerTelemetry {
             session.adjacentTotalPageCount = totalPageCount;
         }
         BenchmarkAdjacentCommitSignal.publishRunwayReady(
-                targetEpisode, pageCount, totalPageCount, now, session.generation);
+                targetEpisode,
+                pageCount,
+                totalPageCount,
+                session.adjacentWorkStartedAtNanos,
+                now,
+                session.generation);
         event("adjacent_runway_ready", session,
                 "targetEpisode=" + targetEpisode
                         + ",pageCount=" + pageCount

@@ -31,6 +31,8 @@ public final class BenchmarkAdjacentCommitSignal {
             "forwardBoundaryReachedAtNanos";
     public static final String EXTRA_MOTION_ENDED_AT_NANOS = "motionEndedAtNanos";
     public static final String EXTRA_RUNWAY_READY_AT_NANOS = "runwayReadyAtNanos";
+    public static final String EXTRA_ADJACENT_WORK_STARTED_AT_NANOS =
+            "adjacentWorkStartedAtNanos";
     public static final String EXTRA_RUNWAY_PAGE_COUNT = "runwayPageCount";
     public static final String EXTRA_TOTAL_PAGE_COUNT = "totalPageCount";
     public static final String PHASE_PHYSICAL_COMMIT = "PHYSICAL_COMMIT";
@@ -204,6 +206,7 @@ public final class BenchmarkAdjacentCommitSignal {
             String episodePath,
             int pageCount,
             int totalPageCount,
+            long adjacentWorkStartedAtNanos,
             long readyAtNanos,
             long viewerGeneration) {
         Config current = config;
@@ -211,6 +214,8 @@ public final class BenchmarkAdjacentCommitSignal {
         String normalizedPath = clean(episodePath);
         if(current == null || context == null
                 || pageCount != REQUIRED_RUNWAY_PAGES || totalPageCount < pageCount
+                || adjacentWorkStartedAtNanos <= 0L
+                || adjacentWorkStartedAtNanos > readyAtNanos
                 || readyAtNanos <= 0L || viewerGeneration <= 0L
                 || !current.expectedEpisodePath.equals(normalizedPath)
                 || !RUNWAY_READY_SENT.compareAndSet(false, true)) {
@@ -223,6 +228,7 @@ public final class BenchmarkAdjacentCommitSignal {
                 .putExtra(EXTRA_NONCE, current.nonce)
                 .putExtra(EXTRA_CASE_ID, current.caseId)
                 .putExtra(EXTRA_EPISODE_PATH, normalizedPath)
+                .putExtra(EXTRA_ADJACENT_WORK_STARTED_AT_NANOS, adjacentWorkStartedAtNanos)
                 .putExtra(EXTRA_RUNWAY_READY_AT_NANOS, readyAtNanos)
                 .putExtra(EXTRA_RUNWAY_PAGE_COUNT, pageCount)
                 .putExtra(EXTRA_TOTAL_PAGE_COUNT, totalPageCount)

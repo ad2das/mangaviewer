@@ -34,6 +34,7 @@ public final class BenchmarkAdjacentCommitSignal {
             String episodePath,
             int pageCount,
             int totalPageCount,
+            long adjacentWorkStartedAtNanos,
             long readyAtNanos,
             long viewerGeneration) {
     }

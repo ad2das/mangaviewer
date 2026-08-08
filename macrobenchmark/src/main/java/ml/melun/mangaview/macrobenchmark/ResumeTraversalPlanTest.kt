@@ -657,6 +657,7 @@ class ResumeTraversalPlanTest {
                 "adjacentTotalPageCount=0"
         )
 
+        assertEquals(1_050_000_000L, accumulator.snapshot.adjacentWorkStartedAtNanos)
         assertEquals(1_100_000_000L, accumulator.snapshot.adjacentRunwayReadyAtNanos)
         assertEquals("/next", accumulator.snapshot.adjacentRunwayTargetEpisode)
         assertEquals(4, accumulator.snapshot.adjacentRunwayPageCount)
@@ -893,6 +894,14 @@ class ResumeTraversalPlanTest {
         assertEquals(
             AdjacentP0IpcRejectReason.GENERATION,
             reject(expectedViewerGeneration = 2L),
+        )
+        assertEquals(
+            AdjacentP0IpcRejectReason.PRESENTED_TIMESTAMP,
+            reject(payload.copy(adjacentWorkStartedAtNanos = 0L)),
+        )
+        assertEquals(
+            AdjacentP0IpcRejectReason.PRESENTED_TIMESTAMP,
+            reject(payload.copy(adjacentWorkStartedAtNanos = payload.readyAtNanos + 1L)),
         )
         assertEquals(
             AdjacentP0IpcRejectReason.SENDER_TIMESTAMP,
@@ -1223,6 +1232,7 @@ class ResumeTraversalPlanTest {
         nonce = "0123456789abcdef0123456789abcdef",
         caseId = "case",
         episodePath = "/next",
+        adjacentWorkStartedAtNanos = 1_050_000_000L,
         readyAtNanos = 1_100_000_000L,
         pageCount = 4,
         totalPageCount = 22,

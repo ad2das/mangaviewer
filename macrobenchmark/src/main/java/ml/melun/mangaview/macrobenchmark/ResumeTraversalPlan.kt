@@ -449,10 +449,16 @@ internal class AdjacentForwardEvidenceAccumulator(
 
     fun observeExactRunwayReadyIpc(payload: AdjacentRunwayReadyIpcPayload) {
         if (payload.episodePath != expectedAdjacentEpisodePath ||
+            payload.adjacentWorkStartedAtNanos <= 0L ||
+            payload.adjacentWorkStartedAtNanos > payload.readyAtNanos ||
             payload.readyAtNanos <= 0L || payload.pageCount != 4 ||
             payload.totalPageCount < payload.pageCount
         ) return
         current = current.copy(
+            adjacentWorkStartedAtNanos = earliestPositive(
+                current.adjacentWorkStartedAtNanos,
+                payload.adjacentWorkStartedAtNanos,
+            ),
             adjacentRunwayReadyAtNanos = earliestPositive(
                 current.adjacentRunwayReadyAtNanos,
                 payload.readyAtNanos,
@@ -772,6 +778,7 @@ internal data class AdjacentRunwayReadyIpcPayload(
     val nonce: String,
     val caseId: String,
     val episodePath: String,
+    val adjacentWorkStartedAtNanos: Long,
     val readyAtNanos: Long,
     val pageCount: Int,
     val totalPageCount: Int,
@@ -798,6 +805,9 @@ internal object AdjacentRunwayReadyIpcSignalPolicy {
         payload.viewerGeneration <= 0L ||
             expectedViewerGeneration?.let { payload.viewerGeneration != it } == true ->
             AdjacentP0IpcRejectReason.GENERATION
+        payload.adjacentWorkStartedAtNanos <= 0L ||
+            payload.adjacentWorkStartedAtNanos > payload.readyAtNanos ->
+            AdjacentP0IpcRejectReason.PRESENTED_TIMESTAMP
         payload.readyAtNanos <= 0L -> AdjacentP0IpcRejectReason.PRESENTED_TIMESTAMP
         payload.senderAtNanos < payload.readyAtNanos ->
             AdjacentP0IpcRejectReason.SENDER_TIMESTAMP
