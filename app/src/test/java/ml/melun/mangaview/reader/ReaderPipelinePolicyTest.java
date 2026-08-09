@@ -165,6 +165,23 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void shortExactTerminalTailIsActualOnlyForTheNaturalHeightShortfall() {
+        assertTrue(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                true, 2340, 820, 820, "viewportShort|drawableShort"));
+
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                false, 2340, 820, 820, "viewportShort|drawableShort"));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                true, 2340, 820, 819, "viewportShort|drawableShort"));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                true, 2340, 820, 820, "viewportShort|drawableShort|missing"));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                true, 2340, 820, 820, "viewportShort|drawableShort|card"));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                true, 2340, 2340, 2340, ""));
+    }
+
+    @Test
     public void autoCutDisplayIndexesNeverReplaceCanonicalSourceIndexes() {
         StrictRollingAdmission initial = StrictRollingAdmission.initial(20);
         StrictRollingAdmission splitDisplay = StrictRollingAdmission.update(

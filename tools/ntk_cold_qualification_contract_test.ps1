@@ -289,7 +289,7 @@ if(-not $source.Contains('function Get-StableRandomEpisodePairRanking',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('"imageMetas":\[(?<items>.*?)\],"imagesToken"',
             [StringComparison]::Ordinal) -or
-        -not $source.Contains('$expectedAdjacentPageCount -lt 4',
+        -not $source.Contains('$expectedAdjacentPageCount -lt 5',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$statusCode -eq 404 -or $statusCode -eq 410',
             [StringComparison]::Ordinal) -or
@@ -297,7 +297,7 @@ if(-not $source.Contains('function Get-StableRandomEpisodePairRanking',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('"CLEARLY_UNAVAILABLE"',
             [StringComparison]::Ordinal)) {
-    throw "Random work/pair selection must hash-rank exact current-next identities, retain canonical evidence, prove four adjacent pages, and avoid image bodies"
+    throw "Random work/pair selection must hash-rank exact current-next identities, retain canonical evidence, prove five adjacent pages, and avoid image bodies"
 }
 if(-not $source.Contains('Replay exact episode pair mismatch for',
         [StringComparison]::Ordinal) -or
@@ -347,7 +347,7 @@ $schemaFixture = [pscustomobject][ordered]@{
         currentPageCount = 8
         nextEpisodeId = "101"
         nextEpisodePath = "/webtoon/fixture-work/101"
-        nextEpisodePageCount = 4
+        nextEpisodePageCount = 5
         pairSelectionHash = $fixturePairSelectionHash
         pairRankOrdinal = 1
         pairCandidateCount = 3
@@ -426,7 +426,7 @@ $schemaFixture = [pscustomobject][ordered]@{
         episodeId = "100"
         episodePath = "/webtoon/fixture-work/100"
         expectedAdjacentEpisodePath = "/webtoon/fixture-work/101"
-        expectedAdjacentPageCount = 4
+        expectedAdjacentPageCount = 5
         passed = $false
         measurementInvalid = $false
         measurementInvalidReason = $null
@@ -580,12 +580,10 @@ if(-not $macroSource.Contains(
         -not $resumePlanSource.Contains(
             'runwayDrawableCount == requiredRunwayPageCount',
             [StringComparison]::Ordinal) -or
-        -not $macroSource.Contains('ADJACENT_P0_SEAM_SLA_MS = 250L',
-            [StringComparison]::Ordinal) -or
         -not $macroSource.Contains('MAX_INPUT_INTER_GESTURE_GAP_MS = 64L',
             [StringComparison]::Ordinal) -or
         -not $macroSource.Contains(
-            'requireReaderRateInput(inputMetrics, "resume-through-adjacent-p3")',
+            'requireReaderRateInput(inputMetrics, "resume-through-adjacent-p4")',
             [StringComparison]::Ordinal) -or
         -not $macroSource.Contains('inputMetrics.gestureCount > gesturesAtP0Signal',
             [StringComparison]::Ordinal) -or
@@ -597,7 +595,7 @@ if(-not $macroSource.Contains(
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$requiredAdjacentRunwayPages = 4',
             [StringComparison]::Ordinal) -or
-        -not $source.Contains('$ProductionMaxAdjacentP0SeamMs = 250.0',
+        -not $source.Contains('$requiredAdjacentPhysicalPages = 5',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$ProductionMaxP0DetectionLagMs = 240.0',
             [StringComparison]::Ordinal) -or
@@ -605,7 +603,7 @@ if(-not $macroSource.Contains(
             [StringComparison]::Ordinal) -or
         -not $source.Contains('"adjacentObservedRunwayDrawableCount"',
             [StringComparison]::Ordinal)) {
-    throw "Forward-adjacent qualification is not fail-closed on physical p0-p3/IPC/input timing"
+    throw "Forward-adjacent qualification is not fail-closed on unordered physical p0-p4/IPC/input timing"
 }
 if($macroSource.Contains('ADJACENT_BOUNDARY_WAIT_SLA_MS', [StringComparison]::Ordinal) -or
         $source.Contains('adjacentBoundaryWaitMs', [StringComparison]::Ordinal) -or
@@ -721,11 +719,11 @@ foreach($adjacentField in @(
         throw "Qualification case summary does not copy adjacent evidence: $adjacentField"
     }
 }
-if([double]$passedCaseProperties.adjacentP0SeamMs.maximum -ne 250.0 -or
+if($passedCaseProperties.adjacentP0SeamMs.PSObject.Properties.Name -contains "maximum" -or
         [string]$passedCaseProperties.classification.const -cne "VALID" -or
         [string]$passedCaseProperties.adjacentPhysicallyObservedSources.const -cne
-            "0,1,2,3" -or
-        [int]$passedCaseProperties.adjacentLastSourceIndex.const -ne 3 -or
+            "0,1,2,3,4" -or
+        [int]$passedCaseProperties.adjacentLastSourceIndex.maximum -ne 4 -or
         $passedCaseProperties.adjacentPhysicalRunwayPassed.const -ne $true -or
         [int]$passedCaseProperties.inputMaxInterGestureGapMs.maximum -ne 64 -or
         [double]$passedCaseProperties.p0DetectionLagMs.maximum -ne 240.0 -or
@@ -737,16 +735,16 @@ if([double]$passedCaseProperties.adjacentP0SeamMs.maximum -ne 250.0 -or
         [string]$passedCaseProperties.p0IpcFirstRejectReason.const -cne "NONE" -or
         $passedCaseProperties.p0IpcTimestampCrossCheckPassed.const -ne $true -or
         $passedCaseProperties.adjacentSourceProgressPassed.const -ne $true -or
-        [int]$passedCaseProperties.adjacentSourcePresentedAtNanos.minItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourcePresentedAtNanos.maxItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceIpcAcceptedAtNanos.minItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceIpcAcceptedAtNanos.maxItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceSemanticObservedAtNanos.minItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceSemanticObservedAtNanos.maxItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceSemanticEventPublishedAtNanos.minItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceSemanticEventPublishedAtNanos.maxItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceSemanticCallbackAtNanos.minItems -ne 4 -or
-        [int]$passedCaseProperties.adjacentSourceSemanticCallbackAtNanos.maxItems -ne 4 -or
+        [int]$passedCaseProperties.adjacentSourcePresentedAtNanos.minItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourcePresentedAtNanos.maxItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceIpcAcceptedAtNanos.minItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceIpcAcceptedAtNanos.maxItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticObservedAtNanos.minItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticObservedAtNanos.maxItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticEventPublishedAtNanos.minItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticEventPublishedAtNanos.maxItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticCallbackAtNanos.minItems -ne 5 -or
+        [int]$passedCaseProperties.adjacentSourceSemanticCallbackAtNanos.maxItems -ne 5 -or
         @($passedCaseProperties.adjacentSourceSemanticObserverModes.items.enum) -cnotcontains
             "ACCESSIBILITY_EVENT_TIME" -or
         @($passedCaseProperties.adjacentSourceSemanticObserverModes.items.enum) -cnotcontains
@@ -757,7 +755,7 @@ if([double]$passedCaseProperties.adjacentP0SeamMs.maximum -ne 250.0 -or
             "CALLBACK_FLOOR" -or
         $passedCaseProperties.allImagesEvidenceConflict.const -ne $false -or
         $passedCaseProperties.measurementInvalid.const -ne $false) {
-    throw "Passed-case schema weakened the physical p0-p3/IPC/input contract"
+    throw "Passed-case schema weakened the unordered physical p0-p4/IPC/input contract"
 }
 foreach($frameField in @(
         "activePresentedFrameCount",
@@ -801,10 +799,10 @@ if(-not $source.Contains(
     throw "Generated Macrobenchmark reproduction command omitted mandatory adjacent identity proof"
 }
 if(-not $reportSource.Contains(
-        'exact four-drawable forward-adjacent proof missing',
+        'exact five-page forward-adjacent proof missing',
         [StringComparison]::Ordinal) -or
         -not $reportSource.Contains(
-            'forward-adjacent p0-p3 physical runway proof missing',
+            'forward-adjacent p0-p4 physical proof missing',
             [StringComparison]::Ordinal) -or
         -not $reportSource.Contains(
             'forward-adjacent p0 seam timing proof failed',
@@ -815,7 +813,7 @@ if(-not $reportSource.Contains(
         -not $reportSource.Contains(
             'resume-to-next physical input cadence contract failed',
             [StringComparison]::Ordinal)) {
-    throw "Final report does not recompute the physical p0-p3/IPC/input contract"
+    throw "Final report does not recompute the unordered physical p0-p4/IPC/input contract"
 }
 foreach($classificationContractToken in @(
         '"PRODUCT_INVALID" {',

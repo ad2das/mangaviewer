@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Benchmark-build-only, one-shot-per-source exact p0-p3 signal to Macrobenchmark. */
+/** Benchmark-build-only, one-shot-per-source exact p0-p4 signal to Macrobenchmark. */
 public final class BenchmarkAdjacentCommitSignal {
     public static final String PREFS_NAME = "ntk_benchmark_adjacent_commit_signal";
     public static final String ACTION_PREFIX =
@@ -45,12 +45,13 @@ public final class BenchmarkAdjacentCommitSignal {
     public static final String PREF_EXPECTED_EPISODE_PATH = "expectedEpisodePath";
 
     private static final String TAG = "BenchmarkP0Signal";
-    private static final int REQUIRED_RUNWAY_PAGES = 4;
+    private static final int REQUIRED_PHYSICAL_PAGES = 5;
+    private static final int PREPARED_RUNWAY_PAGES = 4;
     private static final AtomicInteger SENT_MASK = new AtomicInteger(0);
     private static final AtomicInteger SEMANTIC_SENT_MASK = new AtomicInteger(0);
     private static final AtomicBoolean RUNWAY_READY_SENT = new AtomicBoolean(false);
     private static final AtomicLong LAST_MOTION_IDLE_AT_NANOS = new AtomicLong(0L);
-    private static final long[] PRESENTED_AT_NANOS = new long[REQUIRED_RUNWAY_PAGES];
+    private static final long[] PRESENTED_AT_NANOS = new long[REQUIRED_PHYSICAL_PAGES];
     private static volatile Context applicationContext;
     private static volatile Config config;
 
@@ -97,7 +98,7 @@ public final class BenchmarkAdjacentCommitSignal {
         Context context = applicationContext;
         String normalizedPath = clean(episodePath);
         if(current == null || context == null || sourceIndex < 0
-                || sourceIndex >= REQUIRED_RUNWAY_PAGES
+                || sourceIndex >= REQUIRED_PHYSICAL_PAGES
                 || presentedAtNanos <= 0L || viewerGeneration <= 0L
                 || !current.expectedEpisodePath.equals(normalizedPath)) {
             return;
@@ -152,7 +153,7 @@ public final class BenchmarkAdjacentCommitSignal {
         Context context = applicationContext;
         String normalizedPath = clean(episodePath);
         if(current == null || context == null || sourceIndex < 0
-                || sourceIndex >= REQUIRED_RUNWAY_PAGES
+                || sourceIndex >= REQUIRED_PHYSICAL_PAGES
                 || presentedAtNanos <= 0L || viewerGeneration <= 0L
                 || !current.expectedEpisodePath.equals(normalizedPath)) {
             return;
@@ -198,9 +199,9 @@ public final class BenchmarkAdjacentCommitSignal {
     }
 
     /**
-     * Publishes the exact app-owned instant when p0-p3 have all reached drawable residency.
+     * Publishes the exact app-owned instant when the prepared p0-p3 runway reaches residency.
      * This phase is independent from accessibility frame coalescing and never proves that a page
-     * was physically shown; the physical p0-p3 phases retain that responsibility.
+     * was physically shown; the independent physical p0-p4 phases retain that responsibility.
      */
     public static void publishRunwayReady(
             String episodePath,
@@ -213,7 +214,7 @@ public final class BenchmarkAdjacentCommitSignal {
         Context context = applicationContext;
         String normalizedPath = clean(episodePath);
         if(current == null || context == null
-                || pageCount != REQUIRED_RUNWAY_PAGES || totalPageCount < pageCount
+                || pageCount != PREPARED_RUNWAY_PAGES || totalPageCount < pageCount
                 || adjacentWorkStartedAtNanos <= 0L
                 || adjacentWorkStartedAtNanos > readyAtNanos
                 || readyAtNanos <= 0L || viewerGeneration <= 0L

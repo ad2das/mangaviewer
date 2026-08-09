@@ -413,7 +413,7 @@
         "nextEpisodeId": { "type": "string", "minLength": 1 },
         "nextEpisodePath": { "type": "string", "pattern": "^/(webtoon|manhwa)/[^/]+/[^/]+$" },
         "currentPageCount": { "type": "integer", "minimum": 1 },
-        "nextEpisodePageCount": { "type": "integer", "minimum": 4 },
+        "nextEpisodePageCount": { "type": "integer", "minimum": 5 },
         "pairSelectionHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "pairRankOrdinal": { "type": "integer", "minimum": 1 },
         "pairCandidateCount": { "type": "integer", "minimum": 1 }
@@ -521,50 +521,50 @@
         "adjacentSourcePresentedAtNanos": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": 0 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceIpcAcceptedAtNanos": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": 0 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceGesturesAtPresentation": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": -1 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceSemanticObservedAtNanos": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": 0 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceSemanticEventPublishedAtNanos": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": 0 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceSemanticEventLeadMs": {
           "type": ["array", "null"],
           "items": { "type": ["number", "null"] },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceSemanticCommitPublishedAtNanos": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": 0 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceSemanticCallbackAtNanos": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": 0 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceSemanticObserverModes": {
           "type": ["array", "null"],
@@ -572,14 +572,14 @@
             "type": "string",
             "enum": ["ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME", "UIAUTOMATOR_POLL_FALLBACK", "UNMEASURED"]
           },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceGesturesAtSemanticProof": {
           "type": ["array", "null"],
           "items": { "type": "integer", "minimum": -1 },
-          "minItems": 4,
-          "maxItems": 4
+          "minItems": 5,
+          "maxItems": 5
         },
         "adjacentSourceProgressPassed": { "type": ["boolean", "null"] },
         "adjacentSourceProgressFailure": { "type": ["string", "null"] },
@@ -956,77 +956,77 @@
               "inputMaxInjectionCallMs": { "type": "number", "minimum": 0 },
               "inputMaxInterGestureGapMs": { "type": "integer", "minimum": 0, "maximum": 64 },
               "expectedAdjacentEpisodePath": { "type": "string", "minLength": 1 },
-              "expectedAdjacentPageCount": { "type": "integer", "minimum": 4 },
+              "expectedAdjacentPageCount": { "type": "integer", "minimum": 5 },
               "adjacentRunwayTargetEpisode": { "type": "string", "minLength": 1 },
               "adjacentRunwayPageCount": { "const": 4 },
-              "adjacentObservedRunwayDrawableCount": { "const": 4 },
-              "adjacentTotalPageCount": { "type": "integer", "minimum": 4 },
+              "adjacentObservedRunwayDrawableCount": { "const": 5 },
+              "adjacentTotalPageCount": { "type": "integer", "minimum": 5 },
               "adjacentTraversalGestureCount": { "type": "integer", "minimum": 1 },
               "adjacentP0TraversalGestureCount": { "type": "integer", "minimum": 0 },
               "adjacentRunwayTraversalGestureCount": { "type": "integer", "minimum": 0 },
-              "adjacentLastSourceIndex": { "const": 3 },
-              "adjacentPhysicallyObservedSources": { "const": "0,1,2,3" },
+              "adjacentLastSourceIndex": { "type": "integer", "minimum": 0, "maximum": 4 },
+              "adjacentPhysicallyObservedSources": { "const": "0,1,2,3,4" },
               "adjacentPhysicalRunwayPassed": { "const": true },
               "adjacentSourcePresentedAtNanos": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 1 }
               },
               "adjacentSourceIpcAcceptedAtNanos": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 1 }
               },
               "adjacentSourceGesturesAtPresentation": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 0 }
               },
               "adjacentSourceSemanticObservedAtNanos": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 1 }
               },
               "adjacentSourceSemanticEventPublishedAtNanos": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 0 }
               },
               "adjacentSourceSemanticEventLeadMs": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": ["number", "null"] }
               },
               "adjacentSourceSemanticCommitPublishedAtNanos": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 0 }
               },
               "adjacentSourceSemanticCallbackAtNanos": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 1 }
               },
               "adjacentSourceSemanticObserverModes": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": {
                   "enum": ["ACCESSIBILITY_EVENT_TIME", "CALLBACK_FLOOR", "SEMANTIC_COMMIT_TIME"]
                 }
               },
               "adjacentSourceGesturesAtSemanticProof": {
                 "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
+                "minItems": 5,
+                "maxItems": 5,
                 "items": { "type": "integer", "minimum": 0 }
               },
               "adjacentSourceProgressPassed": { "const": true },
@@ -1036,7 +1036,7 @@
               "forwardBoundaryReachedAtNanos": { "type": "integer", "minimum": 1 },
               "firstAdjacentActualAtNanos": { "type": "integer", "minimum": 1 },
               "firstAdjacentActualEpisode": { "type": "string", "minLength": 1 },
-              "adjacentP0SeamMs": { "type": "number", "minimum": 0, "maximum": 250 },
+              "adjacentP0SeamMs": { "type": "number", "minimum": 0 },
               "p0EmbeddedFirstAdjacentActualAtNanos": { "type": "integer", "minimum": 1 },
               "p0HarnessObservedAtNanos": { "type": "integer", "minimum": 1 },
               "p0GesturesAtObservation": { "type": "integer", "minimum": 0 },

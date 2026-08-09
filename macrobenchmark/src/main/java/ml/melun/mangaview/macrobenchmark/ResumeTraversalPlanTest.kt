@@ -36,21 +36,6 @@ class ResumeTraversalPlanTest {
     }
 
     @Test
-    fun laterSemanticNodeWaitsForTheMissingPhysicalSourceProof() {
-        assertTrue(AdjacentSemanticTraversalOrderPolicy.shouldDefer(
-            sourceIndex = 3,
-            observedSourceCount = 2,
-        ))
-        assertEquals(
-            false,
-            AdjacentSemanticTraversalOrderPolicy.shouldDefer(
-                sourceIndex = 2,
-                observedSourceCount = 2,
-            ),
-        )
-    }
-
-    @Test
     fun canonicalPercentsMapToForwardPageOrdinals() {
         assertEquals(5, ResumeTraversalPlan.resumePage(20, 25))
         assertEquals(10, ResumeTraversalPlan.resumePage(20, 50))
@@ -428,7 +413,7 @@ class ResumeTraversalPlanTest {
 
     @Test
     fun adjacentPageZeroStartsButCannotCompletePhysicalRunwayProof() {
-        val gate = AdjacentEpisodeProofGate("/next", 4)
+        val gate = AdjacentEpisodeProofGate("/next", 5, 4)
 
         val entry = gate.observe(
             actualEpisodePath = "/next",
@@ -456,7 +441,7 @@ class ResumeTraversalPlanTest {
 
     @Test
     fun runwayTelemetryCannotReplacePhysicalPages() {
-        val gate = AdjacentEpisodeProofGate("/next", 4)
+        val gate = AdjacentEpisodeProofGate("/next", 5, 4)
 
         val runwayOnly = gate.observe(
             actualEpisodePath = "/current",
@@ -508,16 +493,17 @@ class ResumeTraversalPlanTest {
     }
 
     @Test
-    fun eachP0ThroughP3MustBePhysicallyObservedToComplete() {
-        val gate = AdjacentEpisodeProofGate("/next", 4)
-        for (source in 0..3) {
+    fun eachP0ThroughP4CompletesRegardlessOfPresentationOrder() {
+        val gate = AdjacentEpisodeProofGate("/next", 5, 4)
+        val presentationOrder = listOf(0, 2, 4, 1, 3)
+        for ((ordinal, source) in presentationOrder.withIndex()) {
             val presentedAt = 1_000_000_000L + source * 1_000_000_000L
             val update = gate.observe(
                 actualEpisodePath = "/next",
                 actualSourceIndex = source,
                 adjacentTotalPageCount = 8,
-                adjacentRunwayPageCount = if (source == 3) 4 else 0,
-                adjacentRunwayTargetEpisode = if (source == 3) "/next" else "",
+                adjacentRunwayPageCount = if (source == 4) 4 else 0,
+                adjacentRunwayTargetEpisode = if (source == 4) "/next" else "",
                 firstAdjacentActualAtNanos = 10L,
                 firstAdjacentActualEpisode = "/next",
                 description = "next-p$source",
@@ -527,21 +513,21 @@ class ResumeTraversalPlanTest {
                 gesturesAtSemanticProof = source * 2,
             )
             assertEquals(source == 0, update.boundaryEnteredNow)
-            assertEquals(source == 3, update.complete)
+            assertEquals(ordinal == presentationOrder.lastIndex, update.complete)
         }
 
         assertTrue(gate.isComplete)
-        assertEquals(4, gate.runwayDrawableCount)
+        assertEquals(5, gate.runwayDrawableCount)
         assertEquals(4, gate.preparedRunwayPageCount)
-        assertEquals(listOf(0, 1, 2, 3), gate.observedSourceIndices)
+        assertEquals(listOf(0, 1, 2, 3, 4), gate.observedSourceIndices)
         assertEquals("next-p3", gate.runwayDescription)
     }
 
     @Test
     fun shortPagesPresentedInTheSameFrameStillCompleteExactRunwayProof() {
-        val gate = AdjacentEpisodeProofGate("/next", 4)
+        val gate = AdjacentEpisodeProofGate("/next", 5, 4)
         val sharedPresentedAt = 1_000_000_000L
-        for (source in 0..3) {
+        for (source in 0..4) {
             val update = gate.observe(
                 actualEpisodePath = "/next",
                 actualSourceIndex = source,
@@ -556,19 +542,19 @@ class ResumeTraversalPlanTest {
                 semanticObservedAtNanos = sharedPresentedAt + 10_000_000L,
                 gesturesAtSemanticProof = 12,
             )
-            assertEquals(source == 3, update.complete)
+            assertEquals(source == 4, update.complete)
         }
 
         assertTrue(gate.isComplete)
         assertTrue(gate.sourceProgressComplete)
-        assertEquals(listOf(0, 1, 2, 3), gate.observedSourceIndices)
-        assertEquals(List(4) { sharedPresentedAt }, gate.presentedTimestamps)
+        assertEquals(listOf(0, 1, 2, 3, 4), gate.observedSourceIndices)
+        assertEquals(List(5) { sharedPresentedAt }, gate.presentedTimestamps)
     }
 
     @Test
     fun skippedPhysicalPageCannotBeFilledByPreparedTelemetry() {
-        val gate = AdjacentEpisodeProofGate("/next", 4)
-        for (source in listOf(0, 1, 3)) {
+        val gate = AdjacentEpisodeProofGate("/next", 5, 4)
+        for (source in listOf(0, 1, 3, 4)) {
             val presentedAt = 1_000_000_000L + source * 1_000_000_000L
             gate.observe(
                 actualEpisodePath = "/next",
@@ -587,10 +573,10 @@ class ResumeTraversalPlanTest {
         }
 
         assertTrue(!gate.isComplete)
-        assertEquals(2, gate.runwayDrawableCount)
+        assertEquals(4, gate.runwayDrawableCount)
         assertEquals(4, gate.preparedRunwayPageCount)
-        assertEquals(listOf(0, 1), gate.observedSourceIndices)
-        assertTrue(gate.sourceProgressFailure?.contains("expected=2 actual=3") == true)
+        assertEquals(listOf(0, 1, 3, 4), gate.observedSourceIndices)
+        assertEquals(null, gate.sourceProgressFailure)
     }
 
     @Test
@@ -830,26 +816,26 @@ class ResumeTraversalPlanTest {
     }
 
     @Test
-    fun runwayIpcRequiresExactSourceOrderAndP0Generation() {
+    fun runwayIpcAcceptsAnyP1ThroughP4OrderButRequiresP0Generation() {
         val payload = validP0IpcPayload().copy(sourceIndex = 2)
         fun reject(
             candidate: AdjacentP0IpcPayload = payload,
-            expectedSourceIndex: Int = 2,
             expectedViewerGeneration: Long = 1L,
         ) = AdjacentRunwayIpcSignalPolicy.rejection(
             expectedNonce = "0123456789abcdef0123456789abcdef",
             expectedCaseId = "case",
             expectedEpisodePath = "/next",
             expectedViewerGeneration = expectedViewerGeneration,
-            expectedSourceIndex = expectedSourceIndex,
+            requiredPhysicalPageCount = 5,
             payload = candidate,
             receivedAtNanos = 1_002_000_000L,
         )
 
         assertEquals(AdjacentP0IpcRejectReason.NONE, reject())
+        assertEquals(AdjacentP0IpcRejectReason.NONE, reject(payload.copy(sourceIndex = 4)))
         assertEquals(
-            AdjacentP0IpcRejectReason.SOURCE_ORDER,
-            reject(expectedSourceIndex = 1),
+            AdjacentP0IpcRejectReason.SOURCE_INDEX,
+            reject(payload.copy(sourceIndex = 5)),
         )
         assertEquals(
             AdjacentP0IpcRejectReason.GENERATION,

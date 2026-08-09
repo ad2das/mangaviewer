@@ -6429,11 +6429,11 @@ if (!renderView.isShown ||
             coverage.lowResolutionItems
         )
         val viewportDefect = viewportDefectReasons.isNotEmpty()
-        if (viewportDefect) strictTelemetryViewportDefectFrames++
         val blankOrRootCommit = visible.isEmpty() || viewportDefect
         val launchSeal = strictExactLaunchSeal
         val activeSession = session
         if (launchSeal == null || activeSession == null) {
+            if (viewportDefect) strictTelemetryViewportDefectFrames++
             if (strictTelemetryInvalidCommittedFrames < 3L) {
                 Log.w(
                     "ViewerPerf",
@@ -6491,6 +6491,7 @@ if (!renderView.isShown ||
                 )
             )
         if (!identityValid) {
+            if (viewportDefect) strictTelemetryViewportDefectFrames++
             if (strictTelemetryIdentityInvalidFrames < 3L) {
                 Log.w(
                     "ViewerPerf",
@@ -6525,7 +6526,7 @@ if (!renderView.isShown ||
         val telemetryEpisodeOwned =
             ViewerTelemetry.isActiveEpisode(strictTelemetryEpisodePath) &&
                 launchSeal.matchesEpisodePath(strictTelemetryEpisodePath)
-        val commitValid = ReaderPipelinePolicy.isStrictCommittedFrameValid(
+        val commitValidWithoutViewport = ReaderPipelinePolicy.isStrictCommittedFrameValid(
             sessionGenerationMatches =
                 activeReaderSessionGeneration.get() == strictReaderSessionGeneration,
             telemetryGenerationMatches =
@@ -6541,9 +6542,39 @@ if (!renderView.isShown ||
             proofStructureEpoch = proof.structureEpoch,
             currentStructureEpoch = traversalEpoch,
             hasVisiblePages = visible.isNotEmpty(),
-            viewportDefect = viewportDefect,
+            viewportDefect = false,
             surfaceControlLatchObserved = proof.surfaceControlLatchObserved
         )
+        val exactTerminalTailActual = commitValidWithoutViewport &&
+            capturedIdentities != null &&
+            ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                coverage.directWifiForwardOnlyTerminalTailActual,
+                coverage.physicalViewportPx,
+                coverage.viewportPx,
+                coverage.drawablePx,
+                viewportDefectReasons
+            )
+        if (exactTerminalTailActual) {
+            // Record the current terminal source at the instant it was physically presented.
+            // This neither fabricates viewport pixels nor substitutes for the separately timed
+            // adjacent identity; it only classifies the natural area below a short final image.
+            Log.d(
+                "ViewerPerf",
+                "reader_ntk_strict_terminal_tail_actual " +
+                    "visible=${visible.joinToString("|")}," +
+                    "coverage=${coverage.drawablePx}/${coverage.physicalViewportPx}," +
+                    "path=$physicalEpisodePath,source=${physicalIdentity?.sourcePageIndex}," +
+                    "token=${proof.frameToken},hardware=${proof.hardwareAccelerated}," +
+                    "surfaceQueue=${proof.surfaceQueueSubmissionObserved}," +
+                    "surfaceLatch=${proof.surfaceControlLatchObserved}," +
+                    "versions=${proof.drawnVersion}/${proof.committedVersion}," +
+                    "structure=${proof.structureEpoch}/$traversalEpoch," +
+                    "defectReasons=$viewportDefectReasons"
+            )
+        }
+        val effectiveViewportDefect = viewportDefect && !exactTerminalTailActual
+        if (effectiveViewportDefect) strictTelemetryViewportDefectFrames++
+        val commitValid = commitValidWithoutViewport && !effectiveViewportDefect
         if (!commitValid) {
             if (strictTelemetryInvalidCommittedFrames < 3L ||
                 (viewportDefect && strictTelemetryViewportDefectFrames <= 3L)
@@ -6697,14 +6728,14 @@ if (!renderView.isShown ||
                 benchmarkSemanticEpisodePath = adjacentIdentity.normalizedEpisodePath
                 // A single committed viewport can contain more than one short manga page. The
                 // accessibility node intentionally exposes one representative identity, but the
-                // benchmark must retain every exact p0-p3 identity that was physically present in
+                // benchmark must retain every exact p0-p4 identity that was physically present in
                 // this immutable, defect-free frame. Otherwise p2 and p3 in the same frame can be
                 // collapsed to p2 and a fast following frame can advance directly to p4.
                 benchmarkSemanticSourceIndexes =
                     NtkVisibleIdentityPolicy.traversalSourceIndexesForEpisode(
                         visibleIdentityClaims,
                         benchmarkSemanticEpisodePath,
-                    ).filter { sourceIndex -> sourceIndex in 0 until 4 }
+                    ).filter { sourceIndex -> sourceIndex in 0 until 5 }
                 benchmarkSemanticSourceIndexes.forEach { sourceIndex ->
                     BenchmarkAdjacentCommitSignal.publish(
                         benchmarkSemanticEpisodePath,

@@ -158,7 +158,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
          * still a fully opaque, identity-qualified forward viewport; the flag lets strict
          * telemetry distinguish that card from a placeholder-first launch.
          */
-        val directWifiForwardOnlyInitialResume: Boolean = false
+        val directWifiForwardOnlyInitialResume: Boolean = false,
+        /**
+         * Exact current-episode pixels at a naturally short terminal image while the forward
+         * runway is still private. It does not claim full-viewport coverage; it proves that the
+         * visible image itself is the complete terminal source so the natural uncovered area
+         * below it is not mislabeled as a blank, placeholder, or identity failure.
+         */
+        val directWifiForwardOnlyTerminalTailActual: Boolean = false
     )
 
     data class PageReadinessSnapshot(
@@ -522,7 +529,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val realPixelsOnly: Boolean = false,
         val traversalEpoch: Long = 0L,
         val forwardRunway: ForwardRunwaySnapshot? = null,
-        val directWifiForwardOnlyInitialResume: Boolean = false
+        val directWifiForwardOnlyInitialResume: Boolean = false,
+        val directWifiForwardOnlyTerminalTailActual: Boolean = false
     )
 
     private enum class BitmapSubmissionMode {
@@ -1126,6 +1134,62 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         }
         return false
+    }
+
+    /**
+     * Classifies only the real current-episode tail that precedes the combined transition
+     * viewport. The image must be the exact terminal canonical source, occupy the restored
+     * bookmark coordinate, and end naturally before the physical viewport. No card, inferred
+     * geometry, unresolved resource, or adjacent structure can satisfy this predicate.
+     */
+    private fun directWifiForwardOnlyTerminalTailActualLocked(): Boolean {
+        val target = directWifiForwardOnlyInitialResumePage
+        if (!emulatorNativeSurfaceRuntime || !directWifiForwardOnlyInitialResumeEnabled ||
+            target !in pages.indices || target != pages.lastIndex || width <= 0 || height <= 0 ||
+            target < directWifiExpandedNativeTextureMinimumPage
+        ) return false
+        rebuildLayoutLocked()
+        val page = pages[target]
+        val identity = page.committedIdentity ?: return false
+        if (!pageHasCompleteActualPixelsLocked(page) || page.pendingResolveType != PENDING_NONE ||
+            page.loading || page.cardText != null || page.errorText != null ||
+            identity.displayPageIndex != target ||
+            identity.normalizedEpisodePath !in directWifiExpandedNativeTextureEpisodePaths ||
+            identity.sourcePageIndex < 0 ||
+            identity.manifestPageCount <= 0 ||
+            identity.sourcePageIndex != identity.manifestPageCount - 1 ||
+            identity.canonicalAsset.isBlank() ||
+            identity.manifestDigest.length != 64 ||
+            !identity.manifestDigest.all { it in '0'..'9' || it in 'a'..'f' }
+        ) return false
+        val targetTop = pageTopOrElseLocked(target, Float.NaN)
+        val expectedScroll = targetTop - directWifiForwardOnlyInitialResumeOffset
+        if (!targetTop.isFinite() ||
+            abs(scrollOffset - expectedScroll) > RESTORE_POSITION_EPSILON_PX
+        ) return false
+        val viewportTop = scrollOffset
+        val viewportBottom = viewportTop + height
+        val targetBottom = targetTop + pageDrawHeightLocked(page)
+        val visibleTop = max(viewportTop, targetTop)
+        val visibleBottom = min(viewportBottom, targetBottom)
+        return visibleTop <= viewportTop + DRAW_COVERAGE_EPSILON_PX &&
+            visibleBottom > viewportTop + DRAW_COVERAGE_EPSILON_PX &&
+            targetBottom < viewportBottom - DRAW_COVERAGE_EPSILON_PX
+    }
+
+    /** Must be called with [stateLock] held after exact adjacent pixels change. */
+    private fun qualifyDirectWifiForwardOnlyInitialResumeRevealLocked(): Boolean {
+        val qualified = directWifiForwardOnlyInitialResumeViewportOpaqueLocked()
+        if (qualified && !directWifiForwardOnlyInitialResumeRevealQualified) {
+            directWifiForwardOnlyInitialResumeRevealQualified = true
+            Log.d(
+                TAG,
+                "reader_surface_forward_only_resume_ready " +
+                    "page=$directWifiForwardOnlyInitialResumePage " +
+                    "scroll=${scrollOffset.toInt()},viewport=${width}x$height",
+            )
+        }
+        return qualified
     }
 
     fun setWindowListener(listener: WindowListener?) {
@@ -7620,9 +7684,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
         } else {
             preparedSceneForDrawLocked(viewWidth)
         }
-        val forwardOnlyInitialResumeViewport =
+        // Progressive current pixels remain visible immediately. Once the exact forward runway
+        // fills a short terminal restore, classify only the source-qualified combined viewport.
+        // This live DrawState check also covers a p0 too short to fill the screen until p1/p2 arrive.
+        val forwardOnlyInitialResumeViewport = if (emulatorNativeSurfaceRuntime) {
+            qualifyDirectWifiForwardOnlyInitialResumeRevealLocked()
+        } else {
             directWifiForwardOnlyInitialResumeRevealQualified &&
                 directWifiForwardOnlyInitialResumeViewportOpaqueLocked()
+        }
+        val forwardOnlyTerminalTailActual =
+            directWifiForwardOnlyTerminalTailActualLocked()
         val state = DrawState(
             viewWidth,
             viewHeight,
@@ -7648,7 +7720,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
             } else {
                 null
             },
-            forwardOnlyInitialResumeViewport
+            forwardOnlyInitialResumeViewport,
+            forwardOnlyTerminalTailActual,
         )
         val nowMs = SystemClock.uptimeMillis()
         val recentScroll = nowMs <= programmaticScrollStatsUntilMs ||
@@ -7798,7 +7871,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lowResolutionItems = coverage.lowResolutionItems,
             minDrawableSourceWidth = coverage.minDrawableSourceWidth,
             physicalViewportPx = state.height,
-            directWifiForwardOnlyInitialResume = state.directWifiForwardOnlyInitialResume
+            directWifiForwardOnlyInitialResume = state.directWifiForwardOnlyInitialResume,
+            directWifiForwardOnlyTerminalTailActual =
+                state.directWifiForwardOnlyTerminalTailActual
         )
     }
 
@@ -8431,16 +8506,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 stripResidentCoverage.continuousEndFrom(viewportTop) >= viewportBottom
         }
         if (currentViewportDrawableOpaqueLocked()) return true
-        val forwardOnlyResumeReady = directWifiForwardOnlyInitialResumeViewportOpaqueLocked()
-        if (forwardOnlyResumeReady) {
-            directWifiForwardOnlyInitialResumeRevealQualified = true
-            Log.d(
-                TAG,
-                "reader_surface_forward_only_resume_ready page=$directWifiForwardOnlyInitialResumePage " +
-                    "scroll=${scrollOffset.toInt()},viewport=${width}x$height"
-            )
-        }
-        return forwardOnlyResumeReady
+        return qualifyDirectWifiForwardOnlyInitialResumeRevealLocked()
     }
 
     /** Must be called with [stateLock] held. */

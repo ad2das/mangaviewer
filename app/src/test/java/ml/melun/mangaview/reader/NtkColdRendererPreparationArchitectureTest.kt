@@ -2160,7 +2160,7 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
-    fun adjacentQualificationRequiresPhysicalP0ThroughP3AndFailsClosed() {
+    fun adjacentQualificationRequiresPhysicalP0ThroughP4WithoutOrderingThem() {
         val drive = functionBody(
             "private fun driveIntoExpectedAdjacentEpisode(",
             macrobenchmarkSource
@@ -2194,7 +2194,8 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(drive.contains("if (maxExpectedSource >= 0 ||"))
         assertTrue(continuation.contains("if (update.physicalSourceObservedNow"))
         assertTrue(continuation.contains("if (update.complete)"))
-        assertTrue(continuation.contains("source == ADJACENT_REQUIRED_RUNWAY_PAGES - 1"))
+        assertFalse(continuation.contains("source == ADJACENT_REQUIRED_RUNWAY_PAGES - 1"))
+        assertFalse(continuation.contains("callbacks were not observed in forward physical order"))
         assertTrue(continuation.contains("proof.observedSourceIndices.joinToString()"))
         assertTrue(macrobenchmarkResumePlanSource.contains("actualSourceIndex == 0"))
         assertTrue(
@@ -2226,18 +2227,19 @@ class NtkColdRendererPreparationArchitectureTest {
                 "require(expectedAdjacentPageCount >= ADJACENT_REQUIRED_RUNWAY_PAGES)"
             )
         )
-        assertTrue(macrobenchmarkSource.contains("val requiredRunwayPages = ADJACENT_REQUIRED_RUNWAY_PAGES"))
+        assertTrue(macrobenchmarkSource.contains("ADJACENT_REQUIRED_RUNWAY_PAGES = 5"))
+        assertTrue(macrobenchmarkSource.contains("ADJACENT_PREPARED_RUNWAY_PAGES = 4"))
         assertTrue(macrobenchmarkSource.contains("runwayReadyBeforeTail ="))
         assertTrue(macrobenchmarkSource.contains("adjacentP0SeamMs ="))
-        assertTrue(macrobenchmarkSource.contains("check(adjacentP0SeamMs <= ADJACENT_P0_SEAM_SLA_MS)"))
-        assertTrue(macrobenchmarkSource.contains("ADJACENT_P0_SEAM_SLA_MS = 250L"))
+        assertFalse(macrobenchmarkSource.contains("check(adjacentP0SeamMs <="))
         assertTrue(macrobenchmarkSource.contains("p0IpcContinuousInputPreserved"))
         assertTrue(macrobenchmarkSource.contains("val boundaryGestures = sourceCheckpoint"))
         assertTrue(macrobenchmarkSource.contains("gestures = boundaryGestures"))
         assertFalse(macrobenchmarkSource.contains("check(runwayReadyBeforeTail)"))
         assertFalse(macrobenchmarkSource.contains("ADJACENT_BOUNDARY_WAIT_SLA_MS"))
         assertTrue(qualificationSource.contains("\$requiredAdjacentRunwayPages = 4"))
-        assertTrue(qualificationSource.contains("\$expectedAdjacentPageCount -lt \$requiredAdjacentRunwayPages"))
+        assertTrue(qualificationSource.contains("\$requiredAdjacentPhysicalPages = 5"))
+        assertTrue(qualificationSource.contains("\$expectedAdjacentPageCount -lt \$requiredAdjacentPhysicalPages"))
         assertTrue(qualificationSource.contains("\"adjacentObservedRunwayDrawableCount\""))
         assertTrue(qualificationSource.contains("\"runwayReadyBeforeTail\""))
         assertTrue(
@@ -2246,7 +2248,7 @@ class NtkColdRendererPreparationArchitectureTest {
             )
         )
         assertFalse(qualificationSource.contains("if(\$runwayReadyBeforeTail -ne \$true"))
-        assertTrue(qualificationSource.contains("\$ProductionMaxAdjacentP0SeamMs = 250.0"))
+        assertFalse(qualificationSource.contains("\$ProductionMaxAdjacentP0SeamMs"))
         assertTrue(qualificationSource.contains("\$terminalResumeInitialViewportP0 ="))
         assertTrue(qualificationSource.contains("\$p0InputOrderValid ="))
         assertFalse(qualificationSource.contains("\$ProductionMaxAdjacentBoundaryWaitMs"))
@@ -2442,6 +2444,10 @@ class NtkColdRendererPreparationArchitectureTest {
         val viewport = functionBody(
             "private fun directWifiForwardOnlyInitialResumeViewportOpaqueLocked()"
         )
+        val qualify = functionBody(
+            "private fun qualifyDirectWifiForwardOnlyInitialResumeRevealLocked()"
+        )
+        val drawState = functionBody("private fun buildDrawStateLocked(")
         val completed = functionBody(
             "private fun handleStrictRollingCompletedDraw(",
             activitySource,
@@ -2467,8 +2473,60 @@ class NtkColdRendererPreparationArchitectureTest {
         assertFalse(viewport.contains("requiredAdjacentSources"))
         assertFalse(viewport.contains("DIRECT_WIFI_INITIAL_ADJACENT_RUNWAY_PAGES"))
         assertTrue(viewport.contains("directWifiExpandedNativeTextureEpisodePaths"))
+        assertTrue(qualify.contains("directWifiForwardOnlyInitialResumeViewportOpaqueLocked()"))
+        assertFalse(qualify.contains("emulatorNativeSurfaceRuntime"))
+        assertTrue(qualify.contains("directWifiForwardOnlyInitialResumeRevealQualified = true"))
+        assertTrue(drawState.contains("emulatorNativeSurfaceRuntime"))
+        assertTrue(drawState.contains("qualifyDirectWifiForwardOnlyInitialResumeRevealLocked()"))
+        assertTrue(drawState.contains("directWifiForwardOnlyInitialResumeRevealQualified &&"))
         assertTrue(completed.contains("val launchPixelsVisible = identities.any"))
         assertTrue(completed.contains("if (!launchPixelsVisible)"))
+    }
+
+    @Test
+    fun shortTerminalTailIsIdentityQualifiedActualWithoutFabricatingViewportPixels() {
+        val terminalTail = functionBody(
+            "private fun directWifiForwardOnlyTerminalTailActualLocked()"
+        )
+        val drawState = functionBody("private fun buildDrawStateLocked(")
+        val completed = functionBody(
+            "private fun handleStrictRollingCompletedDraw(",
+            activitySource,
+        )
+
+        assertTrue(terminalTail.contains("emulatorNativeSurfaceRuntime"))
+        assertTrue(terminalTail.contains("directWifiForwardOnlyInitialResumeEnabled"))
+        assertTrue(terminalTail.contains("target != pages.lastIndex"))
+        assertTrue(terminalTail.contains("pageHasCompleteActualPixelsLocked(page)"))
+        assertTrue(terminalTail.contains("page.pendingResolveType != PENDING_NONE"))
+        assertTrue(terminalTail.contains("identity.normalizedEpisodePath !in"))
+        assertTrue(terminalTail.contains("identity.sourcePageIndex != identity.manifestPageCount - 1"))
+        assertTrue(terminalTail.contains("val expectedScroll = targetTop -"))
+        assertTrue(terminalTail.contains("targetBottom < viewportBottom"))
+        assertTrue(drawState.contains("directWifiForwardOnlyTerminalTailActualLocked()"))
+        assertTrue(drawState.contains("forwardOnlyTerminalTailActual"))
+
+        val identity = completed.indexOf("if (!identityValid)")
+        val transport = completed.indexOf("val commitValidWithoutViewport")
+        val exactTailCheck = completed.indexOf("val exactTerminalTailActual")
+        val effectiveDefect = completed.indexOf("val effectiveViewportDefect")
+        val defectCounter = completed.indexOf(
+            "if (effectiveViewportDefect) strictTelemetryViewportDefectFrames++",
+            startIndex = effectiveDefect,
+        )
+        val strictActual = completed.indexOf(
+            "strictTelemetryValidCommittedFrames++",
+            startIndex = defectCounter,
+        )
+        assertTrue(identity >= 0)
+        assertTrue(transport > identity)
+        assertTrue(exactTailCheck > transport)
+        assertTrue(completed.contains("capturedIdentities != null &&"))
+        assertTrue(effectiveDefect > exactTailCheck)
+        assertTrue(defectCounter > effectiveDefect)
+        assertTrue(strictActual > defectCounter)
+        assertTrue(completed.contains("commitValidWithoutViewport && !effectiveViewportDefect"))
+        assertFalse(completed.substring(exactTailCheck, effectiveDefect).contains("return"))
     }
 
     @Test

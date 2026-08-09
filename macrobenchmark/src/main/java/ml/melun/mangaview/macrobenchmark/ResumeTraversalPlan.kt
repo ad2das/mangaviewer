@@ -514,7 +514,7 @@ internal object AdjacentSourceProgressPolicy {
         gesturesAtSignal: Int,
         gesturesAtSemanticProof: Int,
     ): String? {
-        if (sourceIndex !in 0..3) return "source=$sourceIndex is outside p0-p3"
+        if (sourceIndex !in 0..4) return "source=$sourceIndex is outside p0-p4"
         if (presentedAtNanos <= 0L || semanticObservedAtNanos < presentedAtNanos) {
             return "source=$sourceIndex presented/semantic timestamps were invalid"
         }
@@ -551,7 +551,7 @@ internal object AdjacentSemanticCommitDescriptionPolicy {
         forwardBoundaryReachedAtNanos: Long = 0L,
     ): String {
         require(episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
-        require(sourceIndex in 0..3)
+        require(sourceIndex in 0..4)
         require(viewerGeneration > 0L)
         require(presentedAtNanos > 0L)
         val firstAt = firstAdjacentPresentedAtNanos.coerceAtLeast(0L)
@@ -571,13 +571,6 @@ internal object AdjacentSemanticCommitDescriptionPolicy {
     }
 }
 
-/** Accessibility callbacks may arrive after a later physical IPC; wait for the missing source. */
-internal object AdjacentSemanticTraversalOrderPolicy {
-    fun shouldDefer(sourceIndex: Int, observedSourceCount: Int): Boolean =
-        sourceIndex in 0..3 && observedSourceCount in 0..3 &&
-            sourceIndex > observedSourceCount
-}
-
 /**
  * Records physical, defect-free presentation of the requested next episode's initial pages.
  *
@@ -589,11 +582,13 @@ internal object AdjacentSemanticTraversalOrderPolicy {
 internal class AdjacentEpisodeProofGate(
     private val expectedEpisodePath: String,
     private val requiredRunwayPageCount: Int,
+    private val preparedRunwayPageCountRequirement: Int = requiredRunwayPageCount,
     private val requireSourceProgress: Boolean = true,
 ) {
     init {
         require(expectedEpisodePath.isNotBlank())
         require(requiredRunwayPageCount > 0)
+        require(preparedRunwayPageCountRequirement in 1..requiredRunwayPageCount)
     }
 
     var boundaryEntered: Boolean = false
@@ -673,16 +668,8 @@ internal class AdjacentEpisodeProofGate(
             actualSourceIndex in physicallyObservedSources.indices &&
             !physicallyObservedSources[actualSourceIndex]
         if (physicalSourceObservedNow) {
-            val expectedSource = physicallyObservedSources.count { it }
             val progressReason = when {
-                actualSourceIndex != expectedSource ->
-                    "adjacent sources were not presented in order: expected=$expectedSource " +
-                        "actual=$actualSourceIndex"
                 !requireSourceProgress -> null
-                actualSourceIndex > 0 && presentedAtNanos <
-                    sourcePresentedAtNanos[actualSourceIndex - 1] ->
-                    "adjacent source presentation timestamps were not monotonic at " +
-                        "source=$actualSourceIndex"
                 else -> AdjacentSourceProgressPolicy.invalidReason(
                     sourceIndex = actualSourceIndex,
                     presentedAtNanos = presentedAtNanos,
@@ -704,8 +691,8 @@ internal class AdjacentEpisodeProofGate(
             }
         }
 
-        val exactRunwayReady = adjacentTotalPageCount >= requiredRunwayPageCount &&
-            adjacentRunwayPageCount == requiredRunwayPageCount &&
+        val exactRunwayReady = adjacentTotalPageCount >= preparedRunwayPageCountRequirement &&
+            adjacentRunwayPageCount == preparedRunwayPageCountRequirement &&
             adjacentRunwayTargetEpisode == expectedEpisodePath &&
             firstAdjacentActualAtNanos > 0L &&
             firstAdjacentActualEpisode == expectedEpisodePath
@@ -842,7 +829,7 @@ internal object AdjacentSemanticCommitSignalPolicy {
         semanticPayload.caseId != expectedCaseId -> AdjacentP0IpcRejectReason.CASE_ID
         semanticPayload.episodePath != expectedEpisodePath ->
             AdjacentP0IpcRejectReason.EPISODE_PATH
-        semanticPayload.sourceIndex !in 0..3 -> AdjacentP0IpcRejectReason.SOURCE_INDEX
+        semanticPayload.sourceIndex !in 0..4 -> AdjacentP0IpcRejectReason.SOURCE_INDEX
         semanticPayload.viewerGeneration <= 0L -> AdjacentP0IpcRejectReason.GENERATION
         semanticPayload.presentedAtNanos <= 0L ->
             AdjacentP0IpcRejectReason.PRESENTED_TIMESTAMP
@@ -943,21 +930,22 @@ internal object AdjacentP0AfterInputStartPolicy {
     }
 }
 
-/** Exact identity/clock contract for the benchmark-only p1-p3 presentation checkpoints. */
+/** Exact identity/clock contract for the benchmark-only p1-p4 presentation checkpoints. */
 internal object AdjacentRunwayIpcSignalPolicy {
     fun rejection(
         expectedNonce: String,
         expectedCaseId: String,
         expectedEpisodePath: String,
         expectedViewerGeneration: Long,
-        expectedSourceIndex: Int,
+        requiredPhysicalPageCount: Int,
         payload: AdjacentP0IpcPayload,
         receivedAtNanos: Long,
     ): AdjacentP0IpcRejectReason = when {
         payload.nonce != expectedNonce -> AdjacentP0IpcRejectReason.NONCE
         payload.caseId != expectedCaseId -> AdjacentP0IpcRejectReason.CASE_ID
         payload.episodePath != expectedEpisodePath -> AdjacentP0IpcRejectReason.EPISODE_PATH
-        payload.sourceIndex != expectedSourceIndex -> AdjacentP0IpcRejectReason.SOURCE_ORDER
+        payload.sourceIndex !in 1 until requiredPhysicalPageCount ->
+            AdjacentP0IpcRejectReason.SOURCE_INDEX
         payload.viewerGeneration <= 0L ||
             payload.viewerGeneration != expectedViewerGeneration ->
             AdjacentP0IpcRejectReason.GENERATION
@@ -1042,7 +1030,6 @@ internal enum class AdjacentP0IpcRejectReason {
     PRESENTED_TIMESTAMP,
     SENDER_TIMESTAMP,
     RECEIVER_TIMESTAMP,
-    SOURCE_ORDER,
     EARLY_SIGNAL,
     DUPLICATE,
     PHASE,

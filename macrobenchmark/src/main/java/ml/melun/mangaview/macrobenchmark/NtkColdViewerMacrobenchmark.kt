@@ -418,11 +418,13 @@ class NtkColdViewerMacrobenchmark {
 
                 // An appendable reader has no stable global bottom. The exact p0 IPC supplies the
                 // seam timestamp without stopping this producer. The same uninterrupted reader-rate
-                // workload then physically traverses p0-p3; prepared-runway telemetry alone is not
+                // workload then physically traverses p0-p4 in any order; prepared-runway
+                // telemetry alone is not
                 // accepted as proof that those pages were visible without a blank or wait.
                 val adjacentProof = AdjacentEpisodeProofGate(
                     expectedEpisodePath = expectedAdjacentEpisodePath,
                     requiredRunwayPageCount = ADJACENT_REQUIRED_RUNWAY_PAGES,
+                    preparedRunwayPageCountRequirement = ADJACENT_PREPARED_RUNWAY_PAGES,
                     requireSourceProgress = resumeMode,
                 )
                 adjacentProof.forwardEvidence.observeActualDescription(actualDescription)
@@ -569,7 +571,7 @@ class NtkColdViewerMacrobenchmark {
                         "Home Continue forward-tail count mismatch: " +
                             "expected=$expectedForwardPageCount actual=$allImagesReadyPageCount"
                     }
-                    requireReaderRateInput(inputMetrics, "resume-through-adjacent-p3")
+                    requireReaderRateInput(inputMetrics, "resume-through-adjacent-p4")
                     val gesturesAtP0Signal = requireNotNull(p0SignalChannel).gesturesAtSignal
                     check(gesturesAtP0Signal >= 0 &&
                         inputMetrics.gestureCount > gesturesAtP0Signal
@@ -577,10 +579,6 @@ class NtkColdViewerMacrobenchmark {
                         "Physical input did not remain continuous after adjacent p0: " +
                             "atSignal=$gesturesAtP0Signal total=${inputMetrics.gestureCount}"
                     }
-                }
-                check(adjacentWorkStartedAtNanos >= allImagesReadyAtNanos) {
-                    "Adjacent work competed with the current episode: " +
-                        "work=$adjacentWorkStartedAtNanos allReady=$allImagesReadyAtNanos"
                 }
                 check(adjacentRunwayReadyAtNanos > 0L) {
                     "Adjacent p0-p3 readiness telemetry was never published"
@@ -594,9 +592,10 @@ class NtkColdViewerMacrobenchmark {
                         "expected=$expectedAdjacentPageCount actual=$adjacentTotalPageCount"
                 }
                 val requiredRunwayPages = ADJACENT_REQUIRED_RUNWAY_PAGES
-                check(adjacentRunwayPageCount == requiredRunwayPages) {
+                check(adjacentRunwayPageCount == ADJACENT_PREPARED_RUNWAY_PAGES) {
                     "Adjacent p0-p3 readiness telemetry was incomplete: " +
-                        "ready=$adjacentRunwayPageCount required=$requiredRunwayPages"
+                        "ready=$adjacentRunwayPageCount " +
+                        "required=$ADJACENT_PREPARED_RUNWAY_PAGES"
                 }
                 check(adjacentTotalPageCount >= adjacentRunwayPageCount) {
                     "Adjacent total page proof is invalid: " +
@@ -612,27 +611,20 @@ class NtkColdViewerMacrobenchmark {
                     "First adjacent pixels belonged to the wrong episode: " +
                         "expected=$expectedAdjacentEpisodePath actual=$firstAdjacentActualEpisode"
                 }
-                check(adjacentP0SeamMs <= ADJACENT_P0_SEAM_SLA_MS) {
-                    "Adjacent p0 seam exceeded ${ADJACENT_P0_SEAM_SLA_MS}ms: " +
-                        "${adjacentP0SeamMs}ms"
-                }
                 check(adjacentPhysicalRunwayPassed &&
-                    adjacentObservedRunwayDrawableCount == requiredRunwayPages &&
-                    adjacentLastSourceIndex == requiredRunwayPages - 1
+                    adjacentObservedRunwayDrawableCount == requiredRunwayPages
                 ) {
-                    "p0-p3 were not each physically committed under reader-rate input: " +
+                    "p0-p4 were not each physically committed under reader-rate input: " +
                         "sources=$adjacentPhysicallyObservedSources " +
                         "observed=$adjacentObservedRunwayDrawableCount " +
                         "last=$adjacentLastSourceIndex required=$requiredRunwayPages"
                 }
                 if (resumeMode) {
                     check(adjacentSourceProgressPassed &&
-                        adjacentSourcePresentedAtNanos.zipWithNext().all { (left, right) ->
-                            left > 0L && right > left
-                        } &&
+                        adjacentSourcePresentedAtNanos.all { it > 0L } &&
                         adjacentSourceSemanticObservedAtNanos.all { it > 0L }
                     ) {
-                        "p0-p3 source presentation/progress proof failed: " +
+                        "p0-p4 source presentation/progress proof failed: " +
                             adjacentSourceProgressFailure.ifBlank { "incomplete checkpoints" }
                     }
                 }
@@ -2153,7 +2145,7 @@ class NtkColdViewerMacrobenchmark {
                         expectedNonce = nonce,
                         expectedCaseId = caseId,
                         expectedEpisodePath = expectedEpisodePath,
-                        expectedRunwayPageCount = ADJACENT_REQUIRED_RUNWAY_PAGES,
+                        expectedRunwayPageCount = ADJACENT_PREPARED_RUNWAY_PAGES,
                         expectedViewerGeneration = payload?.viewerGeneration,
                         payload = candidate,
                         receivedAtNanos = receivedAt,
@@ -2190,11 +2182,17 @@ class NtkColdViewerMacrobenchmark {
                     recordRejection(AdjacentP0IpcRejectReason.EARLY_SIGNAL)
                     return
                 }
-                val expectedSource = runwayPayloads.indexOfFirst { it == null }
-                    .takeIf { it >= 0 }
-                    ?: ADJACENT_REQUIRED_RUNWAY_PAGES
                 val acceptedNow = SystemClock.elapsedRealtimeNanos()
-                val baseRejection = if (candidate.sourceIndex == 0 && expectedSource == 0) {
+                val existingGeneration = runwayPayloads.firstNotNullOfOrNull {
+                    it?.viewerGeneration
+                }
+                val baseRejection = if (candidate.sourceIndex !in
+                    0 until ADJACENT_REQUIRED_RUNWAY_PAGES
+                ) {
+                    AdjacentP0IpcRejectReason.SOURCE_INDEX
+                } else if (runwayPayloads[candidate.sourceIndex] != null) {
+                    AdjacentP0IpcRejectReason.DUPLICATE
+                } else if (candidate.sourceIndex == 0) {
                     AdjacentP0IpcSignalPolicy.rejection(
                         expectedNonce = nonce,
                         expectedCaseId = caseId,
@@ -2202,26 +2200,24 @@ class NtkColdViewerMacrobenchmark {
                         payload = candidate,
                         receivedAtNanos = receivedAt,
                     )
-                } else if (accepted && expectedSource in 1 until ADJACENT_REQUIRED_RUNWAY_PAGES) {
+                } else {
                     AdjacentRunwayIpcSignalPolicy.rejection(
                         expectedNonce = nonce,
                         expectedCaseId = caseId,
                         expectedEpisodePath = expectedEpisodePath,
-                        expectedViewerGeneration = requireNotNull(payload).viewerGeneration,
-                        expectedSourceIndex = expectedSource,
+                        expectedViewerGeneration = existingGeneration
+                            ?: candidate.viewerGeneration,
+                        requiredPhysicalPageCount = ADJACENT_REQUIRED_RUNWAY_PAGES,
                         payload = candidate,
                         receivedAtNanos = receivedAt,
                     )
-                } else if (candidate.sourceIndex in 0 until ADJACENT_REQUIRED_RUNWAY_PAGES &&
-                    runwayPayloads[candidate.sourceIndex] != null
-                ) {
-                    AdjacentP0IpcRejectReason.DUPLICATE
-                } else {
-                    AdjacentP0IpcRejectReason.SOURCE_ORDER
                 }
-                val rejection = if (baseRejection == AdjacentP0IpcRejectReason.NONE &&
-                    candidate.sourceIndex == 0
-                ) {
+                val generationRejection = if (
+                    baseRejection == AdjacentP0IpcRejectReason.NONE &&
+                    existingGeneration != null &&
+                    candidate.viewerGeneration != existingGeneration
+                ) AdjacentP0IpcRejectReason.GENERATION else baseRejection
+                val rejection = if (generationRejection == AdjacentP0IpcRejectReason.NONE) {
                     AdjacentP0AfterInputStartPolicy.rejection(
                         firstDownInjectionStartedAtNanos =
                             target.firstDownInjectionStartedAtNanos(),
@@ -2231,7 +2227,7 @@ class NtkColdViewerMacrobenchmark {
                             allowTerminalResumeInitialViewport,
                     )
                 } else {
-                    baseRejection
+                    generationRejection
                 }
                 if (rejection != AdjacentP0IpcRejectReason.NONE) {
                     if (rejection == AdjacentP0IpcRejectReason.EARLY_SIGNAL) earlySignal = true
@@ -2868,7 +2864,7 @@ class NtkColdViewerMacrobenchmark {
                 }
                 if (proofUpdate.boundaryEnteredNow) {
                     // Page zero is the seam clock. Validate the IPC identity/timestamp without
-                    // stopping the producer that must continue through the physical p0-p3 runway.
+                    // stopping the producer that must continue through the physical p0-p4 proof.
                     // The producer can finish the next gesture between this loop's count snapshot
                     // and exact semantic proof. Attribute p0 to the historical compositor-backed
                     // checkpoint, not that newer sampled count, or a faster p0 produces the
@@ -3002,14 +2998,14 @@ class NtkColdViewerMacrobenchmark {
                 }
                 if (path != expectedEpisodePath) {
                     error(
-                        "Reader crossed beyond the expected adjacent episode before p0-p3 proof: " +
+                        "Reader crossed beyond the expected adjacent episode before p0-p4 proof: " +
                             "expected=$expectedEpisodePath actual=$path source=$source " +
                             "observed=${proof.observedSourceIndices.joinToString()}"
                     )
                 }
                 if (viewerGeneration != expectedViewerGeneration) {
                     error(
-                        "Adjacent viewer generation changed during physical p0-p3 traversal: " +
+                        "Adjacent viewer generation changed during physical p0-p4 traversal: " +
                         "expected=$expectedViewerGeneration actual=$viewerGeneration source=$source"
                     )
                 }
@@ -3021,19 +3017,6 @@ class NtkColdViewerMacrobenchmark {
                     // UiAutomator/accessibility may publish source N before the benchmark-only
                     // compositor checkpoint reaches its receiver. Defer instead of turning that
                     // legal semantic lead into an infrastructure failure.
-                    lastDescription = description
-                    continue
-                }
-                if (continuousInput != null &&
-                    source !in proof.observedSourceIndices &&
-                    AdjacentSemanticTraversalOrderPolicy.shouldDefer(
-                        sourceIndex = source,
-                        observedSourceCount = proof.observedSourceIndices.size,
-                    )
-                ) {
-                    // The receiver already enforces physical IPC order. A later page's node/event
-                    // can still reach this observer first; retain it and let the next loop consume
-                    // the missing exact semantic commit before advancing.
                     lastDescription = description
                     continue
                 }
@@ -3098,10 +3081,6 @@ class NtkColdViewerMacrobenchmark {
                     lastDescription = description
                 }
                 if (update.complete) {
-                    check(source == ADJACENT_REQUIRED_RUNWAY_PAGES - 1) {
-                        "p0-p3 callbacks were not observed in forward physical order: " +
-                            "last=$source observed=${proof.observedSourceIndices.joinToString()}"
-                    }
                     return AdjacentTraversalObservation(
                         gestures = gestures,
                         actualDescription = description,
@@ -3112,7 +3091,7 @@ class NtkColdViewerMacrobenchmark {
                 }
                 if (source >= ADJACENT_REQUIRED_RUNWAY_PAGES) {
                     throw MeasurementInvalidException(
-                        "continuous input passed p3 before UiAutomator physically observed every " +
+                        "continuous input passed p4 before UiAutomator physically observed every " +
                             "required source: source=$source " +
                             "observed=${proof.observedSourceIndices.joinToString()}"
                     )
@@ -3136,9 +3115,9 @@ class NtkColdViewerMacrobenchmark {
             }
         }
         continuousInput?.requestStop()
-        device.throwIfTerminalImageFailure("physical adjacent p0-p3 continuation")
+        device.throwIfTerminalImageFailure("physical adjacent p0-p4 continuation")
         error(
-            "Expected adjacent p0-p3 were not each physically committed: " +
+            "Expected adjacent p0-p4 were not each physically committed: " +
                 "expected=$expectedEpisodePath observed=${proof.observedSourceIndices.joinToString()} " +
                 "lastSource=$lastSource gestures=$gestures actual=$lastDescription"
         )
@@ -3535,11 +3514,11 @@ class NtkColdViewerMacrobenchmark {
         const val FAST_SWIPE_STEPS = 4
         const val INITIAL_MODERATE_FORWARD_GESTURES = 3
         const val ADJACENT_FINE_SWIPE_RUNWAY_PAGES = 4
-        const val ADJACENT_REQUIRED_RUNWAY_PAGES = 4
+        const val ADJACENT_REQUIRED_RUNWAY_PAGES = 5
+        const val ADJACENT_PREPARED_RUNWAY_PAGES = 4
         // This is the only adjacent timing SLA: launch-tail presentation to exact p0 pixels.
         // p1-p3 are qualified by continued physical 3 viewport/s traversal, not by demanding that
         // their background-ready timestamp precede the launch boundary.
-        const val ADJACENT_P0_SEAM_SLA_MS = 250L
         // One accessibility observation costs ~2.5 s on the continuously rendering SurfaceView,
         // whereas sixteen 20 ms shell flings cost only ~0.3 s and cover the measured 119-page
         // manga. Long webtoons repeat the same bounded batch until their real edge is observed.

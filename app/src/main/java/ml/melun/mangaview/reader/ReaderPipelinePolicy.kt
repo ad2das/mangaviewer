@@ -410,6 +410,25 @@ object ReaderPipelinePolicy {
     }
 
     /**
+     * A short terminal image is honest actual content, even though it cannot fill the viewport.
+     * Surface ownership and exact source identity are proven separately before this policy is
+     * consulted. Keep the shape fail-closed so every unresolved/card/error/width defect remains
+     * a strict failure. This exception records when the user really saw the current terminal
+     * source; it never substitutes for the separately measured adjacent-image presentation.
+     */
+    @JvmStatic
+    fun isExactForwardOnlyTerminalTailActualFrame(
+        surfaceQualified: Boolean,
+        physicalViewportPx: Int,
+        viewportPx: Int,
+        drawablePx: Int,
+        defectReasons: String
+    ): Boolean = surfaceQualified && physicalViewportPx > 0 &&
+        viewportPx > 0 && drawablePx > 0 && viewportPx == drawablePx &&
+        viewportPx < physicalViewportPx &&
+        defectReasons == "viewportShort|drawableShort"
+
+    /**
      * A transition card is invalid before the first real image, but becomes intentional reader
      * content after image ownership has been established. This keeps cold first-image proof strict
      * while allowing the lightweight between-episode label in continuous forward reading.

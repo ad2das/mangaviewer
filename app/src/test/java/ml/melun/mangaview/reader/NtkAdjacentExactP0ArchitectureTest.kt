@@ -84,6 +84,43 @@ class NtkAdjacentExactP0ArchitectureTest {
     }
 
     @Test
+    fun hostGpuDrawStateRequalifiesTheExactCombinedResumeViewport() {
+        val drawState = block("private fun buildDrawStateLocked(", surface)
+        val qualifier = block(
+            "private fun qualifyDirectWifiForwardOnlyInitialResumeRevealLocked(",
+            surface,
+        )
+        assertTrue(drawState.contains("emulatorNativeSurfaceRuntime"))
+        assertTrue(drawState.contains("qualifyDirectWifiForwardOnlyInitialResumeRevealLocked()"))
+        assertTrue(drawState.contains(
+            "directWifiForwardOnlyInitialResumeRevealQualified &&"
+        ))
+        assertTrue(qualifier.contains("directWifiForwardOnlyInitialResumeViewportOpaqueLocked()"))
+        assertFalse(qualifier.contains("emulatorNativeSurfaceRuntime"))
+    }
+
+    @Test
+    fun terminalTailActualFlagIsImmutableAndDoesNotRelaxTheCombinedViewportProof() {
+        val terminalTail = block(
+            "private fun directWifiForwardOnlyTerminalTailActualLocked(",
+            surface,
+        )
+        val drawState = block("private fun buildDrawStateLocked(", surface)
+        val combined = block(
+            "private fun directWifiForwardOnlyInitialResumeViewportOpaqueLocked(",
+            surface,
+        )
+        assertTrue(terminalTail.contains("emulatorNativeSurfaceRuntime"))
+        assertTrue(terminalTail.contains("target != pages.lastIndex"))
+        assertTrue(terminalTail.contains("identity.sourcePageIndex != identity.manifestPageCount - 1"))
+        assertTrue(terminalTail.contains("targetBottom < viewportBottom"))
+        assertTrue(drawState.contains("forwardOnlyTerminalTailActual"))
+        assertTrue(combined.contains("sawTransition"))
+        assertTrue(combined.contains("sawAdjacentActual"))
+        assertFalse(combined.contains("directWifiForwardOnlyTerminalTailActual"))
+    }
+
+    @Test
     fun adjacentP0CanCoexistWithTheCurrentEpisodesStripAuthority() {
         val install = block("fun installAdjacentExactP0Delta(", surface)
         assertFalse(install.contains("stripAuthorityToken != 0L"))

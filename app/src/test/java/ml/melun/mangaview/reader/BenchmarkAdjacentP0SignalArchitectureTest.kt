@@ -66,7 +66,7 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
         assertTrue(!nonBenchmarkSignalSource.contains("sendBroadcast"))
 
         assertTrue(benchmarkSignalSource.contains("nonce.matches(\"[0-9a-f]{32}\")"))
-        assertTrue(benchmarkSignalSource.contains("sourceIndex >= REQUIRED_RUNWAY_PAGES"))
+        assertTrue(benchmarkSignalSource.contains("sourceIndex >= REQUIRED_PHYSICAL_PAGES"))
         assertTrue(benchmarkSignalSource.contains("current.expectedEpisodePath.equals"))
         assertTrue(benchmarkSignalSource.contains("SENT_MASK.compareAndSet"))
         assertTrue(benchmarkSignalSource.contains("1 << sourceIndex"))
@@ -140,7 +140,7 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
                 "NtkVisibleIdentityPolicy.traversalSourceIndexesForEpisode("
             )
         )
-        assertTrue(activityCommit.contains("sourceIndex in 0 until 4"))
+        assertTrue(activityCommit.contains("sourceIndex in 0 until 5"))
         assertTrue(activityCommit.contains("benchmarkSemanticSourceIndexes.forEach"))
         assertTrue(
             activityCommit.contains(
