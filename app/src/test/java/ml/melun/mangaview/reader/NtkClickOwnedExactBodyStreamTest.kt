@@ -211,9 +211,19 @@ class NtkClickOwnedExactBodyStreamTest {
         assertEquals("booktoki9.org", policy.preferredWarmAdjacentReplicaHost(2, warm))
         assertEquals("booktoki8.org", policy.preferredWarmAdjacentReplicaHost(3, warm))
         assertEquals(null, policy.previousWarmAdjacentReplicaPage(0, 4, warm))
-        assertEquals(2, policy.previousWarmAdjacentReplicaPage(1, 4, warm))
+        assertEquals(null, policy.previousWarmAdjacentReplicaPage(1, 4, warm))
         assertEquals(null, policy.previousWarmAdjacentReplicaPage(2, 4, warm))
         assertEquals(0, policy.previousWarmAdjacentReplicaPage(3, 4, warm))
+
+        val shortResumeWarmHosts = listOf("mana.apihost93.com", "booktoki9.org")
+        assertEquals(
+            null,
+            policy.previousWarmAdjacentReplicaPage(0, 5, shortResumeWarmHosts),
+        )
+        assertEquals(
+            null,
+            policy.previousWarmAdjacentReplicaPage(1, 5, shortResumeWarmHosts),
+        )
         fun parallel(
             emulator: Boolean = true,
             adjacent: Boolean = true,
@@ -227,6 +237,15 @@ class NtkClickOwnedExactBodyStreamTest {
             previousWarmPage = previous,
         )
         assertTrue(parallel())
+        assertTrue(
+            policy.shouldParallelizeHostGpuAdjacentFollower(
+                hostGpuEmulatorRuntime = true,
+                directWifiAdjacentOwned = true,
+                runwayPageIndex = 4,
+                runwayPageCount = 5,
+                previousWarmPage = 1,
+            ),
+        )
         assertFalse(parallel(emulator = false))
         assertFalse(parallel(adjacent = false))
         assertFalse(parallel(page = 2, previous = null))
@@ -293,7 +312,7 @@ class NtkClickOwnedExactBodyStreamTest {
         assertFalse(inherited.contains("normalizedCanonicalAssets"))
         assertFalse(inherited.contains("listOf(\"jpg\", \"jpeg\")"))
         assertTrue(wave.contains("directWifiAdjacentOwned &&"))
-        assertTrue(wave.contains("0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES"))
+        assertTrue(wave.contains("0 until directWifiAdjacentPhysicalRunwayPages"))
         assertTrue(coordinator.contains("viewerGeneration = flight.viewerGeneration"))
         assertTrue(coordinator.contains(
             "adjacentPredecessorEpisodePath = flight.adjacentPredecessorEpisodePath"
@@ -481,7 +500,7 @@ class NtkClickOwnedExactBodyStreamTest {
             ".getOrNull() == capturedDirectWifiNetworkHandle"
         ))
         assertTrue(preparation.contains(
-            "pageIndex in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES"
+            "pageIndex in 0 until directWifiAdjacentPhysicalRunwayPages"
         ))
         assertTrue(preparation.contains(
             "earlyJpgCandidates[pageIndex]?.getNow(null)"
@@ -600,6 +619,11 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(
             quarantine.contains(
                 "private const val DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES = 4"
+            )
+        )
+        assertTrue(
+            quarantine.contains(
+                "private const val HOST_GPU_DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES = 5"
             )
         )
         assertTrue(quarantine.contains("networkRelease.thenCombine(adjacentRunwayRelease)"))

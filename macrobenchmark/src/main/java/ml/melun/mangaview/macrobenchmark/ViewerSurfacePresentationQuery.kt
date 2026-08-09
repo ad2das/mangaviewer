@@ -173,7 +173,7 @@ internal object ViewerSurfacePresentationQuery {
                    ROW_NUMBER() OVER (
                        PARTITION BY mapped_queues.submission_id
                        ORDER BY surface_presents.present_ts
-                   ) AS candidate_rank
+                   ) AS present_candidate_rank
             FROM mapped_queues
             JOIN surface_presents
               ON surface_presents.layer_name = mapped_queues.layer_name
@@ -181,7 +181,7 @@ internal object ViewerSurfacePresentationQuery {
              AND surface_presents.present_ts >= mapped_queues.queue_ts
         ),
         presented AS MATERIALIZED (
-            SELECT * FROM present_candidates WHERE candidate_rank = 1
+            SELECT * FROM present_candidates WHERE present_candidate_rank = 1
         ),
         coalesced_submission_attempts AS MATERIALIZED (
             SELECT physical_submissions.submission_id

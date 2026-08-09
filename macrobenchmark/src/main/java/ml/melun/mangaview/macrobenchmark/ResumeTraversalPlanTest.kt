@@ -651,6 +651,17 @@ class ResumeTraversalPlanTest {
     }
 
     @Test
+    fun exactFivePageRunwayUsesTheCallersPreparedRunwayContract() {
+        val accumulator = AdjacentForwardEvidenceAccumulator("/next", 5)
+        accumulator.observeExactRunwayReadyIpc(
+            validRunwayReadyIpcPayload().copy(pageCount = 5)
+        )
+
+        assertEquals(5, accumulator.snapshot.adjacentRunwayPageCount)
+        assertEquals(1_100_000_000L, accumulator.snapshot.adjacentRunwayReadyAtNanos)
+    }
+
+    @Test
     fun sourceProgressFailsClosedOnSemanticLagOrGestureOvershoot() {
         assertTrue(
             AdjacentSourceProgressPolicy.invalidReason(

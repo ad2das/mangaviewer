@@ -423,11 +423,12 @@ internal class NtkDirectWifiAdjacentWebtoonPredecessorGate {
  * Pure lane calculation for a direct-Wi-Fi adjacent webtoon.
  *
  * p0 is the only body admitted until OkHttp physically writes its exact request headers. At that
- * point p0 owns the first H2 stream and the remaining p1-p3 runway may open on the established
- * direct-Wi-Fi pool. This preserves p0's DNS/TLS/wire-order head start while giving a three-page current
- * tail enough time to prepare the complete next runway. Once p0 reaches EOF, admissions pause only
- * for its short decode/install ACK; afterwards the bounded p1-p3 lanes remain available. Rolling
- * admission still caps this phase at p1-p3. Carrier/SNI, manhwa, generic, and current-episode
+ * point p0 owns the first H2 stream and the remaining host p1-p4 runway may open on the established
+ * direct-Wi-Fi pool. This preserves p0's DNS/TLS/wire-order head start while giving the current tail
+ * enough time to prepare the complete next runway. Once p0 reaches EOF, admissions pause only
+ * for its short decode/install ACK; afterwards the bounded p1-p4 lanes remain available. Rolling
+ * admission still caps this phase at p1-p4 on the host and at p1-p3 on legacy profiles. Carrier/SNI,
+ * manhwa, generic, and current-episode
  * sessions never set [requiresHeadInstall] and retain their established lane policy.
  */
 internal object NtkDirectWifiAdjacentHeadInstallGatePolicy {
@@ -440,19 +441,22 @@ internal object NtkDirectWifiAdjacentHeadInstallGatePolicy {
         anchorRequestHeadersSent: Boolean,
         headPixelsInstalled: Boolean,
         prioritizeAnchorUntilEof: Boolean = false,
+        initialRunwayBodyCount: Int =
+            NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
     ): Int {
         require(progressiveLaneCount >= 0 && preAnchorGateOperations >= 0)
+        require(initialRunwayBodyCount > 0)
         return when {
             requiresHeadInstall && prioritizeAnchorUntilEof && !anchorBodyPublished ->
                 minOf(progressiveLaneCount, preAnchorGateOperations)
             requiresHeadInstall && anchorBodyPublished && !headPixelsInstalled -> 0
             requiresHeadInstall && headPixelsInstalled -> minOf(
                 progressiveLaneCount,
-                NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES - 1,
+                initialRunwayBodyCount - 1,
             )
             requiresHeadInstall && anchorRequestHeadersSent -> minOf(
                 progressiveLaneCount,
-                NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+                initialRunwayBodyCount,
             )
             webtoon && !anchorBodyPublished ->
                 minOf(progressiveLaneCount, preAnchorGateOperations)
@@ -1043,6 +1047,7 @@ internal object NtkStrictInitialWavePolicy {
     // the real viewport; carrier/SNI never enters this adjacent Wi-Fi-only cap.
     private const val MANHWA_WIFI_ADJACENT_PREFETCH_BODY_TRANSFERS = 4
     internal const val WIFI_ADJACENT_INITIAL_RUNWAY_BODIES = 4
+    internal const val HOST_GPU_ADJACENT_INITIAL_RUNWAY_BODIES = 5
     private const val WIFI_ADJACENT_ANCHOR_GATE_OPERATIONS = 1
 
     /**
@@ -1105,6 +1110,7 @@ internal object NtkStrictInitialWavePolicy {
         wifiQuicBulkTransport: Boolean = false,
         episodePageCount: Int = 0,
         adjacentPrefetch: Boolean = false,
+        adjacentPrefetchBodyTransfers: Int = MANHWA_WIFI_ADJACENT_PREFETCH_BODY_TRANSFERS,
         webtoonConnectionShardCount: Int = WEBTOON_CONNECTION_SHARDS,
     ): Int {
         require(episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
@@ -1113,6 +1119,7 @@ internal object NtkStrictInitialWavePolicy {
         require(webtoonPublishedBodyCount >= 0)
         require(episodePageCount >= 0)
         require(webtoonConnectionShardCount > 0)
+        require(adjacentPrefetchBodyTransfers > 0)
         return if (episodePath.startsWith("/webtoon/")) {
             // Until the entry body reaches EOF its pool is deliberately single-stream. Counting
             // it as a full six-stream pool pushes an avoidable extra body onto the other pools.
@@ -1166,7 +1173,7 @@ internal object NtkStrictInitialWavePolicy {
                 physicalLaneCount,
                 bulkTransferLimit,
                 if (adjacentPrefetch && !cellularResilientTransport) {
-                    MANHWA_WIFI_ADJACENT_PREFETCH_BODY_TRANSFERS
+                    adjacentPrefetchBodyTransfers
                 } else {
                     Int.MAX_VALUE
                 },
@@ -1226,16 +1233,18 @@ internal object NtkStrictInitialWavePolicy {
         rollingAdmission: Boolean,
         alreadyPublishedPageIndexes: Set<Int> = emptySet(),
         adjacentPrefetch: Boolean = false,
+        adjacentRunwayBodyCount: Int = WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
     ): Set<Int> {
         require(pageCount > 0)
         require(initialPageIndex in 0 until pageCount)
         require(alreadyPublishedPageIndexes.all { it in 0 until pageCount })
         require(alreadyPublishedPageIndexes.size <= pageCount)
+        require(adjacentRunwayBodyCount > 0)
         if (!rollingAdmission) return (0 until pageCount).toSet() - alreadyPublishedPageIndexes
         if (adjacentPrefetch) {
             val endExclusive = minOf(
                 pageCount,
-                initialPageIndex + WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+                initialPageIndex + adjacentRunwayBodyCount,
             )
             return (initialPageIndex until endExclusive).asSequence()
                 .filter { it !in alreadyPublishedPageIndexes }
@@ -1262,15 +1271,17 @@ internal object NtkStrictInitialWavePolicy {
         initialPageIndex: Int,
         directWifiTransport: Boolean,
         adjacentPrefetch: Boolean,
+        adjacentRunwayBodyCount: Int = WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
     ): Boolean {
         require(pageCount > 0)
         require(pageIndex in 0 until pageCount)
         require(initialPageIndex in 0 until pageCount)
+        require(adjacentRunwayBodyCount > 0)
         if (pageIndex == initialPageIndex) return true
         if (!directWifiTransport || !adjacentPrefetch || pageIndex < initialPageIndex) return false
         return pageIndex < minOf(
             pageCount,
-            initialPageIndex + WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+            initialPageIndex + adjacentRunwayBodyCount,
         )
     }
 
@@ -1288,17 +1299,35 @@ internal object NtkStrictInitialWavePolicy {
         adjacentPrefetch: Boolean,
         adjacentPrefetchReleased: Boolean,
         forwardResume: Boolean = false,
+        adjacentRunwayBodyCount: Int = WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
     ): Boolean {
         require(pageCount > 0)
         require(pageIndex in 0 until pageCount)
         require(initialPageIndex in 0 until pageCount)
+        require(adjacentRunwayBodyCount > 0)
         if (forwardResume && pageIndex < initialPageIndex) return false
         if (!adjacentPrefetch) return true
         if (pageIndex < initialPageIndex) return false
         return adjacentPrefetchReleased || pageIndex < minOf(
             pageCount,
-            initialPageIndex + WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+            initialPageIndex + adjacentRunwayBodyCount,
         )
+    }
+
+    fun adjacentInitialRunwayBodyCount(
+        emulatorRuntime: Boolean,
+        directWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        adjacentPrefetch: Boolean,
+        episodePath: String,
+    ): Int = if (
+        emulatorRuntime && directWifiTransport && !cellularResilientTransport &&
+        adjacentPrefetch &&
+        (episodePath.startsWith("/webtoon/") || episodePath.startsWith("/manhwa/"))
+    ) {
+        HOST_GPU_ADJACENT_INITIAL_RUNWAY_BODIES
+    } else {
+        WIFI_ADJACENT_INITIAL_RUNWAY_BODIES
     }
 
     fun submissionTarget(admittedPageCount: Int): Int {
@@ -1976,6 +2005,20 @@ internal class NtkStrictSourceSession(
     private var boundEpisode: NtkEpisodeToken? = null
     private var preGeometryPlan = NtkPreGeometrySourcePlanner.create(initialPageIndex, pages.size)
     private var sourceDemand: NtkSourceDemandSnapshot? = null
+    private val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+        Build.FINGERPRINT,
+        Build.MODEL,
+        Build.HARDWARE,
+        Build.PRODUCT,
+    )
+    private val adjacentInitialRunwayBodyCount =
+        NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
+            emulatorRuntime = hostGpuEmulatorRuntime,
+            directWifiTransport = directWifiTransport,
+            cellularResilientTransport = cellularResilientTransport,
+            adjacentPrefetch = adjacentPrefetch,
+            episodePath = planBinding.episodePath,
+        )
     private var rollingAdmittedPages: Set<Int> =
         NtkStrictInitialWavePolicy.admittedPageIndexes(
             pages.size,
@@ -1983,17 +2026,12 @@ internal class NtkStrictSourceSession(
             rollingAdmission,
             initialExactBodies.keys + externallyOwnedPageIndexes,
             adjacentPrefetch = adjacentPrefetch,
+            adjacentRunwayBodyCount = adjacentInitialRunwayBodyCount,
         )
     private var adjacentPrefetchReleased = false
-    private val hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
-        Build.FINGERPRINT,
-        Build.MODEL,
-        Build.HARDWARE,
-        Build.PRODUCT,
-    )
     private val requiresAdjacentHeadPixelsInstall = adjacentPrefetch && directWifiTransport &&
         !cellularResilientTransport && planBinding.episodePath.startsWith("/webtoon/")
-    private val hostGpuEmulatorAdjacentP0EofPriority =
+    private val hostGpuEmulatorAdjacentP0Predecode =
         requiresAdjacentHeadPixelsInstall && hostGpuEmulatorRuntime
     private var adjacentAnchorRequestHeadersSent =
         !requiresAdjacentHeadPixelsInstall
@@ -2020,6 +2058,7 @@ internal class NtkStrictSourceSession(
                     manhwaTransferLimit = manhwaPhysicalTransferLimit,
                     cellularResilientTransport = cellularResilientTransport,
                     adjacentPrefetch = adjacentPrefetch,
+                    adjacentPrefetchBodyTransfers = adjacentInitialRunwayBodyCount,
                 )
             },
             webtoonShardCount = webtoonConnectionShardCount,
@@ -2409,6 +2448,7 @@ internal class NtkStrictSourceSession(
             adjacentPrefetch = adjacentPrefetch,
             adjacentPrefetchReleased = adjacentPrefetchReleased,
             forwardResume = rollingAdmission && initialPageIndex > 0,
+            adjacentRunwayBodyCount = adjacentInitialRunwayBodyCount,
         )
 
     private fun startReleasedAdjacentRoutePreparationsActor() {
@@ -2430,6 +2470,7 @@ internal class NtkStrictSourceSession(
                     initialPageIndex = initialPageIndex,
                     adjacentPrefetch = true,
                     adjacentPrefetchReleased = false,
+                    adjacentRunwayBodyCount = adjacentInitialRunwayBodyCount,
                 )
             if (wasInitiallyAdmitted) return@forEachIndexed
             val preparation = createRoutePreparation(pageIndex)
@@ -2754,7 +2795,7 @@ internal class NtkStrictSourceSession(
         if (!adjacentPrefetch || adjacentPrefetchReleased) return
         val runwayEndExclusive = minOf(
             pages.size,
-            initialPageIndex + NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES,
+            initialPageIndex + adjacentInitialRunwayBodyCount,
         )
         val runwayBodiesComplete = (initialPageIndex until runwayEndExclusive)
             .all { pages[it].publishedBody != null }
@@ -3002,6 +3043,7 @@ internal class NtkStrictSourceSession(
             wifiQuicBulkTransport = wifiQuicBulkTransport,
             episodePageCount = pages.size,
             adjacentPrefetch = adjacentPrefetch && !adjacentPrefetchReleased,
+            adjacentPrefetchBodyTransfers = adjacentInitialRunwayBodyCount,
             webtoonConnectionShardCount = webtoonConnectionShardCount,
         )
         val adaptive = wifiWebtoonAdaptiveLanes ?: return base
@@ -3069,7 +3111,8 @@ internal class NtkStrictSourceSession(
             anchorBodyPublished = anchorBodyPublished,
             anchorRequestHeadersSent = adjacentAnchorRequestHeadersSent,
             headPixelsInstalled = adjacentHeadPixelsInstalled,
-            prioritizeAnchorUntilEof = hostGpuEmulatorAdjacentP0EofPriority,
+            prioritizeAnchorUntilEof = false,
+            initialRunwayBodyCount = adjacentInitialRunwayBodyCount,
         )
         val launchLimitThisTurn = when {
             initialWaveCount < initialQuarantineWaveTargetCount ->
@@ -3299,6 +3342,7 @@ internal class NtkStrictSourceSession(
             initialPageIndex = initialPageIndex,
             directWifiTransport = directWifiTransport,
             adjacentPrefetch = adjacentPrefetch,
+            adjacentRunwayBodyCount = adjacentInitialRunwayBodyCount,
         )
     }
 
@@ -3430,7 +3474,7 @@ internal class NtkStrictSourceSession(
                         Long.MAX_VALUE
                     }
                     val predecodedOriginal = if (
-                        hostGpuEmulatorAdjacentP0EofPriority &&
+                        hostGpuEmulatorAdjacentP0Predecode &&
                         initialPageIndex == 0 && pageIndex == 0 &&
                         body.encodedBytes != null &&
                         sourceHeight <= HOST_GPU_ADJACENT_P0_PREDECODE_MAX_SOURCE_HEIGHT &&

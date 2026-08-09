@@ -61,6 +61,36 @@ class NtkDirectWifiAdjacentHeadInstallGatePolicyTest {
     }
 
     @Test
+    fun hostGpuP0RequestHeadersReleaseTheFivePageAdjacentRunway() {
+        assertEquals(
+            5,
+            NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
+                progressiveLaneCount = 120,
+                preAnchorGateOperations = 1,
+                webtoon = true,
+                requiresHeadInstall = true,
+                anchorBodyPublished = false,
+                anchorRequestHeadersSent = true,
+                headPixelsInstalled = false,
+                initialRunwayBodyCount = 5,
+            ),
+        )
+        assertEquals(
+            4,
+            NtkDirectWifiAdjacentHeadInstallGatePolicy.usableLaneCount(
+                progressiveLaneCount = 120,
+                preAnchorGateOperations = 1,
+                webtoon = true,
+                requiresHeadInstall = true,
+                anchorBodyPublished = true,
+                anchorRequestHeadersSent = true,
+                headPixelsInstalled = true,
+                initialRunwayBodyCount = 5,
+            ),
+        )
+    }
+
+    @Test
     fun hostGpuEmulatorKeepsP0ExclusiveUntilItsBodyReachesEof() {
         assertEquals(
             1,

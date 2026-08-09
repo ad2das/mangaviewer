@@ -165,8 +165,8 @@
       "type": "object",
       "required": ["webtoon", "manhwa"],
       "properties": {
-        "webtoon": { "type": "integer", "minimum": 20 },
-        "manhwa": { "type": "integer", "minimum": 20 }
+        "webtoon": { "type": "integer", "minimum": 0 },
+        "manhwa": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
     },
@@ -628,6 +628,7 @@
         "p0IpcTimestampCrossCheckPassed": { "type": ["boolean", "null"] },
         "measurementInvalid": { "type": "boolean" },
         "measurementInvalidReason": { "type": ["string", "null"] },
+        "networkUnavailableBeforeFirstDocument": { "type": ["boolean", "null"] },
         "invalidMeasurementDiagnostics": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
@@ -685,6 +686,14 @@
         "decodeCancellationCount": { "type": ["integer", "null"], "minimum": 0 },
         "pageListFailureCount": { "type": ["integer", "null"], "minimum": 0 },
         "pageListCancellationCount": { "type": ["integer", "null"], "minimum": 0 },
+        "postQualifiedAdjacentPageListFailureCount": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "postQualifiedAdjacentPageListCancellationCount": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
         "requestQueueMetricsMeasured": { "type": ["boolean", "null"] },
         "peakActiveRequestQueue": { "type": ["integer", "null"], "minimum": 0 },
         "peakActiveRequestQueueLimit": { "type": ["integer", "null"], "minimum": 1 },
@@ -958,8 +967,9 @@
               "expectedAdjacentEpisodePath": { "type": "string", "minLength": 1 },
               "expectedAdjacentPageCount": { "type": "integer", "minimum": 5 },
               "adjacentRunwayTargetEpisode": { "type": "string", "minLength": 1 },
-              "adjacentRunwayPageCount": { "const": 4 },
+              "adjacentRunwayPageCount": { "const": 5 },
               "adjacentObservedRunwayDrawableCount": { "const": 5 },
+              "runwayReadyBeforeTail": { "type": "boolean" },
               "adjacentTotalPageCount": { "type": "integer", "minimum": 5 },
               "adjacentTraversalGestureCount": { "type": "integer", "minimum": 1 },
               "adjacentP0TraversalGestureCount": { "type": "integer", "minimum": 0 },

@@ -11,6 +11,8 @@ class ViewerSurfacePresentationQueryTest {
 
         assertTrue(sql.contains("surface_presents.frame_number = mapped_queues.frame_number"))
         assertTrue(sql.contains("surface_presents.layer_name = mapped_queues.layer_name"))
+        assertTrue(sql.contains(") AS present_candidate_rank"))
+        assertTrue(sql.contains("WHERE present_candidate_rank = 1"))
         assertTrue(sql.contains("surface_queues.queue_ts >= physical_submissions.submit_ts"))
         assertTrue(sql.contains("PARTITION BY input_segment_start_ts"))
         assertTrue(sql.contains("PARTITION BY physical_submissions.submission_id"))

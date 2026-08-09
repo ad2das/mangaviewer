@@ -372,9 +372,11 @@ internal data class AdjacentForwardEvidence(
  */
 internal class AdjacentForwardEvidenceAccumulator(
     private val expectedAdjacentEpisodePath: String,
+    private val expectedRunwayPageCount: Int = 4,
 ) {
     init {
         require(expectedAdjacentEpisodePath.isNotBlank())
+        require(expectedRunwayPageCount > 0)
     }
 
     private var current = AdjacentForwardEvidence()
@@ -451,7 +453,7 @@ internal class AdjacentForwardEvidenceAccumulator(
         if (payload.episodePath != expectedAdjacentEpisodePath ||
             payload.adjacentWorkStartedAtNanos <= 0L ||
             payload.adjacentWorkStartedAtNanos > payload.readyAtNanos ||
-            payload.readyAtNanos <= 0L || payload.pageCount != 4 ||
+            payload.readyAtNanos <= 0L || payload.pageCount != expectedRunwayPageCount ||
             payload.totalPageCount < payload.pageCount
         ) return
         current = current.copy(
@@ -577,7 +579,7 @@ internal object AdjacentSemanticCommitDescriptionPolicy {
  * `adjacentRunwayPageCount` remains useful corroborating telemetry, but it cannot complete this
  * gate. Each required source must itself appear in an `actual:` state produced by a committed,
  * identity-valid, full-quality viewport while real forward input is running. This prevents a
- * background-ready p0-p3 count from being mistaken for seamless reading UX.
+ * background-ready p0-p4 count from being mistaken for seamless reading UX.
  */
 internal class AdjacentEpisodeProofGate(
     private val expectedEpisodePath: String,
@@ -604,7 +606,10 @@ internal class AdjacentEpisodeProofGate(
     var preparedRunwayDescription: String = ""
         private set
 
-    val forwardEvidence = AdjacentForwardEvidenceAccumulator(expectedEpisodePath)
+    val forwardEvidence = AdjacentForwardEvidenceAccumulator(
+        expectedEpisodePath,
+        preparedRunwayPageCountRequirement,
+    )
 
     private val physicallyObservedSources = BooleanArray(requiredRunwayPageCount)
     private val sourcePresentedAtNanos = LongArray(requiredRunwayPageCount)
@@ -773,7 +778,7 @@ internal data class AdjacentRunwayReadyIpcPayload(
     val viewerGeneration: Long,
 )
 
-/** Exact identity/count/clock contract for the app-owned p0-p3 drawable-residency signal. */
+/** Exact identity/count/clock contract for the app-owned p0-p4 drawable-residency signal. */
 internal object AdjacentRunwayReadyIpcSignalPolicy {
     fun rejection(
         expectedNonce: String,
@@ -908,8 +913,9 @@ internal object AdjacentP0IpcSignalPolicy {
 
 /**
  * Prevents a prepared/armed channel from proving p0 before the first physical DOWN begins.
- * A terminal Continue is the sole exception: its remaining current image can be shorter than the
- * viewport, so an exact p0 compositor checkpoint is legitimately part of the first opaque frame.
+ * A forward-only Continue is the exception when its exact remaining tail is naturally shorter
+ * than the viewport: an already-prepared p0 checkpoint is then legitimately part of the first
+ * opaque frame. Identity, generation and compositor timestamps remain independently validated.
  */
 internal object AdjacentP0AfterInputStartPolicy {
     fun rejection(

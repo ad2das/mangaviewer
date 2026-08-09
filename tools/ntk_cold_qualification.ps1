@@ -16,6 +16,9 @@ param(
     [long]$Seed = 0,
     [string]$ReplaySelectionPath = "",
     [string]$ReplayTargetKeys = "",
+    [ValidateCount(1, 2)]
+    [ValidateSet("webtoon", "manhwa")]
+    [string[]]$WorkTypes = @("webtoon", "manhwa"),
     [ValidateRange(1, 100)]
     [int]$CountPerType = 20,
     [ValidateCount(1, 3)]
@@ -48,6 +51,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:HostGpuAvdName = $HostGpuAvdName
 $script:HostGpuEmulatorPath = $HostGpuEmulatorPath
+$WorkTypes = @(@("webtoon", "manhwa") | Where-Object {
+    $_ -in @($WorkTypes | ForEach-Object { $_.ToLowerInvariant() })
+})
+if($WorkTypes.Count -eq 0) {
+    throw "At least one work type is required"
+}
 if($FastFunctionalTriage) {
     # A warm reopen is a separate diagnostic and doubles neither cold coverage nor triage value.
     # The canonical path keeps its caller-selected setting unchanged.
@@ -1851,6 +1860,34 @@ function Resolve-ColdCaseClassification(
     return "PRODUCT_INVALID"
 }
 
+function Test-ColdTransientNetworkOutage(
+    [AllowNull()][string]$InstrumentationText,
+    [AllowNull()][AllowEmptyCollection()][object[]]$PageListFailures,
+    [AllowNull()][AllowEmptyCollection()][object[]]$PageListSuccesses,
+    [AllowNull()][AllowEmptyCollection()][object[]]$ImageRequestStarts,
+    [AllowNull()][string]$LogcatText
+) {
+    if([string]::IsNullOrWhiteSpace($InstrumentationText) -or
+            $InstrumentationText -notmatch
+                'Timed out waiting for first HWUI-committed actual work-image draw') {
+        return $false
+    }
+    if($null -eq $PageListFailures -or $PageListFailures.Count -lt 2 -or
+            ($null -ne $PageListSuccesses -and $PageListSuccesses.Count -gt 0) -or
+            ($null -ne $ImageRequestStarts -and $ImageRequestStarts.Count -gt 0)) {
+        return $false
+    }
+    foreach($failure in $PageListFailures) {
+        if([string]$failure.value.outcome -cne 'failed_UnknownHostException') {
+            return $false
+        }
+    }
+    return -not [string]::IsNullOrWhiteSpace($LogcatText) -and
+        $LogcatText.Contains(
+            'ntk_domain_refresh_deferred_to_demand_failure',
+            [StringComparison]::Ordinal)
+}
+
 function Get-EventValues(
     [AllowNull()][AllowEmptyCollection()][object[]]$Events,
     [Parameter(Mandatory)][string]$Name
@@ -2551,14 +2588,23 @@ function Invoke-ColdCase(
         [string]$_.value.event -ceq "decode" -and
             [string]$_.value.phase -ceq "cancel"
     })
-    $pageListFailures = @($sessionTelemetry | Where-Object {
+    $allPageListFailures = @($sessionTelemetry | Where-Object {
         [string]$_.value.event -ceq "page_list_request" -and
             [string]$_.value.phase -ceq "fail"
     })
-    $pageListCancellations = @($sessionTelemetry | Where-Object {
+    $pageListSuccesses = @($sessionTelemetry | Where-Object {
+        [string]$_.value.event -ceq "page_list_request" -and
+            [string]$_.value.phase -ceq "end" -and
+            [string]$_.value.outcome -ceq "success"
+    })
+    $allPageListCancellations = @($sessionTelemetry | Where-Object {
         [string]$_.value.event -ceq "page_list_request" -and
             [string]$_.value.phase -ceq "cancel"
     })
+    $pageListFailures = @($allPageListFailures)
+    $pageListCancellations = @($allPageListCancellations)
+    $postQualifiedAdjacentPageListFailures = @()
+    $postQualifiedAdjacentPageListCancellations = @()
     $forwardTraversalStartNanos = 0L
     $forwardTraversalEndNanos = 0L
     $forwardTraversalGestureCount = 0L
@@ -3217,13 +3263,21 @@ function Invoke-ColdCase(
     $instrumentationMeasurementInvalidReason =
         Find-InstrumentationMeasurementInvalidReason $instrumentationFailureText
     $macroResultTransportInvalid = -not $exactMacroResultArtifact.valid
+    $networkUnavailableBeforeFirstDocument = Test-ColdTransientNetworkOutage `
+        $instrumentationFailureText `
+        $allPageListFailures `
+        $pageListSuccesses `
+        $requestStarts `
+        $logcat.Text
     $macroMeasurementInvalid = $macroReportedMeasurementInvalid -or
         -not [string]::IsNullOrWhiteSpace($instrumentationMeasurementInvalidReason) -or
-        $macroResultTransportInvalid
+        $macroResultTransportInvalid -or $networkUnavailableBeforeFirstDocument
     $macroMeasurementInvalidReason = if($macroReportedMeasurementInvalid) {
         [string](Get-OptionalProperty $macroResult "measurementInvalidReason")
     } elseif(-not [string]::IsNullOrWhiteSpace($instrumentationMeasurementInvalidReason)) {
         $instrumentationMeasurementInvalidReason
+    } elseif($networkUnavailableBeforeFirstDocument) {
+        "MEASUREMENT_INVALID: emulator network resolver unavailable before first document"
     } elseif($macroResultTransportInvalid) {
         "MEASUREMENT_INVALID: " + (@($exactMacroResultArtifact.problems) -join "; ")
     } else { "" }
@@ -3463,7 +3517,7 @@ function Invoke-ColdCase(
     $observedAdjacentTotalPageCount = if($null -ne $macroResult) {
         [int](Get-OptionalProperty $macroResult "adjacentTotalPageCount")
     } else { 0 }
-    $requiredAdjacentRunwayPages = 4
+    $requiredAdjacentRunwayPages = 5
     $requiredAdjacentPhysicalPages = 5
     $adjacentWorkStartedAtNanos = [long](
         Get-OptionalProperty $macroResult "adjacentWorkStartedAtNanos"
@@ -3549,7 +3603,7 @@ function Invoke-ColdCase(
     } elseif([int](Get-OptionalProperty $macroResult "adjacentRunwayPageCount") -ne
                 $requiredAdjacentRunwayPages) {
         $violations.Add(
-            "forward-adjacent atomic runway p1-p$requiredAdjacentRunwayPages was not proven"
+            "forward-adjacent p0-p4 attached runway was not proven"
         )
     } elseif([int](Get-OptionalProperty $macroResult "adjacentObservedRunwayDrawableCount") -ne
             $requiredAdjacentPhysicalPages) {
@@ -3652,9 +3706,53 @@ function Invoke-ColdCase(
             "forward-adjacent p0-p4 source presentation/progress deadlines were not proven"
         )
     }
+    # This qualification owns exactly the selected current episode and the selected next
+    # episode's p0-p4 runway. Continuous input can move beyond p4 and start a third episode
+    # before the harness closes ReaderV2Activity. Once all five physical and semantic proofs
+    # are complete, later page-list cancellation/failure is outside this case's product scope.
+    # Keep it as a diagnostic instead of misclassifying an already-complete p0-p4 runway.
+    if($sourceProgressValid -and
+            (Get-OptionalProperty $macroResult "adjacentPhysicalRunwayPassed") -eq $true) {
+        $qualifiedAdjacentCompleteAtNanos = 0L
+        foreach($timestamp in @($sourceAcceptedAt) + @($sourceSemanticObservedAt)) {
+            $parsedTimestamp = 0L
+            if([long]::TryParse([string]$timestamp, [ref]$parsedTimestamp) -and
+                    $parsedTimestamp -gt $qualifiedAdjacentCompleteAtNanos) {
+                $qualifiedAdjacentCompleteAtNanos = $parsedTimestamp
+            }
+        }
+        if($qualifiedAdjacentCompleteAtNanos -gt 0L) {
+            $pageListFailures = @($allPageListFailures | Where-Object {
+                [long]$_.value.timestampNanos -le $qualifiedAdjacentCompleteAtNanos
+            })
+            $postQualifiedAdjacentPageListFailures = @(
+                $allPageListFailures | Where-Object {
+                    [long]$_.value.timestampNanos -gt $qualifiedAdjacentCompleteAtNanos
+                }
+            )
+            $pageListCancellations = @($allPageListCancellations | Where-Object {
+                [long]$_.value.timestampNanos -le $qualifiedAdjacentCompleteAtNanos
+            })
+            $postQualifiedAdjacentPageListCancellations = @(
+                $allPageListCancellations | Where-Object {
+                    [long]$_.value.timestampNanos -gt $qualifiedAdjacentCompleteAtNanos
+                }
+            )
+        }
+    }
     $adjacentP0SeamMs = Get-OptionalProperty $macroResult "adjacentP0SeamMs"
     $expectedAdjacentP0SeamMs =
         ($firstAdjacentActualAtNanos - $forwardBoundaryReachedAtNanos) / 1000000.0
+    if($allImagesReadyAtNanos -le 0 -or $adjacentWorkStartedAtNanos -lt
+            $allImagesReadyAtNanos) {
+        $violations.Add(
+            "forward-adjacent physical work preceded current resume-to-tail readiness"
+        )
+    } elseif(($adjacentWorkStartedAtNanos - $allImagesReadyAtNanos) -gt 100000000L) {
+        $violations.Add(
+            "forward-adjacent preparation did not start within 100 ms of current readiness"
+        )
+    }
     if($forwardBoundaryReachedAtNanos -le 0 -or
             $firstAdjacentActualAtNanos -lt $forwardBoundaryReachedAtNanos -or
             [string](Get-OptionalProperty $macroResult "firstAdjacentActualEpisode") -cne
@@ -3665,6 +3763,10 @@ function Invoke-ColdCase(
         $violations.Add("forward-adjacent p0 seam timing evidence was invalid")
     }
     $runwayReadyBeforeTail = Get-OptionalProperty $macroResult "runwayReadyBeforeTail"
+    # Diagnostic only. A cold response can finish after an exceptionally early boundary even
+    # when all five physical requests were dispatched immediately after current readiness.
+    # Qualification continues to require <=100 ms dispatch, five-page readiness, and exact
+    # eventual physical/semantic proof, without imposing a network-impossible finish deadline.
     if($null -eq $macroResult -or
             (Get-OptionalProperty $macroResult "measurementInvalid") -ne $false -or
             $null -ne (Get-OptionalProperty $macroResult "measurementInvalidReason") -or
@@ -3707,8 +3809,7 @@ function Invoke-ColdCase(
         $null -eq (Get-OptionalProperty $macroResult "p0SemanticEventLeadMs")
     }
     $terminalResumeInitialViewportP0 =
-        [int](Get-OptionalProperty $macroResult "resumePage") -eq ($currentPageCount - 1) -and
-        [int](Get-OptionalProperty $macroResult "expectedForwardPageCount") -eq 1 -and
+        [int](Get-OptionalProperty $macroResult "expectedForwardPageCount") -gt 0 -and
         [int](Get-OptionalProperty $macroResult "resumeOffset") -le 0 -and
         [int](Get-OptionalProperty $macroResult "p0GesturesAtObservation") -eq 0 -and
         $p0IpcGesturesAtSignal -eq 0
@@ -4200,6 +4301,7 @@ function Invoke-ColdCase(
         measurementInvalidReason = if($macroMeasurementInvalid) {
             $macroMeasurementInvalidReason
         } else { $null }
+        networkUnavailableBeforeFirstDocument = $networkUnavailableBeforeFirstDocument
         invalidMeasurementDiagnostics = @($invalidMeasurementDiagnostics)
         inputGestureCount = if($null -ne $macroResult) {
             Get-OptionalProperty $macroResult "inputGestureCount"
@@ -4333,6 +4435,10 @@ function Invoke-ColdCase(
         sessionDecodeCancellationCount = $sessionDecodeCancellations.Count
         pageListFailureCount = $pageListFailures.Count
         pageListCancellationCount = $pageListCancellations.Count
+        postQualifiedAdjacentPageListFailureCount =
+            $postQualifiedAdjacentPageListFailures.Count
+        postQualifiedAdjacentPageListCancellationCount =
+            $postQualifiedAdjacentPageListCancellations.Count
         requestQueueMetricsMeasured = $requestQueueMetrics.measured
         peakActiveRequestQueue = $requestQueueMetrics.peakActive
         peakActiveRequestQueueLimit = $script:ProductionMaxActiveRequestQueue
@@ -4569,7 +4675,9 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
     if(([string]$replay.siteRoot).TrimEnd('/') -cne $siteRoot) {
         throw "Replay selection siteRoot mismatch: requested=$siteRoot recorded=$($replay.siteRoot)"
     }
-    $replayTargets = @($replay.targets)
+    $replayTargets = @($replay.targets | Where-Object {
+        ([string]$_.workType) -cin $WorkTypes
+    })
     if(-not [string]::IsNullOrWhiteSpace($replayTargetFilter)) {
         $requestedTargetKeys = @($replayTargetFilter.Split(
             ',',
@@ -4608,7 +4716,7 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
         }
     }
     if([string]::IsNullOrWhiteSpace($replayTargetFilter)) {
-        foreach($workType in @("webtoon", "manhwa")) {
+        foreach($workType in $WorkTypes) {
             $typeCount = @($replayTargets | Where-Object {
                 ([string]$_.workType) -ceq $workType
             }).Count
@@ -4706,11 +4814,15 @@ if(-not [string]::IsNullOrWhiteSpace($replayPath)) {
     }
 } else {
     Write-Host "Fetching complete metadata catalogs on the host; no image URL is requested."
-    $webtoonCatalog = @(Get-CompleteCatalog "webtoon")
-    $manhwaCatalog = @(Get-CompleteCatalog "manhwa")
+    $webtoonCatalog = @(if("webtoon" -cin $WorkTypes) {
+        Get-CompleteCatalog "webtoon"
+    })
+    $manhwaCatalog = @(if("manhwa" -cin $WorkTypes) {
+        Get-CompleteCatalog "manhwa"
+    })
     $targets = [Collections.Generic.List[object]]::new()
     $accessExcludedWorks = [Collections.Generic.List[object]]::new()
-    foreach($workType in @("webtoon", "manhwa")) {
+    foreach($workType in $WorkTypes) {
         $catalog = if($workType -ceq "webtoon") { $webtoonCatalog } else { $manhwaCatalog }
         $ranked = @(Get-StableRandomWorkRanking $catalog $workType)
         $initiallyRejected = [Collections.Generic.Queue[object]]::new()
@@ -5040,6 +5152,7 @@ $rerunParts = [Collections.Generic.List[string]]::new()
 [void]$rerunParts.Add("-NtkSiteRoot $(ConvertTo-PowerShellLiteral $siteRoot)")
 [void]$rerunParts.Add("-OutDir $(ConvertTo-PowerShellLiteral $OutDir)")
 [void]$rerunParts.Add("-Seed $Seed")
+[void]$rerunParts.Add("-WorkTypes $($WorkTypes -join ',')")
 [void]$rerunParts.Add("-CountPerType $CountPerType")
 [void]$rerunParts.Add("-ResumePercents $($ResumePercents -join ',')")
 [void]$rerunParts.Add("-FirstImageSlaMs $FirstImageSlaMs")

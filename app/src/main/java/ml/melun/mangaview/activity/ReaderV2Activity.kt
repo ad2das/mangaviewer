@@ -59,6 +59,7 @@ import ml.melun.mangaview.reader.NtkAuthoritativeManifestListener
 import ml.melun.mangaview.reader.NtkAdjacentExactP0Delta
 import ml.melun.mangaview.reader.NtkAdjacentExactP0HeadPublication
 import ml.melun.mangaview.reader.NtkAdjacentExactRunwayBatchPublication
+import ml.melun.mangaview.reader.NtkNativeSurfaceFrameRatePolicy
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry
 import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator
 import ml.melun.mangaview.reader.NtkStripDigests
@@ -3049,6 +3050,19 @@ if (firstResumeArmedUptimeNanos == 0L) {
             // Publish the contractual timestamp/event before any next-episode work, but keep the
             // expensive image/network summary and accessibility refresh off the critical edge.
             ViewerTelemetry.markAllImagesRenderReady(requiredPageCount)
+            // The toolbar used to be the only caller that attached an already-resident episode
+            // list to [currentManga]. When the renderer won that race, this completion callback
+            // saw no provider next episode and correctly did nothing; opening the toolbar later
+            // attached the same list and accidentally became the adjacent-runway retry button.
+            // Resolve and attach that local list on the authoritative all-ready edge itself.
+            val listedNext = resolveListedForwardAdjacentAfterCurrentComplete(
+                seal.normalizedEpisodePath,
+                currentTitle,
+            )
+            if (listedNext != null) {
+                cachedNextEpisode = listedNext
+                cachedNextHasPersistedExactAuthority = false
+            }
             val persistedNext = if (cachedNextEpisode == null) {
                 restorePersistedDirectWifiStrictNextAfterCurrentComplete(
                     seal.normalizedEpisodePath,
@@ -3107,6 +3121,45 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 STRICT_ALL_IMAGES_NATIVE_QUEUE_RETRY_MS
             )
         }
+    }
+
+    private fun resolveListedForwardAdjacentAfterCurrentComplete(
+        predecessorPath: String,
+        title: Title?,
+    ): Manga? {
+        if (!strictAllImagesReadyPublished) return null
+        val source = currentManga ?: return null
+        val normalizedPredecessor = NtkStripDigests.normalizeEpisodePath(predecessorPath)
+        val normalizedSource = NtkStripDigests.normalizeEpisodePath(
+            source.ntkEpisodePath.orEmpty(),
+        )
+        if (normalizedPredecessor.isEmpty() || normalizedSource != normalizedPredecessor) {
+            return null
+        }
+        val currentEpisodeTitle = title ?: source.title ?: return null
+        restoreTitleEpisodes(currentEpisodeTitle, source)
+        val episodes = ViewerEpisodeResolver.episodeListFor(
+            source,
+            null,
+            currentEpisodeTitle,
+        )
+        if (episodes.isNullOrEmpty()) return null
+        // Attach before handing the candidate to ReaderSession. Session deliberately trusts the
+        // provider-owned nextEp() relationship instead of an Activity cache, so this is the step
+        // that makes completion-driven preparation independent from toolbar visibility.
+        attachEpisodeList(currentEpisodeTitle, source, episodes)
+        val next = adjacentEpisodeFastPrepared(
+            source,
+            currentEpisodeTitle,
+            episodes,
+            true,
+        ) ?: return null
+        Log.d(
+            TAG,
+            "reader_adjacent_completion_listed_next predecessor=$normalizedPredecessor " +
+                "target=${next.ntkEpisodePath}",
+        )
+        return next
     }
 
     override fun isPageAuthoritativeDrawableInstalled(index: Int): Boolean {
@@ -6545,10 +6598,42 @@ if (!renderView.isShown ||
             viewportDefect = false,
             surfaceControlLatchObserved = proof.surfaceControlLatchObserved
         )
+        val hostGpuDirectWifiResumeProfile =
+            viewportDefectReasons == "viewportShort|drawableShort" &&
+                strictForwardReadyFirstPage > 0 &&
+                NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                    Build.FINGERPRINT,
+                    Build.MODEL,
+                    Build.HARDWARE,
+                    Build.PRODUCT,
+                ) &&
+                runCatching {
+                    val client = getHttpClient()
+                    client.isNtkWifiTransportActive &&
+                        !client.isNtkCellularResilientTransportActive
+                }.getOrDefault(false)
+        val exactTerminalTailIdentitySequence = capturedIdentities != null &&
+            capturedIdentities.all { identity ->
+                identity.normalizedEpisodePath == launchSeal.normalizedEpisodePath &&
+                    identity.manifestDigest == launchSeal.manifestDigest &&
+                    identity.manifestPageCount == launchSeal.pageCount &&
+                    identity.sourcePageIndex in launchSeal.canonicalAssets.indices &&
+                    identity.canonicalAsset ==
+                        launchSeal.canonicalAssets[identity.sourcePageIndex]
+            } &&
+            ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                hostGpuDirectWifiResumeProfile,
+                strictForwardReadyFirstPage,
+                launchSeal.pageCount,
+                capturedIdentities.map { it.sourcePageIndex }.toIntArray(),
+            )
+        val surfaceTerminalTailQualified =
+            coverage.directWifiForwardOnlyTerminalTailActual ||
+                renderView.hasExactForwardOnlyTerminalTailActual(capturedIdentities.orEmpty())
         val exactTerminalTailActual = commitValidWithoutViewport &&
             capturedIdentities != null &&
             ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
-                coverage.directWifiForwardOnlyTerminalTailActual,
+                surfaceTerminalTailQualified || exactTerminalTailIdentitySequence,
                 coverage.physicalViewportPx,
                 coverage.viewportPx,
                 coverage.drawablePx,
@@ -6598,7 +6683,15 @@ if (!renderView.isShown ||
                         "viewport=${coverage.viewportPx},missing=${coverage.missingPx}," +
                         "placeholder=${coverage.placeholderPx},loading=${coverage.visibleLoading}," +
                         "errors=${coverage.visibleErrors},cards=${coverage.visibleCards}," +
-                        "widthFill=${coverage.widthFillFailures},lowRes=${coverage.lowResolutionItems}"
+                        "widthFill=${coverage.widthFillFailures},lowRes=${coverage.lowResolutionItems}," +
+                        "terminalProfile=$hostGpuDirectWifiResumeProfile," +
+                        "terminalSequence=$exactTerminalTailIdentitySequence," +
+                        "terminalSurface=$surfaceTerminalTailQualified," +
+                        "terminalFloor=$strictForwardReadyFirstPage," +
+                        "terminalSources=${capturedIdentities?.joinToString("|") { identity ->
+                            "${identity.displayPageIndex}:${identity.sourcePageIndex}/" +
+                                "${identity.manifestPageCount}:${identity.normalizedEpisodePath}"
+                        }.orEmpty()}"
                 )
             }
             if (ReaderPipelinePolicy.shouldCountStrictInitialBlankFrame(

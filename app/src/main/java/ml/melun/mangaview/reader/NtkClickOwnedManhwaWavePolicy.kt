@@ -244,7 +244,17 @@ internal object NtkClickOwnedManhwaWavePolicy {
                 }.thenBy { it },
             )
         val position = hostOrder.indexOf(runwayPageIndex)
-        return if (position > 0) hostOrder[position - 1] else null
+        // A short resumed tail may have warmed only two replica hosts. In that topology the
+        // canonical owner for this host can be a *later* runway page (for example p0 assigned to
+        // p1's warm host). Waiting on that later page creates a forward dependency inside the
+        // p0-p4 wave; if its completion callback and the p0 admission race, p0 can remain pending
+        // forever even though p1-p4 are resident. Reuse only an earlier logical page. Bodies are
+        // still unordered and parallel when no earlier same-host owner exists.
+        return if (position > 0) {
+            hostOrder.take(position).lastOrNull { it < runwayPageIndex }
+        } else {
+            null
+        }
     }
 
     /**
@@ -264,7 +274,7 @@ internal object NtkClickOwnedManhwaWavePolicy {
         require(runwayPageIndex in 0 until runwayPageCount)
         return hostGpuEmulatorRuntime &&
             directWifiAdjacentOwned &&
-            runwayPageIndex < DIRECT_EXTENSION_RACE_PAGES &&
+            runwayPageIndex < runwayPageCount &&
             previousWarmPage != null &&
             previousWarmPage in 0 until runwayPageIndex
     }

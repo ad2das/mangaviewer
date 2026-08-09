@@ -7417,7 +7417,7 @@ class ReaderSession(
                 urls.size,
                 maxOf(
                     requiredGeneratedAppendReadyPages(target).coerceAtLeast(1),
-                    NTK_APPEND_INITIAL_RUNWAY_PAGES,
+                    initialAdjacentRunwayPageLimit(target.ntkEpisodePath),
                     generatedAppendVisibleRunwayPageLimit(target),
                     NTK_ADJACENT_ACTIVE_FOREGROUND_STREAM_PAGES
                 )
@@ -14336,7 +14336,7 @@ class ReaderSession(
         pageCount: Int,
     ) {
         if (!path.startsWith("/manhwa/") || !isDirectWifiStrictAdjacentTransportActive()) return
-        val requiredRunwayPages = minOf(NTK_APPEND_INITIAL_RUNWAY_PAGES, pageCount)
+        val requiredRunwayPages = minOf(initialAdjacentRunwayPageLimit(path), pageCount)
         if (sourceIndex !in 0 until requiredRunwayPages) return
         val complete = (0 until requiredRunwayPages).all { pageIndex ->
             adjacentStrictBodyDescriptors.containsKey(
@@ -15157,6 +15157,23 @@ class ReaderSession(
         return exactViewerApiAdjacentAuthority(target)
     }
 
+    private fun initialAdjacentRunwayPageLimit(episodePath: String?): Int {
+        val path = NtkStripDigests.normalizeEpisodePath(episodePath.orEmpty())
+        return if (
+            hostGpuEmulatorRuntime && isDirectWifiStrictAdjacentTransportActive() &&
+            (path.startsWith("/webtoon/") || path.startsWith("/manhwa/"))
+        ) {
+            NTK_HOST_GPU_DIRECT_WIFI_ADJACENT_RUNWAY_PAGES
+        } else {
+            NTK_APPEND_INITIAL_RUNWAY_PAGES
+        }
+    }
+
+    private fun requiredInitialAdjacentRunwayPages(target: Manga): Int {
+        val limit = initialAdjacentRunwayPageLimit(target.ntkEpisodePath)
+        return minOf(target.ntkImageCount.takeIf { it > 0 } ?: limit, limit)
+    }
+
     private fun initialAdjacentAppendRunwayRefCount(refs: List<PageRef>): Int {
         val target = refs.firstOrNull { it.transitionTitle == null }?.manga
         return initialAdjacentAppendRunwayRefCount(
@@ -15172,6 +15189,7 @@ class ReaderSession(
         if (refs.isEmpty()) return 0
         val cardOffset = refs.indexOfFirst { it.transitionTitle != null }
         val target = refs.firstOrNull { it.transitionTitle == null }?.manga
+        val initialRunwayPageLimit = initialAdjacentRunwayPageLimit(target?.ntkEpisodePath)
         val imageRunway = if (isDirectWifiStrictAdjacentTransportActive()) {
             val normalizedPath = NtkStripDigests.normalizeEpisodePath(
                 target?.ntkEpisodePath.orEmpty(),
@@ -15185,7 +15203,7 @@ class ReaderSession(
             } else {
                 val imageRefs = refs.asSequence()
                     .filter { it.transitionTitle == null }
-                    .take(NTK_APPEND_INITIAL_RUNWAY_PAGES)
+                    .take(initialRunwayPageLimit)
                     .toList()
                 val publishable = if (strictExactDescriptorOnly) {
                     // The profile was frozen before this append turn. Do not let a concurrent
@@ -15199,15 +15217,15 @@ class ReaderSession(
                     episodePath = normalizedPath,
                     sourceIndexes = imageRefs.map { it.sourceIndex },
                     publishable = publishable,
-                    maximumRunwayPages = NTK_APPEND_INITIAL_RUNWAY_PAGES,
+                    maximumRunwayPages = initialRunwayPageLimit,
                     strictExactDescriptorOnly = strictExactDescriptorOnly,
                     sourceSides = imageRefs.map { it.side },
                 )
             }
         } else if (target != null && isInitialTailAdjacentPreappendTarget(target)) {
-            NTK_APPEND_INITIAL_RUNWAY_PAGES
+            initialRunwayPageLimit
         } else {
-            NTK_APPEND_INITIAL_RUNWAY_PAGES
+            initialRunwayPageLimit
                 .coerceAtLeast(NTK_APPEND_INITIAL_RUNWAY_READY_PAGES)
         }
         if (strictExactDescriptorOnly && imageRunway <= 0) return 0
@@ -16042,10 +16060,7 @@ class ReaderSession(
         if (path.isEmpty() || !isDirectWifiStrictAdjacentTransportActive()) return null
         val claim = adjacentStrictSourceClaims[path] ?: return null
         if (!isAdjacentStrictSourceClaimLive(path, claim)) return null
-        val requiredRunwayPageCount = minOf(
-            target.ntkImageCount.takeIf { it > 0 } ?: NTK_APPEND_INITIAL_RUNWAY_PAGES,
-            NTK_APPEND_INITIAL_RUNWAY_PAGES,
-        )
+        val requiredRunwayPageCount = requiredInitialAdjacentRunwayPages(target)
         val (installedSourceIndexes, candidates) = synchronized(pagesLock) {
             val installed = pages.asSequence()
                 .filter { page ->
@@ -16212,10 +16227,7 @@ class ReaderSession(
             isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)
         ) {
             if (isDirectWifiStrictAdjacentTransportActive()) {
-                val requiredInitialRunway = minOf(
-                    target.ntkImageCount.takeIf { it > 0 } ?: NTK_APPEND_INITIAL_RUNWAY_PAGES,
-                    NTK_APPEND_INITIAL_RUNWAY_PAGES,
-                )
+                val requiredInitialRunway = requiredInitialAdjacentRunwayPages(target)
                 val installed = installedDrawablePageCountForEpisode(target)
                 if (installed in 1 until requiredInitialRunway &&
                     !viewportBusy.get() &&
@@ -16254,10 +16266,7 @@ class ReaderSession(
 
     private fun remainingAdjacentRunwayPublishPages(target: Manga): Int {
         if (isDirectWifiStrictAdjacentTransportActive()) {
-            val requiredInitialRunway = minOf(
-                target.ntkImageCount.takeIf { it > 0 } ?: NTK_APPEND_INITIAL_RUNWAY_PAGES,
-                NTK_APPEND_INITIAL_RUNWAY_PAGES,
-            )
+            val requiredInitialRunway = requiredInitialAdjacentRunwayPages(target)
             val installed = installedDrawablePageCountForEpisode(target)
             if (installed in 1 until requiredInitialRunway) {
                 // Page zero is attached independently on direct Wi-Fi. Do not let an already-ready
@@ -16606,10 +16615,7 @@ class ReaderSession(
     }
 
     private fun directWifiAdjacentAtomicRunwayTailReadyCount(target: Manga): Int {
-        val requiredInitialRunway = minOf(
-            target.ntkImageCount.takeIf { it > 0 } ?: NTK_APPEND_INITIAL_RUNWAY_PAGES,
-            NTK_APPEND_INITIAL_RUNWAY_PAGES,
-        )
+        val requiredInitialRunway = requiredInitialAdjacentRunwayPages(target)
         val path = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
         val installedSourceIndexes = synchronized(pagesLock) {
             pages.asSequence()
@@ -16716,10 +16722,7 @@ class ReaderSession(
         if (!isImmediateNtkGeneratedUx()) return false
         if (!isNtkManhwaOrWebtoonEpisodePath(target.ntkEpisodePath)) return false
         if (isDirectWifiStrictAdjacentTransportActive()) {
-            val requiredProgressiveRunway = minOf(
-                target.ntkImageCount.takeIf { it > 0 } ?: NTK_APPEND_INITIAL_RUNWAY_PAGES,
-                NTK_APPEND_INITIAL_RUNWAY_PAGES,
-            )
+            val requiredProgressiveRunway = requiredInitialAdjacentRunwayPages(target)
             val installed = installedDrawablePageCountForEpisode(target)
             if (installed in 1 until requiredProgressiveRunway) {
                 // Direct Wi-Fi publishes page one as soon as it is drawable, while the exact
@@ -17506,13 +17509,16 @@ class ReaderSession(
             val indexedPages = refs.mapIndexedNotNull { offset, page ->
                 if (page.transitionTitle == null) offset to page else null
             }
+            val atomicRunwayPageLimit = initialAdjacentRunwayPageLimit(
+                indexedPages.firstOrNull()?.second?.manga?.ntkEpisodePath,
+            )
             val directWifiAtomicRunwayTail =
                 reason == "append_runway_remaining_publish" &&
                     isDirectWifiStrictAdjacentTransportActive() &&
                     indexedPages.all {
                         it.second.manga.ntkEpisodePath?.startsWith("/webtoon/") == true
                     } &&
-                    indexedPages.size in 2 until NTK_APPEND_INITIAL_RUNWAY_PAGES &&
+                    indexedPages.size in 2 until atomicRunwayPageLimit &&
                     indexedPages.map { it.second.sourceIndex } ==
                         (1..indexedPages.size).toList()
             val directWifiAtomicInitialManhwaRunway =
@@ -17521,7 +17527,7 @@ class ReaderSession(
                     indexedPages.all {
                         it.second.manga.ntkEpisodePath?.startsWith("/manhwa/") == true
                     } &&
-                    indexedPages.size in 2..NTK_APPEND_INITIAL_RUNWAY_PAGES &&
+                    indexedPages.size in 2..atomicRunwayPageLimit &&
                     indexedPages.map { it.second.sourceIndex } ==
                         (0 until indexedPages.size).toList()
             if ((reason == "initial_strict_source" || directWifiAtomicRunwayTail ||
@@ -17757,7 +17763,9 @@ class ReaderSession(
     }
 
     private fun shouldParallelDecodeDirectWifiAdjacentResidentTiles(page: PageRef): Boolean {
-        if (page.sourceIndex !in 0 until NTK_APPEND_INITIAL_RUNWAY_PAGES) return false
+        if (page.sourceIndex !in
+            0 until initialAdjacentRunwayPageLimit(page.manga.ntkEpisodePath)
+        ) return false
         val path = NtkStripDigests.normalizeEpisodePath(
             page.manga.ntkEpisodePath?.trim().orEmpty(),
         )
@@ -18432,7 +18440,7 @@ class ReaderSession(
                 canonicalEpisodeImageCount(target, refs.map { it.value }),
             )
             val requiredPageCount = minOf(
-                NTK_APPEND_INITIAL_RUNWAY_PAGES,
+                initialAdjacentRunwayPageLimit(target.ntkEpisodePath),
                 totalPageCount,
             )
             if (requiredPageCount <= 0) return@synchronized null
@@ -18958,7 +18966,10 @@ class ReaderSession(
             if (isActiveGeneratedTouchOrQuiet() || viewportBusy.get()) {
                 NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS
             } else {
-                maxOf(NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS, NTK_APPEND_INITIAL_RUNWAY_PAGES)
+                maxOf(
+                    NTK_ACTIVE_SCROLL_FOREGROUND_RADIUS,
+                    initialAdjacentRunwayPageLimit(target.ntkEpisodePath),
+                )
             }
         } else {
             0
@@ -23927,9 +23938,6 @@ class ReaderSession(
         val key = "${ReaderSurfaceView.DIRECTION_NEXT}:$sourcePath:initial_tail_prefetch"
         if (preparedInitialAdjacentRunways.keys.any { it.isNotEmpty() }) return
         if (!initialTailAdjacentPrefetchKeys.add(key)) return
-        if (isNtkContinuousAdjacentCompletionPolicyActive()) {
-            ViewerTelemetry.adjacentWorkStarted(sourcePath)
-        }
         Log.d(
             TAG,
             "append_adjacent_initial_prefetch_start reason=$reason source=$sourcePath"
@@ -35160,10 +35168,10 @@ class ReaderSession(
         private const val NTK_MAX_AUTHORITATIVE_ADJACENT_PAGES = 300
         private const val NTK_ADJACENT_AUTHORITATIVE_DOCUMENT_MAX_AGE_MS = 15000L
         private const val NTK_APPEND_INITIAL_PUBLISH_TOUCH_QUIET_MS = 4200L
-        // Direct Wi-Fi starts these proved body transfers only after the current episode is fully
-        // drawable. Attach p0 first so the boundary never waits for offscreen p1..p3; those pages
-        // remain a bounded, contiguous progressive runway.
+        // Existing profiles keep their four-page runway. The wired host-GPU emulator alone keeps
+        // p0..p4 resident and attached before the current episode boundary is reached.
         private const val NTK_APPEND_INITIAL_RUNWAY_PAGES = 4
+        private const val NTK_HOST_GPU_DIRECT_WIFI_ADJACENT_RUNWAY_PAGES = 5
         private const val NTK_DIRECT_WIFI_INITIAL_ATTACHED_RUNWAY_PAGES = 1
         private const val NTK_INITIAL_ADJACENT_RUNWAY_FETCH_PARALLELISM =
             NTK_APPEND_INITIAL_RUNWAY_PAGES

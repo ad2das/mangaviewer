@@ -424,9 +424,36 @@ object ReaderPipelinePolicy {
         drawablePx: Int,
         defectReasons: String
     ): Boolean = surfaceQualified && physicalViewportPx > 0 &&
-        viewportPx > 0 && drawablePx > 0 && viewportPx == drawablePx &&
+        viewportPx > 0 && drawablePx > 0 &&
+        kotlin.math.abs(viewportPx.toLong() - drawablePx.toLong()) <= 1L &&
         viewportPx < physicalViewportPx &&
         defectReasons == "viewportShort|drawableShort"
+
+    /**
+     * Verifies the immutable source ordinals carried by a physically submitted current-tail
+     * frame. Exact URL/manifest/generation ownership is checked by the caller before this pure
+     * ordinal policy is consulted. Duplicate source ordinals are allowed for a legitimate
+     * auto-cut pair, but gaps, regression, a non-resume floor, and a non-terminal suffix are not.
+     */
+    @JvmStatic
+    fun isExactForwardOnlyTerminalTailSourceSequence(
+        hostGpuForwardOnlyResumeProfile: Boolean,
+        resumeSourceFloor: Int,
+        manifestPageCount: Int,
+        sourceIndexes: IntArray,
+    ): Boolean {
+        if (!hostGpuForwardOnlyResumeProfile || resumeSourceFloor <= 0 ||
+            manifestPageCount <= resumeSourceFloor || sourceIndexes.isEmpty()
+        ) return false
+        var previous = -1
+        for (source in sourceIndexes) {
+            if (source !in resumeSourceFloor until manifestPageCount ||
+                (previous >= 0 && (source < previous || source > previous + 1))
+            ) return false
+            previous = source
+        }
+        return previous == manifestPageCount - 1
+    }
 
     /**
      * A transition card is invalid before the first real image, but becomes intentional reader

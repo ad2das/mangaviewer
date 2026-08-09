@@ -667,6 +667,47 @@ class NtkStrictInitialWavePolicyTest {
     }
 
     @Test
+    fun hostGpuDirectWifiAdjacentAdmissionIncludesP0ThroughP4Only() {
+        val count = NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
+            emulatorRuntime = true,
+            directWifiTransport = true,
+            cellularResilientTransport = false,
+            adjacentPrefetch = true,
+            episodePath = "/webtoon/work/next",
+        )
+        val admitted = NtkStrictInitialWavePolicy.admittedPageIndexes(
+            pageCount = 78,
+            initialPageIndex = 0,
+            rollingAdmission = true,
+            adjacentPrefetch = true,
+            adjacentRunwayBodyCount = count,
+        )
+
+        assertEquals(5, count)
+        assertEquals((0 until 5).toSet(), admitted)
+        assertEquals(
+            4,
+            NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
+                emulatorRuntime = false,
+                directWifiTransport = true,
+                cellularResilientTransport = false,
+                adjacentPrefetch = true,
+                episodePath = "/webtoon/work/next",
+            ),
+        )
+        assertEquals(
+            4,
+            NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
+                emulatorRuntime = true,
+                directWifiTransport = false,
+                cellularResilientTransport = true,
+                adjacentPrefetch = true,
+                episodePath = "/manhwa/work/next",
+            ),
+        )
+    }
+
+    @Test
     fun directWifiAdjacentFallbackCanRepairOnlyTheAtomicRunwayBeforeBulkRelease() {
         val directWifiAdjacent = (0 until 8).filter { pageIndex ->
             NtkStrictInitialWavePolicy.isPreBulkFallbackBodyAdmitted(

@@ -168,17 +168,37 @@ public class ReaderPipelinePolicyTest {
     public void shortExactTerminalTailIsActualOnlyForTheNaturalHeightShortfall() {
         assertTrue(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
                 true, 2340, 820, 820, "viewportShort|drawableShort"));
+        assertTrue(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
+                true, 2340, 1398, 1399, "viewportShort|drawableShort"));
 
         assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
                 false, 2340, 820, 820, "viewportShort|drawableShort"));
         assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
-                true, 2340, 820, 819, "viewportShort|drawableShort"));
+                true, 2340, 820, 818, "viewportShort|drawableShort"));
         assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
                 true, 2340, 820, 820, "viewportShort|drawableShort|missing"));
         assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
                 true, 2340, 820, 820, "viewportShort|drawableShort|card"));
         assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailActualFrame(
                 true, 2340, 2340, 2340, ""));
+    }
+
+    @Test
+    public void exactTerminalTailSourceSequenceAllowsUnorderedFetchButNotVisibleSourceGaps() {
+        assertTrue(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                true, 18, 20, new int[]{18, 19}));
+        assertTrue(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                true, 18, 20, new int[]{18, 18, 19}));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                true, 18, 20, new int[]{18}));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                true, 18, 20, new int[]{18, 20}));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                true, 18, 20, new int[]{19, 18, 19}));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                false, 18, 20, new int[]{18, 19}));
+        assertFalse(ReaderPipelinePolicy.isExactForwardOnlyTerminalTailSourceSequence(
+                true, 0, 20, new int[]{18, 19}));
     }
 
     @Test

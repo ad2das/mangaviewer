@@ -46,7 +46,7 @@ public final class BenchmarkAdjacentCommitSignal {
 
     private static final String TAG = "BenchmarkP0Signal";
     private static final int REQUIRED_PHYSICAL_PAGES = 5;
-    private static final int PREPARED_RUNWAY_PAGES = 4;
+    private static final int PREPARED_RUNWAY_PAGES = 5;
     private static final AtomicInteger SENT_MASK = new AtomicInteger(0);
     private static final AtomicInteger SEMANTIC_SENT_MASK = new AtomicInteger(0);
     private static final AtomicBoolean RUNWAY_READY_SENT = new AtomicBoolean(false);
@@ -54,6 +54,7 @@ public final class BenchmarkAdjacentCommitSignal {
     private static final long[] PRESENTED_AT_NANOS = new long[REQUIRED_PHYSICAL_PAGES];
     private static volatile Context applicationContext;
     private static volatile Config config;
+    private static volatile RunwayReadyState runwayReadyState;
 
     private BenchmarkAdjacentCommitSignal() {
     }
@@ -72,6 +73,7 @@ public final class BenchmarkAdjacentCommitSignal {
         SEMANTIC_SENT_MASK.set(0);
         RUNWAY_READY_SENT.set(false);
         LAST_MOTION_IDLE_AT_NANOS.set(0L);
+        runwayReadyState = null;
         synchronized(PRESENTED_AT_NANOS) {
             java.util.Arrays.fill(PRESENTED_AT_NANOS, 0L);
         }
@@ -123,6 +125,15 @@ public final class BenchmarkAdjacentCommitSignal {
                 .putExtra(EXTRA_PRESENTED_AT_NANOS, presentedAtNanos)
                 .putExtra(EXTRA_SENDER_AT_NANOS, senderAtNanos)
                 .putExtra(EXTRA_VIEWER_GENERATION, viewerGeneration);
+        RunwayReadyState ready = runwayReadyState;
+        if(ready != null
+                && ready.viewerGeneration == viewerGeneration
+                && ready.episodePath.equals(normalizedPath)) {
+            signal.putExtra(EXTRA_ADJACENT_WORK_STARTED_AT_NANOS, ready.workStartedAtNanos)
+                    .putExtra(EXTRA_RUNWAY_READY_AT_NANOS, ready.readyAtNanos)
+                    .putExtra(EXTRA_RUNWAY_PAGE_COUNT, ready.pageCount)
+                    .putExtra(EXTRA_TOTAL_PAGE_COUNT, ready.totalPageCount);
+        }
         try {
             context.sendBroadcast(signal);
         } catch(RuntimeException failure) {
@@ -199,7 +210,7 @@ public final class BenchmarkAdjacentCommitSignal {
     }
 
     /**
-     * Publishes the exact app-owned instant when the prepared p0-p3 runway reaches residency.
+     * Publishes the exact app-owned instant when the prepared p0-p4 runway reaches residency.
      * This phase is independent from accessibility frame coalescing and never proves that a page
      * was physically shown; the independent physical p0-p4 phases retain that responsibility.
      */
@@ -219,12 +230,23 @@ public final class BenchmarkAdjacentCommitSignal {
                 || adjacentWorkStartedAtNanos > readyAtNanos
                 || readyAtNanos <= 0L || viewerGeneration <= 0L
                 || !current.expectedEpisodePath.equals(normalizedPath)
-                || !RUNWAY_READY_SENT.compareAndSet(false, true)) {
+                ) {
             return;
         }
+        if(!RUNWAY_READY_SENT.compareAndSet(false, true)) {
+            return;
+        }
+        runwayReadyState = new RunwayReadyState(
+                normalizedPath,
+                pageCount,
+                totalPageCount,
+                adjacentWorkStartedAtNanos,
+                readyAtNanos,
+                viewerGeneration);
         long senderAtNanos = SystemClock.elapsedRealtimeNanos();
         Intent signal = new Intent(current.action)
                 .setPackage(MACRO_PACKAGE)
+                .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                 .putExtra(EXTRA_PHASE, PHASE_RUNWAY_READY)
                 .putExtra(EXTRA_NONCE, current.nonce)
                 .putExtra(EXTRA_CASE_ID, current.caseId)
@@ -293,6 +315,30 @@ public final class BenchmarkAdjacentCommitSignal {
             this.nonce = nonce;
             this.caseId = caseId;
             this.expectedEpisodePath = expectedEpisodePath;
+        }
+    }
+
+    private static final class RunwayReadyState {
+        final String episodePath;
+        final int pageCount;
+        final int totalPageCount;
+        final long workStartedAtNanos;
+        final long readyAtNanos;
+        final long viewerGeneration;
+
+        RunwayReadyState(
+                String episodePath,
+                int pageCount,
+                int totalPageCount,
+                long workStartedAtNanos,
+                long readyAtNanos,
+                long viewerGeneration) {
+            this.episodePath = episodePath;
+            this.pageCount = pageCount;
+            this.totalPageCount = totalPageCount;
+            this.workStartedAtNanos = workStartedAtNanos;
+            this.readyAtNanos = readyAtNanos;
+            this.viewerGeneration = viewerGeneration;
         }
     }
 }

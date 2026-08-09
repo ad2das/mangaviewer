@@ -8792,9 +8792,29 @@ data class NtkResolvedSourceRoute(
         // transport routing only: exact response validation and fallback still reject a stale or
         // genuinely mixed-page hint without changing the manifest seal.
         val httpClient = getHttpClient()
+        val proofBackedAdjacentGrant = hasActiveAdjacentNtkForegroundViewerGrant(
+            manifestSeal.normalizedEpisodePath,
+        )
+        val proofBackedAdjacentRunwayBodyCount =
+            NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
+                emulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                    Build.FINGERPRINT,
+                    Build.MODEL,
+                    Build.HARDWARE,
+                    Build.PRODUCT,
+                ),
+                directWifiTransport = runCatching {
+                    httpClient.isNtkWifiTransportActive()
+                }.getOrDefault(false),
+                cellularResilientTransport = runCatching {
+                    httpClient.isNtkCellularResilientTransportActive()
+                }.getOrDefault(true),
+                adjacentPrefetch = proofBackedAdjacentGrant,
+                episodePath = manifestSeal.normalizedEpisodePath,
+            )
         val proofBackedAdjacentCandidates = if (
-            pageIndex in 0 until NtkStrictInitialWavePolicy.WIFI_ADJACENT_INITIAL_RUNWAY_BODIES &&
-            hasActiveAdjacentNtkForegroundViewerGrant(manifestSeal.normalizedEpisodePath) &&
+            pageIndex in 0 until proofBackedAdjacentRunwayBodyCount &&
+            proofBackedAdjacentGrant &&
             runCatching {
                 httpClient.isNtkWifiTransportActive() &&
                     !httpClient.isNtkCellularResilientTransportActive()

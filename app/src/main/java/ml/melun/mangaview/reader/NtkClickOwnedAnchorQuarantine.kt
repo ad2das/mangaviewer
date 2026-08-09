@@ -921,6 +921,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         Build.HARDWARE,
         Build.PRODUCT,
     )
+    private val directWifiAdjacentPhysicalRunwayPages = if (
+        directWifiAdjacentOwned && hostGpuEmulatorRuntime
+    ) {
+        HOST_GPU_DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+    } else {
+        DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+    }
     private val predecessorPhysicalEvidence:
         CompletableFuture<NtkDirectWifiPredecessorPhysicalExtensionRegistry.Evidence?> =
         if (directWifiAdjacentOwned) {
@@ -958,7 +965,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         wifiEntryPriorityMode && directWifiEarlyUncommonEnabled
     private val initialSpeculationPages = minOf(
         if (directWifiAdjacentOwned) {
-            DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+            directWifiAdjacentPhysicalRunwayPages
         } else {
             NtkClickOwnedManhwaWavePolicy.initialSpeculationPages(wifiEntryPriorityMode)
         },
@@ -999,7 +1006,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         if (directWifiAdjacentOwned) {
             (forwardFirstPage until minOf(
                 plan.pageCount,
-                forwardFirstPage + DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
+                forwardFirstPage + directWifiAdjacentPhysicalRunwayPages,
             )).associateWith { CompletableFuture<HeldBody>() }
         } else {
             emptyMap()
@@ -1463,7 +1470,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             TAG,
             "click_forward_quarantine_adjacent_viewport_release " +
                 "path=${plan.normalizedEpisodePath}," +
-                "runwayPages=${minOf(DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES, effectivePageCount.get())}",
+                "runwayPages=${minOf(directWifiAdjacentPhysicalRunwayPages, effectivePageCount.get())}",
         )
     }
 
@@ -1473,7 +1480,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             TAG,
             "click_forward_quarantine_adjacent_runway_release " +
                 "path=${plan.normalizedEpisodePath}," +
-                "runwayPages=${minOf(DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES, effectivePageCount.get())}",
+                "runwayPages=${minOf(directWifiAdjacentPhysicalRunwayPages, effectivePageCount.get())}",
         )
     }
 
@@ -1695,7 +1702,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         if (held.predecodedOriginal != null || closed.get()) return held
         val executor = if (
             directWifiAdjacentOwned &&
-            pageIndex - forwardFirstPage in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+            pageIndex - forwardFirstPage in 0 until directWifiAdjacentPhysicalRunwayPages
         ) {
             DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR
         } else if (pageIndex == forwardFirstPage) {
@@ -1729,7 +1736,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 forwardFirstPage = forwardFirstPage,
                 pageIndex = pageIndex,
                 runwayPageCount = minOf(
-                    DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
+                    directWifiAdjacentPhysicalRunwayPages,
                     exactManifest.seal.pageCount - forwardFirstPage,
                 ),
                 candidateReconciliationComplete = candidateReconciliationComplete,
@@ -1816,7 +1823,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             val directBodies = (forwardFirstPage until pageLimit).associateWith { pageIndex ->
                 if (directWifiAdjacentOwned &&
                     pageIndex - forwardFirstPage in
-                        0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+                        0 until directWifiAdjacentPhysicalRunwayPages
                 ) {
                     val targetCandidate = adjacentPredecessorComplete.thenCompose {
                         probeCandidates(
@@ -1891,7 +1898,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         val initialBodyFutures = candidateFutures.toSortedMap().mapValues { (pageIndex, candidateFuture) ->
             val forwardOffset = pageIndex - forwardFirstPage
             if (directWifiAdjacentOwned &&
-                forwardOffset in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+                forwardOffset in 0 until directWifiAdjacentPhysicalRunwayPages
             ) {
                 startDirectWifiAdjacentInheritedCandidate(pageIndex, candidateFuture)
             } else if (plan.maximumNumericBound) {
@@ -2259,7 +2266,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             ?: candidate.substringAfter("://", "").substringBefore('/').lowercase(Locale.ROOT)
         if (host.isBlank()) return CompletableFuture.completedFuture(Unit) to null
         val runwayPageCount = minOf(
-            DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
+            directWifiAdjacentPhysicalRunwayPages,
             effectivePageCount.get(),
         )
         val warmPreviousPage = NtkClickOwnedManhwaWavePolicy.previousWarmAdjacentReplicaPage(
@@ -2883,7 +2890,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             capturedDirectWifiNetworkHandle != null &&
             runCatching { getHttpClient().getNtkDirectWifiNetwork()?.networkHandle }
                 .getOrNull() == capturedDirectWifiNetworkHandle &&
-            pageIndex in 0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+            pageIndex in 0 until directWifiAdjacentPhysicalRunwayPages
         val probeWarmAdjacentRunway = directWifiAdjacentRunway &&
             runCatching { earlyJpgCandidates[pageIndex]?.getNow(null) }
                 .getOrNull() == candidate
@@ -3079,7 +3086,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         val inheritedRunway = predecessorProvenOrdinaryDirectWifi &&
             directWifiAdjacentOwned &&
             pageIndex - forwardFirstPage in
-                0 until DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES
+                0 until directWifiAdjacentPhysicalRunwayPages
         val extension = candidate.substringAfterLast('.', "").lowercase(Locale.ROOT)
         val httpClient = getHttpClient()
         val liveHandle = runCatching {
@@ -3224,7 +3231,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         val predecessorAdmission = adjacentPredecessorComplete.handle { _, releaseFailure ->
             releaseFailure == null && !closed.get() && pageIndex < effectivePageCount.get()
         }
-        val runwayAdmission = if (pageIndex < DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES) {
+        val runwayAdmission = if (pageIndex < directWifiAdjacentPhysicalRunwayPages) {
             CompletableFuture.completedFuture(Unit)
         } else {
             adjacentRunwayRelease
@@ -3246,7 +3253,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         while (!closed.get()) {
             callCancellation.throwIfCancelled()
             try {
-                val release = if (pageIndex < DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES) {
+                val release = if (pageIndex < directWifiAdjacentPhysicalRunwayPages) {
                     adjacentPredecessorComplete
                 } else {
                     adjacentRunwayRelease
@@ -3568,6 +3575,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         private const val DEFAULT_EXTENSION = "jpg"
         private const val BODY_TRANSFER_PERMIT_POLL_MS = 25L
         private const val DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES = 4
+        private const val HOST_GPU_DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES = 5
         // This is a production post-click wave, not pre-entry warm-up. The signed image-list API
         // uses the separate control-plane client and consumes no source-operation lane, so every
         // page up to the ownership bound belongs in this wave. Leaving the final page out made a
@@ -3667,7 +3675,9 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             )
         }
         private val DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR =
-            Executors.newFixedThreadPool(DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES) { runnable ->
+            Executors.newFixedThreadPool(
+                HOST_GPU_DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
+            ) { runnable ->
                 ntkClickWorkerThread(
                     runnable,
                     "ntk-click-adjacent-runway-predecode",

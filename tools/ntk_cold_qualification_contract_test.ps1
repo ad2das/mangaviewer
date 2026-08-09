@@ -60,7 +60,8 @@ foreach($functionName in @(
         "Get-OptionalProperty",
         "Get-ExactMacroResultArtifact",
         "Find-InstrumentationMeasurementInvalidReason",
-        "Resolve-ColdCaseClassification")) {
+        "Resolve-ColdCaseClassification",
+        "Test-ColdTransientNetworkOutage")) {
     $functionAst = @($ast.FindAll({
         param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
@@ -123,6 +124,29 @@ Assert-SourceContains 'infrastructure measurement invalid:'
 Assert-SourceContains 'Get-ExactMacroResultArtifact'
 Assert-SourceContains 'Find-InstrumentationMeasurementInvalidReason'
 Assert-SourceContains '$macroResultTransportInvalid = -not $exactMacroResultArtifact.valid'
+Assert-SourceContains 'network resolver unavailable before first document'
+$unknownHostFailures = @(
+    [pscustomobject]@{ value = [pscustomobject]@{ outcome = 'failed_UnknownHostException' } },
+    [pscustomobject]@{ value = [pscustomobject]@{ outcome = 'failed_UnknownHostException' } }
+)
+$timeoutText = 'Timed out waiting for first HWUI-committed actual work-image draw page=47 after 60000ms'
+$refreshExhausted = 'ntk_domain_refresh_deferred_to_demand_failure'
+if(-not (Test-ColdTransientNetworkOutage `
+        $timeoutText $unknownHostFailures @() @() $refreshExhausted)) {
+    throw 'Complete pre-document resolver outage was not infrastructure-invalid'
+}
+if(Test-ColdTransientNetworkOutage `
+        $timeoutText $unknownHostFailures @([pscustomobject]@{}) @() $refreshExhausted) {
+    throw 'A successful page-list request was misclassified as a resolver outage'
+}
+if(Test-ColdTransientNetworkOutage `
+        $timeoutText `
+        @($unknownHostFailures[0], [pscustomobject]@{
+            value = [pscustomobject]@{ outcome = 'failed_SocketException' }
+        }) `
+        @() @() $refreshExhausted) {
+    throw 'A mixed product/network failure was misclassified as a resolver outage'
+}
 if(-not $macroSource.Contains(
         'AtomicFile(File(outputDirectory, MACRO_RESULT_FILE_NAME))',
         [StringComparison]::Ordinal) -or
@@ -407,7 +431,9 @@ $schemaFixture = [pscustomobject][ordered]@{
         benchmark = "fixture-benchmark.apk"
         benchmarkSha256 = "1" * 64
     }
-    catalogCounts = [pscustomobject]@{ webtoon = 20; manhwa = 20 }
+    # Diagnostic runs may intentionally select only one work type. Formal reports still
+    # require 20 webtoon + 20 manhwa through their cross-field qualification contract.
+    catalogCounts = [pscustomobject]@{ webtoon = 1; manhwa = 0 }
     cases = @([pscustomobject][ordered]@{
         schema = 1
         caseId = "fixture-1"
@@ -593,7 +619,7 @@ if(-not $macroSource.Contains(
             [StringComparison]::Ordinal) -or
         -not $resumePlanSource.Contains('maxDetectionLagMs: Long = 240L',
             [StringComparison]::Ordinal) -or
-        -not $source.Contains('$requiredAdjacentRunwayPages = 4',
+        -not $source.Contains('$requiredAdjacentRunwayPages = 5',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$requiredAdjacentPhysicalPages = 5',
             [StringComparison]::Ordinal) -or
@@ -609,13 +635,16 @@ if($macroSource.Contains('ADJACENT_BOUNDARY_WAIT_SLA_MS', [StringComparison]::Or
         $source.Contains('adjacentBoundaryWaitMs', [StringComparison]::Ordinal) -or
         $source.Contains('adjacentAttachMs', [StringComparison]::Ordinal) -or
         $reportSource.Contains('adjacentBoundaryWaitMs', [StringComparison]::Ordinal) -or
-        $reportSource.Contains('adjacentAttachMs', [StringComparison]::Ordinal) -or
-        $source.Contains(
-            '(Get-OptionalProperty $macroResult "runwayReadyBeforeTail") -ne $true',
+        $reportSource.Contains('adjacentAttachMs', [StringComparison]::Ordinal)) {
+    throw "Historical fixed boundary-delay thresholds must not be restored"
+}
+if(-not $source.Contains('$runwayReadyBeforeTail = Get-OptionalProperty $macroResult "runwayReadyBeforeTail"',
+        [StringComparison]::Ordinal) -or
+        $source.Contains('if($runwayReadyBeforeTail -ne $true',
             [StringComparison]::Ordinal) -or
         $reportSource.Contains('$case.runwayReadyBeforeTail -eq $true',
             [StringComparison]::Ordinal)) {
-    throw "Historical pre-tail runway diagnostics must not be used as pass gates"
+    throw "Pre-tail p0-p4 timing must remain diagnostic instead of rejecting physical network delay"
 }
 if(-not $source.Contains('$terminalResumeInitialViewportP0 =',
         [StringComparison]::Ordinal) -or
@@ -623,7 +652,7 @@ if(-not $source.Contains('$terminalResumeInitialViewportP0 =',
         -not $reportSource.Contains('$terminalResumeInitialViewportP0 =',
             [StringComparison]::Ordinal) -or
         -not $reportSource.Contains('$p0InputOrderValid =', [StringComparison]::Ordinal)) {
-    throw "Terminal Continue initial-viewport p0 is not consistently recognized"
+    throw "Forward-only Continue initial-viewport p0 is not consistently recognized"
 }
 $formalPassContract = $schema.allOf[3].then.properties
 if([int]$formalPassContract.expectedWebtoon.const -ne 20 -or

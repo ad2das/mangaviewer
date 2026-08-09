@@ -105,6 +105,28 @@ internal object NtkAdjacentExactP0FrameCatchupPolicy {
         surfaceValid
 }
 
+/**
+ * Keeps a resumed host-emulator viewport private until it is either physically continuous or is
+ * the exact, naturally short terminal source. Other renderer profiles retain progressive
+ * first-pixel reveal.
+ */
+internal object NtkDeferredSurfaceRevealPolicy {
+    fun shouldReveal(
+        emulatorRuntime: Boolean,
+        directWifiForwardOnlyResume: Boolean,
+        visibleActualPixels: Boolean,
+        continuousActualViewport: Boolean,
+        exactTerminalTailActual: Boolean,
+    ): Boolean {
+        if (!visibleActualPixels) return false
+        return if (emulatorRuntime && directWifiForwardOnlyResume) {
+            continuousActualViewport || exactTerminalTailActual
+        } else {
+            true
+        }
+    }
+}
+
 class ReaderSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
@@ -984,6 +1006,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var directWifiForwardOnlyInitialResumePage = -1
     private var directWifiForwardOnlyInitialResumeOffset = 0
     private var directWifiForwardOnlyInitialResumeRevealQualified = false
+    private var directWifiForwardOnlyTerminalTailRevealQualified = false
     private var sourceNativeWebtoonCompositingEnabled = false
     private val hwuiPreparedBitmapKeys = HashSet<Long>()
     private var frameSchedulingSuppressed = false
@@ -1082,6 +1105,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             width <= 0 || height <= 0 || target >= pages.lastIndex
         ) return false
         rebuildLayoutLocked()
+        val firstIdentity = pages[target].committedIdentity ?: return false
+        val currentEpisodePath = firstIdentity.normalizedEpisodePath
+        val currentManifestDigest = firstIdentity.manifestDigest
+        val currentManifestPageCount = firstIdentity.manifestPageCount
+        if (currentEpisodePath !in directWifiExpandedNativeTextureEpisodePaths ||
+            currentManifestPageCount <= 0 || currentManifestDigest.length != 64 ||
+            !currentManifestDigest.all { it in '0'..'9' || it in 'a'..'f' }
+        ) return false
         val targetTop = pageTopOrElseLocked(target, Float.NaN)
         val expectedScroll = targetTop - directWifiForwardOnlyInitialResumeOffset
         if (!targetTop.isFinite() ||
@@ -1095,6 +1126,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var sawTarget = false
         var sawTransition = false
         var sawAdjacentActual = false
+        var previousCurrentSource = -1
+        var previousCurrentCanonicalAsset = ""
+        var currentTailLastIndex = -1
+        var adjacentEpisodePath: String? = null
         for (index in target until pages.size) {
             val page = pages[index]
             val top = pageTopOrElseLocked(index, Float.NaN)
@@ -1107,24 +1142,55 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (visibleBottom <= visibleTop) continue
             if (visibleTop > coveredUntil + DRAW_COVERAGE_EPSILON_PX) return false
             when {
-                index == target -> {
-                    val identity = page.committedIdentity ?: return false
-                    if (!pageHasCompleteActualPixelsLocked(page) ||
-                        identity.normalizedEpisodePath !in directWifiExpandedNativeTextureEpisodePaths
-                    ) return false
-                    sawTarget = true
-                }
                 page.cardText != null -> {
-                    if (!sawTarget || sawTransition || sawAdjacentActual || index != target + 1 ||
-                        page.errorText != null
+                    if (!sawTarget || sawTransition || sawAdjacentActual ||
+                        previousCurrentSource != currentManifestPageCount - 1 ||
+                        index != currentTailLastIndex + 1 || page.errorText != null
                     ) return false
                     sawTransition = true
+                }
+                !sawTransition -> {
+                    val identity = page.committedIdentity ?: return false
+                    if (!pageHasCompleteActualPixelsLocked(page) || page.loading ||
+                        page.errorText != null ||
+                        identity.displayPageIndex != index ||
+                        identity.normalizedEpisodePath != currentEpisodePath ||
+                        identity.manifestDigest != currentManifestDigest ||
+                        identity.manifestPageCount != currentManifestPageCount ||
+                        identity.sourcePageIndex !in 0 until currentManifestPageCount ||
+                        identity.canonicalAsset.isBlank()
+                    ) {
+                        return false
+                    }
+                    if (previousCurrentSource >= 0 &&
+                        (identity.sourcePageIndex < previousCurrentSource ||
+                            identity.sourcePageIndex > previousCurrentSource + 1 ||
+                            (identity.sourcePageIndex == previousCurrentSource &&
+                                identity.canonicalAsset != previousCurrentCanonicalAsset))
+                    ) {
+                        return false
+                    }
+                    sawTarget = true
+                    previousCurrentSource = identity.sourcePageIndex
+                    previousCurrentCanonicalAsset = identity.canonicalAsset
+                    currentTailLastIndex = index
                 }
                 else -> {
                     val identity = page.committedIdentity ?: return false
                     if (!sawTransition || !pageHasCompleteActualPixelsLocked(page) ||
-                        identity.normalizedEpisodePath !in directWifiExpandedNativeTextureEpisodePaths
-                    ) return false
+                        page.loading || page.errorText != null ||
+                        identity.displayPageIndex != index ||
+                        identity.normalizedEpisodePath == currentEpisodePath ||
+                        identity.normalizedEpisodePath !in directWifiExpandedNativeTextureEpisodePaths ||
+                        identity.sourcePageIndex !in 0 until identity.manifestPageCount ||
+                        identity.canonicalAsset.isBlank() || identity.manifestDigest.length != 64 ||
+                        !identity.manifestDigest.all { it in '0'..'9' || it in 'a'..'f' } ||
+                        (adjacentEpisodePath != null &&
+                            identity.normalizedEpisodePath != adjacentEpisodePath)
+                    ) {
+                        return false
+                    }
+                    adjacentEpisodePath = identity.normalizedEpisodePath
                     sawAdjacentActual = true
                 }
             }
@@ -1138,29 +1204,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     /**
      * Classifies only the real current-episode tail that precedes the combined transition
-     * viewport. The image must be the exact terminal canonical source, occupy the restored
-     * bookmark coordinate, and end naturally before the physical viewport. No card, inferred
-     * geometry, unresolved resource, or adjacent structure can satisfy this predicate.
+     * viewport. A resume can cover more than one short canonical image (for example p18+p19), so
+     * validate the complete exact tail rather than requiring the restored display page itself to
+     * be the final display slot. The tail must occupy the restored bookmark coordinate and end
+     * naturally before the physical viewport. No card, inferred geometry, unresolved resource,
+     * skipped source, or adjacent structure can satisfy this predicate.
      */
     private fun directWifiForwardOnlyTerminalTailActualLocked(): Boolean {
         val target = directWifiForwardOnlyInitialResumePage
         if (!emulatorNativeSurfaceRuntime || !directWifiForwardOnlyInitialResumeEnabled ||
-            target !in pages.indices || target != pages.lastIndex || width <= 0 || height <= 0 ||
+            target !in pages.indices || width <= 0 || height <= 0 ||
             target < directWifiExpandedNativeTextureMinimumPage
         ) return false
         rebuildLayoutLocked()
-        val page = pages[target]
-        val identity = page.committedIdentity ?: return false
-        if (!pageHasCompleteActualPixelsLocked(page) || page.pendingResolveType != PENDING_NONE ||
-            page.loading || page.cardText != null || page.errorText != null ||
-            identity.displayPageIndex != target ||
-            identity.normalizedEpisodePath !in directWifiExpandedNativeTextureEpisodePaths ||
-            identity.sourcePageIndex < 0 ||
-            identity.manifestPageCount <= 0 ||
-            identity.sourcePageIndex != identity.manifestPageCount - 1 ||
-            identity.canonicalAsset.isBlank() ||
-            identity.manifestDigest.length != 64 ||
-            !identity.manifestDigest.all { it in '0'..'9' || it in 'a'..'f' }
+        val firstIdentity = pages[target].committedIdentity ?: return false
+        val episodePath = firstIdentity.normalizedEpisodePath
+        val manifestDigest = firstIdentity.manifestDigest
+        val manifestPageCount = firstIdentity.manifestPageCount
+        if (episodePath !in directWifiExpandedNativeTextureEpisodePaths ||
+            manifestPageCount <= 0 || manifestDigest.length != 64 ||
+            !manifestDigest.all { it in '0'..'9' || it in 'a'..'f' }
         ) return false
         val targetTop = pageTopOrElseLocked(target, Float.NaN)
         val expectedScroll = targetTop - directWifiForwardOnlyInitialResumeOffset
@@ -1169,12 +1232,110 @@ class ReaderSurfaceView @JvmOverloads constructor(
         ) return false
         val viewportTop = scrollOffset
         val viewportBottom = viewportTop + height
-        val targetBottom = targetTop + pageDrawHeightLocked(page)
-        val visibleTop = max(viewportTop, targetTop)
-        val visibleBottom = min(viewportBottom, targetBottom)
-        return visibleTop <= viewportTop + DRAW_COVERAGE_EPSILON_PX &&
-            visibleBottom > viewportTop + DRAW_COVERAGE_EPSILON_PX &&
-            targetBottom < viewportBottom - DRAW_COVERAGE_EPSILON_PX
+        var coveredUntil = viewportTop
+        var previousSource = -1
+        var previousCanonicalAsset = ""
+        var terminalBottom = Float.NaN
+        for (index in target until pages.size) {
+            val page = pages[index]
+            val identity = page.committedIdentity ?: return false
+            if (!pageHasCompleteActualPixelsLocked(page) ||
+                page.pendingResolveType != PENDING_NONE || page.loading ||
+                page.cardText != null || page.errorText != null ||
+                identity.displayPageIndex != index ||
+                identity.normalizedEpisodePath != episodePath ||
+                identity.manifestDigest != manifestDigest ||
+                identity.manifestPageCount != manifestPageCount ||
+                identity.sourcePageIndex !in 0 until manifestPageCount ||
+                identity.canonicalAsset.isBlank()
+            ) return false
+            if (previousSource >= 0) {
+                if (identity.sourcePageIndex < previousSource ||
+                    identity.sourcePageIndex > previousSource + 1 ||
+                    (identity.sourcePageIndex == previousSource &&
+                        identity.canonicalAsset != previousCanonicalAsset)
+                ) return false
+            }
+            val top = pageTopOrElseLocked(index, Float.NaN)
+            if (!top.isFinite()) return false
+            val bottom = top + pageDrawHeightLocked(page)
+            val visibleTop = max(viewportTop, top)
+            val visibleBottom = min(viewportBottom, bottom)
+            if (visibleBottom <= visibleTop ||
+                visibleTop > coveredUntil + DRAW_COVERAGE_EPSILON_PX
+            ) return false
+            coveredUntil = max(coveredUntil, visibleBottom)
+            terminalBottom = bottom
+            previousSource = identity.sourcePageIndex
+            previousCanonicalAsset = identity.canonicalAsset
+        }
+        return previousSource == manifestPageCount - 1 &&
+            terminalBottom.isFinite() &&
+            terminalBottom < viewportBottom - DRAW_COVERAGE_EPSILON_PX
+    }
+
+    /**
+     * Re-checks the live exact tail after a physical proof's structure/identity epoch has already
+     * been accepted. A tile can complete between DrawState capture and the compositor callback;
+     * the immutable proof then has correct pixels but the previous tail-qualified bit. The
+     * captured identity fallback is intentionally narrower than the general visible-identity
+     * policy: it accepts only the contiguous exact current tail ending at the manifest's final
+     * source. ReaderV2Activity separately proves the physical frame and allows only the natural
+     * viewportShort/drawableShort shape.
+     */
+    fun hasExactForwardOnlyTerminalTailActual(
+        capturedIdentities: List<CommittedPageIdentity> = emptyList(),
+    ): Boolean = synchronized(stateLock) {
+        val qualified = directWifiForwardOnlyTerminalTailRevealQualified ||
+            directWifiForwardOnlyTerminalTailActualLocked() ||
+            capturedForwardOnlyTerminalTailIdentitiesLocked(capturedIdentities)
+        if (qualified) directWifiForwardOnlyTerminalTailRevealQualified = true
+        qualified
+    }
+
+    /** Must be called with [stateLock] held after the proof's structure epoch was accepted. */
+    private fun capturedForwardOnlyTerminalTailIdentitiesLocked(
+        identities: List<CommittedPageIdentity>,
+    ): Boolean {
+        if (!emulatorNativeSurfaceRuntime || !directWifiForwardOnlyInitialResumeEnabled ||
+            directWifiExpandedNativeTextureMinimumPage <= 0 || identities.isEmpty()
+        ) return false
+        // The mutable restore-page lock is intentionally absent here: it is consumed as soon as
+        // the bookmark geometry settles, which can precede the compositor callback for the same
+        // exact pixels. The first path in this insertion-ordered set is the frozen current episode;
+        // later entries are only authorized forward episodes and must not qualify this current-tail
+        // exception.
+        val episodePath = directWifiExpandedNativeTextureEpisodePaths.firstOrNull()
+            ?: return false
+        val firstIdentity = identities.first()
+        val manifestDigest = firstIdentity.manifestDigest
+        val manifestPageCount = firstIdentity.manifestPageCount
+        if (firstIdentity.normalizedEpisodePath != episodePath ||
+            manifestPageCount <= 0 || manifestDigest.length != 64
+        ) return false
+        var previousDisplay = -1
+        var previousSource = -1
+        var previousCanonicalAsset = ""
+        for (identity in identities) {
+            if ((previousDisplay >= 0 && identity.displayPageIndex != previousDisplay + 1) ||
+                identity.normalizedEpisodePath != episodePath ||
+                identity.manifestDigest != manifestDigest ||
+                identity.manifestPageCount != manifestPageCount ||
+                identity.sourcePageIndex !in directWifiExpandedNativeTextureMinimumPage until
+                    manifestPageCount ||
+                identity.canonicalAsset.isBlank()
+            ) return false
+            if (previousSource >= 0 &&
+                (identity.sourcePageIndex < previousSource ||
+                    identity.sourcePageIndex > previousSource + 1 ||
+                    (identity.sourcePageIndex == previousSource &&
+                        identity.canonicalAsset != previousCanonicalAsset))
+            ) return false
+            previousDisplay = identity.displayPageIndex
+            previousSource = identity.sourcePageIndex
+            previousCanonicalAsset = identity.canonicalAsset
+        }
+        return previousSource == manifestPageCount - 1
     }
 
     /** Must be called with [stateLock] held after exact adjacent pixels change. */
@@ -1299,10 +1460,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 directWifiForwardOnlyInitialResumePage = -1
                 directWifiForwardOnlyInitialResumeOffset = 0
                 directWifiForwardOnlyInitialResumeRevealQualified = false
+                directWifiForwardOnlyTerminalTailRevealQualified = false
             } else if (surfaceAttachmentDeferredUntilActualPixels && !hasDrawnContentFrame &&
                 lockedRestorePage >= 0
             ) {
-                if (lockedRestorePage == pages.lastIndex) {
+                if (lockedRestorePage in pages.indices) {
                     directWifiForwardOnlyInitialResumePage = lockedRestorePage
                     lockedRestoreOffset = min(0, lockedRestoreOffset)
                     directWifiForwardOnlyInitialResumeOffset = lockedRestoreOffset
@@ -1355,6 +1517,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             nativeTexturePrewarmAnchorPage = -1
             nativeTexturePrewarmDirty = true
             requestResidentNativeTexturePrewarmLocked()
+            reevaluateDeferredSurfaceRevealLocked(
+                "forward_episode_authorized",
+                directWifiForwardOnlyInitialResumePage,
+            )
         }
     }
 
@@ -1473,7 +1639,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             nativeSurfaceRevealAfterPrepareEpoch = 0L
             deferredSurfaceIdentityActivated = !enabled
             directWifiForwardOnlyInitialResumeRevealQualified = false
-            if (!enabled) {
+            if (enabled) directWifiForwardOnlyTerminalTailRevealQualified = false
+            // Revealing the native child ends attachment deferral, not the forward-only resume
+            // lifecycle. Retain the restored tail identity until the renderer profile or page
+            // table is retired so the first physical proof can still classify its natural
+            // viewport shortfall and the following exact adjacent pixels.
+            if (!enabled && !directWifiForwardOnlyInitialResumeEnabled) {
                 directWifiForwardOnlyInitialResumePage = -1
                 directWifiForwardOnlyInitialResumeOffset = 0
             }
@@ -1499,7 +1670,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 deferredSurfaceIdentityActivated = true
                 if (renderRunning && pages.isNotEmpty()) {
                     renderRequested = true
-                    if (hasVisibleActualPixelsLocked()) {
+                    if (hasRevealableActualPixelsLocked()) {
                         postSurfaceRevealLocked()
                     }
                     stateLock.notifyAll()
@@ -1641,6 +1812,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             directWifiForwardOnlyInitialResumePage = -1
             directWifiForwardOnlyInitialResumeOffset = 0
             directWifiForwardOnlyInitialResumeRevealQualified = false
+            directWifiForwardOnlyTerminalTailRevealQualified = false
             boundaryArmedDirection = 0
             boundaryDispatchInFlight = false
             lastAnchor = -1
@@ -3150,6 +3322,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
             outcome = AdjacentExactP0InstallResult(true, full, pageIndex, firstInstall)
             windowRequestLocked(lastBusy)
         }
+        synchronized(stateLock) {
+            if (outcome.accepted) {
+                reevaluateDeferredSurfaceRevealLocked(
+                    "adjacent_exact_p0",
+                    outcome.displayPageIndex,
+                )
+            }
+        }
         dispatchWindowRequest(request)
         return outcome
     }
@@ -3271,6 +3451,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             stateLock.notifyAll()
             outcome = AdjacentExactRunwayBatchInstallResult(true, installed)
             windowRequestLocked(lastBusy)
+        }
+        synchronized(stateLock) {
+            if (outcome.accepted) {
+                outcome.installedPages.lastOrNull()?.let { lastInstalled ->
+                    reevaluateDeferredSurfaceRevealLocked(
+                        "adjacent_exact_runway_batch",
+                        lastInstalled,
+                    )
+                }
+            }
         }
         dispatchWindowRequest(request)
         return outcome
@@ -4360,6 +4550,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 null
             }
         }
+        synchronized(stateLock) {
+            if (installed) {
+                reevaluateDeferredSurfaceRevealLocked("authoritative_tiles", index)
+            }
+        }
         dispatchWindowRequest(request)
         return installed
     }
@@ -4474,6 +4669,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 windowRequestLocked(lastBusy)
             } else {
                 null
+            }
+        }
+        synchronized(stateLock) {
+            installed.lastOrNull()?.let { lastInstalled ->
+                reevaluateDeferredSurfaceRevealLocked(
+                    "authoritative_tile_batch",
+                    lastInstalled,
+                )
             }
         }
         dispatchWindowRequest(request)
@@ -4783,6 +4986,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 nativeTexturePrewarmDirty = true
                 requestResidentNativeTexturePrewarmLocked()
             }
+            // Exact pixels and their immutable identity arrive on independent actor callbacks.
+            // Re-evaluate here as well as at pixel installation so either arrival order can
+            // release a fully proven resumed viewport.
+            reevaluateDeferredSurfaceRevealLocked(
+                "identity",
+                startIndex + identities.lastIndex,
+            )
         }
     }
 
@@ -4891,6 +5101,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             scheduleFrameLocked()
             stateLock.notifyAll()
             windowRequestLocked(lastBusy)
+        }
+        synchronized(stateLock) {
+            reevaluateDeferredSurfaceRevealLocked("card", index)
         }
         dispatchWindowRequest(request)
     }
@@ -5013,19 +5226,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun lockRestoredPageOffset(index: Int, offset: Int) {
         val request = synchronized(stateLock) {
             if (index !in 0 until pages.size) return
-            val forwardOnlyTerminalResume = directWifiForwardOnlyInitialResumeEnabled &&
-                surfaceAttachmentDeferredUntilActualPixels && !hasDrawnContentFrame &&
-                index == pages.lastIndex
-            if (forwardOnlyTerminalResume) {
+            val forwardOnlyResume = directWifiForwardOnlyInitialResumeEnabled &&
+                surfaceAttachmentDeferredUntilActualPixels && !hasDrawnContentFrame
+            if (forwardOnlyResume) {
+                val nextOffset = min(0, offset)
+                val resumeIdentityChanged =
+                    directWifiForwardOnlyInitialResumePage != index ||
+                        directWifiForwardOnlyInitialResumeOffset != nextOffset
                 directWifiForwardOnlyInitialResumePage = index
-                directWifiForwardOnlyInitialResumeOffset = min(0, offset)
+                directWifiForwardOnlyInitialResumeOffset = nextOffset
                 directWifiForwardOnlyInitialResumeRevealQualified = false
+                if (resumeIdentityChanged) {
+                    directWifiForwardOnlyTerminalTailRevealQualified = false
+                }
             }
             lockedRestorePage = index
             // A positive offset exposes predecessor pixels above this page. The forward-only UX
-            // deliberately did not request those pages, so start the exact terminal page at the
-            // top instead of manufacturing a placeholder viewport.
-            lockedRestoreOffset = if (forwardOnlyTerminalResume) {
+            // deliberately did not request those pages, so start the exact resumed tail at the
+            // top instead of manufacturing a placeholder viewport. The restored page can be the
+            // first of several exact tail pages; requiring pages.lastIndex would strand that tail.
+            lockedRestoreOffset = if (forwardOnlyResume) {
                 directWifiForwardOnlyInitialResumeOffset
             } else {
                 offset
@@ -7694,7 +7914,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 directWifiForwardOnlyInitialResumeViewportOpaqueLocked()
         }
         val forwardOnlyTerminalTailActual =
-            directWifiForwardOnlyTerminalTailActualLocked()
+            directWifiForwardOnlyTerminalTailRevealQualified ||
+                directWifiForwardOnlyTerminalTailActualLocked()
         val state = DrawState(
             viewWidth,
             viewHeight,
@@ -8416,7 +8637,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return false
         }
         if (surfaceAttachmentDeferredUntilActualPixels) {
-            if (hasVisibleActualPixelsLocked()) postSurfaceRevealLocked()
+            if (hasRevealableActualPixelsLocked()) postSurfaceRevealLocked()
             return false
         }
         if (!isShown || windowVisibility != View.VISIBLE) {
@@ -8529,6 +8750,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
         return false
     }
 
+    /** Must be called with [stateLock] held. */
+    private fun hasRevealableActualPixelsLocked(): Boolean {
+        val visibleActualPixels = hasVisibleActualPixelsLocked()
+        val scopedResume = emulatorNativeSurfaceRuntime &&
+            directWifiForwardOnlyInitialResumeEnabled
+        val exactTerminalTailActual = scopedResume &&
+            directWifiForwardOnlyTerminalTailActualLocked()
+        if (exactTerminalTailActual) {
+            directWifiForwardOnlyTerminalTailRevealQualified = true
+        }
+        return NtkDeferredSurfaceRevealPolicy.shouldReveal(
+            emulatorRuntime = emulatorNativeSurfaceRuntime,
+            directWifiForwardOnlyResume = directWifiForwardOnlyInitialResumeEnabled,
+            visibleActualPixels = visibleActualPixels,
+            continuousActualViewport = scopedResume &&
+                hasContinuousActualViewportPixelsLocked(),
+            exactTerminalTailActual = exactTerminalTailActual,
+        )
+    }
+
     /**
      * Proof deliveries temporarily retain viewport-space layout bounds while their pending source
      * bounds settle. Validate completeness from the immutable tile source geometry itself.
@@ -8557,7 +8798,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     /** Re-checks the attachment gate after every complete image-resource installation. */
     private fun reevaluateDeferredSurfaceRevealLocked(reason: String, changedIndex: Int) {
         if (!surfaceAttachmentDeferredUntilActualPixels) return
-        if (hasVisibleActualPixelsLocked()) {
+        if (hasRevealableActualPixelsLocked()) {
             Log.d(
                 TAG,
                 "reader_surface_progressive_reveal_ready reason=$reason,index=$changedIndex," +
@@ -8611,7 +8852,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val reveal = synchronized(stateLock) {
                 surfaceRevealPosted = false
                 if (!surfaceAttachmentDeferredUntilActualPixels ||
-                    !hasVisibleActualPixelsLocked()
+                    !hasRevealableActualPixelsLocked()
                 ) {
                     false
                 } else {

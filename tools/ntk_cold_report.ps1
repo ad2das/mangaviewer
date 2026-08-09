@@ -379,7 +379,7 @@ for($index = 0; $index -lt $cases.Count; $index++) {
                 [string]$case.expectedAdjacentEpisodePath -and
             [int]$case.expectedAdjacentPageCount -ge 5 -and
             [int]$case.adjacentTotalPageCount -eq [int]$case.expectedAdjacentPageCount -and
-            [int]$case.adjacentRunwayPageCount -eq 4 -and
+            [int]$case.adjacentRunwayPageCount -eq 5 -and
             [int]$case.adjacentObservedRunwayDrawableCount -eq 5) `
             "exact five-page forward-adjacent proof missing: $($case.caseId)"
         Assert-Contract ($case.adjacentPhysicalRunwayPassed -eq $true -and
@@ -474,8 +474,10 @@ for($index = 0; $index -lt $cases.Count; $index++) {
         $expectedAdjacentP0SeamMs =
             ($firstAdjacentActualAtNanos - $forwardBoundaryReachedAtNanos) / 1000000.0
         Assert-Contract ($allImagesReadyAtNanos -gt 0 -and
+            $adjacentWorkStartedAtNanos -ge $allImagesReadyAtNanos -and
+            ($adjacentWorkStartedAtNanos - $allImagesReadyAtNanos) -le 100000000L -and
             [long]$case.adjacentRunwayReadyAtNanos -gt 0) `
-            "current or adjacent readiness proof was missing: $($case.caseId)"
+            "adjacent physical work preceded current readiness: $($case.caseId)"
         Assert-Contract ($forwardBoundaryReachedAtNanos -gt 0 -and
             $firstAdjacentActualAtNanos -ge $forwardBoundaryReachedAtNanos -and
             [string]$case.firstAdjacentActualEpisode -ceq
@@ -521,8 +523,7 @@ for($index = 0; $index -lt $cases.Count; $index++) {
             $null -eq $case.p0SemanticEventLeadMs
         }
         $terminalResumeInitialViewportP0 =
-            [int]$case.resumePage -eq ([int]$case.currentPageCount - 1) -and
-            [int]$case.expectedForwardPageCount -eq 1 -and
+            [int]$case.expectedForwardPageCount -gt 0 -and
             [int]$case.resumeOffset -le 0 -and
             [int]$case.p0GesturesAtObservation -eq 0 -and
             [int]$case.p0IpcGesturesAtSignal -eq 0

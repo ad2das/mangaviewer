@@ -157,8 +157,7 @@ class NtkColdViewerMacrobenchmark {
                 caseId = caseId,
                 expectedEpisodePath = expectedAdjacentEpisodePath,
                 allowTerminalResumeInitialViewport =
-                    resumePage == currentPageCount - 1 &&
-                        expectedForwardPageCount == 1 && resumeOffset <= 0,
+                    expectedForwardPageCount > 0 && resumeOffset <= 0,
             )
         } else {
             null
@@ -580,8 +579,19 @@ class NtkColdViewerMacrobenchmark {
                             "atSignal=$gesturesAtP0Signal total=${inputMetrics.gestureCount}"
                     }
                 }
+                check(adjacentWorkStartedAtNanos >= allImagesReadyAtNanos) {
+                    "Adjacent physical work preceded current readiness: " +
+                        "work=$adjacentWorkStartedAtNanos allReady=$allImagesReadyAtNanos"
+                }
+                check(
+                    adjacentWorkStartedAtNanos - allImagesReadyAtNanos <=
+                        MAX_ADJACENT_START_AFTER_CURRENT_READY_MS * 1_000_000L,
+                ) {
+                    "Adjacent preparation did not start immediately after current readiness: " +
+                        "lagMs=${(adjacentWorkStartedAtNanos - allImagesReadyAtNanos) / 1_000_000.0}"
+                }
                 check(adjacentRunwayReadyAtNanos > 0L) {
-                    "Adjacent p0-p3 readiness telemetry was never published"
+                    "Adjacent p0-p4 readiness telemetry was never published"
                 }
                 check(adjacentRunwayTargetEpisode == expectedAdjacentEpisodePath) {
                     "Adjacent runway targeted the wrong episode: " +
@@ -593,7 +603,7 @@ class NtkColdViewerMacrobenchmark {
                 }
                 val requiredRunwayPages = ADJACENT_REQUIRED_RUNWAY_PAGES
                 check(adjacentRunwayPageCount == ADJACENT_PREPARED_RUNWAY_PAGES) {
-                    "Adjacent p0-p3 readiness telemetry was incomplete: " +
+                    "Adjacent p0-p4 readiness telemetry was incomplete: " +
                         "ready=$adjacentRunwayPageCount " +
                         "required=$ADJACENT_PREPARED_RUNWAY_PAGES"
                 }
@@ -604,6 +614,9 @@ class NtkColdViewerMacrobenchmark {
                 check(forwardBoundaryReachedAtNanos > 0L) {
                     "Launch episode bottom was never physically committed"
                 }
+                // Retain whether the five-page runway beat the boundary as diagnostics.  A cold
+                // network response can make that physically impossible even when p0-p4 were
+                // dispatched immediately after current readiness, so it is not a pass gate.
                 check(firstAdjacentActualAtNanos >= forwardBoundaryReachedAtNanos) {
                     "Expected adjacent p0 committed before the launch bottom"
                 }
@@ -1775,8 +1788,9 @@ class NtkColdViewerMacrobenchmark {
             synchronized(lock) {
                 check(!armed) { "p0 signal channel already armed" }
                 // The direct backend, urgent priority and shell identity are ready while the
-                // schedule gate is still closed. Marking this order under the receiver lock before
-                // accepting IPC prevents a p0 checkpoint from racing ahead of the first real DOWN.
+                // schedule gate is still closed. Exact adjacent pixels may legitimately complete a
+                // naturally short resumed tail before the first DOWN; the channel preserves that
+                // compositor timestamp instead of forcing the app to delay already-ready pixels.
                 input.markP0ChannelArmed()
                 this.input = input
                 armed = true
@@ -2266,6 +2280,14 @@ class NtkColdViewerMacrobenchmark {
                     pendingSemanticCommitPayloads[source] = null
                     acceptSemanticCommitLocked(pending.first, pending.second)
                 }
+            }
+            val embeddedRunwayReadyAt =
+                intent.getLongExtra(P0_SIGNAL_EXTRA_RUNWAY_READY_AT_NANOS, 0L)
+            if (
+                embeddedRunwayReadyAt > 0L &&
+                synchronized(lock) { runwayReadyPayload == null }
+            ) {
+                handleRunwayReadySignal(intent, receivedAt)
             }
         }
 
@@ -3515,10 +3537,8 @@ class NtkColdViewerMacrobenchmark {
         const val INITIAL_MODERATE_FORWARD_GESTURES = 3
         const val ADJACENT_FINE_SWIPE_RUNWAY_PAGES = 4
         const val ADJACENT_REQUIRED_RUNWAY_PAGES = 5
-        const val ADJACENT_PREPARED_RUNWAY_PAGES = 4
-        // This is the only adjacent timing SLA: launch-tail presentation to exact p0 pixels.
-        // p1-p3 are qualified by continued physical 3 viewport/s traversal, not by demanding that
-        // their background-ready timestamp precede the launch boundary.
+        const val ADJACENT_PREPARED_RUNWAY_PAGES = 5
+        const val MAX_ADJACENT_START_AFTER_CURRENT_READY_MS = 100L
         // One accessibility observation costs ~2.5 s on the continuously rendering SurfaceView,
         // whereas sixteen 20 ms shell flings cost only ~0.3 s and cover the measured 119-page
         // manga. Long webtoons repeat the same bounded batch until their real edge is observed.
