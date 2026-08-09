@@ -793,6 +793,9 @@ class NtkStripRenderEngineProtocolTest {
         assertTrue(rollingRenderer.contains(
             "constexpr int kPausedForwardPrewarmPages = 16;"
         ))
+        assertTrue(rollingRenderer.contains(
+            "constexpr int kHostGpuPausedForwardPrewarmPages = 24;"
+        ))
 
         val rollingView = readRepositoryFile(
             "app/src/main/java/ml/melun/mangaview/reader/ReaderSurfaceView.kt"

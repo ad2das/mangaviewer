@@ -2476,6 +2476,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val shortWebtoonPixelWindow = expandedDirectWifiRunway &&
                 directWifiShortWebtoonPixelWindowPrewarm && width > 0 && height > 0
             val first = visibleFirst
+            val directWifiAheadPages = if (expandedDirectWifiRunway &&
+                emulatorNativeSurfaceRuntime
+            ) {
+                HOST_GPU_DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES
+            } else {
+                DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES
+            }
             val runwayEnd = if (shortWebtoonPixelWindow) {
                 val endExclusive = min(
                     contentHeight,
@@ -2488,7 +2495,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 )
                 firstVisiblePageLocked(probe).coerceIn(first, pages.lastIndex)
             } else if (expandedDirectWifiRunway) {
-                min(pages.lastIndex, first + DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES - 1)
+                min(pages.lastIndex, first + directWifiAheadPages - 1)
             } else if (width > 0 && height > 0) {
                 val endExclusive = min(
                     contentHeight,
@@ -12496,6 +12503,12 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         private const val NATIVE_PREWARM_FALLBACK_AHEAD_PAGES = 6
         private const val NATIVE_PREWARM_MAX_TILES = 12
         private const val DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 16
+        // A resumed r90 manhwa can have twelve current-tail pages, one transition card and the
+        // required p0-p4 runway ahead of the first visible page. Sixteen therefore stopped at p2:
+        // p3 paid its first glTexImage upload in the presented frame even though its decoded body
+        // had been resident for seconds. Expand only the host-GPU/direct-Wi-Fi profile; physical
+        // direct Wi-Fi retains its established sixteen-page window.
+        private const val HOST_GPU_DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 24
         private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES = 48
         private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES = 288L * 1024L * 1024L
         private const val DIRECT_WIFI_SHORT_WEBTOON_PREWARM_AHEAD_VIEWPORTS = 6f

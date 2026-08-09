@@ -1005,7 +1005,7 @@ class NtkColdRendererPreparationArchitectureTest {
         )
         assertTrue(
             sessionSource.contains(
-                "NTK_APPEND_REMAINING_RUNWAY_ACTIVE_PUBLISH_PAGES = 4"
+                "NTK_APPEND_REMAINING_RUNWAY_ACTIVE_PUBLISH_PAGES = 1"
             )
         )
         assertTrue(
@@ -1249,6 +1249,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(snapshot.contains("NATIVE_PREWARM_AHEAD_VIEWPORTS"))
         assertTrue(snapshot.contains("val requestedPages = if (expandedDirectWifiRunway)"))
         assertTrue(snapshot.contains("DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES"))
+        assertTrue(snapshot.contains("HOST_GPU_DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES"))
         assertTrue(snapshot.contains("DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES"))
         assertTrue(snapshot.contains("DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES"))
         assertTrue(snapshot.contains("identity.normalizedEpisodePath !in"))
@@ -1483,7 +1484,9 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(admission.contains("isActiveDirectWifiPrewarmLocked()"))
         assertTrue(admission.contains("resident->second.bitmapIdentity == next.bitmapIdentity"))
         assertTrue(admission.contains("next.key.page >= lastPresentedMaxPage_"))
-        assertTrue(admission.contains("lastPresentedMaxPage_ + kPausedForwardPrewarmPages"))
+        assertTrue(admission.contains("hostGpuEmulatorSurfaceProfile_.load"))
+        assertTrue(admission.contains("kHostGpuPausedForwardPrewarmPages"))
+        assertTrue(admission.contains("lastPresentedMaxPage_ + forwardPrewarmPages"))
         assertTrue(loop.contains("activeDirectWifiCandidate"))
         assertTrue(loop.contains("frames_.empty()"))
         assertTrue(loop.contains("!backend_.hasPendingEvent()"))
@@ -1938,6 +1941,15 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(publishBound.contains("isDirectWifiStrictAdjacentTransportActive()"))
         assertTrue(publishBound.contains("installed in 1 until requiredInitialRunway"))
         assertTrue(publishBound.contains("return requiredInitialRunway - installed"))
+        assertTrue(
+            publishBound.indexOf("isActiveGeneratedTouchOrQuiet() || viewportBusy.get()") <
+                publishBound.indexOf("isInitialTailAdjacentPreappendTarget(target)")
+        )
+        assertTrue(
+            source.contains(
+                "HOST_GPU_DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 24"
+            )
+        )
 
         val retryBound = functionBody(
             "private fun remainingAdjacentRunwayAppendMinRetryMs(",

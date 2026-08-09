@@ -16276,10 +16276,14 @@ class ReaderSession(
                 return requiredInitialRunway - installed
             }
         }
-        return if (isInitialTailAdjacentPreappendTarget(target)) {
-            NTK_APPEND_REMAINING_RUNWAY_PUBLISH_PAGES
-        } else if (isActiveGeneratedTouchOrQuiet() || viewportBusy.get()) {
+        return if (isActiveGeneratedTouchOrQuiet() || viewportBusy.get()) {
+            // The initial p0-p4 cohort is already attached atomically.  Once the viewport enters
+            // that episode, publish at most one additional decoded page per moving-input turn.
+            // Multi-page suffix batches were decoding 4-8 immutable originals while the native
+            // producer was presenting and repeatedly triggered NativeAlloc GC in a 60 Hz frame.
             NTK_APPEND_REMAINING_RUNWAY_ACTIVE_PUBLISH_PAGES
+        } else if (isInitialTailAdjacentPreappendTarget(target)) {
+            NTK_APPEND_REMAINING_RUNWAY_PUBLISH_PAGES
         } else {
             NTK_APPEND_REMAINING_RUNWAY_PUBLISH_PAGES
         }
@@ -35178,7 +35182,7 @@ class ReaderSession(
         private const val NTK_APPEND_INITIAL_RUNWAY_READY_PAGES = 3
         private const val NTK_APPEND_INITIAL_ACTIVE_RUNWAY_READY_PAGES = 2
         private const val NTK_APPEND_REMAINING_RUNWAY_ACTIVE_QUIET_MS = 3200L
-        private const val NTK_APPEND_REMAINING_RUNWAY_ACTIVE_PUBLISH_PAGES = 4
+        private const val NTK_APPEND_REMAINING_RUNWAY_ACTIVE_PUBLISH_PAGES = 1
         private const val NTK_APPEND_REMAINING_RUNWAY_PUBLISH_PAGES = 8
         private const val NTK_APPEND_REMAINING_RUNWAY_FILE_FETCH_PAGES = 4
         private const val NTK_APPEND_REMAINING_RUNWAY_ACTIVE_FILE_FETCH_PAGES = 4

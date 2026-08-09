@@ -43,12 +43,11 @@ constexpr std::size_t kMaxQueuedFrames = 1;
 // post-click original has been installed it may publish one full-scene snapshot; keep that queue
 // intact so the worker can fill idle EGL slots during the long forward traversal.
 constexpr std::size_t kMaxQueuedPrewarmTiles = 1024;
-// During a physical drag/fling, keep a bounded immutable forward runway resident. Four pages was
-// enough for finger-speed reading but not repeated fast forward swipes: a 104-page cold trace
-// reached the next page before its texture upload and combined that 6.6 ms allocation with a host
-// swap fence. Sixteen pages covers the maximum fast-fling advance while the one-upload-per-display
-// pacing below still prevents a complete-scene burst from saturating gfxstream.
 constexpr int kPausedForwardPrewarmPages = 16;
+// A host-GPU r90 trace needed twelve current-tail pages, one card and p0-p4. Keep physical direct
+// Wi-Fi on the established bound while admitting the complete decoded adjacent runway before the
+// emulator's physical-input pause closes its non-presenting upload lane.
+constexpr int kHostGpuPausedForwardPrewarmPages = 24;
 constexpr std::int64_t kDefaultRefreshPeriodNanos = 11'111'111;
 // Direct Wi-Fi may replenish one immutable forward tile only when the visible mailbox and
 // compositor event queue are empty. Spread those uploads far enough apart that host gfxstream
@@ -732,6 +731,10 @@ private:
         // the real quiet-period gate in setPrewarmPaused(false).
         if (prewarmTiles_.empty()) return false;
         const FrameTile& next = prewarmTiles_.front();
+        const int forwardPrewarmPages =
+            hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire)
+                ? kHostGpuPausedForwardPrewarmPages
+                : kPausedForwardPrewarmPages;
         if (prewarmPaused_) {
             if (!isActiveDirectWifiPrewarmLocked()) return false;
             const auto resident = textures_.find(next.key);
@@ -747,7 +750,7 @@ private:
                 lastPresentedMaxPage_ < 0) return false;
             return next.key.structureEpoch == lastPresentedStructureEpoch_ &&
                 next.key.page >= lastPresentedMaxPage_ &&
-                next.key.page <= lastPresentedMaxPage_ + kPausedForwardPrewarmPages;
+                next.key.page <= lastPresentedMaxPage_ + forwardPrewarmPages;
         }
         // The immutable full-scene queue is ordered from the first page to the last. During
         // physical motion it may feed only the short forward runway: this removes first-visible
@@ -771,7 +774,7 @@ private:
             return false;
         }
         return next.key.structureEpoch == lastPresentedStructureEpoch_ &&
-            next.key.page <= lastPresentedMaxPage_ + kPausedForwardPrewarmPages;
+            next.key.page <= lastPresentedMaxPage_ + forwardPrewarmPages;
     }
 
     void rememberAppliedFrame(const FrameCommand& frame) {
