@@ -919,6 +919,7 @@ foreach($requiredToken in @(
         'stale AndroidX Perfetto trace output could not be retired before case',
         'AndroidX Perfetto trace output could not be retired after instrumentation',
         'Remove-RemoteCaseArtifacts',
+        "'^(webtoon|manhwa)-\d{2,3}-[A-Za-z0-9._-]+$'",
         'remote benchmark artifacts could not be retired after host pull',
         'remote screenshot artifacts could not be retired after host pull',
         'Refusing post-pull cleanup outside exact qualification case paths',

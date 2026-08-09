@@ -779,7 +779,7 @@ function Remove-RemoteCaseArtifacts(
     $expectedCase = "$RunRemoteRoot/$CaseId"
     $expectedScreenshot = "/sdcard/Android/data/$script:BenchmarkPackage/files/ntk-cold/$CaseId"
     if($RunRemoteRoot -notmatch '^/sdcard/Android/media/ml\.melun\.mangaview\.macrobenchmark/ntk-cold-output/\d{8}-\d{6}-[1-9]\d*$' -or
-            $CaseId -notmatch '^(webtoon|manhwa)-\d{2}-[A-Za-z0-9._-]+$' -or
+            $CaseId -notmatch '^(webtoon|manhwa)-\d{2,3}-[A-Za-z0-9._-]+$' -or
             $RemoteCase -cne $expectedCase -or
             $ScreenshotRemote -cne $expectedScreenshot) {
         throw "Refusing post-pull cleanup outside exact qualification case paths"
@@ -2259,7 +2259,7 @@ function Invoke-ColdCase(
     $remoteAdditional = "$remoteCase/benchmark"
     $remoteTrace = "/data/misc/perfetto-traces/$caseId.perfetto-trace"
     if($RunRemoteRoot -notmatch '^/sdcard/Android/media/ml\.melun\.mangaview\.macrobenchmark/ntk-cold-output/\d{8}-\d{6}-[1-9]\d*$' -or
-            $caseId -notmatch '^(webtoon|manhwa)-\d{2}-[A-Za-z0-9._-]+$' -or
+            $caseId -notmatch '^(webtoon|manhwa)-\d{2,3}-[A-Za-z0-9._-]+$' -or
             $remoteCase -cne "$RunRemoteRoot/$caseId" -or
             -not $remoteCase.StartsWith("$RunRemoteRoot/", [StringComparison]::Ordinal)) {
         throw "Refusing recursive remote cleanup outside the exact run/case root: '$remoteCase'"
