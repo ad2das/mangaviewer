@@ -876,6 +876,56 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         return true
     }
 
+    /**
+     * Replaces only an unfinished adjacent flight whose image work was cancelled after launch.
+     *
+     * Active-scroll cleanup records the exact path and cancellation time in [ReaderImageCache].
+     * Checking that evidence under the flight lifecycle lock prevents a late timeout from retiring
+     * a flight which has already published authority, while still allowing the same active reader
+     * generation to recover immediately instead of joining a permanently empty discovery.
+     */
+    @JvmStatic
+    fun retireCancelledAdjacentTargetForReplacement(
+        path: String?,
+        viewerGeneration: Long,
+        reason: String?,
+    ): Boolean {
+        val key = normalizedPath(path) ?: return false
+        if (viewerGeneration <= 0L) return false
+        val flight = synchronized(flightLifecycleLock(key)) {
+            val owned = flights[key] ?: return@synchronized null
+            if (owned.viewerGeneration != viewerGeneration ||
+                owned.viewerOwnerEpisodePath.equals(key, ignoreCase = true) ||
+                owned.completed.get() ||
+                NtkSourceSpoolRegistry.currentAuthoritativeManifest(key) != null ||
+                !ReaderImageCache.wasNtkEpisodeWorkCancelledSince(key, owned.startedAtMs)
+            ) {
+                return@synchronized null
+            }
+            if (!claimNetworkOwnershipRetirement(owned) ||
+                !owned.retirement.retire(key, viewerGeneration)
+            ) {
+                return@synchronized null
+            }
+            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                owned.lease,
+                "strict_exact_adjacent_cancelled_${safeReason(reason)}",
+            )
+            flights.remove(key, owned)
+            owned
+        } ?: return false
+        Log.d(
+            "ViewerPerf",
+            "ntk_strict_exact_adjacent_cancelled_retired path=$key," +
+                "viewerOwnerPath=${flight.viewerOwnerEpisodePath}," +
+                "viewerGeneration=$viewerGeneration," +
+                "discoveryGeneration=${flight.lease.generation.value}," +
+                "reason=${safeReason(reason)}",
+        )
+        flight.client.leaveNtkStrictForegroundNetwork(key, viewerGeneration)
+        return true
+    }
+
     /** Retires one completed episode after continuous forward reading has removed its page table. */
     @JvmStatic
     fun retireConsumedTargetOwnership(

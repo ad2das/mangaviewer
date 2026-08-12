@@ -6045,6 +6045,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
             physicalMotionEnded = interruptPhysicalScrollForLifecycleLocked()
             directSurfaceReady = false
             rollingTextureSurface = null
+            // A producer-thread Choreographer callback can remain reserved when the window stops
+            // delivering vsync. If that reservation survives this Surface, the replacement
+            // attachment mistakes it for live work and strands its first admitted frame forever.
+            // Retire every Surface-scoped callback while the old attachment is fenced so resume
+            // always starts with an empty scheduling lane.
+            retireDirectSurfaceSchedulingLocked()
             val value = rollingNativeHandle to maxOf(
                 rollingNativeAttachEpoch,
                 rollingNativeSurfaceEpochCounter
@@ -9664,8 +9670,8 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         attachRollingNativeSurface(ready.first, ready.second, ready.third)
     }
 
-    private fun stopRenderThreadLocked(): HandlerThread? {
-        val thread = directRenderThread ?: return null
+    /** Must be called with [stateLock] held. Keeps the producer thread but retires one Surface. */
+    private fun retireDirectSurfaceSchedulingLocked() {
         directRenderHandler?.removeCallbacks(directFramePostRunnable)
         directRenderHandler?.removeCallbacks(directCadenceWatchdog)
         directRenderHandler?.removeCallbacks(directLateInputCatchup)
@@ -9685,6 +9691,11 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         directCallbackObservedPhysicalGestureRevision = 0L
         directCallbackObservedAtNanos = 0L
         directCallbackHadAdmission = false
+    }
+
+    private fun stopRenderThreadLocked(): HandlerThread? {
+        val thread = directRenderThread ?: return null
+        retireDirectSurfaceSchedulingLocked()
         directChoreographer = null
         directRenderHandler = null
         directRenderThread = null

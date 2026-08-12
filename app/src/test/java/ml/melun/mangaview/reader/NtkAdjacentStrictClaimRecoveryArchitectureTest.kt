@@ -47,7 +47,7 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
         val retirement = functionSlice(
             coordinator,
             "fun retireAdjacentTargetForReplacement(",
-            "fun retireConsumedTargetOwnership(",
+            "fun retireCancelledAdjacentTargetForReplacement(",
         )
         assertTrue(retirement.contains("owned.viewerGeneration != viewerGeneration"))
         assertTrue(retirement.contains("owned.lease.generation.value != discoveryGeneration"))
@@ -55,6 +55,43 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
         assertTrue(retirement.contains("retireDiscoveryForReplacement("))
         assertTrue(retirement.contains("flights.remove(key, owned)"))
         assertFalse(retirement.contains("completedAdjacentPredecessors.remove"))
+    }
+
+    @Test
+    fun cancelledDiscoveryReplacementIsEvidenceBoundAndAdjacentScoped() {
+        val retirement = functionSlice(
+            coordinator,
+            "fun retireCancelledAdjacentTargetForReplacement(",
+            "fun retireConsumedTargetOwnership(",
+        )
+        assertTrue(retirement.contains("owned.viewerGeneration != viewerGeneration"))
+        assertTrue(retirement.contains("owned.viewerOwnerEpisodePath.equals(key, ignoreCase = true)"))
+        assertTrue(retirement.contains("owned.completed.get()"))
+        assertTrue(retirement.contains("currentAuthoritativeManifest(key) != null"))
+        assertTrue(
+            retirement.contains(
+                "wasNtkEpisodeWorkCancelledSince(key, owned.startedAtMs)",
+            ),
+        )
+        assertTrue(retirement.contains("retireDiscoveryForReplacement("))
+        assertTrue(retirement.contains("flights.remove(key, owned)"))
+        assertTrue(retirement.contains("leaveNtkStrictForegroundNetwork(key, viewerGeneration)"))
+    }
+
+    @Test
+    fun exactManifestWaitProtectsTargetBeforeLaunchAndRetriesCancelledFlight() {
+        val wait = functionSlice(
+            readerSession,
+            "private fun waitForExactViewerApiAdjacentUrls(",
+            "private fun fetchGeneratedNtkAppendUrlsWithEarlyHandoff(",
+        )
+        val allow = wait.indexOf("ReaderImageCache.allowAdjacentNtkForegroundViewerPath(")
+        val launch = wait.indexOf("listener.onAdjacentExactManifestRequired(")
+        assertTrue(allow >= 0)
+        assertTrue(launch > allow)
+        assertTrue(wait.contains("retireCancelledAdjacentTargetForReplacement("))
+        assertTrue(wait.contains("requestExactDiscovery(\"adjacent_exact_manifest_cancelled_retry\")"))
+        assertTrue(wait.contains("if (!replacedCancelledFlight) holdOrRecoverAdjacentStrictSource(target)"))
     }
 
     @Test

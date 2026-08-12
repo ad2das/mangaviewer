@@ -12610,9 +12610,9 @@ class ReaderSession(
             // image API uses mixed extensions or opaque assets. Turning that count back into
             // pNNN.jpg guesses made real next episodes (for example an 80-page webtoon epilogue)
             // retry four 404s until the reader hit a permanent physical bottom.
-            listener.onAdjacentExactManifestRequired(target, predecessorPath)
             val exactUrls = waitForExactViewerApiAdjacentUrls(
                 target,
+                predecessorPath,
                 NTK_APPEND_EXACT_MANIFEST_WAIT_MS,
             )
             Log.d(
@@ -12640,9 +12640,9 @@ class ReaderSession(
                 )
                 return AppendUrlLoad(Title.LOAD_ERROR, emptyList())
             }
-            listener.onAdjacentExactManifestRequired(target, predecessorPath)
             val exactUrls = waitForExactViewerApiAdjacentUrls(
                 target,
+                predecessorPath,
                 NTK_APPEND_EXACT_MANIFEST_WAIT_MS,
             )
             if (exactUrls.isEmpty()) {
@@ -14048,9 +14048,9 @@ class ReaderSession(
         ) {
             if (predecessorPath.isEmpty()) return Title.LOAD_ERROR
             val exactUrls = exactViewerApiAdjacentUrls(target).orEmpty().ifEmpty {
-                listener.onAdjacentExactManifestRequired(target, predecessorPath)
                 waitForExactViewerApiAdjacentUrls(
                     target,
+                    predecessorPath,
                     NTK_APPEND_EXACT_MANIFEST_WAIT_MS,
                 )
             }
@@ -14445,14 +14445,47 @@ class ReaderSession(
         return authority
     }
 
-    private fun waitForExactViewerApiAdjacentUrls(target: Manga, timeoutMs: Long): List<String> {
+    private fun waitForExactViewerApiAdjacentUrls(
+        target: Manga,
+        predecessorEpisodePath: String,
+        timeoutMs: Long,
+    ): List<String> {
+        val targetPath = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        if (targetPath.isEmpty() || predecessorPath.isEmpty()) return emptyList()
+        fun requestExactDiscovery(reason: String) {
+            // The exact manifest joins its first body probes. Protect that one validated neighbor
+            // before publishing the request so active input cannot classify those calls as
+            // unrelated episode work and cancel the discovery that the boundary is awaiting.
+            ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
+                targetPath,
+                NTK_ADJACENT_APPEND_FOREGROUND_PATH_TTL_MS,
+                reason,
+            )
+            listener.onAdjacentExactManifestRequired(target, predecessorPath)
+        }
+        requestExactDiscovery("adjacent_exact_manifest_wait")
         val deadline = SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0L)
         while (!cancelled.get() && SystemClock.elapsedRealtime() < deadline) {
             exactViewerApiAdjacentUrls(target)?.let { return it }
+            val replacedCancelledFlight = NtkStrictEpisodeDiscoveryCoordinator
+                .retireCancelledAdjacentTargetForReplacement(
+                    targetPath,
+                    ViewerTelemetry.activeGeneration(),
+                    "adjacent_exact_manifest_wait",
+                )
+            if (replacedCancelledFlight) {
+                requestExactDiscovery("adjacent_exact_manifest_cancelled_retry")
+                Log.d(
+                    TAG,
+                    "append_adjacent_exact_manifest_cancelled_retry path=$targetPath " +
+                        "predecessor=$predecessorPath",
+                )
+            }
             // A terminal claimed generation can otherwise make every caller join its stale
             // authority until this timeout expires. Detach/retry only that exact identity while
             // the same bounded wait remains in progress.
-            holdOrRecoverAdjacentStrictSource(target)
+            if (!replacedCancelledFlight) holdOrRecoverAdjacentStrictSource(target)
             SystemClock.sleep(NTK_APPEND_EARLY_GENERATED_POLL_MS)
         }
         return exactViewerApiAdjacentUrls(target).orEmpty()

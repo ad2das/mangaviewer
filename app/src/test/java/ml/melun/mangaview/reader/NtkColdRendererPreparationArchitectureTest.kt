@@ -422,6 +422,27 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun surfaceReplacementRetiresProducerCallbacksBeforeFramePipe() {
+        val destroyed = functionBody("override fun surfaceDestroyed(holder: SurfaceHolder)")
+        val retirement = functionBody("private fun retireDirectSurfaceSchedulingLocked()")
+        val stopThread = functionBody("private fun stopRenderThreadLocked()")
+
+        val surfaceFence = destroyed.indexOf("directSurfaceReady = false")
+        val callbackRetirement = destroyed.indexOf("retireDirectSurfaceSchedulingLocked()")
+        val framePipeRetirement = destroyed.indexOf("clearFramePipeLocked(preserveDirty = true)")
+        assertTrue(surfaceFence >= 0)
+        assertTrue(callbackRetirement > surfaceFence)
+        assertTrue(framePipeRetirement > callbackRetirement)
+        assertTrue(retirement.contains("removeCallbacks(directFramePostRunnable)"))
+        assertTrue(retirement.contains("removeCallbacks(directCadenceWatchdog)"))
+        assertTrue(retirement.contains("removeFrameCallback(directFrameCallback)"))
+        assertTrue(retirement.contains("directFrameCallbackPosted = false"))
+        assertTrue(retirement.contains("directLateInputCatchupPosted = false"))
+        assertTrue(retirement.contains("directAdjacentExactP0CatchupPosted = false"))
+        assertTrue(stopThread.contains("retireDirectSurfaceSchedulingLocked()"))
+    }
+
+    @Test
     fun physicalFrameContainsOnlyViewportPixels() {
         val submit = functionBody("private fun submitNativeFrame(")
         val tileIntersection = functionBody("private fun nativeTileIntersectsViewport(")
@@ -577,6 +598,10 @@ class NtkColdRendererPreparationArchitectureTest {
             "private fun loadAuthoritativeAdjacentUrlsForPrefetch(",
             sessionSource
         )
+        val exactManifestWait = functionBody(
+            "private fun waitForExactViewerApiAdjacentUrls(",
+            sessionSource
+        )
         val resolvedMetadata = functionBody(
             "private fun prefetchResolvedMetadataAdjacent(",
             sessionSource
@@ -717,15 +742,19 @@ class NtkColdRendererPreparationArchitectureTest {
         assertFalse(metadata.contains("ViewerTelemetry.adjacentWorkStarted("))
         assertTrue(
             exactManifest.contains(
-                "listener.onAdjacentExactManifestRequired(target, predecessorPath)"
+                "waitForExactViewerApiAdjacentUrls("
             )
         )
         assertTrue(exactManifest.contains("!isEpisodeFullyDrawableForAdjacent(source)"))
         assertTrue(
             exactManifest.indexOf("!isEpisodeFullyDrawableForAdjacent(source)") <
                 exactManifest.indexOf(
-                    "listener.onAdjacentExactManifestRequired(target, predecessorPath)"
+                    "waitForExactViewerApiAdjacentUrls("
                 )
+        )
+        assertTrue(
+            exactManifestWait.indexOf("ReaderImageCache.allowAdjacentNtkForegroundViewerPath(") <
+                exactManifestWait.indexOf("listener.onAdjacentExactManifestRequired(")
         )
         assertTrue(resolvedMetadata.contains("!isEpisodeFullyDrawableForAdjacent(source)"))
         assertTrue(
