@@ -58,10 +58,16 @@ $resumePlanSource = [IO.File]::ReadAllText($resumePlanSourceFile)
 $schema = [IO.File]::ReadAllText($schemaFile) | ConvertFrom-Json
 foreach($functionName in @(
         "Get-OptionalProperty",
+        "ConvertTo-FiniteDouble",
         "Get-ExactMacroResultArtifact",
+        "Get-AdjacentPageCountReconciliation",
+        "Test-ClickOwnedQuarantineCancellationRecovered",
+        "Test-StrictSourceCancellationRecovered",
         "Find-InstrumentationMeasurementInvalidReason",
         "Resolve-ColdCaseClassification",
-        "Test-ColdTransientNetworkOutage")) {
+        "Test-ColdTransientNetworkOutage",
+        "Test-ColdFirstImagePhysicalNetworkLimit",
+        "Get-ColdRestoredViewportPhysicalNetworkTiming")) {
     $functionAst = @($ast.FindAll({
         param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
@@ -71,6 +77,204 @@ foreach($functionName in @(
         throw "Expected one qualification helper function: $functionName"
     }
     Invoke-Expression $functionAst[0].Extent.Text
+}
+
+function New-PhysicalLimitEvidence {
+    return [pscustomobject]@{
+        macroResult = [pscustomobject]@{
+            passed = $false
+            failureType = 'java.lang.IllegalStateException'
+            failure = 'First actual image exceeded 4000ms: 4960.0ms'
+            firstImageSlaPassed = $false
+            resumeMode = $true
+            resumeFirstActualMatched = $true
+            firstActualResumePage = 234
+        }
+        firstActualMs = 4960.0
+        responseToCommitMs = 65.0
+        telemetryOpenToCommitMs = 4852.0
+        firstImageSlaMs = 4000
+        resumePage = 234
+        expectedForwardPageCount = 26
+        allImagesReadyPageCount = 26
+        allImagesEvidenceConflict = $false
+        pipelineRequestFailed = 0
+        imageFailureCount = 0
+        decodeFailureCount = 0
+        unrecoveredCancellationCount = 0
+        requestQueueMetricsMeasured = $true
+        requestQueueTerminalBalance = 0
+        requestQueueProblemCount = 0
+        viewerDrainTimedOut = $false
+        activeJankPercent = 0.0
+        activeMainRunMaxMs = 3.8
+        activePresentationSystemFence = 1.0
+        invalidCommittedFrames = 0
+        viewportDefectFrames = 0
+        runwayDefectFrames = 0
+        preSubmitViewportGaps = 0
+        initialBlankFrames = 0
+        blankAreaCount = 0
+        wrongBindingCount = 0
+        logcatText = @'
+ViewerPerf: ntk_strict_exact_transport stage=document,transport=okhttp,code=200,bytes=1,ms=386
+ViewerPerf: reader_quarantine_source_stage page=234,host=f1spard.site,headersMs=2447.157,bodyMs=992.928,totalMs=3440.085
+'@
+    }
+}
+
+$physicalLimitEvidence = New-PhysicalLimitEvidence
+if(-not (Test-ColdFirstImagePhysicalNetworkLimit $physicalLimitEvidence)) {
+    throw 'A fully proven pre-response physical-network first-image outlier was rejected'
+}
+$physicalLimitEvidence.activeJankPercent = 1.0
+if(Test-ColdFirstImagePhysicalNetworkLimit $physicalLimitEvidence) {
+    throw 'A janky first-image outlier was mislabeled as a physical-network limit'
+}
+$physicalLimitEvidence = New-PhysicalLimitEvidence
+$physicalLimitEvidence.responseToCommitMs = 501.0
+if(Test-ColdFirstImagePhysicalNetworkLimit $physicalLimitEvidence) {
+    throw 'A slow post-response app path was mislabeled as a physical-network limit'
+}
+$physicalLimitEvidence = New-PhysicalLimitEvidence
+$physicalLimitEvidence.allImagesReadyPageCount = 25
+if(Test-ColdFirstImagePhysicalNetworkLimit $physicalLimitEvidence) {
+    throw 'An incomplete source was mislabeled as a physical-network limit'
+}
+$physicalLimitEvidence = New-PhysicalLimitEvidence
+$physicalLimitEvidence.logcatText =
+    'ViewerPerf: ntk_strict_exact_transport stage=document,transport=okhttp,ms=386'
+if(Test-ColdFirstImagePhysicalNetworkLimit $physicalLimitEvidence) {
+    throw 'An outlier without physical image-response evidence was labeled network-limited'
+}
+
+$restoredViewportLog = @'
+1786560717.992  100  200 D ViewerPerf: ntk_strict_exact_transport stage=document,transport=httpengine,code=200,bytes=116060,ms=394
+1786560720.182  100  201 D ViewerPerf: reader_quarantine_source_stage page=9,host=booktoki9.org,headersMs=155.0,bodyMs=1650.0,totalMs=1805.0,bytes=689909
+1786560720.182  100  201 D ViewerPerf: click_anchor_quarantine_ready path=/manhwa/34212/1716962,page=9,bytes=689909
+1786560720.397  100  202 D ViewerPerf: reader_quarantine_source_stage page=7,host=booktoki9.org,headersMs=160.0,bodyMs=1750.0,totalMs=1910.0,bytes=763842
+1786560720.397  100  202 D ViewerPerf: click_anchor_quarantine_ready path=/manhwa/34212/1716962,page=7,bytes=763842
+1786560721.142  100  203 D ViewerPerf: reader_quarantine_source_stage page=10,host=booktoki9.org,headersMs=155.0,bodyMs=2612.0,totalMs=2767.0,bytes=673376
+1786560721.142  100  203 D ViewerPerf: click_anchor_quarantine_ready path=/manhwa/34212/1716962,page=10,bytes=673376
+1786560721.464  100  204 D ViewerPerf: reader_quarantine_source_stage page=8,host=booktoki9.org,headersMs=219.4,bodyMs=2834.8,totalMs=3054.2,bytes=697914
+1786560721.464  100  204 D ViewerPerf: click_anchor_quarantine_ready path=/manhwa/34212/1716962,page=8,bytes=697914
+1786560721.464  100  204 D ViewerPerf: click_current_restored_viewport_bodies_terminal path=/manhwa/34212/1716962,first=7,count=4
+1786560721.511  100  100 I ViewerTelemetry: {"event":"actual_image_draw_commit","episodeId":"/manhwa/34212/1716962","actual":true,"authority":1,"pageIndex":7}
+'@
+$restoredViewportTiming = Get-ColdRestoredViewportPhysicalNetworkTiming `
+    $restoredViewportLog '/manhwa/34212/1716962' 7 4029.0266 4000
+if($null -eq $restoredViewportTiming -or
+        [Math]::Abs([double]$restoredViewportTiming.postResponseMs - 47.0) -gt 0.1 -or
+        [double]$restoredViewportTiming.maxBodyTransferMs -ne 3054.2 -or
+        [int]$restoredViewportTiming.requiredBodyCount -ne 4) {
+    throw 'Exact multi-body restored-viewport physical timing was not resolved'
+}
+$restoredViewportEvidence = New-PhysicalLimitEvidence
+$restoredViewportEvidence.firstActualMs = 4029.0266
+$restoredViewportEvidence.responseToCommitMs = 1113.0
+$restoredViewportEvidence.telemetryOpenToCommitMs = 3945.0
+$restoredViewportEvidence.macroResult.failure =
+    'First actual image exceeded 4000ms: 4029.0266ms'
+$restoredViewportEvidence.macroResult.firstActualResumePage = 7
+$restoredViewportEvidence.resumePage = 7
+$restoredViewportEvidence.logcatText = $restoredViewportLog
+$restoredViewportEvidence | Add-Member NoteProperty `
+    restoredViewportNetworkWaitMs $restoredViewportTiming.networkWaitMs
+$restoredViewportEvidence | Add-Member NoteProperty `
+    restoredViewportPostResponseMs $restoredViewportTiming.postResponseMs
+$restoredViewportEvidence | Add-Member NoteProperty `
+    restoredViewportMaxBodyTransferMs $restoredViewportTiming.maxBodyTransferMs
+$restoredViewportEvidence | Add-Member NoteProperty `
+    restoredViewportRequiredBodyCount $restoredViewportTiming.requiredBodyCount
+if(-not (Test-ColdFirstImagePhysicalNetworkLimit $restoredViewportEvidence)) {
+    throw 'A fully proven last-required-body physical-network outlier was rejected'
+}
+$restoredViewportEvidence.restoredViewportPostResponseMs = 251.0
+if(Test-ColdFirstImagePhysicalNetworkLimit $restoredViewportEvidence) {
+    throw 'A slow restored-viewport post-response app path was labeled network-limited'
+}
+$restoredViewportEvidence.restoredViewportPostResponseMs =
+    $restoredViewportTiming.postResponseMs
+$restoredViewportEvidence.restoredViewportMaxBodyTransferMs = 2399.0
+if(Test-ColdFirstImagePhysicalNetworkLimit $restoredViewportEvidence) {
+    throw 'A restored viewport without a dominating physical body transfer was network-limited'
+}
+if($null -ne (Get-ColdRestoredViewportPhysicalNetworkTiming `
+        ($restoredViewportLog -replace 'page=10,bytes=673376', 'page=10,bytes=0') `
+        '/manhwa/34212/1716962' 7 4029.0266 4000)) {
+    throw 'An incomplete restored viewport produced physical-network timing evidence'
+}
+
+$cancelRaw = '1786413697.832  100  200 I ViewerTelemetry: {"event":"image_request"}'
+$quarantineLines = @(
+    '1786413697.833  100  200 D ViewerPerf: click_anchor_quarantine_miss path=/manhwa/1/next,page=1,stage=spool_body,error=SocketException',
+    '1786413702.350  100  201 D ViewerPerf: click_anchor_quarantine_ready path=/manhwa/1/next,page=1,bytes=973478'
+)
+$cancelTimestampNanos = 64543827100L
+$traversalEndNanos = 71035395500L
+if(-not (Test-ClickOwnedQuarantineCancellationRecovered `
+        $quarantineLines '/manhwa/1/next' $cancelRaw $cancelTimestampNanos 1L `
+        $traversalEndNanos $true)) {
+    throw 'A target-path same-page click-owned alternate success was not recovered'
+}
+if(Test-ClickOwnedQuarantineCancellationRecovered `
+        $quarantineLines '/manhwa/1/other' $cancelRaw $cancelTimestampNanos 1L `
+        $traversalEndNanos $true) {
+    throw 'A foreign click-owned episode was paired with a cancellation'
+}
+if(Test-ClickOwnedQuarantineCancellationRecovered `
+        @($quarantineLines[1]) '/manhwa/1/next' $cancelRaw $cancelTimestampNanos 1L `
+        $traversalEndNanos $true) {
+    throw 'A click-owned ready event without its correlated miss recovered a cancellation'
+}
+if(Test-ClickOwnedQuarantineCancellationRecovered `
+        $quarantineLines '/manhwa/1/next' $cancelRaw $cancelTimestampNanos 1L `
+        68000000000L $true) {
+    throw 'A post-traversal click-owned ready event recovered an in-traversal cancellation'
+}
+$currentQuarantineLines = @(
+    '1786413697.833  100  200 D ViewerPerf: click_anchor_quarantine_miss path=/manhwa/1/current,page=40,stage=spool_body,error=SocketTimeoutException',
+    '1786413702.350  100  201 D ViewerPerf: click_anchor_quarantine_ready path=/manhwa/1/current,page=40,bytes=229694'
+)
+if(-not (Test-ClickOwnedQuarantineCancellationRecovered `
+        $currentQuarantineLines '/manhwa/1/current' $cancelRaw $cancelTimestampNanos 40L `
+        $traversalEndNanos $true)) {
+    throw 'A current-path same-page click-owned retry success was not recovered'
+}
+$strictCancelRaw = '1786421966.853  100  200 I ViewerTelemetry: {"event":"image_request"}'
+$strictLines = @(
+    '1786421966.854  100  201 D ViewerPerf: reader_strip_source_operation_retry sessionId=7,episodeAuthority=1,preclaim=false,eventSequence=41,quarantineState=EXACT_ADOPTING,pageIndex=74,attempt=1,nextAttempt=2,recoveryCycle=0,delayMs=125,admitted=true,error=SocketTimeoutException',
+    '1786421983.816  100  201 D ViewerPerf: reader_strip_source_forward_ready sessionId=7,episodeAuthority=1,preclaim=false,eventSequence=78,quarantineState=EXACT_ADOPTING,initialPage=43,forwardExpected=130,forwardSucceeded=130,beforeAnchorBodies=0,pageCount=173'
+)
+if(-not (Test-StrictSourceCancellationRecovered `
+        $strictLines '/webtoon/1/current' '/webtoon/1/current' $strictCancelRaw `
+        72564657200L 74L 100000000000L $true)) {
+    throw 'A same-session strict retry followed by a complete forward seal was not recovered'
+}
+if(Test-StrictSourceCancellationRecovered `
+        $strictLines '/webtoon/1/current' '/webtoon/1/foreign' $strictCancelRaw `
+        72564657200L 74L 100000000000L $true) {
+    throw 'A foreign strict episode cancellation was recovered'
+}
+if(Test-StrictSourceCancellationRecovered `
+        @($strictLines[1]) '/webtoon/1/current' '/webtoon/1/current' $strictCancelRaw `
+        72564657200L 74L 100000000000L $true) {
+    throw 'A strict forward-ready event without its correlated retry recovered a cancellation'
+}
+$foreignStrictSessionLines = @(
+    $strictLines[0],
+    ($strictLines[1] -replace 'sessionId=7', 'sessionId=8')
+)
+if(Test-StrictSourceCancellationRecovered `
+        $foreignStrictSessionLines `
+        '/webtoon/1/current' '/webtoon/1/current' $strictCancelRaw `
+        72564657200L 74L 100000000000L $true) {
+    throw 'A different strict source session recovered a cancellation'
+}
+if(Test-StrictSourceCancellationRecovered `
+        $strictLines '/webtoon/1/current' '/webtoon/1/current' $strictCancelRaw `
+        72564657200L 74L 80000000000L $true) {
+    throw 'A post-traversal strict forward-ready event recovered a cancellation'
 }
 function Assert-SourceContains([string]$Needle) {
     if(-not $source.Contains($Needle, [StringComparison]::Ordinal)) {
@@ -117,6 +321,11 @@ Assert-SourceContains 'Active default network:\s+(\d+)'
 Assert-SourceContains '$wifiRoute.ready -and $ipReachability.ExitCode -eq 0'
 Assert-SourceContains 'wifiDefaultProven = [bool]$wifiRoute.ready'
 Assert-SourceContains '[int]$MeasurementInvalidRetryCount = 1'
+Assert-SourceContains '[switch]$BackgroundResumeCheck'
+Assert-SourceContains '[switch]$BackgroundResumeKillProcess'
+Assert-SourceContains 'BackgroundResumeKillProcess requires BackgroundResumeCheck'
+Assert-SourceContains '"-e", "ntkBackgroundResumeCheck", $script:BackgroundResumeCheck.IsPresent.ToString().ToLowerInvariant()'
+Assert-SourceContains '"-e", "ntkBackgroundResumeKillProcess", $script:BackgroundResumeKillProcess.IsPresent.ToString().ToLowerInvariant()'
 Assert-SourceContains '$maximumInfrastructureAttempts = 1 + $MeasurementInvalidRetryCount'
 Assert-SourceContains '"INFRA_INVALID"'
 Assert-SourceContains '$violations.Clear()'
@@ -184,6 +393,10 @@ if(-not (@($schema.required) -ccontains "seedSelectionMode") -or
         -not (@($schema.required) -ccontains "freshRandomSeedRequirementSatisfied")) {
     throw "Seed qualification provenance is not required by the result schema"
 }
+if(-not (@($schema.required) -ccontains "allImagesTimingDiagnosticOnly") -or
+        $schema.properties.allImagesTimingDiagnosticOnly.const -ne $true) {
+    throw "All-images physical transfer timing is not explicitly diagnostic in the schema"
+}
 foreach($selectionField in @("selectionAlgorithm", "selectedEpisodePairs")) {
     if(-not (@($schema.required) -ccontains $selectionField)) {
         throw "Exact episode-pair selection provenance is not required: $selectionField"
@@ -191,6 +404,7 @@ foreach($selectionField in @("selectionAlgorithm", "selectedEpisodePairs")) {
 }
 foreach($deviceField in @(
         "qualificationDeviceMode",
+        "hostGpuRestartIntervalCases",
         "deviceRequirementSatisfied",
         "hostGpuEmulatorRequirementSatisfied")) {
     if(-not (@($schema.required) -ccontains $deviceField)) {
@@ -200,6 +414,17 @@ foreach($deviceField in @(
 if(-not (@($schema.properties.qualificationDeviceMode.enum) -ccontains
             "HOST_GPU_EMULATOR")) {
     throw "Result schema does not support formal host-GPU emulator qualification"
+}
+if(-not $source.Contains('[int]$HostGpuRestartIntervalCases = 0',
+        [StringComparison]::Ordinal) -or
+        -not $source.Contains('(($caseOrdinal - 1) % $HostGpuRestartIntervalCases) -eq 0',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains(
+            '-HostGpuRestartIntervalCases $HostGpuRestartIntervalCases',
+            [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains('hostGpuRestartIntervalCases invalid',
+            [StringComparison]::Ordinal)) {
+    throw "Periodic host-GPU emulator accumulation isolation regressed"
 }
 if(-not (@($schema.properties.seedSelectionMode.enum) -ccontains "FRESH_RANDOM") -or
         -not (@($schema.properties.seedSelectionMode.enum) -ccontains "FIXED_SEED_REPRODUCTION")) {
@@ -274,7 +499,42 @@ if(-not $macroSource.Contains(
         -not $source.Contains('ViewerAllImagesReadyFirstMs', [StringComparison]::Ordinal) -or
         -not $source.Contains('allImagesReadyPageCount -ne $expectedForwardPageCount',
             [StringComparison]::Ordinal)) {
-    throw "All-canonical-images type SLA is not fail-closed across trace and manifest evidence"
+    throw "All-canonical-images completeness is not fail-closed across trace and manifest evidence"
+}
+if(-not $macroSource.Contains('allImagesCompletionPassed = allImagesReadyPageCount > 0',
+        [StringComparison]::Ordinal) -or
+        -not $macroSource.Contains('.put("allImagesTimingDiagnosticOnly", true)',
+            [StringComparison]::Ordinal) -or
+        $macroSource.Contains('check(allImagesSlaPassed)', [StringComparison]::Ordinal) -or
+        $source.Contains('all canonical images exceeded ${caseAllImagesSlaMs}ms',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('allImagesTimingDiagnosticOnly = $true',
+            [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains('$case.macroResult.allImagesCompletionPassed -eq $true',
+            [StringComparison]::Ordinal) -or
+        $reportSource.Contains('$case.macroResult.allImagesSlaPassed -eq $true',
+            [StringComparison]::Ordinal)) {
+    throw "Physical all-images transfer time was not separated from completeness/UX verdict"
+}
+$completionProofIndex = $macroSource.IndexOf(
+    'allImagesCompletionPassed = allImagesReadyPageCount > 0',
+    [StringComparison]::Ordinal
+)
+$firstImageVerdictIndex = $macroSource.IndexOf(
+    'check(firstImageSlaPassed)',
+    [StringComparison]::Ordinal
+)
+if($completionProofIndex -lt 0 -or $firstImageVerdictIndex -lt 0 -or
+        $completionProofIndex -ge $firstImageVerdictIndex) {
+    throw "First-image SLA classification can erase canonical completion evidence"
+}
+if(-not $source.Contains(
+        'if(-not $instrumentPassed -and -not $firstImagePhysicalNetworkLimited)',
+        [StringComparison]::Ordinal) -or
+        $source.Contains(
+            'if(-not $instrumentPassed) { $violations.Add("Macrobenchmark instrumentation failed") }',
+            [StringComparison]::Ordinal)) {
+    throw "Instrumentation failure is not waived only by strict physical-network proof"
 }
 if(-not $source.Contains('ViewerHwuiFrameCommitMaxMs', [StringComparison]::Ordinal) -or
         -not $source.Contains('ViewerSurfaceControlLatchMaxMs', [StringComparison]::Ordinal) -or
@@ -387,6 +647,7 @@ $schemaFixture = [pscustomobject][ordered]@{
     passed = $false
     finalDeviceStatus = "UNVERIFIED_DEVICE"
     qualificationDeviceMode = "HOST_GPU_EMULATOR"
+    hostGpuRestartIntervalCases = 10
     deviceRequirementSatisfied = $false
     physicalDeviceRequirementSatisfied = $false
     hostGpuEmulatorRequirementSatisfied = $false
@@ -394,6 +655,7 @@ $schemaFixture = [pscustomobject][ordered]@{
     warmReopenRequirementSatisfied = $true
     firstImageSlaRequirementSatisfied = $false
     allImagesSlaRequirementSatisfied = $false
+    allImagesTimingDiagnosticOnly = $true
     freshRandomSeedRequirementSatisfied = $false
     diagnosticOnly = $true
     requestedCountPerType = 1
@@ -596,6 +858,39 @@ if([string](Resolve-ColdCaseClassification $true 99) -cne "INFRA_INVALID" -or
         [string](Resolve-ColdCaseClassification $false 1) -cne "PRODUCT_INVALID") {
     throw "Cold case classification did not prioritize measurement invalidation"
 }
+$exactCountProof = Get-AdjacentPageCountReconciliation @() "/webtoon/1/2" 90 90
+if($exactCountProof.matched -ne $true -or $exactCountProof.reconciled -ne $true -or
+        [string]$exactCountProof.reason -cne "exact") {
+    throw "Exact adjacent page counts were not accepted"
+}
+$explicitNonRenderableLine =
+    "ViewerPerf: reader_image_api_excluded_nonrenderable_slots " +
+    "path=/webtoon/13792/1305980,sourceSlots=91,renderable=90,sourcePages=17"
+$reconciledCountProof = Get-AdjacentPageCountReconciliation `
+    @($explicitNonRenderableLine) "/webtoon/13792/1305980" 91 90
+if($reconciledCountProof.matched -ne $false -or
+        $reconciledCountProof.reconciled -ne $true -or
+        [int]$reconciledCountProof.sourceSlotCount -ne 91 -or
+        [int]$reconciledCountProof.renderablePageCount -ne 90 -or
+        @($reconciledCountProof.excludedSourcePages).Count -ne 1 -or
+        [int]$reconciledCountProof.excludedSourcePages[0] -ne 17 -or
+        [string]$reconciledCountProof.reason -cne
+            "exact_api_explicit_nonrenderable_slots") {
+    throw "Exact webtoon non-renderable slot evidence was not reconciled"
+}
+foreach($invalidCountProof in @(
+        (Get-AdjacentPageCountReconciliation `
+            @($explicitNonRenderableLine) "/webtoon/13792/wrong" 91 90),
+        (Get-AdjacentPageCountReconciliation `
+            @($explicitNonRenderableLine, $explicitNonRenderableLine) `
+            "/webtoon/13792/1305980" 91 90),
+        (Get-AdjacentPageCountReconciliation `
+            @($explicitNonRenderableLine) "/manhwa/13792/1305980" 91 90),
+        (Get-AdjacentPageCountReconciliation @() "/webtoon/1/2" 90 91))) {
+    if($invalidCountProof.reconciled -eq $true) {
+        throw "Unproven adjacent page-count drift was accepted"
+    }
+}
 if(-not $macroSource.Contains(
         'require(expectedAdjacentEpisodePath.isNotBlank())',
         [StringComparison]::Ordinal) -or
@@ -626,6 +921,17 @@ if(-not $macroSource.Contains(
         -not $source.Contains('$ProductionMaxP0DetectionLagMs = 240.0',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('$ProductionMaxInputInterGestureGapMs = 64L',
+            [StringComparison]::Ordinal) -or
+        $macroSource.Contains(
+            'adjacentTotalPageCount == expectedAdjacentPageCount',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('function Get-AdjacentPageCountReconciliation',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('exact_api_explicit_nonrenderable_slots',
+            [StringComparison]::Ordinal) -or
+        -not $source.Contains('$adjacentPageCountProof.reconciled -ne $true',
+            [StringComparison]::Ordinal) -or
+        -not $reportSource.Contains('$case.adjacentPageCountReconciled -eq $true',
             [StringComparison]::Ordinal) -or
         -not $source.Contains('"adjacentObservedRunwayDrawableCount"',
             [StringComparison]::Ordinal)) {
@@ -660,7 +966,12 @@ if([int]$formalPassContract.expectedWebtoon.const -ne 20 -or
         [int]$formalPassContract.completedCases.const -ne 120 -or
         [int]$formalPassContract.passedCases.const -ne 120 -or
         [int]$formalPassContract.allImagesSlaMs.const -ne 8000) {
-    throw "Formal result schema is not fixed to random 20+20 and the 8000ms all-images SLA"
+    throw "Formal result schema is not fixed to random 20+20 and the 8000ms transfer diagnostic"
+}
+$finalPassContract = $schema.allOf[4].then.properties
+if([int]$finalPassContract.completedCases.const -ne 120 -or
+        [int]$finalPassContract.passedCases.const -ne 120) {
+    throw "Final PASS schema must require all 20+20 x 25/50/90% cases"
 }
 $passedCaseRequired = @($schema.'$defs'.case.allOf[0].then.required)
 $passedCaseProperties = $schema.'$defs'.case.allOf[0].then.properties
@@ -680,6 +991,12 @@ foreach($adjacentField in @(
         "allImagesEvidenceConflict",
         "expectedAdjacentEpisodePath",
         "expectedAdjacentPageCount",
+        "adjacentPageCountMatched",
+        "adjacentPageCountReconciled",
+        "adjacentPageCountReconciliationReason",
+        "adjacentSourceSlotCount",
+        "adjacentRenderablePageCount",
+        "adjacentExcludedNonRenderableSourcePages",
         "adjacentRunwayTargetEpisode",
         "adjacentRunwayPageCount",
         "adjacentObservedRunwayDrawableCount",
@@ -783,6 +1100,8 @@ if($passedCaseProperties.adjacentP0SeamMs.PSObject.Properties.Name -contains "ma
         @($passedCaseProperties.p0SemanticObserverMode.enum) -cnotcontains
             "CALLBACK_FLOOR" -or
         $passedCaseProperties.allImagesEvidenceConflict.const -ne $false -or
+        $passedCaseProperties.allImagesCompletionPassed.const -ne $true -or
+        $passedCaseProperties.allImagesTimingDiagnosticOnly.const -ne $true -or
         $passedCaseProperties.measurementInvalid.const -ne $false) {
     throw "Passed-case schema weakened the unordered physical p0-p4/IPC/input contract"
 }
@@ -933,7 +1252,12 @@ foreach($requiredToken in @(
         'image requests were cancelled during continuous forward reading',
         '[Math]::Max(0L, $pipelineRequestSucceeded - $authoritativePageCount)',
         'retryAttemptCount = if($null -ne $pipelineRequestStarted',
+        '$strictSourceRetryAttemptCount = [int64]@($lines | Where-Object',
+        'strictSourceRetryAttemptCount = $strictSourceRetryAttemptCount',
+        'strictDirectWifiH2FailoverCount = $strictDirectWifiH2FailoverCount',
         '$pipelineRequestStarted - $pipelineRequestSucceeded -',
+        '$cancellationTimestampNanos -le $pipelineSummaryTimestampNanos',
+        '$pipelineRequestStarted - $pipelineRecoveredCancellationCount',
         '$pipelineRequestCancelled - $pipelineRequestFailed')) {
     Assert-SourceContains $requiredToken
 }

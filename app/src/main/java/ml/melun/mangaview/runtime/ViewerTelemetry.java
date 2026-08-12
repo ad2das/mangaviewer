@@ -1088,13 +1088,13 @@ public final class ViewerTelemetry {
         if(SESSION.get() != session)
             return;
         if(REQUESTS.isEmpty() && DECODES.isEmpty()) {
-            finalizeCloseOnMain(session, reason, false);
+            finalizeCloseOnMain(session, reason, false, deadlineNanos);
             return;
         }
         if(SystemClock.elapsedRealtimeNanos() >= deadlineNanos) {
             // Do not manufacture a drained boundary by deleting telemetry operations. A timeout
             // is explicit failure evidence and preserves the real non-zero counts in viewer_closed.
-            finalizeCloseOnMain(session, reason, true);
+            finalizeCloseOnMain(session, reason, true, deadlineNanos);
             return;
         }
         MEMORY_SAMPLER.schedule(
@@ -1104,12 +1104,21 @@ public final class ViewerTelemetry {
     }
 
     private static void finalizeCloseOnMain(
-            Session session, String reason, boolean drainTimedOut) {
+            Session session, String reason, boolean drainTimedOut, long deadlineNanos) {
         if(!session.closeFinalizing.compareAndSet(false, true))
             return;
         Runnable finish = () -> {
             if(SESSION.get() != session) {
                 session.closeFinalizing.set(false);
+                return;
+            }
+            // The sampler's empty observation and this main-thread runnable are not one atomic
+            // step. A deferred image operation can publish valid headers in that gap while its
+            // cancelled physical Call is still unwinding. Revalidate on the thread that emits
+            // viewer_closed; otherwise drainTimedOut=false can be paired with activeRequests>0.
+            if(!drainTimedOut && (!REQUESTS.isEmpty() || !DECODES.isEmpty())) {
+                session.closeFinalizing.set(false);
+                attemptCloseAfterDrain(session, reason, deadlineNanos);
                 return;
             }
             // viewerStopped emits its final frame summary synchronously on main while the

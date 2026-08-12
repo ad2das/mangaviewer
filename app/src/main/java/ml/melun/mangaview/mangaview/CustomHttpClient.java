@@ -284,18 +284,29 @@ public class CustomHttpClient {
         private final Object gate = new Object();
         private final String normalizedEpisodePath;
         private final long viewerGeneration;
+        private final String episodeOrigin;
+        private final boolean cellularResilientTransport;
+        private final boolean directWifiTransport;
+        private final long networkHandle;
         private final LinkedHashSet<Call> activeCalls = new LinkedHashSet<>();
         private final LinkedHashSet<UrlRequest> activeEngineRequests = new LinkedHashSet<>();
         private boolean cancelled;
 
-        public NtkStrictCallRegistry(String episodePath, long viewerGeneration) {
+        public NtkStrictCallRegistry(String episodePath, long viewerGeneration,
+                                     NtkStrictRouteSnapshot routeSnapshot) {
             String normalized = normalizeComparableNtkPath(episodePath);
             if(!normalized.matches("(?i)^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$"))
                 throw new IllegalArgumentException("Invalid strict call-registry episode path");
             if(viewerGeneration <= 0L)
                 throw new IllegalArgumentException("Strict call-registry generation must be positive");
+            if(routeSnapshot == null)
+                throw new IllegalArgumentException("Strict call-registry route snapshot is null");
             this.normalizedEpisodePath = normalized;
             this.viewerGeneration = viewerGeneration;
+            this.episodeOrigin = canonicalStrictEpisodeOrigin(routeSnapshot.episodeOrigin);
+            this.cellularResilientTransport = routeSnapshot.cellularResilientTransport;
+            this.directWifiTransport = routeSnapshot.directWifiTransport;
+            this.networkHandle = routeSnapshot.networkHandle;
         }
 
         public String normalizedEpisodePath() {
@@ -306,9 +317,33 @@ public class CustomHttpClient {
             return viewerGeneration;
         }
 
+        public String episodeOrigin() {
+            return episodeOrigin;
+        }
+
+        public boolean cellularResilientTransport() {
+            return cellularResilientTransport;
+        }
+
+        public boolean directWifiTransport() {
+            return directWifiTransport;
+        }
+
+        public long networkHandle() {
+            return networkHandle;
+        }
+
         public boolean owns(String episodePath, long generation) {
             return viewerGeneration == generation
                     && normalizedEpisodePath.equals(normalizeComparableNtkPath(episodePath));
+        }
+
+        public boolean ownsRequestOrigin(String requestUrl) {
+            try {
+                return episodeOrigin.equals(strictRequestOrigin(requestUrl));
+            } catch(IllegalArgumentException invalidRequestUrl) {
+                return false;
+            }
         }
 
         public boolean register(Call call) {
@@ -416,6 +451,30 @@ public class CustomHttpClient {
                 publication.run();
                 return true;
             }
+        }
+    }
+
+    /**
+     * Immutable control-plane route captured from one active-Network/capabilities observation.
+     * Every request in one strict flight uses this same origin and transport profile. A route
+     * handoff can retire/restart the flight, but can never mutate an already-issued authority.
+     */
+    public static final class NtkStrictRouteSnapshot {
+        public final String episodeOrigin;
+        public final boolean cellularResilientTransport;
+        public final boolean directWifiTransport;
+        public final long networkHandle;
+
+        public NtkStrictRouteSnapshot(String episodeOrigin,
+                                      boolean cellularResilientTransport,
+                                      boolean directWifiTransport,
+                                      long networkHandle) {
+            this.episodeOrigin = canonicalStrictEpisodeOrigin(episodeOrigin);
+            this.cellularResilientTransport = cellularResilientTransport;
+            this.directWifiTransport = directWifiTransport;
+            this.networkHandle = networkHandle;
+            if(cellularResilientTransport && directWifiTransport)
+                throw new IllegalArgumentException("Strict route cannot be cellular and direct Wi-Fi");
         }
     }
 
@@ -625,9 +684,9 @@ public class CustomHttpClient {
     // Large 200+ page strips otherwise place enough data behind each H2 flow to make one CDN tail
     // dominate the whole-scene deadline. This is a production, host-local stripe for every work.
     private static final int NTK_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 8;
-    // Direct Wi-Fi keeps the proven 64-body large-strip ceiling over sixteen host-local pools.
+    // Direct Wi-Fi keeps the proven 64-body large-strip ceiling over twenty-four host-local pools.
     // Carrier/SNI remains on the established eight-pool layout, and manhwa stays independent.
-    private static final int NTK_DIRECT_WIFI_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 16;
+    private static final int NTK_DIRECT_WIFI_WEBTOON_EXACT_IMAGE_CONNECTION_SHARDS = 24;
     private static final int NTK_MANHWA_EXACT_IMAGE_CONNECTION_SHARDS = 24;
     /**
      * A failed pass over all three immutable webtoon replicas is no longer a useful H2 retry.
@@ -2091,6 +2150,53 @@ public class CustomHttpClient {
         }
     }
 
+    /** Captures one immutable strict-flight route from one active network observation. */
+    public NtkStrictRouteSnapshot captureNtkStrictRouteSnapshot(String episodePath) {
+        String normalized = normalizeComparableNtkPath(episodePath);
+        if(!normalized.matches("(?i)^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$"))
+            throw new IllegalArgumentException("Invalid strict route-snapshot episode path");
+        boolean cellular = false;
+        boolean directWifi = false;
+        long networkHandle = 0L;
+        if(context != null) {
+            try {
+                ConnectivityManager manager = (ConnectivityManager)context.getSystemService(
+                        Context.CONNECTIVITY_SERVICE);
+                if(manager != null) {
+                    Network active = manager.getActiveNetwork();
+                    NetworkCapabilities capabilities = active == null
+                            ? null
+                            : manager.getNetworkCapabilities(active);
+                    if(active != null)
+                        networkHandle = active.getNetworkHandle();
+                    boolean vpn = capabilities != null
+                            && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
+                    cellular = shouldUseNtkCellularResilientTransport(
+                            isCellularBackedNetwork(manager, capabilities), vpn);
+                    directWifi = capabilities != null
+                            && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                            && !vpn
+                            && !cellular;
+                }
+            } catch(Exception ignored) {
+                // The configured HTTPS origin remains a valid fail-closed route. It simply does
+                // not receive any Wi-Fi/cellular specialization until a replacement flight.
+                cellular = false;
+                directWifi = false;
+                networkHandle = 0L;
+            }
+        }
+        String origin = getBaseUrlForTransport(normalized, cellular);
+        NtkStrictRouteSnapshot snapshot = new NtkStrictRouteSnapshot(
+                origin, cellular, directWifi, networkHandle);
+        Log.d(TAG, "ntk_strict_route_snapshot path=" + normalized
+                + ",originHost=" + URI.create(snapshot.episodeOrigin).getHost()
+                + ",cellular=" + snapshot.cellularResilientTransport
+                + ",directWifi=" + snapshot.directWifiTransport
+                + ",networkHandle=" + snapshot.networkHandle);
+        return snapshot;
+    }
+
     private static boolean isCellularBackedNetwork(ConnectivityManager manager,
                                                     NetworkCapabilities capabilities) {
         if(capabilities == null)
@@ -2158,21 +2264,39 @@ public class CustomHttpClient {
     }
 
     private OkHttpClient ntkStrictDocumentClientForActiveNetwork() {
-        if(shouldUseNtkCellularResilientTransport()
-                && ntkCellularStrictDocumentClient != null) {
-            return ntkCellularStrictDocumentClient;
+        return ntkStrictDocumentClientForTransport(
+                shouldUseNtkCellularResilientTransport());
+    }
+
+    private OkHttpClient ntkStrictDocumentClientForTransport(
+            boolean cellularResilientTransport) {
+        if(cellularResilientTransport) {
+            if(ntkCellularStrictDocumentClient != null)
+                return ntkCellularStrictDocumentClient;
+            if(ntkCellularPageFastClient != null)
+                return ntkCellularPageFastClient;
         }
         if(ntkStrictDocumentClient != null)
             return ntkStrictDocumentClient;
-        return ntkPageFastClientForActiveNetwork();
+        return ntkPageFastClient != null ? ntkPageFastClient : client;
     }
 
     private OkHttpClient ntkStrictExactImageApiClientForActiveNetwork() {
-        if(shouldUseNtkCellularResilientTransport()
-                && ntkCellularStrictExactImageApiClient != null) {
-            return ntkCellularStrictExactImageApiClient;
+        return ntkStrictExactImageApiClientForTransport(
+                shouldUseNtkCellularResilientTransport());
+    }
+
+    private OkHttpClient ntkStrictExactImageApiClientForTransport(
+            boolean cellularResilientTransport) {
+        if(cellularResilientTransport) {
+            if(ntkCellularStrictExactImageApiClient != null)
+                return ntkCellularStrictExactImageApiClient;
+            if(ntkCellularApiDirectClient != null)
+                return ntkCellularApiDirectClient;
         }
-        return ntkStrictExactImageApiClient;
+        if(ntkStrictExactImageApiClient != null)
+            return ntkStrictExactImageApiClient;
+        return ntkApiDirectClient != null ? ntkApiDirectClient : client;
     }
 
     /**
@@ -2940,6 +3064,7 @@ public class CustomHttpClient {
         return rangeRequest || ((cellularResilientTransport || directWifiRetryRotation)
                 && routeAttemptOrdinal >= NTK_WEBTOON_HTTP1_RECOVERY_ATTEMPT);
     }
+
 
     public OkHttpClient ntkForegroundImageFastClient() {
         return ntkForegroundImageFastClient == null ? imageClient : ntkForegroundImageFastClient;
@@ -5399,6 +5524,16 @@ public class CustomHttpClient {
                 if(shouldTryTrustedNtkAliasFirst(
                         currentRoot, trustedAlias, preferTrustedAlias)) {
                     boolean aliasProbePassed = canReachNtkRoot(trustedAlias, headers);
+                    if(shouldDiscardNtkDomainProbeResult(
+                            resolverRequestGroup != null && resolverRequestGroup.isCancelled(),
+                            hasNtkStrictForegroundNetworkOwner())) {
+                        Log.d(TAG, "ntk_domain_probe_result_discarded current=" + currentRoot
+                                + ",candidate=" + trustedAlias
+                                + ",requestCancelled=" + (resolverRequestGroup != null
+                                && resolverRequestGroup.isCancelled())
+                                + ",strictOwner=" + hasNtkStrictForegroundNetworkOwner());
+                        return false;
+                    }
                     // The final resolver fallback already treats this bundled compatibility
                     // alias as authoritative when every numbered sbxh origin is unavailable.
                     // Apply the same trust decision here so a stricter document/API probe mismatch
@@ -5417,6 +5552,16 @@ public class CustomHttpClient {
                             NtkDomainResolver.resolveCandidates(
                                     client, headers, resolverRequestGroup);
                     reachable = reachableNtkRoot(currentRoot, resolvedRoots, headers);
+                }
+                if(shouldDiscardNtkDomainProbeResult(
+                        resolverRequestGroup != null && resolverRequestGroup.isCancelled(),
+                        hasNtkStrictForegroundNetworkOwner())) {
+                    Log.d(TAG, "ntk_domain_probe_result_discarded current=" + currentRoot
+                            + ",candidate=" + reachable
+                            + ",requestCancelled=" + (resolverRequestGroup != null
+                            && resolverRequestGroup.isCancelled())
+                            + ",strictOwner=" + hasNtkStrictForegroundNetworkOwner());
+                    return false;
                 }
                 if(shouldApplyResolvedNtkRoot(currentRoot, reachable, resolvedRoots)) {
                     SiteOverride override = currentSiteOverride.get();
@@ -5480,6 +5625,17 @@ public class CustomHttpClient {
     static boolean shouldAcceptTrustedNtkAliasAfterProbeForTest(String currentRoot,
                                                                 boolean aliasProbePassed) {
         return shouldAcceptTrustedNtkAliasAfterProbe(currentRoot, aliasProbePassed);
+    }
+
+    private static boolean shouldDiscardNtkDomainProbeResult(boolean requestGroupCancelled,
+                                                              boolean strictForegroundOwner) {
+        return requestGroupCancelled || strictForegroundOwner;
+    }
+
+    static boolean shouldDiscardNtkDomainProbeResultForTest(boolean requestGroupCancelled,
+                                                             boolean strictForegroundOwner) {
+        return shouldDiscardNtkDomainProbeResult(
+                requestGroupCancelled, strictForegroundOwner);
     }
 
     private String reachableNtkRoot(String currentRoot, List<String> resolvedRoots, Map<String, String> headers) {
@@ -9028,6 +9184,10 @@ public class CustomHttpClient {
     }
 
     private String getComicUrl(){
+        return getComicUrlForTransport(shouldUseNtkCellularResilientTransport());
+    }
+
+    private String getComicUrlForTransport(boolean cellularResilientTransport){
         SiteOverride override = currentSiteOverride.get();
         String url = override == null ? null : override.comicUrl;
         if(url == null || url.length() == 0)
@@ -9039,7 +9199,7 @@ public class CustomHttpClient {
             cellularRoot = selectedNtkCellularResolvedRoot(
                     url,
                     p == null ? "" : p.getNtkCellularResolvedRoot(),
-                    shouldUseNtkCellularResilientTransport(),
+                    cellularResilientTransport,
                     false);
         }
         if(cellularRoot.length() > 0)
@@ -9048,6 +9208,10 @@ public class CustomHttpClient {
     }
 
     private String getWebtoonUrl(){
+        return getWebtoonUrlForTransport(shouldUseNtkCellularResilientTransport());
+    }
+
+    private String getWebtoonUrlForTransport(boolean cellularResilientTransport){
         SiteOverride override = currentSiteOverride.get();
         String url = override == null ? null : override.webtoonUrl;
         if(url == null || url.length() == 0)
@@ -9059,7 +9223,7 @@ public class CustomHttpClient {
             cellularRoot = selectedNtkCellularResolvedRoot(
                     url,
                     p == null ? "" : p.getNtkCellularResolvedRoot(),
-                    shouldUseNtkCellularResilientTransport(),
+                    cellularResilientTransport,
                     false);
         }
         if(cellularRoot.length() > 0)
@@ -9091,6 +9255,37 @@ public class CustomHttpClient {
         if(isWebtoonPath(path))
             return getWebtoonUrl();
         return getRootUrl(getComicUrl());
+    }
+
+    private String getBaseUrlForTransport(String path, boolean cellularResilientTransport){
+        if(isWebtoonPath(path))
+            return getWebtoonUrlForTransport(cellularResilientTransport);
+        return getRootUrl(getComicUrlForTransport(cellularResilientTransport));
+    }
+
+    private static String canonicalStrictEpisodeOrigin(String origin) {
+        if(origin == null)
+            throw new IllegalArgumentException("Strict episode origin is null");
+        URI uri = URI.create(origin.trim());
+        String rawPath = uri.getRawPath();
+        if(!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                || uri.getRawUserInfo() != null || uri.getPort() >= 0
+                || uri.getRawQuery() != null || uri.getRawFragment() != null
+                || (rawPath != null && rawPath.length() > 0 && !"/".equals(rawPath))) {
+            throw new IllegalArgumentException("Strict episode origin is not canonical HTTPS");
+        }
+        return "https://" + uri.getHost().toLowerCase(Locale.ROOT);
+    }
+
+    private static String strictRequestOrigin(String requestUrl) {
+        if(requestUrl == null)
+            throw new IllegalArgumentException("Strict request URL is null");
+        URI uri = URI.create(requestUrl.trim());
+        if(!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                || uri.getRawUserInfo() != null || uri.getPort() >= 0) {
+            throw new IllegalArgumentException("Strict request URL origin is invalid");
+        }
+        return "https://" + uri.getHost().toLowerCase(Locale.ROOT);
     }
 
     public boolean isNtk() {
@@ -12962,16 +13157,17 @@ public class CustomHttpClient {
         }
         requireStrictCallRegistry(callRegistry, callRegistry.normalizedEpisodePath());
         URI requestUri = URI.create(boundRequest.url);
-        URI expectedOrigin = URI.create(
-                getBaseUrl(callRegistry.normalizedEpisodePath()).replaceAll("/+$", ""));
-        if(!"https".equalsIgnoreCase(requestUri.getScheme())
-                || requestUri.getHost() == null
-                || requestUri.getPort() >= 0
-                || expectedOrigin.getHost() == null
-                || !expectedOrigin.getHost().equalsIgnoreCase(requestUri.getHost())) {
+        if(!callRegistry.ownsRequestOrigin(boundRequest.url)) {
+            Log.e(TAG, "ntk_strict_exact_preflight stage=" + stage
+                    + ",requestHost=" + requestUri.getHost()
+                    + ",expectedHost="
+                    + URI.create(callRegistry.episodeOrigin()).getHost()
+                    + ",networkHandle=" + callRegistry.networkHandle()
+                    + ",cellular=" + callRegistry.cellularResilientTransport()
+                    + ",sameOrigin=false");
             throw new IllegalStateException("Strict exact request escaped episode origin");
         }
-        String baseUrl = "https://" + requestUri.getHost();
+        String baseUrl = callRegistry.episodeOrigin();
         HttpEngine sharedEngine = getCachedNtkQuicEngine(baseUrl);
         ExecutorService sharedExecutor = sharedEngine == null
                 ? null
@@ -12979,7 +13175,7 @@ public class CustomHttpClient {
         if(!forceOkHttp && sharedEngine != null && sharedExecutor != null
                 && isNtkQuicStrictTransportEligible(baseUrl)
                 && shouldUseSharedHttpEngineForStrictTransport(
-                stage, shouldUseNtkCellularResilientTransport())) {
+                stage, callRegistry.cellularResilientTransport())) {
             long startedAt = System.currentTimeMillis();
             String cookieHeader = headerValue(boundRequest.headers, "cookie");
             NtkQuicFetcher.ExactResponseObserver exactResponseObserver =
@@ -13276,7 +13472,7 @@ public class CustomHttpClient {
             throw new IllegalArgumentException("Invalid strict episode path");
         }
         requireStrictCallRegistry(callRegistry, normalized);
-        String baseUrl = getBaseUrl(normalized).replaceAll("/+$", "");
+        String baseUrl = callRegistry.episodeOrigin();
         String encodedNormalized = ntkNativeAckScopePath(normalized);
         String canonicalRequestUrl = baseUrl + encodedNormalized;
         String requestUrl = canonicalRequestUrl;
@@ -13313,7 +13509,8 @@ public class CustomHttpClient {
         headers.put("User-Agent", agent);
         NtkBoundHttpRequest boundRequest =
                 new NtkBoundHttpRequest("GET", requestUrl, headers, new byte[0]);
-        OkHttpClient exactClient = ntkStrictDocumentClientForActiveNetwork();
+        OkHttpClient exactClient = ntkStrictDocumentClientForTransport(
+                callRegistry.cellularResilientTransport());
         ntkStrictDocumentLogicalRequestCount.incrementAndGet();
         return executeStrictExactSameOriginRequest(
                 boundRequest,
@@ -13369,6 +13566,11 @@ public class CustomHttpClient {
             throw new IllegalArgumentException("Invalid strict document response URL", e);
         }
         requireStrictCallRegistry(callRegistry, responsePath);
+        if(!callRegistry.ownsRequestOrigin(response.request.url)
+                || !callRegistry.ownsRequestOrigin(response.finalUrl)) {
+            throw new IllegalStateException(
+                    "Strict document response escaped frozen flight origin");
+        }
         return callRegistry.publishIfActive(
                 () -> storeResponseCookies(response.responseHeaders));
     }
@@ -13420,13 +13622,16 @@ public class CustomHttpClient {
      * Builds the closed seed-cookie boundary for the isolated ACK process. This method performs no
      * network request and never exports a StrictFresh grant from a previous flight.
      */
-    public NtkStrictAckBootstrap prepareNtkStrictAckBootstrap(String episodePath) {
+    public NtkStrictAckBootstrap prepareNtkStrictAckBootstrap(
+            String episodePath,
+            NtkStrictCallRegistry callRegistry) {
         String normalized = normalizeComparableNtkPath(episodePath);
         if(context == null || !normalized.matches(
                 "(?i)^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$")) {
             throw new IllegalArgumentException("Invalid strict ACK bootstrap path");
         }
-        String origin = getBaseUrl(normalized).replaceAll("/+$", "");
+        requireStrictCallRegistry(callRegistry, normalized);
+        String origin = callRegistry.episodeOrigin();
         URI originUri = URI.create(origin);
         if(!"https".equalsIgnoreCase(originUri.getScheme()) || originUri.getHost() == null
                 || originUri.getPort() >= 0 || originUri.getRawQuery() != null
@@ -13506,12 +13711,15 @@ public class CustomHttpClient {
                 || (originUri.getRawPath() != null && originUri.getRawPath().length() > 0)) {
             throw new IllegalArgumentException("Strict trusted challenge origin is invalid");
         }
+        if(!origin.equals(callRegistry.episodeOrigin()))
+            throw new IllegalStateException("Strict trusted challenge route snapshot mismatch");
         String endpoint = origin + "/api/ad/challenge";
         byte[] bodyBytes = new JSONObject()
                 .put("path", normalized)
                 .toString()
                 .getBytes(StandardCharsets.UTF_8);
-        OkHttpClient exactClient = ntkStrictDocumentClientForActiveNetwork();
+        OkHttpClient exactClient = ntkStrictDocumentClientForTransport(
+                callRegistry.cellularResilientTransport());
         ArrayList<NtkAckCookie> nvGrants = new ArrayList<>();
         NtkNvIssueGrant nvIssueGrant = null;
         boolean hasNvSeed = bootstrap.seedCookies.stream().anyMatch(
@@ -13681,12 +13889,15 @@ public class CustomHttpClient {
                 || (originUri.getRawPath() != null && originUri.getRawPath().length() > 0)) {
             throw new IllegalArgumentException("Strict nv origin is invalid");
         }
+        if(!origin.equals(callRegistry.episodeOrigin()))
+            throw new IllegalStateException("Strict nv route snapshot mismatch");
         if(isNtkNvValid(getCookie("nv")))
             return;
         NtkNvIssueGrant grant = fetchExactNtkNvGrants(
                 bootstrap,
                 callRegistry,
-                ntkStrictDocumentClientForActiveNetwork(),
+                ntkStrictDocumentClientForTransport(
+                        callRegistry.cellularResilientTransport()),
                 normalized,
                 origin
         );
@@ -13730,7 +13941,7 @@ public class CustomHttpClient {
                 NTK_ACK_CHALLENGE_TIMEOUT_MS,
                 "nv_issue"
         );
-        boolean wifiBodyAuthority = !shouldUseNtkCellularResilientTransport();
+        boolean wifiBodyAuthority = !callRegistry.cellularResilientTransport();
         NtkNvIssueGrant grant = exactNtkNvGrantFromExchange(
                 nvExchange, nvEndpoint, origin, normalized, wifiBodyAuthority);
         if(grant == null && wifiBodyAuthority) {
@@ -13970,7 +14181,8 @@ public class CustomHttpClient {
     /** Builds the exact API bytes but performs no image request and creates no signing key. */
     public NtkUnsignedExactImageRequest buildUnsignedExactNtkViewerImageApiRequest(
             ml.melun.mangaview.reader.NtkEpisodeDocumentPlanDraft draft,
-            String requestKeyId
+            String requestKeyId,
+            NtkStrictCallRegistry callRegistry
     ) throws Exception {
         if(draft == null)
             throw new IllegalArgumentException("Strict image API requires a document draft");
@@ -13978,12 +14190,14 @@ public class CustomHttpClient {
                 draft.getNormalizedEpisodePath(),
                 draft.getRequestIdentity(),
                 draft.getImagesToken(),
-                requestKeyId);
+                requestKeyId,
+                callRegistry);
     }
 
     public NtkUnsignedExactImageRequest buildUnsignedExactNtkViewerImageApiRequest(
             ml.melun.mangaview.reader.NtkViewerImageRequestSeed seed,
-            String requestKeyId
+            String requestKeyId,
+            NtkStrictCallRegistry callRegistry
     ) throws Exception {
         if(seed == null)
             throw new IllegalArgumentException("Strict image API requires a document seed");
@@ -13991,20 +14205,23 @@ public class CustomHttpClient {
                 seed.getNormalizedEpisodePath(),
                 seed.getRequestIdentity(),
                 seed.getImagesToken(),
-                requestKeyId);
+                requestKeyId,
+                callRegistry);
     }
 
     private NtkUnsignedExactImageRequest buildUnsignedExactNtkViewerImageApiRequest(
             String normalizedEpisodePath,
             ml.melun.mangaview.reader.NtkViewerImageRequestIdentity identity,
             String imagesToken,
-            String requestKeyId
+            String requestKeyId,
+            NtkStrictCallRegistry callRegistry
     ) throws Exception {
         String normalizedRequestKeyId = requestKeyId == null ? "" : requestKeyId.trim();
         String episodePath = normalizeComparableNtkPath(normalizedEpisodePath);
         if(identity == null || imagesToken == null || imagesToken.trim().length() == 0)
             throw new IllegalArgumentException("Strict image API request identity is incomplete");
-        String baseUrl = getBaseUrl(episodePath).replaceAll("/+$", "");
+        requireStrictCallRegistry(callRegistry, episodePath);
+        String baseUrl = callRegistry.episodeOrigin();
         String endpoint = identity.getNormalizedEndpointPath();
         String expectedEndpoint = episodePath.toLowerCase(Locale.ROOT).startsWith("/manhwa/")
                 ? "/api/manhwa-images"
@@ -14076,10 +14293,14 @@ public class CustomHttpClient {
     /** Executes the already signed exact request exactly once, with no retry, hedge or fallback. */
     public NtkBoundHttpResponse bindIsolatedExactNtkViewerImageApiResponse(
             NtkUnsignedExactImageRequest unsigned,
-            NtkAckExactExchange exchange
+            NtkAckExactExchange exchange,
+            NtkStrictCallRegistry callRegistry
     ) {
         if(unsigned == null || exchange == null)
             throw new IllegalArgumentException("Strict isolated exact exchange is incomplete");
+        requireStrictCallRegistry(callRegistry, unsigned.episodePath);
+        if(!callRegistry.ownsRequestOrigin(unsigned.request.url))
+            throw new IllegalStateException("Strict isolated exact request escaped flight origin");
         NtkAckSignature signature = exchange.getSignature();
         if(!unsigned.episodePath.equals(signature.getEpisodePath())
                 || !unsigned.endpoint.equals(signature.getEndpoint())
@@ -14192,7 +14413,8 @@ public class CustomHttpClient {
         NtkBoundHttpResponse exchange = executeStrictExactSameOriginRequest(
                 signedRequest,
                 callRegistry,
-                ntkStrictExactImageApiClientForActiveNetwork(),
+                ntkStrictExactImageApiClientForTransport(
+                        callRegistry.cellularResilientTransport()),
                 NTK_API_DIRECT_TIMEOUT_MS,
                 "signed_image_api"
         );
@@ -14278,8 +14500,10 @@ public class CustomHttpClient {
         Log.d(TAG, "ntk_strict_unsigned_webtoon_image_api_start path="
                 + unsigned.episodePath + ",endpoint=" + unsigned.endpoint);
         OkHttpClient exactClient = forceOkHttp
-                ? ntkStrictExactImageApiClientForActiveNetwork()
-                : ntkStrictDocumentClientForActiveNetwork();
+                ? ntkStrictExactImageApiClientForTransport(
+                        callRegistry.cellularResilientTransport())
+                : ntkStrictDocumentClientForTransport(
+                        callRegistry.cellularResilientTransport());
         NtkBoundHttpResponse exchange = executeStrictExactSameOriginRequest(
                 exactRequest,
                 callRegistry,

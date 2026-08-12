@@ -109,13 +109,16 @@ class NtkAdjacentControlSplitGateArchitectureTest {
     }
 
     @Test
-    fun sameTickOverlapProofIsHostEmulatorDirectWifiAdjacentOnly() {
+    fun zeroWaveAndHostEmulatorAdjacentMayUseActorOrderedSameTickProof() {
         val source = File(
             "src/main/java/ml/melun/mangaview/reader/NtkStrictSourceSession.kt",
         ).readText()
         val activation = block("private fun activateExactPublicationActor(", source)
-        assertTrue(activation.contains("sameMillisecondSeededExactAllowed = adjacentPrefetch"))
-        assertTrue(activation.contains("directWifiTransport && !cellularResilientTransport"))
+        assertTrue(activation.contains(
+            "sameMillisecondSeededExactAllowed = initialWaveCount == 0 ||",
+        ))
+        assertTrue(activation.contains("(adjacentPrefetch && directWifiTransport &&"))
+        assertTrue(activation.contains("!cellularResilientTransport && hostGpuEmulatorRuntime"))
         assertTrue(activation.contains("hostGpuEmulatorRuntime"))
     }
 }

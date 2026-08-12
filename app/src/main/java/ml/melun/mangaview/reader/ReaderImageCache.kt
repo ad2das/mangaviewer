@@ -943,6 +943,23 @@ internal object NtkDirectWifiStrictLegacySpeculationPolicy {
     }
 }
 
+/**
+ * Carries the coordinator's explicit foreground admission through asynchronous cache layers.
+ *
+ * The permitless suppression fence is deliberately path-wide while strict discovery takes
+ * ownership.  A real visible request may cross that fence only with the exact immutable permit
+ * issued for its ReaderSession display slot; a null, stale, mismatched, or malformed permit keeps
+ * the original fail-closed behavior.
+ */
+internal object NtkPermitlessInitialGeneratedForegroundPolicy {
+    fun isCoordinatorAuthorized(permit: NtkImagePermit?, requestedPageIndex: Int): Boolean {
+        if (permit == null || requestedPageIndex < 0) return false
+        if (permit.sessionEpoch <= 0L || permit.pageIndex != requestedPageIndex) return false
+        return permit.permitId ==
+            "${permit.sessionEpoch}:${permit.pageIndex}:${permit.lane.name}"
+    }
+}
+
 /** Network-specific response-header and bounded recovery policy for immutable webtoon replicas. */
 internal data class NtkStrictEpisodePageCountTag(val pageCount: Int) {
     init {
@@ -1231,6 +1248,7 @@ internal object NtkWebtoonReplicaHeaderPolicy {
     const val WIFI_PRIMARY_EXACT_QUIC_ENABLED = false
     const val WIFI_DIRECT_H2_COHORT_ENABLED = true
     const val WIFI_DIRECT_H2_HEADER_FAILOVER_MS = 1_200L
+    const val WIFI_DIRECT_H2_CURRENT_RESUME_HEADER_FAILOVER_MS = 1_200L
     const val WIFI_DIRECT_H2_REFRESHED_HOST_HEADER_FAILOVER_MS = 1_000L
     const val WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES = 3
     const val WIFI_DIRECT_H2_EXPLICIT_MISS_QUIC_TIMEOUT_MS = 1_500L
@@ -1247,19 +1265,40 @@ internal object NtkWebtoonReplicaHeaderPolicy {
      * without reopening the former five-second repeated-header tail. Later attempts probe one
      * fresh ring because their pools already begin rotated. Carrier/SNI never enters this branch.
      */
-    fun directWifiH2RecoveryCycles(logicalAttemptOrdinal: Int): Int {
+    fun directWifiH2RecoveryCycles(
+        logicalAttemptOrdinal: Int,
+        currentHostEmulatorResumeRecovery: Boolean = false,
+        adjacentHostEmulatorRunwayRecovery: Boolean = false,
+    ): Int {
         require(logicalAttemptOrdinal > 0)
-        return if (logicalAttemptOrdinal == 1) {
+        // A tagged host-emulator current-resume body and an exact adjacent p0-p3 runway body both
+        // have a captured-Network H1 recovery ring immediately below this H2 loop. Reopening the
+        // same three H2 replica pools for two more rings after all three failed only amplifies
+        // one-page tail latency. One complete H2 ring still tries every exact replica before the
+        // bounded H1 ring; cold-open, later adjacent, physical Wi-Fi, mobile and SNI calls retain
+        // the measured three-ring policy.
+        return if (currentHostEmulatorResumeRecovery ||
+            adjacentHostEmulatorRunwayRecovery
+        ) {
+            1
+        } else if (logicalAttemptOrdinal == 1) {
             WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES
         } else {
             1
         }
     }
 
-    fun directWifiH2HeaderDeadlineMs(previousHostTimeouts: Int): Long {
+    fun directWifiH2HeaderDeadlineMs(
+        previousHostTimeouts: Int,
+        currentHostEmulatorResumeRecovery: Boolean = false,
+    ): Long {
         require(previousHostTimeouts >= 0)
         return if (previousHostTimeouts == 0) {
-            WIFI_DIRECT_H2_HEADER_FAILOVER_MS
+            if (currentHostEmulatorResumeRecovery) {
+                WIFI_DIRECT_H2_CURRENT_RESUME_HEADER_FAILOVER_MS
+            } else {
+                WIFI_DIRECT_H2_HEADER_FAILOVER_MS
+            }
         } else {
             WIFI_DIRECT_H2_REFRESHED_HOST_HEADER_FAILOVER_MS
         }
@@ -1345,6 +1384,7 @@ internal object NtkWebtoonReplicaHeaderPolicy {
 
     fun directWifiH2HostPriority(host: String): Int =
         if (host.equals(WIFI_DIRECT_H2_PREFERRED_HOST, ignoreCase = true)) 0 else 1
+
     // A 24-call Wi-Fi release fills eight already-isolated H2 pools. The former one-second
     // timer cancelled 79 otherwise viable headers in one 124-page scene and forced 38 redundant
     // QUIC recoveries, extending the complete scene from 9.7 to 11.3 seconds. Explicit 404/410,
@@ -1468,6 +1508,42 @@ internal object NtkWebtoonReplicaHeaderPolicy {
         } else {
             WIFI_PROVISIONAL_OTHER_RANGE_MS
         }
+}
+
+/**
+ * Exact-session proof that one post-anchor current webtoon resume may enter the host-emulator
+ * single-H2-ring -> captured-Network H1 recovery path. The strict session creates this tag only
+ * after its anchor body is published; ReaderImageCache rechecks the session id, foreground path,
+ * viewer generation and emulator runtime before using it.
+ */
+class NtkHostGpuEmulatorCurrentWebtoonRecoveryFence {
+    private val tripped = AtomicBoolean(false)
+    private val directH1RecoveryLogged = AtomicBoolean(false)
+    private val directH1RecoveryPages = ConcurrentHashMap.newKeySet<Int>()
+
+    fun trip(pageIndex: Int): Boolean {
+        require(pageIndex >= 0)
+        directH1RecoveryPages += pageIndex
+        return tripped.compareAndSet(false, true)
+    }
+
+    fun isTripped(): Boolean = tripped.get()
+
+    fun requiresDirectH1(pageIndex: Int): Boolean =
+        pageIndex >= 0 && pageIndex in directH1RecoveryPages
+
+    fun markDirectH1RecoveryLogged(): Boolean =
+        tripped.get() && directH1RecoveryLogged.compareAndSet(false, true)
+
+}
+
+internal data class NtkHostGpuEmulatorCurrentWebtoonRecoveryTag(
+    val sessionId: Long,
+    val fence: NtkHostGpuEmulatorCurrentWebtoonRecoveryFence,
+) {
+    init {
+        require(sessionId > 0L)
+    }
 }
 
 internal object NtkWebtoonReplicaContentPolicy {
@@ -2072,6 +2148,14 @@ private val ntkWifiWebtoonReplicaPreferences =
     private val earlyTransportPreparePhysicalCalls = AtomicLong(0L)
     private val adjacentForegroundViewerPaths = ConcurrentHashMap<String, Long>()
     /**
+     * A TTL grant is sufficient to start adjacent discovery, but it is not a source-lifetime
+     * lease. Large exact images can legitimately remain in flight after that launch TTL expires.
+     * Keep those already-owned adjacent source sessions protected until their close barrier; an
+     * active-scroll cleanup must never cancel a production strict Call and turn useful body bytes
+     * into an outer retry storm.
+     */
+    private val activeStrictAdjacentNtkEpisodePaths = RequiredNtkEpisodePathRegistry()
+    /**
      * Exact launch episodes retain this lease until their ReaderSession ends. Advancing into an
      * appended episode must not cancel unfinished canonical bodies from the launch episode: that
      * leaves the old strict transport retrying forever while all-images readiness can never
@@ -2137,6 +2221,10 @@ private val ntkWifiWebtoonReplicaPreferences =
         maxRequestsPerHost =
             NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT
     }
+    private val clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits = Semaphore(
+        NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT,
+        true,
+    )
     private const val CLICK_OWNED_EXTENSION_HEDGE_MS = 650L
     private val clickOwnedExtensionScheduler = Executors.newScheduledThreadPool(8) { runnable ->
         Thread(runnable, "ntk-click-extension-hedge").apply {
@@ -2672,6 +2760,17 @@ data class NtkResolvedSourceRoute(
             }
             val strictEpisodePageCount =
                 originalRequest.tag(NtkStrictEpisodePageCountTag::class.java)?.pageCount ?: 0
+            val strictCallTag = originalRequest.tag(NtkStrictSourceCallTag::class.java)
+            val strictPageIndex = strictCallTag?.pageIndex
+                ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
+                ?: -1
+            val currentResumeTag = originalRequest.tag(
+                NtkHostGpuEmulatorCurrentWebtoonRecoveryTag::class.java,
+            )
+            val episodePath = originalRequest
+                .tag(NtkStrictEpisodePathTag::class.java)
+                ?.path
+                .orEmpty()
             if (webtoonReplica && wifiTransportActive &&
                 NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_COHORT_ENABLED
             ) {
@@ -2709,9 +2808,6 @@ data class NtkResolvedSourceRoute(
                         NtkManhwaProjectedBodyHedgePolicy.SessionStarts()
                     }
                 }
-            val strictPageIndex = originalRequest.tag(NtkStrictSourceCallTag::class.java)?.pageIndex
-                ?: originalRequest.tag(NtkQuarantineSourceCallIdentity::class.java)?.pageIndex
-                ?: -1
             val liveDirectWifiAdjacentProofRoute = isLiveDirectWifiAdjacentProofRoute()
             val liveDirectWifiAdjacentQuarantineRoute =
                 isLiveDirectWifiAdjacentQuarantineRoute()
@@ -2797,7 +2893,11 @@ data class NtkResolvedSourceRoute(
                 )
                 return true
             }
-            if (shouldTryWifiWebtoonPrimaryExactQuic(strictPageIndex, webtoonReplica)) {
+            if (shouldTryWifiWebtoonPrimaryExactQuic(
+                    strictPageIndex,
+                    webtoonReplica,
+                )
+            ) {
                 wifiWebtoonExactQuicRecoveryAttempted = true
                 val primaryCandidate = candidates.first()
                 executeExactQuicImageRecovery(
@@ -4297,15 +4397,6 @@ data class NtkResolvedSourceRoute(
                 NtkQuarantineSourceCallIdentity::class.java,
             )
             val logicalAttemptOrdinal = strictTag?.attemptOrdinal ?: 1
-            val attempts = List(
-                NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
-                    logicalAttemptOrdinal,
-                ),
-            ) { orderedCandidates }.flatten()
-            // One header timeout may be a dead connection rather than a dead immutable origin.
-            // Preserve one shorter-deadline fresh-pool retry in the next ring. A second header
-            // timeout, or a definitive HTTP miss below, suppresses that host for the remainder of
-            // this logical call so recovery cannot recreate the former repeated five-second tail.
             val hostGpuEmulatorRuntime =
                 NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
                     Build.FINGERPRINT,
@@ -4313,6 +4404,97 @@ data class NtkResolvedSourceRoute(
                     Build.HARDWARE,
                     Build.PRODUCT,
                 )
+            val episodePath = originalRequest
+                .tag(NtkStrictEpisodePathTag::class.java)
+                ?.path
+                .orEmpty()
+            val currentResumeRecoveryTag = originalRequest.tag(
+                NtkHostGpuEmulatorCurrentWebtoonRecoveryTag::class.java,
+            )
+            val adjacentReplicaProof = originalRequest.tag(
+                NtkExactApiReplicaRouteTag::class.java,
+            )
+            val requestPageIndex = strictTag?.pageIndex ?: quarantineTag?.pageIndex ?: -1
+            val currentHostEmulatorResumeRecovery =
+                hostGpuEmulatorRuntime &&
+                    currentResumeRecoveryTag?.sessionId == strictTag?.sessionId &&
+                    strictTag?.isProductionStrict == true &&
+                    originalRequest.tag(NtkExactApiReplicaRouteTag::class.java) == null &&
+                    capturedDirectWifiNetworkHandle != null &&
+                    viewerGeneration > 0L &&
+                    ViewerTelemetry.activeGeneration() == viewerGeneration &&
+                    episodePath.isNotEmpty() &&
+                    MainApplication.isNtkForegroundViewerPath(episodePath)
+            val currentResumeRecoveryFence = currentResumeRecoveryTag?.fence
+            val adjacentHostEmulatorRunwayRecovery =
+                hostGpuEmulatorRuntime &&
+                    adjacentReplicaProof != null &&
+                    requestPageIndex == adjacentReplicaProof.pageIndex &&
+                    NtkWebtoonReplicaHeaderPolicy
+                        .shouldAttemptDirectWifiAdjacentH1Recovery(
+                            directWifiActive = true,
+                            cellularResilientTransport = false,
+                            exactAdjacentReplicaProof = true,
+                            adjacentForegroundGrantActive =
+                                hasActiveAdjacentNtkForegroundViewerGrant(
+                                    adjacentReplicaProof.path,
+                                ),
+                            sameNetwork = capturedDirectWifiNetworkHandle != null,
+                            sameViewerGeneration = viewerGeneration > 0L &&
+                                ViewerTelemetry.activeGeneration() == viewerGeneration,
+                            pageIndex = requestPageIndex,
+                            episodePageCount = episodePageCount,
+                        )
+            val attempts = List(
+                NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                    logicalAttemptOrdinal,
+                    currentHostEmulatorResumeRecovery,
+                    adjacentHostEmulatorRunwayRecovery,
+                ),
+            ) { orderedCandidates }.flatten()
+            // Once one current-resume H2 Call trips the exact-session fence, every Call that was
+            // already active drains through the catch below. A page that actually failed uses the
+            // captured-Network H1 pool directly on its next attempt; other pages may still use H2
+            // under the source actor's four-lane recovery cap. This avoids both repeated header
+            // deadlines for the bad page and forcing the whole bulk episode through four H1
+            // connections.
+            val currentRecoveryCallStartedAfterFence =
+                currentHostEmulatorResumeRecovery &&
+                    currentResumeRecoveryFence?.isTripped() == true
+            val currentRecoveryPageRequiresDirectH1 =
+                currentRecoveryCallStartedAfterFence &&
+                    currentResumeRecoveryFence?.requiresDirectH1(requestPageIndex) == true
+            if (currentRecoveryPageRequiresDirectH1) {
+                val fenceFailure = java.net.SocketException(
+                    "Direct Wi-Fi current H2 session recovery fence is tripped",
+                )
+                if (currentResumeRecoveryFence?.markDirectH1RecoveryLogged() == true) {
+                    Log.w(
+                        TAG,
+                        "reader_strict_direct_wifi_current_recovery_probe " +
+                            "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
+                            "transport=h1_direct",
+                    )
+                }
+                executeDirectWifiAdjacentWebtoonH1Recovery(
+                    candidates = orderedCandidates,
+                    episodePageCount = episodePageCount,
+                    capturedDirectWifiNetworkHandle = capturedDirectWifiNetworkHandle,
+                    viewerGeneration = viewerGeneration,
+                    h2Failure = fenceFailure,
+                )?.let { return it }
+                Log.w(
+                    TAG,
+                    "reader_strict_direct_wifi_h2_socket_fanout_stopped " +
+                        "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
+                        "error=${fenceFailure.javaClass.simpleName}",
+                )
+                throw fenceFailure
+            }
+            // One header timeout may be a dead connection rather than a dead immutable origin.
+            // Preserve one shorter-deadline fresh-pool retry in the next ring. A second header
+            // timeout, or a definitive HTTP miss below, suppresses that host for the remainder of
+            // this logical call so recovery cannot recreate the former repeated five-second tail.
             // A 404/410 is asset-local: another page on the same signed origin may still be
             // healthy. On the host emulator keep those misses inside this logical call. Only a
             // repeated zero-header transport timeout enters the strict-session circuit breaker,
@@ -4504,9 +4686,21 @@ data class NtkResolvedSourceRoute(
                 val normalizedHost = candidate.url.host.lowercase(Locale.ROOT)
                 val previousHostTimeouts = headerTimeoutsByHost[normalizedHost]?.get() ?: 0
                 val headerDeadlineMs = NtkWebtoonReplicaHeaderPolicy
-                    .directWifiH2HeaderDeadlineMs(previousHostTimeouts)
+                    .directWifiH2HeaderDeadlineMs(
+                        previousHostTimeouts,
+                        currentHostEmulatorResumeRecovery,
+                    )
                 val deadline = strictReplicaHeaderDeadlineScheduler.schedule({
                     if (headerResolved.compareAndSet(false, true)) {
+                        if (currentHostEmulatorResumeRecovery &&
+                            currentResumeRecoveryFence?.trip(requestPageIndex) == true
+                        ) {
+                            Log.w(
+                                TAG,
+                                "reader_strict_direct_wifi_current_recovery_fence_tripped " +
+                                    "page=$requestPageIndex,reason=header_deadline",
+                            )
+                        }
                         val hostTimeoutCount = headerTimeoutsByHost
                             .computeIfAbsent(normalizedHost) { AtomicInteger(0) }
                             .incrementAndGet()
@@ -4585,7 +4779,52 @@ data class NtkResolvedSourceRoute(
                             "to=$nextHost",
                     )
                 } catch (failure: IOException) {
-                    if (cancelled.get() || index == attempts.lastIndex) throw failure
+                    // The last H2 candidate closes the ring; it must not bypass the bounded H1
+                    // recovery below. The eligibility check there still limits current recovery
+                    // to the exact foreground host-emulator session and adjacent recovery to the
+                    // completion-gated p0-p3 proof. Cancellation remains immediately terminal.
+                    if (cancelled.get()) throw failure
+                    val socketPressure = NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy
+                        .isSocketPressureFailure(failure)
+                    val firstFenceTrip = currentHostEmulatorResumeRecovery && socketPressure &&
+                        currentResumeRecoveryFence?.trip(requestPageIndex) == true
+                    if (firstFenceTrip) {
+                        Log.w(
+                            TAG,
+                            "reader_strict_direct_wifi_current_recovery_fence_tripped " +
+                                "page=$requestPageIndex,reason=${failure.javaClass.simpleName}",
+                        )
+                    }
+                    if (currentHostEmulatorResumeRecovery &&
+                        currentResumeRecoveryFence?.isTripped() == true
+                    ) {
+                        if (currentRecoveryCallStartedAfterFence && socketPressure &&
+                            currentResumeRecoveryFence.requiresDirectH1(requestPageIndex)
+                        ) {
+                            Log.w(
+                                TAG,
+                                "reader_strict_direct_wifi_current_recovery_probe " +
+                                    "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
+                                    "transport=h1_after_h2," +
+                                    "h2Error=${failure.javaClass.simpleName}",
+                            )
+                            executeDirectWifiAdjacentWebtoonH1Recovery(
+                                candidates = orderedCandidates,
+                                episodePageCount = episodePageCount,
+                                capturedDirectWifiNetworkHandle =
+                                    capturedDirectWifiNetworkHandle,
+                                viewerGeneration = viewerGeneration,
+                                h2Failure = failure,
+                            )?.let { return it }
+                        }
+                        Log.w(
+                            TAG,
+                            "reader_strict_direct_wifi_h2_socket_fanout_stopped " +
+                                "page=$requestPageIndex,attempt=$logicalAttemptOrdinal," +
+                                "error=${failure.javaClass.simpleName}",
+                        )
+                        throw failure
+                    }
                     lastFailure = failure
                     // A definitive compatibility-host miss is host-local. First give both TCP/H2
                     // alternates one complete ring; only if neither owns a response do we spend the
@@ -4687,6 +4926,16 @@ data class NtkResolvedSourceRoute(
             if ((!adjacentEligible && !currentEligible) ||
                 liveNetwork == null || cancelled.get()
             ) return null
+            try {
+                clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits.acquire()
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException(
+                    "Interrupted while waiting for direct Wi-Fi H1 recovery permit",
+                ).apply { initCause(interrupted) }
+            }
+            var releasePermitDirectly = true
+            try {
             val recoveryMode = if (adjacentEligible) "adjacent_runway" else "current_emulator"
             val recoveryPath = proof?.path ?: episodePath
             val shared = httpClient.client ?: httpClient.imageClient
@@ -4746,7 +4995,7 @@ data class NtkResolvedSourceRoute(
                             "mode=$recoveryMode,path=$recoveryPath," +
                             "page=$pageIndex,host=${candidate.url.host}",
                     )
-                    return maybeWrapStalledReplicaBody(
+                    val recoveredResponse = maybeWrapStalledReplicaBody(
                         response,
                         candidates,
                         canonicalIndex,
@@ -4757,6 +5006,13 @@ data class NtkResolvedSourceRoute(
                         directWifiNetworkHandleAtCallStart = capturedDirectWifiNetworkHandle,
                         viewerGenerationAtCallStart = viewerGeneration,
                     )
+                    val recoveredBody = recoveredResponse.body ?: return recoveredResponse
+                    releasePermitDirectly = false
+                    return recoveredResponse.newBuilder()
+                        .body(NtkH1RecoveryPermitResponseBody(recoveredBody) {
+                            clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits.release()
+                        })
+                        .build()
                 } catch (failure: IOException) {
                     if (cancelled.get()) return null
                     lastH1Failure = failure
@@ -4778,6 +5034,11 @@ data class NtkResolvedSourceRoute(
                     "error=${lastH1Failure?.javaClass?.simpleName ?: "identity_miss"}",
             )
             return null
+            } finally {
+                if (releasePermitDirectly) {
+                    clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits.release()
+                }
+            }
         }
 
         private fun executeSegmentedManhwa(candidates: List<Request>): Response {
@@ -6799,9 +7060,14 @@ data class NtkResolvedSourceRoute(
         val tag: NtkStrictSourceCallTag,
         val operationLease: NtkStrictSourceOwnershipRegistry.OperationLease,
         val telemetryAfterSuccessfulHeaders: Boolean = false,
+        val hostGpuCurrentWebtoonResumeRecovery: Boolean = false,
+        val hostGpuCurrentWebtoonRecoveryFence:
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryFence? = null,
     ) {
         init {
             require(tag.isProductionStrict)
+            require(!hostGpuCurrentWebtoonResumeRecovery ||
+                hostGpuCurrentWebtoonRecoveryFence != null)
         }
     }
 
@@ -7153,6 +7419,7 @@ data class NtkResolvedSourceRoute(
             foregroundStreamStartedAt.clear()
             earlyTransportPreparePhysicalCalls.set(0L)
             adjacentForegroundViewerPaths.clear()
+            activeStrictAdjacentNtkEpisodePaths.clear()
             requiredNtkEpisodePaths.clear()
             ntkEpisodeWorkCancelledAt.clear()
             earlyNtkImageUrls.clear()
@@ -7720,6 +7987,45 @@ data class NtkResolvedSourceRoute(
         }
     }
 
+    /** Holds one physical H1 recovery permit until the exact body reaches EOF or is closed. */
+    private class NtkH1RecoveryPermitResponseBody(
+        private val delegate: ResponseBody,
+        private val releasePermit: () -> Unit,
+    ) : ResponseBody() {
+        private val released = AtomicBoolean(false)
+
+        private fun releaseOnce() {
+            if (released.compareAndSet(false, true)) releasePermit()
+        }
+
+        private val permitSource = object : ForwardingSource(delegate.source()) {
+            override fun read(sink: Buffer, byteCount: Long): Long = try {
+                super.read(sink, byteCount).also { read ->
+                    if (read == -1L) releaseOnce()
+                }
+            } catch (failure: Throwable) {
+                releaseOnce()
+                throw failure
+            }
+
+            override fun close() {
+                try {
+                    super.close()
+                } finally {
+                    releaseOnce()
+                }
+            }
+        }.buffer()
+
+        override fun contentType(): MediaType? = delegate.contentType()
+
+        override fun contentLength(): Long = delegate.contentLength()
+
+        override fun source(): BufferedSource = permitSource
+
+        override fun close() = permitSource.close()
+    }
+
     private fun ntkEpisodeCallPath(manga: Manga, image: String): String? {
         val path = manga.ntkEpisodePath?.trim()?.takeIf { isNtkEpisodePathKey(it) }
             ?: ntkGeneratedTarget(image)?.path?.takeIf { isNtkEpisodePathKey(it) }
@@ -8091,17 +8397,45 @@ data class NtkResolvedSourceRoute(
         private val parent: Cancellation?,
         internal val legacySpeculationPath: String,
         internal val legacySpeculationEpoch: Long,
+        private val coordinatorGeneratedForegroundPermit: Boolean,
     ) {
-        constructor() : this(null, "", Long.MIN_VALUE)
+        constructor() : this(null, "", Long.MIN_VALUE, false)
 
         private val cancelled = AtomicBoolean(false)
         private val calls = ConcurrentHashMap.newKeySet<Call>()
 
         internal fun forLegacySpeculation(path: String, epoch: Long): Cancellation =
-            Cancellation(this, earlyNtkPathKey(path), epoch)
+            Cancellation(
+                this,
+                earlyNtkPathKey(path),
+                epoch,
+                coordinatorGeneratedForegroundPermit,
+            )
 
         internal fun childPreservingLegacySpeculation(): Cancellation =
-            Cancellation(this, legacySpeculationPath, legacySpeculationEpoch)
+            Cancellation(
+                this,
+                legacySpeculationPath,
+                legacySpeculationEpoch,
+                coordinatorGeneratedForegroundPermit,
+            )
+
+        internal fun forCoordinatorGeneratedForegroundPermit(
+            permit: NtkImagePermit?,
+            requestedPageIndex: Int,
+        ): Cancellation = Cancellation(
+            this,
+            legacySpeculationPath,
+            legacySpeculationEpoch,
+            NtkPermitlessInitialGeneratedForegroundPolicy.isCoordinatorAuthorized(
+                permit,
+                requestedPageIndex,
+            ),
+        )
+
+        internal fun hasCoordinatorGeneratedForegroundPermit(): Boolean =
+            coordinatorGeneratedForegroundPermit ||
+                parent?.hasCoordinatorGeneratedForegroundPermit() == true
 
         internal fun legacySpeculationEpochFor(path: String?): Long? {
             if (legacySpeculationEpoch == Long.MIN_VALUE) return null
@@ -11159,6 +11493,17 @@ data class NtkResolvedSourceRoute(
             .removeHeader("If-Range")
             .header("Accept-Encoding", "identity")
             .tag(NtkStrictSourceCallTag::class.java, callContext.tag)
+            .tag(
+                NtkHostGpuEmulatorCurrentWebtoonRecoveryTag::class.java,
+                if (callContext.hostGpuCurrentWebtoonResumeRecovery) {
+                    NtkHostGpuEmulatorCurrentWebtoonRecoveryTag(
+                        callContext.tag.sessionId,
+                        checkNotNull(callContext.hostGpuCurrentWebtoonRecoveryFence),
+                    )
+                } else {
+                    null
+                },
+            )
             .tag(NtkManhwaWaveRecoveryState::class.java, waveRecoveryState)
             .build()
         val call = try {
@@ -16355,8 +16700,9 @@ data class NtkResolvedSourceRoute(
                         null
                     } else {
                         cancellation
-                    }
+                }
                 val fencedStreamCancellation = (streamCancellation ?: Cancellation())
+                    .forCoordinatorGeneratedForegroundPermit(permit, pageIndex)
                     .forLegacySpeculation(
                         legacySpeculationPath,
                         effectiveLegacySpeculationEpoch,
@@ -17120,6 +17466,7 @@ data class NtkResolvedSourceRoute(
         val task = FutureTask<ByteArray?> {
             if (!canRunLegacySpeculation()) return@FutureTask null
             val fencedCancellation = (cancellation ?: Cancellation())
+                .forCoordinatorGeneratedForegroundPermit(permit, pageIndex)
                 .forLegacySpeculation(legacySpeculationPath, legacySpeculationEpoch)
             fetchForegroundBytes(
                 appContext,
@@ -21598,6 +21945,10 @@ data class NtkResolvedSourceRoute(
     internal fun hasActiveAdjacentNtkForegroundViewerGrant(path: String?): Boolean {
         val key = earlyNtkPathKey(path)
         if (key.isBlank() || !isNtkEpisodePathKey(key)) return false
+        // Once a proof-backed adjacent source session has started, its close barrier—not the
+        // discovery launch timer—owns revocation. This keeps H1/range recovery available for a
+        // physically large p0-p4 body without authorizing any new path or generation.
+        if (activeStrictAdjacentNtkEpisodePaths.contains(key)) return true
         val allowedUntil = adjacentForegroundViewerPaths[key] ?: return false
         val now = SystemClock.elapsedRealtime()
         if (allowedUntil > now) return true
@@ -21605,6 +21956,50 @@ data class NtkResolvedSourceRoute(
         ntkDirectWifiAdjacentReplicaOrigins.remove(key)
         ntkDirectWifiAdjacentReplicaProofs.remove(key)
         return false
+    }
+
+    internal fun retainActiveStrictAdjacentNtkEpisodePath(
+        path: String?,
+        reason: String,
+    ): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank() || !isNtkEpisodePathKey(key)) return false
+        val refs = activeStrictAdjacentNtkEpisodePaths.retain(key)
+        if (refs <= 0) return false
+        Log.d(
+            TAG,
+            "reader_image_cache_active_strict_adjacent_retain path=$key," +
+                "refs=$refs,reason=$reason",
+        )
+        return true
+    }
+
+    internal fun releaseActiveStrictAdjacentNtkEpisodePath(
+        path: String?,
+        reason: String,
+    ): Boolean {
+        val key = earlyNtkPathKey(path)
+        if (key.isBlank()) return false
+        val remaining = activeStrictAdjacentNtkEpisodePaths.release(key) ?: return false
+        if (remaining == 0) {
+            val allowedUntil = adjacentForegroundViewerPaths[key] ?: 0L
+            if (allowedUntil <= SystemClock.elapsedRealtime()) {
+                adjacentForegroundViewerPaths.remove(key, allowedUntil)
+                ntkDirectWifiAdjacentReplicaOrigins.remove(key)
+                ntkDirectWifiAdjacentReplicaProofs.remove(key)
+            }
+        }
+        Log.d(
+            TAG,
+            "reader_image_cache_active_strict_adjacent_release path=$key," +
+                "refs=$remaining,reason=$reason",
+        )
+        return true
+    }
+
+    internal fun activeStrictAdjacentNtkEpisodePathRefCountForTest(path: String?): Int {
+        val key = earlyNtkPathKey(path)
+        return activeStrictAdjacentNtkEpisodePaths.refCount(key)
     }
 
     private fun isAuthorizedAdjacentForegroundViewerPath(path: String?): Boolean {
@@ -21642,6 +22037,10 @@ data class NtkResolvedSourceRoute(
         trimExecutor.schedule({
             val activeUntil = adjacentForegroundViewerPaths[key] ?: return@schedule
             if (activeUntil == until && activeUntil <= SystemClock.elapsedRealtime()) {
+                // The launch timer must not dismantle replica proof state underneath an exact
+                // adjacent source which is still reading. Its close barrier performs the same
+                // cleanup after every physical Call and descriptor lease has drained.
+                if (activeStrictAdjacentNtkEpisodePaths.contains(key)) return@schedule
                 adjacentForegroundViewerPaths.remove(key, activeUntil)
                 ntkDirectWifiAdjacentReplicaOrigins.remove(key)
                 ntkDirectWifiAdjacentReplicaProofs.remove(key)
@@ -21687,8 +22086,12 @@ data class NtkResolvedSourceRoute(
         val protected = LinkedHashSet<String>()
         protected.add(currentPath)
         protected.addAll(requiredNtkEpisodePaths.snapshot())
+        // Production strict adjacent calls are retired by their source-session close barrier.
+        // Active input may purge legacy/speculative episodes, but must not cancel this exact
+        // session merely because its discovery TTL elapsed while a large immutable body flowed.
+        protected.addAll(activeStrictAdjacentNtkEpisodePaths.snapshot())
         for ((path, until) in adjacentForegroundViewerPaths.entries) {
-            if (until > now) {
+            if (until > now || activeStrictAdjacentNtkEpisodePaths.contains(path)) {
                 protected.add(path)
             } else {
                 adjacentForegroundViewerPaths.remove(path, until)
@@ -22650,7 +23053,10 @@ data class NtkResolvedSourceRoute(
             )
         }
         val initialTarget = ntkGeneratedTarget(image)
-        if (foreground && isPermitlessInitialGeneratedForegroundSuppressed(initialTarget)) {
+        val coordinatorAuthorized = cancellation?.hasCoordinatorGeneratedForegroundPermit() == true
+        val permitlessSuppressed =
+            foreground && isPermitlessInitialGeneratedForegroundSuppressed(initialTarget)
+        if (permitlessSuppressed && !coordinatorAuthorized) {
             logCacheEvent(
                 "generated_initial_permitless_suppressed",
                 manga,
@@ -22659,6 +23065,15 @@ data class NtkResolvedSourceRoute(
                 "page=${initialTarget?.page ?: 0}"
             )
             throw IOException("Suppressed permitless initial generated foreground: page=${initialTarget?.page ?: 0}")
+        }
+        if (permitlessSuppressed) {
+            logCacheEvent(
+                "generated_initial_coordinator_permit_admitted",
+                manga,
+                image,
+                true,
+                "page=${initialTarget?.page ?: 0}"
+            )
         }
         if (initialTarget != null && hasNtkGeneratedHardBlocked(manga, image)) {
             throw IOException("Generated image Cloudflare hard block: page=${initialTarget.page} code=403")
@@ -25352,7 +25767,9 @@ data class NtkResolvedSourceRoute(
             )
             throw IOException("KP descriptor is browser-owned and must not be fetched by native foreground transport")
         }
-        if (isPermitlessInitialGeneratedForegroundSuppressed(generatedTarget)) {
+        if (isPermitlessInitialGeneratedForegroundSuppressed(generatedTarget) &&
+            cancellation?.hasCoordinatorGeneratedForegroundPermit() != true
+        ) {
             logCacheEvent(
                 "foreground_transport_skip_suppressed_permitless_initial",
                 manga,

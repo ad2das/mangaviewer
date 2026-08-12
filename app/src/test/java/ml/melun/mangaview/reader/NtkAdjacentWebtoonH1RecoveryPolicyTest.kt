@@ -89,6 +89,44 @@ class NtkAdjacentWebtoonH1RecoveryPolicyTest {
     }
 
     @Test
+    fun taggedCurrentResumeUsesOneCompleteH2RingBeforeH1Recovery() {
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                logicalAttemptOrdinal = 1,
+                currentHostEmulatorResumeRecovery = true,
+            ) == 1
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                logicalAttemptOrdinal = 1,
+                currentHostEmulatorResumeRecovery = false,
+            ) == NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                logicalAttemptOrdinal = 2,
+                currentHostEmulatorResumeRecovery = true,
+            ) == 1
+        )
+    }
+
+    @Test
+    fun exactHostEmulatorAdjacentRunwayUsesOneCompleteH2RingBeforeH1Recovery() {
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                logicalAttemptOrdinal = 1,
+                adjacentHostEmulatorRunwayRecovery = true,
+            ) == 1
+        )
+        assertTrue(
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                logicalAttemptOrdinal = 1,
+                adjacentHostEmulatorRunwayRecovery = false,
+            ) == NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_H2_INITIAL_RECOVERY_CYCLES
+        )
+    }
+
+    @Test
     fun emulatorDefinitiveMissIsCallLocalAndTransportHealthIsStrictSessionScoped() {
         assertTrue(
             NtkWebtoonReplicaHeaderPolicy.isolateDefinitiveMissToLogicalCall(true)

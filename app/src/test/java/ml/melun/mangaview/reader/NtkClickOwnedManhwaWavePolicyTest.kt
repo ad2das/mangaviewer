@@ -18,6 +18,18 @@ class NtkClickOwnedManhwaWavePolicyTest {
             40,
             NtkClickOwnedManhwaWavePolicy.DIRECT_WIFI_ORDINARY_BODY_TRANSFERS,
         )
+        assertEquals(
+            4,
+            NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_VIEWPORT_BODIES,
+        )
+        assertEquals(
+            24,
+            NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS,
+        )
+        assertEquals(
+            5,
+            NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS,
+        )
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.MIXED_UNCOMMON_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)
         assertEquals(12, NtkClickOwnedManhwaWavePolicy.WIFI_ENTRY_SPECULATION_PAGES)
@@ -58,6 +70,112 @@ class NtkClickOwnedManhwaWavePolicyTest {
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
         assertTrue(NtkClickOwnedManhwaWavePolicy.BODY_LANES <=
             NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
+    }
+
+    @Test
+    fun hostGpuAdjacentTailWindowStartsAfterTheFivePagePhysicalRunwayOnly() {
+        fun bounded(
+            hostGpu: Boolean = true,
+            adjacent: Boolean = true,
+            pageIndex: Int = 5,
+            forwardFirstPage: Int = 0,
+            runwayPages: Int = 5,
+        ) = NtkClickOwnedManhwaWavePolicy.shouldBoundHostGpuAdjacentTailTransfers(
+            hostGpuEmulatorRuntime = hostGpu,
+            directWifiAdjacentOwned = adjacent,
+            pageIndex = pageIndex,
+            forwardFirstPage = forwardFirstPage,
+            physicalRunwayPages = runwayPages,
+        )
+
+        assertTrue(!bounded(pageIndex = 0))
+        assertTrue(!bounded(pageIndex = 4))
+        assertTrue(bounded(pageIndex = 5))
+        assertTrue(bounded(pageIndex = 96))
+        assertTrue(!bounded(hostGpu = false))
+        assertTrue(!bounded(adjacent = false))
+        assertTrue(!bounded(pageIndex = 14, forwardFirstPage = 10))
+        assertTrue(bounded(pageIndex = 15, forwardFirstPage = 10))
+    }
+
+    @Test
+    fun onlyHostGpuDirectWifiCurrentResumeFencesTheFourViewportBodies() {
+        fun enabled(
+            hostGpu: Boolean = true,
+            adjacent: Boolean = false,
+            wifi: Boolean = true,
+            cellular: Boolean = false,
+            handle: Long? = 100L,
+            first: Int = 20,
+        ) = NtkClickOwnedManhwaWavePolicy.shouldFenceHostGpuCurrentRestoredViewportBodies(
+            hostGpuEmulatorRuntime = hostGpu,
+            directWifiAdjacentOwned = adjacent,
+            wifiTransport = wifi,
+            cellularResilientTransport = cellular,
+            capturedNetworkHandle = handle,
+            forwardFirstPage = first,
+        )
+
+        assertTrue(enabled())
+        assertTrue(!enabled(hostGpu = false))
+        assertTrue(!enabled(adjacent = true))
+        assertTrue(!enabled(wifi = false))
+        assertTrue(!enabled(cellular = true))
+        assertTrue(!enabled(handle = null))
+        assertTrue(!enabled(first = 0))
+
+        assertTrue(NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(20, 20, 83))
+        assertTrue(NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(23, 20, 83))
+        assertTrue(!NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(24, 20, 83))
+        assertTrue(NtkClickOwnedManhwaWavePolicy.isHostGpuCurrentRestoredViewportBody(82, 82, 83))
+    }
+
+    @Test
+    fun lateVerifiedCurrentResumePeersOwnTheExistingEntryExecutorOnly() {
+        fun prioritize(
+            hostGpu: Boolean = true,
+            adjacent: Boolean = false,
+            entryWifi: Boolean = true,
+            liveWifi: Boolean = true,
+            cellular: Boolean = false,
+            capturedHandle: Long? = 100L,
+            liveHandle: Long? = 100L,
+            page: Int = 21,
+            first: Int = 20,
+            pages: Int = 83,
+            extension: String = "jpg",
+        ) = NtkClickOwnedManhwaWavePolicy
+            .shouldPrioritizeHostGpuCurrentRestoredViewportEntryBody(
+                hostGpuEmulatorRuntime = hostGpu,
+                directWifiAdjacentOwned = adjacent,
+                wifiEntryPriorityMode = entryWifi,
+                liveWifiTransport = liveWifi,
+                cellularResilientTransport = cellular,
+                capturedNetworkHandle = capturedHandle,
+                liveNetworkHandle = liveHandle,
+                pageIndex = page,
+                forwardFirstPage = first,
+                pageCount = pages,
+                candidateExtension = extension,
+            )
+
+        assertTrue(prioritize(page = 21, extension = "jpg"))
+        assertTrue(prioritize(page = 22, extension = "GIF"))
+        assertTrue(prioritize(page = 23, extension = "png"))
+
+        // The anchor has its own lane; the fourth peer and every non-resume profile stay unchanged.
+        assertTrue(!prioritize(page = 20))
+        assertTrue(!prioritize(page = 24))
+        assertTrue(!prioritize(first = 0, page = 1))
+        assertTrue(!prioritize(hostGpu = false))
+        assertTrue(!prioritize(adjacent = true))
+        assertTrue(!prioritize(entryWifi = false))
+        assertTrue(!prioritize(liveWifi = false))
+        assertTrue(!prioritize(cellular = true))
+        assertTrue(!prioritize(capturedHandle = null))
+        assertTrue(!prioritize(liveHandle = null))
+        assertTrue(!prioritize(liveHandle = 101L))
+        assertTrue(!prioritize(extension = "avif"))
     }
 
     @Test

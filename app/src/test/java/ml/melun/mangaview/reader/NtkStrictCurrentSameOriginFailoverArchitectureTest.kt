@@ -29,6 +29,7 @@ class NtkStrictCurrentSameOriginFailoverArchitectureTest {
 
         assertTrue(recovery.contains("if (skipDomainResolution)"))
         assertTrue(recovery.contains("client.resolveNtkDomainAfterRouteFailure()"))
+        assertTrue(coordinator.contains("shouldResolveAfterSameOriginFallback("))
         assertTrue(recovery.indexOf("NtkSourceSpoolRegistry.retireDiscoveryForReplacement(") <
             recovery.indexOf("val restarted = startInternal("))
         assertTrue(recovery.contains("if (skipDomainResolution) 0 else 1"))

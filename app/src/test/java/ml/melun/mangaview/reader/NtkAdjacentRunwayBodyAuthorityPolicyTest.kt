@@ -127,6 +127,20 @@ class NtkAdjacentRunwayBodyAuthorityPolicyTest {
         assertTrue(rejectionBranch.contains("return false"))
     }
 
+    @Test
+    fun exactWebtoonRemainderCannotFallThroughAfterAuthorityRetires() {
+        val append = block("private fun appendRemainingAdjacentRunwayRefs(", sessionSource)
+        val delivery = block("private fun prepareAdjacentRunwayDelivery(", sessionSource)
+
+        assertTrue(append.contains("requiresStrictExactRemainingAdjacentRunway(candidateSnapshot)"))
+        assertTrue(append.contains("candidateSnapshot.takeWhile { strictAdjacentBodyDescriptor(it) != null }"))
+        assertTrue(append.contains("requireStrictDescriptor = strictExactDescriptorOnly"))
+        assertTrue(append.contains("if (strictExactDescriptorOnly && exactRunwayPublication == null)"))
+        assertTrue(append.contains("rollbackAdjacentRunwayStructure(startIndex, appendable)"))
+        assertTrue(append.contains("recycleAdjacentRunwayDrawableBatch(drawableBatch)"))
+        assertTrue(delivery.contains("Adjacent exact body has no generation-bound descriptor"))
+    }
+
     private fun block(signature: String, source: String): String {
         val start = source.indexOf(signature)
         require(start >= 0) { "Missing source signature: $signature" }

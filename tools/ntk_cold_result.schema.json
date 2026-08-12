@@ -22,6 +22,7 @@
     "passed",
     "finalDeviceStatus",
     "qualificationDeviceMode",
+    "hostGpuRestartIntervalCases",
     "deviceRequirementSatisfied",
     "physicalDeviceRequirementSatisfied",
     "hostGpuEmulatorRequirementSatisfied",
@@ -29,6 +30,7 @@
     "warmReopenRequirementSatisfied",
     "firstImageSlaRequirementSatisfied",
     "allImagesSlaRequirementSatisfied",
+    "allImagesTimingDiagnosticOnly",
     "freshRandomSeedRequirementSatisfied",
     "diagnosticOnly",
     "requestedCountPerType",
@@ -82,6 +84,11 @@
     "qualificationDeviceMode": {
       "enum": ["PHYSICAL_DEVICE", "HOST_GPU_EMULATOR"]
     },
+    "hostGpuRestartIntervalCases": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 120
+    },
     "deviceRequirementSatisfied": { "type": "boolean" },
     "physicalDeviceRequirementSatisfied": { "type": "boolean" },
     "hostGpuEmulatorRequirementSatisfied": { "type": "boolean" },
@@ -89,6 +96,7 @@
     "warmReopenRequirementSatisfied": { "type": "boolean" },
     "firstImageSlaRequirementSatisfied": { "type": "boolean" },
     "allImagesSlaRequirementSatisfied": { "type": "boolean" },
+    "allImagesTimingDiagnosticOnly": { "const": true },
     "freshRandomSeedRequirementSatisfied": { "type": "boolean" },
     "diagnosticOnly": { "type": "boolean" },
     "requestedCountPerType": { "type": "integer", "minimum": 1 },
@@ -232,6 +240,7 @@
           "warmReopenRequirementSatisfied": { "const": true },
           "firstImageSlaRequirementSatisfied": { "const": true },
           "allImagesSlaRequirementSatisfied": { "const": true },
+          "allImagesTimingDiagnosticOnly": { "const": true },
           "freshRandomSeedRequirementSatisfied": { "const": true },
           "seedSelectionMode": { "const": "FRESH_RANDOM" },
           "diagnosticOnly": { "const": false },
@@ -256,8 +265,8 @@
           "freshRandomSeedRequirementSatisfied": { "const": true },
           "seedSelectionMode": { "const": "FRESH_RANDOM" },
           "diagnosticOnly": { "const": false },
-          "completedCases": { "const": 40 },
-          "passedCases": { "const": 40 }
+          "completedCases": { "const": 120 },
+          "passedCases": { "const": 120 }
         }
       }
     },
@@ -508,6 +517,16 @@
         "episodePath": { "type": ["string", "null"] },
         "expectedAdjacentEpisodePath": { "type": ["string", "null"] },
         "expectedAdjacentPageCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentPageCountMatched": { "type": ["boolean", "null"] },
+        "adjacentPageCountReconciled": { "type": ["boolean", "null"] },
+        "adjacentPageCountReconciliationReason": { "type": ["string", "null"] },
+        "adjacentSourceSlotCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentRenderablePageCount": { "type": ["integer", "null"], "minimum": 0 },
+        "adjacentExcludedNonRenderableSourcePages": {
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 1 },
+          "uniqueItems": true
+        },
         "adjacentRunwayTargetEpisode": { "type": ["string", "null"] },
         "adjacentRunwayPageCount": { "type": ["integer", "null"], "minimum": 0 },
         "adjacentObservedRunwayDrawableCount": { "type": ["integer", "null"], "minimum": 0 },
@@ -646,6 +665,18 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "firstActualMs": { "type": ["number", "null"], "minimum": 0 },
+        "firstImageSlaPassed": { "type": ["boolean", "null"] },
+        "firstImageTimingDiagnosticOnly": { "type": ["boolean", "null"] },
+        "firstImagePhysicalNetworkLimited": { "type": ["boolean", "null"] },
+        "firstImagePhysicalNetworkWaitMs": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "firstImagePhysicalNetworkPostResponseMs": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 500
+        },
         "imageSlaMs": { "type": ["integer", "null"], "minimum": 250, "maximum": 30000 },
         "allImagesSlaMs": { "type": ["integer", "null"], "minimum": 250, "maximum": 30000 },
         "allImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
@@ -656,6 +687,9 @@
           "enum": ["MACRO_EXACT", "SESSION_TELEMETRY_RECOVERY", "UNMEASURED", null]
         },
         "allImagesEvidenceConflict": { "type": ["boolean", "null"] },
+        "allImagesCompletionPassed": { "type": ["boolean", "null"] },
+        "allImagesSlaPassed": { "type": ["boolean", "null"] },
+        "allImagesTimingDiagnosticOnly": { "type": ["boolean", "null"] },
         "androidxAllImagesReadyMs": { "type": ["number", "null"], "minimum": 0 },
         "androidxFrameCommitTraceKind": { "type": ["string", "null"] },
         "androidxFrameCommitMaxMs": { "type": ["number", "null"], "minimum": 0 },
@@ -682,6 +716,14 @@
         "viewerDrainTimedOut": { "type": ["boolean", "null"] },
         "imageFailureCount": { "type": ["integer", "null"], "minimum": 0 },
         "imageCancellationCount": { "type": ["integer", "null"], "minimum": 0 },
+        "recoveredSessionImageCancellationCount": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "unrecoveredSessionImageCancellationCount": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
         "decodeFailureCount": { "type": ["integer", "null"], "minimum": 0 },
         "decodeCancellationCount": { "type": ["integer", "null"], "minimum": 0 },
         "pageListFailureCount": { "type": ["integer", "null"], "minimum": 0 },
@@ -793,6 +835,12 @@
               "inputMaxInterGestureGapMs",
               "expectedAdjacentEpisodePath",
               "expectedAdjacentPageCount",
+              "adjacentPageCountMatched",
+              "adjacentPageCountReconciled",
+              "adjacentPageCountReconciliationReason",
+              "adjacentSourceSlotCount",
+              "adjacentRenderablePageCount",
+              "adjacentExcludedNonRenderableSourcePages",
               "adjacentRunwayTargetEpisode",
               "adjacentRunwayPageCount",
               "adjacentObservedRunwayDrawableCount",
@@ -860,6 +908,11 @@
               "completedAt",
               "randomSeed",
               "firstActualMs",
+              "firstImageSlaPassed",
+              "firstImageTimingDiagnosticOnly",
+              "firstImagePhysicalNetworkLimited",
+              "firstImagePhysicalNetworkWaitMs",
+              "firstImagePhysicalNetworkPostResponseMs",
               "imageSlaMs",
               "allImagesSlaMs",
               "allImagesReadyMs",
@@ -867,6 +920,9 @@
               "allImagesReadyPageCount",
               "allImagesEvidenceSource",
               "allImagesEvidenceConflict",
+              "allImagesCompletionPassed",
+              "allImagesSlaPassed",
+              "allImagesTimingDiagnosticOnly",
               "androidxAllImagesReadyMs",
               "androidxFrameCommitTraceKind",
               "androidxFrameCommitMaxMs",
@@ -966,6 +1022,18 @@
               "inputMaxInterGestureGapMs": { "type": "integer", "minimum": 0, "maximum": 64 },
               "expectedAdjacentEpisodePath": { "type": "string", "minLength": 1 },
               "expectedAdjacentPageCount": { "type": "integer", "minimum": 5 },
+              "adjacentPageCountMatched": { "type": "boolean" },
+              "adjacentPageCountReconciled": { "const": true },
+              "adjacentPageCountReconciliationReason": {
+                "enum": ["exact", "exact_api_explicit_nonrenderable_slots"]
+              },
+              "adjacentSourceSlotCount": { "type": "integer", "minimum": 5 },
+              "adjacentRenderablePageCount": { "type": "integer", "minimum": 5 },
+              "adjacentExcludedNonRenderableSourcePages": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 1 },
+                "uniqueItems": true
+              },
               "adjacentRunwayTargetEpisode": { "type": "string", "minLength": 1 },
               "adjacentRunwayPageCount": { "const": 5 },
               "adjacentObservedRunwayDrawableCount": { "const": 5 },
@@ -1085,6 +1153,15 @@
               "measurementInvalid": { "const": false },
               "measurementInvalidReason": { "type": "null" },
               "firstActualMs": { "type": "number", "minimum": 0 },
+              "firstImageSlaPassed": { "type": "boolean" },
+              "firstImageTimingDiagnosticOnly": { "type": "boolean" },
+              "firstImagePhysicalNetworkLimited": { "type": "boolean" },
+              "firstImagePhysicalNetworkWaitMs": { "type": ["number", "null"], "minimum": 0 },
+              "firstImagePhysicalNetworkPostResponseMs": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 500
+              },
               "imageSlaMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
               "allImagesReadyMs": { "type": "number", "minimum": 0 },
               "allImagesReadyAtNanos": { "type": "integer", "minimum": 1 },
@@ -1093,6 +1170,9 @@
                 "enum": ["MACRO_EXACT", "SESSION_TELEMETRY_RECOVERY"]
               },
               "allImagesEvidenceConflict": { "const": false },
+              "allImagesCompletionPassed": { "const": true },
+              "allImagesSlaPassed": { "type": "boolean" },
+              "allImagesTimingDiagnosticOnly": { "const": true },
               "androidxAllImagesReadyMs": { "type": "number", "minimum": 0 },
               "firstActualPageIndex": { "type": "integer", "minimum": 0 },
               "observedSourceCount": { "type": "integer", "minimum": 1 },
@@ -1156,8 +1236,16 @@
               },
               "macroResult": {
                 "type": "object",
-                "required": ["passed"],
-                "properties": { "passed": { "const": true } }
+                "required": [
+                  "passed",
+                  "allImagesCompletionPassed",
+                  "allImagesTimingDiagnosticOnly"
+                ],
+                "properties": {
+                  "passed": { "const": true },
+                  "allImagesCompletionPassed": { "const": true },
+                  "allImagesTimingDiagnosticOnly": { "const": true }
+                }
               },
               "macroResultArtifact": {
                 "type": "object",

@@ -58,6 +58,91 @@ class NtkDirectWifiStrictLegacySpeculationPolicyTest {
     }
 
     @Test
+    fun coordinatorPermitMustMatchTheExactDisplaySlotAndImmutableId() {
+        val permit = NtkImagePermit(
+            sessionEpoch = 7L,
+            pageIndex = 213,
+            lane = NtkImageLane.FOLLOWING_VISIBLE,
+            phaseAtGrant = NtkBootPhase.FIRST_DRAWABLE_COMMITTED,
+            permitId = "7:213:FOLLOWING_VISIBLE",
+        )
+
+        assertTrue(
+            NtkPermitlessInitialGeneratedForegroundPolicy.isCoordinatorAuthorized(
+                permit,
+                requestedPageIndex = 213,
+            )
+        )
+        assertFalse(
+            NtkPermitlessInitialGeneratedForegroundPolicy.isCoordinatorAuthorized(
+                permit,
+                requestedPageIndex = 214,
+            )
+        )
+        assertFalse(
+            NtkPermitlessInitialGeneratedForegroundPolicy.isCoordinatorAuthorized(
+                permit.copy(permitId = "forged"),
+                requestedPageIndex = 213,
+            )
+        )
+        assertFalse(
+            NtkPermitlessInitialGeneratedForegroundPolicy.isCoordinatorAuthorized(
+                null,
+                requestedPageIndex = 213,
+            )
+        )
+    }
+
+    @Test
+    fun coordinatorPermitSurvivesAsyncAndCacheLayersWithoutOpeningPermitlessCalls() {
+        val readerCache = readSource("reader", "ReaderImageCache.kt")
+        val cancellationStart = readerCache.indexOf("class Cancellation private constructor(")
+        val cancellationEnd = readerCache.indexOf("fun interface ByteFlightSubscriber", cancellationStart)
+        val cancellation = readerCache.substring(cancellationStart, cancellationEnd)
+        assertTrue(cancellation.contains("forCoordinatorGeneratedForegroundPermit("))
+        assertTrue(cancellation.contains("coordinatorGeneratedForegroundPermit"))
+        assertTrue(cancellation.contains("hasCoordinatorGeneratedForegroundPermit()"))
+        assertTrue(cancellation.contains("childPreservingLegacySpeculation"))
+
+        val streamStart = readerCache.indexOf("fun startForegroundStreamFetch(")
+        val streamEnd = readerCache.indexOf("fun decodeForegroundBitmap(", streamStart)
+        val stream = readerCache.substring(streamStart, streamEnd)
+        assertTrue(
+            stream.indexOf("forCoordinatorGeneratedForegroundPermit(permit, pageIndex)") <
+                stream.indexOf(".forLegacySpeculation(")
+        )
+
+        val requestStart = readerCache.indexOf("private fun requestWithNtkGeneratedFallback(")
+        val requestEnd = readerCache.indexOf("private fun shouldUseInitialGeneratedRangeFirst(", requestStart)
+        val request = readerCache.substring(requestStart, requestEnd)
+        assertTrue(request.contains("cancellation?.hasCoordinatorGeneratedForegroundPermit() == true"))
+        assertTrue(request.contains("permitlessSuppressed && !coordinatorAuthorized"))
+
+        val foregroundStart = readerCache.indexOf("private fun requestForForegroundMode(")
+        val foregroundEnd = readerCache.indexOf("private fun requestDirectInitialGeneratedForeground(", foregroundStart)
+        val foreground = readerCache.substring(foregroundStart, foregroundEnd)
+        assertTrue(foreground.contains("cancellation?.hasCoordinatorGeneratedForegroundPermit() != true"))
+
+        val session = readSource("reader", "ReaderSession.kt")
+        val leaseStart = session.indexOf("private fun leaseImageFile(")
+        val leaseEnd = session.indexOf("private fun prefetchImageFile(", leaseStart)
+        val lease = session.substring(leaseStart, leaseEnd)
+        assertTrue(lease.contains("foregroundPermit: NtkImagePermit? = null"))
+        assertTrue(lease.contains("forCoordinatorGeneratedForegroundPermit(foregroundPermit, index)"))
+        assertTrue(lease.indexOf("forCoordinatorGeneratedForegroundPermit") < lease.indexOf("ReaderImageCache.leaseFile("))
+
+        val boundedStart = session.indexOf("private fun startBoundedForegroundStreamFetch(")
+        val boundedEnd = session.indexOf("private fun startBoundedVisiblePreviewFetch(", boundedStart)
+        val bounded = session.substring(boundedStart, boundedEnd)
+        assertTrue(bounded.contains("forCoordinatorGeneratedForegroundPermit(permit, pageIndex)"))
+        assertTrue(
+            bounded.indexOf("forCoordinatorGeneratedForegroundPermit(permit, pageIndex)") <
+                bounded.indexOf("ReaderImageCache.getOrFetchFileForeground(")
+        )
+        assertTrue(bounded.contains("producerCancellation,"))
+    }
+
+    @Test
     fun mangaRejectsLegacyWorkBeforeItCreatesProbeThreadsOrStreams() {
         val manga = readSource(
             "mangaview", "Manga.java"

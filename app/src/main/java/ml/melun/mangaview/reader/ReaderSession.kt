@@ -125,6 +125,29 @@ internal object NtkStrictActiveScrollDecodePolicy {
         anchor: Boolean,
         manhwa: Boolean,
     ): Boolean = directWifi && currentForegroundEpisode && activeInput && !anchor && manhwa
+
+}
+
+/**
+ * Keeps decoded adjacent webtoon pixels bounded to the runway the reader can actually consume.
+ * Exact body downloads may still complete for the whole episode; only bitmap publication is
+ * parked. This is host-emulator-only because physical devices keep their established cache and
+ * renderer policy.
+ */
+internal object NtkAdjacentDecodedRunwayPolicy {
+    fun shouldParkRemainder(
+        hostGpuEmulatorRuntime: Boolean,
+        directWifi: Boolean,
+        episodePath: String,
+        requiredRunwayPages: Int,
+        drawablePagesAtOrAhead: Int,
+    ): Boolean =
+        hostGpuEmulatorRuntime &&
+            directWifi &&
+            episodePath.startsWith("/webtoon/") &&
+            requiredRunwayPages > 0 &&
+            drawablePagesAtOrAhead >= requiredRunwayPages
+
 }
 
 /** Fail closed for the emulator-only exact manhwa runway unless its live descriptor owns the page. */
@@ -10145,6 +10168,12 @@ class ReaderSession(
             windowLastBase = minOf(count - 1, maxOf(windowLastBase, windowAnchor))
         }
         currentViewportAnchor.set(windowAnchor)
+        if (windowAnchor != previousViewportAnchor) {
+            val activePath = pageRef(windowAnchor)?.manga?.ntkEpisodePath
+                ?.let(NtkStripDigests::normalizeEpisodePath)
+                .orEmpty()
+            resumeParkedAdjacentRemainder(activePath)
+        }
         if (retainWindow) {
             // The inline controller's incoming window is derived from the real visible pages
             // plus its pixel-measured forward runway. Keep it separate from the broader bitmap
@@ -16320,7 +16349,17 @@ class ReaderSession(
             clearPendingAdjacentAppendPublish(publishKey)
             return
         }
-        if (shouldDeferRemainingAdjacentRunwayForActiveInput(target)) {
+        val boundedDecodedRunwayReady = shouldParkHostGpuAdjacentWebtoonRemainder(target)
+        if (boundedDecodedRunwayReady || shouldDeferRemainingAdjacentRunwayForActiveInput(target)) {
+            if (boundedDecodedRunwayReady) {
+                parkHostGpuAdjacentWebtoonRemainder(
+                    target,
+                    activeRefs,
+                    publishKey,
+                    warm,
+                )
+                return
+            }
             val preparedAndParked = prepareAndParkOffscreenAdjacentRemainderIfIdle(
                 target,
                 activeRefs,
@@ -16388,7 +16427,20 @@ class ReaderSession(
             clearPendingAdjacentAppendPublish(publishKey)
             return
         }
-        val readyCount = adjacentRunwayPublishablePrefixCount(candidateSnapshot)
+        // Once an exact webtoon tail has been identified, keep that decision immutable for this
+        // append turn. A terminal source can retire its live authority while an already queued
+        // append is waking up; re-evaluating the mutable authority at that point used to let the
+        // stale turn consume a generic cached drawable and pair it with the new exact manifest.
+        // Besides losing ownership, that mixed proof used to throw from the publication data class
+        // and kill the reader process. Exact refs therefore remain descriptor-only until this turn
+        // either publishes one coherent batch or rolls back and joins strict recovery.
+        val strictExactDescriptorOnly =
+            requiresStrictExactRemainingAdjacentRunway(candidateSnapshot)
+        val readyCount = if (strictExactDescriptorOnly) {
+            candidateSnapshot.takeWhile { strictAdjacentBodyDescriptor(it) != null }.size
+        } else {
+            adjacentRunwayPublishablePrefixCount(candidateSnapshot)
+        }
         val atomicTailReadyCount = directWifiAdjacentAtomicRunwayTailReadyCount(target)
         if (readyCount < atomicTailReadyCount) {
             waitingCandidates = candidateSnapshot
@@ -16440,6 +16492,21 @@ class ReaderSession(
             }
         }
         waitingCandidates?.let { candidates ->
+            if (strictExactDescriptorOnly) {
+                holdOrRecoverAdjacentStrictSource(target)
+                if (!isAdjacentStrictRecoveryExhausted(target)) {
+                    scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
+                } else {
+                    clearActiveRemainingAdjacentRunwayTarget(target)
+                    clearPendingAdjacentAppendPublish(publishKey)
+                }
+                Log.d(
+                    TAG,
+                    "append_adjacent_exact_runway_wait_descriptor path=${target.ntkEpisodePath} " +
+                        "ready=$readyCount required=$atomicTailReadyCount candidates=${candidates.size}",
+                )
+                return
+            }
             val waitingPath = activeRemainingAdjacentRunwayTargetPath(target)
             if (waitingPath.isNotEmpty() && adjacentStrictSourceClaims.containsKey(waitingPath)) {
                 val waiting = ParkedAdjacentRemainderAppend(
@@ -16493,19 +16560,30 @@ class ReaderSession(
         val drawableBatch = prepareAdjacentRunwayDrawableBatch(
             startIndex,
             appendable,
-            "append_runway_remaining_publish"
+            "append_runway_remaining_publish",
+            requireStrictDescriptor = strictExactDescriptorOnly,
         )
         if (drawableBatch == null) {
             rollbackAdjacentRunwayStructure(startIndex, appendable)
             finishStructurePublish()
             finishAdjacentDrawableBatchPublication()
-            startAdjacentForegroundStreamsForRefs(
-                target,
-                appendable,
-                ReaderSurfaceView.DIRECTION_NEXT,
-                asyncLaunch = true
-            )
-            scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
+            if (strictExactDescriptorOnly) {
+                holdOrRecoverAdjacentStrictSource(target)
+                if (!isAdjacentStrictRecoveryExhausted(target)) {
+                    scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
+                } else {
+                    clearActiveRemainingAdjacentRunwayTarget(target)
+                    clearPendingAdjacentAppendPublish(publishKey)
+                }
+            } else {
+                startAdjacentForegroundStreamsForRefs(
+                    target,
+                    appendable,
+                    ReaderSurfaceView.DIRECTION_NEXT,
+                    asyncLaunch = true
+                )
+                scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
+            }
             Log.d(
                 TAG,
                 "append_adjacent_runway_remaining_wait_drawable_batch targetId=${target.id} " +
@@ -16518,6 +16596,25 @@ class ReaderSession(
             total,
             drawableBatch,
         )
+        if (strictExactDescriptorOnly && exactRunwayPublication == null) {
+            rollbackAdjacentRunwayStructure(startIndex, appendable)
+            recycleAdjacentRunwayDrawableBatch(drawableBatch)
+            finishStructurePublish()
+            finishAdjacentDrawableBatchPublication()
+            holdOrRecoverAdjacentStrictSource(target)
+            if (!isAdjacentStrictRecoveryExhausted(target)) {
+                scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
+            } else {
+                clearActiveRemainingAdjacentRunwayTarget(target)
+                clearPendingAdjacentAppendPublish(publishKey)
+            }
+            Log.w(
+                TAG,
+                "append_adjacent_exact_runway_invalid_publication path=${target.ntkEpisodePath} " +
+                    "start=$startIndex refs=${appendable.size}",
+            )
+            return
+        }
         if (
             remainingRefs.isNotEmpty() &&
             !(isImmediateNtkGeneratedUx() && (isActiveGeneratedTouchOrQuiet() || viewportBusy.get()))
@@ -16752,6 +16849,61 @@ class ReaderSession(
         // may be prepared separately during idle, but pages must not become scrollable until the
         // user has actually entered this episode.
         return true
+    }
+
+    private fun shouldParkHostGpuAdjacentWebtoonRemainder(target: Manga): Boolean {
+        val path = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
+        val requiredRunwayPages = requiredInitialAdjacentRunwayPages(target)
+        val anchor = currentViewportAnchor.get().coerceAtLeast(0)
+        val drawablePagesAtOrAhead = synchronized(pagesLock) {
+            val firstTargetIndex = pages.indexOfFirst { page ->
+                looseSameEpisodeForAppend(page.manga, target)
+            }
+            if (firstTargetIndex < 0) {
+                0
+            } else {
+                val runwayStart = maxOf(anchor, firstTargetIndex)
+                pages.asSequence()
+                    .drop(runwayStart)
+                    .filter { page ->
+                        page.transitionTitle == null &&
+                            looseSameEpisodeForAppend(page.manga, target) &&
+                            hasDeliveredOrPendingDrawable(page.pageIndex)
+                    }
+                    .count()
+            }
+        }
+        return NtkAdjacentDecodedRunwayPolicy.shouldParkRemainder(
+            hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+            directWifi = isDirectWifiStrictAdjacentTransportActive(),
+            episodePath = path,
+            requiredRunwayPages = requiredRunwayPages,
+            drawablePagesAtOrAhead = drawablePagesAtOrAhead,
+        )
+    }
+
+    private fun parkHostGpuAdjacentWebtoonRemainder(
+        target: Manga,
+        refs: List<PageRef>,
+        publishKey: String,
+        warm: Boolean,
+    ) {
+        val path = activeRemainingAdjacentRunwayTargetPath(target)
+        if (path.isEmpty()) return
+        val parked = ParkedAdjacentRemainderAppend(target, refs, publishKey, warm)
+        val firstPark = parkedAdjacentRemainderAppends.put(path, parked) == null
+        pendingRemainingAdjacentRunwayAppends.remove(path)
+        waitingStrictRemainingAdjacentAppends.remove(path)
+        scheduledRemainingAdjacentRunwayRetries.remove(path)?.let { scheduled ->
+            main.removeCallbacks(scheduled.runnable)
+            scheduledRemainingAdjacentRunwayRetryKeys.remove(scheduled.retryKey)
+        }
+        if (firstPark) {
+            Log.d(
+                TAG,
+                "append_adjacent_webtoon_decoded_runway_parked path=$path refs=${refs.size}",
+            )
+        }
     }
 
     /**
@@ -18395,6 +18547,21 @@ class ReaderSession(
                 delivery.index != startIndex + offset || page.manifestPageCount <= page.sourceIndex ||
                 !NtkStripDigests.isSha256(page.manifestDigest) || page.canonicalAsset.isBlank()
             ) return null
+            if (!ReaderPreparedStore.isCanonicalOriginalProof(
+                    proof,
+                    page.canonicalAsset,
+                    result.pageWidth,
+                    result.pageHeight,
+                )
+            ) {
+                Log.w(
+                    TAG,
+                    "append_adjacent_exact_runway_proof_mismatch path=$path " +
+                        "source=${page.sourceIndex} result=${result.pageWidth}x${result.pageHeight} " +
+                        "proof=${proof.originalWidth}x${proof.originalHeight}",
+                )
+                return null
+            }
             pages += NtkAdjacentExactRunwayTilePage(
                 displayPageIndex = delivery.index,
                 normalizedEpisodePath = path,
@@ -18413,6 +18580,20 @@ class ReaderSession(
             totalPageCount = totalPageCount,
             pages = pages,
         )
+    }
+
+    private fun requiresStrictExactRemainingAdjacentRunway(refs: List<PageRef>): Boolean {
+        if (!isDirectWifiStrictAdjacentTransportActive() || refs.isEmpty()) return false
+        return refs.all { page ->
+            val path = NtkStripDigests.normalizeEpisodePath(
+                page.manga.ntkEpisodePath?.trim().orEmpty(),
+            )
+            path.startsWith("/webtoon/") &&
+                page.sourceIndex >= 1 &&
+                NtkStripDigests.isSha256(page.manifestDigest) &&
+                page.manifestPageCount > page.sourceIndex &&
+                page.canonicalAsset.isNotBlank()
+        }
     }
 
     private fun commitAdjacentExactRunwayDrawableBatch(batch: AdjacentRunwayDrawableBatch) {
@@ -26383,6 +26564,8 @@ class ReaderSession(
             demand
         )
         val subscriberId = foregroundByteFlightSubscriberIds.incrementAndGet()
+        val producerCancellation = (cancellation ?: imageCancellation)
+            .forCoordinatorGeneratedForegroundPermit(permit, pageIndex)
 
         fun publishReady(file: File, source: String) {
             initialInteractiveRunwayByteFetches.remove(pageIndex)
@@ -26401,7 +26584,7 @@ class ReaderSession(
                                 context.applicationContext,
                                 target,
                                 image,
-                                cancellation ?: imageCancellation,
+                                producerCancellation,
                                 visiblePriority = visiblePriority
                             )
                         }
@@ -26477,19 +26660,25 @@ class ReaderSession(
         index: Int,
         page: PageRef,
         foreground: Boolean,
-        visiblePriority: Boolean
+        visiblePriority: Boolean,
+        foregroundPermit: NtkImagePermit? = null,
     ): ReaderImageCache.FileLease {
         if (strictExactColdRolling) {
             throw NtkSourceIdentityException("Strict rolling decode bypassed source body lease")
         }
         val image = page.image ?: throw java.io.IOException("Missing image for page $index")
+        val requestCancellation = if (foreground) {
+            imageCancellation.forCoordinatorGeneratedForegroundPermit(foregroundPermit, index)
+        } else {
+            imageCancellation
+        }
         return withProtectedNumericNetworkPermit(page.manga) {
             ReaderImageCache.leaseFile(
                 appContext,
                 page.manga,
                 image,
                 foreground,
-                imageCancellation,
+                requestCancellation,
                 visiblePriority = visiblePriority
             )
         }
@@ -28248,7 +28437,13 @@ class ReaderSession(
         val startPage = currentStartPage()
         val trace = shouldTraceNtkPage(index, page)
         val leaseStart = if (page.manga.isOnline && (index == startPage || trace)) SystemClock.elapsedRealtime() else 0L
-        leaseImageFile(index, page, foregroundFetch || index == startPage, visiblePriority || index == startPage).use { lease ->
+        leaseImageFile(
+            index,
+            page,
+            foregroundFetch || index == startPage,
+            visiblePriority || index == startPage,
+            foregroundPermit,
+        ).use { lease ->
             if (leaseStart > 0L) {
                 val leaseMs = SystemClock.elapsedRealtime() - leaseStart
                 if (index == startPage) ViewerWarmupManager.logMetric("reader_first_fetch_wait_ms", leaseMs)

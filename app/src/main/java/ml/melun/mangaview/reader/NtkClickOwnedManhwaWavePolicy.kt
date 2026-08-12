@@ -51,6 +51,23 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // change the forty-body carrier, VPN, mixed-format, or fallback admission ring.
     const val DIRECT_WIFI_ORDINARY_H1_ENABLED = true
     const val DIRECT_WIFI_ORDINARY_BODY_TRANSFERS = 40
+    // A resumed manhwa needs several canonical bodies to fill the first physical viewport. Letting
+    // the remaining chapter consume all forty direct-Wi-Fi transfers before those bodies reach EOF
+    // turned a healthy ~1 s p021 response into an 11 s first frame on the host-GPU emulator. Keep
+    // the full forty-wide wave, but open it only after this four-body current-viewport prefix is
+    // terminal. This is not used for cold page zero, adjacent work, physical devices, or SNI.
+    const val HOST_GPU_CURRENT_RESTORED_VIEWPORT_BODIES = 4
+    // After the visible prefix is resident, use exactly one transfer per independent connection
+    // shard. Forty simultaneous H1 bodies duplicated sixteen shards and produced header/body
+    // timeouts; twelve needed too many serial waves. This 24-shard limit remains current-resume/
+    // emulator only and does not reduce the physical-device or adjacent production ring.
+    const val HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS = CONNECTION_SHARDS
+    // The completion-gated adjacent p0-p4 runway must be fully resident before the boundary, but
+    // releasing the remaining ninety-plus bodies into the forty-call ring at viewport activation
+    // competes with SurfaceFlinger while the user is scrolling. Keep only one five-page suffix
+    // window physical at a time on the host-GPU emulator. Current episodes and every physical,
+    // cellular, SNI, and webtoon route retain their measured admission policy.
+    const val HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS = 5
     const val MIXED_UNCOMMON_BODY_TRANSFERS = 8
     // Keep the authority document's cold QUIC request alive: starting 32 bodies before exact-count
     // proof saturated the emulator and made that independent request time out at 3.5 seconds.
@@ -132,6 +149,89 @@ internal object NtkClickOwnedManhwaWavePolicy {
         return wifiTransport &&
             initialViewportPage >= PROBE_FRONTIER_PAGES &&
             pageIndex == initialViewportPage
+    }
+
+    fun shouldFenceHostGpuCurrentRestoredViewportBodies(
+        hostGpuEmulatorRuntime: Boolean,
+        directWifiAdjacentOwned: Boolean,
+        wifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        capturedNetworkHandle: Long?,
+        forwardFirstPage: Int,
+    ): Boolean {
+        require(forwardFirstPage >= 0)
+        return hostGpuEmulatorRuntime &&
+            !directWifiAdjacentOwned &&
+            wifiTransport &&
+            !cellularResilientTransport &&
+            capturedNetworkHandle != null &&
+            forwardFirstPage > 0
+    }
+
+    fun isHostGpuCurrentRestoredViewportBody(
+        pageIndex: Int,
+        forwardFirstPage: Int,
+        pageCount: Int,
+    ): Boolean {
+        require(pageIndex >= 0)
+        require(forwardFirstPage in 0 until pageCount)
+        return pageIndex in forwardFirstPage until minOf(
+            pageCount,
+            forwardFirstPage + HOST_GPU_CURRENT_RESTORED_VIEWPORT_BODIES,
+        )
+    }
+
+    /**
+     * Keeps a late HEAD-proven peer of a restored current viewport ahead of the parked bulk wave.
+     *
+     * The anchor already owns its dedicated executor. The other three viewport bodies can finish
+     * metadata after the exact-count release has filled the ordinary body executor with suffix
+     * runnables that are waiting on the four-body fence. Selecting the existing entry executor for
+     * these three exact candidates prevents that executor-level cycle without adding a request,
+     * changing its transport, or broadening the policy to cold-open, adjacent, physical, or SNI.
+     */
+    fun shouldPrioritizeHostGpuCurrentRestoredViewportEntryBody(
+        hostGpuEmulatorRuntime: Boolean,
+        directWifiAdjacentOwned: Boolean,
+        wifiEntryPriorityMode: Boolean,
+        liveWifiTransport: Boolean,
+        cellularResilientTransport: Boolean,
+        capturedNetworkHandle: Long?,
+        liveNetworkHandle: Long?,
+        pageIndex: Int,
+        forwardFirstPage: Int,
+        pageCount: Int,
+        candidateExtension: String,
+    ): Boolean {
+        require(pageIndex >= 0)
+        require(forwardFirstPage in 0 until pageCount)
+        val extension = candidateExtension.trim().lowercase()
+        return hostGpuEmulatorRuntime &&
+            !directWifiAdjacentOwned &&
+            wifiEntryPriorityMode &&
+            liveWifiTransport &&
+            !cellularResilientTransport &&
+            capturedNetworkHandle != null &&
+            liveNetworkHandle == capturedNetworkHandle &&
+            forwardFirstPage > 0 &&
+            pageIndex != forwardFirstPage &&
+            isHostGpuCurrentRestoredViewportBody(pageIndex, forwardFirstPage, pageCount) &&
+            extension in CANDIDATE_EXTENSIONS
+    }
+
+    fun shouldBoundHostGpuAdjacentTailTransfers(
+        hostGpuEmulatorRuntime: Boolean,
+        directWifiAdjacentOwned: Boolean,
+        pageIndex: Int,
+        forwardFirstPage: Int,
+        physicalRunwayPages: Int,
+    ): Boolean {
+        require(pageIndex >= 0)
+        require(forwardFirstPage >= 0)
+        require(physicalRunwayPages > 0)
+        return hostGpuEmulatorRuntime &&
+            directWifiAdjacentOwned &&
+            pageIndex - forwardFirstPage >= physicalRunwayPages
     }
 
     /**

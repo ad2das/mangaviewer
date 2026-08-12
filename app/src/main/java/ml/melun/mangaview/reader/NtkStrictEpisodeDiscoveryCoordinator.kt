@@ -126,6 +126,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val initialPageIndexHint: Int,
         val completedRouteRecoveryAttempts: Int,
         val sameOriginFallbackConsumed: Boolean,
+        val routeSnapshot: CustomHttpClient.NtkStrictRouteSnapshot,
     ) {
         val retirement = NtkStrictDiscoveryRetirementFence(
             episodePath,
@@ -135,6 +136,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val physicalCalls = CustomHttpClient.NtkStrictCallRegistry(
             episodePath,
             viewerGeneration,
+            routeSnapshot,
         )
         /** Exact authority is retained here until its viewer explicitly retires ownership. */
         val completed = AtomicBoolean(false)
@@ -258,10 +260,14 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val adjacentOwned = ownerPath != path &&
             ntkAdjacentOwnerAllowsTarget(ownerPath, path)
         val predecessorPath = normalizedPath(adjacentPredecessorEpisodePath) ?: ownerPath
-        val transportState = runCatching {
-            client.isNtkWifiTransportActive to
-                client.isNtkCellularResilientTransportActive
-        }.getOrDefault(false to true)
+        val routeSnapshot = runCatching {
+            client.captureNtkStrictRouteSnapshot(path)
+        }.getOrElse { failure ->
+            Log.e("ViewerPerf", "ntk_strict_route_snapshot_failed path=$path", failure)
+            return false
+        }
+        val transportState = routeSnapshot.directWifiTransport to
+            routeSnapshot.cellularResilientTransport
         // Freeze the forward-resume decision at discovery ownership. Every later source,
         // renderer and click-owned manhwa consumer reads this same generation-owned value; a
         // network handoff after the click can therefore neither enable the Wi-Fi optimization on
@@ -340,6 +346,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     effectiveInitialPageIndexHint,
                     completedRouteRecoveryAttempts,
                     sameOriginFallbackConsumed,
+                    routeSnapshot,
                 ).also {
                     flights[path] = it
                 }
@@ -400,7 +407,9 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             // Every adjacent flight retains this empty route until its worker observes the
             // predecessor-complete event. Its network-specific transport is selected only after
             // that release; current flights preserve eager overlap.
-            val route = AckRoute(client.prepareNtkStrictAckBootstrap(path))
+            val route = AckRoute(
+                client.prepareNtkStrictAckBootstrap(path, flight.physicalCalls),
+            )
             if (!flight.adjacentPredecessorGate) {
                 startAckNetworkPrerequisites(client, flight, path, route)
             }
@@ -1302,6 +1311,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             client.buildUnsignedExactNtkViewerImageApiRequest(
                                 checkNotNull(streamedRequestSeed),
                                 "",
+                                flight.physicalCalls,
                             )
                         }
                     }
@@ -1658,7 +1668,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 }
                 val unsignedRequest = traceStage("NtkExactRequestBuild") {
                     withDiscoveryOwnership(flight, "exact_webtoon_request_build") {
-                        client.buildUnsignedExactNtkViewerImageApiRequest(draft, "")
+                        client.buildUnsignedExactNtkViewerImageApiRequest(
+                            draft,
+                            "",
+                            flight.physicalCalls,
+                        )
                     }
                 }
                 logStage(flight, "trusted_request_ready")
@@ -1695,6 +1709,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         client.buildUnsignedExactNtkViewerImageApiRequest(
                             draft,
                             ackProof.requestKeyId,
+                            flight.physicalCalls,
                         )
                     }
                 }
@@ -1715,6 +1730,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         client.bindIsolatedExactNtkViewerImageApiResponse(
                             unsignedRequest,
                             exchange,
+                            flight.physicalCalls,
                         )
                     }
                 }
@@ -1829,14 +1845,10 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 "viewer_image_api",
             )
         } catch (failure: Throwable) {
-            routeRecoveryRequested = !exactInstalled &&
+            val replacementEligible = !exactInstalled &&
                 NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) == null &&
-                NtkStrictRouteRecoveryPolicy.shouldRecover(
-                    failure,
-                    flight.completedRouteRecoveryAttempts,
-                ) &&
                 isViewerOwnerActive(flight)
-            restartSameOriginWithoutResolver = routeRecoveryRequested &&
+            restartSameOriginWithoutResolver = replacementEligible &&
                 NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
                     failure,
                     flight.completedRouteRecoveryAttempts,
@@ -1850,6 +1862,27 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         Build.PRODUCT,
                     ),
                 )
+            val resolveAfterSameOriginFallback = replacementEligible &&
+                NtkStrictRouteRecoveryPolicy.shouldResolveAfterSameOriginFallback(
+                    failure,
+                    flight.completedRouteRecoveryAttempts,
+                    flight.directWifiCurrentViewer,
+                    sameOriginFallbackConsumed = flight.sameOriginFallbackConsumed,
+                    directWifiAdjacentViewer = flight.directWifiAdjacentBodyGate,
+                    hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
+                        Build.FINGERPRINT,
+                        Build.MODEL,
+                        Build.HARDWARE,
+                        Build.PRODUCT,
+                    ),
+                )
+            routeRecoveryRequested = replacementEligible &&
+                (restartSameOriginWithoutResolver ||
+                    resolveAfterSameOriginFallback ||
+                    NtkStrictRouteRecoveryPolicy.shouldRecover(
+                        failure,
+                        flight.completedRouteRecoveryAttempts,
+                    ))
             if (routeRecoveryRequested) {
                 // Keep the old lease/flight as a path reservation until domain recovery finishes.
                 // This prevents UI watchdogs from starting a competing flight in the gap.

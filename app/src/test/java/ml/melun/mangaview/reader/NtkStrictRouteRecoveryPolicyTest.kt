@@ -124,6 +124,82 @@ class NtkStrictRouteRecoveryPolicyTest {
     }
 
     @Test
+    fun currentDirectWifiBareControlPlaneTimeoutRestartsOnSameOriginOnlyOnce() {
+        val failure = SocketTimeoutException("timeout")
+
+        assertTrue(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                failure,
+                0,
+                directWifiCurrentViewer = true,
+                sameOriginFallbackConsumed = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                failure,
+                0,
+                directWifiCurrentViewer = false,
+                sameOriginFallbackConsumed = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                failure,
+                0,
+                directWifiCurrentViewer = true,
+                sameOriginFallbackConsumed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun secondCurrentDirectWifiTimeoutResolvesANewOriginOnlyAfterSameOriginFallback() {
+        val failure = SocketTimeoutException("timeout")
+
+        assertTrue(
+            NtkStrictRouteRecoveryPolicy.shouldResolveAfterSameOriginFallback(
+                failure,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = true,
+                sameOriginFallbackConsumed = true,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldResolveAfterSameOriginFallback(
+                failure,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = true,
+                sameOriginFallbackConsumed = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldResolveAfterSameOriginFallback(
+                failure,
+                completedRecoveryAttempts = 1,
+                directWifiCurrentViewer = true,
+                sameOriginFallbackConsumed = true,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldResolveAfterSameOriginFallback(
+                failure,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                sameOriginFallbackConsumed = true,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldResolveAfterSameOriginFallback(
+                IllegalStateException("identity mismatch"),
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = true,
+                sameOriginFallbackConsumed = true,
+            ),
+        )
+    }
+
+    @Test
     fun sameOriginFastFailoverExcludesAdjacentCarrierAndOtherFailures() {
         val timeout = IOException(
             "Strict document HttpEngine request failed",

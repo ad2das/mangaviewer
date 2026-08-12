@@ -641,6 +641,7 @@ object NtkViewerImageApiAuthorityParser {
         val selectedSlots = selectRenderableSlots(
             images,
             allowExplicitNonRenderableSlots = false,
+            episodePath = plan.proof.normalizedEpisodePath,
         )
         val assets = selectedSlots.orderedAssets
         if (assets.toSet().size != assets.size) fail("Image API canonical assets are not unique")
@@ -705,6 +706,7 @@ object NtkViewerImageApiAuthorityParser {
         val selectedSlots = selectRenderableSlots(
             images,
             allowExplicitNonRenderableSlots = true,
+            episodePath = draft.normalizedEpisodePath,
         )
         val assets = selectedSlots.orderedAssets
         if (assets.toSet().size != assets.size) fail("Image API canonical assets are not unique")
@@ -763,6 +765,7 @@ object NtkViewerImageApiAuthorityParser {
     private fun selectRenderableSlots(
         images: JSONArray,
         allowExplicitNonRenderableSlots: Boolean,
+        episodePath: String,
     ): SelectedRenderableSlots {
         logReplicaTopology(images)
         val assets = ArrayList<String>(images.length())
@@ -795,9 +798,10 @@ object NtkViewerImageApiAuthorityParser {
                 Log.w(
                     "ViewerPerf",
                     "reader_image_api_excluded_nonrenderable_slots " +
-                        "sourceSlots=${images.length()},renderable=${assets.size}," +
+                        "path=$episodePath,sourceSlots=${images.length()}," +
+                        "renderable=${assets.size}," +
                         "sourcePages=${excludedPages.joinToString("|")}"
-                )
+                    )
             }
         }
         return SelectedRenderableSlots(assets, sourcePages, replicaCandidates)
