@@ -702,6 +702,10 @@ class ReaderSessionListenerGate(
         }
     }
 
+    override fun onForwardAdjacentPathResolved(episodePath: String) {
+        if (active()) downstream.onForwardAdjacentPathResolved(episodePath)
+    }
+
     override fun onBoundaryAppendFinished(
         anchor: Int,
         direction: Int,

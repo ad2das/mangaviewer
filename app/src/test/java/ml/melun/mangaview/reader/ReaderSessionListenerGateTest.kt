@@ -390,6 +390,28 @@ class ReaderSessionListenerGateTest {
         )
     }
 
+    @Test
+    fun forwardAdjacentPathAuthorizationReachesOnlyTheActiveSessionListener() {
+        val downstream = RecordingListener()
+        var activeGeneration = 8
+        val gate = ReaderSessionListenerGate(
+            generation = 8,
+            isActive = { it == activeGeneration },
+            adopted = AdoptedDrawableRegistry(),
+            installed = InstalledDrawableQuery { false },
+            downstream = downstream,
+        )
+
+        gate.onForwardAdjacentPathResolved("/manhwa/work/episode-11")
+        activeGeneration = 9
+        gate.onForwardAdjacentPathResolved("/manhwa/work/episode-12")
+
+        assertEquals(
+            listOf("adjacent-authorized:/manhwa/work/episode-11"),
+            downstream.events,
+        )
+    }
+
     private open class RecordingListener : ReaderSession.Listener {
         val events = ArrayList<String>()
 
@@ -467,6 +489,10 @@ class ReaderSessionListenerGateTest {
             predecessorEpisodePath: String,
         ) {
             events += "adjacent-exact:${manga.ntkEpisodePath}:after:$predecessorEpisodePath"
+        }
+
+        override fun onForwardAdjacentPathResolved(episodePath: String) {
+            events += "adjacent-authorized:$episodePath"
         }
 
         override fun onBoundaryAppendFinished(

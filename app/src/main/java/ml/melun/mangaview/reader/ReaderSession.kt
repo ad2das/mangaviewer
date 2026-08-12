@@ -533,6 +533,11 @@ class ReaderSession(
             manga: Manga,
             predecessorEpisodePath: String,
         ) {}
+        /**
+         * Publishes the provider-validated forward target before its prepared pixels can reach the
+         * renderer. The Activity generation gate makes a stale Session notification harmless.
+         */
+        fun onForwardAdjacentPathResolved(episodePath: String) {}
         fun onBoundaryAppendFinished(anchor: Int, direction: Int, silent: Boolean, suppressedCaptcha: Boolean)
     }
 
@@ -30522,6 +30527,7 @@ class ReaderSession(
         // This is the provider-validated target, not the Activity's possibly stale cached hint.
         // Authorizing it before exact discovery lets an already-attached runway cross its
         // structural card while never granting texture ownership to an unvalidated neighbor.
+        listener.onForwardAdjacentPathResolved(targetPath)
         onResolvedForwardPath?.invoke(targetPath)
         if (hasEpisode(candidate)) return null
         val declaredSourceWorkId = source.ntkImageWorkId.trim()
@@ -31261,11 +31267,10 @@ class ReaderSession(
         if (hasForwardNtkEpisodeAfterSource(snapshot.episode)) return
         val path = snapshot.episode.ntkEpisodePath?.trim().orEmpty()
         if (path.isEmpty()) return
-        NtkStrictEpisodeDiscoveryCoordinator
-            .releaseAdjacentBodiesAfterPredecessorComplete(path)
-        // Every current-episode drawable is physically installed at this point. Continuous
-        // forward input must not postpone the next-episode metadata/runway indefinitely; the
-        // bounded adjacent work runs off-main and no unfinished current image can lose priority.
+        // Every current-episode drawable is decoded and handed to the Activity at this point.
+        // Continuous forward input must not postpone the next-episode metadata/runway
+        // indefinitely; the bounded adjacent work runs off-main and no unfinished current image
+        // can lose priority.
         val key = "${ReaderSurfaceView.DIRECTION_NEXT}:$path:complete_idle"
         if (!completedEpisodeWarmupKeys.add(key)) return
         Log.d(
@@ -31273,6 +31278,21 @@ class ReaderSession(
             "append_adjacent_complete_idle_warmup_start source=$path,count=${snapshot.refs.size}," +
                 "anchor=$anchor,last=${snapshot.lastDisplayIndex}"
         )
+        // The Session drawable ledger is the first point at which all current body/decode work is
+        // finished. Start the exact next owner here instead of waiting for the Activity to queue
+        // every already-decoded current texture. The exact target is reconciled before its body
+        // gate opens, so no current network/decode resource can be displaced and a long fling can
+        // consume the prepared runway without paying the document/manifest RTT at the boundary.
+        val exactTargetPath = startForwardAdjacentExactDiscoveryAtCompletion(
+            snapshot.episode,
+            resolvedNext = null,
+            onResolvedForwardPath = null,
+        )
+        if (exactTargetPath != null) {
+            NtkStrictEpisodeDiscoveryCoordinator
+                .releaseAdjacentBodiesAfterPredecessorComplete(path, exactTargetPath)
+            releaseAdjacentStrictClaimsAfterPredecessorComplete(path)
+        }
         maybeStartInitialTailAdjacentPreappend(
             snapshot.episode,
             snapshot.refs.size - 1,

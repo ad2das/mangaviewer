@@ -75,6 +75,20 @@ class NtkAdjacentControlSplitGateArchitectureTest {
     }
 
     @Test
+    fun fullyDecodedEpisodeStartsExactRunwayBeforeNativeTextureCompletion() {
+        val warm = block("private fun maybeWarmCompletedForwardEpisode(", session)
+        val exact = warm.indexOf("startForwardAdjacentExactDiscoveryAtCompletion(")
+        val release = warm.indexOf("releaseAdjacentBodiesAfterPredecessorComplete(")
+        val preappend = warm.indexOf("maybeStartInitialTailAdjacentPreappend(")
+
+        assertTrue(warm.contains("NtkCompletedForwardEpisodePolicy.isComplete("))
+        assertTrue(exact >= 0)
+        assertTrue(release > exact)
+        assertTrue(preappend > release)
+        assertTrue(warm.contains("exactTargetPath"))
+    }
+
+    @Test
     fun sessionGenerationSurvivesTheMainHandlerHop() {
         val listener = block("private fun activeReaderSessionListener(", activity)
         val post = block("private fun postAdjacentExactManifestForGeneration(", activity)

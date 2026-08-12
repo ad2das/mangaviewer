@@ -173,6 +173,33 @@ class NtkSamePathGenerationRetirementContractTest {
     }
 
     @Test
+    fun strictSamePathReconfigurationRetiresOneShotSourceBeforeRestart() {
+        val activity = readSource("activity", "ReaderV2Activity.kt")
+        val toggle = sourceFunction(
+            activity,
+            "private fun toggleAutoCut()",
+            "private fun updateAutoCutButton()",
+        )
+        val restart = sourceFunction(
+            activity,
+            "private fun restartStrictSessionWithFreshAuthority(",
+            "private fun updateAutoCutButton()",
+        )
+
+        assertTrue(toggle.contains("restartStrictSessionWithFreshAuthority("))
+        assertTrue(restart.contains("saveCurrentReadingProgress()"))
+        val coordinatorRetire = restart.indexOf("retireViewerOwnership(")
+        val generationRetire = restart.indexOf("retireDiscoveryGenerationForReplacement(")
+        val sessionCancel = restart.indexOf("activeSession.cancel()")
+        val restartWait = restart.indexOf("startStrictReaderSessionWhenExactReady(")
+        assertTrue(coordinatorRetire >= 0)
+        assertTrue(generationRetire > coordinatorRetire)
+        assertTrue(sessionCancel > generationRetire)
+        assertTrue(restartWait > sessionCancel)
+        assertTrue(restart.contains("clearViewImmediately = false"))
+    }
+
+    @Test
     fun lifecyclePathLockDoesNotCoverSessionConstructionOrThreadPrestart() {
         val registry = readSource("reader", "NtkSourceSpoolRegistry.kt")
         val reserve = sourceFunction(

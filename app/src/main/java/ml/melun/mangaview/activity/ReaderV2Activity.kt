@@ -457,6 +457,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                     predecessorEpisodePath,
                 )
             }
+
+            override fun onForwardAdjacentPathResolved(episodePath: String) {
+                postForwardAdjacentPathAuthorization(generation, episodePath)
+            }
         }
         return ReaderSessionListenerGate(
             generation = generation,
@@ -6324,7 +6328,90 @@ if (firstResumeArmedUptimeNanos == 0L) {
         val source = currentManga ?: return
         autoCut = !autoCut
         updateAutoCutButton()
+        if (restartStrictSessionWithFreshAuthority(source, currentTitle ?: source.title)) return
         startReaderSession(source, currentTitle ?: source.title, null)
+    }
+
+    /**
+     * A strict source transport is a one-shot claim. Reconfiguring the current Session against its
+     * existing manifest deterministically asks the replacement Session to claim that same port a
+     * second time, producing source_claim_failed. Retire the exact generation first, keep the
+     * already-rendered Surface visible, and adopt a freshly discovered source when it is ready.
+     */
+    private fun restartStrictSessionWithFreshAuthority(source: Manga, title: Title?): Boolean {
+        val path = NtkStripDigests.normalizeEpisodePath(source.ntkEpisodePath.orEmpty())
+        val retiringSeal = strictExactLaunchSeal?.takeIf { it.matchesEpisodePath(path) }
+            ?: return false
+        val activeSession = session ?: return false
+        if (!strictTelemetryOwned || strictTelemetryClosed ||
+            strictTelemetryGeneration <= 0L ||
+            ViewerTelemetry.activeGeneration() != strictTelemetryGeneration
+        ) return false
+
+        saveCurrentReadingProgress()
+        activeReaderSessionGeneration.incrementAndGet()
+        strictReaderSessionGeneration = -1
+        strictWorkerHandoffGeneration = -1
+        strictNtkPendingSessionPath = ""
+        strictNtkManifestSubscription?.close()
+        strictNtkManifestSubscription = null
+        ntkAckPreflightGeneration.incrementAndGet()
+        deferredNtkAckPreflightManga = null
+        statusHandler.removeCallbacks(deferredNtkAckPreflightTimeoutRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightQuietRunnable)
+        statusHandler.removeCallbacks(deferredNtkAckPreflightBlockProbeRunnable)
+        preparedSessionBuildTask?.cancel()
+        preparedSessionBuildTask = null
+        preparedSessionStartTask?.cancel()
+        preparedSessionStartTask = null
+        clearDeferredAppendPublishCallbacks()
+        clearPendingPageCallbacks()
+        clearStrictAuthoritativeInstallQueue()
+
+        // The coordinator normally owns the completed source generation. The seal-qualified
+        // registry retirement is the fallback when its retained flight has already disappeared.
+        NtkStrictEpisodeDiscoveryCoordinator.retireViewerOwnership(
+            path,
+            strictTelemetryGeneration,
+            "same_path_reconfigure",
+        )
+        NtkSourceSpoolRegistry.retireDiscoveryGenerationForReplacement(
+            path,
+            retiringSeal.discoveryGeneration,
+            "same_path_reconfigure",
+        )
+        session = null
+        activeSession.cancel()
+        synchronized(strictEarlySessionLock) {
+            strictEarlySession.also { early ->
+                if (early != null && early.session !== activeSession) early.session.cancel()
+            }
+            strictEarlySession = null
+        }
+        strictExactLaunchSeal = null
+        strictForwardReadyFirstPage = 0
+        strictDirectManifestAckSkipPath = ""
+        synchronized(strictRenderReadyLock) {
+            strictRenderReadyPages.clear()
+            strictRenderReadyGeneration = -1
+            strictAllImagesReadyQueueScheduled = false
+            strictAllImagesReadyPublished = false
+            strictRollingHistoricalScene = false
+        }
+
+        Log.d(
+            "ViewerPerf",
+            "reader_ntk_same_path_fresh_source_restart path=$path," +
+                "retiredDiscoveryGeneration=${retiringSeal.discoveryGeneration}",
+        )
+        startStrictReaderSessionWhenExactReady(
+            source,
+            title,
+            preparedKey = null,
+            startAtFirstPage = false,
+            clearViewImmediately = false,
+        )
+        return true
     }
 
     private fun updateAutoCutButton() {
@@ -7250,6 +7337,22 @@ if (!renderView.isShown ||
             manga,
             predecessorEpisodePath,
         )
+    }
+
+    private fun postForwardAdjacentPathAuthorization(generation: Int, rawPath: String) {
+        val path = NtkStripDigests.normalizeEpisodePath(rawPath)
+        if (!isStrictNtkEpisodePath(path)) return
+        val authorize = Runnable {
+            if (destroyed || isFinishing || generation != activeReaderSessionGeneration.get()) {
+                return@Runnable
+            }
+            renderView.authorizeCompletedForwardNativeTextureEpisode(path)
+        }
+        if (Looper.myLooper() == statusHandler.looper) {
+            authorize.run()
+        } else {
+            statusHandler.post(authorize)
+        }
     }
 
     private fun postAdjacentExactManifestForGeneration(
