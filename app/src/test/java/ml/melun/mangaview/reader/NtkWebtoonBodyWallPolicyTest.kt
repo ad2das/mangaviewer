@@ -8,6 +8,7 @@ import org.junit.Test
 
 class NtkWebtoonBodyWallPolicyTest {
 
+
     @Test
     fun directWifiTreatsOnlyCompleteTinyInvalidBodiesAsReplicaMisses() {
         val staleBody = "File not found.".toByteArray()
@@ -198,8 +199,36 @@ class NtkWebtoonBodyWallPolicyTest {
         assertEquals(3, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(1))
         assertEquals(1, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(2))
         assertEquals(1, NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(32))
+        assertEquals(
+            1,
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                logicalAttemptOrdinal = 1,
+                currentHostEmulatorResumeRecovery = true,
+            ),
+        )
+        assertEquals(
+            1,
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2RecoveryCycles(
+                logicalAttemptOrdinal = 1,
+                adjacentHostEmulatorRunwayRecovery = true,
+            ),
+        )
         assertEquals(1_200L, NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(0))
         assertEquals(1_000L, NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(1))
+        assertEquals(
+            1_200L,
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(
+                previousHostTimeouts = 0,
+                currentHostEmulatorResumeRecovery = true,
+            ),
+        )
+        assertEquals(
+            1_000L,
+            NtkWebtoonReplicaHeaderPolicy.directWifiH2HeaderDeadlineMs(
+                previousHostTimeouts = 1,
+                currentHostEmulatorResumeRecovery = true,
+            ),
+        )
         assertFalse(
             NtkWebtoonReplicaHeaderPolicy
                 .shouldSuppressDirectWifiH2HostAfterHeaderTimeout(1)

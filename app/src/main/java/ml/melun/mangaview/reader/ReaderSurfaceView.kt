@@ -9,6 +9,7 @@ import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderNode
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -80,6 +81,27 @@ internal object NtkNativeSurfaceFrameRatePolicy {
     ): Boolean = emulatorRuntime && directWifiRendererProfile
 }
 
+internal object NtkDisplayTimingPolicy {
+    private const val DEFAULT_REFRESH_RATE_HZ = 60f
+
+    fun normalizedRefreshRate(refreshRate: Float?): Float =
+        refreshRate?.takeIf { it.isFinite() && it > 1f } ?: DEFAULT_REFRESH_RATE_HZ
+
+    fun frameBudgetMs(refreshRate: Float): Float =
+        1000f / normalizedRefreshRate(refreshRate)
+}
+
+internal object NtkDirectCadenceWatchdogPolicy {
+    fun delayMs(frameBudgetMs: Float, emulatorRuntime: Boolean): Long {
+        val nominalPeriodMs = ceil(frameBudgetMs.toDouble()).toLong().coerceAtLeast(1L)
+        // gfxstream's producer Choreographer often arrives just after one nominal period. An
+        // 18-ms watchdog races that healthy callback, creating five extra queueBuffer submissions
+        // per second and mailbox drops. Give the host two periods; physical devices retain the
+        // established one-period grace. A genuine 60-100 ms host callback outage is still bounded.
+        return if (emulatorRuntime) nominalPeriodMs * 2L + 1L else nominalPeriodMs + 1L
+    }
+}
+
 /**
  * Replaces, rather than adds to, the one producer-vsync callback that already owns an exact
  * adjacent-p0 content mutation. This is intentionally narrower than input catch-up: it requires
@@ -124,6 +146,25 @@ internal object NtkDeferredSurfaceRevealPolicy {
         } else {
             true
         }
+    }
+}
+
+/**
+ * Native exact pixels may use sparse source indexes (for example auto-cut pages), but their
+ * structural display-page indexes must remain contiguous. A missing structural page represents
+ * an incomplete geometry snapshot, not a valid sparse viewport.
+ */
+internal object NtkDirectWifiExactVisibleStructurePolicy {
+    fun shouldEnforce(
+        emulatorRuntime: Boolean,
+        realPixelsOnly: Boolean,
+    ): Boolean = emulatorRuntime && realPixelsOnly
+
+    fun isContiguous(displayPageIndexes: IntArray): Boolean {
+        for (index in 1 until displayPageIndexes.size) {
+            if (displayPageIndexes[index] != displayPageIndexes[index - 1] + 1) return false
+        }
+        return true
     }
 }
 
@@ -552,7 +593,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val traversalEpoch: Long = 0L,
         val forwardRunway: ForwardRunwaySnapshot? = null,
         val directWifiForwardOnlyInitialResume: Boolean = false,
-        val directWifiForwardOnlyTerminalTailActual: Boolean = false
+        val directWifiForwardOnlyTerminalTailActual: Boolean = false,
+        val enforceContiguousExactStructure: Boolean = false,
     )
 
     private enum class BitmapSubmissionMode {
@@ -750,6 +792,20 @@ class ReaderSurfaceView @JvmOverloads constructor(
     } else {
         Handler(Looper.getMainLooper())
     }
+    private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+    @Volatile private var cachedDisplayRefreshRate =
+        NtkDisplayTimingPolicy.normalizedRefreshRate(null)
+    private var displayListenerRegistered = false
+    private val displayTimingListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+
+        override fun onDisplayRemoved(displayId: Int) = Unit
+
+        override fun onDisplayChanged(displayId: Int) {
+            val currentDisplay = display ?: return
+            if (currentDisplay.displayId == displayId) refreshCachedDisplayTiming()
+        }
+    }
     private val benchmarkPhysicalMotionIdleRunnable = object : Runnable {
         override fun run() {
             var retryAfterPhysicalSettle = false
@@ -757,10 +813,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 val enabled = BenchmarkAdjacentCommitSignal.isEnabled()
                 val physicalMotionActive = physicalScrollTraceCookie != 0 || dragging ||
                     !scroller.isFinished
-                val pixelsStillPending = desiredVersion > committedVersion
-                // The trace can close with all requested pixels committed, then an adjacent image
-                // can advance desiredVersion during this 96 ms confirmation window. No later
-                // physical trace end exists to schedule another proof. A zero-pixel final edge
+                val pixelsStillPending =
+                    benchmarkPhysicalMotionIdleRequiredVersion > committedVersion
+                // Freeze the gesture-owned version when the check is armed. An adjacent image can
+                // advance desiredVersion during this 96 ms confirmation window, but that is new
+                // content work rather than unfinished physical motion. A zero-pixel final edge
                 // gesture can also leave no trace cookie. After UP, poll without changing either
                 // the scroller or pixels; a new DOWN cancels this callback and its own UP rearms it.
                 retryAfterPhysicalSettle = enabled && !pointerDown &&
@@ -872,6 +929,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var desiredVersion = 0L
     private var drawnVersion = 0L
     private var committedVersion = 0L
+    /**
+     * Compositor watermark captured when the physical-input settle check is armed.
+     * Later adjacent-body installs may advance desiredVersion, but they do not extend the gesture.
+     */
+    private var benchmarkPhysicalMotionIdleRequiredVersion = 0L
     private var pendingPixelReasons = 0
     private var pixelMutationWatermark = 0L
     private var pendingPixelMutationWatermark = 0L
@@ -926,6 +988,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var nextActiveScrollTraceCookie = 1
     private var physicalScrollTraceCookie = 0
     private var nextPhysicalScrollTraceCookie = 1
+    /**
+     * Latest compositor version caused by an actual physical offset change. Content arriving
+     * after the finger reaches a drawable edge must not extend the preceding motion interval;
+     * the first later MOVE that can advance again starts a new interval with its own watermark.
+     */
+    private var physicalMotionRequiredVersion = 0L
     private var statsAwaitingFirstInput = false
     private var programmaticScrollStatsUntilMs = 0L
     private var edgeNoMovementStatsSuppressedUntilMs = 0L
@@ -983,6 +1051,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var lastTestScrollDiagnosticLogMs = 0L
     private var lastDirectionClampLogMs = 0L
     private var lastForwardCapLogMs = 0L
+    private var lastExactStructureHoldLogMs = 0L
     private var lastVisibleCoverageSnapshot: VisibleCoverageSnapshot? = null
     private var completedDrawSequence = 0L
     private var traversalStructureEpoch = 0L
@@ -5797,6 +5866,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        refreshCachedDisplayTiming()
+        if (!displayListenerRegistered) {
+            displayManager?.registerDisplayListener(displayTimingListener, mainHandler)
+            displayListenerRegistered = displayManager != null
+        }
         synchronized(stateLock) {
             renderRunning = true
             if (rollingNativePresentationEnabled) {
@@ -5860,6 +5934,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     override fun onDetachedFromWindow() {
+        if (displayListenerRegistered) {
+            displayManager?.unregisterDisplayListener(displayTimingListener)
+            displayListenerRegistered = false
+        }
         mainHandler.removeCallbacksAndMessages(null)
         var nativeHandleToDestroy = 0L
         var nativeDestroyPosted = false
@@ -5923,7 +6001,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (directSurfaceReady && renderRunning && pages.isNotEmpty()) renderRequested = true
             stateLock.notifyAll()
         }
-        val refreshRate = display?.refreshRate?.takeIf { it > 0f } ?: 60f
+        val refreshRate = refreshCachedDisplayTiming()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             surface.setFrameRate(
                 refreshRate,
@@ -5956,7 +6034,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             stateLock.notifyAll()
             current
         }
-        val refreshRate = display?.refreshRate?.takeIf { it > 0f } ?: 60f
+        val refreshRate = refreshCachedDisplayTiming()
         applyQualifiedNativeSurfaceFrameRateVote(refreshRate)
         attachRollingNativeSurface(surface, width, height)
     }
@@ -6097,7 +6175,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val surfaceEpoch = advanceRollingNativeSurfaceEpochLocked()
             longArrayOf(handle, surfaceEpoch, target.first.toLong(), target.second.toLong())
         } ?: return
-        val refreshRate = display?.refreshRate?.takeIf { it > 0f } ?: 60f
+        val refreshRate = cachedDisplayRefreshRate
         val refreshPeriodNanos = (1_000_000_000.0 / refreshRate.toDouble()).toLong()
         val accepted = NtkRollingNativeBridge.nativeAttach(
             request[0],
@@ -6572,7 +6650,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val animateScroll = scrolling || !scroller.isFinished
             val shouldDraw = (renderRequested || animateScroll) && pages.isNotEmpty()
             val deferInitialEmptyDraw = shouldDeferInitialEmptyDrawLocked()
-            val state = if (shouldDraw && !deferInitialEmptyDraw) buildDrawStateLocked(busyNow) else null
+            var state = if (shouldDraw && !deferInitialEmptyDraw) buildDrawStateLocked(busyNow) else null
+            val exactStructureHeld = state?.let(::hasNonContiguousExactNativeStructure) == true
+            if (exactStructureHeld) {
+                val heldState = checkNotNull(state)
+                val nowMs = SystemClock.uptimeMillis()
+                if (nowMs - lastExactStructureHoldLogMs >= EXACT_STRUCTURE_HOLD_LOG_INTERVAL_MS) {
+                    lastExactStructureHoldLogMs = nowMs
+                    Log.d(
+                        TAG,
+                        "reader_native_exact_structure_hold visible=" +
+                            heldState.items.joinToString("|") { it.index.toString() } +
+                            ",scroll=${fmt(heldState.scrollOffset)},busy=$busyNow",
+                    )
+                }
+                boundary?.let { heldBoundary ->
+                    boundaryDispatchInFlight = false
+                    boundaryArmedDirection = heldBoundary.direction
+                    boundary = null
+                }
+                state = null
+                renderRequested = true
+            }
             if (state == null && shouldLogProgrammaticScrollDiagnosticLocked()) {
                 Log.d(
                     TAG,
@@ -6596,7 +6695,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 renderRequested = false
                 drawnVersion = version
             } else {
-                if (renderRequested && pages.isNotEmpty()) scheduleNoStateRetryLocked()
+                if (renderRequested && pages.isNotEmpty() &&
+                    (!exactStructureHeld || !animateScroll)
+                ) {
+                    scheduleNoStateRetryLocked()
+                }
                 // No reader draw was recorded, so there is no reader HWUI submission to prove.
                 // Waiting for an unrelated root commit here held the only admission token for
                 // another 1-3 vsyncs during touch input. Unregister this no-op callback and release
@@ -6609,6 +6712,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     if (observer.isAlive) observer.unregisterFrameCommitCallback(callback)
                 }
                 releasePostedAdmissionLocked(preserveDirty = true)
+                if (exactStructureHeld && animateScroll) {
+                    scheduleFrameLocked()
+                }
             }
             RenderWork(request, boundary, state, admittedToken, admittedEpoch, version, mutation)
         }
@@ -7329,6 +7435,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
+        if (visibility == View.VISIBLE) refreshCachedDisplayTiming()
         synchronized(stateLock) {
             if (visibility != View.VISIBLE || !isShown) {
                 if (hasFrameWorkLocked()) clearFramePipeLocked(preserveDirty = true)
@@ -7950,6 +8057,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             },
             forwardOnlyInitialResumeViewport,
             forwardOnlyTerminalTailActual,
+            // The expanded-runway bit is installed asynchronously after the exact manifest. A
+            // slow current-page response can therefore leave it false for the very frame that
+            // would skip that page (for example display 16 -> 19). Structural continuity belongs
+            // to the host-emulator exact native surface itself; the helper below still requires
+            // an authoritative exact item before it can hold a frame.
+            NtkDirectWifiExactVisibleStructurePolicy.shouldEnforce(
+                emulatorRuntime = emulatorNativeSurfaceRuntime,
+                realPixelsOnly = inlineRealPixelsOnly,
+            ),
         )
         val nowMs = SystemClock.uptimeMillis()
         val recentScroll = nowMs <= programmaticScrollStatsUntilMs ||
@@ -8131,20 +8247,32 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var lowResolutionItems = 0
         var minDrawableSourceWidth = Int.MAX_VALUE
         var coveredPx = 0
+        var coveredUntilPx = 0
         val minimumReadableSourceWidth = minimumReadableSourceWidth(state.width, state.realPixelsOnly)
         for (item in state.items) {
             val top = floor(max(0f, item.top)).toInt().coerceIn(0, visibleContentPx)
             val bottom = ceil(min(visibleContentPx.toFloat(), item.top + item.pageHeight)).toInt().coerceIn(top, visibleContentPx)
             if (bottom <= top) continue
-            val px = bottom - top
-            coveredPx += px
+            // Adjacent float page edges can round outward to the same physical pixel. Counting
+            // every item span independently double-counts that boundary (and can cancel a real
+            // gap elsewhere). Accumulate the ordered vertical union instead. Draw items are built
+            // in display order, so only the portion after the prior covered edge is new coverage.
+            val uniqueTop = max(top, coveredUntilPx)
+            val uniquePx = max(0, bottom - uniqueTop)
+            coveredUntilPx = max(coveredUntilPx, bottom)
+            if (uniquePx <= 0) continue
+            coveredPx += uniquePx
             if (state.realPixelsOnly &&
                 (item.stripAuthoritative || item.adjacentExactAuthoritative)
             ) {
                 val sourceWidth = authoritativeStripSourceWidth(item)
-                val tilePx = if (sourceWidth > 0) authoritativeStripDrawablePx(item, top, bottom) else 0
+                val tilePx = if (sourceWidth > 0) {
+                    min(uniquePx, authoritativeStripDrawablePx(item, top, bottom))
+                } else {
+                    0
+                }
                 drawablePx += tilePx
-                placeholderPx += max(0, px - tilePx)
+                placeholderPx += max(0, uniquePx - tilePx)
                 if (tilePx > 0) {
                     drawableItems++
                     minDrawableSourceWidth = min(minDrawableSourceWidth, sourceWidth)
@@ -8158,16 +8286,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     requireOriginalProof = state.realPixelsOnly
                 )
                 if (!state.realPixelsOnly || sourceWidth > 0) {
-                    drawablePx += px
+                    drawablePx += uniquePx
                     drawableItems++
                     minDrawableSourceWidth = min(minDrawableSourceWidth, sourceWidth)
                     if (sourceWidth < minimumReadableSourceWidth) lowResolutionItems++
                 } else {
-                    placeholderPx += px
+                    placeholderPx += uniquePx
                     lowResolutionItems++
                 }
             } else {
-                placeholderPx += px
+                placeholderPx += uniquePx
             }
         }
         val rawMissingPx = max(0, visibleContentPx - coveredPx)
@@ -8177,10 +8305,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
         } else {
             rawMissingPx
         }
+        val boundedPlaceholderPx = placeholderPx.coerceIn(0, visibleContentPx)
+        val boundedDrawablePx = (
+            if (missingPx == 0) {
+                max(drawablePx, visibleContentPx - boundedPlaceholderPx)
+            } else {
+                drawablePx
+            }
+        ).coerceIn(0, visibleContentPx)
         return CoverageStats(
-            drawablePx = if (missingPx == 0) max(drawablePx, visibleContentPx - placeholderPx) else drawablePx,
+            drawablePx = boundedDrawablePx,
             missingPx = missingPx,
-            placeholderPx = placeholderPx,
+            placeholderPx = boundedPlaceholderPx,
             drawableItems = drawableItems,
             totalItems = state.items.size,
             lowResolutionItems = lowResolutionItems,
@@ -8300,7 +8436,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val visibleItems = state.items.filter { item ->
             item.top < state.height.toFloat() && item.top + item.pageHeight > 0f
         }
-        val authoritativeVisible = visibleItems.isNotEmpty() && visibleItems.all { item ->
+        val exactStructureContinuous = !hasNonContiguousExactNativeStructure(state)
+        val authoritativeVisible = exactStructureContinuous && visibleItems.isNotEmpty() &&
+            visibleItems.all { item ->
             if (item.cardText != null) true else if (
                 item.stripAuthoritative || item.adjacentExactAuthoritative
             ) {
@@ -8348,6 +8486,23 @@ class ReaderSurfaceView @JvmOverloads constructor(
             visiblePageIdentities = visibleIdentities,
             viewportDefect = viewportDefect,
             runwayDefect = runwayDefect
+        )
+    }
+
+    private fun hasNonContiguousExactNativeStructure(state: DrawState): Boolean {
+        if (!state.enforceContiguousExactStructure) return false
+        val visibleItems = state.items.filter { item ->
+            item.top < state.height.toFloat() && item.top + item.pageHeight > 0f
+        }
+        if (visibleItems.none {
+                it.stripAuthoritative || it.adjacentExactAuthoritative ||
+                    it.committedIdentity != null
+            }
+        ) {
+            return false
+        }
+        return !NtkDirectWifiExactVisibleStructurePolicy.isContiguous(
+            visibleItems.map { it.index }.toIntArray(),
         )
     }
 
@@ -9074,13 +9229,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
             // A physical trace represents pixel-producing motion, not the entire time a finger
             // remains down.  Host input can deliver sparse MOVE events, so keeping the interval
-            // open after the exact requested version has latched fabricates a long compositor
-            // gap even though there is no newer viewport to present.  Do not close while any
-            // requested viewport is still outstanding: a real render stall remains measured.
+            // open after the exact physical version has latched fabricates a long compositor gap
+            // even though only later content work remains. Do not close while the last actual
+            // offset mutation is outstanding: a real render stall remains measured.
             if (shouldClosePhysicalMotionInterval(
                     traceActive = physicalScrollTraceCookie != 0,
                     scrollerFinished = scroller.isFinished,
-                    desiredVersion = desiredVersion,
+                    requiredVersion = physicalMotionRequiredVersion,
                     committedVersion = committedVersion
                 )
             ) {
@@ -9827,7 +9982,7 @@ val lifecycleStillCurrent = synchronized(stateLock) {
                 if (shouldClosePhysicalMotionInterval(
                         traceActive = physicalScrollTraceCookie != 0,
                         scrollerFinished = scroller.isFinished,
-                        desiredVersion = desiredVersion,
+                        requiredVersion = physicalMotionRequiredVersion,
                         committedVersion = committedVersion
                     )
                 ) {
@@ -9862,7 +10017,7 @@ val lifecycleStillCurrent = synchronized(stateLock) {
             if (shouldClosePhysicalMotionInterval(
                     traceActive = physicalScrollTraceCookie != 0,
                     scrollerFinished = scroller.isFinished,
-                    desiredVersion = desiredVersion,
+                    requiredVersion = physicalMotionRequiredVersion,
                     committedVersion = committedVersion
                 )
             ) {
@@ -12019,7 +12174,12 @@ val lifecycleStillCurrent = synchronized(stateLock) {
     }
 
     private fun beginPhysicalScrollTraceLocked() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || physicalScrollTraceCookie != 0) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        // Every caller reaches this method only after a real scrollOffset mutation. Refresh the
+        // gesture-owned watermark even when an earlier moving segment is still open. Image/body
+        // installs after this point may advance desiredVersion, but are not physical motion.
+        physicalMotionRequiredVersion = desiredVersion
+        if (physicalScrollTraceCookie != 0) return
         if (BenchmarkAdjacentCommitSignal.isEnabled()) {
             mainHandler.removeCallbacks(benchmarkPhysicalMotionIdleRunnable)
         }
@@ -12038,8 +12198,20 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         Trace.beginAsyncSection(PHYSICAL_SCROLL_TRACE_NAME, cookie)
     }
 
-    private fun scheduleBenchmarkPhysicalMotionIdleCheckLocked() {
+    private fun scheduleBenchmarkPhysicalMotionIdleCheckLocked(
+        completedPhysicalVersion: Long = 0L
+    ) {
         if (!BenchmarkAdjacentCommitSignal.isEnabled()) return
+        // A later trace close replaces the prior value with the final fling viewport. An UP with
+        // no live trace deliberately preserves that physical watermark (or the already-committed
+        // baseline for a zero-pixel edge gesture). Never recapture desiredVersion here: adjacent
+        // image installation is content work and can advance it after the finger has stopped.
+        benchmarkPhysicalMotionIdleRequiredVersion =
+            benchmarkPhysicalMotionIdleRequiredVersion(
+                completedPhysicalVersion = completedPhysicalVersion,
+                existingRequiredVersion = benchmarkPhysicalMotionIdleRequiredVersion,
+                committedVersion = committedVersion,
+            )
         mainHandler.removeCallbacks(benchmarkPhysicalMotionIdleRunnable)
         mainHandler.postDelayed(
             benchmarkPhysicalMotionIdleRunnable,
@@ -12050,16 +12222,18 @@ val lifecycleStillCurrent = synchronized(stateLock) {
     private fun endPhysicalScrollTraceLocked() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         val cookie = physicalScrollTraceCookie
+        val completedPhysicalVersion = physicalMotionRequiredVersion
         if (cookie != 0) {
             physicalScrollTraceCookie = 0
             Trace.endAsyncSection(PHYSICAL_SCROLL_TRACE_NAME, cookie)
         }
+        physicalMotionRequiredVersion = 0L
         if (BenchmarkAdjacentCommitSignal.isEnabled()) {
             // A final edge gesture can be physically valid but move zero pixels. Its preceding
             // trace may have closed while the finger was still down; arm the confirmation again
             // on UP even when there is no live trace cookie, otherwise the pointer-down sample
             // consumes the only pending callback and the harness never observes final idle.
-            scheduleBenchmarkPhysicalMotionIdleCheckLocked()
+            scheduleBenchmarkPhysicalMotionIdleCheckLocked(completedPhysicalVersion)
         }
     }
 
@@ -12073,16 +12247,25 @@ val lifecycleStillCurrent = synchronized(stateLock) {
 
     private fun nsToMs(ns: Long): Float = ns / 1_000_000f
 
-    private fun frameBudgetMs(): Float {
-        val rate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.refreshRate else display?.refreshRate
-        return if (rate != null && rate > 1f) 1000f / rate else DEFAULT_FRAME_BUDGET_MS
+    /**
+     * Refreshes display timing only from lifecycle/display callbacks. Reading Display.refreshRate
+     * performs a synchronous IDisplayManager transaction on Android; doing that from ACTION_MOVE
+     * made a single display-service lock stall consume an otherwise healthy 60 Hz frame.
+     */
+    private fun refreshCachedDisplayTiming(): Float {
+        val refreshRate = NtkDisplayTimingPolicy.normalizedRefreshRate(display?.refreshRate)
+        cachedDisplayRefreshRate = refreshRate
+        return refreshRate
     }
 
+    private fun frameBudgetMs(): Float =
+        NtkDisplayTimingPolicy.frameBudgetMs(cachedDisplayRefreshRate)
+
     private fun directCadenceWatchdogDelayMs(): Long {
-        // Keep a one-millisecond grace after the nominal period so an on-time Choreographer
-        // callback wins. Recovering at 16 ms races the normal callback; 18 ms avoids that phase
-        // split while still preceding the host-GPU missed-opportunity path.
-        return (ceil(frameBudgetMs().toDouble()).toLong() + 1L).coerceAtLeast(1L)
+        return NtkDirectCadenceWatchdogPolicy.delayMs(
+            frameBudgetMs = frameBudgetMs(),
+            emulatorRuntime = emulatorNativeSurfaceRuntime,
+        )
     }
 
     private fun fmt(value: Float): String = String.format(Locale.US, "%.2f", value)
@@ -12246,10 +12429,22 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         private fun shouldClosePhysicalMotionInterval(
             traceActive: Boolean,
             scrollerFinished: Boolean,
-            desiredVersion: Long,
+            requiredVersion: Long,
             committedVersion: Long
         ): Boolean {
-            return traceActive && scrollerFinished && desiredVersion <= committedVersion
+            return traceActive && scrollerFinished && requiredVersion <= committedVersion
+        }
+
+        private fun benchmarkPhysicalMotionIdleRequiredVersion(
+            completedPhysicalVersion: Long,
+            existingRequiredVersion: Long,
+            committedVersion: Long,
+        ): Long {
+            return when {
+                completedPhysicalVersion > 0L -> completedPhysicalVersion
+                existingRequiredVersion > 0L -> existingRequiredVersion
+                else -> committedVersion.coerceAtLeast(0L)
+            }
         }
 
         private fun mergeOldestPixelMutationNs(existingNs: Long, mutationNs: Long): Long {
@@ -12393,14 +12588,27 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         fun shouldClosePhysicalMotionIntervalForTest(
             traceActive: Boolean,
             scrollerFinished: Boolean,
-            desiredVersion: Long,
+            requiredVersion: Long,
             committedVersion: Long
         ): Boolean {
             return shouldClosePhysicalMotionInterval(
                 traceActive,
                 scrollerFinished,
-                desiredVersion,
+                requiredVersion,
                 committedVersion
+            )
+        }
+
+        @JvmStatic
+        fun benchmarkPhysicalMotionIdleRequiredVersionForTest(
+            completedPhysicalVersion: Long,
+            existingRequiredVersion: Long,
+            committedVersion: Long,
+        ): Long {
+            return benchmarkPhysicalMotionIdleRequiredVersion(
+                completedPhysicalVersion,
+                existingRequiredVersion,
+                committedVersion,
             )
         }
 
@@ -12535,6 +12743,7 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         private const val MAX_PENDING_FRAME_COMMITS = 6
         private const val VISIBLE_LOADING_HOLD_RETRY_MS = 48L
         private const val NO_STATE_FRAME_RETRY_MS = 48L
+        private const val EXACT_STRUCTURE_HOLD_LOG_INTERVAL_MS = 250L
         private const val BLOCKED_FORWARD_REQUEST_THROTTLE_MS = 48L
         private const val BLOCKED_FORWARD_RUNWAY_AFTER_PAGES = 5
         private const val IDLE_SLOW_FRAME_LOG_BUDGET_MS = 200f

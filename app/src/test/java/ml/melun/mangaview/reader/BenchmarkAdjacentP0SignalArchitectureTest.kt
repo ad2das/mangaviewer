@@ -93,17 +93,36 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
             surfaceSource,
         )
         val idleSchedule = block(
-            "private fun scheduleBenchmarkPhysicalMotionIdleCheckLocked()",
+            "private fun scheduleBenchmarkPhysicalMotionIdleCheckLocked(",
             surfaceSource,
         )
         assertTrue(endTrace.contains("Trace.endAsyncSection(PHYSICAL_SCROLL_TRACE_NAME, cookie)"))
-        assertTrue(endTrace.contains("scheduleBenchmarkPhysicalMotionIdleCheckLocked()"))
+        assertTrue(
+            endTrace.contains(
+                "scheduleBenchmarkPhysicalMotionIdleCheckLocked(completedPhysicalVersion)"
+            )
+        )
         assertTrue(!endTrace.contains("if (cookie == 0) return"))
+        assertTrue(surfaceSource.contains("physicalMotionRequiredVersion = desiredVersion"))
+        assertTrue(
+            surfaceSource.contains(
+                "requiredVersion = physicalMotionRequiredVersion"
+            )
+        )
         assertTrue(idleSchedule.contains("BENCHMARK_PHYSICAL_MOTION_IDLE_CONFIRM_MS"))
         assertTrue(idleSchedule.contains("mainHandler.removeCallbacks("))
+        assertTrue(idleSchedule.contains("completedPhysicalVersion = completedPhysicalVersion"))
+        assertTrue(idleSchedule.contains("existingRequiredVersion = benchmarkPhysicalMotionIdleRequiredVersion"))
+        assertTrue(idleSchedule.contains("committedVersion = committedVersion"))
+        assertTrue(!idleSchedule.contains("= desiredVersion"))
         assertTrue(idlePublish.contains("physicalScrollTraceCookie != 0"))
         assertTrue(idlePublish.contains("!scroller.isFinished"))
-        assertTrue(idlePublish.contains("desiredVersion > committedVersion"))
+        assertTrue(
+            idlePublish.contains(
+                "benchmarkPhysicalMotionIdleRequiredVersion > committedVersion"
+            )
+        )
+        assertTrue(!idlePublish.contains("desiredVersion > committedVersion"))
         assertTrue(idlePublish.contains("retryAfterPhysicalSettle"))
         assertTrue(idlePublish.contains("mainHandler.postDelayed("))
         assertTrue(idlePublish.contains("BenchmarkAdjacentCommitSignal.publishPhysicalMotionIdle("))
@@ -240,6 +259,33 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
         assertTrue(macroSource.contains("P0_SIGNAL_PHASE_RUNWAY_READY"))
         assertTrue(macroSource.contains("handleRunwayReadySignal(intent, receivedAt)"))
         assertTrue(macroSource.contains("adjacentSourceProgressPassed"))
+    }
+
+    @Test
+    fun processDeathDiagnosticFreezesCurrentAndAdjacentEvidenceBeforeTaskRestore() {
+        val currentResume = macroSource.indexOf(
+            "label = \"current episode after Android Home round-trip\"",
+        )
+        val currentReady = macroSource.indexOf(
+            "resume-to-tail images before Android Home round-trip",
+        )
+        assertTrue(currentReady >= 0)
+        assertTrue(currentResume > currentReady)
+
+        val traversalEnd = macroSource.indexOf(
+            "forwardTraversalEndElapsedNanos = SystemClock.elapsedRealtimeNanos()",
+        )
+        val adjacentEvidence = macroSource.indexOf(
+            "materializeAdjacentEvidence()",
+            traversalEnd,
+        )
+        val adjacentResume = macroSource.indexOf(
+            "label = \"adjacent episode after Android Home round-trip\"",
+            traversalEnd,
+        )
+        assertTrue(traversalEnd >= 0)
+        assertTrue(adjacentEvidence > traversalEnd)
+        assertTrue(adjacentResume > adjacentEvidence)
     }
 
     @Test

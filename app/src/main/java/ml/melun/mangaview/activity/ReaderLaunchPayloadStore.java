@@ -1,6 +1,7 @@
 package ml.melun.mangaview.activity;
 
 import android.content.Intent;
+import android.os.Bundle;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -174,6 +175,30 @@ public final class ReaderLaunchPayloadStore {
             intent.putExtra(EXTRA_NTK_EPISODE_METADATA, episodeMetadata);
         else
             intent.removeExtra(EXTRA_NTK_EPISODE_METADATA);
+    }
+
+    /**
+     * Captures the currently presented exact episode for Android Activity state restoration.
+     * The returned bundle contains only the same primitive cold identity accepted by
+     * {@link #attachColdExactReaderPayload(Intent, Manga, Title)}; it never retains a process
+     * object, prepared key, image URL payload, decoded bitmap, or page-count hint.
+     */
+    public static Bundle snapshotColdExactReaderState(Manga manga, Title title) {
+        if(manga == null)
+            return null;
+        Intent snapshot = new Intent();
+        attachColdExactReaderPayload(snapshot, manga, title);
+        Bundle extras = snapshot.getExtras();
+        return extras == null ? null : new Bundle(extras);
+    }
+
+    /** Restores a primitive Activity-state snapshot without consulting the original Intent. */
+    public static Entry restoreCompactReaderPayload(Bundle extras) {
+        if(extras == null)
+            return null;
+        Intent snapshot = new Intent();
+        snapshot.putExtras(new Bundle(extras));
+        return restoreCompactReaderPayload(snapshot);
     }
 
     /** Restores the compact payload after the process-local entry is unavailable. */

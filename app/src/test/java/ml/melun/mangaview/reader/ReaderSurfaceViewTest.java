@@ -146,6 +146,25 @@ public class ReaderSurfaceViewTest {
     }
 
     @Test
+    public void contentOnlyWorkCannotExtendACompletedPhysicalMotionInterval() {
+        // The helper receives the last version owned by a real offset mutation, not the mutable
+        // global desired version. A later image install may be version 13 while physical version
+        // 12 is already committed; the preceding gesture is therefore complete.
+        assertTrue(ReaderSurfaceView.shouldClosePhysicalMotionIntervalForTest(
+                true, true, 12L, 12L));
+    }
+
+    @Test
+    public void benchmarkIdleKeepsTheLastPhysicalVersionInsteadOfLaterContentWork() {
+        assertEquals(12L, ReaderSurfaceView.benchmarkPhysicalMotionIdleRequiredVersionForTest(
+                12L, 9L, 11L));
+        assertEquals(12L, ReaderSurfaceView.benchmarkPhysicalMotionIdleRequiredVersionForTest(
+                0L, 12L, 12L));
+        assertEquals(12L, ReaderSurfaceView.benchmarkPhysicalMotionIdleRequiredVersionForTest(
+                0L, 0L, 12L));
+    }
+
+    @Test
     public void coalescedMutationsKeepOldestAndNewestWatermarks() {
         assertEquals(100L, ReaderSurfaceView.mergeOldestPixelMutationNsForTest(0L, 100L));
         assertEquals(100L, ReaderSurfaceView.mergeOldestPixelMutationNsForTest(100L, 112L));

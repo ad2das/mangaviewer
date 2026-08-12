@@ -51,6 +51,9 @@ class NtkColdRendererPreparationArchitectureTest {
     private val strictDiscoveryCoordinatorSource = File(
         "src/main/java/ml/melun/mangaview/reader/NtkStrictEpisodeDiscoveryCoordinator.kt"
     ).readText()
+    private val manifestEvidenceParserSource = File(
+        "src/main/java/ml/melun/mangaview/reader/NtkManifestEvidenceParser.kt"
+    ).readText()
     private val macrobenchmarkSource = File(
         "../macrobenchmark/src/main/java/ml/melun/mangaview/macrobenchmark/NtkColdViewerMacrobenchmark.kt"
     ).readText()
@@ -147,6 +150,11 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(registrySource.contains("!cellularResilientTransport && it > 0L"))
         assertTrue(registrySource.contains("spec.forwardResumeViewerGeneration == it"))
         assertTrue(rememberFloor.contains("isCurrentDirectWifiRendererProfile("))
+        assertTrue(
+            rememberFloor.contains(
+                "renderView.setLimitScrollToDrawablePrefix(directWifiRendererProfile)"
+            )
+        )
         assertTrue(rememberFloor.contains("expandedMinimumPage = strictForwardReadyFirstPage"))
         assertFalse(rememberFloor.contains("getHttpClient()"))
         assertTrue(profileGetter.contains("viewerGeneration > 0L"))
@@ -1177,9 +1185,15 @@ class NtkColdRendererPreparationArchitectureTest {
     fun visibleNativeFramesUseAtomicMultiBufferPublication() {
         val attach = functionBody("bool attachBackend(", rollingRendererSource)
 
-        assertTrue(attach.contains("eglSwapInterval(display_, 0)"))
-        assertTrue(attach.contains("setNativeWindowSwapInterval(command.window, 0)"))
-        assertTrue(attach.contains("setFrameRate(command.window, requestedFrameRate, 0)"))
+        assertTrue(attach.contains("hostGpuEmulatorQueue ? 1 : 0"))
+        assertTrue(attach.contains("eglSwapInterval(display_, requestedSwapInterval)"))
+        assertTrue(attach.contains("setNativeWindowSwapInterval(command.window, requestedSwapInterval)"))
+        assertTrue(attach.contains("const int8_t frameRateCompatibility = hostGpuEmulatorQueue ? 1 : 0"))
+        assertTrue(
+            attach.contains(
+                "command.window, requestedFrameRate, frameRateCompatibility",
+            ),
+        )
         assertTrue(source.contains("Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE"))
         assertTrue(source.contains("Surface.CHANGE_FRAME_RATE_ALWAYS"))
         assertTrue(attach.contains("setSharedBufferMode(command.window, false)"))
@@ -2275,6 +2289,24 @@ class NtkColdRendererPreparationArchitectureTest {
         )
         assertTrue(macrobenchmarkSource.contains("ADJACENT_REQUIRED_RUNWAY_PAGES = 5"))
         assertTrue(macrobenchmarkSource.contains("ADJACENT_PREPARED_RUNWAY_PAGES = 5"))
+        assertFalse(
+            macrobenchmarkSource.contains(
+                "adjacentTotalPageCount == expectedAdjacentPageCount"
+            )
+        )
+        assertTrue(
+            manifestEvidenceParserSource.contains(
+                "path=\$episodePath,sourceSlots=\${images.length()}"
+            )
+        )
+        assertTrue(
+            qualificationSource.contains("function Get-AdjacentPageCountReconciliation")
+        )
+        assertTrue(
+            qualificationSource.contains(
+                "\$adjacentPageCountProof.reconciled -ne \$true"
+            )
+        )
         assertTrue(macrobenchmarkSource.contains("runwayReadyBeforeTail ="))
         assertTrue(macrobenchmarkSource.contains("adjacentP0SeamMs ="))
         assertFalse(macrobenchmarkSource.contains("check(adjacentP0SeamMs <="))
@@ -2670,15 +2702,30 @@ class NtkColdRendererPreparationArchitectureTest {
             imageCacheSource,
         )
         val h2Ring = h2.indexOf("attempts.forEachIndexed")
-        val recoveryCall = h2.indexOf("executeDirectWifiAdjacentWebtoonH1Recovery(")
+        // Post-fence current work uses the bounded H1 recovery path before opening another H2
+        // deadline. The adjacent runway path still reaches H1 only after its complete H2 ring.
+        val currentFence = h2.indexOf("val currentRecoveryCallStartedAfterFence")
+        val firstRecoveryCall = h2.indexOf("executeDirectWifiAdjacentWebtoonH1Recovery(")
+        val recoveryCall = h2.lastIndexOf("executeDirectWifiAdjacentWebtoonH1Recovery(")
 
         assertTrue(h2Ring >= 0)
+        assertTrue(currentFence >= 0)
+        assertTrue(firstRecoveryCall > currentFence)
+        assertTrue(firstRecoveryCall < h2Ring)
         assertTrue(recoveryCall > h2Ring)
+        assertTrue(h2.contains("transport=h1_direct"))
+        assertTrue(h2.contains("transport=h1_after_h2"))
+        assertTrue(h2.contains("currentRecoveryPageRequiresDirectH1"))
+        assertTrue(h2.contains("currentRecoveryCallStartedAfterFence && socketPressure"))
+        assertFalse(h2.contains("cancelled.get() || index == attempts.lastIndex"))
+        assertTrue(h2.contains("if (cancelled.get()) throw failure"))
         assertTrue(recovery.contains("NtkExactApiReplicaRouteTag::class.java"))
         assertTrue(recovery.contains("hasActiveAdjacentNtkForegroundViewerGrant(proof.path)"))
         assertTrue(recovery.contains("sameNetwork ="))
         assertTrue(recovery.contains("sameViewerGeneration ="))
         assertTrue(recovery.contains("clickOwnedDirectWifiAdjacentWebtoonRecoveryClient("))
+        assertTrue(recovery.contains("clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits.acquire()"))
+        assertTrue(recovery.contains("NtkH1RecoveryPermitResponseBody(recoveredBody)"))
         assertTrue(recoveryClient.contains("directWifiNetwork.socketFactory"))
         assertTrue(recoveryClient.contains("protocols(listOf(Protocol.HTTP_1_1))"))
         assertFalse(recovery.contains("currentEpisodeOwned"))

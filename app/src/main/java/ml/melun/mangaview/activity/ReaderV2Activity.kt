@@ -634,10 +634,18 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         PerformanceMonitor.attach(this)
         PerformanceMonitor.screen("viewer")
 
-        val processPayload = ReaderLaunchPayloadStore.take(
-            intent.getStringExtra(ReaderLaunchPayloadStore.EXTRA_READER_KEY)
+        val savedStatePayload = ReaderLaunchPayloadStore.restoreCompactReaderPayload(
+            savedInstanceState?.getBundle(STATE_CURRENT_EXACT_READER_PAYLOAD)
         )
-        val launchPayload = processPayload
+        val processPayload = if (savedStatePayload == null) {
+            ReaderLaunchPayloadStore.take(
+                intent.getStringExtra(ReaderLaunchPayloadStore.EXTRA_READER_KEY)
+            )
+        } else {
+            null
+        }
+        val launchPayload = savedStatePayload
+            ?: processPayload
             ?: ReaderLaunchPayloadStore.restoreCompactReaderPayload(intent)
         val title = launchPayload?.title
             ?: Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
@@ -665,7 +673,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val ntkLaunchPreflightStarted = intent.getBooleanExtra("viewerNtkAckPreflightStarted", false)
         val ntkPath = manga.ntkEpisodePath?.trim().orEmpty()
         val strictNtkEpisode = isStrictNtkEpisodePath(ntkPath)
-        val startAtFirstPage = intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
+        // A recreated task must resume the physically adopted episode/progress captured above,
+        // not replay the original click's "start at first page" instruction on a later episode.
+        val startAtFirstPage = savedStatePayload == null &&
+            intent.getBooleanExtra(ViewerIntentContract.EXTRA_START_AT_FIRST_PAGE, false)
         initialStartAtFirstPage = startAtFirstPage
         if (strictNtkEpisode) {
             strictTelemetryEpisodePath = NtkStripDigests.normalizeEpisodePath(ntkPath)
@@ -1370,6 +1381,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         }
         PerformanceMonitor.pause()
         super.onPause()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        val manga = currentManga
+        if (manga != null && isStrictNtkEpisodePath(manga.ntkEpisodePath)) {
+            ReaderLaunchPayloadStore.snapshotColdExactReaderState(manga, currentTitle)?.let {
+                outState.putBundle(STATE_CURRENT_EXACT_READER_PAYLOAD, it)
+            }
+        }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -5138,13 +5159,19 @@ if (firstResumeArmedUptimeNanos == 0L) {
             0
         }
         if (::renderView.isInitialized) {
+            val directWifiRendererProfile =
+                NtkSourceSpoolRegistry.isCurrentDirectWifiRendererProfile(
+                    seal.normalizedEpisodePath,
+                    strictTelemetryGeneration,
+                )
+            // Exact direct-Wi-Fi bodies can finish out of order. Keep the user's physical scroll
+            // at the last complete real-pixel viewport instead of letting a later drawable jump
+            // over an unresolved structural page. This never changes request order or scroll
+            // distance; the cap disappears as soon as the missing original becomes drawable.
+            renderView.setLimitScrollToDrawablePrefix(directWifiRendererProfile)
             renderView.setForwardNativeTexturePrewarmEnabled(
                 enabled = true,
-                directWifiExpandedRunway =
-                    NtkSourceSpoolRegistry.isCurrentDirectWifiRendererProfile(
-                        seal.normalizedEpisodePath,
-                        strictTelemetryGeneration,
-                    ),
+                directWifiExpandedRunway = directWifiRendererProfile,
                 expandedEpisodePath = seal.normalizedEpisodePath,
                 expandedMinimumPage = strictForwardReadyFirstPage,
             )
@@ -11537,6 +11564,8 @@ if (!renderView.isShown ||
 
         private val strictActivityOwner = AtomicReference<StrictActivityOwner?>(null)
         private val strictActivityOwnerLock = Any()
+        private const val STATE_CURRENT_EXACT_READER_PAYLOAD =
+            "reader.state.currentExactReaderPayload"
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val STRICT_ALL_IMAGES_NATIVE_QUEUE_RETRY_MS = 16L
         private const val INITIAL_STATUS_DELAY_MS = 450L

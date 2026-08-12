@@ -13,8 +13,8 @@ import org.junit.Test;
 
 public final class NtkExactImageShardPolicyTest {
     @Test
-    public void directWifiExactWebtoonUsesSixteenPoolsWithoutChangingCarrier() {
-        assertEquals(16, CustomHttpClient.ntkWebtoonExactImageShardCount(
+    public void directWifiExactWebtoonUsesTwentyFourPoolsWithoutChangingCarrier() {
+        assertEquals(24, CustomHttpClient.ntkWebtoonExactImageShardCount(
                 false, true, true));
         assertEquals(8, CustomHttpClient.ntkWebtoonExactImageShardCount(
                 true, false, true));
@@ -25,15 +25,15 @@ public final class NtkExactImageShardPolicyTest {
     }
 
     @Test
-    public void everyActualHostSequenceUsesSixteenBalancedDirectWifiPools() {
+    public void everyActualHostSequenceUsesTwentyFourBalancedDirectWifiPools() {
         for(int hostStripe = 0; hostStripe < 3; hostStripe++) {
             Set<Integer> usedShards = new HashSet<>();
             for(int pageIndex = 0; pageIndex < 193; pageIndex++) {
                 int actualHostStripe = pageIndex <= 1 ? 0 : pageIndex % 3;
                 if(actualHostStripe == hostStripe)
-                    usedShards.add(CustomHttpClient.ntkWebtoonExactImageShardIndex(pageIndex, 16));
+                    usedShards.add(CustomHttpClient.ntkWebtoonExactImageShardIndex(pageIndex, 24));
             }
-            assertEquals("host stripe " + hostStripe, 16, usedShards.size());
+            assertEquals("host stripe " + hostStripe, 24, usedShards.size());
         }
     }
 

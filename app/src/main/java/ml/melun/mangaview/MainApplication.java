@@ -30,6 +30,7 @@ import ml.melun.mangaview.repository.room.MangaRoomStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.MainThreadStallMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.runtime.ViewerTelemetry;
 import ml.melun.mangaview.runtime.ViewerColdStateSnapshot;
 import ml.melun.mangaview.ntkack.NtkAckProcessRuntime;
 import ml.melun.mangaview.ntkack.ProcessRole;
@@ -245,10 +246,11 @@ public class MainApplication extends MultiDexApplication implements Configuratio
 
     public static boolean isNtkForegroundViewerPathActive() {
         String foreground = ntkForegroundViewerPath;
-        return foreground != null
-                && foreground.length() > 0
-                && android.os.SystemClock.elapsedRealtime() - ntkForegroundViewerStartedAtMs
-                < NTK_FOREGROUND_VIEWER_ACTIVE_MS;
+        return isNtkForegroundViewerLeaseActive(
+                foreground,
+                ntkForegroundViewerStartedAtMs,
+                android.os.SystemClock.elapsedRealtime(),
+                ViewerTelemetry.isActiveEpisode(foreground));
     }
 
     public static String activeNtkForegroundViewerPath() {
@@ -261,8 +263,22 @@ public class MainApplication extends MultiDexApplication implements Configuratio
         String foreground = ntkForegroundViewerPath;
         return foreground != null
                 && path.equals(foreground)
-                && android.os.SystemClock.elapsedRealtime() - ntkForegroundViewerStartedAtMs
-                < NTK_FOREGROUND_VIEWER_ACTIVE_MS;
+                && isNtkForegroundViewerLeaseActive(
+                        foreground,
+                        ntkForegroundViewerStartedAtMs,
+                        android.os.SystemClock.elapsedRealtime(),
+                        ViewerTelemetry.isActiveEpisode(path));
+    }
+
+    static boolean isNtkForegroundViewerLeaseActive(String foregroundPath,
+                                                       long startedAtMs,
+                                                       long nowMs,
+                                                       boolean exactViewerEpisodeActive) {
+        if(foregroundPath == null || foregroundPath.length() == 0)
+            return false;
+        if(exactViewerEpisodeActive)
+            return true;
+        return nowMs - startedAtMs < NTK_FOREGROUND_VIEWER_ACTIVE_MS;
     }
 
     public static long ntkForegroundViewerInputQuietRemainingMs(String path, long quietMs) {

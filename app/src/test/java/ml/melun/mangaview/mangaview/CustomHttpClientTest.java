@@ -1111,6 +1111,14 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void cancelledOrStrictOwnedDomainProbeCannotMutateViewerRoute() {
+        assertTrue(CustomHttpClient.shouldDiscardNtkDomainProbeResultForTest(true, false));
+        assertTrue(CustomHttpClient.shouldDiscardNtkDomainProbeResultForTest(false, true));
+        assertTrue(CustomHttpClient.shouldDiscardNtkDomainProbeResultForTest(true, true));
+        assertFalse(CustomHttpClient.shouldDiscardNtkDomainProbeResultForTest(false, false));
+    }
+
+    @Test
     public void ntkMissingApiResponseAfterChallengeSkipsAddressRetry() {
         assertTrue(CustomHttpClient.shouldSkipNtkResolvedDomainRetryAfterChallengeForTest(
                 CustomHttpClient.FetchMode.SEARCH_NO_WEBVIEW, true, true, "/api/manhwa-list"));

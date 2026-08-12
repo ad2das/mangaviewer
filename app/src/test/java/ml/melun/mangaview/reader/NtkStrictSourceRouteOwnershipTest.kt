@@ -302,7 +302,8 @@ class NtkStrictSourceRouteOwnershipTest {
         assertTrue(direct.contains("attempts.forEachIndexed { index, candidate ->"))
         assertTrue(direct.contains("val headerTimeoutsByHost = ConcurrentHashMap<String, AtomicInteger>()"))
         assertTrue(direct.contains("val previousHostTimeouts = headerTimeoutsByHost[normalizedHost]?.get() ?: 0"))
-        assertTrue(direct.contains(".directWifiH2HeaderDeadlineMs(previousHostTimeouts)"))
+        assertTrue(direct.contains(".directWifiH2HeaderDeadlineMs("))
+        assertTrue(direct.contains("currentHostEmulatorResumeRecovery,"))
         assertTrue(direct.contains("if (headerResolved.compareAndSet(false, true))"))
         assertTrue(direct.contains("call.cancel()"))
         assertFalse(direct.contains("cancelled.set(true)"))
@@ -338,24 +339,31 @@ class NtkStrictSourceRouteOwnershipTest {
             direct.substring(definitiveSuppression, explicitMissFailure)
                 .contains("shouldSuppressDirectWifiH2HostAfterHeaderTimeout")
         )
-        assertTrue(
+        assertFalse(
             direct.contains(
                 "if (cancelled.get() || index == attempts.lastIndex) throw failure"
             )
         )
+        assertTrue(direct.contains("if (cancelled.get()) throw failure"))
         assertTrue(direct.contains("lastFailure = failure"))
         assertTrue(direct.contains("val nextHost = attempts.drop(index + 1).firstOrNull"))
 
-        // A failed physical header attempt is retained as the eventual error, but is surfaced to
-        // the outer source operation only after every internal candidate has been exhausted.
+        // A failed physical header attempt is retained as the eventual error. The last H2
+        // candidate must still reach the bounded current/adjacent H1 recovery before that error is
+        // surfaced to the outer source operation.
         val physicalCatch = direct.indexOf("} catch (failure: IOException) {")
         val nextReplica = direct.indexOf("val nextHost = attempts.drop(index + 1).firstOrNull", physicalCatch)
+        val h1Recovery = direct.indexOf(
+            "executeDirectWifiAdjacentWebtoonH1Recovery(",
+            nextReplica,
+        )
         val logicalFailure = direct.lastIndexOf(
             "throw lastFailure ?: IOException(\"Direct Wi-Fi H2 replica image Call exhausted\")"
         )
         assertTrue(physicalCatch >= 0)
         assertTrue(nextReplica > physicalCatch)
-        assertTrue(logicalFailure > nextReplica)
+        assertTrue(h1Recovery > nextReplica)
+        assertTrue(logicalFailure > h1Recovery)
     }
 
     @Test

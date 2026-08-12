@@ -10,6 +10,7 @@ class NtkAdjacentExactP0ArchitectureTest {
     private val reader = source("ReaderSession.kt")
     private val surface = source("ReaderSurfaceView.kt")
     private val strict = source("NtkStrictSourceSession.kt")
+    private val imageCache = source("ReaderImageCache.kt")
     private val transport = source("NtkStrictSourceTransport.kt")
     private val cacheTransport = source("NtkCacheSourceTransport.kt")
     private val registry = source("NtkSourceSpoolRegistry.kt")
@@ -97,6 +98,34 @@ class NtkAdjacentExactP0ArchitectureTest {
         ))
         assertTrue(qualifier.contains("directWifiForwardOnlyInitialResumeViewportOpaqueLocked()"))
         assertFalse(qualifier.contains("emulatorNativeSurfaceRuntime"))
+    }
+
+    @Test
+    fun hostGpuExactNativeSubmissionHoldsStructuralGapsWithoutLosingBoundaryState() {
+        val render = block("private fun renderFrame(", surface)
+        val drawState = block("private fun buildDrawStateLocked(", surface)
+        val traversal = block("private fun frameTraversalProof(", surface)
+        val structure = block(
+            "private fun hasNonContiguousExactNativeStructure(",
+            surface,
+        )
+        assertTrue(render.contains("exactStructureHeld"))
+        assertTrue(render.contains("state = null"))
+        assertTrue(render.contains("boundaryDispatchInFlight = false"))
+        assertTrue(render.contains("boundaryArmedDirection = heldBoundary.direction"))
+        assertTrue(render.contains("releasePostedAdmissionLocked(preserveDirty = true)"))
+        assertTrue(render.contains("if (exactStructureHeld && animateScroll)"))
+        assertTrue(render.indexOf("exactStructureHeld") <
+            render.indexOf("consumePendingPixelMutationTimingLocked"))
+        assertTrue(traversal.contains("exactStructureContinuous"))
+        assertTrue(drawState.contains("NtkDirectWifiExactVisibleStructurePolicy.shouldEnforce"))
+        assertFalse(drawState.substringAfter(
+            "NtkDirectWifiExactVisibleStructurePolicy.shouldEnforce"
+        ).substringBefore("),").contains("directWifiExpandedNativeTextureRunway"))
+        assertTrue(structure.contains("state.enforceContiguousExactStructure"))
+        assertTrue(structure.contains("it.stripAuthoritative || it.adjacentExactAuthoritative"))
+        assertTrue(structure.contains("it.committedIdentity != null"))
+        assertTrue(structure.contains("NtkDirectWifiExactVisibleStructurePolicy.isContiguous"))
     }
 
     @Test
@@ -189,6 +218,34 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(reader.contains("waitingInitialAdjacentExactP0Appends.cancelAll()"))
         assertTrue(reader.contains("initialAdjacentWebtoonP0EventWakeLane.set(true)"))
         assertTrue(reader.contains("initialAdjacentWebtoonP0EventWakeLane.remove()"))
+    }
+
+    @Test
+    fun activeScrollCannotCancelAnOwnedAdjacentSourceAfterItsLaunchTtlExpires() {
+        val start = block("fun enqueueStartQuarantined()", strict)
+        val finish = block("private fun maybeFinishClosedActor()", strict)
+        val grant = block(
+            "internal fun hasActiveAdjacentNtkForegroundViewerGrant(",
+            imageCache,
+        )
+        val protected = block("private fun protectedNtkEpisodePaths(", imageCache)
+        val allow = block("fun allowAdjacentNtkForegroundViewerPath(", imageCache)
+
+        assertTrue(start.contains("if (adjacentPrefetch &&"))
+        assertTrue(start.contains("retainActiveStrictAdjacentNtkEpisodePath("))
+        assertTrue(start.contains("releaseActiveStrictAdjacentPath(\"start_failure\")"))
+        assertTrue(finish.contains("releaseActiveStrictAdjacentPath(\"close_barrier\")"))
+        assertTrue(
+            finish.indexOf("NtkQuarantineSourceOwnershipRegistry.release(") <
+                finish.indexOf("releaseActiveStrictAdjacentPath(\"close_barrier\")"),
+        )
+        assertTrue(grant.contains("activeStrictAdjacentNtkEpisodePaths.contains(key)"))
+        assertTrue(protected.contains(
+            "protected.addAll(activeStrictAdjacentNtkEpisodePaths.snapshot())",
+        ))
+        assertTrue(allow.contains(
+            "if (activeStrictAdjacentNtkEpisodePaths.contains(key)) return@schedule",
+        ))
     }
 
     @Test
@@ -373,8 +430,16 @@ class NtkAdjacentExactP0ArchitectureTest {
         val callback = block("override fun onAdjacentExactRunwayBatchReady(", activity)
         assertTrue(publish.contains("listener.onAdjacentExactRunwayBatchReady("))
         assertTrue(publish.contains("commitAdjacentExactRunwayDrawableBatch(drawableBatch)"))
+        assertTrue(publish.contains("requiresStrictExactRemainingAdjacentRunway(candidateSnapshot)"))
+        assertTrue(publish.contains("requireStrictDescriptor = strictExactDescriptorOnly"))
+        assertTrue(publish.contains("strictExactDescriptorOnly && exactRunwayPublication == null"))
+        assertTrue(publish.contains("append_adjacent_exact_runway_invalid_publication"))
         assertTrue(build.contains("result.originalProof ?: return null"))
         assertTrue(build.contains("page.sourceIndex < 1"))
+        val proofValidation = build.indexOf("ReaderPreparedStore.isCanonicalOriginalProof(")
+        val publicationConstruction = build.indexOf("NtkAdjacentExactRunwayTilePage(")
+        assertTrue(proofValidation >= 0)
+        assertTrue(publicationConstruction > proofValidation)
         assertFalse(build.contains("page.sourceIndex !in 1..3"))
         assertTrue(gate.contains("downstream.onAdjacentExactRunwayBatchReady(publication)"))
         assertTrue(gate.contains("replaceWithCurrentAuthoritative"))

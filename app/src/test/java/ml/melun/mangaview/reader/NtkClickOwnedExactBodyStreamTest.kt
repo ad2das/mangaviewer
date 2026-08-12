@@ -774,6 +774,14 @@ class NtkClickOwnedExactBodyStreamTest {
 
         assertTrue(exactBody.contains("verifiedExactBodyExecutor(pageIndex, candidate)"))
         assertTrue(
+            selector.contains("shouldPrioritizeHostGpuCurrentRestoredViewportEntryBody(")
+        )
+        assertTrue(selector.contains("hostGpuEmulatorRuntime = hostGpuEmulatorRuntime"))
+        assertTrue(selector.contains("pageIndex = pageIndex"))
+        assertTrue(selector.contains("forwardFirstPage = forwardFirstPage"))
+        assertTrue(selector.contains("pageCount = effectivePageCount.get()"))
+        assertTrue(selector.contains("val prioritize = prioritizeRestoredViewport ||"))
+        assertTrue(
             selector.contains("shouldPrioritizeVerifiedDirectWifiEntryBody(")
         )
         assertTrue(selector.contains("currentEpisode = !directWifiAdjacentOwned"))
@@ -922,6 +930,74 @@ class NtkClickOwnedExactBodyStreamTest {
         assertEquals(
             1,
             Regex(Regex.escape("bodyReadAdmission?.invoke()")).findAll(spool).count(),
+        )
+    }
+
+    @Test
+    fun hostGpuAdjacentSuffixIsBoundedBeforeOrdinaryWifiAndPhysicalCallAdmission() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val admissionStart = quarantine.indexOf("bodyReadAdmission = {")
+        val admissionEnd = quarantine.indexOf("\n                },\n            )", admissionStart)
+        val admission = quarantine.substring(admissionStart, admissionEnd)
+        val tailWindow = admission.indexOf("acquireHostGpuAdjacentTailBodyTransferLease(")
+        val ordinaryWindow = admission.indexOf("acquireOrdinaryDirectWifiTransferLease(")
+        val baseWindow = admission.indexOf("acquireBodyTransferLease(")
+
+        assertTrue(tailWindow >= 0)
+        assertTrue(tailWindow < ordinaryWindow)
+        assertTrue(ordinaryWindow < baseWindow)
+        assertTrue(admission.contains("adjacentTailLease?.close()"))
+        assertTrue(
+            quarantine.contains(
+                "NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS"
+            )
+        )
+        assertTrue(
+            quarantine.contains(
+                "shouldBoundHostGpuAdjacentTailTransfers("
+            )
+        )
+    }
+
+    @Test
+    fun hostGpuCurrentResumeViewportFenceRunsBeforeEveryPhysicalCallAdmission() {
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val admissionStart = quarantine.indexOf("bodyReadAdmission = {")
+        val admissionEnd = quarantine.indexOf("\n                },\n            )", admissionStart)
+        val admission = quarantine.substring(admissionStart, admissionEnd)
+        val viewportFence = admission.indexOf(
+            "awaitHostGpuCurrentRestoredViewportBodyAdmission("
+        )
+        val adjacentFence = admission.indexOf("awaitAdjacentPhysicalAdmission(")
+        val restoredBulk = admission.indexOf(
+            "acquireHostGpuCurrentRestoredBulkBodyTransferLease("
+        )
+        val mixedUncommon = admission.indexOf(
+            "acquireMixedUncommonTransferLease("
+        )
+        val ordinaryWifi = admission.indexOf(
+            "acquireOrdinaryDirectWifiTransferLease("
+        )
+        val physicalPermit = admission.indexOf("acquireBodyTransferLease(")
+
+        assertTrue(viewportFence >= 0)
+        assertTrue(viewportFence < adjacentFence)
+        assertTrue(adjacentFence < restoredBulk)
+        assertTrue(restoredBulk < mixedUncommon)
+        assertTrue(mixedUncommon < ordinaryWifi)
+        assertTrue(ordinaryWifi < physicalPermit)
+        assertTrue(admission.contains("mixedUncommonLease?.close()"))
+        val beforeAdmission = quarantine.substring(0, admissionStart)
+        assertFalse(beforeAdmission.contains("mixedUncommonLease = acquireMixedUncommonTransferLease("))
+        assertTrue(
+            quarantine.contains(
+                "armHostGpuCurrentRestoredViewportBodyRelease(initialBodyFutures)"
+            )
+        )
+        assertTrue(
+            quarantine.contains(
+                "if (!isCapturedDirectWifiTransportLive()) return"
+            )
         )
     }
 

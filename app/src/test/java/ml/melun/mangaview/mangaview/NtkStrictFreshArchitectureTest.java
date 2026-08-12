@@ -69,7 +69,7 @@ public final class NtkStrictFreshArchitectureTest {
         assertTrue(nvGrantExchange.contains("\"nv_issue\""));
         assertTrue(nvGrantExchange.contains("callRegistry"));
         assertTrue(nvGrantExchange.contains("NtkAckCookieBoundary.INSTANCE.validateGrants("));
-        assertTrue(nvGrantExchange.contains("!shouldUseNtkCellularResilientTransport()"));
+        assertTrue(nvGrantExchange.contains("!callRegistry.cellularResilientTransport()"));
         assertTrue(nvGrantExchange.contains("allowExactBodyAuthority"));
         assertTrue(nvGrantExchange.contains("responseHasSingleJsonContentType"));
         assertTrue(nvGrantExchange.contains("\"ok\", \"session\", \"ttl\""));
@@ -192,6 +192,10 @@ public final class NtkStrictFreshArchitectureTest {
         assertFalse(exactTransport.contains("while("));
         assertFalse(exactTransport.contains("for(;;"));
         assertFalse(exactTransport.toLowerCase().contains("hedge"));
+        assertFalse(exactTransport.contains("getBaseUrl("));
+        assertFalse(exactTransport.contains("shouldUseNtkCellularResilientTransport()"));
+        assertTrue(exactTransport.contains("callRegistry.episodeOrigin()"));
+        assertTrue(exactTransport.contains("callRegistry.cellularResilientTransport()"));
         assertFalse(execute.contains("applyNtkViewerImagesSignature"));
     }
 
@@ -632,6 +636,69 @@ public final class NtkStrictFreshArchitectureTest {
                 "/** Called only when the native SurfaceControl path");
         assertTrue(committedDraw.contains("\"actual_image_draw_commit\""));
         assertTrue(committedDraw.contains("\"hwui_frame_commit\""));
+    }
+
+    @Test
+    public void viewerCloseRechecksDeferredOperationsOnThePublishingThread() throws Exception {
+        String telemetry = read(projectPath("src", "main", "java", "ml", "melun",
+                "mangaview", "runtime", "ViewerTelemetry.java"));
+        String drain = method(telemetry,
+                "private static void attemptCloseAfterDrain(",
+                "private static void finalizeCloseOnMain(");
+        String finalizeClose = method(telemetry,
+                "private static void finalizeCloseOnMain(",
+                "private static void closeOutstandingOperationsAsCancelled(");
+
+        assertTrue(drain.contains(
+                "finalizeCloseOnMain(session, reason, false, deadlineNanos)"));
+        assertTrue(drain.contains(
+                "finalizeCloseOnMain(session, reason, true, deadlineNanos)"));
+        int recheck = finalizeClose.indexOf(
+                "if(!drainTimedOut && (!REQUESTS.isEmpty() || !DECODES.isEmpty()))");
+        int reset = finalizeClose.indexOf("session.closeFinalizing.set(false);", recheck);
+        int retry = finalizeClose.indexOf(
+                "attemptCloseAfterDrain(session, reason, deadlineNanos);", recheck);
+        int publish = finalizeClose.indexOf("PerformanceMonitor.viewerStopped(reason);");
+        assertTrue(recheck >= 0);
+        assertTrue(reset > recheck);
+        assertTrue(retry > reset);
+        assertTrue(publish > retry);
+    }
+
+    @Test
+    public void recreatedReaderRestoresPhysicallyAdoptedExactEpisodeBeforeOriginalIntent()
+            throws Exception {
+        String activity = read(activitySourcePath("ReaderV2Activity.kt"));
+        String create = method(activity,
+                "override fun onCreate(savedInstanceState: Bundle?)",
+                "override fun onPause()");
+        int restoreSaved = create.indexOf(
+                "ReaderLaunchPayloadStore.restoreCompactReaderPayload(\n" +
+                        "            savedInstanceState?.getBundle(STATE_CURRENT_EXACT_READER_PAYLOAD)");
+        int takeProcess = create.indexOf("ReaderLaunchPayloadStore.take(");
+        int restoreIntent = create.indexOf(
+                "ReaderLaunchPayloadStore.restoreCompactReaderPayload(intent)");
+        assertTrue(restoreSaved >= 0);
+        assertTrue(takeProcess > restoreSaved);
+        assertTrue(restoreIntent > takeProcess);
+        assertTrue(create.contains("val launchPayload = savedStatePayload"));
+        assertTrue(create.contains("val startAtFirstPage = savedStatePayload == null"));
+
+        String save = method(activity,
+                "override fun onSaveInstanceState(outState: Bundle)",
+                "override fun onResume()");
+        assertTrue(save.contains("isStrictNtkEpisodePath(manga.ntkEpisodePath)"));
+        assertTrue(save.contains(
+                "ReaderLaunchPayloadStore.snapshotColdExactReaderState(manga, currentTitle)"));
+        assertTrue(save.indexOf("snapshotColdExactReaderState") <
+                save.indexOf("super.onSaveInstanceState(outState)"));
+
+        String store = read(activitySourcePath("ReaderLaunchPayloadStore.java"));
+        String snapshot = method(store,
+                "public static Bundle snapshotColdExactReaderState(",
+                "/** Restores a primitive Activity-state snapshot");
+        assertTrue(snapshot.contains("attachColdExactReaderPayload(snapshot, manga, title)"));
+        assertFalse(snapshot.contains("attachCompactReaderPayload(snapshot, manga, title)"));
     }
 
     @Test

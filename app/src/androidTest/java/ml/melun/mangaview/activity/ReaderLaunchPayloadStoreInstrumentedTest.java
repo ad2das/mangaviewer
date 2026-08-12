@@ -1,6 +1,7 @@
 package ml.melun.mangaview.activity;
 
 import android.content.Intent;
+import android.os.Bundle;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
@@ -79,6 +80,25 @@ public class ReaderLaunchPayloadStoreInstrumentedTest {
         assertEquals("", restored.getManga().getNtkViewerPayloadHint());
         assertEquals(0, restored.getManga().getNtkImageCount());
         assertNull(intent.getStringExtra(ReaderLaunchPayloadStore.EXTRA_READER_KEY));
+    }
+
+    @Test
+    public void activityStateSnapshotRestoresCapturedEpisodeWithoutPreparedContent() {
+        Title title = title();
+        Manga manga = manga(title);
+        manga.setNtkViewerPayloadHint("{\"images\":[\"https://cdn.example/page-0.jpg\"]}");
+        manga.setNtkImageCount(73);
+
+        Bundle state = ReaderLaunchPayloadStore.snapshotColdExactReaderState(manga, title);
+        manga.setNtkEpisodePath("/manhwa/44/mutated-after-save");
+        ReaderLaunchPayloadStore.Entry restored =
+                ReaderLaunchPayloadStore.restoreCompactReaderPayload(state);
+
+        assertNotNull(restored);
+        assertEquals("/webtoon/44/701", restored.getManga().getNtkEpisodePath());
+        assertEquals("", restored.getManga().getNtkViewerPayloadHint());
+        assertEquals(0, restored.getManga().getNtkImageCount());
+        assertNull(restored.getPreparedKey());
     }
 
     @Test

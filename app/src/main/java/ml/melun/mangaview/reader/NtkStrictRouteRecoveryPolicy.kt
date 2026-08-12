@@ -90,6 +90,11 @@ object NtkStrictRouteRecoveryPolicy {
             return false
         }
         if (failure !is IOException) return false
+        // OkHttp/H2 can surface the strict control-plane read timeout directly rather than wrap
+        // it with the HttpEngine stage message. The failed flight has not installed authority and
+        // the caller permits only one same-origin replacement, so retrying the whole immutable
+        // flight is safe while a parser/content rejection remains terminal.
+        if (directWifiCurrentViewer && failure is SocketTimeoutException) return true
         val currentDocumentQuicFallback = directWifiCurrentViewer &&
             failure.message == "Strict document HttpEngine request failed"
         val adjacentHttpEngineTimeoutFallback = directWifiAdjacentViewer &&
@@ -105,6 +110,40 @@ object NtkStrictRouteRecoveryPolicy {
             ) {
                 return true
             }
+            val next = current.cause
+            if (next === current) break
+            current = next
+        }
+        return false
+    }
+
+    /**
+     * A second timeout after the immutable same-origin H2 replacement is route evidence, not a
+     * reason to leave the reader permanently blank. Only the exact direct-Wi-Fi viewer profiles
+     * that consumed that one replacement may retire it and ask the trusted domain resolver for a
+     * new HTTPS origin. Content, identity and parser failures remain terminal.
+     */
+    @JvmStatic
+    fun shouldResolveAfterSameOriginFallback(
+        failure: Throwable,
+        completedRecoveryAttempts: Int,
+        directWifiCurrentViewer: Boolean,
+        sameOriginFallbackConsumed: Boolean,
+        directWifiAdjacentViewer: Boolean = false,
+        hostGpuEmulatorRuntime: Boolean = false,
+    ): Boolean {
+        val eligibleViewer = directWifiCurrentViewer ||
+            (directWifiAdjacentViewer && hostGpuEmulatorRuntime)
+        if (!eligibleViewer ||
+            !sameOriginFallbackConsumed ||
+            completedRecoveryAttempts >= MAX_RECOVERY_ATTEMPTS
+        ) {
+            return false
+        }
+        var current: Throwable? = failure
+        var depth = 0
+        while (current != null && depth++ < 16) {
+            if (current is SocketTimeoutException) return true
             val next = current.cause
             if (next === current) break
             current = next

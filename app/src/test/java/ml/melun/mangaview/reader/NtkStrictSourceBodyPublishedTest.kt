@@ -96,6 +96,27 @@ class NtkStrictSourceBodyPublishedTest {
     }
 
     @Test
+    fun zeroWaveAllowanceDoesNotPermitAReversedActorClock() {
+        assertRejected {
+            NtkSourceOverlapProof(
+                planReservedAtMs = 101L,
+                firstQuarantineSubmittedAtMs = 101L,
+                initialQuarantineWaveSubmittedAtMs = 101L,
+                initialWaveCount = 0,
+                exactSealAtMs = 100L,
+                ownerClaimedAtMs = 101L,
+                completedAtPromotion = 0,
+                activeAtPromotion = 0,
+                queuedAtPromotion = 0,
+                postPromotionStarted = 0,
+                physicalCallCount = 0,
+                duplicatePhysicalCallCount = 0,
+                sameMillisecondSeededExactAllowed = true,
+            )
+        }
+    }
+
+    @Test
     fun actorOrderedHostEmulatorAdjacentWaveMaySealInTheSubmissionMillisecond() {
         val proof = NtkSourceOverlapProof(
             planReservedAtMs = 100L,

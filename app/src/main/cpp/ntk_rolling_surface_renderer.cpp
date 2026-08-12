@@ -1549,12 +1549,17 @@ private:
             display_, config_, EGL_MIN_SWAP_INTERVAL, &minimumSwapInterval);
         (void)eglGetConfigAttrib(
             display_, config_, EGL_MAX_SWAP_INTERVAL, &maximumSwapInterval);
-        // Choreographer is the sole 60 Hz pacing authority. Keeping EGL itself at interval one
-        // makes gfxstream queueBuffer block behind the emulator compositor. Interval zero does
-        // not synthesize or interpolate a viewport: Java still submits only the latest exact
-        // MotionEvent coordinate once per Choreographer callback.
-        const EGLBoolean asynchronous = eglSwapInterval(display_, 0);
-        const int nativeAsyncResult = setNativeWindowSwapInterval(command.window, 0);
+        const bool hostGpuEmulatorQueue =
+            hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire);
+        // Physical devices retain asynchronous submission. The host queue uses the display-paced
+        // mode together with two transport-only spare slots below, so gfxstream cannot replace an
+        // exact viewport before SurfaceFlinger observes it or block the following producer frame.
+        const int requestedSwapInterval = hostGpuEmulatorQueue ? 1 : 0;
+        const EGLBoolean swapIntervalResult =
+            eglSwapInterval(display_, requestedSwapInterval);
+        const int nativeSwapResult =
+            setNativeWindowSwapInterval(command.window, requestedSwapInterval);
+        nativeSwapInterval_ = requestedSwapInterval;
         const auto& bufferControls = nativeWindowBufferControls();
         const float requestedFrameRate = command.refreshPeriodNanos > 0
             ? static_cast<float>(1'000'000'000.0 /
@@ -1562,8 +1567,14 @@ private:
             : 60.0F;
         // This is a cadence hint, not another clock: Choreographer still owns admission while the
         // vote keeps the Surface on the display's seamless 60 Hz mode.
+        // Surface.setFrameRate(FIXED_SOURCE) is applied before native attachment. Do not overwrite
+        // that host-emulator vote with DEFAULT compatibility here; doing so turns the async queue
+        // into a mailbox and drops otherwise on-time Choreographer buffers. Physical profiles keep
+        // the established default compatibility.
+        const int8_t frameRateCompatibility = hostGpuEmulatorQueue ? 1 : 0;
         const int frameRateResult = bufferControls.setFrameRate != nullptr
-            ? bufferControls.setFrameRate(command.window, requestedFrameRate, 0)
+            ? bufferControls.setFrameRate(
+                command.window, requestedFrameRate, frameRateCompatibility)
             : -3;
         // Shared-buffer + auto-refresh exposes the same producer buffer while GLES is updating
         // it. Several physical Samsung compositors scan that buffer out concurrently, which
@@ -1580,8 +1591,6 @@ private:
         // front/queued/producer set. Its fourth slot is transport capacity only: Java/native still
         // accepts at most the newest viewport. Physical Wi-Fi, mobile, and SNI retain the existing
         // three-slot front/queued/producer queue; the profile is frozen by Java before attachment.
-        const bool hostGpuEmulatorQueue =
-            hostGpuEmulatorSurfaceProfile_.load(std::memory_order_acquire);
         const int bufferCountResult = bufferControls.setBufferCount != nullptr
             ? bufferControls.setBufferCount(command.window, hostGpuEmulatorQueue ? 4 : 3)
             : -3;
@@ -1618,13 +1627,15 @@ private:
         height_ = command.height;
         refreshPeriodNanos_ = command.refreshPeriodNanos > 0
             ? command.refreshPeriodNanos : kDefaultRefreshPeriodNanos;
-        RLOGI("cold async SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d eglSwap0=%d nativeSwap0=%d frameRate=%.3f frameRateResult=%d sharedOff=%d autoRefreshOff=%d hostBuffer4=%d bufferCountResult=%d intervalRange=%d..%d durationMs=%.3f",
+        RLOGI("cold SurfaceView BufferQueue attached epoch=%llu size=%dx%d refreshNs=%lld prepared=%d requestedSwap=%d eglSwapResult=%d nativeSwapResult=%d frameRate=%.3f frameRateCompat=%d frameRateResult=%d sharedOff=%d autoRefreshOff=%d hostBuffer4=%d bufferCountResult=%d intervalRange=%d..%d durationMs=%.3f",
               static_cast<unsigned long long>(surfaceEpoch_), width_, height_,
               static_cast<long long>(refreshPeriodNanos_),
               preparedWidth_ == width_ && preparedHeight_ == height_ ? 1 : 0,
-              asynchronous == EGL_TRUE ? 1 : 0,
-              nativeAsyncResult,
+              requestedSwapInterval,
+              swapIntervalResult == EGL_TRUE ? 1 : 0,
+              nativeSwapResult,
               static_cast<double>(requestedFrameRate),
+              static_cast<int>(frameRateCompatibility),
               frameRateResult,
               sharedBufferOffResult,
               autoRefreshOffResult,
@@ -1698,7 +1709,7 @@ private:
         // ANativeWindow_setSwapInterval on every frame can itself enter BufferQueue
         // synchronization, so keep the established mode for the surface's lifetime and submit
         // only the complete buffer here.
-        constexpr int nativeSwapInterval = 0;
+        const int nativeSwapInterval = nativeSwapInterval_;
         if (eglSwapBuffers(display_, windowSurface_) != EGL_TRUE) {
             if (failureStage != nullptr) *failureStage = "window-swap";
             return PresentResult::FAILED;
@@ -2289,6 +2300,7 @@ private:
     std::uint64_t submittedFrames_ = 0;
     bool submissionAwaitingLatch_ = false;
     std::uint64_t presentationFailures_ = 0;
+    int nativeSwapInterval_ = 0;
     std::int64_t lastSlowPresentLogNanos_ = 0;
     std::atomic<std::uint64_t> acceptedFrames_{0};
     std::atomic<std::uint64_t> supersededFrames_{0};
