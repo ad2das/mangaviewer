@@ -26,6 +26,15 @@ class NtkClickOwnedManhwaWavePolicyTest {
             24,
             NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS,
         )
+        assertEquals(6, NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_BULK_INITIAL_TRANSFERS)
+        assertEquals(
+            48,
+            NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_BULK_UPWARD_PROBE_MIN_BODIES,
+        )
+        assertEquals(
+            listOf(4, 6, 8, 12, 24),
+            NtkClickOwnedManhwaWavePolicy.hostGpuCurrentBulkTransferLadder().toList(),
+        )
         assertEquals(
             5,
             NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS,

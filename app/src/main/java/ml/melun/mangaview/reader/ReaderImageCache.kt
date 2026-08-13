@@ -10891,7 +10891,7 @@ data class NtkResolvedSourceRoute(
                             "HTTP ${response.code} quarantine primary full body"
                         )
                     response.code !in 200..299 ->
-                        throw IOException("HTTP ${response.code} quarantine primary full body")
+                        throw NtkQuarantineHttpStatusException(response.code)
                 }
                 if (response.code == 206 || response.header("Content-Range") != null ||
                     response.header("x-mangaviewer-partial-image") == "1"

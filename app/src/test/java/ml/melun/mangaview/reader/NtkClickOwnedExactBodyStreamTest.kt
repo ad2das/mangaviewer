@@ -987,6 +987,8 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(mixedUncommon < ordinaryWifi)
         assertTrue(ordinaryWifi < physicalPermit)
         assertTrue(admission.contains("mixedUncommonLease?.close()"))
+        assertTrue(admission.contains("currentRestoredBulkOwner?.abandonAdaptive()"))
+        assertTrue(admission.contains("currentRestoredBulkOutcome = null"))
         val beforeAdmission = quarantine.substring(0, admissionStart)
         assertFalse(beforeAdmission.contains("mixedUncommonLease = acquireMixedUncommonTransferLease("))
         assertTrue(
@@ -999,6 +1001,30 @@ class NtkClickOwnedExactBodyStreamTest {
                 "if (!isCapturedDirectWifiTransportLive()) return"
             )
         )
+        val restoredHelperStart = quarantine.indexOf(
+            "private fun acquireHostGpuCurrentRestoredBulkBodyTransferLease("
+        )
+        val restoredHelperEnd = quarantine.indexOf(
+            "private fun acquireOrdinaryDirectWifiTransferLease(",
+            restoredHelperStart,
+        )
+        val restoredHelper = quarantine.substring(restoredHelperStart, restoredHelperEnd)
+        assertTrue(
+            restoredHelper.indexOf("hostGpuCurrentRestoredTotalBulkBodyTransferPermits.tryAcquire(") <
+                restoredHelper.indexOf("hostGpuCurrentRestoredBulkAdmission.tryAcquire(")
+        )
+        assertTrue(restoredHelper.contains("isLiveOrdinaryDirectWifiCandidate("))
+        assertTrue(quarantine.contains("val stillComparableOrdinaryBody ="))
+        val wrapperStart = quarantine.indexOf("private class CurrentRestoredBulkBodyLease(")
+        val wrapperEnd = quarantine.indexOf(
+            "/** Purely local request material",
+            wrapperStart,
+        )
+        val wrapper = quarantine.substring(wrapperStart, wrapperEnd)
+        assertTrue(wrapper.contains("adaptive.getAndSet(null)?.aborted()"))
+        assertTrue(wrapper.contains("totalLease.close()"))
+        assertFalse(wrapper.contains("adaptive.getAndSet(null)?.close()"))
+        assertTrue(quarantine.contains("currentRestoredBulkOutcome?.close()"))
     }
 
     @Test

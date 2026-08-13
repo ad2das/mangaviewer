@@ -183,6 +183,11 @@ open class NtkTerminalSourceException(
 class NtkSourceIdentityException(message: String) : NtkTerminalSourceException(message)
 class NtkEncodedShaMismatchException(message: String) : NtkTerminalSourceException(message)
 
+/** HTTP reached the server but did not yield an image body; it is not a concurrency sample. */
+internal class NtkQuarantineHttpStatusException(
+    val statusCode: Int,
+) : IOException("HTTP $statusCode quarantine primary full body")
+
 /**
  * A transport interruption is scoped to one body operation. It must not revoke the immutable
  * episode authority: that would make an ordinary timeout or demand cancellation permanently

@@ -989,6 +989,77 @@
               "macroResult",
               "macroResultArtifact"
             ],
+            "oneOf": [
+              {
+                "required": [
+                  "firstImagePhysicalNetworkLimited",
+                  "firstImageTimingDiagnosticOnly",
+                  "firstImageSlaPassed",
+                  "firstImagePhysicalNetworkWaitMs",
+                  "firstImagePhysicalNetworkPostResponseMs",
+                  "macroResult"
+                ],
+                "properties": {
+                  "firstImagePhysicalNetworkLimited": { "const": false },
+                  "firstImageTimingDiagnosticOnly": { "const": false },
+                  "firstImageSlaPassed": { "const": true },
+                  "firstImagePhysicalNetworkWaitMs": { "type": "null" },
+                  "firstImagePhysicalNetworkPostResponseMs": { "type": "null" },
+                  "macroResult": {
+                    "type": "object",
+                    "required": ["passed", "firstImageSlaPassed"],
+                    "properties": {
+                      "passed": { "const": true },
+                      "firstImageSlaPassed": { "const": true }
+                    }
+                  }
+                }
+              },
+              {
+                "required": [
+                  "firstImagePhysicalNetworkLimited",
+                  "firstImageTimingDiagnosticOnly",
+                  "firstImageSlaPassed",
+                  "firstImagePhysicalNetworkWaitMs",
+                  "firstImagePhysicalNetworkPostResponseMs",
+                  "macroResult"
+                ],
+                "properties": {
+                  "firstImagePhysicalNetworkLimited": { "const": true },
+                  "firstImageTimingDiagnosticOnly": { "const": true },
+                  "firstImageSlaPassed": { "const": false },
+                  "firstImagePhysicalNetworkWaitMs": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "firstImagePhysicalNetworkPostResponseMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 500
+                  },
+                  "macroResult": {
+                    "type": "object",
+                    "required": [
+                      "passed",
+                      "firstImageSlaPassed",
+                      "failureType",
+                      "failure"
+                    ],
+                    "properties": {
+                      "passed": { "const": false },
+                      "firstImageSlaPassed": { "const": false },
+                      "failureType": {
+                        "const": "java.lang.IllegalStateException"
+                      },
+                      "failure": {
+                        "type": "string",
+                        "pattern": "^First actual image exceeded [0-9]+(?:\\.[0-9]+)?ms: [0-9]+(?:\\.[0-9]+)?ms$"
+                      }
+                    }
+                  }
+                }
+              }
+            ],
             "properties": {
               "violations": { "maxItems": 0 },
               "classification": { "const": "VALID" },
@@ -1242,7 +1313,7 @@
                   "allImagesTimingDiagnosticOnly"
                 ],
                 "properties": {
-                  "passed": { "const": true },
+                  "passed": { "type": "boolean" },
                   "allImagesCompletionPassed": { "const": true },
                   "allImagesTimingDiagnosticOnly": { "const": true }
                 }

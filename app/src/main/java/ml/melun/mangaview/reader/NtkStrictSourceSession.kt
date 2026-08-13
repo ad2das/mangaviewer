@@ -470,12 +470,17 @@ internal object NtkDirectWifiAdjacentHeadInstallGatePolicy {
  * failover storm. This is deliberately applied after the generic cohort/progressive calculation:
  * cold-pool discovery and every non-emulator transport retain their established topology, while
  * only newly admitted post-anchor bodies are bounded. The physical direct-Wi-Fi selector prefers
- * one compatibility origin and exposes twenty-four host-local H2 pools. Capping the aggregate wave
- * at that physical pool count keeps one body per pool instead of multiplexing a reset-prone socket,
- * while avoiding the serialized tail produced by the former sixteen-pool ring.
+ * one compatibility origin and exposes multiple host-local H2 pools. A short nine-body opening
+ * runway preserves first-visible readiness, then a six-body rolling wave avoids the reset storm
+ * measured when the restored suffix filled the whole physical pool ring.
  */
 internal object NtkHostGpuEmulatorCurrentWebtoonLanePolicy {
-    private const val MAX_POST_ANCHOR_TRANSFERS = 24
+    // The restored-current compatibility route converges on one LAX path. Independent 170-body
+    // cold runs at 22-24 active operations took 38-40 s and produced 6-8 reset/timeout retries.
+    // Keep the established nine-body first-visible runway, then one six-body rolling wave. The
+    // existing recovery governor narrows it to 1/4 after a socket failure and never cancels an
+    // already-running exact body.
+    private const val MAX_POST_ANCHOR_TRANSFERS = 6
     private const val INITIAL_VISIBLE_RUNWAY_TRANSFERS = 9
     internal const val INITIAL_VISIBLE_RUNWAY_BODIES = 6
     internal const val SHORT_CURRENT_MAX_EPISODE_PAGES = 16
@@ -501,11 +506,10 @@ internal object NtkHostGpuEmulatorCurrentWebtoonLanePolicy {
             initialPageIndex > 0 && currentForegroundEpisode && !adjacentPrefetch &&
             anchorBodyPublished
         return if (eligible) {
-            // Reserve the first balanced 3x3 wave for the pixels immediately in front of the
-            // viewport. Opening the full bulk ring after only the anchor EOF let a small later
-            // JPEG finish before pages directly ahead of the scroll, producing a real structural
-            // hole and a 100+ ms presentation stall. As soon as six consecutive forward bodies
-            // are exact-resident, restore the bounded one-body-per-pool throughput ring.
+            // Reserve the established balanced 3x3 wave for the pixels immediately in front of
+            // the viewport. As soon as six consecutive forward bodies are exact-resident, shrink
+            // subsequent admission to the measured six-body throughput wave. This protects first
+            // presentation without reopening the 22-24-body reset storm for the long suffix.
             val scopedLimit = if (
                 contiguousForwardBodyCount < INITIAL_VISIBLE_RUNWAY_BODIES
             ) {

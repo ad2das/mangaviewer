@@ -975,6 +975,99 @@ if([int]$finalPassContract.completedCases.const -ne 120 -or
 }
 $passedCaseRequired = @($schema.'$defs'.case.allOf[0].then.required)
 $passedCaseProperties = $schema.'$defs'.case.allOf[0].then.properties
+$passedCaseMacroBranches = @($schema.'$defs'.case.allOf[0].then.oneOf)
+if($passedCaseMacroBranches.Count -ne 2 -or
+        $passedCaseMacroBranches[0].properties.firstImagePhysicalNetworkLimited.const -ne
+            $false -or
+        $passedCaseMacroBranches[0].properties.firstImageTimingDiagnosticOnly.const -ne
+            $false -or
+        $passedCaseMacroBranches[0].properties.firstImageSlaPassed.const -ne $true -or
+        [string]$passedCaseMacroBranches[0].properties.firstImagePhysicalNetworkWaitMs.type -cne
+            "null" -or
+        [string]$passedCaseMacroBranches[0].properties.firstImagePhysicalNetworkPostResponseMs.type -cne
+            "null" -or
+        $passedCaseMacroBranches[0].properties.macroResult.properties.passed.const -ne
+            $true -or
+        $passedCaseMacroBranches[0].properties.macroResult.properties.firstImageSlaPassed.const -ne
+            $true -or
+        $passedCaseMacroBranches[1].properties.firstImagePhysicalNetworkLimited.const -ne
+            $true -or
+        $passedCaseMacroBranches[1].properties.firstImageTimingDiagnosticOnly.const -ne
+            $true -or
+        $passedCaseMacroBranches[1].properties.firstImageSlaPassed.const -ne $false -or
+        [string]$passedCaseMacroBranches[1].properties.firstImagePhysicalNetworkWaitMs.type -cne
+            "number" -or
+        [string]$passedCaseMacroBranches[1].properties.firstImagePhysicalNetworkPostResponseMs.type -cne
+            "number" -or
+        [double]$passedCaseMacroBranches[1].properties.firstImagePhysicalNetworkPostResponseMs.maximum -ne
+            500.0 -or
+        $passedCaseMacroBranches[1].properties.macroResult.properties.passed.const -ne
+            $false -or
+        $passedCaseMacroBranches[1].properties.macroResult.properties.firstImageSlaPassed.const -ne
+            $false -or
+        $passedCaseMacroBranches[1].properties.macroResult.properties.failureType.const -cne
+            "java.lang.IllegalStateException" -or
+        [string]$passedCaseMacroBranches[1].properties.macroResult.properties.failure.pattern -cne
+            '^First actual image exceeded [0-9]+(?:\.[0-9]+)?ms: [0-9]+(?:\.[0-9]+)?ms$' -or
+        [string]$passedCaseProperties.macroResult.properties.passed.type -cne "boolean") {
+    throw "Passed-case schema does not narrowly encode the physical-network timing waiver"
+}
+$passedCaseBranchSchema = [pscustomobject]@{
+    oneOf = $passedCaseMacroBranches
+} | ConvertTo-Json -Depth 20
+$normalPassedCase = [pscustomobject]@{
+    firstImagePhysicalNetworkLimited = $false
+    firstImageTimingDiagnosticOnly = $false
+    firstImageSlaPassed = $true
+    firstImagePhysicalNetworkWaitMs = $null
+    firstImagePhysicalNetworkPostResponseMs = $null
+    macroResult = [pscustomobject]@{
+        passed = $true
+        firstImageSlaPassed = $true
+    }
+}
+$waivedPassedCase = [pscustomobject]@{
+    firstImagePhysicalNetworkLimited = $true
+    firstImageTimingDiagnosticOnly = $true
+    firstImageSlaPassed = $false
+    firstImagePhysicalNetworkWaitMs = 6354.9318
+    firstImagePhysicalNetworkPostResponseMs = 196.0
+    macroResult = [pscustomobject]@{
+        passed = $false
+        firstImageSlaPassed = $false
+        failureType = 'java.lang.IllegalStateException'
+        failure = 'First actual image exceeded 4000ms: 6550.9318ms'
+    }
+}
+foreach($validPassedCase in @($normalPassedCase, $waivedPassedCase)) {
+    if(-not (Test-Json -Json ($validPassedCase | ConvertTo-Json -Depth 10) `
+            -Schema $passedCaseBranchSchema -ErrorAction Stop)) {
+        throw "Valid passed-case timing branch did not validate"
+    }
+}
+$invalidWaiverCases = @()
+foreach($mutation in @(
+        [pscustomobject]@{ Path = 'macroPassed'; Value = $true },
+        [pscustomobject]@{ Path = 'physicalLimited'; Value = $false },
+        [pscustomobject]@{ Path = 'diagnosticOnly'; Value = $false },
+        [pscustomobject]@{ Path = 'networkWait'; Value = $null },
+        [pscustomobject]@{ Path = 'failure'; Value = 'Some unrelated macro failure' })) {
+    $candidate = ($waivedPassedCase | ConvertTo-Json -Depth 10) | ConvertFrom-Json
+    switch($mutation.Path) {
+        'macroPassed' { $candidate.macroResult.passed = $mutation.Value }
+        'physicalLimited' { $candidate.firstImagePhysicalNetworkLimited = $mutation.Value }
+        'diagnosticOnly' { $candidate.firstImageTimingDiagnosticOnly = $mutation.Value }
+        'networkWait' { $candidate.firstImagePhysicalNetworkWaitMs = $mutation.Value }
+        'failure' { $candidate.macroResult.failure = $mutation.Value }
+    }
+    $invalidWaiverCases += $candidate
+}
+foreach($invalidWaiverCase in $invalidWaiverCases) {
+    if(Test-Json -Json ($invalidWaiverCase | ConvertTo-Json -Depth 10) `
+            -Schema $passedCaseBranchSchema -ErrorAction SilentlyContinue) {
+        throw "Passed-case schema accepted a malformed physical-network timing waiver"
+    }
+}
 foreach($adjacentField in @(
         "baseCaseId",
         "infrastructureAttempt",

@@ -33,9 +33,10 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
 
     @Test
     fun capsOnlyPostAnchorHostEmulatorCurrentWebtoonResume() {
-        assertEquals(24, cap(progressiveLaneCount = 60))
-        assertEquals(24, cap(progressiveLaneCount = 64))
-        assertEquals(18, cap(progressiveLaneCount = 18))
+        assertEquals(6, cap(progressiveLaneCount = 60))
+        assertEquals(6, cap(progressiveLaneCount = 64))
+        assertEquals(6, cap(progressiveLaneCount = 18))
+        assertEquals(5, cap(progressiveLaneCount = 5))
 
         assertEquals(60, cap(emulatorRuntime = false))
         assertEquals(60, cap(directWifiTransport = false))
@@ -49,15 +50,15 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
     }
 
     @Test
-    fun reservesBalancedNineLaneWaveUntilTheVisibleForwardRunwayIsResident() {
+    fun preservesTheNineLaneVisibleRunwayThenUsesTheMeasuredSixLaneWave() {
         assertEquals(9, cap(contiguousForwardBodyCount = 0))
         assertEquals(9, cap(contiguousForwardBodyCount = 5))
         assertEquals(
             8,
             cap(progressiveLaneCount = 8, contiguousForwardBodyCount = 0),
         )
-        assertEquals(24, cap(contiguousForwardBodyCount = 6))
-        assertEquals(24, cap(contiguousForwardBodyCount = 20))
+        assertEquals(6, cap(contiguousForwardBodyCount = 6))
+        assertEquals(6, cap(contiguousForwardBodyCount = 20))
 
         // The runway stage is fenced by the same exact profile as the one-body-per-pool cap.
         assertEquals(60, cap(

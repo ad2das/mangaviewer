@@ -57,11 +57,22 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // the full forty-wide wave, but open it only after this four-body current-viewport prefix is
     // terminal. This is not used for cold page zero, adjacent work, physical devices, or SNI.
     const val HOST_GPU_CURRENT_RESTORED_VIEWPORT_BODIES = 4
-    // After the visible prefix is resident, use exactly one transfer per independent connection
-    // shard. Forty simultaneous H1 bodies duplicated sixteen shards and produced header/body
-    // timeouts; twelve needed too many serial waves. This 24-shard limit remains current-resume/
-    // emulator only and does not reduce the physical-device or adjacent production ring.
+    // Twenty-four remains the maximum for a historically fast CDN cohort, but it is no longer the
+    // starting point. A 17.74 MiB LAX-routed volume took 27-30 s at C24 versus 16.8-21.9 s at C4-C6.
+    // Probe a session-local ladder after the four visible bodies are resident and keep a wider
+    // stage only when its byte-weighted wall throughput materially improves. This remains current-
+    // resume/emulator only and does not reduce the physical-device or adjacent production ring.
     const val HOST_GPU_CURRENT_RESTORED_BULK_BODY_TRANSFERS = CONNECTION_SHARDS
+    const val HOST_GPU_CURRENT_BULK_INITIAL_TRANSFERS = 6
+    // A 27-body restored suffix would spend most of its useful work benchmarking itself. Keep the
+    // measured C6 optimum directly for finite chapters and probe wider only when enough untouched
+    // bodies remain to benefit from the result in the same session.
+    const val HOST_GPU_CURRENT_BULK_UPWARD_PROBE_MIN_BODIES = 48
+    const val HOST_GPU_CURRENT_BULK_MINIMUM_IMPROVEMENT_RATIO = 0.15
+    private val HOST_GPU_CURRENT_BULK_TRANSFER_LADDER = intArrayOf(4, 6, 8, 12, 24)
+
+    fun hostGpuCurrentBulkTransferLadder(): IntArray =
+        HOST_GPU_CURRENT_BULK_TRANSFER_LADDER.copyOf()
     // The completion-gated adjacent p0-p4 runway must be fully resident before the boundary, but
     // releasing the remaining ninety-plus bodies into the forty-call ring at viewport activation
     // competes with SurfaceFlinger while the user is scrolling. Keep only one five-page suffix
