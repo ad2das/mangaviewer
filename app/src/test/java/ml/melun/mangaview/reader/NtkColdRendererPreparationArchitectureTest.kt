@@ -761,7 +761,11 @@ class NtkColdRendererPreparationArchitectureTest {
             resolvedMetadata.indexOf("!isEpisodeFullyDrawableForAdjacent(source)") <
                 resolvedMetadata.indexOf("ReaderImageCache.allowAdjacentNtkForegroundViewerPath(")
         )
-        assertTrue(completionRelease.contains("releaseAdjacentBodiesAfterPredecessorComplete("))
+        assertTrue(
+            completionRelease.contains(
+                "releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete("
+            )
+        )
         assertTrue(completionRelease.contains("startForwardAdjacentExactDiscoveryAtCompletion("))
         assertTrue(
             completionRelease.substringBefore("control.execute {")
@@ -774,10 +778,14 @@ class NtkColdRendererPreparationArchitectureTest {
         )
         assertTrue(
             completionRelease.indexOf("!isEpisodeFullyDrawableForAdjacent(completedSource)") <
-                completionRelease.indexOf("releaseAdjacentBodiesAfterPredecessorComplete(")
+                completionRelease.indexOf(
+                    "releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete("
+                )
         )
         assertTrue(
-            completionRelease.indexOf("releaseAdjacentBodiesAfterPredecessorComplete(") <
+            completionRelease.indexOf(
+                "releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete("
+            ) <
                 completionRelease.indexOf("control.execute {")
         )
         assertTrue(
@@ -787,7 +795,11 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(
             appendedCompletionRelease.contains("NtkCompletedForwardEpisodePolicy.isComplete(")
         )
-        assertTrue(appendedCompletionRelease.contains("releaseAdjacentBodiesAfterPredecessorComplete("))
+        assertTrue(
+            appendedCompletionRelease.contains(
+                "releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete("
+            )
+        )
         assertTrue(physicalAdmission.contains("adjacentPredecessorComplete"))
         assertTrue(physicalAdmission.contains("adjacentRunwayRelease"))
         assertTrue(exactInstall.contains("if (flight.adjacentPredecessorGate)"))
@@ -1317,6 +1329,10 @@ class NtkColdRendererPreparationArchitectureTest {
             "private fun startForwardAdjacentExactDiscoveryAtCompletion(",
             sessionSource,
         )
+        val completionActivation = functionBody(
+            "private fun activateForwardAdjacentCompletionTargetClaim(",
+            sessionSource,
+        )
         val completionEpisodeResolution = functionBody(
             "private fun resolveForwardAdjacentEpisodeListAtCompletion(",
             sessionSource,
@@ -1346,17 +1362,23 @@ class NtkColdRendererPreparationArchitectureTest {
 
         assertTrue(completion.contains("onResolvedForwardPath ="))
         assertFalse(completion.contains("cachedNextEpisode?.ntkEpisodePath?.let"))
-        assertTrue(completionDiscovery.contains("onResolvedForwardPath?.invoke(targetPath)"))
+        assertTrue(completionActivation.contains("onResolvedForwardPath?.invoke(targetPath)"))
         assertTrue(
-            completionDiscovery.indexOf("watchForwardAdjacentExactManifestForPreappend(") <
-                completionDiscovery.lastIndexOf("listener.onAdjacentExactManifestRequired(")
+            completionActivation.indexOf("watchForwardAdjacentExactManifestForPreappend(") <
+                completionActivation.lastIndexOf("listener.onAdjacentExactManifestRequired(")
         )
-        assertTrue(completionDiscovery.contains("if (controlOnly)"))
+        assertTrue(completionActivation.contains("if (controlOnly)"))
         assertTrue(completionDiscovery.contains("persistedExactAdjacentAuthority"))
         assertTrue(completionDiscovery.contains("isDirectWifiStrictAdjacentTransportActive()"))
-        assertTrue(completionDiscovery.contains("providerAuthority || persistedAuthority"))
         assertTrue(
-            completionDiscovery.indexOf("providerAuthority || persistedAuthority") <
+            completionDiscovery.contains(
+                "resolvedNextProviderAuthority || resolvedNextPersistedAuthority"
+            )
+        )
+        assertTrue(
+            completionDiscovery.indexOf(
+                "resolvedNextProviderAuthority || resolvedNextPersistedAuthority"
+            ) <
                 completionDiscovery.indexOf("resolveForwardAdjacentEpisodeListAtCompletion(")
         )
         assertTrue(completionDiscovery.contains("resolveForwardAdjacentEpisodeListAtCompletion("))
@@ -1407,8 +1429,8 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(exactManifestPreappend.contains("appendResolvedEpisode("))
         assertFalse(exactManifestPreappend.contains("fetchEpisodesForeground("))
         assertTrue(
-            completionDiscovery.indexOf("if (targetPath.isEmpty() || predecessorPath.isEmpty())") <
-                completionDiscovery.indexOf("onResolvedForwardPath?.invoke(targetPath)")
+            completionDiscovery.indexOf("if (expectedPath.isEmpty() || predecessorPath.isEmpty())") <
+                completionDiscovery.indexOf("claimForwardAdjacentCompletionTarget(")
         )
         assertTrue(authorize.contains("if (!directWifiExpandedNativeTextureRunway"))
         assertTrue(authorize.contains("directWifiExpandedNativeTextureEpisodePaths.add"))
@@ -2057,7 +2079,8 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(callFactory.contains("isLegacyBlockedImageRequest(request)"))
         assertTrue(legacyRecovery.contains("executeExactQuicImageRecovery("))
         assertTrue(recovery.contains("request.url.toString()"))
-        assertTrue(recovery.contains(".request(request)"))
+        assertTrue(recovery.contains(".request(recoveryRequest)"))
+        assertTrue(recovery.contains("NtkExactImagePhysicalAttempt(recoveryAttempt)"))
         assertTrue(recovery.contains("result.bodyBytes"))
         assertTrue(recovery.contains("activeExactQuicRecovery.compareAndSet"))
         assertFalse(recovery.contains("workId"))
@@ -2758,6 +2781,83 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(recoveryClient.contains("directWifiNetwork.socketFactory"))
         assertTrue(recoveryClient.contains("protocols(listOf(Protocol.HTTP_1_1))"))
         assertFalse(recovery.contains("currentEpisodeOwned"))
+    }
+
+    @Test
+    fun currentWebtoonSocketFailureOwnsTheProbeBeforeOrdinaryRefill() {
+        val strictSource = File(
+            "src/main/java/ml/melun/mangaview/reader/NtkStrictSourceSession.kt"
+        ).readText()
+        val refill = functionBody("private fun refillLanesActor(", strictSource)
+        val service = functionBody(
+            "private fun serviceCurrentWebtoonRecoveryProofOwnerActor(",
+            strictSource,
+        )
+        val complete = functionBody("private fun completePhysicalActor(", strictSource)
+        val retry = functionBody("private fun schedulePhysicalRetryActor(", strictSource)
+
+        val fenceHold = refill.indexOf("currentWebtoonRecoveryProofOwner == null")
+        val proofService = refill.indexOf("serviceCurrentWebtoonRecoveryProofOwnerActor()")
+        val ordinaryLaneLoop = refill.indexOf("laneLoop@ for (laneIndex")
+        assertTrue(fenceHold >= 0)
+        assertTrue(proofService > fenceHold)
+        assertTrue(ordinaryLaneLoop > proofService)
+        assertTrue(service.contains("currentWebtoonRecoveryFence.requiresDirectH1"))
+        assertTrue(service.contains("BASE_TARGET"))
+        assertTrue(service.contains("BACKGROUND_OWNER_RECHECK_MS"))
+        assertTrue(service.contains("schedulePhysicalRetryActor("))
+        assertTrue(service.contains("launchPrimaryFullBodyActor(laneIndex, page)"))
+        assertTrue(
+            service.indexOf("schedulePhysicalRetryActor(") <
+                service.indexOf("launchPrimaryFullBodyActor(laneIndex, page)")
+        )
+        assertFalse(service.contains("executePhysical("))
+
+        val claim = complete.indexOf("CurrentWebtoonRecoveryProofOwner(")
+        val schedule = complete.indexOf("schedulePhysicalRetryActor(page, delayMs)")
+        assertTrue(claim >= 0)
+        assertTrue(schedule > claim)
+        val pressure = complete.indexOf("val recoveryPressure =")
+        val stateTransition = complete.indexOf("pressureObserved = recoveryPressure")
+        val delay = complete.indexOf("recoveryEligible && (recoveryPressure")
+        val owner = complete.lastIndexOf("pressureObserved = recoveryPressure")
+        assertTrue(pressure >= 0)
+        assertTrue(complete.contains("fenceRequiresDirectH1 = pageFenceRequiresDirectH1"))
+        assertTrue(stateTransition > pressure)
+        assertTrue(delay > stateTransition)
+        assertTrue(owner > delay)
+        assertTrue(complete.contains("currentWebtoonRecoveryProofOwner?.activeWorkId"))
+        assertTrue(retry.lastIndexOf("refillLanesActor()") >= 0)
+    }
+
+    @Test
+    fun healthyColdCohortLeaderPreferenceIsScopedBehindRecoveryAndC8Proof() {
+        val strictSource = File(
+            "src/main/java/ml/melun/mangaview/reader/NtkStrictSourceSession.kt"
+        ).readText()
+        val refill = functionBody("private fun refillLanesActor(", strictSource)
+        val selector = functionBody("private fun selectPrimaryPageActor(", strictSource)
+
+        val recoveryOwner = refill.indexOf("serviceCurrentWebtoonRecoveryProofOwnerActor()")
+        val ordinarySelector = refill.indexOf("selectPrimaryPageActor(")
+        assertTrue(recoveryOwner >= 0)
+        assertTrue(ordinarySelector > recoveryOwner)
+
+        val preferenceStart = refill.indexOf("preferHealthyColdCohortLeaders =")
+        val preferenceEnd = refill.indexOf(") ?: break", preferenceStart)
+        assertTrue(preferenceStart > ordinarySelector)
+        assertTrue(preferenceEnd > preferenceStart)
+        val preference = refill.substring(preferenceStart, preferenceEnd)
+        assertTrue(preference.contains("anchorBodyPublished"))
+        assertTrue(preference.contains("healthyCurrentWebtoonBulkExpansion"))
+        assertTrue(preference.contains("currentWebtoonRecoveryLiveAdmissionEligibleActor()"))
+        assertTrue(refill.contains("currentWebtoonC8HealthState.qualified"))
+        assertTrue(refill.contains("!currentWebtoonC8HealthState.frozen"))
+        assertTrue(refill.contains("!currentWebtoonRecoveryFence.isTripped()"))
+
+        assertTrue(selector.contains("preferredPageIndexes = if (preferHealthyColdCohortLeaders)"))
+        assertTrue(selector.contains("coldConnectionCohortLeaderSet"))
+        assertTrue(selector.indexOf("coldConnectionCohortLeaderSet") < selector.indexOf("emptySet()"))
     }
 
     private fun functionBody(signature: String, text: String = source): String {

@@ -81,6 +81,73 @@ internal object NtkStrictDecodeReleasePolicy {
         residentPageCount >= releaseThreshold(pageCount, webtoon)
 }
 
+/**
+ * Revision-aware ownership for completion-driven exact-manifest appends.
+ *
+ * A target path can legitimately be selected, replaced, and selected again before an older
+ * manifest callback leaves its executor. Keeping both pending and in-flight ownership keyed by
+ * path alone lets that old callback either overwrite the new pending value or consume its only
+ * wake-up. Pending installation therefore keeps the greatest monotonic claim revision, while an
+ * in-flight release must match the exact revision that acquired the path.
+ */
+internal class NtkForwardAdjacentExactManifestAppendGate<T>(
+    private val revisionOf: (T) -> Long,
+) {
+    private val pendingByPath = ConcurrentHashMap<String, T>()
+    private val inFlightRevisionByPath = ConcurrentHashMap<String, Long>()
+
+    fun installNewest(path: String, proposed: T): T {
+        require(path.isNotBlank())
+        val proposedRevision = revisionOf(proposed)
+        require(proposedRevision > 0L)
+        return checkNotNull(pendingByPath.compute(path) { _, current ->
+            if (current == null || proposedRevision > revisionOf(current)) proposed else current
+        })
+    }
+
+    fun current(path: String): T? = pendingByPath[path]
+
+    fun snapshot(): Map<String, T> = HashMap(pendingByPath)
+
+    fun isCurrent(path: String, expected: T): Boolean = pendingByPath[path] === expected
+
+    fun removePending(path: String, expected: T): Boolean {
+        var removed = false
+        pendingByPath.computeIfPresent(path) { _, current ->
+            if (current === expected) {
+                removed = true
+                null
+            } else {
+                current
+            }
+        }
+        return removed
+    }
+
+    fun removePendingRevision(path: String, expectedRevision: Long): Boolean {
+        require(expectedRevision > 0L)
+        val current = pendingByPath[path] ?: return false
+        if (revisionOf(current) != expectedRevision) return false
+        return pendingByPath.remove(path, current)
+    }
+
+    fun tryAcquire(path: String, revision: Long): Boolean {
+        require(path.isNotBlank())
+        require(revision > 0L)
+        return inFlightRevisionByPath.putIfAbsent(path, revision) == null
+    }
+
+    fun release(path: String, revision: Long): Boolean {
+        require(revision > 0L)
+        return inFlightRevisionByPath.remove(path, revision)
+    }
+
+    fun clear() {
+        pendingByPath.clear()
+        inFlightRevisionByPath.clear()
+    }
+}
+
 internal object NtkStrictTerminalDecodePolicy {
     const val DEFAULT_PARALLELISM = 5
     const val DIRECT_WIFI_CURRENT_WEBTOON_PARALLELISM = 7
@@ -1278,11 +1345,25 @@ class ReaderSession(
     private data class ForwardAdjacentExactManifestAppend(
         val target: Manga,
         val predecessorEpisodePath: String,
+        val claimRevision: Long,
         val attempts: AtomicInteger = AtomicInteger(0),
     )
-    private val forwardAdjacentExactManifestAppends =
-        ConcurrentHashMap<String, ForwardAdjacentExactManifestAppend>()
-    private val forwardAdjacentExactManifestAppendInFlight = ConcurrentHashMap.newKeySet<String>()
+    private data class ForwardAdjacentCompletionTargetClaim(
+        val target: Manga,
+        val predecessorEpisodePath: String,
+        val targetEpisodePath: String,
+        val authority: NtkForwardAdjacentTargetClaimPolicy.Authority,
+        val revision: Long,
+        val structureCommitted: Boolean = false,
+    )
+    private val forwardAdjacentCompletionTargetClaimLock = Any()
+    private val forwardAdjacentCompletionTargetClaimSequence = AtomicLong(1L)
+    private val forwardAdjacentCompletionTargetClaims = HashMap<String, ForwardAdjacentCompletionTargetClaim>()
+    private val forwardAdjacentCompletionTargetHistory = ConcurrentHashMap<String, String>()
+    private val forwardAdjacentExactManifestAppendGate =
+        NtkForwardAdjacentExactManifestAppendGate<ForwardAdjacentExactManifestAppend> {
+            it.claimRevision
+        }
     private val forwardAdjacentExactManifestSubscription = AtomicReference<Closeable?>()
     private val forwardAdjacentControlAfterBodiesResidentStarted = AtomicBoolean(false)
     private val adjacentStrictRecoveryStates = HashMap<String, AdjacentStrictRecoveryState>()
@@ -11040,8 +11121,11 @@ class ReaderSession(
         waitingInitialAdjacentManhwaRunwayAppends.cancelAll()
         initialAdjacentManhwaRunwayEventWakeKeys.clear()
         forwardAdjacentExactManifestSubscription.getAndSet(null)?.close()
-        forwardAdjacentExactManifestAppends.clear()
-        forwardAdjacentExactManifestAppendInFlight.clear()
+        forwardAdjacentExactManifestAppendGate.clear()
+        synchronized(forwardAdjacentCompletionTargetClaimLock) {
+            forwardAdjacentCompletionTargetClaims.clear()
+            forwardAdjacentCompletionTargetHistory.clear()
+        }
         adjacentStrictPredecessorPaths.clear()
         synchronized(adjacentStrictSourceClaimLock) {
             adjacentStrictRecoveryStates.clear()
@@ -12298,6 +12382,12 @@ class ReaderSession(
         target.title = currentTitle
         target.titleId = currentTitle.id
         target.mode = source.mode
+        if (direction > 0) {
+            rememberAdjacentStrictPredecessor(
+                target.ntkEpisodePath,
+                source.ntkEpisodePath,
+            )
+        }
         if (hasEpisode(target)) return false
         inheritNtkAppendGeneratedHints(target, source, currentTitle)
         val seeded = seedNtkAppendGeneratedUrlsFromNeighbor(target, source, currentTitle)
@@ -15117,6 +15207,10 @@ class ReaderSession(
                     if (publishKey.isNotEmpty()) pendingAdjacentAppendPublishKeys.remove(publishKey)
                     return
                 }
+                if (!claimForwardAdjacentStructurePublication(target)) {
+                    if (publishKey.isNotEmpty()) pendingAdjacentAppendPublishKeys.remove(publishKey)
+                    return
+                }
                 if (publishKey.isNotEmpty()) pendingAdjacentAppendPublishKeys.add(publishKey)
                 beginStructurePublish()
                 cardIndex = pages.size
@@ -15730,6 +15824,11 @@ class ReaderSession(
                     "append_adjacent_runway_duplicate targetId=${target.id} " +
                         "path=${target.ntkEpisodePath} pages=${pages.size}"
                 )
+                recycleAdjacentRunwayDrawableBatch(readyBatch)
+                clearPendingAdjacentAppendPublish(publishKey)
+                return true
+            }
+            if (!claimForwardAdjacentStructurePublication(target)) {
                 recycleAdjacentRunwayDrawableBatch(readyBatch)
                 clearPendingAdjacentAppendPublish(publishKey)
                 return true
@@ -18171,6 +18270,12 @@ class ReaderSession(
                 clearPendingAdjacentAppendPublish(publishKey)
                 return true
             }
+            if (!claimForwardAdjacentStructurePublication(target)) {
+                recycleAdjacentExactP0Delta(flight.head)
+                releaseAdjacentExactP0Flight(flight)
+                clearPendingAdjacentAppendPublish(publishKey)
+                return true
+            }
             if (publishKey.isNotEmpty()) pendingAdjacentAppendPublishKeys.add(publishKey)
             beginStructurePublish()
             beginAdjacentDrawableBatchPublication()
@@ -19529,6 +19634,8 @@ class ReaderSession(
             source.ntkEpisodePath?.trim().orEmpty(),
         )
         if (sourcePath.isEmpty()) return false
+        val forwardAdjacentExactManifestAppends =
+            forwardAdjacentExactManifestAppendGate.snapshot()
         val pending = forwardAdjacentExactManifestAppends.entries.filter { entry ->
             NtkStripDigests.normalizeEpisodePath(entry.value.predecessorEpisodePath)
                 .equals(sourcePath, ignoreCase = true)
@@ -30257,23 +30364,22 @@ class ReaderSession(
                     forwardAdjacentControlAfterBodiesResidentStarted.set(false)
                     return@execute
                 }
-                startForwardAdjacentExactDiscoveryAtCompletion(
+                val selectedTargetPath = startForwardAdjacentExactDiscoveryAtCompletion(
                     source,
                     target,
                     persistedExactAdjacentAuthority = true,
                     onResolvedForwardPath = null,
                     controlOnly = true,
+                ) ?: return@execute
+                releaseClaimedForwardAdjacentControlAfterBodiesResident(
+                    launchSeal.normalizedEpisodePath,
+                    selectedTargetPath,
                 )
-                NtkStrictEpisodeDiscoveryCoordinator
-                    .releaseAdjacentControlAfterPredecessorBodiesResident(
-                        launchSeal.normalizedEpisodePath,
-                        target.ntkEpisodePath,
-                    )
                 Log.d(
                     TAG,
                     "append_adjacent_body_resident_control_release " +
                         "source=${launchSeal.normalizedEpisodePath}," +
-                        "target=${target.ntkEpisodePath},requiredFirst=$strictForwardSourceFloor," +
+                        "target=$selectedTargetPath,requiredFirst=$strictForwardSourceFloor," +
                         "requiredCount=${launchSeal.pageCount - strictForwardSourceFloor}",
                 )
             }
@@ -30368,40 +30474,44 @@ class ReaderSession(
             onResolvedForwardPath,
         )
         if (exactTargetPath != null) {
-            NtkStrictEpisodeDiscoveryCoordinator
-                .releaseAdjacentBodiesAfterPredecessorComplete(
-                    completedSource.ntkEpisodePath,
-                    exactTargetPath,
-                )
+            releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete(
+                completedSource.ntkEpisodePath.orEmpty(),
+                exactTargetPath,
+            )
             releaseAdjacentStrictClaimsAfterPredecessorComplete(normalizedCompletedPath)
         }
-        try {
-            control.execute {
-                if (cancelled.get()) return@execute
-                val source = synchronized(pagesLock) {
-                    pages.firstOrNull { page ->
-                        page.transitionTitle == null &&
-                            NtkStripDigests.normalizeEpisodePath(
-                                page.manga.ntkEpisodePath.orEmpty(),
-                            ) == normalizedCompletedPath
-                    }?.manga
-                } ?: return@execute
-                if (!isEpisodeFullyDrawableForAdjacent(source)) return@execute
-                val currentTitle = title ?: source.title ?: manga.title ?: return@execute
-                maybeStartInitialAdjacentMetadataPrefetch(
-                    source,
-                    currentTitle,
-                    NtkAdjacentRunwayPreparationPolicy.CURRENT_EPISODE_COMPLETE_IDLE_REASON,
-                )
-                val sourceTail = synchronized(pagesLock) {
-                    pages.indexOfLast { page ->
-                        page.transitionTitle == null &&
-                            looseSameEpisodeForAppend(page.manga, source)
+        // Once an exact pair is selected, its manifest watcher owns completion. Starting the
+        // independent numeric/list fallback as well creates a second valid-image owner whose
+        // opaque database id can win the structural race despite not being the next chapter.
+        if (exactTargetPath == null) {
+            try {
+                control.execute {
+                    if (cancelled.get()) return@execute
+                    val source = synchronized(pagesLock) {
+                        pages.firstOrNull { page ->
+                            page.transitionTitle == null &&
+                                NtkStripDigests.normalizeEpisodePath(
+                                    page.manga.ntkEpisodePath.orEmpty(),
+                                ) == normalizedCompletedPath
+                        }?.manga
+                    } ?: return@execute
+                    if (!isEpisodeFullyDrawableForAdjacent(source)) return@execute
+                    val currentTitle = title ?: source.title ?: manga.title ?: return@execute
+                    maybeStartInitialAdjacentMetadataPrefetch(
+                        source,
+                        currentTitle,
+                        NtkAdjacentRunwayPreparationPolicy.CURRENT_EPISODE_COMPLETE_IDLE_REASON,
+                    )
+                    val sourceTail = synchronized(pagesLock) {
+                        pages.indexOfLast { page ->
+                            page.transitionTitle == null &&
+                                looseSameEpisodeForAppend(page.manga, source)
+                        }
                     }
+                    if (sourceTail >= 0) maybeWarmCompletedForwardEpisode(sourceTail, source)
                 }
-                if (sourceTail >= 0) maybeWarmCompletedForwardEpisode(sourceTail, source)
+            } catch (_: RejectedExecutionException) {
             }
-        } catch (_: RejectedExecutionException) {
         }
     }
 
@@ -30421,6 +30531,292 @@ class ReaderSession(
     }
 
     /**
+     * Selects exactly one forward structural target for a predecessor. The exact body manifest for
+     * an episode is not adjacency evidence: opaque numeric record ids may point at a different
+     * chapter that nevertheless has perfectly valid images. Keep the persisted six-field pair
+     * ahead of those heuristics, while still permitting stronger fresh-provider evidence to
+     * replace an unpublished hint.
+     */
+    private fun claimForwardAdjacentCompletionTarget(
+        target: Manga,
+        predecessorEpisodePath: String,
+        authority: NtkForwardAdjacentTargetClaimPolicy.Authority,
+    ): ForwardAdjacentCompletionTargetClaim? {
+        if (cancelled.get()) return null
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        val targetPath = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
+        if (predecessorPath.isEmpty() || targetPath.isEmpty()) return null
+        return synchronized(forwardAdjacentCompletionTargetClaimLock) {
+            if (cancelled.get()) return@synchronized null
+            val existing = forwardAdjacentCompletionTargetClaims[predecessorPath]
+            when (NtkForwardAdjacentTargetClaimPolicy.decide(
+                existing?.targetEpisodePath,
+                existing?.authority,
+                existing?.structureCommitted == true,
+                targetPath,
+                authority,
+            )) {
+                NtkForwardAdjacentTargetClaimPolicy.Decision.ACCEPT -> {
+                    ForwardAdjacentCompletionTargetClaim(
+                        target = target,
+                        predecessorEpisodePath = predecessorPath,
+                        targetEpisodePath = targetPath,
+                        authority = authority,
+                        revision = forwardAdjacentCompletionTargetClaimSequence.getAndIncrement(),
+                    ).also { accepted ->
+                        forwardAdjacentCompletionTargetClaims[predecessorPath] = accepted
+                        forwardAdjacentCompletionTargetHistory[targetPath] = predecessorPath
+                    }
+                }
+
+                NtkForwardAdjacentTargetClaimPolicy.Decision.JOIN -> {
+                    checkNotNull(existing)
+                    if (authority.rank > existing.authority.rank) {
+                        existing.copy(authority = authority).also { upgraded ->
+                            // A same-path authority upgrade retains the revision so an already
+                            // queued exact-manifest callback and its immutable target object remain
+                            // valid. Replacing the object here would reopen an ABA publication race.
+                            forwardAdjacentCompletionTargetClaims[predecessorPath] = upgraded
+                        }
+                    } else {
+                        existing
+                    }
+                }
+
+                NtkForwardAdjacentTargetClaimPolicy.Decision.REPLACE -> {
+                    checkNotNull(existing)
+                    forwardAdjacentExactManifestAppendGate.removePendingRevision(
+                        existing.targetEpisodePath,
+                        existing.revision,
+                    )
+                    ForwardAdjacentCompletionTargetClaim(
+                        target = target,
+                        predecessorEpisodePath = predecessorPath,
+                        targetEpisodePath = targetPath,
+                        authority = authority,
+                        revision = forwardAdjacentCompletionTargetClaimSequence.getAndIncrement(),
+                    ).also { replacement ->
+                        forwardAdjacentCompletionTargetClaims[predecessorPath] = replacement
+                        forwardAdjacentCompletionTargetHistory[targetPath] = predecessorPath
+                        Log.d(
+                            TAG,
+                            "append_adjacent_completion_target_replaced predecessor=$predecessorPath " +
+                                "old=${existing.targetEpisodePath},new=$targetPath," +
+                                "oldAuthority=${existing.authority},newAuthority=$authority",
+                        )
+                    }
+                }
+
+                NtkForwardAdjacentTargetClaimPolicy.Decision.REJECT -> {
+                    checkNotNull(existing)
+                    // Keep a tombstone for the losing path so a callback already queued by an
+                    // older metadata route cannot be mistaken for an unrelated generic append at
+                    // the final page-table fence.
+                    forwardAdjacentCompletionTargetHistory[targetPath] = predecessorPath
+                    Log.d(
+                        TAG,
+                        "append_adjacent_completion_target_conflict_rejected " +
+                            "predecessor=$predecessorPath,selected=${existing.targetEpisodePath}," +
+                            "rejected=$targetPath,selectedAuthority=${existing.authority}," +
+                            "rejectedAuthority=$authority,committed=${existing.structureCommitted}",
+                    )
+                    existing
+                }
+            }
+        }
+    }
+
+    private fun isForwardAdjacentCompletionTargetCurrent(
+        predecessorEpisodePath: String,
+        targetEpisodePath: String,
+        claimRevision: Long,
+    ): Boolean {
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        val targetPath = NtkStripDigests.normalizeEpisodePath(targetEpisodePath)
+        if (predecessorPath.isEmpty() || targetPath.isEmpty() || claimRevision <= 0L) return false
+        return synchronized(forwardAdjacentCompletionTargetClaimLock) {
+            val selected = forwardAdjacentCompletionTargetClaims[predecessorPath]
+            selected != null && selected.revision == claimRevision &&
+                selected.targetEpisodePath.equals(targetPath, ignoreCase = true)
+        }
+    }
+
+    /** Linearizes the final page-table mutation against target replacement. */
+    private fun claimForwardAdjacentStructurePublication(target: Manga): Boolean {
+        if (cancelled.get()) return false
+        val targetPath = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
+        if (targetPath.isEmpty()) return true
+        val predecessorPath = forwardAdjacentCompletionTargetHistory[targetPath]
+            ?: adjacentStrictPredecessorPaths[targetPath]
+            ?: return true
+        val currentTitle = title ?: target.title ?: manga.title
+        val persistedTargetPath = currentTitle
+            ?.takeIf {
+                hostGpuEmulatorRuntime && isDirectWifiStrictAdjacentTransportActive()
+            }
+            ?.takeIf { it.sourceSite.equals("ntk", ignoreCase = true) }
+            ?.let { ntkTitle ->
+                val identity = ntkTitle.snapshotResumeNtkNextEpisodeIdentity()
+                val persistedPredecessor = NtkStripDigests.normalizeEpisodePath(
+                    ntkTitle.resumeNtkEpisodePath,
+                )
+                NtkStripDigests.normalizeEpisodePath(identity.path)
+                    .takeIf {
+                        identity.isComplete &&
+                            persistedPredecessor.equals(predecessorPath, ignoreCase = true)
+                    }
+            }
+        return synchronized(forwardAdjacentCompletionTargetClaimLock) {
+            if (cancelled.get()) return@synchronized false
+            val selected = forwardAdjacentCompletionTargetClaims[predecessorPath]
+            if (selected == null) {
+                if (persistedTargetPath != null &&
+                    !persistedTargetPath.equals(targetPath, ignoreCase = true)
+                ) {
+                    forwardAdjacentCompletionTargetHistory[targetPath] = predecessorPath
+                    Log.d(
+                        TAG,
+                        "append_adjacent_completion_persisted_structure_rejected " +
+                            "predecessor=$predecessorPath,persisted=$persistedTargetPath," +
+                            "rejected=$targetPath",
+                    )
+                    return@synchronized false
+                }
+                val authority = if (persistedTargetPath != null) {
+                    NtkForwardAdjacentTargetClaimPolicy.Authority.PERSISTED_EXACT_PAIR
+                } else {
+                    NtkForwardAdjacentTargetClaimPolicy.Authority.NUMERIC_OR_LIST_FALLBACK
+                }
+                val committed = ForwardAdjacentCompletionTargetClaim(
+                    target = target,
+                    predecessorEpisodePath = predecessorPath,
+                    targetEpisodePath = targetPath,
+                    authority = authority,
+                    revision = forwardAdjacentCompletionTargetClaimSequence.getAndIncrement(),
+                    structureCommitted = true,
+                )
+                forwardAdjacentCompletionTargetClaims[predecessorPath] = committed
+                forwardAdjacentCompletionTargetHistory[targetPath] = predecessorPath
+                return@synchronized true
+            }
+            if (!selected.targetEpisodePath.equals(targetPath, ignoreCase = true)) {
+                Log.d(
+                    TAG,
+                    "append_adjacent_completion_stale_structure_rejected predecessor=$predecessorPath " +
+                        "selected=${selected.targetEpisodePath},rejected=$targetPath",
+                )
+                return@synchronized false
+            }
+            if (selected.target !== target) {
+                Log.d(
+                    TAG,
+                    "append_adjacent_completion_stale_target_object_rejected " +
+                        "predecessor=$predecessorPath,target=$targetPath," +
+                        "revision=${selected.revision}",
+                )
+                return@synchronized false
+            }
+            if (!selected.structureCommitted) {
+                forwardAdjacentCompletionTargetClaims[predecessorPath] =
+                    selected.copy(structureCommitted = true)
+            }
+            true
+        }
+    }
+
+    private fun releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete(
+        predecessorEpisodePath: String,
+        fallbackTargetEpisodePath: String? = null,
+    ): Int = synchronized(forwardAdjacentCompletionTargetClaimLock) {
+        if (cancelled.get()) return@synchronized 0
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        if (predecessorPath.isEmpty()) return@synchronized 0
+        val selectedTarget = forwardAdjacentCompletionTargetClaims[predecessorPath]
+            ?.targetEpisodePath
+            ?: NtkStripDigests.normalizeEpisodePath(fallbackTargetEpisodePath.orEmpty())
+        NtkStrictEpisodeDiscoveryCoordinator.releaseAdjacentBodiesAfterPredecessorComplete(
+            predecessorPath,
+            selectedTarget.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    private fun releaseClaimedForwardAdjacentControlAfterBodiesResident(
+        predecessorEpisodePath: String,
+        fallbackTargetEpisodePath: String?,
+    ): Int = synchronized(forwardAdjacentCompletionTargetClaimLock) {
+        if (cancelled.get()) return@synchronized 0
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        if (predecessorPath.isEmpty()) return@synchronized 0
+        val selectedTarget = forwardAdjacentCompletionTargetClaims[predecessorPath]
+            ?.targetEpisodePath
+            ?: NtkStripDigests.normalizeEpisodePath(fallbackTargetEpisodePath.orEmpty())
+        NtkStrictEpisodeDiscoveryCoordinator.releaseAdjacentControlAfterPredecessorBodiesResident(
+            predecessorPath,
+            selectedTarget,
+        )
+    }
+
+    private fun currentForwardAdjacentCompletionTargetClaim(
+        predecessorEpisodePath: String,
+    ): ForwardAdjacentCompletionTargetClaim? {
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
+        if (predecessorPath.isEmpty() || cancelled.get()) return null
+        return synchronized(forwardAdjacentCompletionTargetClaimLock) {
+            if (cancelled.get()) null else forwardAdjacentCompletionTargetClaims[predecessorPath]
+        }
+    }
+
+    private fun activateForwardAdjacentCompletionTargetClaim(
+        claim: ForwardAdjacentCompletionTargetClaim,
+        onResolvedForwardPath: ((String) -> Unit)?,
+        controlOnly: Boolean,
+    ): String? {
+        if (cancelled.get() || !isForwardAdjacentCompletionTargetCurrent(
+                claim.predecessorEpisodePath,
+                claim.targetEpisodePath,
+                claim.revision,
+            )
+        ) return null
+        val candidate = claim.target
+        val targetPath = claim.targetEpisodePath
+        val predecessorPath = claim.predecessorEpisodePath
+        listener.onForwardAdjacentPathResolved(targetPath)
+        onResolvedForwardPath?.invoke(targetPath)
+        // Preserve the selected target even when another joiner has already attached it. Returning
+        // null would re-enable the independent numeric fallback in the completion caller.
+        if (hasEpisode(candidate)) {
+            if (!claimForwardAdjacentStructurePublication(candidate)) return null
+            return targetPath
+        }
+        rememberAdjacentStrictPredecessor(targetPath, predecessorPath)
+        if (controlOnly) {
+            listener.onAdjacentExactManifestRequired(candidate, predecessorPath)
+            Log.d(
+                TAG,
+                "append_adjacent_body_resident_exact_control source=$predecessorPath " +
+                    "target=$targetPath",
+            )
+            return targetPath
+        }
+        ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
+            targetPath,
+            NTK_INITIAL_ADJACENT_PREFETCH_PATH_TTL_MS,
+            "current_complete_exact_discovery",
+        )
+        watchForwardAdjacentExactManifestForPreappend(
+            candidate,
+            predecessorPath,
+            claim.revision,
+        )
+        listener.onAdjacentExactManifestRequired(candidate, predecessorPath)
+        Log.d(
+            TAG,
+            "append_adjacent_completion_exact_discovery source=$predecessorPath target=$targetPath",
+        )
+        return targetPath
+    }
+
+    /**
      * Resolves only the already-present episode-list neighbor at the authoritative completion
      * edge, then starts its exact owner without waiting behind the session control/network queues.
      * No caller can enter this method before every current texture has been queued. The regular
@@ -30432,6 +30828,7 @@ class ReaderSession(
         resolvedNext: Manga?,
         persistedExactAdjacentAuthority: Boolean = false,
         onResolvedForwardPath: ((String) -> Unit)?,
+        freshOrderedProviderAuthority: Boolean = false,
         controlOnly: Boolean = false,
     ): String? {
         val currentTitle = title ?: source.title ?: manga.title ?: return null
@@ -30442,26 +30839,40 @@ class ReaderSession(
         val sourcePath = NtkStripDigests.normalizeEpisodePath(
             source.ntkEpisodePath?.trim().orEmpty()
         )
+        if (sourcePath.isEmpty()) return null
+        // The body-resident control path may already own the persisted exact pair. A later full
+        // completion with no attached list must join and arm that owner instead of returning null
+        // and reopening the independent numeric fallback.
+        if (resolvedNext == null && !freshOrderedProviderAuthority) {
+            currentForwardAdjacentCompletionTargetClaim(sourcePath)?.let { existing ->
+                return activateForwardAdjacentCompletionTargetClaim(
+                    existing,
+                    onResolvedForwardPath,
+                    controlOnly,
+                )
+            }
+        }
         val providerImmediate = ntkTrustedProvidedAdjacentCandidate(
             source,
             ReaderSurfaceView.DIRECTION_NEXT,
         )
+        val resolvedNextProviderAuthority = resolvedNext != null && providerImmediate?.let { immediate ->
+            Manga.sameEpisodeIdentity(immediate, resolvedNext)
+        } == true
+        val resolvedNextPersistedAuthority = resolvedNext != null &&
+            persistedExactAdjacentAuthority &&
+            isDirectWifiStrictAdjacentTransportActive() &&
+            resolvedNext.id > 0 &&
+            resolvedNext.ntkImageWorkId.isNotBlank() &&
+            resolvedNext.ntkImageEpisodeId.isNotBlank() &&
+            resolvedNext.ntkImageCount > 0
         val trustedCandidate = resolvedNext?.takeIf { provided ->
             val providedPath = NtkStripDigests.normalizeEpisodePath(
                 provided.ntkEpisodePath?.trim().orEmpty()
             )
-            val providerAuthority = providerImmediate?.let { immediate ->
-                Manga.sameEpisodeIdentity(immediate, provided)
-            } == true
-            val persistedAuthority = persistedExactAdjacentAuthority &&
-                isDirectWifiStrictAdjacentTransportActive() &&
-                provided.id > 0 &&
-                provided.ntkImageWorkId.isNotBlank() &&
-                provided.ntkImageEpisodeId.isNotBlank() &&
-                provided.ntkImageCount > 0
             sourcePath.isNotEmpty() && providedPath.isNotEmpty() &&
                 !Manga.sameEpisodeIdentity(source, provided) &&
-                (providerAuthority || persistedAuthority) &&
+                (resolvedNextProviderAuthority || resolvedNextPersistedAuthority) &&
                 NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(
                     sourcePath,
                     providedPath,
@@ -30495,6 +30906,20 @@ class ReaderSession(
                 ReaderSurfaceView.DIRECTION_NEXT,
             ).firstOrNull() ?: return null
         }
+        val proposedAuthority = when {
+            sharedCandidate === resolvedNext && resolvedNextPersistedAuthority ->
+                NtkForwardAdjacentTargetClaimPolicy.Authority.PERSISTED_EXACT_PAIR
+
+            providerImmediate?.let { immediate ->
+                Manga.sameEpisodeIdentity(immediate, sharedCandidate)
+            } == true -> if (freshOrderedProviderAuthority) {
+                NtkForwardAdjacentTargetClaimPolicy.Authority.FRESH_ORDERED_PROVIDER_NEIGHBOR
+            } else {
+                NtkForwardAdjacentTargetClaimPolicy.Authority.ATTACHED_PROVIDER_NEIGHBOR
+            }
+
+            else -> NtkForwardAdjacentTargetClaimPolicy.Authority.NUMERIC_OR_LIST_FALLBACK
+        }
         val expectedPath = NtkStripDigests.normalizeEpisodePath(
             sharedCandidate.ntkEpisodePath?.trim().orEmpty()
         )
@@ -30502,7 +30927,7 @@ class ReaderSession(
         // Discovery needs immutable identity/signing hints only. Copying the complete episode
         // list via setEps() measured ~170-250 ms and is unnecessary until the regular metadata
         // task consumes the result.
-        val candidate = Manga(
+        val proposedCandidate = Manga(
             sharedCandidate.id,
             sharedCandidate.name,
             sharedCandidate.date,
@@ -30517,51 +30942,32 @@ class ReaderSession(
             ntkViewerPayloadHint = sharedCandidate.ntkViewerPayloadHint
             ntkImageCount = sharedCandidate.ntkImageCount
         }
-        val targetPath = NtkStripDigests.normalizeEpisodePath(
-            candidate.ntkEpisodePath?.trim().orEmpty()
-        )
         val predecessorPath = NtkStripDigests.normalizeEpisodePath(
             source.ntkEpisodePath?.trim().orEmpty()
         )
-        if (targetPath.isEmpty() || predecessorPath.isEmpty()) return null
-        // This is the provider-validated target, not the Activity's possibly stale cached hint.
-        // Authorizing it before exact discovery lets an already-attached runway cross its
-        // structural card while never granting texture ownership to an unvalidated neighbor.
-        listener.onForwardAdjacentPathResolved(targetPath)
-        onResolvedForwardPath?.invoke(targetPath)
-        if (hasEpisode(candidate)) return null
+        if (expectedPath.isEmpty() || predecessorPath.isEmpty()) return null
         val declaredSourceWorkId = source.ntkImageWorkId.trim()
-        if (candidate.ntkImageWorkId.isBlank() &&
+        if (proposedCandidate.ntkImageWorkId.isBlank() &&
             declaredSourceWorkId.matches(Regex("\\d{1,12}"))
         ) {
             // The common signed slug path already carries the provider's exact work id on its
             // predecessor. Avoid the broader generated-neighbor scan on the completion edge.
-            candidate.ntkImageWorkId = declaredSourceWorkId
+            proposedCandidate.ntkImageWorkId = declaredSourceWorkId
         } else {
-            inheritNtkAppendGeneratedHints(candidate, source, currentTitle)
+            inheritNtkAppendGeneratedHints(proposedCandidate, source, currentTitle)
         }
-        rememberAdjacentStrictPredecessor(targetPath, predecessorPath)
-        if (controlOnly) {
-            listener.onAdjacentExactManifestRequired(candidate, predecessorPath)
-            Log.d(
-                TAG,
-                "append_adjacent_body_resident_exact_control source=$predecessorPath " +
-                    "target=$targetPath",
-            )
-            return targetPath
-        }
-        ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
-            targetPath,
-            NTK_INITIAL_ADJACENT_PREFETCH_PATH_TTL_MS,
-            "current_complete_exact_discovery",
+        // The claim must precede every listener/cache/discovery side effect. A weaker conflicting
+        // candidate joins the selected target rather than creating a second exact owner.
+        val selectedClaim = claimForwardAdjacentCompletionTarget(
+            proposedCandidate,
+            predecessorPath,
+            proposedAuthority,
+        ) ?: return null
+        return activateForwardAdjacentCompletionTargetClaim(
+            selectedClaim,
+            onResolvedForwardPath,
+            controlOnly,
         )
-        watchForwardAdjacentExactManifestForPreappend(candidate, predecessorPath)
-        listener.onAdjacentExactManifestRequired(candidate, predecessorPath)
-        Log.d(
-            TAG,
-            "append_adjacent_completion_exact_discovery source=$predecessorPath target=$targetPath",
-        )
-        return targetPath
     }
 
     /**
@@ -30574,20 +30980,36 @@ class ReaderSession(
     private fun watchForwardAdjacentExactManifestForPreappend(
         target: Manga,
         predecessorEpisodePath: String,
+        claimRevision: Long,
     ) {
         if (cancelled.get() || !isDirectWifiStrictAdjacentTransportActive()) return
         val targetPath = NtkStripDigests.normalizeEpisodePath(target.ntkEpisodePath.orEmpty())
         val predecessorPath = NtkStripDigests.normalizeEpisodePath(predecessorEpisodePath)
         if (targetPath.isEmpty() || predecessorPath.isEmpty() ||
+            !isForwardAdjacentCompletionTargetCurrent(
+                predecessorPath,
+                targetPath,
+                claimRevision,
+            ) ||
             !NtkStrictEpisodeDiscoveryCoordinator.ntkAdjacentOwnerAllowsTarget(
                 predecessorPath,
                 targetPath,
             )
         ) return
-        forwardAdjacentExactManifestAppends.putIfAbsent(
+        val pending = forwardAdjacentExactManifestAppendGate.installNewest(
             targetPath,
-            ForwardAdjacentExactManifestAppend(target, predecessorPath),
+            ForwardAdjacentExactManifestAppend(target, predecessorPath, claimRevision),
         )
+        if (pending.claimRevision != claimRevision) return
+        if (!isForwardAdjacentCompletionTargetCurrent(
+                predecessorPath,
+                targetPath,
+                claimRevision,
+            )
+        ) {
+            forwardAdjacentExactManifestAppendGate.removePending(targetPath, pending)
+            return
+        }
         if (forwardAdjacentExactManifestSubscription.get() == null) {
             val created = NtkSourceSpoolRegistry.addAuthoritativeManifestListener(
                 NtkAuthoritativeManifestListener { changedPath, manifest ->
@@ -30610,17 +31032,36 @@ class ReaderSession(
         manifest: NtkAuthoritativeManifest,
     ) {
         val path = NtkStripDigests.normalizeEpisodePath(changedPath)
-        val pending = forwardAdjacentExactManifestAppends[path] ?: return
+        val pending = forwardAdjacentExactManifestAppendGate.current(path) ?: return
+        if (!isForwardAdjacentCompletionTargetCurrent(
+                pending.predecessorEpisodePath,
+                path,
+                pending.claimRevision,
+            )
+        ) {
+            forwardAdjacentExactManifestAppendGate.removePending(path, pending)
+            return
+        }
         if (cancelled.get() || !isDirectWifiStrictAdjacentTransportActive() ||
             !manifest.isProductionClaimable ||
             manifest.seal.normalizedEpisodePath != path ||
-            !forwardAdjacentExactManifestAppendInFlight.add(path)
+            !forwardAdjacentExactManifestAppendGate.tryAcquire(path, pending.claimRevision)
         ) return
         try {
             adjacentNetwork.execute {
                 var consumed = false
+                var retired = false
                 try {
                     if (cancelled.get() || !isDirectWifiStrictAdjacentTransportActive()) return@execute
+                    if (!isForwardAdjacentCompletionTargetCurrent(
+                            pending.predecessorEpisodePath,
+                            path,
+                            pending.claimRevision,
+                        )
+                    ) {
+                        retired = true
+                        return@execute
+                    }
                     val predecessor = synchronized(pagesLock) {
                         pages.asSequence()
                             .filter { it.transitionTitle == null }
@@ -30644,6 +31085,15 @@ class ReaderSession(
                     rememberAdjacentStrictPredecessor(path, pending.predecessorEpisodePath)
                     val urls = exactViewerApiAdjacentUrls(pending.target) ?: return@execute
                     if (urls.isEmpty() || urls.size != authority.seal.pageCount) return@execute
+                    if (!isForwardAdjacentCompletionTargetCurrent(
+                            pending.predecessorEpisodePath,
+                            path,
+                            pending.claimRevision,
+                        )
+                    ) {
+                        retired = true
+                        return@execute
+                    }
                     initialTailAdjacentPreappendTargetPaths.add(path)
                     Log.d(
                         TAG,
@@ -30657,27 +31107,94 @@ class ReaderSession(
                     )
                     consumed = true
                 } finally {
-                    forwardAdjacentExactManifestAppendInFlight.remove(path)
-                    if (consumed) {
-                        forwardAdjacentExactManifestAppends.remove(path, pending)
-                    } else if (!cancelled.get() && pending.attempts.incrementAndGet() <= 20) {
-                        main.postDelayed(
-                            {
-                                NtkSourceSpoolRegistry.currentAuthoritativeManifest(path)
-                                    ?.let { current ->
-                                        onForwardAdjacentExactManifestInstalled(path, current)
-                                    }
-                            },
-                            25L,
-                        )
+                    var retryCurrent = false
+                    if (consumed || retired) {
+                        forwardAdjacentExactManifestAppendGate.removePending(path, pending)
+                    } else if (!cancelled.get() &&
+                        forwardAdjacentExactManifestAppendGate.isCurrent(path, pending) &&
+                        pending.attempts.incrementAndGet() <= 20
+                    ) {
+                        retryCurrent = true
                     } else {
-                        forwardAdjacentExactManifestAppends.remove(path, pending)
+                        forwardAdjacentExactManifestAppendGate.removePending(path, pending)
                     }
+                    releaseForwardAdjacentExactManifestFlight(
+                        path,
+                        pending,
+                        retryCurrent = retryCurrent,
+                    )
                 }
             }
         } catch (_: RejectedExecutionException) {
-            forwardAdjacentExactManifestAppendInFlight.remove(path)
+            releaseForwardAdjacentExactManifestFlight(
+                path,
+                pending,
+                retryRejectedCurrent = true,
+            )
         }
+    }
+
+    /**
+     * Releases only the revision that acquired this path and asynchronously hands the path to a
+     * newer current claim. Executor rejection may also retry the same pending value, but remains
+     * bounded and delayed so a closed executor cannot create a recursive rejection loop.
+     */
+    private fun releaseForwardAdjacentExactManifestFlight(
+        path: String,
+        pending: ForwardAdjacentExactManifestAppend,
+        retryCurrent: Boolean = false,
+        retryRejectedCurrent: Boolean = false,
+    ) {
+        if (!forwardAdjacentExactManifestAppendGate.release(path, pending.claimRevision)) return
+        if (cancelled.get() || !isDirectWifiStrictAdjacentTransportActive()) return
+        val successor = forwardAdjacentExactManifestAppendGate.current(path) ?: return
+        val newerRevision = successor.claimRevision > pending.claimRevision
+        val retrySameRevision = (retryCurrent || retryRejectedCurrent) && successor === pending
+        if (!newerRevision && !retrySameRevision) return
+        if (!isForwardAdjacentCompletionTargetCurrent(
+                successor.predecessorEpisodePath,
+                path,
+                successor.claimRevision,
+            )
+        ) {
+            forwardAdjacentExactManifestAppendGate.removePending(path, successor)
+            return
+        }
+        val delayMs = if (newerRevision) {
+            0L
+        } else if (retryCurrent) {
+            // The normal retry budget was charged before releasing the token. Scheduling only
+            // after compare-release closes the callback-before-release lost-wakeup race.
+            25L
+        } else if (successor.attempts.incrementAndGet() <= 20) {
+            25L
+        } else {
+            forwardAdjacentExactManifestAppendGate.removePending(path, successor)
+            return
+        }
+        scheduleForwardAdjacentExactManifestRedrive(path, delayMs)
+    }
+
+    /** Always crosses the main queue before invoking the manifest callback; never recurses. */
+    private fun scheduleForwardAdjacentExactManifestRedrive(path: String, delayMs: Long) {
+        if (cancelled.get() || !isDirectWifiStrictAdjacentTransportActive()) return
+        val redrive = Runnable {
+            if (cancelled.get() || !isDirectWifiStrictAdjacentTransportActive()) return@Runnable
+            val current = forwardAdjacentExactManifestAppendGate.current(path) ?: return@Runnable
+            if (!isForwardAdjacentCompletionTargetCurrent(
+                    current.predecessorEpisodePath,
+                    path,
+                    current.claimRevision,
+                )
+            ) {
+                forwardAdjacentExactManifestAppendGate.removePending(path, current)
+                return@Runnable
+            }
+            NtkSourceSpoolRegistry.currentAuthoritativeManifest(path)?.let { freshManifest ->
+                onForwardAdjacentExactManifestInstalled(path, freshManifest)
+            }
+        }
+        if (delayMs > 0L) main.postDelayed(redrive, delayMs) else main.post(redrive)
     }
 
     /**
@@ -30701,6 +31218,7 @@ class ReaderSession(
             adjacentNetwork.execute {
                 try {
                     if (cancelled.get()) return@execute
+                    var fetchedFreshOrderedProviderList = false
                     if (syncNtkTitlePathFromEpisode(currentTitle, source)) {
                         currentTitle.removeEps()
                     }
@@ -30710,6 +31228,7 @@ class ReaderSession(
                             imageRepository.fetchEpisodesForeground(currentTitle, it)
                         }
                         if (cancelled.get() || result != Title.LOAD_OK) return@execute
+                        fetchedFreshOrderedProviderList = true
                     }
                     attachTitle()
                     val episodes = Utils.snapshotEpisodes(currentTitle)
@@ -30721,14 +31240,14 @@ class ReaderSession(
                     val exactTargetPath = startForwardAdjacentExactDiscoveryAtCompletion(
                         source,
                         resolvedNext = null,
+                        freshOrderedProviderAuthority = fetchedFreshOrderedProviderList,
                         onResolvedForwardPath = onResolvedForwardPath,
                     )
                     if (exactTargetPath != null) {
-                        NtkStrictEpisodeDiscoveryCoordinator
-                            .releaseAdjacentBodiesAfterPredecessorComplete(
-                                source.ntkEpisodePath,
-                                exactTargetPath,
-                            )
+                        releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete(
+                            source.ntkEpisodePath.orEmpty(),
+                            exactTargetPath,
+                        )
                         releaseAdjacentStrictClaimsAfterPredecessorComplete(predecessorPath)
                     }
                     if (shouldReenterDirectWifiCompletionRunway(source)) {
@@ -31289,8 +31808,7 @@ class ReaderSession(
             onResolvedForwardPath = null,
         )
         if (exactTargetPath != null) {
-            NtkStrictEpisodeDiscoveryCoordinator
-                .releaseAdjacentBodiesAfterPredecessorComplete(path, exactTargetPath)
+            releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete(path, exactTargetPath)
             releaseAdjacentStrictClaimsAfterPredecessorComplete(path)
         }
         maybeStartInitialTailAdjacentPreappend(

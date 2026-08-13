@@ -139,6 +139,157 @@ class NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicyTest {
     }
 
     @Test
+    fun lowLevelFenceTripPersistsOneIdempotentProbeEpoch() {
+        val probing = NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.observeFenceTrip(
+            healthy,
+            fenceTripped = true,
+            nextWorkId = 70L,
+            eligible = true,
+        )
+        assertEquals(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.Mode.PROBING,
+            probing.mode,
+        )
+        assertEquals(70L, probing.minimumRecoveryWorkId)
+        assertEquals(
+            probing,
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.observeFenceTrip(
+                probing,
+                fenceTripped = true,
+                nextWorkId = 99L,
+                eligible = true,
+            ),
+        )
+        assertEquals(
+            healthy,
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.observeFenceTrip(
+                healthy,
+                fenceTripped = true,
+                nextWorkId = 70L,
+                eligible = false,
+            ),
+        )
+        assertEquals(
+            healthy,
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.observeFenceTrip(
+                healthy,
+                fenceTripped = false,
+                nextWorkId = 70L,
+                eligible = true,
+            ),
+        )
+    }
+
+    @Test
+    fun onlySocketPressurePageCanOwnTheSingleDirectH1Proof() {
+        val probing = NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.Mode.PROBING
+        assertTrue(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.shouldClaim(
+                pressureObserved = true,
+                observationEligible = true,
+                fenceRequiresDirectH1 = true,
+                ownerExists = false,
+                mode = probing,
+            ),
+        )
+        assertFalse(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.shouldClaim(
+                false, true, true, false, probing,
+            ),
+        )
+        assertFalse(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.shouldClaim(
+                true, false, true, false, probing,
+            ),
+        )
+        assertFalse(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.shouldClaim(
+                true, true, false, false, probing,
+            ),
+        )
+        assertFalse(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.shouldClaim(
+                true, true, true, true, probing,
+            ),
+        )
+    }
+
+    @Test
+    fun pageLocalFenceRecoversPlainCanceledIOExceptionWithoutBroadeningGenericIo() {
+        val canceled = IOException("Canceled")
+        assertTrue(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.pressureObserved(
+                failure = canceled,
+                observationEligible = true,
+                fenceRequiresDirectH1 = true,
+            ),
+        )
+        assertFalse(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.pressureObserved(
+                failure = canceled,
+                observationEligible = true,
+                fenceRequiresDirectH1 = false,
+            ),
+        )
+        assertFalse(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.pressureObserved(
+                failure = canceled,
+                observationEligible = false,
+                fenceRequiresDirectH1 = true,
+            ),
+        )
+
+        val probing = NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.recordPressure(
+            state = healthy,
+            pressureObserved = true,
+            nextWorkId = 44L,
+        )
+        assertEquals(
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.Mode.PROBING,
+            probing.mode,
+        )
+        assertEquals(
+            healthy,
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.recordPressure(
+                state = healthy,
+                pressureObserved = false,
+                nextWorkId = 44L,
+            ),
+        )
+    }
+
+    @Test
+    fun proofReusesFailedLaneFallsBackToAnotherFreeLaneAndNeverExceedsSix() {
+        assertEquals(
+            5,
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.selectLane(
+                preferredLaneIndex = 5,
+                activeLanes = booleanArrayOf(true, true, true, true, true, false, false),
+                adoptionLanes = BooleanArray(7),
+                healthyActiveCeiling = 6,
+            ),
+        )
+        assertEquals(
+            6,
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.selectLane(
+                preferredLaneIndex = 5,
+                activeLanes = booleanArrayOf(true, true, true, true, true, false, false),
+                adoptionLanes = booleanArrayOf(false, false, false, false, false, true, false),
+                healthyActiveCeiling = 6,
+            ),
+        )
+        assertEquals(
+            -1,
+            NtkHostGpuEmulatorCurrentWebtoonRecoveryProofPolicy.selectLane(
+                preferredLaneIndex = 5,
+                activeLanes = booleanArrayOf(true, true, true, true, true, true, false),
+                adoptionLanes = BooleanArray(7),
+                healthyActiveCeiling = 6,
+            ),
+        )
+    }
+
+    @Test
     fun nestedSocketPressureIsClassifiedButOtherIoAndIneligibleWorkAreNot() {
         assertTrue(
             NtkHostGpuEmulatorCurrentWebtoonRecoveryPolicy.isSocketPressureFailure(

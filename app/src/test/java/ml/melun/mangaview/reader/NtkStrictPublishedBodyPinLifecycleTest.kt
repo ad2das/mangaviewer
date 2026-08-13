@@ -94,6 +94,43 @@ class NtkStrictPublishedBodyPinLifecycleTest {
         assertFalse(volatileClear.contains("activeReads.clear()"))
         assertFalse(volatileClear.contains("cacheWriteLocks.clear()"))
 
+        val trackedBody = functionSlice(
+            cacheSource,
+            "private interface NtkRangeContinuationProvenance",
+            "private fun cancelActiveNtkEpisodeCallsByKey("
+        )
+        assertTrue(
+            trackedBody.contains(
+                ") : ResponseBody(), NtkRangeContinuationProvenance"
+            )
+        )
+        val completionBody = functionSlice(
+            cacheSource,
+            "private class CompletionResponseBody(",
+            "private class NtkH1RecoveryPermitResponseBody("
+        )
+        assertTrue(
+            completionBody.contains(
+                ") : ResponseBody(), NtkRangeContinuationProvenance"
+            )
+        )
+        assertTrue(
+            completionBody.contains("(delegate as? NtkRangeContinuationProvenance)")
+        )
+        assertTrue(completionBody.contains("?.usedAnyContinuation() == true"))
+
+        val quicRecovery = functionSlice(
+            cacheSource,
+            "private fun executeExactQuicImageRecovery(",
+            "private fun executeUnknownLengthExactQuicPrefixRange("
+        )
+        assertOrdered(
+            quicRecovery,
+            "val recoveryAttempt =",
+            "NtkExactImagePhysicalAttempt(recoveryAttempt)",
+            ".request(recoveryRequest)"
+        )
+
         val cachedLookup = functionSlice(
             cacheSource,
             "private fun strictCachedPublishedBodyLocked(",
@@ -119,6 +156,41 @@ class NtkStrictPublishedBodyPinLifecycleTest {
             "return cachedBeforeCall",
             "val request =",
             "newTrackedNtkEpisodeCall("
+        )
+        assertOrdered(
+            strictSpool,
+            "proof.requireProductionAuthority(acceptedMetadata)",
+            "proofReadyAtNs = SystemClock.elapsedRealtimeNanos()",
+            "publishedAtNs = SystemClock.elapsedRealtimeNanos()",
+            "succeeded = true",
+            "onPhysicalBodyProven?.let { sink ->",
+            "physicalAttemptOrdinal =",
+            "NtkExactImagePhysicalAttempt::class.java",
+            "usedRangeContinuation =",
+            "usedAnyContinuation() == true"
+        )
+        assertTrue(
+            strictSpool.indexOf("return cachedBeforeCall") <
+                strictSpool.indexOf("onPhysicalBodyProven?.let { sink ->")
+        )
+
+        val quarantineSpool = functionSlice(
+            cacheSource,
+            "internal fun spoolQuarantinedEncodedOriginal(",
+            "fun predecodeQuarantinedOriginalAsync("
+        )
+        assertOrdered(
+            quarantineSpool,
+            "val bodyDigest =",
+            "val metadata = NtkQuarantineMetadataEvidence(",
+            "metadataSink(metadata)",
+            "val completedAtNs = SystemClock.elapsedRealtimeNanos()",
+            "onPhysicalBodyProven?.let { sink ->",
+            "physicalAttemptOrdinal =",
+            "NtkExactImagePhysicalAttempt::class.java",
+            "usedRangeContinuation =",
+            "usedAnyContinuation() == true",
+            "succeeded = true"
         )
     }
 

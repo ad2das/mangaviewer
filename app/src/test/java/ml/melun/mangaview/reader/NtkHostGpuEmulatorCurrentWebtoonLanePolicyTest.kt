@@ -17,6 +17,7 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
         anchorBodyPublished: Boolean = true,
         contiguousForwardBodyCount: Int =
             NtkHostGpuEmulatorCurrentWebtoonLanePolicy.INITIAL_VISIBLE_RUNWAY_BODIES,
+        healthyBulkExpansion: Boolean = false,
     ): Int = NtkHostGpuEmulatorCurrentWebtoonLanePolicy.cap(
         progressiveLaneCount,
         emulatorRuntime,
@@ -29,13 +30,14 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
         adjacentPrefetch,
         anchorBodyPublished,
         contiguousForwardBodyCount,
+        healthyBulkExpansion,
     )
 
     @Test
     fun capsOnlyPostAnchorHostEmulatorCurrentWebtoonResume() {
         assertEquals(6, cap(progressiveLaneCount = 60))
-        assertEquals(6, cap(progressiveLaneCount = 64))
-        assertEquals(6, cap(progressiveLaneCount = 18))
+        assertEquals(8, cap(progressiveLaneCount = 64, healthyBulkExpansion = true))
+        assertEquals(8, cap(progressiveLaneCount = 18, healthyBulkExpansion = true))
         assertEquals(5, cap(progressiveLaneCount = 5))
 
         assertEquals(60, cap(emulatorRuntime = false))
@@ -50,7 +52,7 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
     }
 
     @Test
-    fun preservesTheNineLaneVisibleRunwayThenUsesTheMeasuredSixLaneWave() {
+    fun preservesTheNineLaneVisibleRunwayThenUsesTheBoundedEightLaneWave() {
         assertEquals(9, cap(contiguousForwardBodyCount = 0))
         assertEquals(9, cap(contiguousForwardBodyCount = 5))
         assertEquals(
@@ -58,7 +60,14 @@ class NtkHostGpuEmulatorCurrentWebtoonLanePolicyTest {
             cap(progressiveLaneCount = 8, contiguousForwardBodyCount = 0),
         )
         assertEquals(6, cap(contiguousForwardBodyCount = 6))
-        assertEquals(6, cap(contiguousForwardBodyCount = 20))
+        assertEquals(8, cap(
+            contiguousForwardBodyCount = 6,
+            healthyBulkExpansion = true,
+        ))
+        assertEquals(8, cap(
+            contiguousForwardBodyCount = 20,
+            healthyBulkExpansion = true,
+        ))
 
         // The runway stage is fenced by the same exact profile as the one-body-per-pool cap.
         assertEquals(60, cap(

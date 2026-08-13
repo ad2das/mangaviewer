@@ -563,46 +563,42 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         if (generation <= 0L || !ViewerTelemetry.hasActiveSession()) return 0
         return synchronized(flightLifecycleLock("adjacent-gate:$key")) {
             if (expectedTarget != null) {
-            // Publish the authoritative pair before sweeping stale markers/flights. A late main
-            // Handler callback for an older persisted target then observes this fence before it
-            // can reserve a lease, even if it races the cleanup snapshot below.
-            completedAdjacentTargets[adjacentGateKey(key, expectedTarget)] = generation
-            // A persisted early-control identity is only a bounded transport hint. Reconcile it
-            // with the provider/full-completion target before opening any API or image admission.
-            // Cancelling a mismatched control-only flight also prevents later broad completion
-            // maintenance from accidentally releasing its stale target.
-            val staleMarkerTargets = bodyResidentAdjacentTargets.entries
-                .filter { entry ->
-                    entry.value == generation &&
+                // Publish one authoritative pair, then remove every older pair for the same
+                // predecessor before any flight admission can observe the ledger. Exact image
+                // authority for another path is not evidence that it is the next episode.
+                completedAdjacentTargets[adjacentGateKey(key, expectedTarget)] = generation
+                completedAdjacentTargets.entries.forEach { entry ->
+                    if (entry.value == generation &&
                         entry.key.predecessorPath == key &&
                         entry.key.targetPath != expectedTarget
+                    ) {
+                        completedAdjacentTargets.remove(entry.key, entry.value)
+                    }
                 }
-                .map { it.key.targetPath }
-                .toSet()
-            bodyResidentAdjacentTargets.entries.forEach { entry ->
-                if (entry.value == generation &&
-                    entry.key.predecessorPath == key &&
-                    entry.key.targetPath != expectedTarget
-                ) {
-                    bodyResidentAdjacentTargets.remove(entry.key, entry.value)
+                bodyResidentAdjacentTargets.entries.forEach { entry ->
+                    if (entry.value == generation &&
+                        entry.key.predecessorPath == key &&
+                        entry.key.targetPath != expectedTarget
+                    ) {
+                        bodyResidentAdjacentTargets.remove(entry.key, entry.value)
+                    }
                 }
-            }
-            val mismatches = flights.values.filter { flight ->
-                flight.viewerGeneration == generation &&
-                    flight.adjacentPredecessorGate &&
-                    flight.adjacentPredecessorEpisodePath == key &&
-                    flight.episodePath in staleMarkerTargets &&
-                    !flight.adjacentPredecessorComplete.isDone &&
-                    flight.episodePath != expectedTarget
-            }
-            mismatches.forEach { stale ->
-                retireAdjacentTargetForReplacement(
-                    stale.episodePath,
-                    stale.lease.generation.value,
-                    generation,
-                    "adjacent_target_reconciled",
-                )
-            }
+                // A mismatched flight may already have crossed its control/body gate. Retire it
+                // regardless of marker membership or gate state so it cannot publish later.
+                val mismatches = flights.values.filter { flight ->
+                    flight.viewerGeneration == generation &&
+                        flight.adjacentPredecessorGate &&
+                        flight.adjacentPredecessorEpisodePath == key &&
+                        flight.episodePath != expectedTarget
+                }
+                mismatches.forEach { stale ->
+                    retireAdjacentTargetForReplacement(
+                        stale.episodePath,
+                        stale.lease.generation.value,
+                        generation,
+                        "adjacent_target_reconciled",
+                    )
+                }
             }
             val reconciledTargets = completedAdjacentTargets.entries
                 .filter { entry ->

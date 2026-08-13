@@ -1090,6 +1090,16 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     NtkClickOwnedManhwaWavePolicy.HOST_GPU_CURRENT_RESTORED_VIEWPORT_BODIES,
             )
         ).coerceAtLeast(0),
+        // A probing stage used to stop refilling freed slots until every body in the stage had
+        // drained. On a healthy Korean edge that made the throughput benchmark itself the long
+        // pole: the same exact-original C6 rolling wave is faster than the stop-and-probe ladder.
+        // Keep the measured C6 admission continuously work-conserving for this session. Socket,
+        // DNS, cancellation, mixed-format, adjacent and non-emulator policies remain unchanged.
+        probeWiderStages = false,
+        healthGatedRollingRamp = true,
+        // A maximum-bound numeric plan is provisionally 384 pages. Do not let those synthetic
+        // suffix slots qualify a wider physical wave before the document publishes exact count.
+        finiteBodyCountKnownAtConstruction = !plan.maximumNumericBound,
     )
     // This remains the common outer ceiling across ordinary, mixed and unresolved bodies.
     // Ordinary JPEGs add the adaptive inner gate; mixed PNGs still add their independent C8 gate.
@@ -1342,7 +1352,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         "click_current_restored_bulk_admission " +
                             "path=${plan.normalizedEpisodePath},target=${admission.targetLimit}," +
                             "best=${admission.bestLimit},active=${admission.activeLeases}," +
-                            "settled=true,reason=finite_exact_count,bodies=$finiteBulkBodies",
+                            "settled=${admission.settled},frozen=${admission.frozen}," +
+                            "reason=${admission.transitionReason},bodies=$finiteBulkBodies",
                     )
                 }
         }
@@ -3168,7 +3179,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         var totalLease: Closeable? = null
         while (!closed.get()) {
             callCancellation.throwIfCancelled()
-            if (!isCapturedDirectWifiTransportLive()) return null
+            if (!isCapturedDirectWifiTransportLive()) {
+                hostGpuCurrentRestoredBulkAdmission.freeze(
+                    "profile_changed_before_outer_admission",
+                )
+                return null
+            }
             if (hostGpuCurrentRestoredTotalBulkBodyTransferPermits.tryAcquire(
                     BODY_TRANSFER_PERMIT_POLL_MS,
                     TimeUnit.MILLISECONDS,
@@ -3190,6 +3206,9 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             while (!closed.get()) {
                 callCancellation.throwIfCancelled()
                 if (!isCapturedDirectWifiTransportLive()) {
+                    hostGpuCurrentRestoredBulkAdmission.freeze(
+                        "profile_changed_before_adaptive_admission",
+                    )
                     ownedTotal.close()
                     return null
                 }
@@ -3199,7 +3218,12 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     predecessorProvenOrdinaryDirectWifi,
                     restoredAnchorOrdinaryDirectWifi,
                 )
-                if (!adaptive) return CurrentRestoredBulkBodyLease(ownedTotal, null)
+                if (!adaptive) {
+                    hostGpuCurrentRestoredBulkAdmission.freeze(
+                        "ordinary_classification_changed_before_admission",
+                    )
+                    return CurrentRestoredBulkBodyLease(ownedTotal, null)
+                }
                 val lease = hostGpuCurrentRestoredBulkAdmission.tryAcquire(
                     BODY_TRANSFER_PERMIT_POLL_MS,
                     TimeUnit.MILLISECONDS,
@@ -3213,7 +3237,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         restoredAnchorOrdinaryDirectWifi,
                     )
                 ) {
-                    lease.aborted()
+                    lease.disqualified(
+                        if (!isCapturedDirectWifiTransportLive()) {
+                            "profile_changed_after_adaptive_admission"
+                        } else {
+                            "ordinary_classification_changed_after_admission"
+                        },
+                    )
                     pendingAdaptive = null
                     if (!isCapturedDirectWifiTransportLive()) {
                         ownedTotal.close()
@@ -3678,6 +3708,14 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         var stage = "create_identity"
         var currentRestoredBulkOutcome: NtkAdaptiveManhwaBulkAdmission.Lease? = null
         var currentRestoredBulkOwner: CurrentRestoredBulkBodyLease? = null
+        var currentRestoredPhysicalEvidence:
+            ReaderImageCache.NtkStrictPhysicalBodyEvidence? = null
+        var currentRestoredExactJpeg = false
+        val expectedPlannedReplicaHost = (
+            preferredOrdinaryDirectWifiReplicaHost?.trim()?.takeIf { it.isNotEmpty() }
+                ?: runCatching { java.net.URI.create(candidateAsset).host.orEmpty() }
+                    .getOrDefault("")
+            ).lowercase(Locale.ROOT)
         val operationId = NtkStrictSourceOwnershipRegistry.nextOperationId()
         val identity = NtkQuarantineSourceCallIdentity.create(
             sourceSessionId,
@@ -3730,7 +3768,19 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 validImageHeadersSink = {
                     onValidImageHeaders()
                 },
-                exactImageHeaderSink = {
+                exactImageHeaderSink = { exactHeader ->
+                    currentRestoredExactJpeg = exactHeader.format.equals(
+                        NtkExactImageHeaderParser.FORMAT_JPEG,
+                        ignoreCase = true,
+                    )
+                    if (!currentRestoredExactJpeg && hostGpuCurrentRestoredViewportPriority) {
+                        // Exact bytes, not the filename suffix, are the final format signal. This
+                        // page continues through the mixed path, but it may never qualify a wider
+                        // ordinary-JPEG wave for the rest of the session. A bulk Call keeps its
+                        // slot until EOF so a downshift cannot temporarily exceed its cap; a
+                        // viewport proof freezes the controller before the suffix fence opens.
+                        hostGpuCurrentRestoredBulkAdmission.freeze("mixed_exact_format")
+                    }
                     if (directWifiEarlyUncommonEnabled) {
                         val exactExtension = candidateAsset.substringAfterLast('.', "")
                             .lowercase(Locale.ROOT)
@@ -3796,8 +3846,15 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                             preferredOrdinaryDirectWifiReplicaHost,
                         )
                         if (currentRestoredBulkOutcome != null && ordinaryWifiLease == null) {
-                            // Classification/transport changed between the two gates. Retain the
-                            // common C24 ceiling, but remove this request from the JPEG experiment.
+                            // Classification/transport changed between the two gates. Freeze the
+                            // session-local experiment before returning the common outer permit.
+                            hostGpuCurrentRestoredBulkAdmission.freeze(
+                                if (!isCapturedDirectWifiTransportLive()) {
+                                    "profile_changed_between_body_gates"
+                                } else {
+                                    "ordinary_classification_changed_between_body_gates"
+                                },
+                            )
                             currentRestoredBulkOwner?.abandonAdaptive()
                             currentRestoredBulkOutcome = null
                         }
@@ -3822,18 +3879,40 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                         throw failure
                     }
                 },
+                onPhysicalBodyProven = { evidence ->
+                    // The spool emits this synchronously only after exact length + SHA at EOF.
+                    // Keep it local to this one operation; it never enters body identity state.
+                    currentRestoredPhysicalEvidence = evidence
+                },
             )
-            val stillComparableOrdinaryBody = currentRestoredBulkOutcome != null &&
-                isLiveOrdinaryDirectWifiCandidate(
+            val capturedProfileLive = isCapturedDirectWifiTransportLive()
+            val ordinaryClassificationLive = isLiveOrdinaryDirectWifiCandidate(
                     pageIndex,
                     candidateAsset,
                     predecessorProvenOrdinaryDirectWifi,
                     restoredAnchorOrdinaryDirectWifi,
                 )
-            val completedAdmission = if (stillComparableOrdinaryBody) {
-                currentRestoredBulkOutcome?.succeeded(body.encodedLength)
-            } else {
-                currentRestoredBulkOutcome?.aborted()
+            val stillComparableOrdinaryBody = currentRestoredBulkOutcome != null &&
+                currentRestoredPhysicalEvidence != null &&
+                expectedPlannedReplicaHost.isNotBlank()
+            val completedAdmission = currentRestoredBulkOutcome?.let { outcome ->
+                val evidence = currentRestoredPhysicalEvidence
+                if (!stillComparableOrdinaryBody || evidence == null) {
+                    outcome.disqualified("missing_physical_eof_proof")
+                } else {
+                    outcome.succeeded(
+                        NtkAdaptiveManhwaBulkAdmission.PhysicalProof(
+                            operationId = operationId,
+                            pageIndex = pageIndex,
+                            encodedBytes = body.encodedLength,
+                            expectedResponseHost = expectedPlannedReplicaHost,
+                            capturedProfileLive = capturedProfileLive,
+                            ordinaryClassificationLive = ordinaryClassificationLive,
+                            exactOrdinaryJpeg = currentRestoredExactJpeg,
+                            evidence = evidence,
+                        ),
+                    )
+                }
             }
             completedAdmission?.let { admission ->
                 Log.d(
@@ -3841,7 +3920,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     "click_current_restored_bulk_admission " +
                         "path=${binding.episodePath},target=${admission.targetLimit}," +
                         "best=${admission.bestLimit},active=${admission.activeLeases}," +
-                        "settled=${admission.settled}",
+                        "settled=${admission.settled},frozen=${admission.frozen}," +
+                        "reason=${admission.transitionReason}," +
+                        "proofs=${admission.stageSuccesses}," +
+                        "hosts=${admission.healthyReplicaHostCount}",
                 )
             }
             val held = HeldBody(body, opened, binding)
@@ -3861,18 +3943,21 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         } catch (failure: Throwable) {
             val congestionFailure = currentRestoredBulkOutcome != null &&
                 isAdaptiveBulkTransportFailure(failure, stage, callCancellation)
-            val admission = if (congestionFailure) {
-                currentRestoredBulkOutcome?.failed()
-            } else {
-                currentRestoredBulkOutcome?.aborted()
+            val admission = when {
+                congestionFailure -> currentRestoredBulkOutcome?.failed()
+                currentRestoredBulkOutcome != null &&
+                    !isCapturedDirectWifiTransportLive() ->
+                    currentRestoredBulkOutcome?.disqualified("profile_changed_after_body_failure")
+                else -> currentRestoredBulkOutcome?.aborted()
             }
-            if (congestionFailure && admission != null) {
+            if (admission != null) {
                 Log.d(
                     TAG,
                     "click_current_restored_bulk_admission " +
                         "path=${binding.episodePath},target=${admission.targetLimit}," +
                         "best=${admission.bestLimit},active=${admission.activeLeases}," +
-                        "settled=${admission.settled},reason=body_failure",
+                        "settled=${admission.settled},frozen=${admission.frozen}," +
+                        "reason=${admission.transitionReason}",
                 )
             }
             operationLease.close()

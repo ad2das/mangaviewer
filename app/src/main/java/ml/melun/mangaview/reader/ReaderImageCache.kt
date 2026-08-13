@@ -3822,6 +3822,20 @@ data class NtkResolvedSourceRoute(
                     )
                     null
                 } else {
+                    // This synthetic response came from a transport fallback rather than the
+                    // request's first physical H2 attempt. Preserve that provenance in the
+                    // immutable request tag so admission tuning can never mistake it for a
+                    // healthy first-attempt H2 EOF, even if host policy changes later.
+                    val recoveryAttempt =
+                        (request.tag(
+                            CustomHttpClient.NtkExactImagePhysicalAttempt::class.java
+                        )?.ordinal ?: 0) + 1
+                    val recoveryRequest = request.newBuilder()
+                        .tag(
+                            CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
+                            CustomHttpClient.NtkExactImagePhysicalAttempt(recoveryAttempt),
+                        )
+                        .build()
                     val headers = Headers.Builder()
                     result.headers.forEach { (name, values) ->
                         if (name.equals("content-length", ignoreCase = true) ||
@@ -3841,7 +3855,7 @@ data class NtkResolvedSourceRoute(
                             "elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs}",
                     )
                     Response.Builder()
-                        .request(request)
+                        .request(recoveryRequest)
                         .protocol(Protocol.HTTP_2)
                         .code(result.code)
                         .message("OK")
@@ -5974,6 +5988,10 @@ data class NtkResolvedSourceRoute(
         }
     }
 
+    private interface NtkRangeContinuationProvenance {
+        fun usedAnyContinuation(): Boolean
+    }
+
     private class NtkStalledReplicaResponseBody(
         private val delegateFactory: Call.Factory,
         private val candidates: List<Request>,
@@ -6009,7 +6027,7 @@ data class NtkResolvedSourceRoute(
         private val capturedDirectWifiNetwork: android.net.Network?,
         private val requiredDirectWifiViewerGeneration: Long?,
         private val requiredForegroundEpisodePath: String?,
-    ) : ResponseBody() {
+    ) : ResponseBody(), NtkRangeContinuationProvenance {
         init {
             require(maxRangeContinuations > 0)
             require(directWifiShortWebtoonTailTag == null ||
@@ -6030,6 +6048,8 @@ data class NtkResolvedSourceRoute(
         private var nextCandidateIndex = initialCandidateIndex + 1
         private var deliveredBytes = 0L
         private var continuationCount = 0
+
+        override fun usedAnyContinuation(): Boolean = continuationCount > 0
         private var segmentDeadlineArmed = false
         private var segmentStartedAtNanos = 0L
         private var nextProjectedBodyCheckAtNanos = 0L
@@ -7014,6 +7034,28 @@ data class NtkResolvedSourceRoute(
         }
     }
 
+    /**
+     * Ephemeral evidence from this operation's actual network response. It is deliberately kept
+     * outside the encoded-body identity: callers may use it to tune future admission, but cache
+     * hits cannot manufacture it and it never changes the URL, bytes, SHA, or publication proof.
+     */
+    internal data class NtkStrictPhysicalBodyEvidence(
+        val protocol: String,
+        val responseHost: String,
+        val physicalStartedAtNanos: Long,
+        val proofReadyAtNanos: Long,
+        val physicalAttemptOrdinal: Int,
+        val usedRangeContinuation: Boolean,
+    ) {
+        init {
+            require(protocol.isNotBlank())
+            require(responseHost.isNotBlank())
+            require(physicalStartedAtNanos > 0L)
+            require(proofReadyAtNanos >= physicalStartedAtNanos)
+            require(physicalAttemptOrdinal >= 0)
+        }
+    }
+
     private fun strictPublishedBody(
         file: File,
         metadata: NtkSourceMetadata,
@@ -7894,7 +7936,7 @@ data class NtkResolvedSourceRoute(
     private class CompletionResponseBody(
         private val delegate: ResponseBody,
         private val onComplete: (Long, Boolean, Throwable?) -> Unit
-    ) : ResponseBody() {
+    ) : ResponseBody(), NtkRangeContinuationProvenance {
         private val completed = AtomicBoolean(false)
         private val bytesRead = AtomicLong(0L)
         private val reachedEof = AtomicBoolean(false)
@@ -7981,6 +8023,9 @@ data class NtkResolvedSourceRoute(
         override fun source(): BufferedSource = completionSource
 
         override fun close() = completionSource.close()
+
+        override fun usedAnyContinuation(): Boolean =
+            (delegate as? NtkRangeContinuationProvenance)?.usedAnyContinuation() == true
 
         fun cancelWithoutConcurrentClose() {
             completionSourceDelegate.requestCancellationClose()
@@ -10808,6 +10853,7 @@ data class NtkResolvedSourceRoute(
         exactImageHeaderSink: (NtkStreamingImageHeaderParser.Result.Exact) -> Unit = {},
         metadataSink: (NtkQuarantineMetadataEvidence) -> Unit,
         bodyReadAdmission: (() -> Closeable)? = null,
+        onPhysicalBodyProven: ((NtkStrictPhysicalBodyEvidence) -> Unit)? = null,
     ): NtkQuarantinedBody {
         require(pageIndex in binding.normalizedOrderedCanonicalAssets.indices) {
             "Quarantine page index is outside the bound plan"
@@ -11054,6 +11100,34 @@ data class NtkResolvedSourceRoute(
                             "totalMs=${elapsedMs(physicalStartedAtNs, completedAtNs)}," +
                             "bytes=$encodedLength"
                     )
+                }
+                // Quarantine and exact work belong to the same physical source session. Emit the
+                // same post-EOF/SHA evidence here so a slow or alternate opening response cannot
+                // be forgotten merely because the manifest was still being promoted.
+                onPhysicalBodyProven?.let { sink ->
+                    runCatching {
+                        sink(
+                            NtkStrictPhysicalBodyEvidence(
+                                protocol = protocol,
+                                responseHost = response.request.url.host.lowercase(Locale.ROOT),
+                                physicalStartedAtNanos = physicalStartedAtNs,
+                                proofReadyAtNanos = completedAtNs,
+                                physicalAttemptOrdinal =
+                                    response.request.tag(
+                                        CustomHttpClient.NtkExactImagePhysicalAttempt::class.java
+                                    )?.ordinal ?: 0,
+                                usedRangeContinuation =
+                                    (body as? NtkRangeContinuationProvenance)
+                                        ?.usedAnyContinuation() == true,
+                            )
+                        )
+                    }.onFailure { failure ->
+                        Log.w(
+                            TAG,
+                            "reader_quarantine_physical_body_evidence_drop " +
+                                "page=$pageIndex,error=${failure.javaClass.simpleName}",
+                        )
+                    }
                 }
                 succeeded = true
                 return NtkQuarantinedBody(
@@ -11415,6 +11489,7 @@ data class NtkResolvedSourceRoute(
         cancellation: Cancellation,
         onMetadata: (NtkSourceMetadata) -> Unit,
         waveRecoveryState: NtkManhwaWaveRecoveryState? = null,
+        onPhysicalBodyProven: ((NtkStrictPhysicalBodyEvidence) -> Unit)? = null,
     ): NtkStrictPublishedBody {
         require(manifestSeal.isStructurallyComplete)
         require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
@@ -11789,6 +11864,34 @@ data class NtkResolvedSourceRoute(
                 }
                 publishedAtNs = SystemClock.elapsedRealtimeNanos()
                 succeeded = true
+                // Only an actual response that reached EOF and completed the strict SHA/length
+                // proof can emit transport-health evidence. The cache-before-call return above
+                // intentionally bypasses this callback.
+                onPhysicalBodyProven?.let { sink ->
+                    runCatching {
+                        sink(
+                            NtkStrictPhysicalBodyEvidence(
+                                protocol = protocol,
+                                responseHost = response.request.url.host.lowercase(Locale.ROOT),
+                                physicalStartedAtNanos = physicalStartedAtNs,
+                                proofReadyAtNanos = proofReadyAtNs,
+                                physicalAttemptOrdinal =
+                                    response.request.tag(
+                                        CustomHttpClient.NtkExactImagePhysicalAttempt::class.java
+                                    )?.ordinal ?: 0,
+                                usedRangeContinuation =
+                                    (body as? NtkRangeContinuationProvenance)
+                                        ?.usedAnyContinuation() == true,
+                            )
+                        )
+                    }.onFailure { failure ->
+                        Log.w(
+                            TAG,
+                            "reader_strict_physical_body_evidence_drop " +
+                                "page=$pageIndex,error=${failure.javaClass.simpleName}",
+                        )
+                    }
+                }
                 // The ownership ledger remains exact for every body. Formatting 114 detailed
                 // success records on source threads competes with EOF/SHA and JPEG decode during
                 // the only cold deadline; page zero is the representative stage breakdown while
