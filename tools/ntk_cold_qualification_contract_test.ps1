@@ -57,6 +57,7 @@ $macroSource = [IO.File]::ReadAllText($macroSourceFile)
 $resumePlanSource = [IO.File]::ReadAllText($resumePlanSourceFile)
 $schema = [IO.File]::ReadAllText($schemaFile) | ConvertFrom-Json
 foreach($functionName in @(
+        "Normalize-HostGpuDnsServers",
         "Get-OptionalProperty",
         "ConvertTo-FiniteDouble",
         "Get-ExactMacroResultArtifact",
@@ -77,6 +78,30 @@ foreach($functionName in @(
         throw "Expected one qualification helper function: $functionName"
     }
     Invoke-Expression $functionAst[0].Extent.Text
+}
+
+if((Normalize-HostGpuDnsServers '192.168.110.1, 1.1.1.1') -cne
+        '192.168.110.1,1.1.1.1') {
+    throw 'Host-GPU DNS server normalization did not preserve the ordered server list'
+}
+foreach($invalidDnsServers in @('', ' ', '1.1.1.1,', '1.1.1.1,1.1.1.1',
+        '1,2,3,4,5', 'not a host')) {
+    try {
+        [void](Normalize-HostGpuDnsServers $invalidDnsServers)
+        throw "Invalid HostGpuDnsServers was accepted: $invalidDnsServers"
+    } catch {
+        if($_.Exception.Message -like 'Invalid HostGpuDnsServers was accepted:*') { throw }
+    }
+}
+foreach($wrapperSource in @($finalSource, $hostSource)) {
+    if(-not $wrapperSource.Contains('[string]$HostGpuDnsServers') -or
+            -not $wrapperSource.Contains('HostGpuDnsServers = $HostGpuDnsServers')) {
+        throw 'A canonical host-GPU wrapper does not preserve the selected DNS servers'
+    }
+}
+if(-not $source.Contains('dnsServers = $script:HostGpuDnsServers') -or
+        -not $source.Contains('-HostGpuDnsServers $(ConvertTo-PowerShellLiteral $HostGpuDnsServers)')) {
+    throw 'Qualification artifacts or rerun command do not preserve the selected DNS servers'
 }
 
 function New-PhysicalLimitEvidence {
@@ -852,6 +877,34 @@ if([string]$instrumentationInvalidReason -cne
 if($null -ne (Find-InstrumentationMeasurementInvalidReason `
         "java.lang.AssertionError: product seam exceeded")) {
     throw "Instrumentation fallback mislabeled a product assertion as infrastructure invalid"
+}
+$traceProcessorTimeoutReason = Find-InstrumentationMeasurementInvalidReason @'
+[Trace with processing error: timeout]
+java.net.SocketTimeoutException: timeout
+    at androidx.benchmark.traceprocessor.TraceProcessorHttpServer.rawQuery(TraceProcessorHttpServer.kt:114)
+    at androidx.benchmark.traceprocessor.TraceProcessor$Session.query(TraceProcessor.kt:318)
+    at ml.melun.mangaview.macrobenchmark.ViewerScrollTraceMetric.getMeasurements(ViewerScrollTraceMetric.kt:87)
+'@
+if([string]$traceProcessorTimeoutReason -cne
+        'MEASUREMENT_INVALID: AndroidX TraceProcessor timed out while querying ViewerScrollTraceMetric') {
+    throw "TraceProcessor ViewerScrollTraceMetric timeout was not classified as infrastructure invalid"
+}
+$traceProcessorTimeoutNearMisses = @(
+    ("[Trace with processing error: timeout]`n" +
+        "java.net.SocketTimeoutException: timeout`n" +
+        "at androidx.benchmark.traceprocessor.TraceProcessor`$Session.query`n" +
+        "at ViewerScrollTraceMetric.getMeasurements"),
+    ("[Trace with processing error: timeout]`n" +
+        "java.net.SocketTimeoutException: timeout`n" +
+        "at androidx.benchmark.traceprocessor.TraceProcessorHttpServer.rawQuery`n" +
+        "at androidx.benchmark.traceprocessor.TraceProcessor`$Session.query"),
+    ("java.net.SocketTimeoutException: timeout`n" +
+        "at app.ProductNetworkCall.execute")
+)
+foreach($nearMiss in $traceProcessorTimeoutNearMisses) {
+    if($null -ne (Find-InstrumentationMeasurementInvalidReason $nearMiss)) {
+        throw "A partial or product SocketTimeoutException signature was mislabeled as infrastructure invalid"
+    }
 }
 if([string](Resolve-ColdCaseClassification $true 99) -cne "INFRA_INVALID" -or
         [string](Resolve-ColdCaseClassification $false 0) -cne "VALID" -or

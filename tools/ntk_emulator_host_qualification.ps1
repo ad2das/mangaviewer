@@ -23,7 +23,9 @@ param(
     [switch]$RequireBaselineProfile,
     [switch]$StandalonePerfetto,
     [string]$HostGpuAvdName = "",
-    [string]$HostGpuEmulatorPath = ""
+    [string]$HostGpuEmulatorPath = "",
+    [ValidateNotNullOrEmpty()]
+    [string]$HostGpuDnsServers = "1.1.1.1,8.8.8.8"
 )
 
 Set-StrictMode -Version Latest
@@ -59,6 +61,7 @@ $arguments = @{
     # 180-second timeout per case. Warm UX is exercised separately; the formal verdict is cold.
     IncludeWarmReopen = $false
     RestartHostGpuProcessPerCase = $true
+    HostGpuDnsServers = $HostGpuDnsServers
 }
 if($SkipInstall) { $arguments.SkipInstall = $true }
 if($RequireBaselineProfile) { $arguments.RequireBaselineProfile = $true }

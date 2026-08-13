@@ -1099,7 +1099,7 @@ public class CustomHttpClientTest {
                 CustomHttpClient.NTK_CELLULAR_ALIAS_URL,
                 CustomHttpClient.NTK_CELLULAR_ALIAS_URL,
                 true));
-        assertTrue(CustomHttpClient.shouldAcceptTrustedNtkAliasAfterProbeForTest(
+        assertFalse(CustomHttpClient.shouldAcceptTrustedNtkAliasAfterProbeForTest(
                 CustomHttpClient.NTK_WEBTOON_URL,
                 false));
         assertTrue(CustomHttpClient.shouldAcceptTrustedNtkAliasAfterProbeForTest(

@@ -5534,10 +5534,10 @@ public class CustomHttpClient {
                                 + ",strictOwner=" + hasNtkStrictForegroundNetworkOwner());
                         return false;
                     }
-                    // The final resolver fallback already treats this bundled compatibility
-                    // alias as authoritative when every numbered sbxh origin is unavailable.
-                    // Apply the same trust decision here so a stricter document/API probe mismatch
-                    // cannot force a 12-host sweep before reaching the exact same alias.
+                    // A compatibility alias is only authoritative after its exact document/API
+                    // probe succeeds. Persisting an unproven alias can turn a transient regional
+                    // 403 into a session-wide black screen because strict discovery freezes the
+                    // selected origin for the lifetime of the reader.
                     if(shouldAcceptTrustedNtkAliasAfterProbe(
                             currentRoot, aliasProbePassed)) {
                         reachable = trustedAlias;
@@ -5619,7 +5619,7 @@ public class CustomHttpClient {
 
     private static boolean shouldAcceptTrustedNtkAliasAfterProbe(String currentRoot,
                                                                  boolean aliasProbePassed) {
-        return aliasProbePassed || isCurrentSbxhNtkRoot(currentRoot);
+        return aliasProbePassed;
     }
 
     static boolean shouldAcceptTrustedNtkAliasAfterProbeForTest(String currentRoot,
@@ -5682,12 +5682,6 @@ public class CustomHttpClient {
         Log.d(TAG, "ntk_domain_reachable_none current=" + currentRoot
                 + ",resolved=" + (resolvedRoots == null ? "[]" : resolvedRoots.toString())
                 + ",candidates=" + candidates);
-        if(isCurrentSbxhNtkRoot(currentRoot)) {
-            String aliasRoot = NtkDomainResolver.normalizeRoot("https://" + NTK_ALIAS_HOST);
-            Log.d(TAG, "ntk_domain_reachable_none_alias_fallback current=" + currentRoot
-                    + ",alias=" + aliasRoot);
-            return aliasRoot;
-        }
         return null;
     }
 

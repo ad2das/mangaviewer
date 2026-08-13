@@ -21,6 +21,8 @@ param(
     [int]$CaseTimeoutSeconds = 360,
     [ValidateSet("PHYSICAL_DEVICE", "HOST_GPU_EMULATOR")]
     [string]$QualificationDeviceMode = "HOST_GPU_EMULATOR",
+    [ValidateNotNullOrEmpty()]
+    [string]$HostGpuDnsServers = "1.1.1.1,8.8.8.8",
     [switch]$SkipInstall,
     [switch]$RequireBaselineProfile,
     [switch]$StandalonePerfetto
@@ -55,6 +57,7 @@ $arguments = @{
     # The formal verdict is cold-only. A warm reopen remains available in the diagnostic runner,
     # but cannot delay or invalidate the requested 20 independent pm-clear cases.
     IncludeWarmReopen = $false
+    HostGpuDnsServers = $HostGpuDnsServers
 }
 if($QualificationDeviceMode -ceq "HOST_GPU_EMULATOR") {
     # Long-lived gfxstream/host OpenGL processes developed reproducible 56-95ms queueBuffer

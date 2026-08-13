@@ -33,8 +33,10 @@ import static ml.melun.mangaview.mangaview.CustomHttpClient.WEBTOON_URL;
 public class Preference {
     private static final String NTK_CELLULAR_RESOLVED_ROOT_PREF =
             "ntkCellularResolvedRootV1";
-    private static final String NTK_VERIFIED_RESOLVED_ROOT_PREF =
+    private static final String LEGACY_NTK_VERIFIED_RESOLVED_ROOT_PREF =
             "ntkVerifiedResolvedRootV1";
+    private static final String NTK_VERIFIED_RESOLVED_ROOT_PREF =
+            "ntkVerifiedResolvedRootV2";
 
     SharedPreferences sharedPref;
     //ArrayList<Title> recent;
@@ -235,6 +237,7 @@ public class Preference {
                     .putString("ntkResolvedRoot", ntkResolvedRoot)
                     .putString(NTK_CELLULAR_RESOLVED_ROOT_PREF, ntkCellularResolvedRoot)
                     .putString(NTK_VERIFIED_RESOLVED_ROOT_PREF, ntkVerifiedResolvedRoot)
+                    .remove(LEGACY_NTK_VERIFIED_RESOLVED_ROOT_PREF)
                     .putBoolean("autoUrl", false)
                     .remove("login")
                     .remove("notice")
@@ -605,6 +608,7 @@ public class Preference {
                 .putString("ntkResolvedRoot", ntkResolvedRoot)
                 .putString(NTK_CELLULAR_RESOLVED_ROOT_PREF, ntkCellularResolvedRoot)
                 .putString(NTK_VERIFIED_RESOLVED_ROOT_PREF, ntkVerifiedResolvedRoot)
+                .remove(LEGACY_NTK_VERIFIED_RESOLVED_ROOT_PREF)
                 .putBoolean("autoUrl", autoUrl)
                 .apply();
     }
@@ -917,6 +921,7 @@ public class Preference {
                 .putString("url", url)
                 .putString("webtoonUrl", webtoonUrl)
                 .putString(NTK_VERIFIED_RESOLVED_ROOT_PREF, ntkVerifiedResolvedRoot)
+                .remove(LEGACY_NTK_VERIFIED_RESOLVED_ROOT_PREF)
                 .putBoolean("autoUrl", false)
                 .apply();
         MainApplication.refreshWebViewDebuggingPolicy(this);

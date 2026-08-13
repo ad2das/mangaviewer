@@ -43,6 +43,8 @@ param(
     [switch]$StopOnFirstFailure,
     [string]$HostGpuEmulatorPath = "",
     [string]$HostGpuAvdName = "",
+    [ValidateNotNullOrEmpty()]
+    [string]$HostGpuDnsServers = "1.1.1.1,8.8.8.8",
     [switch]$FastFunctionalTriage,
     [ValidateRange(0, 3)]
     [int]$MeasurementInvalidRetryCount = 1,
@@ -53,8 +55,35 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Normalize-HostGpuDnsServers([string]$Value) {
+    $rawParts = @($Value.Split(','))
+    if($rawParts.Count -lt 1 -or $rawParts.Count -gt 4) {
+        throw "HostGpuDnsServers must contain between one and four comma-separated servers"
+    }
+    $normalized = [Collections.Generic.List[string]]::new()
+    foreach($rawPart in $rawParts) {
+        $server = $rawPart.Trim()
+        if([string]::IsNullOrWhiteSpace($server)) {
+            throw "HostGpuDnsServers contains an empty server"
+        }
+        $address = $null
+        $isIp = [Net.IPAddress]::TryParse($server, [ref]$address)
+        $isDnsName = [Uri]::CheckHostName($server) -ceq [UriHostNameType]::Dns
+        if(-not $isIp -and -not $isDnsName) {
+            throw "HostGpuDnsServers contains an invalid IP address or hostname: $server"
+        }
+        if($normalized.Contains($server)) {
+            throw "HostGpuDnsServers contains a duplicate server: $server"
+        }
+        $normalized.Add($server)
+    }
+    return $normalized -join ','
+}
+
 $script:HostGpuAvdName = $HostGpuAvdName
 $script:HostGpuEmulatorPath = $HostGpuEmulatorPath
+$script:HostGpuDnsServers = Normalize-HostGpuDnsServers $HostGpuDnsServers
 $WorkTypes = @(@("webtoon", "manhwa") | Where-Object {
     $_ -in @($WorkTypes | ForEach-Object { $_.ToLowerInvariant() })
 })
@@ -501,7 +530,7 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         # sockets even though the host route was healthy wired Ethernet. Android's documented
         # feature fallback retains Transport.WIFI while selecting the legacy network model.
         "-feature", "-WiFiPacketStream", "-netdelay", "none", "-netspeed", "full",
-        "-netfast", "-dns-server", "1.1.1.1,8.8.8.8"
+        "-netfast", "-dns-server", $script:HostGpuDnsServers
     )) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
@@ -726,6 +755,7 @@ function Restart-HostGpuEmulatorForCase([int]$Ordinal) {
         mobileDataState = $mobileDataState.Stdout.Trim()
         ipReachabilityProven = $true
         dnsReachabilityProven = $true
+        dnsServers = $script:HostGpuDnsServers
         wifiDefaultProven = [bool]$wifiRoute.ready
         defaultNetworkId = [string]$wifiRoute.defaultNetworkId
         defaultNetworkInterface = [string]$wifiRoute.interfaceName
@@ -2112,8 +2142,24 @@ function Find-InstrumentationMeasurementInvalidReason([AllowNull()][string]$Text
     $matches = [regex]::Matches(
         $Text,
         '(?m)MeasurementInvalidException:[ \t]*(MEASUREMENT_INVALID:[^\r\n]+)')
-    if($matches.Count -eq 0) { return $null }
-    return $matches[$matches.Count - 1].Groups[1].Value.Trim()
+    if($matches.Count -gt 0) {
+        return $matches[$matches.Count - 1].Groups[1].Value.Trim()
+    }
+    # A large, otherwise complete Perfetto trace can exceed AndroidX Benchmark's in-process
+    # TraceProcessor HTTP read timeout after the real UI scenario has finished. Treat only the
+    # exact ViewerScrollTraceMetric query stack as infrastructure-invalid so the normal bounded
+    # retry path reruns every presentation/jank gate. A generic SocketTimeoutException remains a
+    # product failure and missing compositor evidence can never become a pass.
+    $traceProcessorQueryTimedOut =
+        $Text.Contains('Trace with processing error: timeout') -and
+        $Text.Contains('java.net.SocketTimeoutException: timeout') -and
+        $Text.Contains('androidx.benchmark.traceprocessor.TraceProcessor$Session.query') -and
+        $Text.Contains('androidx.benchmark.traceprocessor.TraceProcessorHttpServer.rawQuery') -and
+        $Text.Contains('ViewerScrollTraceMetric.getMeasurements')
+    if($traceProcessorQueryTimedOut) {
+        return 'MEASUREMENT_INVALID: AndroidX TraceProcessor timed out while querying ViewerScrollTraceMetric'
+    }
+    return $null
 }
 
 function Resolve-ColdCaseClassification(
@@ -5900,6 +5946,7 @@ $rerunParts = [Collections.Generic.List[string]]::new()
 [void]$rerunParts.Add("-AllImagesSlaMs $AllImagesSlaMs")
 [void]$rerunParts.Add("-CaseTimeoutSeconds $CaseTimeoutSeconds")
 [void]$rerunParts.Add("-QualificationDeviceMode $QualificationDeviceMode")
+[void]$rerunParts.Add("-HostGpuDnsServers $(ConvertTo-PowerShellLiteral $HostGpuDnsServers)")
 if($RestartHostGpuProcessPerCase) {
     [void]$rerunParts.Add("-RestartHostGpuProcessPerCase")
 }
