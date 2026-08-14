@@ -1120,6 +1120,10 @@ class ReaderSession(
         if (strictExactColdRolling) Long.MAX_VALUE else 0L
     )
     private val currentViewportAnchor = AtomicInteger(-1)
+    // The rolling WindowEvent can intentionally look several pages ahead of the first visible
+    // page.  Keep the Activity's actual progress PageRef separately so an old boundary request
+    // cannot use that prefetch horizon as proof that newly appended tail pages were consumed.
+    private val latestReportedReadingPage = AtomicReference<PageRef?>(null)
     private val forwardReadingPosition = AtomicInteger(-1)
     private val directWifiForwardSurfaceMotionAtMs = AtomicLong(0L)
     private val directWifiForwardSurfaceMotionActive = AtomicBoolean(false)
@@ -11530,7 +11534,11 @@ class ReaderSession(
                 )
                 return
             }
-            appendAdjacentEpisode(effectiveAnchor, direction, silentMissing = silentMissing, skipStartDelay = true)
+            // Preserve the anchor that actually reached the boundary. appendAdjacentEpisode will
+            // compare it with the now-current normalized tail and reject this deferred turn when
+            // pages were published in between. Passing effectiveAnchor here erased that evidence
+            // and could append the next-next episode before the viewport reached the new p5/p6.
+            appendAdjacentEpisode(anchor, direction, silentMissing = silentMissing, skipStartDelay = true)
         }
     }
 
@@ -11971,6 +11979,21 @@ class ReaderSession(
             anchor
         }
         if (effectiveAnchor != anchor) {
+            val viewportAnchor = currentViewportAnchor.get()
+            if (NtkAdjacentAdmissionPolicy.shouldRejectStaleForwardTail(
+                    direction = direction,
+                    requestedAnchor = anchor,
+                    normalizedAnchor = effectiveAnchor,
+                    viewportAnchor = viewportAnchor,
+                )
+            ) {
+                Log.d(
+                    TAG,
+                    "append_adjacent_anchor_growth_stale direction=$direction anchor=$anchor " +
+                        "effective=$effectiveAnchor viewport=$viewportAnchor path=${manga.ntkEpisodePath}"
+                )
+                return AppendStartResult.CANCELLED
+            }
             Log.d(
                 TAG,
                 "append_adjacent_anchor_normalized direction=$direction anchor=$anchor " +
@@ -12393,6 +12416,20 @@ class ReaderSession(
                 }
                 if (resolvedTarget == null || resolvedUrls.isEmpty()) {
                     if (!silentMissing) postMessage("표시할 이미지가 없습니다")
+                    return@execute
+                }
+                if (shouldRejectForwardAppendCompletionAfterSourceGrowth(
+                        appendAnchorPage,
+                        anchorManga,
+                        direction,
+                    )
+                ) {
+                    Log.d(
+                        TAG,
+                        "append_adjacent_completion_anchor_growth_stale direction=$direction " +
+                            "source=${anchorManga.ntkEpisodePath} " +
+                            "target=${resolvedTarget.ntkEpisodePath}",
+                    )
                     return@execute
                 }
                 val publishUrls = completeKnownGeneratedAppendUrls(resolvedTarget, resolvedUrls)
@@ -16788,8 +16825,44 @@ class ReaderSession(
         }
         waitingCandidates?.let { candidates ->
             if (strictExactDescriptorOnly) {
-                holdOrRecoverAdjacentStrictSource(target)
+                // A descriptor-only candidate is still an unstarted physical source page.  The
+                // adjacent strict transport deliberately owns only the p0..p4 runway until the
+                // reader actually enters that episode.  Merely polling strictAdjacentBodyDescriptor
+                // here never tells that transport that the viewport crossed the boundary, so its
+                // p5+ workset stays sealed forever and the bottom remains clamped at p4. Route the
+                // wait through the normal strict-owner fetch seam: it preserves exact ownership,
+                // emits the one-shot viewport activation, and refills the already-bound source
+                // session without launching a generic duplicate.
+                startRemainingAdjacentRunwayFileFetches(
+                    target,
+                    candidates,
+                    activeRefs,
+                    publishKey,
+                    warm,
+                )
                 if (!isAdjacentStrictRecoveryExhausted(target)) {
+                    // Re-arm the body-publication wake after every failed descriptor snapshot.
+                    // wakeStrictRemainingAdjacentAppend removes the previous waiter before it
+                    // enters this method.  Without replacing it here, a body reaching EOF one
+                    // millisecond later has nobody to wake and the reader falls back to a hot
+                    // 128 ms polling loop.  More importantly, a boundary already clamped at p4
+                    // has no new input event to recover the suffix and can remain BUSY forever.
+                    val waitingPath = activeRemainingAdjacentRunwayTargetPath(target)
+                    if (waitingPath.isNotEmpty()) {
+                        val waiting = ParkedAdjacentRemainderAppend(
+                            target = target,
+                            refs = activeRefs,
+                            publishKey = publishKey,
+                            warm = warm,
+                        )
+                        waitingStrictRemainingAdjacentAppends[waitingPath] = waiting
+                        deferStrictRemainingAdjacentWakeAfterRegistration(
+                            waitingPath,
+                            waiting,
+                            target,
+                            activeRefs,
+                        )
+                    }
                     scheduleRemainingAdjacentRunwayAppend(target, activeRefs, publishKey, warm)
                 } else {
                     clearActiveRemainingAdjacentRunwayTarget(target)
@@ -19266,7 +19339,11 @@ class ReaderSession(
         reason: String
     ): Boolean {
         if (publishKey.isEmpty()) return true
-        val pending = pendingAdjacentAppendPublishes[publishKey] ?: return true
+        // A cleared token is a cancellation, never permission for an older polling Runnable to
+        // publish its captured page count.  Removal/replacement can retire the structure while a
+        // 32 ms readiness callback is already queued on main; treating absence as success lets
+        // that stale callback resurrect the retired boundary.
+        val pending = pendingAdjacentAppendPublishes[publishKey] ?: return false
         val valid = synchronized(pagesLock) {
             pages.size >= pending.total &&
                 total >= pending.total &&
@@ -19331,6 +19408,13 @@ class ReaderSession(
         val notify = object : Runnable {
             override fun run() {
                 if (cancelled.get()) return
+                // clearPendingAdjacentAppendPublish owns cancellation. Stop this polling owner
+                // immediately when another recovery/removal path retires the token; otherwise a
+                // permanently missing drawable leaves a main-thread Runnable alive for the
+                // entire Session and can later publish a stale total.
+                if (publishKey.isNotEmpty() &&
+                    pendingAdjacentAppendPublishes[publishKey] == null
+                ) return
                 if (!hasGeneratedAppendNearReady(target, cardIndex, total)) {
                     main.postDelayed(this, NTK_GENERATED_APPEND_NOTIFY_NEAR_READY_POLL_MS)
                     return
@@ -30470,6 +30554,9 @@ class ReaderSession(
     @JvmOverloads
     fun noteForwardReadingPosition(anchor: Int, surfaceMotionActive: Boolean = false) {
         if (anchor < 0 || reverse || cancelled.get() || !isNtkSource(manga, title)) return
+        synchronized(pagesLock) {
+            latestReportedReadingPage.set(pages.getOrNull(anchor))
+        }
         if (strictExactShortWebtoonRollingPixelResidency.get()) {
             // This callback arrives on main before its coalesced WindowEvent reaches the control
             // mailbox. Publish the Surface's native drag/fling state immediately so forward-only
@@ -30481,6 +30568,48 @@ class ReaderSession(
         }
         forwardReadingPosition.set(anchor)
         scheduleForwardReadingDrain()
+    }
+
+    /**
+     * Revalidates the physical boundary after an asynchronous episode-list/manifest fetch.
+     *
+     * A p4 request may still be resolving while p5/p6 are published below it. The rolling window
+     * immediately prefetches those new indexes, so [currentViewportAnchor] can already equal p6
+     * even though the first visible/reading page is still p3. Only the Activity's identity-bearing
+     * progress PageRef may authorize the next-next structure in that race.
+     */
+    private fun shouldRejectForwardAppendCompletionAfterSourceGrowth(
+        requestedPage: PageRef?,
+        source: Manga,
+        direction: Int,
+    ): Boolean {
+        if (direction <= 0 || requestedPage == null || !isImmediateNtkGeneratedUx()) return false
+        return synchronized(pagesLock) {
+            val requestedIndex = pageIndexLocked(requestedPage, requestedPage.pageIndex)
+            if (requestedIndex < 0) return@synchronized true
+            var sourceTail = requestedIndex
+            for (index in requestedIndex + 1 until pages.size) {
+                val page = pages[index]
+                if (page.transitionTitle == null &&
+                    Manga.sameEpisodeIdentity(page.manga, source)
+                ) {
+                    sourceTail = index
+                }
+            }
+            if (sourceTail <= requestedIndex) return@synchronized false
+            val readingPage = latestReportedReadingPage.get()
+            val readingIndex = if (readingPage == null) {
+                -1
+            } else {
+                pageIndexLocked(readingPage, readingPage.pageIndex)
+            }
+            NtkAdjacentAdmissionPolicy.shouldRejectStaleForwardTail(
+                direction = direction,
+                requestedAnchor = requestedIndex,
+                normalizedAnchor = sourceTail,
+                viewportAnchor = readingIndex,
+            )
+        }
     }
 
     /** Releases the native-motion level only after ReaderSurfaceView closes its real fling. */

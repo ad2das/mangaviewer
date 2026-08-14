@@ -1958,6 +1958,23 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     )
                     return@trace
                 }
+                val completedNextBoundaryGrowth = shouldCompleteNextBoundaryGrowth(
+                    publishedCount = count,
+                    currentCount = pageCount,
+                    boundaryStatusPending = pendingBoundaryStatus,
+                    deferredDirection = deferredBoundaryDirection,
+                )
+                if (count > pageCount &&
+                    deferredBoundaryDirection == ReaderSurfaceView.DIRECTION_NEXT
+                ) {
+                    // A structural publication is the completion signal for the latest BUSY
+                    // retry. Leaving that retry queued would re-resolve its old anchor against
+                    // the new table and immediately request the following episode, skipping the
+                    // chapter that was just attached.
+                    statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
+                    deferredBoundaryDirection = 0
+                    deferredBoundaryAnchor = -1
+                }
                 if (isCurrentNtkManhwaOrWebtoonPath() && count > pageCount) {
                     val oldCount = pageCount
                     pageCount = count
@@ -1965,6 +1982,11 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     syncRenderPageIdentities(count)
                     flushPendingPageCallbacks()
                     updateCurrentEpisode(currentPage)
+                    if (completedNextBoundaryGrowth) {
+                        hideBoundaryStatus()
+                        pendingBoundaryStartInteractionMs = 0L
+                        renderView.finishBoundaryDispatch()
+                    }
                     Log.d(
                         TAG,
                         "pages_appended_current_episode_full_surface from=$oldCount total=$count currentPage=$currentPage"
@@ -5991,13 +6013,16 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 return
             }
         }
+        val boundaryStatusWasPending = pendingBoundaryStatus
         pendingBoundaryStatus = true
         pendingBoundaryCaptchaRetry = true
         pendingCaptchaRetryDirection = direction
         pendingCaptchaRetryAnchor = anchorPage
         pendingBoundaryStartInteractionMs = lastReaderInteractionMs
-        statusHandler.removeCallbacks(showBoundaryStatusRunnable)
-        statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
+        if (!boundaryStatusWasPending) {
+            statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+            statusHandler.postDelayed(showBoundaryStatusRunnable, BOUNDARY_STATUS_DELAY_MS)
+        }
         val effectiveAnchor = if (direction == ReaderSurfaceView.DIRECTION_NEXT) {
             (pageCount - 1).coerceAtLeast(anchorPage.coerceAtLeast(0))
         } else {
@@ -6010,6 +6035,25 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 startResult == ReaderSession.AppendStartResult.BUSY)
         ) {
             renderView.beginNextBoundaryAppendHold(effectiveAnchor)
+        }
+        if (shouldRetryBusyBoundaryAppend(direction, startResult)) {
+            // BUSY is a transient ownership result, not a completion callback.  In particular an
+            // already-published adjacent runway can still own a bounded suffix publication while
+            // the user reaches its physical tail.  No later Surface edge is guaranteed because
+            // the coordinate is already clamped, so dropping BUSY here permanently wedges the
+            // boundary. Keep one latest retry, re-resolve the effective tail on every turn, and
+            // let onPagesAppended/onBoundaryAppendFinished cancel or supersede it normally.
+            deferredBoundaryDirection = direction
+            deferredBoundaryAnchor = effectiveAnchor
+            statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
+            statusHandler.postDelayed(
+                deferredBoundaryAppendRunnable,
+                NTK_ACTIVE_APPEND_CHUNK_RETRY_MS,
+            )
+            Log.d(
+                TAG,
+                "boundary_append_retry_busy direction=$direction anchor=$effectiveAnchor",
+            )
         }
         markPrependRevealRequest(direction, startResult)
         markAppendRevealRequest(direction, startResult)
@@ -11909,6 +11953,44 @@ if (!renderView.isShown ||
         @JvmStatic
         fun shouldPrepareNearBoundaryForTest(direction: Int): Boolean {
             return direction != ReaderSurfaceView.DIRECTION_PREVIOUS
+        }
+
+        @JvmStatic
+        fun shouldRetryBusyBoundaryAppendForTest(
+            direction: Int,
+            result: ReaderSession.AppendStartResult?,
+        ): Boolean = shouldRetryBusyBoundaryAppend(direction, result)
+
+        @JvmStatic
+        fun shouldCompleteNextBoundaryGrowthForTest(
+            publishedCount: Int,
+            currentCount: Int,
+            boundaryStatusPending: Boolean,
+            deferredDirection: Int,
+        ): Boolean = shouldCompleteNextBoundaryGrowth(
+            publishedCount,
+            currentCount,
+            boundaryStatusPending,
+            deferredDirection,
+        )
+
+        private fun shouldRetryBusyBoundaryAppend(
+            direction: Int,
+            result: ReaderSession.AppendStartResult?,
+        ): Boolean {
+            return direction == ReaderSurfaceView.DIRECTION_NEXT &&
+                result == ReaderSession.AppendStartResult.BUSY
+        }
+
+        private fun shouldCompleteNextBoundaryGrowth(
+            publishedCount: Int,
+            currentCount: Int,
+            boundaryStatusPending: Boolean,
+            deferredDirection: Int,
+        ): Boolean {
+            return publishedCount > currentCount &&
+                (boundaryStatusPending ||
+                    deferredDirection == ReaderSurfaceView.DIRECTION_NEXT)
         }
 
         @JvmStatic

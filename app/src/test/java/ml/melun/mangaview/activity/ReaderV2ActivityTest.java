@@ -9,6 +9,7 @@ import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.reader.ReaderSurfaceView;
+import ml.melun.mangaview.reader.ReaderSession;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -81,6 +82,31 @@ public class ReaderV2ActivityTest {
                 ReaderSurfaceView.DIRECTION_PREVIOUS));
         assertTrue(ReaderV2Activity.shouldPrepareNearBoundaryForTest(
                 ReaderSurfaceView.DIRECTION_NEXT));
+    }
+
+    @Test
+    public void busyNextBoundaryIsRetriedWithoutWaitingForAnotherEdgeGesture() {
+        assertTrue(ReaderV2Activity.shouldRetryBusyBoundaryAppendForTest(
+                ReaderSurfaceView.DIRECTION_NEXT,
+                ReaderSession.AppendStartResult.BUSY));
+        assertFalse(ReaderV2Activity.shouldRetryBusyBoundaryAppendForTest(
+                ReaderSurfaceView.DIRECTION_PREVIOUS,
+                ReaderSession.AppendStartResult.BUSY));
+        assertFalse(ReaderV2Activity.shouldRetryBusyBoundaryAppendForTest(
+                ReaderSurfaceView.DIRECTION_NEXT,
+                ReaderSession.AppendStartResult.STARTED));
+    }
+
+    @Test
+    public void attachedPagesConsumeBusyRetryWithoutAutoRequestingTheFollowingEpisode() {
+        assertTrue(ReaderV2Activity.shouldCompleteNextBoundaryGrowthForTest(
+                12, 10, true, 0));
+        assertTrue(ReaderV2Activity.shouldCompleteNextBoundaryGrowthForTest(
+                12, 10, false, ReaderSurfaceView.DIRECTION_NEXT));
+        assertFalse(ReaderV2Activity.shouldCompleteNextBoundaryGrowthForTest(
+                10, 10, true, ReaderSurfaceView.DIRECTION_NEXT));
+        assertFalse(ReaderV2Activity.shouldCompleteNextBoundaryGrowthForTest(
+                12, 10, false, ReaderSurfaceView.DIRECTION_PREVIOUS));
     }
 
     @Test

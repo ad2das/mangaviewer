@@ -61,6 +61,81 @@ class NtkDirectWifiAdjacentDrawableRunwayReleaseArchitectureTest {
         )
     }
 
+    @Test
+    fun strictRemainderRearmsItsBodyWakeAfterEveryMissingDescriptorSnapshot() {
+        val append = block(
+            "private fun appendRemainingAdjacentRunwayRefs(",
+            readerSession,
+        )
+        val strictWait = append.indexOf("if (strictExactDescriptorOnly)")
+        val viewportRelease = append.indexOf(
+            "startRemainingAdjacentRunwayFileFetches(",
+            strictWait,
+        )
+        val rearm = append.indexOf("Re-arm the body-publication wake")
+        val waiter = append.indexOf(
+            "waitingStrictRemainingAdjacentAppends[waitingPath] = waiting",
+            rearm,
+        )
+        val wakeCheck = append.indexOf("deferStrictRemainingAdjacentWakeAfterRegistration(", waiter)
+        val retry = append.indexOf("scheduleRemainingAdjacentRunwayAppend(", wakeCheck)
+        assertTrue(strictWait >= 0)
+        assertTrue(viewportRelease > strictWait)
+        assertTrue(rearm > viewportRelease)
+        assertTrue(waiter > rearm)
+        assertTrue(wakeCheck > waiter)
+        assertTrue(
+            retry > wakeCheck
+        )
+    }
+
+    @Test
+    fun clearedAdjacentPublicationTokenCancelsQueuedReadinessPolls() {
+        val claim = block(
+            "private fun shouldPublishPendingAdjacentAppend(",
+            readerSession,
+        )
+        val notify = block(
+            "private fun notifyAdjacentAppendWhenNearReady(",
+            readerSession,
+        )
+        assertTrue(
+            claim.contains(
+                "pendingAdjacentAppendPublishes[publishKey] ?: return false",
+            ),
+        )
+        assertTrue(notify.contains("pendingAdjacentAppendPublishes[publishKey] == null"))
+        assertTrue(
+            notify.indexOf("pendingAdjacentAppendPublishes[publishKey] == null") <
+                notify.indexOf("hasGeneratedAppendNearReady(")
+        )
+    }
+
+    @Test
+    fun asynchronousNextManifestRechecksActualReadingPageBeforePublishingNextNext() {
+        val append = block("fun appendAdjacentEpisode(", readerSession)
+        val completionGate = append.indexOf(
+            "shouldRejectForwardAppendCompletionAfterSourceGrowth(",
+        )
+        val warm = append.indexOf("ntkBoundaryAppendWarmUrls(", completionGate)
+        val publish = append.indexOf("appendResolvedEpisode(resolvedTarget", completionGate)
+        val progress = block("fun noteForwardReadingPosition(", readerSession)
+        val guard = block(
+            "private fun shouldRejectForwardAppendCompletionAfterSourceGrowth(",
+            readerSession,
+        )
+
+        assertTrue(completionGate >= 0)
+        assertTrue(warm > completionGate)
+        assertTrue(publish > completionGate)
+        assertTrue(progress.contains("latestReportedReadingPage.set(pages.getOrNull(anchor))"))
+        assertTrue(guard.contains("pageIndexLocked(requestedPage"))
+        assertTrue(guard.contains("Manga.sameEpisodeIdentity(page.manga, source)"))
+        assertTrue(guard.contains("latestReportedReadingPage.get()"))
+        assertTrue(guard.contains("NtkAdjacentAdmissionPolicy.shouldRejectStaleForwardTail("))
+        assertTrue(!guard.contains("currentViewportAnchor.get()"))
+    }
+
     private fun source(name: String): String = File(
         "src/main/java/ml/melun/mangaview/reader/$name"
     ).readText()
