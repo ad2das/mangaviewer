@@ -65,6 +65,7 @@ import ml.melun.mangaview.reader.ReaderImageCache;
 import ml.melun.mangaview.reader.NtkInlineReaderController;
 import ml.melun.mangaview.reader.ReaderPreparedStore;
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
+import ml.melun.mangaview.reader.ReaderWindowViewport;
 import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.CachePolicy;
 import ml.melun.mangaview.repository.EpisodeSnapshotCache;
@@ -3145,7 +3146,7 @@ public class EpisodeActivity extends AppCompatActivity {
         final Manga launchManga = manga;
         final Title launchTitle = title;
         final ArrayList<String> launchImages = new ArrayList<>(images);
-        final int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        final int width = ReaderWindowViewport.width(this, episodeList);
         final AtomicBoolean launched = new AtomicBoolean(false);
         AppDispatchers.submitUserAction(() -> {
             String preparedKey = null;
@@ -4456,7 +4457,7 @@ public class EpisodeActivity extends AppCompatActivity {
     private void primeCanonicalDirectPreparedWindow(Manga manga, ArrayList<String> images, String reason) {
         if(manga == null || images == null || images.size() == 0 || context == null)
             return;
-        int width = Math.max(1, getResources().getDisplayMetrics().widthPixels);
+        int width = ReaderWindowViewport.width(this, episodeList);
         int decodeLimit = canonicalDirectLaunchDecodeLimit(images.size());
         int startPage = ReaderWarmupCoordinator.requestedLaunchStartPage(manga, false);
         String key = ReaderWarmupCoordinator.primeKnownUrls(

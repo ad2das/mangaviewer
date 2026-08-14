@@ -47,6 +47,7 @@ import ml.melun.mangaview.repository.CacheFileStore;
 import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.reader.ReaderWindowViewport;
 
 import static ml.melun.mangaview.MainApplication.getHttpClient;
 import static ml.melun.mangaview.MainApplication.p;
@@ -1586,7 +1587,7 @@ public class ViewerWarmupManager {
 
     private static int viewerWidth(Context context) {
         if(context instanceof Activity)
-            return Utils.getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay());
+            return ReaderWindowViewport.width((Activity) context, null);
         DisplayMetrics metrics = context.getResources().getDisplayMetrics();
         return Math.min(Math.max(metrics.widthPixels, 1), 3000);
     }

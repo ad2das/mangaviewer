@@ -65,7 +65,10 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     private static final String PACKAGE_NAME = "ml.melun.mangaview";
 
     @Test
-    public void wfwfDemonDaughterNextFrom1Opens2BeforeHyphenPartEpisode() {
+    public void wfwfDemonDaughterNextFrom1Opens2BeforeHyphenPartEpisode() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        ImageTestServer imageServer = startImageServer(new File(testImagePath(
+                context, "wfwf-demon-daughter.png", Color.rgb(80, 120, 180))));
         Title title = new Title(
                 "마왕의 딸은 너무 착해!!",
                 "",
@@ -81,11 +84,11 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         Manga episodeTwo = new Manga(2, "마왕의 딸은 너무 착해!! 2화", "", MTitle.base_comic);
         episodeTwo.setTitle(title);
         episodeTwo.setTitleId(title.getId());
-        episodeTwo.setImgs(Collections.singletonList("https://example.com/demon-daughter-2.jpg"));
+        episodeTwo.setImgs(Collections.singletonList(imageServer.url("/demon-daughter-2.png")));
         Manga episodeOne = new Manga(1, "마왕의 딸은 너무 착해!! 1화", "", MTitle.base_comic);
         episodeOne.setTitle(title);
         episodeOne.setTitleId(title.getId());
-        episodeOne.setImgs(Collections.singletonList("https://example.com/demon-daughter-1.jpg"));
+        episodeOne.setImgs(Collections.singletonList(imageServer.url("/demon-daughter-1.png")));
         Manga special = new Manga(19, "마왕의 딸은 너무 착해!! 번외편", "", MTitle.base_comic);
         special.setTitle(title);
         special.setTitleId(title.getId());
@@ -102,30 +105,42 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episodeOne, title));
         try {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-            assertTrue("Expected viewer to start on WFWF 1화",
-                    waitForToolbarTitle(activity, "1화", 10000));
-
             UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 10000);
+            assertNotNull("Expected reader surface", strip);
+            android.graphics.Rect stripBounds = strip.getVisibleBounds();
+            device.click(stripBounds.centerX(), stripBounds.centerY());
+            assertTrue("Expected viewer to start on WFWF 1화",
+                    waitForToolbarObjectText(device, "1화", 10000));
+
             assertTrue("Expected viewer backing list to include WFWF 2화",
-                    setViewerEpisodeImages(activity, 2, Collections.singletonList("https://example.com/demon-daughter-2.jpg")));
-            View next = waitForEnabledView(activity, R.id.toolbar_next, 10000);
+                    setViewerEpisodeImages(activity, 2, Collections.singletonList(
+                            imageServer.url("/demon-daughter-2.png"))));
+            UiObject2 next = waitForEnabledObject(
+                    device, By.res(PACKAGE_NAME, "toolbar_next"), 10000);
             assertNotNull("Expected WFWF 1화 next button to be enabled", next);
-            InstrumentationRegistry.getInstrumentation().runOnMainSync(next::performClick);
+            next.click();
 
             assertTrue("Expected WFWF next from 1화 to open 2화",
-                    waitForToolbarTitle(activity, "2화", 10000));
+                    waitForToolbarObjectText(device, "2화", 10000));
             assertFalse("WFWF next from 1화 must not land on 11-2화 while 2화 exists",
-                    toolbarTitle(activity).contains("11-2화"));
+                    toolbarObjectText(device).contains("11-2화"));
+            SystemClock.sleep(1500L);
+            assertFalse("WFWF 2화 must not silently preappend distant 11-2화 as its next boundary",
+                    isViewerEpisodeLoaded(activity, episodeElevenTwo));
             assertTrue("Expected no missing episode dialog while 2화 exists",
                     device.wait(Until.findObject(By.text("회차 누락")), 1000) == null);
         } finally {
             activity.finish();
+            imageServer.close();
         }
     }
 
     @Test
     public void wfwfScrollUpFromEpisode2PrependsEpisode1() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
+        ImageTestServer imageServer = startImageServer(new File(testImagePath(
+                context, "wfwf-boundary-up.png", Color.rgb(30, 90, 170))));
         Title title = new Title(
                 "WFWF Scroll Boundary",
                 "",
@@ -139,11 +154,11 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         Manga episodeTwo = new Manga(2, "WFWF Scroll Boundary 2화", "", MTitle.base_comic);
         episodeTwo.setTitle(title);
         episodeTwo.setTitleId(title.getId());
-        episodeTwo.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-2.png", Color.rgb(30, 90, 170))));
+        episodeTwo.setImgs(Collections.singletonList(imageServer.url("/wfwf-boundary-2.png")));
         Manga episodeOne = new Manga(1, "WFWF Scroll Boundary 1화", "", MTitle.base_comic);
         episodeOne.setTitle(title);
         episodeOne.setTitleId(title.getId());
-        episodeOne.setImgs(Collections.singletonList(testImagePath(context, "wfwf-boundary-1.png", Color.rgb(170, 70, 30))));
+        episodeOne.setImgs(Collections.singletonList(imageServer.url("/wfwf-boundary-1.png")));
 
         ArrayList<Manga> episodes = new ArrayList<>();
         episodes.add(episodeTwo);
@@ -155,27 +170,32 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
         Activity activity = InstrumentationRegistry.getInstrumentation().startActivitySync(viewerIntent(episodeTwo, title));
         try {
             InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            UiObject2 strip = device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 10000);
+            assertNotNull("Expected reader surface", strip);
+            android.graphics.Rect stripBounds = strip.getVisibleBounds();
+            device.click(stripBounds.centerX(), stripBounds.centerY());
             assertTrue("Expected viewer to start on WFWF 2화",
-                    waitForToolbarTitle(activity, "2화", 10000));
+                    waitForToolbarObjectText(device, "2화", 10000));
             assertTrue("Expected viewer backing list to include WFWF 1화",
                     setViewerEpisodeImages(activity, 1, Collections.singletonList(
-                            testImagePath(context, "wfwf-boundary-1.png", Color.rgb(170, 70, 30)))));
+                            imageServer.url("/wfwf-boundary-1.png"))));
 
-            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
             int width = device.getDisplayWidth();
             int height = device.getDisplayHeight();
             int x = width / 2;
             int fromY = Math.max(120, height / 4);
             int toY = Math.min(height - 160, height * 3 / 4);
-            for(int swipe = 0; swipe < 4 && !toolbarTitle(activity).contains("1화"); swipe++) {
+            for(int swipe = 0; swipe < 4 && !toolbarObjectText(device).contains("1화"); swipe++) {
                 device.swipe(x, fromY, x, toY, 36);
                 SystemClock.sleep(700);
             }
 
             assertTrue("Expected upward scroll at top to move into previous WFWF episode 1화",
-                    waitForToolbarTitle(activity, "1화", 10000));
+                    waitForToolbarObjectText(device, "1화", 10000));
         } finally {
             activity.finish();
+            imageServer.close();
         }
     }
 
@@ -544,8 +564,6 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
 
     private static String testImagePath(Context context, String name, int color) throws Exception {
         File file = new File(context.getCacheDir(), name);
-        if(file.isFile() && file.length() > 0)
-            return file.getAbsolutePath();
         int imageHeight = name.contains("tall") ? 2200 : 1440;
         Bitmap bitmap = Bitmap.createBitmap(720, imageHeight, Bitmap.Config.RGB_565);
         Canvas canvas = new Canvas(bitmap);
@@ -697,13 +715,28 @@ public class ViewerMissingEpisodePromptInstrumentedTest {
     }
 
     private static boolean setViewerEpisodeImages(Activity activity, int episodeNumber, List<String> images) {
-        final boolean[] found = {false};
+        long deadline = SystemClock.elapsedRealtime() + 10000L;
+        do {
+            final boolean[] found = {false};
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                if(!(activity instanceof ReaderV2Activity) || activity.isFinishing())
+                    return;
+                found[0] = ((ReaderV2Activity) activity).testSetEpisodeImages(episodeNumber, images);
+            });
+            if(found[0])
+                return true;
+            SystemClock.sleep(100L);
+        } while(SystemClock.elapsedRealtime() < deadline);
+        return false;
+    }
+
+    private static boolean isViewerEpisodeLoaded(Activity activity, Manga episode) {
+        final boolean[] loaded = {false};
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            if(!(activity instanceof ReaderV2Activity))
-                return;
-            found[0] = ((ReaderV2Activity) activity).testSetEpisodeImages(episodeNumber, images);
+            if(activity instanceof ReaderV2Activity && !activity.isFinishing())
+                loaded[0] = ((ReaderV2Activity) activity).testHasLoadedEpisode(episode);
         });
-        return found[0];
+        return loaded[0];
     }
 
     private static boolean setEpisodeImages(List<Manga> episodes, int episodeNumber, List<String> images) {

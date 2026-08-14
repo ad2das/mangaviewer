@@ -3243,10 +3243,13 @@ class NtkInlineReaderController private constructor(
     fun onHostPause() {
         if (!isActive()) return
         hostPaused = true
-        ViewerTelemetry.physicalScrollMotionEnded()
         if (stripPipeline != null) {
             stripRenderViewTarget?.setHostPresentationEnabled(false)
         }
+        // Close the producer gate before invalidating queued semantic publication tickets. If a
+        // native callback was already inside the gate, this waits for its claim and the reset then
+        // makes its not-yet-run main-thread write inert.
+        ViewerTelemetry.physicalScrollMotionEnded()
         publishProgress(force = true)
         // Preserve the current physical window for resume while releasing decoded pixels that
         // are no longer visible. A subsequent destroy still owns the terminal cancel path.
@@ -3269,7 +3272,13 @@ class NtkInlineReaderController private constructor(
     }
 
     fun onHostWindowFocusChanged(hasFocus: Boolean) {
-        if (isActive() && hasFocus) renderView.requestRender()
+        if (!isActive()) return
+        if (stripPipeline != null) {
+            stripRenderViewTarget?.setHostPresentationEnabled(hasFocus && !hostPaused)
+            if (!hasFocus) ViewerTelemetry.physicalScrollMotionEnded()
+        } else if (hasFocus) {
+            renderView.requestRender()
+        }
     }
 
     fun handleBackPressed(): Boolean {

@@ -22,7 +22,14 @@ class NtkStripHostLifecycleArchitectureTest {
         val resume = controller.substring(resumeStart, focusStart)
         assertTrue(pause.contains("ViewerTelemetry.physicalScrollMotionEnded()"))
         assertTrue(pause.contains("setHostPresentationEnabled(false)"))
+        assertTrue(
+            pause.indexOf("setHostPresentationEnabled(false)") <
+                pause.indexOf("ViewerTelemetry.physicalScrollMotionEnded()")
+        )
         assertTrue(resume.contains("setHostPresentationEnabled(true)"))
+        val focus = controller.substring(focusStart, controller.indexOf("fun handleBackPressed", focusStart))
+        assertTrue(focus.contains("setHostPresentationEnabled(hasFocus && !hostPaused)"))
+        assertTrue(focus.contains("if (!hasFocus) ViewerTelemetry.physicalScrollMotionEnded()"))
 
         val gateStart = surface.indexOf("internal fun setHostPresentationEnabled(enabled: Boolean)")
         val frameStart = surface.indexOf("private fun onFramePresented(")
@@ -30,13 +37,15 @@ class NtkStripHostLifecycleArchitectureTest {
         assertTrue(surface.substring(gateStart, frameStart).contains("requestRender()"))
         val frameEnd = surface.indexOf("private fun onPreSubmitViewportGap", frameStart)
         val frameHandler = surface.substring(frameStart, frameEnd)
-        assertTrue(frameHandler.contains("if (!hostPresentationEnabled) return"))
+        assertTrue(frameHandler.contains("if (!hostPresentationGate.isEnabled) return"))
+        assertTrue(frameHandler.contains("hostPresentationGate.runIfEnabled { onHostFramePresented(frame) }"))
+        assertTrue(frameHandler.contains("private fun onHostFramePresented("))
         assertTrue(
-            frameHandler.indexOf("if (!hostPresentationEnabled) return") <
+            frameHandler.indexOf("if (!hostPresentationGate.isEnabled) return") <
                 frameHandler.indexOf("ViewerTelemetry.actualFramePresented")
         )
         assertTrue(
-            frameHandler.indexOf("if (!hostPresentationEnabled) return") <
+            frameHandler.indexOf("hostPresentationGate.runIfEnabled") <
                 frameHandler.indexOf("frameListener?.invoke(frame)")
         )
     }

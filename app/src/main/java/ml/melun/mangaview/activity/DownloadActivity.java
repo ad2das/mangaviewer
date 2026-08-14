@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.Toast;
 
@@ -26,6 +27,7 @@ import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.adapter.SelectEpisodeAdapter;
 import ml.melun.mangaview.mangaview.Manga;
 import ml.melun.mangaview.mangaview.Title;
+import ml.melun.mangaview.ui.AppWindowSizePolicy;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.queueOfflineDownload;
@@ -107,6 +109,14 @@ public class DownloadActivity extends AppCompatActivity {
         });
         if(dark)
             applyDarkChrome(dl, dlAll, selectionMode);
+        View contentRoot = findViewById(android.R.id.content);
+        if(contentRoot != null) {
+            contentRoot.addOnLayoutChangeListener((v, left, top, right, bottom,
+                                                    oldLeft, oldTop, oldRight, oldBottom) ->
+                    applyCompactWindowChrome(bottom - top, dl, dlAll, selectionMode));
+            contentRoot.post(() -> applyCompactWindowChrome(
+                    contentRoot.getHeight(), dl, dlAll, selectionMode));
+        }
     }
     public boolean onOptionsItemSelected(MenuItem item){
         if (item.getItemId() == android.R.id.home) {
@@ -154,6 +164,33 @@ public class DownloadActivity extends AppCompatActivity {
         styleAccentButton(downloadSelected);
         styleSecondaryButton(downloadAll);
         styleSecondaryButton(selectionMode);
+    }
+
+    private void applyCompactWindowChrome(int heightPixels, Button... buttons) {
+        boolean compact = AppWindowSizePolicy.isCompactHeight(
+                heightPixels, getResources().getDisplayMetrics().density);
+        setViewHeight(findViewById(R.id.dl_buttonContainer), compact ? 64 : 88);
+        for(Button button : buttons)
+            setViewHeight(button, compact ? 48 : 52);
+        if(eplist != null) {
+            eplist.setPadding(eplist.getPaddingLeft(), dp(compact ? 4 : 10),
+                    eplist.getPaddingRight(), dp(compact ? 6 : 14));
+        }
+    }
+
+    private void setViewHeight(View view, int heightDp) {
+        if(view == null)
+            return;
+        ViewGroup.LayoutParams params = view.getLayoutParams();
+        int expected = dp(heightDp);
+        if(params.height != expected) {
+            params.height = expected;
+            view.setLayoutParams(params);
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     private void styleAccentButton(Button button) {

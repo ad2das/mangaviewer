@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Set;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.ui.AppWindowSizePolicy;
 import ml.melun.mangaview.ui.StableScrollbarRecyclerView;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
@@ -235,6 +236,13 @@ public class TagSearchActivity extends AppCompatActivity {
         setupStatusFilters();
         updateResultMeta();
         ab.setDisplayHomeAsUpEnabled(true);
+        View contentRoot = findViewById(android.R.id.content);
+        if(contentRoot != null) {
+            contentRoot.addOnLayoutChangeListener((v, left, top, right, bottom,
+                                                    oldLeft, oldTop, oldRight, oldBottom) ->
+                    applyCompactWindowChrome(bottom - top));
+            contentRoot.post(() -> applyCompactWindowChrome(contentRoot.getHeight()));
+        }
         swipe.setRefreshing(true);
 
         if(mode == 5) {
@@ -287,6 +295,32 @@ public class TagSearchActivity extends AppCompatActivity {
         filterOngoing.setOnClickListener(v -> applyStatusFilter("연재"));
         filterCompleted.setOnClickListener(v -> applyStatusFilter("완결"));
         updateStatusFilterChips();
+    }
+
+    private void applyCompactWindowChrome(int heightPixels) {
+        boolean compact = AppWindowSizePolicy.isCompactHeight(
+                heightPixels, getResources().getDisplayMetrics().density);
+        boolean ultraCompact = AppWindowSizePolicy.isUltraCompactHeight(
+                heightPixels, getResources().getDisplayMetrics().density);
+        setViewHeight(findViewById(R.id.tagSearchToolbar),
+                ultraCompact ? 40 : (compact ? 48 : 56));
+        setViewHeight(findViewById(R.id.tagSearchMeta),
+                isNtkCombinedGenreResult()
+                        ? (ultraCompact ? 54 : (compact ? 64 : 74))
+                        : (ultraCompact ? 40 : (compact ? 44 : 48)));
+        if(resultMetaHint != null)
+            resultMetaHint.setVisibility(ultraCompact ? View.GONE : View.VISIBLE);
+    }
+
+    private void setViewHeight(View view, int heightDp) {
+        if(view == null)
+            return;
+        ViewGroup.LayoutParams params = view.getLayoutParams();
+        int expected = dp(heightDp);
+        if(params.height != expected) {
+            params.height = expected;
+            view.setLayoutParams(params);
+        }
     }
 
     private void retryVisibleSearch() {

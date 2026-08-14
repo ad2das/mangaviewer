@@ -20893,6 +20893,19 @@ data class NtkResolvedSourceRoute(
         foreground: Boolean,
         stage: String
     ): Boolean {
+        val requestUrl = Utils.viewerImageRequestUrl(image, manga.baseMode)
+        if (!requiresTrustedNtkResponseValidation(
+                manga.ntkEpisodePath,
+                requestUrl,
+            )
+        ) {
+            // This validator protects NTK's generated/proxied image namespace. Applying its
+            // rotating-host allow-list to ordinary manga providers rejects their legitimate CDN
+            // URLs (for example c11cm.net) after a successful request and leaves a blank reader.
+            // Non-NTK providers retain the normal OkHttp redirect/TLS policy used before this
+            // specialised validation was introduced.
+            return true
+        }
         val actual = response.request.url.toString()
         if (actual.isBlank()) return true
         val requestedTarget = ntkGeneratedTarget(image)
@@ -20927,6 +20940,24 @@ data class NtkResolvedSourceRoute(
         }
         return allowed
     }
+
+    private fun requiresTrustedNtkResponseValidation(
+        episodePath: String?,
+        requestUrl: String,
+    ): Boolean {
+        val path = episodePath?.trim().orEmpty()
+        return path.startsWith("/webtoon/") ||
+            path.startsWith("/manhwa/") ||
+            ntkGeneratedTarget(requestUrl) != null ||
+            isTrustedNtkImageUrl(requestUrl) ||
+            isNtkProtectedViewerApiImage(requestUrl) ||
+            isNaverWebtoonPageImage(requestUrl)
+    }
+
+    internal fun requiresTrustedNtkResponseValidationForTest(
+        episodePath: String?,
+        requestUrl: String,
+    ): Boolean = requiresTrustedNtkResponseValidation(episodePath, requestUrl)
 
     private fun isTrustedNtkGeneratedStreamResponse(
         requested: String,

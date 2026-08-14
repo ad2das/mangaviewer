@@ -15,6 +15,7 @@ import java.util.Locale;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.mangaview.WfwfDomainResolver;
 import ml.melun.mangaview.model.UrlUpdateResult;
+import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
 
@@ -47,7 +48,13 @@ public class FirstTimeActivity extends AppCompatActivity {
 
         pd = new ProgressDialog(context, R.style.darkDialog);
         pd.setMessage("url 확인중...");
-        pd.setCancelable(false);
+        pd.setCancelable(true);
+        pd.setOnCancelListener(dialog -> {
+            pendingDefUrl = null;
+            if(startupViewModel != null)
+                startupViewModel.cancelActiveLoad();
+            Toast.makeText(context, "주소 확인을 취소했습니다.", Toast.LENGTH_SHORT).show();
+        });
         startupViewModel = new ViewModelProvider(this).get(StartupViewModel.class);
         startupViewModel.state().observe(this, this::renderUrlUpdateState);
 
@@ -133,12 +140,14 @@ public class FirstTimeActivity extends AppCompatActivity {
                 urlError("주소 업데이트에 실패했습니다.");
             return;
         }
-        if(pd.isShowing())
-            pd.dismiss();
         UrlUpdateResult result = (UrlUpdateResult) ((UiState.Content) state).getValue();
         if(pendingDefUrl == null)
             return;
-        if(result != null && result.getSuccess()){
+        if(result == null || !result.isForRequest(pendingDefUrl))
+            return;
+        if(pd.isShowing())
+            pd.dismiss();
+        if(result.getSuccess() && MangaRepository.applyUrlUpdate(pendingDefUrl, result)){
             p.setDefUrl(pendingDefUrl);
             p.setAutoUrl(true);
             long time = System.currentTimeMillis();
@@ -182,8 +191,17 @@ public class FirstTimeActivity extends AppCompatActivity {
 
     @Override
     public void finish() {
+        if(pd != null && pd.isShowing())
+            pd.dismiss();
         super.finish();
         this.overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if(pd != null && pd.isShowing())
+            pd.dismiss();
+        super.onDestroy();
     }
 }
 

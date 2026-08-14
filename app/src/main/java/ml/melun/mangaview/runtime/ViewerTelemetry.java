@@ -1253,7 +1253,8 @@ public final class ViewerTelemetry {
         // dispatch accessibility work indefinitely during a long scroll. Preserve exact timing
         // on the first frame for each semantic identity/milestone and keep native cadence in the
         // dedicated counters above.
-        if(!session.actualStatePublicationGate.claim(semanticKey))
+        long publicationVersion = session.actualStatePublicationGate.claimVersion(semanticKey);
+        if(publicationVersion == 0L)
             return;
         String description =
                 "actual:" + clean(episodeId) + ':' + pageIndex + ':' + session.generation
@@ -1278,7 +1279,18 @@ public final class ViewerTelemetry {
                 : "";
         String publishedDescription =
                 description + allReady + adjacentKey;
-        Runnable publish = () -> view.setContentDescription(publishedDescription);
+        Runnable publish = () -> {
+            // Native strip presentation arrives off-main. Home/focus teardown can reset the
+            // semantic gate after this Runnable was posted but before it runs; never let that
+            // retired publication recreate an `actual:` node in the background. A newer semantic
+            // claim likewise supersedes an older queued write instead of allowing callback order
+            // to regress the observable physical identity.
+            if(SESSION.get() != session ||
+                    !session.actualStatePublicationGate.isCurrent(
+                            semanticKey, publicationVersion))
+                return;
+            view.setContentDescription(publishedDescription);
+        };
         if(Looper.myLooper() == Looper.getMainLooper())
             publish.run();
         else
@@ -1656,17 +1668,33 @@ public final class ViewerTelemetry {
     /** Small thread-safe gate kept testable without Android UI machinery. */
     static final class SemanticPublicationGate {
         private String lastKey = "";
+        private long version;
 
         synchronized boolean claim(String key) {
+            return claimVersion(key) != 0L;
+        }
+
+        synchronized long claimVersion(String key) {
             String safeKey = key == null ? "" : key;
             if(safeKey.equals(lastKey))
-                return false;
+                return 0L;
             lastKey = safeKey;
-            return true;
+            version = nextVersion(version);
+            return version;
+        }
+
+        synchronized boolean isCurrent(String key, long claimedVersion) {
+            String safeKey = key == null ? "" : key;
+            return claimedVersion > 0L && claimedVersion == version && safeKey.equals(lastKey);
         }
 
         synchronized void reset() {
             lastKey = "";
+            version = nextVersion(version);
+        }
+
+        private static long nextVersion(long current) {
+            return current == Long.MAX_VALUE ? 1L : current + 1L;
         }
     }
 

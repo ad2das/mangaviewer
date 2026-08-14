@@ -65,6 +65,34 @@ internal fun ntkExactEpisodeEndFromPresentation(
         merged[0].endPx >= contentHeightPx
 }
 
+/**
+ * Linearization boundary between native presentation callbacks and host lifecycle teardown.
+ *
+ * A volatile pre-check keeps background callbacks cheap. The second check and publication run
+ * under the same monitor as [setEnabled], so once disabling returns no telemetry/proof callback
+ * can still begin. The lifecycle owner then resets ViewerTelemetry to invalidate a UI Runnable
+ * that an already-running publication may have queued before the disable acquired this monitor.
+ */
+internal class NtkHostPresentationGate(initiallyEnabled: Boolean = true) {
+    private val lock = Any()
+    @Volatile private var enabled = initiallyEnabled
+
+    val isEnabled: Boolean
+        get() = enabled
+
+    fun setEnabled(value: Boolean) {
+        synchronized(lock) {
+            enabled = value
+        }
+    }
+
+    fun runIfEnabled(block: () -> Unit): Boolean = synchronized(lock) {
+        if (!enabled) return@synchronized false
+        block()
+        true
+    }
+}
+
 class NtkStripSurfaceView private constructor(
     context: Context,
     prewarmedEngine: NtkStripRenderEngine,
@@ -232,7 +260,7 @@ class NtkStripSurfaceView private constructor(
     private val lastMergedFrameKey = AtomicReference<NtkFrameOrderKey?>()
     private val structureEpoch = AtomicLong(0L)
     @Volatile private var compositorAlpha = 0f
-    @Volatile private var hostPresentationEnabled = true
+    private val hostPresentationGate = NtkHostPresentationGate()
     @Volatile internal var frameListener: ((NtkStripRenderEngine.FrameSnapshot) -> Unit)? = null
     private var holderCreatedNanos = 0L
     private var surfaceLeaseAcquiredNanos = 0L
@@ -411,7 +439,7 @@ class NtkStripSurfaceView private constructor(
      * foreground-owned frame rather than reusing the background latch.
      */
     internal fun setHostPresentationEnabled(enabled: Boolean) {
-        hostPresentationEnabled = enabled
+        hostPresentationGate.setEnabled(enabled)
         if (enabled) liveEngineOrNull()?.requestRender()
     }
 
@@ -2411,7 +2439,12 @@ class NtkStripSurfaceView private constructor(
     fun getPreSubmitViewportGap(): Long = engine.preSubmitViewportGap()
 
     private fun onFramePresented(frame: NtkStripRenderEngine.FrameSnapshot) {
-        if (!hostPresentationEnabled) return
+        if (!hostPresentationGate.isEnabled) return
+        hostPresentationGate.runIfEnabled { onHostFramePresented(frame) }
+    }
+
+    /** Runs wholly inside the host gate so pause cannot split proof aggregation from publication. */
+    private fun onHostFramePresented(frame: NtkStripRenderEngine.FrameSnapshot) {
         val target = publishedEngineTargetOrNull() ?: return
         val currentGeometry = geometry ?: return
         val binding = currentBinding.get() ?: return

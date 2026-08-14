@@ -564,8 +564,38 @@ public final class MangaRepository {
                 headers.put("Referer", root);
                 result = WfwfDomainResolver.resolve(getHttpClient().client, root, headers);
                 if(result == null)
-                    return new UrlUpdateResult(false, "");
-                String resolvedRoot = WfwfDomainResolver.toRoot(result);
+                    return new UrlUpdateResult(false, "", fetchUrl);
+                return new UrlUpdateResult(true, result, fetchUrl);
+            }
+
+            Response response = null;
+            try {
+                response = getHttpClient().get(fetchUrl, headers);
+                if(response == null || response.code() != 302)
+                    return new UrlUpdateResult(false, "", fetchUrl);
+                result = response.header("Location");
+                if(result == null || result.length() == 0)
+                    return new UrlUpdateResult(false, "", fetchUrl);
+                return new UrlUpdateResult(true, result, fetchUrl);
+            } finally {
+                if(response != null)
+                    response.close();
+            }
+        } catch (Exception e) {
+            ml.melun.mangaview.report.CrashReporter.record(e);
+            return new UrlUpdateResult(false, "", fetchUrl);
+        }
+    }
+
+    public static boolean applyUrlUpdate(String fetchUrl, UrlUpdateResult result) {
+        if(fetchUrl == null || result == null || !result.getSuccess() ||
+                result.getUrl() == null || result.getUrl().length() == 0 ||
+                !result.isForRequest(fetchUrl))
+            return false;
+        try {
+            String root = WfwfDomainResolver.toRoot(fetchUrl);
+            if(WfwfDomainResolver.isSupportedNumberedUrl(root)) {
+                String resolvedRoot = WfwfDomainResolver.toRoot(result.getUrl());
                 if(isNtkRoot(resolvedRoot)) {
                     p.setNtkSitePreset(resolvedRoot);
                 } else {
@@ -575,26 +605,13 @@ public final class MangaRepository {
                 }
                 getHttpClient().resetCookie();
                 getHttpClient().clearPageCache();
-                return new UrlUpdateResult(true, result);
+            } else {
+                p.setUrl(result.getUrl());
             }
-
-            Response response = null;
-            try {
-                response = getHttpClient().get(fetchUrl, headers);
-                if(response == null || response.code() != 302)
-                    return new UrlUpdateResult(false, "");
-                result = response.header("Location");
-                if(result == null || result.length() == 0)
-                    return new UrlUpdateResult(false, "");
-                p.setUrl(result);
-                return new UrlUpdateResult(true, result);
-            } finally {
-                if(response != null)
-                    response.close();
-            }
-        } catch (Exception e) {
-            ml.melun.mangaview.report.CrashReporter.record(e);
-            return new UrlUpdateResult(false, "");
+            return true;
+        } catch (RuntimeException exception) {
+            ml.melun.mangaview.report.CrashReporter.record(exception);
+            return false;
         }
     }
 

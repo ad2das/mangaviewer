@@ -68,6 +68,7 @@ import ml.melun.mangaview.reader.ReaderPreparedStore
 import ml.melun.mangaview.reader.ReaderPipelinePolicy
 import ml.melun.mangaview.reader.ReaderSessionListenerGate
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator
+import ml.melun.mangaview.reader.ReaderWindowViewport
 import ml.melun.mangaview.reader.ReaderSession
 import ml.melun.mangaview.reader.StrictExactLaunchSeal
 import ml.melun.mangaview.reader.ReaderSurfaceView
@@ -1084,8 +1085,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         if (preparedKey.isNullOrBlank() || !manga.isOnline) return false
         if (!ntkPath.startsWith("/webtoon/") && !ntkPath.startsWith("/manhwa/")) return false
 
-        val viewportWidth = resources.displayMetrics.widthPixels.coerceAtLeast(1)
-        val viewportHeight = resources.displayMetrics.heightPixels.coerceAtLeast(1)
+        val viewportWidth = ReaderWindowViewport.width(this)
+        val viewportHeight = ReaderWindowViewport.height(this)
         val lease = ReaderPreparedStore.claimWindowReady(preparedKey, manga, viewportWidth) ?: return false
         val snapshot = lease.snapshot
         val images = snapshot.images
@@ -1536,12 +1537,22 @@ if (firstResumeArmedUptimeNanos == 0L) {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        ReaderChromeStyler.applyReaderWindow(this)
         if (strictTelemetryOwned && ::renderView.isInitialized) {
             strictTelemetryLifecycleEpoch++
             strictTelemetryActualInLifecycle = false
             renderView.invalidateCommittedPresentationProof()
             renderView.contentDescription = null
             readerRoot?.contentDescription = null
+            renderView.requestLayout()
+            renderView.requestRender()
+        }
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode)
+        ReaderChromeStyler.applyReaderWindow(this)
+        if (::renderView.isInitialized) {
             renderView.requestLayout()
             renderView.requestRender()
         }
@@ -4528,8 +4539,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
     private fun drawableCoversInitialViewport(pageWidth: Int, pageHeight: Int): Boolean {
         if (!isCurrentNtkReader()) return false
         if (pageWidth <= 0 || pageHeight <= 0) return false
-        val viewWidth = if (renderView.width > 0) renderView.width else resources.displayMetrics.widthPixels
-        val viewHeight = if (renderView.height > 0) renderView.height else resources.displayMetrics.heightPixels
+        val viewWidth = readerWidthPx()
+        val viewHeight = readerHeightPx()
         if (viewWidth <= 0 || viewHeight <= 0) return false
         val drawHeight = viewWidth * (pageHeight / pageWidth.toFloat())
         return drawHeight >= viewHeight - INITIAL_VIEWPORT_COVERAGE_TOLERANCE_PX
@@ -7707,8 +7718,8 @@ if (!renderView.isShown ||
                         context = applicationContext,
                         manga = manga,
                         title = title,
-                        viewerWidth = resources.displayMetrics.widthPixels.coerceAtLeast(1),
-                        viewerHeight = resources.displayMetrics.heightPixels.coerceAtLeast(1),
+                        viewerWidth = readerWidthPx(),
+                        viewerHeight = readerHeightPx(),
                         autoCut = autoCut,
                         reverse = p?.getReverse() == true,
                         preparedKey = preparedKey,
@@ -10595,11 +10606,13 @@ if (!renderView.isShown ||
     }
 
     private fun readerWidthPx(): Int {
-        return maxOf(1, renderView.width, resources.displayMetrics.widthPixels)
+        val preferredView = if (::renderView.isInitialized) renderView else null
+        return ReaderWindowViewport.width(this, preferredView)
     }
 
     private fun readerHeightPx(): Int {
-        return maxOf(1, renderView.height, resources.displayMetrics.heightPixels)
+        val preferredView = if (::renderView.isInitialized) renderView else null
+        return ReaderWindowViewport.height(this, preferredView)
     }
 
     private fun ensureToolbarCreated(manga: Manga? = currentManga, title: Title? = currentTitle): Boolean {
@@ -11436,7 +11449,7 @@ if (!renderView.isShown ||
     fun testCurrentScrollPositionSnapshot(): ReaderSurfaceView.ScrollPositionSnapshot? {
         if (hybridNtkBrowserActive) {
             val snapshot = currentHybridNtkScrollSnapshot()
-            val viewport = maxOf(1, hybridNtkWebView?.height ?: resources.displayMetrics.heightPixels)
+            val viewport = ReaderWindowViewport.height(this, hybridNtkWebView)
             val content = snapshot?.contentHeight ?: maxOf(viewport, ((hybridNtkWebView?.contentHeight ?: 0) * (hybridNtkWebView?.scale ?: 1f)).toInt())
             val maxScroll = snapshot?.maxScroll ?: (content - viewport).coerceAtLeast(0)
             val scrollY = snapshot?.scrollY ?: (hybridNtkWebView?.scrollY ?: 0).coerceIn(0, maxScroll)
@@ -11509,7 +11522,7 @@ if (!renderView.isShown ||
 
     fun testVisibleCoverageSnapshot(): ReaderSurfaceView.VisibleCoverageSnapshot? {
         if (hybridNtkBrowserActive) {
-            val viewport = maxOf(1, hybridNtkWebView?.height ?: resources.displayMetrics.heightPixels)
+            val viewport = ReaderWindowViewport.height(this, hybridNtkWebView)
             try {
                 hybridNtkWebView?.evaluateJavascript(
                     "try{window.__mvNtkPostCoverage&&window.__mvNtkPostCoverage('test');}catch(e){}",

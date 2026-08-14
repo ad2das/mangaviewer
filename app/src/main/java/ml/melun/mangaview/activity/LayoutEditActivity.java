@@ -12,9 +12,9 @@ import android.widget.SeekBar;
 import android.widget.Toast;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.reader.ReaderWindowViewport;
 
 import static ml.melun.mangaview.MainApplication.p;
-import static ml.melun.mangaview.Utils.getScreenWidth;
 
 public class LayoutEditActivity extends AppCompatActivity {
     Button left;
@@ -82,7 +82,7 @@ public class LayoutEditActivity extends AppCompatActivity {
 
     private void refreshSeekbar(){
         // set seekbar max to current screen width
-        int max = getScreenWidth(getWindowManager().getDefaultDisplay());
+        int max = ReaderWindowViewport.width(this, findViewById(android.R.id.content));
         seekBar.setMax(max);
 
         // set button width to saved value

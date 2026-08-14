@@ -12,6 +12,8 @@ import android.content.res.ColorStateList;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 
 import androidx.core.content.ContextCompat;
@@ -60,6 +62,7 @@ import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.R;
 import ml.melun.mangaview.Utils;
 import ml.melun.mangaview.fragment.MainMain;
+import ml.melun.mangaview.ui.AppWindowSizePolicy;
 
 import ml.melun.mangaview.fragment.MainSearch;
 import ml.melun.mangaview.glide.ViewerWarmupManager;
@@ -71,6 +74,7 @@ import ml.melun.mangaview.runtime.BackgroundPrefetchBudget;
 import ml.melun.mangaview.runtime.ContinueReadinessCoordinator;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.runtime.PerfTrace;
+import ml.melun.mangaview.repository.MangaRepository;
 import ml.melun.mangaview.state.UiState;
 import ml.melun.mangaview.viewmodel.StartupViewModel;
 
@@ -125,12 +129,28 @@ public class MainActivity extends AppCompatActivity
     TextView accountSheetHint;
     StartupViewModel startupViewModel;
     UrlUpdateCallback pendingUrlUpdateCallback;
+    String pendingUrlUpdateRequest;
     private boolean ntkCaptchaCheckScheduled = false;
     private boolean resumed = false;
     private long lastNtkCaptchaCheckAt = 0L;
     private int bottomNavTouchPreviousItemId = View.NO_ID;
     private int bottomNavTouchItemId = View.NO_ID;
     private final List<BroadcastReceiver> internalReceivers = new ArrayList<>();
+    private static final long DOWNLOADER_EXIT_TIMEOUT_MS = 10_000L;
+    private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
+    private boolean awaitingDownloaderExit;
+    private ProgressDialog migrationProgressDialog;
+    private final Runnable downloaderExitTimeout = () -> {
+        if(!awaitingDownloaderExit || isFinishing() || isDestroyed())
+            return;
+        awaitingDownloaderExit = false;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+        View waitingPanel = findViewById(R.id.waiting_panel);
+        if(waitingPanel != null)
+            waitingPanel.setVisibility(View.GONE);
+        Toast.makeText(this, "다운로드 종료가 지연되고 있습니다. 잠시 후 다시 시도해 주세요.",
+                Toast.LENGTH_LONG).show();
+    };
     private static final int FIRST_TIME_ACTIVITY = 9;
 
     private void registerInternalReceiver(BroadcastReceiver receiver, IntentFilter filter) {
@@ -287,8 +307,11 @@ public class MainActivity extends AppCompatActivity
             ProgressDialog mpd;
             if (p.getDarkTheme()) mpd = new ProgressDialog(context, R.style.darkDialog);
             else mpd = new ProgressDialog(context);
+            migrationProgressDialog = mpd;
             mpd.setMessage("기록 업데이트중..");
-            mpd.setCancelable(false);
+            mpd.setCancelable(true);
+            mpd.setOnCancelListener(dialog -> Toast.makeText(context,
+                    "기록 업데이트는 백그라운드에서 계속됩니다.", Toast.LENGTH_SHORT).show());
             mpd.show();
 
             BroadcastReceiver migratorStatusReceiver = new BroadcastReceiver() {
@@ -424,6 +447,13 @@ public class MainActivity extends AppCompatActivity
                 }
             });
             installBottomNavigationPressListeners();
+        }
+        View mainRoot = findViewById(R.id.drawer_layout);
+        if(mainRoot != null) {
+            mainRoot.addOnLayoutChangeListener((view, left, top, right, bottom,
+                                                oldLeft, oldTop, oldRight, oldBottom) ->
+                    applyCompactWindowChrome(bottom - top));
+            mainRoot.post(() -> applyCompactWindowChrome(mainRoot.getHeight()));
         }
         PerfTrace.end("main_chrome_setup_ms", chromeStartedAt);
 
@@ -578,6 +608,14 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     protected void onDestroy() {
+        lifecycleHandler.removeCallbacks(downloaderExitTimeout);
+        awaitingDownloaderExit = false;
+        if(migrationProgressDialog != null && migrationProgressDialog.isShowing())
+            migrationProgressDialog.dismiss();
+        migrationProgressDialog = null;
+        if(accountSheet != null && accountSheet.isShowing())
+            accountSheet.dismiss();
+        accountSheet = null;
         unregisterInternalReceivers();
         super.onDestroy();
     }
@@ -675,24 +713,30 @@ public class MainActivity extends AppCompatActivity
         if(!p.getAutoUrl())
             return;
         pendingUrlUpdateCallback = ((MainMain)fragments[0]).getCallback();
+        pendingUrlUpdateRequest = p.getDefUrl();
         if(startupViewModel == null) {
             startupViewModel = new ViewModelProvider(this).get(StartupViewModel.class);
             startupViewModel.state().observe(this, this::renderStartupUrlState);
         }
-        startupViewModel.updateUrl(p.getDefUrl());
+        startupViewModel.updateUrl(pendingUrlUpdateRequest);
     }
 
     @SuppressWarnings("rawtypes")
     private void renderStartupUrlState(UiState state) {
         if(state instanceof UiState.Content) {
             UrlUpdateResult result = (UrlUpdateResult) ((UiState.Content) state).getValue();
+            boolean applied = result != null && pendingUrlUpdateRequest != null &&
+                    result.isForRequest(pendingUrlUpdateRequest) &&
+                    MangaRepository.applyUrlUpdate(pendingUrlUpdateRequest, result);
             if(pendingUrlUpdateCallback != null)
-                pendingUrlUpdateCallback.callback(result != null && result.getSuccess());
+                pendingUrlUpdateCallback.callback(applied);
             pendingUrlUpdateCallback = null;
+            pendingUrlUpdateRequest = null;
         } else if(state instanceof UiState.Error) {
             if(pendingUrlUpdateCallback != null)
                 pendingUrlUpdateCallback.callback(false);
             pendingUrlUpdateCallback = null;
+            pendingUrlUpdateRequest = null;
         }
     }
 
@@ -997,6 +1041,59 @@ public class MainActivity extends AppCompatActivity
         MainChromeStyler.applyBottomNavigation(this, bottomNavigationView, dark);
     }
 
+    private void applyCompactWindowChrome(int heightPixels) {
+        float density = getResources().getDisplayMetrics().density;
+        boolean compact = AppWindowSizePolicy.isCompactHeight(heightPixels, density);
+        boolean ultraCompact = AppWindowSizePolicy.isUltraCompactHeight(heightPixels, density);
+        setViewHeight(toolbar, ultraCompact ? 36 : (compact ? 48 : 56));
+        if(bottomNavigationView != null) {
+            setViewHeight(bottomNavigationView, ultraCompact ? 48 : (compact ? 56 : 64));
+            bottomNavigationView.setLabelVisibilityMode(ultraCompact
+                    ? com.google.android.material.navigation.NavigationBarView.LABEL_VISIBILITY_UNLABELED
+                    : com.google.android.material.navigation.NavigationBarView.LABEL_VISIBILITY_LABELED);
+            ViewGroup.MarginLayoutParams navParams =
+                    (ViewGroup.MarginLayoutParams)bottomNavigationView.getLayoutParams();
+            int horizontalMargin = dp(ultraCompact ? 8 : 16);
+            int bottomMargin = dp(ultraCompact ? 4 : (compact ? 8 : 12));
+            if(navParams.leftMargin != horizontalMargin ||
+                    navParams.rightMargin != horizontalMargin ||
+                    navParams.bottomMargin != bottomMargin) {
+                navParams.leftMargin = horizontalMargin;
+                navParams.rightMargin = horizontalMargin;
+                navParams.bottomMargin = bottomMargin;
+                bottomNavigationView.setLayoutParams(navParams);
+            }
+        }
+        int contentTopDp = ultraCompact ? 36 : (compact ? 48 : 56);
+        int contentBottomDp = ultraCompact ? 56 : (compact ? 68 : 84);
+        setContentMargins(findViewById(R.id.contentHolder), contentTopDp, contentBottomDp);
+        setContentMargins(findViewById(R.id.progress_panel), contentTopDp, contentBottomDp);
+    }
+
+    private void setViewHeight(View view, int heightDp) {
+        if(view == null)
+            return;
+        ViewGroup.LayoutParams params = view.getLayoutParams();
+        int expectedHeight = dp(heightDp);
+        if(params.height != expectedHeight) {
+            params.height = expectedHeight;
+            view.setLayoutParams(params);
+        }
+    }
+
+    private void setContentMargins(View view, int topDp, int bottomDp) {
+        if(view == null)
+            return;
+        ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams)view.getLayoutParams();
+        int expectedTop = dp(topDp);
+        int expectedBottom = dp(bottomDp);
+        if(params.topMargin != expectedTop || params.bottomMargin != expectedBottom) {
+            params.topMargin = expectedTop;
+            params.bottomMargin = expectedBottom;
+            view.setLayoutParams(params);
+        }
+    }
+
     private GradientDrawable makeRoundedBackground(int fillColorRes, int strokeColorRes, int radiusDp) {
         GradientDrawable background = new GradientDrawable();
         background.setColor(ContextCompat.getColor(this, fillColorRes));
@@ -1116,8 +1213,10 @@ public class MainActivity extends AppCompatActivity
                                 BroadcastReceiver statusReceiver = new BroadcastReceiver() {
                                     @Override
                                     public void onReceive(Context context, Intent intent) {
-                                        if(intent.getAction().matches(BROADCAST_STOP)){
+                                        if(awaitingDownloaderExit && BROADCAST_STOP.equals(intent.getAction())){
                                             //service stopped
+                                            awaitingDownloaderExit = false;
+                                            lifecycleHandler.removeCallbacks(downloaderExitTimeout);
                                             finishAffinity();
                                         }
                                     }
@@ -1125,7 +1224,12 @@ public class MainActivity extends AppCompatActivity
                                 IntentFilter infil = new IntentFilter();
                                 infil.addAction(BROADCAST_STOP);
                                 registerInternalReceiver(statusReceiver, infil);
+                                awaitingDownloaderExit = true;
                                 Downloader.cancelAll(getApplicationContext());
+                                lifecycleHandler.removeCallbacks(downloaderExitTimeout);
+                                lifecycleHandler.postDelayed(
+                                        downloaderExitTimeout,
+                                        DOWNLOADER_EXIT_TIMEOUT_MS);
 
                             }else{
                                 //kill application

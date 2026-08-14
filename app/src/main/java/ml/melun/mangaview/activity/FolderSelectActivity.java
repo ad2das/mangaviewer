@@ -18,6 +18,7 @@ import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -31,6 +32,7 @@ import java.util.Collections;
 import java.util.Locale;
 
 import ml.melun.mangaview.R;
+import ml.melun.mangaview.ui.AppWindowSizePolicy;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.Utils.ReservedChars;
@@ -230,6 +232,13 @@ public class FolderSelectActivity extends AppCompatActivity {
             });
             popup.show(); //showing popup menu
         });
+        View contentRoot = findViewById(android.R.id.content);
+        if(contentRoot != null) {
+            contentRoot.addOnLayoutChangeListener((v, left, top, right, bottom,
+                                                    oldLeft, oldTop, oldRight, oldBottom) ->
+                    applyCompactWindowChrome(bottom - top));
+            contentRoot.post(() -> applyCompactWindowChrome(contentRoot.getHeight()));
+        }
         this.findViewById(R.id.createFolderBtn).setOnClickListener(v -> {
             //create folder
             AlertDialog.Builder alert;
@@ -257,6 +266,51 @@ public class FolderSelectActivity extends AppCompatActivity {
             });
             alert.show();
         });
+    }
+
+    private void applyCompactWindowChrome(int heightPixels) {
+        boolean ultraCompact = AppWindowSizePolicy.isUltraCompactHeight(
+                heightPixels, getResources().getDisplayMetrics().density);
+        if(path != null)
+            path.setVisibility(ultraCompact ? View.GONE : View.VISIBLE);
+        if(input != null) {
+            input.setVisibility(mode == MODE_FOLDER_SELECT ? View.GONE : View.VISIBLE);
+            if(mode != MODE_FOLDER_SELECT)
+                setHeightAndBottomMargin(input, ultraCompact ? 36 : 48, ultraCompact ? 4 : 10);
+        }
+        setHeightAndBottomMargin(findViewById(R.id.storageSelectBtn),
+                ultraCompact ? 36 : 48, ultraCompact ? 4 : 14);
+        setHeightAndBottomMargin(findViewById(R.id.dirSelectBtn),
+                ultraCompact ? 36 : 48, ultraCompact ? 4 : 14);
+        setHeightAndBottomMargin(findViewById(R.id.createFolderBtn),
+                ultraCompact ? 36 : 48, ultraCompact ? 4 : 14);
+        if(dirList != null) {
+            ViewGroup.MarginLayoutParams params =
+                    (ViewGroup.MarginLayoutParams)dirList.getLayoutParams();
+            int expected = dp(ultraCompact ? 2 : 10);
+            if(params.topMargin != expected || params.bottomMargin != expected) {
+                params.topMargin = expected;
+                params.bottomMargin = expected;
+                dirList.setLayoutParams(params);
+            }
+        }
+    }
+
+    private void setHeightAndBottomMargin(View view, int heightDp, int bottomMarginDp) {
+        if(view == null)
+            return;
+        ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams)view.getLayoutParams();
+        int expectedHeight = dp(heightDp);
+        int expectedBottom = dp(bottomMarginDp);
+        if(params.height != expectedHeight || params.bottomMargin != expectedBottom) {
+            params.height = expectedHeight;
+            params.bottomMargin = expectedBottom;
+            view.setLayoutParams(params);
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     public boolean onOptionsItemSelected(MenuItem item){

@@ -12232,6 +12232,24 @@ class ReaderSession(
                 anchorManga.title = currentTitle
                 anchorManga.titleId = currentTitle.id
                 var target = nextUnloadedAdjacentEpisode(anchorManga, currentTitle, episodes, direction)
+                if (target == null && hasLoadedImmediateWfwfAdjacentEpisode(
+                        anchorManga,
+                        currentTitle,
+                        episodes,
+                        direction,
+                    )
+                ) {
+                    // WFWF primes exactly one neighbour. Reaching the boundary after that
+                    // neighbour was installed is success, not evidence that the episode list is
+                    // stale. Refreshing here can replace the launch list with an unrelated remote
+                    // snapshot and disable the toolbar's otherwise valid next action.
+                    Log.d(
+                        TAG,
+                        "append_adjacent_wfwf_immediate_already_present direction=$direction " +
+                            "sourceId=${anchorManga.id}",
+                    )
+                    return@execute
+                }
                 if (target == null && anchorManga.isOnline) {
                     val refreshKey = adjacentMissingKey
                     if (adjacentMissingRefreshes.add(refreshKey)) {
@@ -12413,6 +12431,15 @@ class ReaderSession(
                     )
                     loadTarget.setImgs(null)
                     checkedCandidates++
+                    if (isWfwfSource(anchorManga, currentTitle) &&
+                        WfwfAdjacentEpisodePolicy.isImmediateNumericCandidate(
+                            anchorManga.id,
+                            loadTarget.id,
+                            direction,
+                        )
+                    ) {
+                        break
+                    }
                 }
                 if (resolvedTarget == null || resolvedUrls.isEmpty()) {
                     if (!silentMissing) postMessage("표시할 이미지가 없습니다")
@@ -15018,9 +15045,21 @@ class ReaderSession(
                 val primedRefs = ArrayList<PageRef>()
                 val cardOffsets = ArrayList<Int>()
                 var checked = 0
-                val maxPrimeEpisodes = if (ntk) NTK_PRIME_FORWARD_EPISODES else PRIME_FORWARD_EPISODES
+                val maxPrimeEpisodes = when {
+                    ntk -> NTK_PRIME_FORWARD_EPISODES
+                    isWfwfSource(current, currentTitle) -> 1
+                    else -> PRIME_FORWARD_EPISODES
+                }
                 while (!cancelled.get() && checked < maxPrimeEpisodes) {
-                    val target = current.nextEp() ?: break
+                    // Use the same direction-checked resolver as the boundary path. WFWF keeps a
+                    // "first episode" action above the newest real row; raw nextEp() therefore
+                    // used to prime 1183 -> 1184 -> episode 1 and publish that corrupt timeline
+                    // long before the user reached the boundary.
+                    val target = adjacentEpisodeCandidates(
+                        current,
+                        episodes,
+                        ReaderSurfaceView.DIRECTION_NEXT,
+                    ).firstOrNull() ?: break
                     target.title = currentTitle
                     target.titleId = currentTitle.id
                     target.mode = current.mode
@@ -19909,6 +19948,7 @@ class ReaderSession(
         direction: Int
     ): Manga? {
         var checked = 0
+        val wfwf = isWfwfSource(source, source.title ?: currentTitle)
         for (candidate in adjacentEpisodeCandidates(source, episodes, direction)) {
             if (checked >= ADJACENT_EXISTING_SKIP_LIMIT) break
             candidate.title = currentTitle
@@ -19917,9 +19957,36 @@ class ReaderSession(
             if (episodes.isNotEmpty()) candidate.setEps(episodes)
             val loaded = if (direction < 0) hasEpisodeFast(candidate) else hasEpisode(candidate)
             if (!loaded) return candidate
+            // One prepared WFWF neighbour is enough. Searching beyond an already-loaded direct
+            // neighbour turns the newest episode into a chain of doomed synthetic network probes.
+            if (wfwf && WfwfAdjacentEpisodePolicy.isImmediateNumericCandidate(
+                    source.id,
+                    candidate.id,
+                    direction,
+                )
+            ) {
+                return null
+            }
             checked++
         }
         return null
+    }
+
+    private fun hasLoadedImmediateWfwfAdjacentEpisode(
+        source: Manga,
+        currentTitle: Title,
+        episodes: List<Manga>,
+        direction: Int,
+    ): Boolean {
+        if (!isWfwfSource(source, source.title ?: currentTitle)) return false
+        val candidate = adjacentEpisodeCandidates(source, episodes, direction).firstOrNull {
+            WfwfAdjacentEpisodePolicy.isImmediateNumericCandidate(source.id, it.id, direction)
+        } ?: return false
+        candidate.title = currentTitle
+        candidate.titleId = currentTitle.id
+        candidate.mode = source.mode
+        if (episodes.isNotEmpty()) candidate.setEps(episodes)
+        return if (direction < 0) hasEpisodeFast(candidate) else hasEpisode(candidate)
     }
 
     private fun adjacentEpisodeCandidates(source: Manga, episodes: List<Manga>, direction: Int): List<Manga> {
@@ -19930,9 +19997,53 @@ class ReaderSession(
         fun addCandidate(candidate: Manga?) {
             if (candidate == null) return
             if (!isValidAdjacentEpisodeCandidate(source, candidate)) return
+            if (isWfwfSource(candidate, candidate.title ?: source.title ?: title) &&
+                !WfwfAdjacentEpisodePolicy.isDirectionallyConsistent(
+                    source.id,
+                    candidate.id,
+                    direction,
+                )
+            ) {
+                return
+            }
+            // WFWF exposes "first episode" as a navigation shortcut at the top of a newest-first
+            // list. It is not the chronological successor of the latest episode. Treating it as
+            // one replaces a correctly opened recent episode with episode 1 at the forward tail.
+            if (direction > 0 &&
+                isWfwfSource(candidate, candidate.title ?: source.title ?: title) &&
+                WfwfAdjacentEpisodePolicy.isFirstEpisodeShortcut(candidate.id, candidate.name)
+            ) {
+                return
+            }
             if (looseSameEpisodeForAppend(source, candidate)) return
             if (candidates.any { looseSameEpisodeForAppend(it, candidate) }) return
             candidates.add(candidate)
+        }
+        val wfwf = isWfwfSource(source, source.title ?: title)
+        val trustedAuthority = ntkTrustedProvidedAdjacentCandidate(source, direction)
+        if (wfwf && trustedAuthority != null &&
+            (WfwfAdjacentEpisodePolicy.isImmediateNumericCandidate(
+                source.id,
+                trustedAuthority.id,
+                direction,
+            ) || WfwfAdjacentEpisodePolicy.isImmediateVisibleCandidate(
+                Manga.visibleEpisodeNumberKey(source.name),
+                Manga.visibleEpisodeNumberKey(trustedAuthority.name),
+                direction,
+            ))
+        ) {
+            addCandidate(trustedAuthority)
+        }
+        if (wfwf) {
+            WfwfAdjacentEpisodePolicy.syntheticCandidateIds(source.id, direction, 1)
+                .firstOrNull()
+                ?.let { candidateId ->
+                    val candidate = Manga(candidateId, "", source.date ?: "", source.baseMode)
+                    candidate.mode = source.mode
+                    candidate.title = source.title ?: title
+                    candidate.titleId = source.titleId
+                    addCandidate(candidate)
+                }
         }
         // Override legacy list order only when two independent authorities agree. If one is
         // absent or they conflict, preserve the long-standing nextEp()/prevEp() behavior and use
@@ -19945,7 +20056,7 @@ class ReaderSession(
             ::looseSameEpisodeForAppend,
         )
         addCandidate(consensusAuthority)
-        addCandidate(ntkTrustedProvidedAdjacentCandidate(source, direction))
+        addCandidate(trustedAuthority)
         addCandidate(visibleAuthority)
         addCandidate(canonicalAuthority)
         val sourceIndex = looseEpisodeIndexForAppend(episodes, source)
@@ -19962,6 +20073,19 @@ class ReaderSession(
             ViewerEpisodeResolver.nextCandidateFromList(source, episodes, null, source.title ?: title, matcher)
         }
         addCandidate(resolved)
+        if (wfwf) {
+            for (candidateId in WfwfAdjacentEpisodePolicy.syntheticCandidateIds(
+                sourceEpisodeId = source.id,
+                direction = direction,
+                limit = ADJACENT_EXISTING_SKIP_LIMIT,
+            )) {
+                val candidate = Manga(candidateId, "", source.date ?: "", source.baseMode)
+                candidate.mode = source.mode
+                candidate.title = source.title ?: title
+                candidate.titleId = source.titleId
+                addCandidate(candidate)
+            }
+        }
         if (NtkAdjacentEpisodeAuthorityPolicy.maySynthesizeNumericCandidate(
                 episodes.size,
                 source.isOnline

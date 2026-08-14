@@ -39,4 +39,33 @@ public final class ViewerTelemetrySemanticPublicationGateTest {
         assertTrue(gate.claim("episode-a:7:3"));
         assertFalse(gate.claim("episode-a:7:3"));
     }
+
+    @Test
+    public void lifecycleResetInvalidatesAnAlreadyQueuedPublication() {
+        ViewerTelemetry.SemanticPublicationGate gate =
+                new ViewerTelemetry.SemanticPublicationGate();
+
+        long queued = gate.claimVersion("episode-a:7:3");
+        assertTrue(queued > 0L);
+        assertTrue(gate.isCurrent("episode-a:7:3", queued));
+
+        gate.reset();
+
+        assertFalse(gate.isCurrent("episode-a:7:3", queued));
+        long resumed = gate.claimVersion("episode-a:7:3");
+        assertTrue(resumed > 0L);
+        assertTrue(gate.isCurrent("episode-a:7:3", resumed));
+    }
+
+    @Test
+    public void newerSemanticClaimInvalidatesAnOlderQueuedPublication() {
+        ViewerTelemetry.SemanticPublicationGate gate =
+                new ViewerTelemetry.SemanticPublicationGate();
+
+        long oldPage = gate.claimVersion("episode-a:7:3");
+        long newPage = gate.claimVersion("episode-a:8:3");
+
+        assertFalse(gate.isCurrent("episode-a:7:3", oldPage));
+        assertTrue(gate.isCurrent("episode-a:8:3", newPage));
+    }
 }

@@ -34,6 +34,8 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import ml.melun.mangaview.Preference;
 import ml.melun.mangaview.NtkDeviceIdentityManager;
 import ml.melun.mangaview.R;
@@ -70,6 +72,7 @@ public class SettingsActivity extends AppCompatActivity {
     public static final int RESULT_NEED_RESTART = 7;
     private static final String EXTRA_INITIAL_URI = "android.provider.extra.INITIAL_URI";
     View.OnClickListener pbtnClear, nbtnClear, pbtnSet, nbtnSet;
+    private AlertDialog diagnosticsProgress;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -456,21 +459,31 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void runNtkNetworkDiagnostics() {
+        if(diagnosticsProgress != null && diagnosticsProgress.isShowing()) {
+            Toast.makeText(context, "네트워크 진단이 이미 진행 중입니다.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        AtomicBoolean abandoned = new AtomicBoolean(false);
         AlertDialog.Builder builder = dark ? new AlertDialog.Builder(context, R.style.darkDialog) : new AlertDialog.Builder(context);
         AlertDialog progress = builder
                 .setTitle("Site network diagnostics")
                 .setMessage("Running DNS and route checks...")
-                .setCancelable(false)
+                .setCancelable(true)
+                .setNegativeButton("취소", (dialog, which) -> abandoned.set(true))
+                .setOnCancelListener(dialog -> abandoned.set(true))
                 .create();
+        diagnosticsProgress = progress;
         progress.show();
         String network = currentNetworkSummary();
         AppDispatchers.runIo(() -> {
             String report = getHttpClient().buildNtkNetworkDiagnosticReport(network);
             AppDispatchers.runOnMain(() -> {
-                if(isFinishing() || isDestroyed())
-                    return;
                 if(progress.isShowing())
                     progress.dismiss();
+                if(diagnosticsProgress == progress)
+                    diagnosticsProgress = null;
+                if(abandoned.get() || isFinishing() || isDestroyed())
+                    return;
                 showNtkDiagnosticResult(report);
             });
         });
@@ -630,41 +643,42 @@ public class SettingsActivity extends AppCompatActivity {
          {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 final Uri uri = data.getData();
+                if(uri == null) {
+                    Toast.makeText(context, "선택한 파일 또는 폴더를 열 수 없습니다.", Toast.LENGTH_LONG).show();
+                    return;
+                }
                 switch (requestCode) {
                     case MODE_FOLDER_SELECT:
-                        getContentResolver().takePersistableUriPermission(uri, (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
-                        p.setHomeDir(uri.toString());
+                        try {
+                            getContentResolver().takePersistableUriPermission(uri,
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                            p.setHomeDir(uri.toString());
+                        } catch (RuntimeException exception) {
+                            ml.melun.mangaview.report.CrashReporter.record(exception);
+                            Toast.makeText(context, "폴더 접근 권한을 저장하지 못했습니다.", Toast.LENGTH_LONG).show();
+                        }
                         break;
                     case MODE_FILE_SAVE:
-                        showStringInputPopup(context, "백업 파일 이름", s -> {
-                            DocumentFile d = DocumentFile.fromTreeUri(context, uri);
-                            if(!s.endsWith(".mvpref")) s += ".mvpref";
-
-                            final DocumentFile target = d.findFile(s);
-                            if(target != null){
-                                String finalS = s;
-                                showYesNoPopup(context, "파일이 이미 존재합니다.", "덮어 쓸까요?", (dialogInterface, i) -> {
-                                    target.delete();
-                                    if (writePreferenceToFile(context, d.createFile("application", finalS).getUri()))
-                                        Toast.makeText(context, "내보내기 완료!", Toast.LENGTH_LONG).show();
-                                    else
-                                        Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
-                                }, null, null);
-                            } else {
-                                if (writePreferenceToFile(context, d.createFile("application", s).getUri()))
-                                    Toast.makeText(context, "내보내기 완료!", Toast.LENGTH_LONG).show();
-                                else
-                                    Toast.makeText(context, "내보내기 실패", Toast.LENGTH_LONG).show();
-                            }
-                        }, p.getDarkTheme());
+                        showStringInputPopup(context, "백업 파일 이름",
+                                name -> exportPreferencesToTree(uri, name), p.getDarkTheme());
                         break;
                     case MODE_FILE_SELECT:
                         showYesNoPopup(context, "데이터 불러오기", "이 작업은 되돌릴 수 없습니다.\n복원을 진행 하시겠습니까?", (dialogInterface, i) -> {
-                            if (readPreferenceFromFile(p, context, uri)) {
-                                setResult(RESULT_NEED_RESTART);
-                                showPopup(context, "데이터 불러오기", "데이터 불러오기를 성공했습니다. 변경사항을 적용하기 위해 앱을 재시작 합니다.", (dialogInterface12, i1) -> finish(), dialogInterface1 -> finish());
-                            } else
-                                Toast.makeText(context, "불러오기 실패", Toast.LENGTH_LONG).show();
+                            Toast.makeText(context, "백업 데이터를 불러오는 중입니다.", Toast.LENGTH_SHORT).show();
+                            AppDispatchers.runIo(() -> {
+                                boolean success = readPreferenceFromFile(p, context, uri);
+                                AppDispatchers.runOnMain(() -> {
+                                    if(isFinishing() || isDestroyed())
+                                        return;
+                                    if(success) {
+                                        setResult(RESULT_NEED_RESTART);
+                                        showPopup(context, "데이터 불러오기", "데이터 불러오기를 성공했습니다. 변경사항을 적용하기 위해 앱을 재시작 합니다.", (dialogInterface12, i1) -> finish(), dialogInterface1 -> finish());
+                                    } else {
+                                        Toast.makeText(context, "불러오기 실패", Toast.LENGTH_LONG).show();
+                                    }
+                                });
+                            });
 
                         }, (dialogInterface, i) -> Toast.makeText(context,"취소되었습니다", Toast.LENGTH_SHORT).show(), dialogInterface -> Toast.makeText(context,"취소되었습니다", Toast.LENGTH_SHORT).show());
                         break;
@@ -672,6 +686,118 @@ public class SettingsActivity extends AppCompatActivity {
             }
         }
 
+    }
+
+    private void exportPreferencesToTree(Uri uri, String requestedName) {
+        String name = requestedName == null ? "" : requestedName.trim();
+        if(name.length() == 0) {
+            Toast.makeText(context, "백업 파일 이름을 입력해 주세요.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if(!name.endsWith(".mvpref"))
+            name += ".mvpref";
+        String finalName = name;
+        Toast.makeText(context, "백업 폴더를 확인하는 중입니다.", Toast.LENGTH_SHORT).show();
+        AppDispatchers.runIo(() -> {
+            DocumentFile directory = null;
+            DocumentFile existing = null;
+            boolean directoryValid = false;
+            RuntimeException failure = null;
+            try {
+                directory = DocumentFile.fromTreeUri(context, uri);
+                directoryValid = directory != null && directory.isDirectory();
+                if(directoryValid)
+                    existing = directory.findFile(finalName);
+            } catch (RuntimeException exception) {
+                failure = exception;
+            }
+            DocumentFile resolvedDirectory = directory;
+            DocumentFile resolvedExisting = existing;
+            boolean resolvedDirectoryValid = directoryValid;
+            RuntimeException resolvedFailure = failure;
+            AppDispatchers.runOnMain(() -> {
+                if(isFinishing() || isDestroyed())
+                    return;
+                if(resolvedFailure != null) {
+                    ml.melun.mangaview.report.CrashReporter.record(resolvedFailure);
+                    Toast.makeText(context, "백업 폴더에 접근하지 못했습니다.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if(resolvedDirectory == null || !resolvedDirectoryValid) {
+                    Toast.makeText(context, "선택한 폴더를 열 수 없습니다.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if(resolvedExisting != null) {
+                    showYesNoPopup(context, "파일이 이미 존재합니다.", "덮어 쓸까요?",
+                            (dialogInterface, which) -> writePreferenceBackupAsync(
+                                    resolvedDirectory, resolvedExisting, finalName), null, null);
+                } else {
+                    writePreferenceBackupAsync(resolvedDirectory, null, finalName);
+                }
+            });
+        });
+    }
+
+    private void writePreferenceBackupAsync(DocumentFile directory, @Nullable DocumentFile existing,
+                                            String name) {
+        Toast.makeText(context, "백업 파일을 저장하는 중입니다.", Toast.LENGTH_SHORT).show();
+        AppDispatchers.runIo(() -> {
+            boolean success = false;
+            RuntimeException failure = null;
+            DocumentFile previous = null;
+            DocumentFile created = null;
+            try {
+                boolean replacementReady = true;
+                if(existing != null) {
+                    String backupName = name + ".previous-" + android.os.SystemClock.uptimeMillis();
+                    replacementReady = existing.renameTo(backupName);
+                    if(replacementReady)
+                        previous = existing;
+                }
+                if(replacementReady) {
+                    created = directory.createFile("application/octet-stream", name);
+                    success = created != null && writePreferenceToFile(context, created.getUri());
+                }
+                if(success) {
+                    if(previous != null)
+                        previous.delete();
+                } else {
+                    if(created != null)
+                        created.delete();
+                    if(previous != null)
+                        previous.renameTo(name);
+                }
+            } catch (RuntimeException exception) {
+                success = false;
+                failure = exception;
+                try {
+                    if(created != null)
+                        created.delete();
+                    if(previous != null)
+                        previous.renameTo(name);
+                } catch (RuntimeException rollbackFailure) {
+                    exception.addSuppressed(rollbackFailure);
+                }
+            }
+            boolean result = success;
+            RuntimeException resolvedFailure = failure;
+            AppDispatchers.runOnMain(() -> {
+                if(resolvedFailure != null)
+                    ml.melun.mangaview.report.CrashReporter.record(resolvedFailure);
+                if(isFinishing() || isDestroyed())
+                    return;
+                Toast.makeText(context, result ? "내보내기 완료!" : "내보내기 실패",
+                        Toast.LENGTH_LONG).show();
+            });
+        });
+    }
+
+    @Override
+    protected void onDestroy() {
+        if(diagnosticsProgress != null && diagnosticsProgress.isShowing())
+            diagnosticsProgress.dismiss();
+        diagnosticsProgress = null;
+        super.onDestroy();
     }
 
     private interface InputCallback{

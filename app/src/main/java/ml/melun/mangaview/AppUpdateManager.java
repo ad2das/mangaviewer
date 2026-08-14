@@ -36,6 +36,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -443,7 +444,17 @@ public final class AppUpdateManager {
         progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
         progressDialog.setMax(100);
         progressDialog.setProgress(1);
-        progressDialog.setCancelable(false);
+        AtomicBoolean progressUiCancelled = new AtomicBoolean(false);
+        // Network and package-manager stalls must never trap the user behind a modal window.
+        // Dismissing the UI does not corrupt the staged download; the bounded worker may finish
+        // in the background and the pending install is offered again on the next resume.
+        progressDialog.setCancelable(true);
+        progressDialog.setOnCancelListener(dialog -> {
+            progressUiCancelled.set(true);
+            Utils.safeToast(activity,
+                    "업데이트 다운로드는 백그라운드에서 계속되며, 다음 실행 때 설치할 수 있습니다.",
+                    Toast.LENGTH_SHORT);
+        });
         try {
             progressDialog.show();
             progressDialog.setProgress(1);
@@ -483,7 +494,13 @@ public final class AppUpdateManager {
                         return;
                     }
                     pendingInstallApk = apk;
-                    installApk(activity, apk);
+                    if(!progressUiCancelled.get() && Utils.canUseContextForUi(activity)) {
+                        installApk(activity, apk);
+                    } else {
+                        Utils.safeToast(appContext,
+                                "업데이트 다운로드가 완료되었습니다. 앱으로 돌아오면 설치를 계속합니다.",
+                                Toast.LENGTH_LONG);
+                    }
                 });
             } catch (Throwable throwable) {
                 CrashReporter.record(throwable);

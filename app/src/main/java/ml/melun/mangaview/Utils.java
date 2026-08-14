@@ -76,6 +76,7 @@ import ml.melun.mangaview.interfaces.IntegerCallback;
 import ml.melun.mangaview.interfaces.StringCallback;
 import ml.melun.mangaview.reader.ReaderImageCache;
 import ml.melun.mangaview.reader.ReaderLaunchPreparer;
+import ml.melun.mangaview.reader.ReaderWindowViewport;
 import ml.melun.mangaview.reader.ReaderWarmupCoordinator;
 import ml.melun.mangaview.repository.DownloadRepository;
 import ml.melun.mangaview.repository.MangaRepository;
@@ -620,7 +621,7 @@ public class Utils {
                                                        int launchToken) {
         Context appContext = context.getApplicationContext();
         int width = context instanceof Activity
-                ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
+                ? ReaderWindowViewport.width((Activity) context, null)
                 : context.getResources().getDisplayMetrics().widthPixels;
         AppDispatchers.submitNavigation(() -> {
             boolean ntkExact = manga != null && manga.getNtkEpisodePath() != null
@@ -905,7 +906,7 @@ public class Utils {
             return;
         }
         int width = context instanceof Activity
-                ? getScreenWidth(((Activity) context).getWindowManager().getDefaultDisplay())
+                ? ReaderWindowViewport.width((Activity) context, null)
                 : context.getResources().getDisplayMetrics().widthPixels;
         final long launchWidthDoneNs = SystemClock.elapsedRealtimeNanos();
         Context appContext = context.getApplicationContext();
@@ -2228,7 +2229,9 @@ public class Utils {
                 SystemClock.elapsedRealtime() - 30_000L);
         if(head == null || head.isEmpty())
             return null;
-        int width = Math.max(1, context.getResources().getDisplayMetrics().widthPixels);
+        int width = context instanceof Activity
+                ? ReaderWindowViewport.width((Activity) context, null)
+                : Math.max(1, context.getResources().getDisplayMetrics().widthPixels);
         String key = ReaderWarmupCoordinator.primeKnownUrls(
                 context.getApplicationContext(),
                 manga,

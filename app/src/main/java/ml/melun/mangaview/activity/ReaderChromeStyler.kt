@@ -11,10 +11,12 @@ import android.view.WindowManager
 object ReaderChromeStyler {
     fun applyReaderWindow(activity: Activity) {
         val window = activity.window
-        window.addFlags(
-            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_FULLSCREEN
-        )
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (usesImmersiveChrome(activity)) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        }
         window.setBackgroundDrawable(ColorDrawable(Color.BLACK))
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
@@ -36,6 +38,17 @@ object ReaderChromeStyler {
      */
     fun applyReaderSystemUi(activity: Activity) {
         val decorView = activity.window.decorView
+        if (!usesImmersiveChrome(activity)) {
+            val immersiveFlags = View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            val visibility = decorView.systemUiVisibility and immersiveFlags.inv()
+            if (decorView.systemUiVisibility != visibility) {
+                decorView.systemUiVisibility = visibility
+            }
+            return
+        }
         var visibility = decorView.systemUiVisibility or
             View.SYSTEM_UI_FLAG_FULLSCREEN or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
@@ -48,6 +61,10 @@ object ReaderChromeStyler {
         if (decorView.systemUiVisibility != visibility) {
             decorView.systemUiVisibility = visibility
         }
+    }
+
+    private fun usesImmersiveChrome(activity: Activity): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.N || !activity.isInMultiWindowMode
     }
 
     fun roundedBackground(fill: Int, stroke: Int, radius: Int, density: Float): GradientDrawable {

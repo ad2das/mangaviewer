@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicReference
 @RunWith(AndroidJUnit4::class)
 class NtkStrictSourceSessionRollingStartInstrumentedTest {
     @Test
-    fun rollingSessionStartFutureCompletesWithTwoSubmittedSources() {
+    fun rollingSessionStartFutureCompletesWithTheFiniteOpeningWave() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val binding = binding(pageCount = 5)
         val manga = Manga(EPISODE_ID.toInt(), "rolling-start", "", MTitle.base_comic).apply {
@@ -45,9 +45,9 @@ class NtkStrictSourceSessionRollingStartInstrumentedTest {
         try {
             val proof = session.enqueueStartQuarantined().get(5, TimeUnit.SECONDS)
 
-            assertEquals(2, proof.initialWaveCount)
-            assertEquals(2, proof.submittedOperationCount)
-            assertTrue(proof.physicalCallCountAtProof in 0..2)
+            assertEquals(binding.pageCount, proof.initialWaveCount)
+            assertEquals(binding.pageCount, proof.submittedOperationCount)
+            assertTrue(proof.physicalCallCountAtProof in 0..binding.pageCount)
             assertEquals(0, proof.duplicatePhysicalCallCount)
         } finally {
             session.requestClose(null)
@@ -69,7 +69,7 @@ class NtkStrictSourceSessionRollingStartInstrumentedTest {
         val body = """{"sourceWorkId":"$WORK_ID","episodeId":"$EPISODE_ID","pages":$pageCount}"""
             .toByteArray()
         // Port 1 is deliberately closed. The start future proves actor admission before physical
-        // completion callbacks can run; finally cancels both local-only calls and awaits drain.
+        // completion callbacks can run; finally cancels the finite local-only wave and awaits drain.
         val assets = (1..pageCount).map { "https://127.0.0.1:1/page-$it.jpg" }
         val proof = NtkEpisodeDocumentPlanProof.create(
             PATH,

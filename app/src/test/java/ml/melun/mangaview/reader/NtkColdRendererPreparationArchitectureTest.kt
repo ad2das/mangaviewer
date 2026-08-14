@@ -1174,7 +1174,8 @@ class NtkColdRendererPreparationArchitectureTest {
         )
         val consensus = candidates.indexOf("addCandidate(consensusAuthority)")
         val legacy = candidates.indexOf(
-            "addCandidate(ntkTrustedProvidedAdjacentCandidate(source, direction))"
+            "addCandidate(trustedAuthority)",
+            consensus,
         )
         val visible = candidates.indexOf("addCandidate(visibleAuthority)")
         val canonical = candidates.indexOf("addCandidate(canonicalAuthority)")

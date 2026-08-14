@@ -39,6 +39,7 @@ import ml.melun.mangaview.mangaview.MainPageWebtoon;
 import ml.melun.mangaview.mangaview.Title;
 import ml.melun.mangaview.runtime.PerformanceMonitor;
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
+import ml.melun.mangaview.ui.AppWindowSizePolicy;
 
 import static ml.melun.mangaview.MainApplication.p;
 import static ml.melun.mangaview.MainApplication.getHttpClient;
@@ -149,6 +150,10 @@ public class MainMain extends Fragment{
         if(homeRetryButton != null)
             homeRetryButton.setOnClickListener(view -> retrySelectedHome());
         applyHomeTheme(rootView);
+        rootView.addOnLayoutChangeListener((view, left, top, right, bottom,
+                                            oldLeft, oldTop, oldRight, oldBottom) ->
+                applyCompactWindowChrome(rootView, bottom - top));
+        rootView.post(() -> applyCompactWindowChrome(rootView, rootView.getHeight()));
 
         TabLayout.Tab forYouTab = mainTabLayout.newTab().setText("홈");
         TabLayout.Tab popularTab = mainTabLayout.newTab().setText("인기");
@@ -849,6 +854,52 @@ public class MainMain extends Fragment{
     private void hideHomeLoadStatus() {
         if(homeLoadStatus != null)
             homeLoadStatus.setVisibility(View.GONE);
+    }
+
+    private void applyCompactWindowChrome(ViewGroup rootView, int heightPixels) {
+        boolean compact = AppWindowSizePolicy.isCompactHeight(
+                heightPixels,
+                getResources().getDisplayMetrics().density);
+        boolean ultraCompact = AppWindowSizePolicy.isUltraCompactHeight(
+                heightPixels,
+                getResources().getDisplayMetrics().density);
+        View eyebrow = rootView.findViewById(R.id.homeEyebrow);
+        View subtitle = rootView.findViewById(R.id.homeSubtitle);
+        TextView title = rootView.findViewById(R.id.homeTitle);
+        View modeToggle = rootView.findViewById(R.id.mainModeToggle);
+        View tabs = rootView.findViewById(R.id.mainTab);
+        if(eyebrow != null)
+            eyebrow.setVisibility(compact ? View.GONE : View.VISIBLE);
+        if(subtitle != null)
+            subtitle.setVisibility(compact ? View.GONE : View.VISIBLE);
+        if(title != null)
+            title.setVisibility(ultraCompact ? View.GONE : View.VISIBLE);
+        if(title != null)
+            title.setTextSize(compact ? 18f : 22f);
+        if(modeToggle != null)
+            modeToggle.setVisibility(View.VISIBLE);
+        setCompactHeightAndTopMargin(
+                modeToggle,
+                ultraCompact ? 32 : 48,
+                ultraCompact ? 2 : (compact ? 6 : 18));
+        setCompactHeightAndTopMargin(tabs, ultraCompact ? 36 : 48, 0);
+    }
+
+    private void setCompactHeightAndTopMargin(View view, int heightDp, int topMarginDp) {
+        if(view == null)
+            return;
+        ViewGroup.LayoutParams raw = view.getLayoutParams();
+        int expectedHeight = dp(heightDp);
+        int expectedTopMargin = dp(topMarginDp);
+        boolean changed = raw.height != expectedHeight;
+        raw.height = expectedHeight;
+        if(raw instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams margins = (ViewGroup.MarginLayoutParams)raw;
+            changed |= margins.topMargin != expectedTopMargin;
+            margins.topMargin = expectedTopMargin;
+        }
+        if(changed)
+            view.setLayoutParams(raw);
     }
 
     private void retrySelectedHome() {
