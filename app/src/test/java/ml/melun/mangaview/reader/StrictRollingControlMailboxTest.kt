@@ -11,7 +11,7 @@ class StrictRollingControlMailboxTest {
         val mailbox = StrictRollingControlMailbox()
         assertTrue(mailbox.offerWindow(0, 1, 0, true))
         assertFalse(mailbox.offerPhysicalDraw(0, 0, 1))
-        assertFalse(mailbox.offerWindow(8, 10, 9, true))
+        assertFalse(mailbox.offerWindow(8, 10, 9, true, directionHint = -1))
         assertFalse(mailbox.offerPhysicalDraw(1, 1, 1))
 
         val events = mailbox.pollBatch()!!.events
@@ -22,6 +22,7 @@ class StrictRollingControlMailboxTest {
         val latestWindow = events[1] as StrictRollingControlMailbox.WindowEvent
         assertEquals(8, latestWindow.first)
         assertEquals(10, latestWindow.last)
+        assertEquals(-1, latestWindow.directionHint)
         assertTrue(events.zipWithNext().all { (left, right) -> left.sequence < right.sequence })
         assertTrue(mailbox.finishDrainIfEmpty())
     }

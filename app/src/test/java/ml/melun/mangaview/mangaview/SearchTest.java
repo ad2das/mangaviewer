@@ -15,6 +15,21 @@ import static org.junit.Assert.assertTrue;
 
 public class SearchTest {
     @Test
+    public void searchResultsAreBoundToTheRequestSourceEvenWhenParserMetadataIsBlankOrStale() {
+        Title blank = new Title("blank", "", "", null, "", 1, MTitle.base_comic);
+        Title stale = new Title("stale", "", "", null, "", 2, MTitle.base_comic);
+        stale.setSourceSite("wfwf");
+        ArrayList<Title> results = new ArrayList<>();
+        results.add(blank);
+        results.add(stale);
+
+        Search.bindTitlesToSourceSiteForTest(results, "ntk");
+
+        assertEquals("ntk", blank.getSourceSite());
+        assertEquals("ntk", stale.getSourceSite());
+    }
+
+    @Test
     public void ntkExactIdSearchRecognizesExplicitProductionSyntaxOnly() {
         assertEquals("8139", Search.ntkExactWorkIdQueryForTest("#8139"));
         assertEquals("8139", Search.ntkExactWorkIdQueryForTest("  #8139  "));

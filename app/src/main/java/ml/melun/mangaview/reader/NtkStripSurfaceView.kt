@@ -13,6 +13,7 @@ import android.view.Surface
 import android.view.SurfaceControl
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.annotation.RequiresApi
 import ml.melun.mangaview.runtime.AppDispatchers
 import ml.melun.mangaview.runtime.PerfTrace
 import ml.melun.mangaview.runtime.ViewerTelemetry
@@ -231,6 +232,7 @@ class NtkStripSurfaceView private constructor(
     private val lastMergedFrameKey = AtomicReference<NtkFrameOrderKey?>()
     private val structureEpoch = AtomicLong(0L)
     @Volatile private var compositorAlpha = 0f
+    @Volatile private var hostPresentationEnabled = true
     @Volatile internal var frameListener: ((NtkStripRenderEngine.FrameSnapshot) -> Unit)? = null
     private var holderCreatedNanos = 0L
     private var surfaceLeaseAcquiredNanos = 0L
@@ -259,6 +261,11 @@ class NtkStripSurfaceView private constructor(
     }
 
     companion object {
+        // This is a rolling diagnostic window, not the formal schema11 qualification ledger.
+        // 2,048 samples retain more than 17 seconds even at 120 Hz while preventing a reader
+        // session from retaining FrameSnapshot payloads (including schema arrays) indefinitely.
+        internal const val MAX_PRESENT_DIAGNOSTIC_FRAMES = 2_048
+
         internal fun create(
             context: Context,
             engine: NtkStripRenderEngine,
@@ -395,6 +402,17 @@ class NtkStripSurfaceView private constructor(
                     ?: terminalSurfaceFailure?.let(listener::onSurfaceAttachFailed)
             }
         }
+    }
+
+    /**
+     * Host lifecycle gate for physical-frame publication. The native engine may finish an already
+     * submitted frame after Home/onPause; that buffer must not republish accessibility, p0 or
+     * viewport semantics while the Activity is backgrounded. Re-enabling requests one fresh,
+     * foreground-owned frame rather than reusing the background latch.
+     */
+    internal fun setHostPresentationEnabled(enabled: Boolean) {
+        hostPresentationEnabled = enabled
+        if (enabled) liveEngineOrNull()?.requestRender()
     }
 
     private fun driveSurfaceHandoff() {
@@ -1219,11 +1237,22 @@ class NtkStripSurfaceView private constructor(
 
     internal fun applyPublishedCompositorAlphaRequired(): Boolean {
         val clamped = compositorAlpha
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || !isAttachedToWindow) {
+            Log.e(
+                "NtkStripRenderer",
+                "fatal compositor alpha fallback forbidden attached=$isAttachedToWindow " +
+                    "surfaceValid=false api=${Build.VERSION.SDK_INT}"
+            )
+            return false
+        }
+        return applyPublishedCompositorAlphaApi29(clamped)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun applyPublishedCompositorAlphaApi29(clamped: Float): Boolean {
         // SurfaceView.getSurfaceControl() is a platform type and can transiently return null
         // after detach even though the SDK signature is exposed to Kotlin as non-null.
-        val control: SurfaceControl? = if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isAttachedToWindow
-        ) surfaceControl else null
+        val control: SurfaceControl? = surfaceControl
         val validControl = control?.takeIf { it.isValid }
         val surfaceValid = validControl != null
         if (validControl != null) {
@@ -2382,6 +2411,7 @@ class NtkStripSurfaceView private constructor(
     fun getPreSubmitViewportGap(): Long = engine.preSubmitViewportGap()
 
     private fun onFramePresented(frame: NtkStripRenderEngine.FrameSnapshot) {
+        if (!hostPresentationEnabled) return
         val target = publishedEngineTargetOrNull() ?: return
         val currentGeometry = geometry ?: return
         val binding = currentBinding.get() ?: return
@@ -2493,7 +2523,9 @@ class NtkStripSurfaceView private constructor(
                     functionalGpuInvariantValid,
                     gpuInvariantValid
                 )
-                if (presentTimes.size > 2048) presentTimes.pollFirstEntry()
+                if (presentTimes.size > MAX_PRESENT_DIAGNOSTIC_FRAMES) {
+                    presentTimes.pollFirstEntry()
+                }
             }
         }
         if (frame.viewportOriginalComplete) {
@@ -2572,7 +2604,7 @@ class NtkStripSurfaceView private constructor(
         }
         return target.engine.touch(
             event.actionMasked,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 event.eventTimeNanos
             } else {
                 event.eventTime * 1_000_000L
@@ -2582,6 +2614,8 @@ class NtkStripSurfaceView private constructor(
             pointerId
         )
     }
+
+    override fun performClick(): Boolean = super.performClick()
 
     internal fun ingressHostTouch(
         authority: Long,

@@ -28,6 +28,7 @@
                 android:id="@+id/Thumb"
                 android:layout_height="0dp"
                 android:layout_width="86dp"
+                android:contentDescription="@null"
                 android:scaleType="centerCrop"
                 app:layout_constraintBottom_toBottomOf="parent"
                 app:layout_constraintStart_toStartOf="parent"
@@ -60,6 +61,7 @@
                 android:layout_height="18dp"
                 android:layout_margin="@dimen/app_space_xs"
                 android:layout_marginTop="@dimen/app_space_sm"
+                android:contentDescription="@null"
                 android:scaleType="fitCenter"
                 app:layout_constraintEnd_toStartOf="@+id/epsButton"
                 app:layout_constraintBottom_toBottomOf="parent"
@@ -71,6 +73,7 @@
                 android:layout_height="18dp"
                 android:layout_margin="@dimen/app_space_xs"
                 android:layout_marginTop="@dimen/app_space_sm"
+                android:contentDescription="@null"
                 android:scaleType="fitCenter"
                 app:layout_constraintEnd_toStartOf="@+id/seenIcon"
                 app:layout_constraintBottom_toBottomOf="parent"
@@ -156,6 +159,7 @@
                 <ImageView
                     android:layout_width="wrap_content"
                     android:layout_height="match_parent"
+                    android:contentDescription="@null"
                     app:srcCompat="@drawable/ic_tag" />
 
                 <TextView

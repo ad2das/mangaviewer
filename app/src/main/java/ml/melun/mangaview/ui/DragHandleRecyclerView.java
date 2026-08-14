@@ -132,6 +132,11 @@ public class DragHandleRecyclerView extends RecyclerView {
     }
 
     @Override
+    public boolean performClick() {
+        return super.performClick();
+    }
+
+    @Override
     public void draw(Canvas canvas) {
         super.draw(canvas);
         drawDragScrollbar(canvas);

@@ -459,6 +459,37 @@ public class MainSearch extends Fragment {
             task.cancel(true);
     }
 
+    /**
+     * Invalidates only online catalogue state when the global source changes.  Library rows keep
+     * their per-title source identity and remain usable; an in-flight or already rendered online
+     * result must never be reinterpreted through the newly selected site's transport policy.
+     */
+    public void onSitePresetChanged() {
+        boolean hadOnlineResults = shouldClearOnlineResultsForSiteChange(
+                libraryMode, onlineSearchMode, search != null);
+        cancelActiveOnlineSearch();
+        search = null;
+        activeSearchKey = null;
+        if(!hadOnlineResults)
+            return;
+        if(searchAdapter != null)
+            searchAdapter.setDataImmediate(new ArrayList<>());
+        if(searchResult != null && searchAdapter != null)
+            bindOnlineAdapter();
+        if(swipe != null)
+            swipe.setRefreshing(false);
+        if(noResultText != null)
+            noResultText.setText("사이트가 변경되었습니다. 다시 검색해 주세요.");
+        if(noresult != null)
+            noresult.setVisibility(View.VISIBLE);
+    }
+
+    static boolean shouldClearOnlineResultsForSiteChange(boolean libraryMode,
+                                                          boolean onlineSearchMode,
+                                                          boolean hasSearch) {
+        return !libraryMode || onlineSearchMode || hasSearch;
+    }
+
     void optionUpdate(){
         //shows or hides options
         //p.setBaseMode(baseMode.getSelectedItemPosition()+1);
@@ -1497,7 +1528,7 @@ public class MainSearch extends Fragment {
         searchAdapter.setClickListener(new TitleAdapter.ItemClickListener() {
             @Override
             public void onLongClick(View view, int position) {
-                Title title = searchAdapter.getItem(position);
+                Title title = onlineTitleForAction(searchAdapter.getItem(position));
                 if(title == null)
                     return;
                 popup(getContext(),view, position, title, 0, item -> {
@@ -1513,7 +1544,8 @@ public class MainSearch extends Fragment {
 
             @Override
             public void onResumeClick(int position, int id) {
-                Title title = resolveLatestTitleForResume(searchAdapter.getItem(position));
+                Title selected = onlineTitleForAction(searchAdapter.getItem(position));
+                Title title = resolveLatestTitleForResume(selected);
                 if(title == null)
                     return;
                 int bookmark = resolveLatestBookmark(title, id);
@@ -1524,7 +1556,7 @@ public class MainSearch extends Fragment {
 
             @Override
             public void onItemClick(int position) {
-                Title title = searchAdapter.getItem(position);
+                Title title = onlineTitleForAction(searchAdapter.getItem(position));
                 if(title == null)
                     return;
                 if(!canLaunchDestination())
@@ -1533,6 +1565,25 @@ public class MainSearch extends Fragment {
                 startActivity(episodeView);
             }
         });
+    }
+
+    private Title onlineTitleForAction(Title title) {
+        if(title == null || !onlineSearchMode)
+            return title;
+        if(onlineResultMatchesActiveSite(title, p != null && p.isNtkSite()))
+            return title;
+        onSitePresetChanged();
+        if(getContext() != null)
+            Toast.makeText(getContext(), "사이트가 변경되어 검색 결과를 비웠습니다. 다시 검색해 주세요.",
+                    Toast.LENGTH_SHORT).show();
+        return null;
+    }
+
+    static boolean onlineResultMatchesActiveSite(Title title, boolean activeNtkSite) {
+        if(title == null || title.getSourceSite() == null)
+            return false;
+        String source = title.getSourceSite().trim().toLowerCase(Locale.ROOT);
+        return activeNtkSite ? "ntk".equals(source) : "wfwf".equals(source);
     }
 
     private boolean canLaunchDestination() {

@@ -18,6 +18,30 @@ import static org.junit.Assert.assertNull;
 
 public class ReaderV2ActivityTest {
     @Test
+    public void shortWebtoonReverseHintRequiresBusyPhysicalMotionBeyondNoise() {
+        assertEquals(0, ReaderV2Activity.directWifiShortWebtoonDirectionHintForTest(
+                true, 100, 99));
+        assertEquals(ReaderSurfaceView.DIRECTION_PREVIOUS,
+                ReaderV2Activity.directWifiShortWebtoonDirectionHintForTest(
+                        true, 100, 98));
+        assertEquals(0, ReaderV2Activity.directWifiShortWebtoonDirectionHintForTest(
+                false, 100, 90));
+        assertEquals(0, ReaderV2Activity.directWifiShortWebtoonDirectionHintForTest(
+                true, 100, 101));
+        assertEquals(0, ReaderV2Activity.directWifiShortWebtoonDirectionHintForTest(
+                true, Integer.MIN_VALUE, 90));
+    }
+
+    @Test
+    public void malformedOrMissingReaderPayloadFailsClosedWithoutThrowing() {
+        assertFalse(ReaderV2Activity.hasValidReaderMangaExtraForTest(null));
+        assertFalse(ReaderV2Activity.hasValidReaderMangaExtraForTest(""));
+        assertFalse(ReaderV2Activity.hasValidReaderMangaExtraForTest("{not-json"));
+        assertTrue(ReaderV2Activity.hasValidReaderMangaExtraForTest(
+                "{\"id\":7,\"name\":\"episode\",\"baseMode\":1}"));
+    }
+
+    @Test
     public void pageGapForBaseMode_removesWebtoonSeparator() {
         assertEquals(0, ReaderV2Activity.pageGapForBaseModeForTest(MTitle.base_webtoon));
         assertEquals(0, ReaderV2Activity.pageGapForBaseModeForTest(MTitle.base_comic));

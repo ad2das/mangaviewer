@@ -35,5 +35,9 @@ public class MainActivityStartupPolicyTest {
         assertEquals(2, MainTabPolicy.fragmentIndex(ml.melun.mangaview.R.id.nav_download));
         assertEquals(ml.melun.mangaview.R.id.nav_search, MainTabPolicy.tabId(1));
         assertEquals("내 보관함", MainTabPolicy.tabTitle(2));
+        assertEquals(0, MainTabPolicy.normalizeStartTab(-1));
+        assertEquals(0, MainTabPolicy.normalizeStartTab(3));
+        assertEquals(1, MainTabPolicy.normalizeStartTab(1));
+        assertEquals(2, MainTabPolicy.normalizeStartTab(2));
     }
 }

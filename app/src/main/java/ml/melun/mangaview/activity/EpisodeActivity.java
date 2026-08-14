@@ -3574,9 +3574,10 @@ public class EpisodeActivity extends AppCompatActivity {
                             + ",cached=" + cached
                             + ",candidate=" + result.candidate.substring(Math.max(0, result.candidate.length() - 32))
                             + ",ms=" + (android.os.SystemClock.elapsedRealtime() - startedAt));
-                    for(Future<NtkAnchorCandidateResult> pending : futures)
+                    for(Future<NtkAnchorCandidateResult> pending : futures) {
                         pending.cancel(true);
-                        return;
+                    }
+                    return;
                 }
                 Log.d("EpisodeActivity", "ntk_direct_manifest_anchor_fast_fetch_miss_all path="
                         + manga.getNtkEpisodePath()

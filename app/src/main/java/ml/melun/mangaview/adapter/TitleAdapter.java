@@ -604,11 +604,13 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             holder.resume.setVisibility(View.VISIBLE);
             holder.resumeSiteIcon.setVisibility(View.VISIBLE);
             bindResumeSiteIcon(holder.resumeSiteIcon, bindMeta.sourceSite);
+            holder.resume.setContentDescription(resumeActionDescription(title));
         }
         else {
             holder.resume.setVisibility(View.GONE);
             holder.resumeSiteIcon.setVisibility(View.GONE);
         }
+        holder.itemView.setContentDescription(titleCardDescription(title, meta, bindMeta.tags));
 
     }
 
@@ -1024,7 +1026,49 @@ public class TitleAdapter extends RecyclerView.Adapter<TitleAdapter.ViewHolder> 
             disableTouchTarget(progressText);
             disableTouchTarget(tagContainer);
             disableTouchTarget(resume);
+            // Physical taps are still intercepted by the RecyclerView's down-to-up warmup path,
+            // but accessibility services and keyboard/DPAD users invoke View.performClick().
+            // Keep those semantic actions on the real row/button instead of exposing a list that
+            // can only be operated through raw screen coordinates.
+            itemView.setClickable(true);
+            itemView.setLongClickable(true);
+            itemView.setFocusable(true);
+            itemView.setOnClickListener(view -> performItemClick(getAdapterPosition()));
+            itemView.setOnLongClickListener(view ->
+                    performItemLongClick(view, getAdapterPosition()));
+            resume.setClickable(true);
+            resume.setFocusable(true);
+            resume.setOnClickListener(view -> performResumeClick(getAdapterPosition()));
         }
+    }
+
+    private static String titleCardDescription(String title, String meta, String tags) {
+        StringBuilder description = new StringBuilder();
+        appendAccessibilityPart(description, title);
+        appendAccessibilityPart(description, meta);
+        appendAccessibilityPart(description, tags);
+        return description.toString();
+    }
+
+    private static String resumeActionDescription(String title) {
+        String normalized = title == null ? "" : title.trim();
+        return normalized.length() == 0 ? "이어보기" : normalized + " 이어보기";
+    }
+
+    private static void appendAccessibilityPart(StringBuilder target, String value) {
+        if(value == null || value.trim().length() == 0)
+            return;
+        if(target.length() > 0)
+            target.append(", ");
+        target.append(value.trim());
+    }
+
+    static String titleCardDescriptionForTest(String title, String meta, String tags) {
+        return titleCardDescription(title, meta, tags);
+    }
+
+    static String resumeActionDescriptionForTest(String title) {
+        return resumeActionDescription(title);
     }
 
     private void disableTouchTarget(View view) {

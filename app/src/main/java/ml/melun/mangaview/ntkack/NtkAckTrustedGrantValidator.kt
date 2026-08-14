@@ -5,7 +5,7 @@ import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
-import java.util.Base64
+import ml.melun.mangaview.util.NtkBase64
 import java.util.Locale
 
 /**
@@ -353,10 +353,10 @@ object NtkAckTrustedGrantValidator {
 
     private fun decodeCanonicalBase64Url(value: String, label: String): ByteArray {
         require(value.matches(Regex("^[A-Za-z0-9_-]+$"))) { "$label is not base64url" }
-        val decoded = runCatching { Base64.getUrlDecoder().decode(value) }.getOrElse {
+        val decoded = runCatching { NtkBase64.decodeUrl(value) }.getOrElse {
             throw IllegalArgumentException("$label is not decodable", it)
         }
-        require(Base64.getUrlEncoder().withoutPadding().encodeToString(decoded) == value) {
+        require(NtkBase64.encodeUrlWithoutPadding(decoded) == value) {
             "$label is not canonical base64url"
         }
         return decoded

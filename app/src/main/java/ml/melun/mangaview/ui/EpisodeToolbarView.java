@@ -3,11 +3,16 @@ package ml.melun.mangaview.ui;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.os.Bundle;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 
 import androidx.annotation.Nullable;
+
+import ml.melun.mangaview.R;
 
 /** Lightweight, text-free episode toolbar used by the NTK cold path. */
 public final class EpisodeToolbarView extends View {
@@ -35,13 +40,49 @@ public final class EpisodeToolbarView extends View {
         paint.setStrokeJoin(Paint.Join.ROUND);
         setClickable(true);
         setFocusable(true);
+        setContentDescription(context.getString(R.string.episode_toolbar_description));
     }
 
     public void setActions(@Nullable Actions value) { actions = value; }
 
     public void setFavorite(boolean value) {
+        if (favorite == value) return;
         favorite = value;
         invalidate();
+        if (isAttachedToWindow())
+            sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
+    }
+
+    @Override
+    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfo(info);
+        // The canvas has four independent controls. Do not expose the host's otherwise
+        // meaningless default click; publish each control as a named local-context action.
+        info.setContentDescription(getContentDescription());
+        info.setClickable(false);
+        info.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
+        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                R.id.accessibility_episode_toolbar_back,
+                getContext().getString(R.string.episode_toolbar_back)));
+        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                R.id.accessibility_episode_toolbar_favorite,
+                getContext().getString(favorite
+                        ? R.string.episode_toolbar_remove_favorite
+                        : R.string.episode_toolbar_add_favorite)));
+        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                R.id.accessibility_episode_toolbar_download,
+                getContext().getString(R.string.episode_toolbar_download)));
+        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                R.id.accessibility_episode_toolbar_more,
+                getContext().getString(R.string.episode_toolbar_more)));
+    }
+
+    @Override
+    public boolean performAccessibilityAction(int action, @Nullable Bundle arguments) {
+        int slot = slotForAccessibilityAction(action);
+        if (slot >= 0)
+            return dispatchSlot(slot, true);
+        return super.performAccessibilityAction(action, arguments);
     }
 
     @Override
@@ -92,13 +133,8 @@ public final class EpisodeToolbarView extends View {
         if (event.getActionMasked() == MotionEvent.ACTION_UP) {
             int slot = slotFor(event.getX());
             setPressed(false);
-            if (slot == pressedSlot && actions != null) {
-                if (slot == 0) actions.onBack();
-                else if (slot == 1) actions.onFavorite();
-                else if (slot == 2) actions.onDownload();
-                else if (slot == 3) actions.onMore(this);
-                playSoundEffect(android.view.SoundEffectConstants.CLICK);
-            }
+            if (slot == pressedSlot && dispatchSlot(slot, false))
+                performClick();
             pressedSlot = -1;
             return true;
         }
@@ -111,11 +147,57 @@ public final class EpisodeToolbarView extends View {
     }
 
     private int slotFor(float x) {
-        if (x < dp(56)) return 0;
-        if (x >= getWidth() - dp(144) && x < getWidth() - dp(96)) return 1;
-        if (x >= getWidth() - dp(96) && x < getWidth() - dp(48)) return 2;
-        if (x >= getWidth() - dp(48)) return 3;
+        return slotForPosition(x, getWidth(), density);
+    }
+
+    private boolean dispatchSlot(int slot, boolean accessibility) {
+        if (!isEnabled() || actions == null) return false;
+        if (slot == 0) actions.onBack();
+        else if (slot == 1) actions.onFavorite();
+        else if (slot == 2) actions.onDownload();
+        else if (slot == 3) actions.onMore(this);
+        else return false;
+        if (accessibility)
+            sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_CLICKED);
+        else
+            playSoundEffect(android.view.SoundEffectConstants.CLICK);
+        return true;
+    }
+
+    private static int slotForPosition(float x, float width, float density) {
+        if (x < 56f * density) return 0;
+        if (x >= width - 144f * density && x < width - 96f * density) return 1;
+        if (x >= width - 96f * density && x < width - 48f * density) return 2;
+        if (x >= width - 48f * density) return 3;
         return -1;
+    }
+
+    private static int slotForAccessibilityAction(int action) {
+        if (action == R.id.accessibility_episode_toolbar_back) return 0;
+        if (action == R.id.accessibility_episode_toolbar_favorite) return 1;
+        if (action == R.id.accessibility_episode_toolbar_download) return 2;
+        if (action == R.id.accessibility_episode_toolbar_more) return 3;
+        return -1;
+    }
+
+    static int slotForPositionForTest(float x, float width, float density) {
+        return slotForPosition(x, width, density);
+    }
+
+    static int slotForAccessibilityActionForTest(int action) {
+        return slotForAccessibilityAction(action);
+    }
+
+    static int favoriteActionLabelForTest(boolean favorite) {
+        return favorite
+                ? R.string.episode_toolbar_remove_favorite
+                : R.string.episode_toolbar_add_favorite;
+    }
+
+    @Override
+    public boolean performClick() {
+        super.performClick();
+        return true;
     }
 
     private float dp(float value) { return value * density; }

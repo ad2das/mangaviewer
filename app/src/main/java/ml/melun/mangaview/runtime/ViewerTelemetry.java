@@ -484,8 +484,13 @@ public final class ViewerTelemetry {
     /** Ends cadence accounting when rotation/background tears down the interactive Surface. */
     public static void physicalScrollMotionEnded() {
         Session session = SESSION.get();
-        if(session != null)
+        if(session != null) {
             session.endPhysicalScrollMotion();
+            // Reader lifecycle transitions clear the accessibility node.  Let the first valid
+            // frame after a gesture/lifecycle boundary republish its semantic identity without
+            // returning to the old every-frame timestamp churn.
+            session.actualStatePublicationGate.reset();
+        }
     }
 
     private static void recordQualifiedActualFrame(
@@ -1151,7 +1156,9 @@ public final class ViewerTelemetry {
     }
 
     private static void startMemorySampling(Session session) {
-        session.memorySampler = MEMORY_SAMPLER.scheduleAtFixedRate(
+        // Fixed delay prevents cached-process pauses from replaying a burst of missed samples
+        // onto the UI/process as soon as Android makes the app runnable again.
+        session.memorySampler = MEMORY_SAMPLER.scheduleWithFixedDelay(
                 () -> sampleMemory(session), 0L, 1L, TimeUnit.SECONDS);
     }
 
@@ -1235,6 +1242,19 @@ public final class ViewerTelemetry {
         String episodeId = physicalEpisodeId == null || physicalEpisodeId.trim().isEmpty()
                 ? session.episodeId
                 : physicalEpisodeId.trim();
+        String allReadyKey = session.allImagesReady.get()
+                ? session.allImagesReadyPageCount + ":" + session.allImagesReadyAtNanos
+                : "pending";
+        String adjacentKey = adjacentTimingSuffix(session);
+        String semanticKey = clean(episodeId) + ':' + pageIndex + ':' + session.generation
+                + ";allReady=" + allReadyKey + adjacentKey;
+        // The presented timestamp changes at display refresh rate, but the accessibility state
+        // does not. Rewriting contentDescription for every frame causes Android to allocate and
+        // dispatch accessibility work indefinitely during a long scroll. Preserve exact timing
+        // on the first frame for each semantic identity/milestone and keep native cadence in the
+        // dedicated counters above.
+        if(!session.actualStatePublicationGate.claim(semanticKey))
+            return;
         String description =
                 "actual:" + clean(episodeId) + ':' + pageIndex + ':' + session.generation
                     + ";actualAtNanos=" + Math.max(0L, session.latestActualAtNanos)
@@ -1257,7 +1277,7 @@ public final class ViewerTelemetry {
                     + ";allReadyAtNanos=" + session.allImagesReadyAtNanos
                 : "";
         String publishedDescription =
-                description + allReady + adjacentTimingSuffix(session);
+                description + allReady + adjacentKey;
         Runnable publish = () -> view.setContentDescription(publishedDescription);
         if(Looper.myLooper() == Looper.getMainLooper())
             publish.run();
@@ -1439,6 +1459,8 @@ public final class ViewerTelemetry {
         final ConcurrentHashMap<String, Boolean> imageFormats = new ConcurrentHashMap<>();
         final ConcurrentHashMap<String, Boolean> imageHosts = new ConcurrentHashMap<>();
         final ConcurrentHashMap<String, Boolean> networkProtocols = new ConcurrentHashMap<>();
+        final SemanticPublicationGate actualStatePublicationGate =
+                new SemanticPublicationGate();
         volatile long firstActualFrameAtNanos;
         volatile String firstActualEpisodeId = "";
         volatile int firstActualSourcePage = -1;
@@ -1628,6 +1650,23 @@ public final class ViewerTelemetry {
                     "ViewerNativeScrollMaxConsecutiveSlowIntervals",
                     nativeMaxConsecutiveSlowIntervals);
             PerfTrace.counter("ViewerNativeScrollRefreshPeriodNanos", nativeRefreshPeriodNanos);
+        }
+    }
+
+    /** Small thread-safe gate kept testable without Android UI machinery. */
+    static final class SemanticPublicationGate {
+        private String lastKey = "";
+
+        synchronized boolean claim(String key) {
+            String safeKey = key == null ? "" : key;
+            if(safeKey.equals(lastKey))
+                return false;
+            lastKey = safeKey;
+            return true;
+        }
+
+        synchronized void reset() {
+            lastKey = "";
         }
     }
 

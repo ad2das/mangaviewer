@@ -28,6 +28,7 @@
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:background="@drawable/app_hero_placeholder"
+            android:contentDescription="@null"
             android:scaleType="centerCrop"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"

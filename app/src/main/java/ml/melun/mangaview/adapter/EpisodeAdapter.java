@@ -216,6 +216,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
             boolean pressEligible = isPressEligible(episode);
             configureEpisodeRow(h.row, selected,
                     dark ? R.color.colorDarkSurface : R.color.appCard);
+            h.row.setSelectedStateLabel(R.string.episode_current_state);
             h.row.setEpisodeIdentity("");
             h.row.bind(episode.getName(), episode.getDate(), Dposition == 0,
                     mode == 0 || mode == 1 || mode == 3 || mode == 4,

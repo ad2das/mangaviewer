@@ -80,6 +80,23 @@ data class StrictRollingAdmission(
         sourceIndex in allowedFirstSource..allowedLastSource
 
     /**
+     * Keeps the physically visible sources hard and orders soft work nearest to the active
+     * traversal direction. Once an explicit reverse gesture has widened [allowedFirstSource], a
+     * later forward gesture must not let that historical prefix outrank the forward runway.
+     */
+    fun orderedSoftSources(hardSources: Collection<Int>): List<Int> {
+        val hard = hardSources.filter(::admitsSource).toHashSet()
+        val visibleFirst = hard.minOrNull() ?: allowedFirstSource
+        val visibleLast = hard.maxOrNull() ?: visibleFirst
+        val predecessors = (allowedFirstSource until visibleFirst)
+            .filterNot(hard::contains)
+            .sortedDescending()
+        val successors = ((visibleLast + 1)..allowedLastSource)
+            .filterNot(hard::contains)
+        return if (direction < 0) predecessors + successors else successors + predecessors
+    }
+
+    /**
      * A committed HWUI frame opens the cold rolling gate exactly once. After that transition,
      * viewport callbacks are the sole owner of direction and source demand. A later frame commit
      * can describe a narrower, older viewport than the latest scroll callback; allowing it to
@@ -123,6 +140,7 @@ data class StrictRollingAdmission(
         }
 
         @JvmStatic
+        @JvmOverloads
         fun update(
             previous: StrictRollingAdmission,
             pageCount: Int,
@@ -131,15 +149,28 @@ data class StrictRollingAdmission(
             visibleFirstSource: Int,
             visibleLastSource: Int,
             direction: Int,
-            physicalDrawPresented: Boolean
+            physicalDrawPresented: Boolean,
+            allowReverseExpansion: Boolean = false,
+            reverseSourceFloor: Int = (visibleFirstSource - REVERSE_PREDECESSOR_SOURCE_COUNT)
         ): StrictRollingAdmission {
             require(pageCount > 0)
-            // The product's dominant reader UX is a single continuous traversal toward later
-            // pages. Direction changes never reserve or move capacity behind the viewport.
-            val safeDirection = 1
-            val sourceFloor = previous.allowedFirstSource.coerceIn(0, pageCount - 1)
+            val safeDirection = if (direction < 0) -1 else 1
+            val previousFloor = previous.allowedFirstSource.coerceIn(0, pageCount - 1)
+            // A saved resume source is the immutable launch floor. Only a caller that has already
+            // observed a physical busy reverse offset may monotonically widen it downward. Never
+            // reclaim the widened prefix on a later forward gesture: doing so can clear a source
+            // while its reverse re-decode is still crossing the delivery/Surface hand-off.
+            val sourceFloor = if (
+                physicalDrawPresented && allowReverseExpansion && safeDirection < 0
+            ) {
+                minOf(previousFloor, reverseSourceFloor.coerceIn(0, pageCount - 1))
+            } else {
+                previousFloor
+            }
             val candidate = if (!physicalDrawPresented) {
-                initial(pageCount, previous.visibleFirstDisplay, sourceFloor).copy(
+                // Before the first compositor proof, direction is evidence only. Preserve the
+                // original resume admission and its forward launch semantics.
+                initial(pageCount, previous.visibleFirstDisplay, previousFloor).copy(
                     visibleLastDisplay = previous.visibleLastDisplay
                 )
             } else {
@@ -159,6 +190,31 @@ data class StrictRollingAdmission(
             if (previous.hasSameDemand(candidate)) return previous
             return candidate.copy(epoch = previous.epoch + 1L)
         }
+
+        /**
+         * Converts an observed busy reverse viewport into a bounded source-floor expansion. Some
+         * Android input streams coalesce the explicit direction hint, but the decreasing physical
+         * anchor still proves that the user is dragging toward older pixels. The busy bit comes
+         * from the Surface's active drag/fling state, so idle/programmatic callbacks can never
+         * open the saved resume prefix. Do not require a separate touch level here: ACTION_UP can
+         * legitimately reach the control lane before its coalesced final busy viewport.
+         */
+        @JvmStatic
+        fun observedPhysicalReverseFloor(
+            currentFloor: Int,
+            visibleFirstSource: Int,
+            direction: Int,
+            windowBusy: Boolean,
+        ): Int {
+            val boundedCurrent = currentFloor.coerceAtLeast(0)
+            if (direction >= 0 || !windowBusy) return boundedCurrent
+            return minOf(
+                boundedCurrent,
+                (visibleFirstSource - REVERSE_PREDECESSOR_SOURCE_COUNT).coerceAtLeast(0),
+            )
+        }
+
+        const val REVERSE_PREDECESSOR_SOURCE_COUNT = 3
     }
 }
 
@@ -181,7 +237,8 @@ internal class StrictRollingControlMailbox {
         val first: Int,
         val last: Int,
         val anchor: Int,
-        val busy: Boolean
+        val busy: Boolean,
+        val directionHint: Int,
     ) : Event
 
     internal data class PhysicalDrawEvent(
@@ -200,8 +257,22 @@ internal class StrictRollingControlMailbox {
     private var firstPhysicalDraw: PhysicalDrawEvent? = null
     private var latestPhysicalDraw: PhysicalDrawEvent? = null
 
-    fun offerWindow(first: Int, last: Int, anchor: Int, busy: Boolean): Boolean = synchronized(lock) {
-        latestWindow = WindowEvent(allocateSequenceLocked(), first, last, anchor, busy)
+    @JvmOverloads
+    fun offerWindow(
+        first: Int,
+        last: Int,
+        anchor: Int,
+        busy: Boolean,
+        directionHint: Int = 0,
+    ): Boolean = synchronized(lock) {
+        latestWindow = WindowEvent(
+            allocateSequenceLocked(),
+            first,
+            last,
+            anchor,
+            busy,
+            directionHint.coerceIn(-1, 1),
+        )
         markDrainScheduledLocked()
     }
 

@@ -433,14 +433,15 @@ public class MainActivity extends AppCompatActivity
         content = findViewById(R.id.contentHolder);
         restoreExistingFragments();
 
-        // Always start a fresh app session from Home. The older startTab preference can
-        // point to Library after sync/settings restore, which makes cold starts feel wrong.
-        startTab = 0;
+        // Honor the visible Settings choice, but fail closed to Home if imported preferences
+        // contain an out-of-range legacy value.
+        startTab = MainTabPolicy.normalizeStartTab(p.getStartTab());
         if(savedInstanceState != null) {
-            int t = savedInstanceState.getInt("currentTab", 0);
-            changeFragment(t>-1 ? t : 0);
+            int t = MainTabPolicy.normalizeStartTab(
+                    savedInstanceState.getInt("currentTab", startTab));
+            changeFragment(t);
         }else
-            changeFragment(0);
+            changeFragment(startTab);
         openSearchQueryFromIntent();
         PerfTrace.end("main_initial_fragment_ms", fragmentStartedAt);
 
@@ -1206,6 +1207,12 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void switchSitePreset(String comicUrl, String webtoonUrl, String label) {
+        // Stop and retire online results before mutating the client-wide preset.  Without this
+        // fence, a result parsed under the old source can be clicked after the toggle and the
+        // reader applies the new source's URL/trust rules to the old episode.
+        for(int index : new int[]{1, 2})
+            if(fragments[index] instanceof MainSearch)
+                ((MainSearch) fragments[index]).onSitePresetChanged();
         p.setSitePreset(comicUrl, webtoonUrl);
         MainApplication.getHttpClient().clearPageCache();
         invalidateOptionsMenu();

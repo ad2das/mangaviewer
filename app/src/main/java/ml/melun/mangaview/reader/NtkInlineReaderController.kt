@@ -1747,6 +1747,7 @@ class NtkInlineReaderController private constructor(
             fullSceneExecutionBootstrap = executionBootstrap
         )
         stripPipeline = pipeline
+        stripRenderViewTarget?.setHostPresentationEnabled(!hostPaused)
         lastStripTelemetryTop = 0L
         lastStripTelemetryAtMs = 0L
         val controllerStartAt = SystemClock.elapsedRealtime()
@@ -3242,6 +3243,10 @@ class NtkInlineReaderController private constructor(
     fun onHostPause() {
         if (!isActive()) return
         hostPaused = true
+        ViewerTelemetry.physicalScrollMotionEnded()
+        if (stripPipeline != null) {
+            stripRenderViewTarget?.setHostPresentationEnabled(false)
+        }
         publishProgress(force = true)
         // Preserve the current physical window for resume while releasing decoded pixels that
         // are no longer visible. A subsequent destroy still owns the terminal cancel path.
@@ -3253,7 +3258,9 @@ class NtkInlineReaderController private constructor(
     fun onHostResume() {
         if (!isActive()) return
         hostPaused = false
-        if (stripPipeline == null) {
+        if (stripPipeline != null) {
+            stripRenderViewTarget?.setHostPresentationEnabled(true)
+        } else {
             renderView.setWindowListener(this)
             renderView.setFrameSchedulingSuppressed(false)
             requestCurrentWindow(bindingGeneration, busy = false)
@@ -3455,7 +3462,7 @@ class NtkInlineReaderController private constructor(
 
     /** Arm source-scoped unbuffered delivery while STAGED, before the first physical DOWN. */
     private fun enableUnbufferedPointerDispatch() {
-        if (!hostView.isAttachedToWindow) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !hostView.isAttachedToWindow) return
         hostView.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER)
     }
 
@@ -3536,7 +3543,7 @@ class NtkInlineReaderController private constructor(
             hostGestureOwned = hostView.isInsideStripBounds(event.x, event.y)
         }
         if (!hostGestureOwned) return false
-        val eventTimeNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val eventTimeNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             event.eventTimeNanos
         } else {
             event.eventTime * 1_000_000L
@@ -3561,12 +3568,12 @@ class NtkInlineReaderController private constructor(
         stripRenderView.endHostOwnedDispatch()
         if (touchStatsArmed && touchRecordCount < TOUCH_RECORD_CAPACITY) {
             val index = touchRecordCount
-            val eventTimeNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val eventTimeNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 event.eventTimeNanos
             } else event.eventTime * 1_000_000L
             var historicalMaxAgeNanos = 0L
             for (historyIndex in 0 until event.historySize) {
-                val historicalNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val historicalNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     event.getHistoricalEventTimeNanos(historyIndex)
                 } else event.getHistoricalEventTime(historyIndex) * 1_000_000L
                 historicalMaxAgeNanos = maxOf(
@@ -3607,7 +3614,9 @@ class NtkInlineReaderController private constructor(
         anchorPage: Int,
         progressPage: Int,
         progressOffset: Int,
-        busy: Boolean
+        busy: Boolean,
+        directionHint: Int,
+        reverseFirstPageHint: Int,
     ) {
         if (state != State.BINDING && state != State.STAGED && state != State.ACTIVE) return
         currentProgress = ReaderSurfaceView.ProgressPosition(

@@ -3,8 +3,17 @@ package ml.melun.mangaview.fragment;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class HomeStartupPolicyTest {
+    @Test
+    public void reselectingFailedHomeModeIsAnExplicitRetry() {
+        assertTrue(MainMain.shouldRetrySelectedHomeOnReselect(MainMain.HOME_FETCH_FAILED));
+        assertFalse(MainMain.shouldRetrySelectedHomeOnReselect(MainMain.HOME_FETCH_LOADING));
+        assertFalse(MainMain.shouldRetrySelectedHomeOnReselect(MainMain.HOME_FETCH_COMPLETE));
+    }
+
     @Test
     public void inactiveInitialRowsWaitUntilSelectedHomePaints() {
         assertEquals(1200L, HomeStartupPolicy.inactiveInitialRowsDelayMsForTest(false));

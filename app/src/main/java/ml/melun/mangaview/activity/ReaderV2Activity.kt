@@ -267,7 +267,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var blockingStatusForTest = ""
     private val progressHandler = Handler(Looper.getMainLooper())
     private val statusHandler = Handler(Looper.getMainLooper())
-    private val criticalUiHandler = Handler.createAsync(Looper.getMainLooper())
+    private val criticalUiHandler = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        Handler.createAsync(Looper.getMainLooper())
+    } else {
+        Handler(Looper.getMainLooper())
+    }
     private var pendingProgressInfo: ReaderSession.PageInfo? = null
     private var pendingProgressOffset = 0
     private var pendingBoundaryStatus = false
@@ -275,6 +279,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingPrependRevealRequests = 0
     private var pendingAppendRevealRequests = 0
     private var readerWindowBusy = false
+    /** Last physical strip offset observed for reverse-demand admission; reset per Session. */
+    private var lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
     private var deferredBoundaryDirection = 0
     private var deferredBoundaryAnchor = -1
     private var deferredAppendPageCount = 0
@@ -458,8 +464,17 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 )
             }
 
-            override fun onForwardAdjacentPathResolved(episodePath: String) {
-                postForwardAdjacentPathAuthorization(generation, episodePath)
+            override fun onForwardAdjacentPathResolved(
+                predecessorEpisodePath: String,
+                episodePath: String,
+                claimRevision: Long,
+            ) {
+                postForwardAdjacentPathAuthorization(
+                    generation,
+                    predecessorEpisodePath,
+                    episodePath,
+                    claimRevision,
+                )
             }
         }
         return ReaderSessionListenerGate(
@@ -651,10 +666,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         val launchPayload = savedStatePayload
             ?: processPayload
             ?: ReaderLaunchPayloadStore.restoreCompactReaderPayload(intent)
-        val title = launchPayload?.title
-            ?: Gson().fromJson<Title?>(intent.getStringExtra("title"), object : TypeToken<Title?>() {}.type)
-        val manga = launchPayload?.manga
-            ?: Gson().fromJson<Manga?>(intent.getStringExtra("manga"), object : TypeToken<Manga?>() {}.type)
+        val title = launchPayload?.title ?: parseReaderExtra<Title>(intent.getStringExtra("title"))
+        val manga = launchPayload?.manga ?: parseReaderExtra<Manga>(intent.getStringExtra("manga"))
         if (manga == null) {
             releaseInitialDrawGate("no_manga")
             finish()
@@ -1186,6 +1199,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         pageCount = images.size
         pagesReady = true
         currentPage = startPage
+        lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
         initialStartAtFirstPage = startAtFirstPage
         initialStatusPending = false
         pendingInitialRestorePage = -1
@@ -1374,7 +1388,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             strictTelemetryLifecycleEpoch++
             strictTelemetryActualInLifecycle = false
             if (::renderView.isInitialized) {
-                renderView.invalidateCommittedPresentationProof()
+                // Do not let an off-screen transition buffer consume the only dirty lifecycle
+                // version before Android hides/replaces the Surface. onResume owns the fresh
+                // render and presentation proof.
+                renderView.invalidateCommittedPresentationProof(scheduleIfVisible = false)
                 if (renderView.contentDescription?.toString()?.startsWith("actual:") == true) {
                     renderView.contentDescription = null
                 }
@@ -1415,7 +1432,12 @@ if (firstResumeArmedUptimeNanos == 0L) {
         // (which can be lazily initialized after onResume) and of strictTelemetryOwned (set later);
         // the shown/VISIBLE check and the separate owned guard still reject background buffers.
         strictTelemetryForegroundCommitArmed = true
-        renderView.requestRender()
+        if (::renderView.isInitialized) {
+            // A SurfaceView buffer is not guaranteed to survive Home even when Android keeps the
+            // Activity and Java view hierarchy alive. Force a new dirty version; requestRender()
+            // alone intentionally ignores a clean model and can otherwise leave a black Surface.
+            renderView.invalidateCommittedPresentationProof()
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -1503,6 +1525,11 @@ if (firstResumeArmedUptimeNanos == 0L) {
             }
             renderView.requestRender()
         } else if (!hasFocus) {
+            // Focus-only transitions (dialogs, task switcher) do not always call onPause. End the
+            // physical cadence and reset the one-shot semantic publication key before the actual
+            // accessibility node is invalidated on regain, otherwise an identical fresh frame is
+            // suppressed until the visible source changes.
+            resetStrictPhysicalPresentationCadence()
             strictTelemetryForegroundCommitArmed = false
         }
     }
@@ -1661,7 +1688,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 .filterNot { it.value }
                 .map { it.index }
             val structureEpoch = if (::renderView.isInitialized) {
-                renderView.traversalSnapshot().structureEpoch
+                renderView.currentTraversalStructureEpoch()
             } else {
                 0L
             }
@@ -5374,11 +5401,43 @@ if (firstResumeArmedUptimeNanos == 0L) {
         anchorPage: Int,
         progressPage: Int,
         progressOffset: Int,
-        busy: Boolean
+        busy: Boolean,
+        directionHint: Int,
+        reverseFirstPageHint: Int,
     ) {
         MainThreadStallMonitor.trace("reader_on_window_changed") {
             val now = SystemClock.uptimeMillis()
             val activeSession = session
+            val shortWebtoonRolling =
+                activeSession?.usesDirectWifiShortWebtoonRollingResidency() == true
+            val physicalScrollOffset = if (shortWebtoonRolling) {
+                renderView.currentScrollPositionSnapshot()?.scrollOffset ?: Int.MIN_VALUE
+            } else {
+                Int.MIN_VALUE
+            }
+            val sampledShortWebtoonDirectionHint = directWifiShortWebtoonDirectionHintForTest(
+                busy,
+                lastShortWebtoonPhysicalScrollOffset,
+                physicalScrollOffset,
+            )
+            // Window dispatch is latest-only. A real reverse MOVE can therefore be followed by
+            // an idle UP before the main thread handles it. Surface carries that earlier physical
+            // evidence explicitly so releasing a short drag cannot restore the saved resume floor
+            // and make already-read images unreachable again.
+            val coalescedReverseFirstPage = reverseFirstPageHint.takeIf {
+                shortWebtoonRolling && it >= 0
+            }
+            val shortWebtoonDirectionHint = when {
+                coalescedReverseFirstPage != null || directionHint < 0 ->
+                    ReaderSurfaceView.DIRECTION_PREVIOUS
+                directionHint > 0 -> ReaderSurfaceView.DIRECTION_NEXT
+                else -> sampledShortWebtoonDirectionHint
+            }
+            if (shortWebtoonRolling && physicalScrollOffset != Int.MIN_VALUE) {
+                lastShortWebtoonPhysicalScrollOffset = physicalScrollOffset
+            } else if (!shortWebtoonRolling) {
+                lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
+            }
             val wasReaderWindowBusy = readerWindowBusy
             if (busy && !wasReaderWindowBusy) {
                 activeSession?.noteUserInteraction()
@@ -5464,7 +5523,9 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 }
                 return@trace
             }
-            if (shouldIgnoreImpossibleTopProgress(progressPage, busy, now)) {
+            if (shortWebtoonDirectionHint >= 0 &&
+                shouldIgnoreImpossibleTopProgress(progressPage, busy, now)
+            ) {
                 val anchor = currentPage.coerceIn(0, pageCount - 1)
                 val last = (anchor + 2).coerceAtMost(pageCount - 1)
                 Log.d(
@@ -5496,16 +5557,29 @@ if (firstResumeArmedUptimeNanos == 0L) {
             } else {
                 lastPage
             }
-            val shortWebtoonRolling =
-                activeSession?.usesDirectWifiShortWebtoonRollingResidency() == true
+            if (coalescedReverseFirstPage != null) {
+                // Record the source-identity floor before asking the latest-only session mailbox
+                // for work. This side effect is monotonic and makes the reverse page admissible
+                // even if the accompanying UP snapshot is already idle.
+                activeSession?.directWifiShortWebtoonForwardRequestStartPage(
+                    coalescedReverseFirstPage,
+                    ReaderSurfaceView.DIRECTION_PREVIOUS,
+                )
+            }
             val exactPhysicalFirstPage = if (shortWebtoonRolling) {
-                renderView.forwardRequestStartPage()
+                val latestVisible = renderView.forwardRequestStartPage()
+                if (coalescedReverseFirstPage != null && latestVisible >= 0) {
+                    minOf(latestVisible, coalescedReverseFirstPage)
+                } else {
+                    latestVisible
+                }
             } else {
                 -1
             }
             val requestFirstPage = if (shortWebtoonRolling && exactPhysicalFirstPage >= 0) {
                 activeSession?.directWifiShortWebtoonForwardRequestStartPage(
-                    exactPhysicalFirstPage
+                    exactPhysicalFirstPage,
+                    shortWebtoonDirectionHint,
                 ) ?: exactPhysicalFirstPage
             } else {
                 baseRequestFirstPage
@@ -5524,7 +5598,14 @@ if (firstResumeArmedUptimeNanos == 0L) {
             }
             val baseRequestAnchorPage = if (adjustedWindow) adjustedProgressPage else anchorPage
             val requestAnchorPage = if (shortWebtoonRolling) {
-                baseRequestAnchorPage.coerceIn(requestFirstPage, requestLastPage)
+                val physicalReverseAnchor = if (
+                    shortWebtoonDirectionHint < 0 && exactPhysicalFirstPage >= 0
+                ) {
+                    coalescedReverseFirstPage ?: exactPhysicalFirstPage
+                } else {
+                    baseRequestAnchorPage
+                }
+                physicalReverseAnchor.coerceIn(requestFirstPage, requestLastPage)
             } else {
                 baseRequestAnchorPage
             }
@@ -5536,7 +5617,13 @@ if (firstResumeArmedUptimeNanos == 0L) {
             // episode instead of retaining them until scrolling becomes quiet.
             activeSession?.noteForwardReadingPosition(adjustedProgressPage, busy)
             MainThreadStallMonitor.trace("reader_request_window_async") {
-                activeSession?.requestWindowAsync(requestFirstPage, requestLastPage, requestAnchorPage, busy)
+                activeSession?.requestWindowAsync(
+                    requestFirstPage,
+                    requestLastPage,
+                    requestAnchorPage,
+                    busy,
+                    shortWebtoonDirectionHint,
+                )
             }
             if (busy) {
                 readerWindowBusy = true
@@ -6549,28 +6636,17 @@ if (firstResumeArmedUptimeNanos == 0L) {
     }
 
 private fun handleStrictRollingCompletedDraw(proof: ReaderSurfaceView.CompletedDrawProof) {
-        if (strictTelemetryOwned && !destroyed && !isFinishing) {
-            Log.d(
-                "ViewerPerf",
-                "reader_ntk_strict_handle_enter token=${proof.frameToken}," +
-                    "armed=$strictTelemetryForegroundCommitArmed," +
-                    "focus=${renderView.hasWindowFocus()},shown=${renderView.isShown}," +
-                    "visibility=${renderView.windowVisibility},owned=$strictTelemetryOwned," +
-                    "closed=$strictTelemetryClosed,hardware=${proof.hardwareAccelerated}," +
-                    "drawn=${proof.drawnVersion},committed=${proof.committedVersion},coverage=${proof.coverage.drawableItems}"
-            )
-        }
-        if (!strictTelemetryOwned || strictTelemetryClosed || destroyed || isFinishing) return
+        if (!strictTelemetryForegroundCommitArmed || !strictTelemetryOwned ||
+            strictTelemetryClosed || destroyed || isFinishing
+        ) return
 if (!renderView.isShown ||
             renderView.windowVisibility != View.VISIBLE
         ) {
             // Never turn a background/transition buffer into user-visible draw evidence. A new
             // visibility edge invalidates this proof and requests a foreground-owned frame.
-            // Window focus and the armed flag are intentionally not part of this gate: host-GPU
-            // emulator transitions can deliver a fully foreground reader with no focus callback at
-            // all (isFocused=false) and arm/reset the lifecycle-armed mark in an unstable order.
-            // shown+VISIBLE is already the precise foreground-visibility signal, and ownership is
-            // still enforced by the guard above.
+            // onResume arms the gate even on host-GPU transitions that omit a focus callback.
+            // onPause/onWindowFocus(false) retire it before invalidating presentation proof, so a
+            // still-shown transition buffer can never republish background `actual:` semantics.
             return
         }
         val coverage = proof.coverage
@@ -6683,7 +6759,7 @@ if (!renderView.isShown ||
         if (proof.runwayDefect) {
             strictTelemetryRunwayDefectFrames++
         }
-        val traversalEpoch = renderView.traversalSnapshot().structureEpoch
+        val traversalEpoch = renderView.currentTraversalStructureEpoch()
         // `currentManga` is a toolbar/progress label updated from the main-thread page callback.
         // The dedicated Surface producer can physically present an already identity-qualified
         // forward-adjacent page one frame before that callback. Requiring the UI label to equal
@@ -7339,14 +7415,26 @@ if (!renderView.isShown ||
         )
     }
 
-    private fun postForwardAdjacentPathAuthorization(generation: Int, rawPath: String) {
+    private fun postForwardAdjacentPathAuthorization(
+        generation: Int,
+        rawPredecessorPath: String,
+        rawPath: String,
+        claimRevision: Long,
+    ) {
+        val predecessorPath = NtkStripDigests.normalizeEpisodePath(rawPredecessorPath)
         val path = NtkStripDigests.normalizeEpisodePath(rawPath)
-        if (!isStrictNtkEpisodePath(path)) return
+        if (!isStrictNtkEpisodePath(predecessorPath) || !isStrictNtkEpisodePath(path) ||
+            claimRevision <= 0L
+        ) return
         val authorize = Runnable {
             if (destroyed || isFinishing || generation != activeReaderSessionGeneration.get()) {
                 return@Runnable
             }
-            renderView.authorizeCompletedForwardNativeTextureEpisode(path)
+            renderView.authorizeCompletedForwardNativeTextureEpisode(
+                predecessorPath,
+                path,
+                claimRevision,
+            )
         }
         if (Looper.myLooper() == statusHandler.looper) {
             authorize.run()
@@ -7766,6 +7854,7 @@ if (!renderView.isShown ||
         pagesReady = false
         pageCount = if (preservePreRenderedLaunchDrawable) maxOf(pageCount, 1) else 0
         currentPage = 0
+        lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
         pendingInitialNtkCaptchaDeferrals = 0
         if (isStrictNtkEpisodePath(ntkPath)) {
             ntkAckPreflightGeneration.incrementAndGet()
@@ -10815,6 +10904,7 @@ if (!renderView.isShown ||
     }
 
     private fun saveCurrentReadingProgress() {
+        if (!::renderView.isInitialized) return
         val currentPosition = renderView.currentProgressPosition()
         val currentInfo = currentPosition?.let { position ->
             session?.pageInfo(position.page)
@@ -11651,6 +11741,42 @@ if (!renderView.isShown ||
     }
 
     companion object {
+        @JvmStatic
+        fun directWifiShortWebtoonDirectionHintForTest(
+            busy: Boolean,
+            previousScrollOffset: Int,
+            currentScrollOffset: Int,
+        ): Int = if (
+            busy && previousScrollOffset != Int.MIN_VALUE &&
+            currentScrollOffset != Int.MIN_VALUE &&
+                currentScrollOffset.toLong() <= previousScrollOffset.toLong() -
+                    SHORT_WEBTOON_REVERSE_OFFSET_EPSILON_PX.toLong()
+        ) {
+            ReaderSurfaceView.DIRECTION_PREVIOUS
+        } else {
+            0
+        }
+
+        private const val SHORT_WEBTOON_REVERSE_OFFSET_EPSILON_PX = 2
+
+        private inline fun <reified T> parseReaderExtra(
+            raw: String?,
+            logFailure: Boolean = true,
+        ): T? {
+            if (raw.isNullOrBlank()) return null
+            return runCatching {
+                Gson().fromJson<T?>(raw, object : TypeToken<T?>() {}.type)
+            }.onFailure { error ->
+                if (logFailure) {
+                    Log.w(TAG, "reader_invalid_launch_extra type=${T::class.java.simpleName}", error)
+                }
+            }.getOrNull()
+        }
+
+        @JvmStatic
+        fun hasValidReaderMangaExtraForTest(raw: String?): Boolean =
+            parseReaderExtra<Manga>(raw, logFailure = false) != null
+
         private data class StrictActivityOwner(
             val token: Any,
             val viewerGeneration: Long,

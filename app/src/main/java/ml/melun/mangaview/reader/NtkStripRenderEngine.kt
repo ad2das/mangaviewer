@@ -2,6 +2,7 @@ package ml.melun.mangaview.reader
 
 import android.app.Activity
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -2291,7 +2292,12 @@ internal class NtkStripRenderEngine(
             rejected = 0L,
             prepareLocked = {
                 currentBinding?.takeIf(::tokenUsableLocked)?.let { token ->
-                    firstMainIngressNanos.compareAndSet(0L, SystemClock.uptimeNanos())
+                    val ingressNanos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                        SystemClock.uptimeNanos()
+                    } else {
+                        SystemClock.uptimeMillis() * 1_000_000L
+                    }
+                    firstMainIngressNanos.compareAndSet(0L, ingressNanos)
                     NtkPreparedOperation(token)
                 }
             },

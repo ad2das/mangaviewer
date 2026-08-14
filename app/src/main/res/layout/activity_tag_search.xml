@@ -35,6 +35,8 @@
         android:paddingBottom="@dimen/app_space_lg"
         android:text="검색 결과가 없습니다"
         android:textColor="@color/appTextSecondary"
+        android:clickable="false"
+        android:focusable="false"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"

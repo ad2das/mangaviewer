@@ -483,6 +483,12 @@ class ReaderSession(
             0
         }
     } ?: 0
+    /**
+     * The launch floor above is immutable resume evidence. This runtime floor can only move toward
+     * earlier sources after the Activity proves a busy physical reverse offset. Keeping the two
+     * values separate prevents layout/restore callbacks from silently changing launch semantics.
+     */
+    private val strictActiveSourceFloor = AtomicInteger(strictForwardSourceFloor)
     enum class InitialPrerenderResult {
         NOT_RENDERED,
         RENDERED_ONLY,
@@ -601,10 +607,15 @@ class ReaderSession(
             predecessorEpisodePath: String,
         ) {}
         /**
-         * Publishes the provider-validated forward target before its prepared pixels can reach the
-         * renderer. The Activity generation gate makes a stale Session notification harmless.
+         * Publishes the provider-validated predecessor/target claim before its prepared pixels can
+         * reach the renderer. The claim revision and Activity generation gate make stale or ABA
+         * Session notifications harmless.
          */
-        fun onForwardAdjacentPathResolved(episodePath: String) {}
+        fun onForwardAdjacentPathResolved(
+            predecessorEpisodePath: String,
+            targetEpisodePath: String,
+            claimRevision: Long,
+        ) {}
         fun onBoundaryAppendFinished(anchor: Int, direction: Int, silent: Boolean, suppressedCaptcha: Boolean)
     }
 
@@ -1289,6 +1300,7 @@ class ReaderSession(
     private val strictExactDecodeInFlight = ConcurrentHashMap.newKeySet<Int>()
     private val strictExactSplitSourceDecodeInFlight = ConcurrentHashMap.newKeySet<String>()
     private val strictExactAuthoritativeHandoffPages = ConcurrentHashMap.newKeySet<Int>()
+    private val strictExactRollingRehydratePages = ConcurrentHashMap.newKeySet<Int>()
     private val strictExactInitialAnchorPixelsInstalled = CountDownLatch(1)
     private val strictExactBulkDecodeReleased = AtomicBoolean(false)
     private val strictExactTerminalDecodeExpanded = AtomicBoolean(false)
@@ -2084,17 +2096,23 @@ class ReaderSession(
         val visibleSources = if (admission.physicalDrawPresented) {
             synchronized(pagesLock) {
                 (admission.visibleFirstDisplay..admission.visibleLastDisplay)
-                    .mapNotNull { pages.getOrNull(it)?.sourceIndex }
+                    .mapNotNull { index ->
+                        pages.getOrNull(index)
+                            ?.takeIf { page ->
+                                page.transitionTitle == null && isStrictExactLaunchPage(page)
+                            }
+                            ?.sourceIndex
+                    }
                     .filter { it in admitted }
                     .distinct()
             }
         } else {
             listOf(admission.allowedFirstSource)
         }
-        val hard = visibleSources.ifEmpty { listOf(admission.allowedFirstSource) }
-        val soft = admitted.filterNot(hard::contains).let { values ->
+        val hard = visibleSources.ifEmpty { listOf(admission.allowedFirstSource) }.let { values ->
             if (admission.direction < 0) values.sortedDescending() else values.sorted()
         }
+        val soft = admission.orderedSoftSources(hard)
         val background = launchSeal.canonicalAssets.indices
             .filterNot { it in admitted }
         transport.applySourceDemand(
@@ -10016,12 +10034,16 @@ class ReaderSession(
         strictExactShortWebtoonRollingPixelResidency.get()
 
     /**
-     * Maps a physical display index to the first source admitted by the saved resume floor.
-     * Display indexes can be renumbered after the completed launch episode is pruned, so applying
-     * the original numeric floor directly would skip (or crash on) the already-attached next
-     * episode. Non-launch pages therefore keep their exact physical first index.
+     * Maps a physical display index to the first currently admitted launch source. A proven busy
+     * reverse gesture instead keeps the exact physical index and widens the runtime source floor
+     * by at most three predecessor sources. Display indexes can be renumbered after an episode is
+     * pruned, so source identity -- never the raw display number -- owns this decision.
      */
-    fun directWifiShortWebtoonForwardRequestStartPage(physicalFirstPage: Int): Int {
+    @JvmOverloads
+    fun directWifiShortWebtoonForwardRequestStartPage(
+        physicalFirstPage: Int,
+        directionHint: Int = 0,
+    ): Int {
         if (!strictExactShortWebtoonRollingPixelResidency.get() || physicalFirstPage < 0) {
             return physicalFirstPage
         }
@@ -10029,13 +10051,19 @@ class ReaderSession(
             if (pages.isEmpty()) return@synchronized physicalFirstPage
             val bounded = physicalFirstPage.coerceIn(0, pages.lastIndex)
             val first = pages[bounded]
-            if (!isStrictExactLaunchPage(first) || first.sourceIndex >= strictForwardSourceFloor) {
+            if (!isStrictExactLaunchPage(first)) return@synchronized bounded
+            if (directionHint < 0) {
+                val reverseFloor = (first.sourceIndex -
+                    StrictRollingAdmission.REVERSE_PREDECESSOR_SOURCE_COUNT).coerceAtLeast(0)
+                strictActiveSourceFloor.getAndUpdate { current -> minOf(current, reverseFloor) }
                 return@synchronized bounded
             }
+            val activeFloor = strictActiveSourceFloor.get()
+            if (first.sourceIndex >= activeFloor) return@synchronized bounded
             (bounded..pages.lastIndex).firstOrNull { index ->
                 val page = pages[index]
                 isStrictExactLaunchPage(page) &&
-                    page.sourceIndex >= strictForwardSourceFloor
+                    page.sourceIndex >= activeFloor
             } ?: bounded
         }
     }
@@ -10096,9 +10124,22 @@ class ReaderSession(
         }
     }
 
-    fun requestWindowAsync(first: Int, last: Int, anchor: Int, busy: Boolean) {
+    @JvmOverloads
+    fun requestWindowAsync(
+        first: Int,
+        last: Int,
+        anchor: Int,
+        busy: Boolean,
+        directionHint: Int = 0,
+    ) {
         if (cancelled.get()) return
-        val scheduleDrain = strictRollingControlMailbox.offerWindow(first, last, anchor, busy)
+        val scheduleDrain = strictRollingControlMailbox.offerWindow(
+            first,
+            last,
+            anchor,
+            busy,
+            directionHint,
+        )
         if (scheduleDrain) scheduleStrictRollingControlDrain()
     }
 
@@ -10140,7 +10181,8 @@ class ReaderSession(
                             event.last,
                             event.anchor,
                             event.busy,
-                            retainWindow = true
+                            retainWindow = true,
+                            directionHint = event.directionHint,
                         )
                 }
             }
@@ -10148,7 +10190,14 @@ class ReaderSession(
         strictRollingControlMailbox.clear()
     }
 
-    private fun requestWindow(first: Int, last: Int, anchor: Int, busy: Boolean, retainWindow: Boolean) {
+    private fun requestWindow(
+        first: Int,
+        last: Int,
+        anchor: Int,
+        busy: Boolean,
+        retainWindow: Boolean,
+        directionHint: Int = 0,
+    ) {
         if (cancelled.get()) return
         val count = synchronized(pagesLock) { pages.size }
         if (count <= 0) return
@@ -10201,7 +10250,15 @@ class ReaderSession(
                 // never reach the shared next-episode preparation path.
                 maybeStartInitialTailAdjacentPreappendForAnchor(boundedAnchor, "window_tail")
             }
-            requestStrictExactColdWindow(first, last, anchor, busy, retainWindow, count)
+            requestStrictExactColdWindow(
+                first,
+                last,
+                anchor,
+                busy,
+                retainWindow,
+                count,
+                directionHint = directionHint,
+            )
             return
         }
         var windowAnchor = anchor.coerceIn(0, count - 1)
@@ -10595,16 +10652,31 @@ class ReaderSession(
         retainWindow: Boolean,
         pageCount: Int,
         committedDirection: Int? = null,
-        physicalDrawPresentedOverride: Boolean? = null
+        physicalDrawPresentedOverride: Boolean? = null,
+        directionHint: Int = 0,
     ) {
         if (pageCount <= 0 || cancelled.get()) return
         val launchSeal = strictExactLaunchSeal ?: return
         val safeAnchor = anchor.coerceIn(0, pageCount - 1)
         val visibleFirst = minOf(first, safeAnchor).coerceIn(0, pageCount - 1)
         val visibleLast = maxOf(last, safeAnchor).coerceIn(visibleFirst, pageCount - 1)
+        val previous = strictRollingAdmission.get()
+            ?: StrictRollingAdmission.initial(
+                launchSeal.pageCount,
+                initialSource = strictForwardSourceFloor,
+            )
+        // The Activity records the reverse floor before publishing its latest-only WindowEvent.
+        // If an immediate UP/forward callback coalesces that event, consume the monotonic floor
+        // once here instead of losing a real physical reverse gesture.
+        val pendingReverseFloor = strictActiveSourceFloor.get()
+        val hasPendingReverseExpansion = pendingReverseFloor < previous.allowedFirstSource
         val direction: Int
         synchronized(windowLock) {
-            direction = committedDirection?.let { if (it < 0) -1 else 1 } ?: when {
+            direction = when {
+                hasPendingReverseExpansion -> -1
+                directionHint < 0 -> -1
+                directionHint > 0 -> 1
+                committedDirection != null -> if (committedDirection < 0) -1 else 1
                 lastWindowAnchor < 0 -> lastWindowDirection.takeIf { it != 0 } ?: 1
                 safeAnchor > lastWindowAnchor -> 1
                 safeAnchor < lastWindowAnchor -> -1
@@ -10621,11 +10693,23 @@ class ReaderSession(
                 .map { it.sourceIndex }
         }
         if (visibleSources.isEmpty()) return
-        val previous = strictRollingAdmission.get()
-            ?: StrictRollingAdmission.initial(
-                launchSeal.pageCount,
-                initialSource = strictForwardSourceFloor,
-            )
+        val physicalReverseFloor = StrictRollingAdmission.observedPhysicalReverseFloor(
+            pendingReverseFloor,
+            visibleSources.minOrNull() ?: pendingReverseFloor,
+            direction,
+            windowBusy = busy,
+        )
+        if (physicalReverseFloor < pendingReverseFloor) {
+            strictActiveSourceFloor.getAndUpdate { current ->
+                minOf(current, physicalReverseFloor)
+            }
+        }
+        val effectiveReverseFloor = minOf(
+            strictActiveSourceFloor.get(),
+            pendingReverseFloor,
+            physicalReverseFloor,
+        )
+        val allowReverseExpansion = effectiveReverseFloor < previous.allowedFirstSource
         val admission = StrictRollingAdmission.update(
             previous,
             launchSeal.pageCount,
@@ -10634,15 +10718,32 @@ class ReaderSession(
             visibleSources.minOrNull() ?: 0,
             visibleSources.maxOrNull() ?: 0,
             direction,
-            physicalDrawPresented = physicalDrawPresentedOverride ?: previous.physicalDrawPresented
+            physicalDrawPresented = physicalDrawPresentedOverride ?: previous.physicalDrawPresented,
+            allowReverseExpansion = allowReverseExpansion,
+            reverseSourceFloor = effectiveReverseFloor,
         )
-        // Body publication requests the admitted display indexes directly, so repeating an
-        // unchanged viewport is never required to discover newly available bytes.  Avoiding the
-        // duplicate transaction also keeps a terminal 404/410 as one fail-closed error instead of
-        // spinning source demand and HWUI commits indefinitely.
-        if (admission === previous) return
+        // Body publication requests the admitted display indexes directly, so an unchanged
+        // viewport must not advance the source epoch or repeat source demand. Rolling pixel
+        // pressure is different: the Surface can release one exact drawable while the source
+        // admission remains unchanged. Recheck only the current physical display window so that
+        // its historic handoff bit is validated against Surface ownership and, when missing,
+        // safely re-decoded from the already-admitted source.
+        if (admission === previous) {
+            if (admission.physicalDrawPresented && strictExactRollingPixelResidency.get()) {
+                rehydrateSameStrictExactColdWindow(
+                    visibleFirst,
+                    visibleLast,
+                    safeAnchor,
+                    admission,
+                )
+            }
+            return
+        }
         val generation = windowGeneration.incrementAndGet()
         strictRollingAdmission.set(admission)
+        strictActiveSourceFloor.getAndUpdate { current ->
+            minOf(current, admission.allowedFirstSource)
+        }
         if (!strictExactRollingPixelResidency.get() &&
             listener.areAllAuthoritativeDrawablesInstalled(pageCount)
         ) {
@@ -10682,10 +10783,32 @@ class ReaderSession(
             val rollingPixels = strictExactRollingPixelResidency.get()
             val shortWebtoon = strictExactShortWebtoonRollingPixelResidency.get()
             val retainedFirst = if (rollingPixels) {
-                maxOf(
-                    if (shortWebtoon) strictForwardSourceFloor else 0,
-                    visibleFirst - if (shortWebtoon) 0 else STRICT_OVERSIZED_BEHIND_PAGES,
-                )
+                if (shortWebtoon) {
+                    // Display indexes may be split views of one canonical source. On reverse,
+                    // retain every display belonging to the visible source and at most three
+                    // predecessor sources; never compare a source floor directly to a display
+                    // index. Forward traversal keeps the exact physical window as before.
+                    val visibleSourceFloor = visibleSources.minOrNull() ?: 0
+                    val retainedSourceFloor = if (direction < 0) {
+                        maxOf(
+                            admission.allowedFirstSource,
+                            (visibleSourceFloor -
+                                StrictRollingAdmission.REVERSE_PREDECESSOR_SOURCE_COUNT)
+                                .coerceAtLeast(0),
+                        )
+                    } else {
+                        visibleSourceFloor
+                    }
+                    val firstRetainedDisplay = synchronized(pagesLock) {
+                        pages.withIndex().firstOrNull { (_, page) ->
+                            page.transitionTitle == null && isStrictExactLaunchPage(page) &&
+                                page.sourceIndex in retainedSourceFloor..visibleSourceFloor
+                        }?.index
+                    } ?: visibleFirst
+                    minOf(visibleFirst, firstRetainedDisplay)
+                } else {
+                    maxOf(0, visibleFirst - STRICT_OVERSIZED_BEHIND_PAGES)
+                }
             } else {
                 demandFirst
             }
@@ -10740,6 +10863,40 @@ class ReaderSession(
                 "displayDemand=$demandFirst-$demandLast," +
                 "sourceDemand=${admission.allowedFirstSource}-${admission.allowedLastSource}"
         )
+    }
+
+    private fun rehydrateSameStrictExactColdWindow(
+        visibleFirst: Int,
+        visibleLast: Int,
+        safeAnchor: Int,
+        admission: StrictRollingAdmission,
+    ) {
+        val generation = windowGeneration.get()
+        val order = windowOrder(
+            visibleFirst,
+            visibleLast,
+            safeAnchor,
+            admission.direction,
+        )
+        for (index in order) {
+            if (!strictExactRollingRehydratePages.contains(index)) continue
+            if (!isStrictExactColdPageDemanded(index)) {
+                strictExactRollingRehydratePages.remove(index)
+                continue
+            }
+            // A release is recorded before the main-thread listener clears the Surface slot. An
+            // unrelated same-window event can race that callback, so leave the pending index
+            // intact while the exact drawable is still installed. The eviction callback's own
+            // window request observes the cleared slot and becomes the sole re-decode claimant.
+            if (listener.isPageAuthoritativeDrawableInstalled(index)) continue
+            if (!strictExactRollingRehydratePages.remove(index)) continue
+            requestPage(
+                index,
+                busy = true,
+                anchor = index == safeAnchor,
+                generation = generation,
+            )
+        }
     }
 
     private fun requestActiveGeneratedScrollRunway(windowAnchor: Int, count: Int) {
@@ -11137,6 +11294,7 @@ class ReaderSession(
         strictExactDecodeInFlight.clear()
         strictExactSplitSourceDecodeInFlight.clear()
         strictExactAuthoritativeHandoffPages.clear()
+        strictExactRollingRehydratePages.clear()
         strictExactBulkDecodeReleased.set(false)
         strictExactTerminalDecodeExpanded.set(false)
         strictExactOverlapDecodeAdmissions.set(0)
@@ -20800,6 +20958,7 @@ class ReaderSession(
         // duplicate callback for the same winner must not fall through a pre-existing bit and
         // later let generic delivery cleanup recycle the Surface-owned pixels.
         if (index == currentStartPage()) strictExactInitialAnchorPixelsInstalled.countDown()
+        strictExactRollingRehydratePages.remove(index)
         if (!strictExactAuthoritativeHandoffPages.add(index)) return true
         trackDeliveredResult(index, result, owned = false)
         loading.remove(index)
@@ -28268,6 +28427,7 @@ class ReaderSession(
             shiftConcurrentSetAfterRemoval(preRenderedCommittedDeliveries, rangeStart, removedCount)
             shiftConcurrentSetAfterRemoval(authoritativeTileInstallRetryPosted, rangeStart, removedCount)
             shiftConcurrentSetAfterRemoval(strictInlineTileRedecodePosted, rangeStart, removedCount)
+            shiftConcurrentSetAfterRemoval(strictExactRollingRehydratePages, rangeStart, removedCount)
             indexedStateGeneration.incrementAndGet()
         }
         shiftConcurrentMapAfterRemoval(inFlightWidths, rangeStart, removedCount)
@@ -28342,6 +28502,7 @@ class ReaderSession(
             clearConcurrentSetFromIndex(preRenderedCommittedDeliveries, startIndex)
             clearConcurrentSetFromIndex(authoritativeTileInstallRetryPosted, startIndex)
             clearConcurrentSetFromIndex(strictInlineTileRedecodePosted, startIndex)
+            clearConcurrentSetFromIndex(strictExactRollingRehydratePages, startIndex)
             indexedStateGeneration.incrementAndGet()
         }
         clearConcurrentMapFromIndex(inFlightWidths, startIndex)
@@ -30436,7 +30597,7 @@ class ReaderSession(
         resolvedNext: Manga? = null,
         authoritativeCompletionProof: Boolean = false,
         persistedExactAdjacentAuthority: Boolean = false,
-        onResolvedForwardPath: ((String) -> Unit)? = null,
+        onResolvedForwardPath: ((String, String, Long) -> Unit)? = null,
     ) {
         if (reverse || cancelled.get()) return
         if (!isNtkContinuousAdjacentCompletionPolicyActive()) return
@@ -30768,7 +30929,7 @@ class ReaderSession(
 
     private fun activateForwardAdjacentCompletionTargetClaim(
         claim: ForwardAdjacentCompletionTargetClaim,
-        onResolvedForwardPath: ((String) -> Unit)?,
+        onResolvedForwardPath: ((String, String, Long) -> Unit)?,
         controlOnly: Boolean,
     ): String? {
         if (cancelled.get() || !isForwardAdjacentCompletionTargetCurrent(
@@ -30780,8 +30941,12 @@ class ReaderSession(
         val candidate = claim.target
         val targetPath = claim.targetEpisodePath
         val predecessorPath = claim.predecessorEpisodePath
-        listener.onForwardAdjacentPathResolved(targetPath)
-        onResolvedForwardPath?.invoke(targetPath)
+        listener.onForwardAdjacentPathResolved(
+            predecessorPath,
+            targetPath,
+            claim.revision,
+        )
+        onResolvedForwardPath?.invoke(predecessorPath, targetPath, claim.revision)
         // Preserve the selected target even when another joiner has already attached it. Returning
         // null would re-enable the independent numeric fallback in the completion caller.
         if (hasEpisode(candidate)) {
@@ -30827,7 +30992,7 @@ class ReaderSession(
         source: Manga,
         resolvedNext: Manga?,
         persistedExactAdjacentAuthority: Boolean = false,
-        onResolvedForwardPath: ((String) -> Unit)?,
+        onResolvedForwardPath: ((String, String, Long) -> Unit)?,
         freshOrderedProviderAuthority: Boolean = false,
         controlOnly: Boolean = false,
     ): String? {
@@ -31206,7 +31371,7 @@ class ReaderSession(
     private fun resolveForwardAdjacentEpisodeListAtCompletion(
         source: Manga,
         currentTitle: Title,
-        onResolvedForwardPath: ((String) -> Unit)?,
+        onResolvedForwardPath: ((String, String, Long) -> Unit)?,
     ) {
         val predecessorPath = NtkStripDigests.normalizeEpisodePath(
             source.ntkEpisodePath?.trim().orEmpty(),
@@ -31383,14 +31548,15 @@ class ReaderSession(
         } ?: return currentPageIndex(activePage, anchor).takeIf { it >= 0 } ?: anchor
 
         // Pixel ownership and page-table ownership have different safety boundaries. Once the
-        // third real image of the next episode is active, every page in this prefix is physically
-        // behind the forward-only viewport and its decoded pixels can be released immediately.
+        // third real image of the next episode is active -- or an exact one/two-image episode has
+        // reached its terminal source -- decoded pixels older than the bounded predecessor tail
+        // are physically behind the forward viewport and can be released.
         // Moving the page table itself during a fling, however, changes every global index and can
-        // make an already-captured frame look incorrectly bound. Retire pixels now and wait for a
-        // genuinely quiet viewport and a complete current-episode page table before publishing
-        // the structural removal. In particular, do not retain hundreds of megabytes of prior
-        // pixels while the newly foreground episode is still filling its remaining page table.
-        retireConsumedForwardHistoryPixels(pixelCandidate.removeCount, activePage)
+        // make an already-captured frame look incorrectly bound. Retire pixels now, but keep every
+        // lightweight PageRef and source claim for the immediate predecessor. Only structure older
+        // than that episode waits for a genuinely quiet viewport and a complete current page table.
+        retireConsumedForwardHistoryPixels(pixelCandidate.pixelRetireBefore, activePage)
+        if (pixelCandidate.removeCount <= 0) return pixelCandidate.anchor
         val candidate = synchronized(pagesLock) {
             val verifiedAnchor = pageIndexLocked(activePage, pixelCandidate.anchor)
             if (verifiedAnchor !in pages.indices) return@synchronized null
@@ -31434,6 +31600,7 @@ class ReaderSession(
             val verified = forwardHistoryTrimCandidateLocked(verifiedAnchor, activePage)
             if (verified == null ||
                 verified.removeCount != candidate.removeCount ||
+                verified.pixelRetireBefore != candidate.pixelRetireBefore ||
                 candidate.removeCount > pages.size
             ) {
                 scheduleForwardReadingRetry()
@@ -31584,6 +31751,7 @@ class ReaderSession(
         val anchor: Int,
         val removeCount: Int,
         val currentImageOrdinal: Int,
+        val pixelRetireBefore: Int,
     )
 
     private fun forwardHistoryTrimCandidateLocked(
@@ -31601,7 +31769,7 @@ class ReaderSession(
             ) {
                 continue
             }
-            observedSourcePages.add(page.sourceIndex.coerceAtLeast(0))
+            observedSourcePages.add(page.sourceIndex)
             if (firstCurrentImage < 0) firstCurrentImage = index
             if (index == verifiedAnchor) {
                 currentImageOrdinal = ordinal
@@ -31613,6 +31781,11 @@ class ReaderSession(
         // later callbacks normalize against the launch episode and can strand the next boundary.
         // Bitmap readiness is not required here, but the complete source-page table is.
         val authoritativeSourceCount = canonicalEpisodeImageCount(activePage.manga, listOf(activePage))
+        val terminalShortEpisode = NtkForwardHistoryPolicy.terminalShortEpisodeReached(
+            authoritativeSourceCount = authoritativeSourceCount,
+            observedSourceIndexes = observedSourcePages,
+            activeSourceIndex = activePage.sourceIndex,
+        )
         if (
             requireCompleteSourceStructure &&
             authoritativeSourceCount > 0 &&
@@ -31620,26 +31793,62 @@ class ReaderSession(
         ) {
             return null
         }
+        val retainedPreviousEpisodeStart = retainedPreviousEpisodeStartLocked(
+            firstCurrentImage,
+        )
         val removeCount = NtkForwardHistoryPolicy.removablePrefix(
             firstCurrentImage,
             currentImageOrdinal,
             forwardReading = true,
+            retainedPreviousEpisodeStartIndex = retainedPreviousEpisodeStart,
+            terminalShortEpisode = terminalShortEpisode,
         )
-        if (removeCount <= 0) return null
+        val pixelRetireBefore = NtkForwardHistoryPolicy.decodedPixelRetireBefore(
+            firstCurrentImage,
+            currentImageOrdinal,
+            forwardReading = true,
+            terminalShortEpisode = terminalShortEpisode,
+        )
+        if (removeCount <= 0 && pixelRetireBefore <= 0) return null
         return ForwardHistoryTrimCandidate(
             anchor = verifiedAnchor,
             removeCount = removeCount,
             currentImageOrdinal = currentImageOrdinal,
+            pixelRetireBefore = pixelRetireBefore,
         )
     }
+
+    /**
+     * Finds the boundary card (or first image when no card exists) for exactly one predecessor
+     * episode. The current episode's own transition card sits immediately before its first image,
+     * so skip that card before discovering the predecessor identity. Everything older than the
+     * returned index may be removed once the current episode's structure is complete.
+     */
+    private fun retainedPreviousEpisodeStartLocked(
+        firstCurrentImage: Int,
+    ): Int = NtkForwardHistoryPolicy.retainedPreviousEpisodeStart(
+        pages = pages,
+        firstCurrentImageIndex = firstCurrentImage,
+        isTransitionCard = { page -> page.transitionTitle != null },
+        sameEpisode = { first, second ->
+            looseSameEpisodeForAppend(first.manga, second.manga)
+        },
+    )
 
     /**
      * Drops decoded pixels for a consumed prefix without changing page indexes or measured page
      * geometry. The Surface keeps each page's authoritative width/height, so this cannot collapse
      * content or expose a transient gap ahead of the forward viewport.
      */
-    private fun retireConsumedForwardHistoryPixels(removeCount: Int, activePage: PageRef) {
-        if (removeCount <= 0) return
+    private fun retireConsumedForwardHistoryPixels(retireBefore: Int, activePage: PageRef) {
+        if (retireBefore <= 0) return
+        val launchIndexes = synchronized(pagesLock) {
+            (0 until minOf(retireBefore, pages.size))
+                .filterTo(HashSet()) { index ->
+                    val page = pages[index]
+                    page.transitionTitle == null && isStrictExactLaunchPage(page)
+                }
+        }
         val releases = ArrayList<BitmapRelease>()
         val retiredIdentities = java.util.Collections.newSetFromMap(
             IdentityHashMap<Bitmap, Boolean>()
@@ -31650,10 +31859,10 @@ class ReaderSession(
         var retiredBytes = 0L
         synchronized(deliveredBitmaps) {
             for ((index, bitmap) in deliveredBitmaps) {
-                if (index >= removeCount) retainedIdentities.add(bitmap)
+                if (index >= retireBefore) retainedIdentities.add(bitmap)
             }
             for ((index, tiles) in deliveredTiles) {
-                if (index >= removeCount) {
+                if (index >= retireBefore) {
                     tiles.forEach { tile -> retainedIdentities.add(tile.bitmap) }
                 }
             }
@@ -31661,7 +31870,7 @@ class ReaderSession(
             val bitmapIterator = deliveredBitmaps.entries.iterator()
             while (bitmapIterator.hasNext()) {
                 val entry = bitmapIterator.next()
-                if (entry.key >= removeCount) continue
+                if (entry.key >= retireBefore) continue
                 val owned = deliveredOwned.remove(entry.key)
                 retiredBytes += trackedBitmapBytes(entry.value)
                 retiredIdentities.add(entry.value)
@@ -31670,7 +31879,7 @@ class ReaderSession(
                         index = entry.key,
                         bitmap = entry.value.takeIf { owned && it !in retainedIdentities },
                         clearPage = true,
-                        preserveStrictReady = true,
+                        preserveStrictReady = entry.key in launchIndexes,
                     )
                 )
                 deliveredBitmapBytes -= trackedBitmapBytes(entry.value)
@@ -31680,7 +31889,7 @@ class ReaderSession(
             val tileIterator = deliveredTiles.entries.iterator()
             while (tileIterator.hasNext()) {
                 val entry = tileIterator.next()
-                if (entry.key >= removeCount) continue
+                if (entry.key >= retireBefore) continue
                 val owned = deliveredOwned.remove(entry.key)
                 retiredBytes += trackedTileBytes(entry.value)
                 uniqueTileBitmaps(entry.value).forEach(retiredIdentities::add)
@@ -31691,7 +31900,7 @@ class ReaderSession(
                                 index = entry.key,
                                 bitmap = bitmap.takeIf { it !in retainedIdentities },
                                 clearPage = true,
-                                preserveStrictReady = true,
+                                preserveStrictReady = entry.key in launchIndexes,
                             )
                         )
                     }
@@ -31701,7 +31910,7 @@ class ReaderSession(
                             index = entry.key,
                             bitmap = null,
                             clearPage = true,
-                            preserveStrictReady = true,
+                            preserveStrictReady = entry.key in launchIndexes,
                         )
                     )
                 }
@@ -31719,7 +31928,7 @@ class ReaderSession(
         postBitmapReleases(releases)
         Log.d(
             TAG,
-            "reader_forward_history_pixels_retired pages=$removeCount," +
+            "reader_forward_history_pixels_retired before=$retireBefore," +
                 "releases=${releases.size},bytes=$retiredBytes," +
                 "path=${activePage.manga.ntkEpisodePath}"
         )
@@ -33110,7 +33319,7 @@ class ReaderSession(
             var requested = 0
             for (index in (anchor + 1)..last) {
                 val page = pageRef(index) ?: continue
-                    if (!isNtkGeneratedDescriptorOrImagePage(page)) continue
+                if (!isNtkGeneratedDescriptorOrImagePage(page)) continue
                 requestPage(index, busy = true, anchor = false, generation = FOREGROUND_PRIME_WARM_GENERATION)
                 requested++
             }
@@ -34314,6 +34523,7 @@ class ReaderSession(
             // worker-side handoff above. Record the same ownership fact so later viewport demand
             // cannot schedule a second decode for an already installed canonical original.
             strictExactAuthoritativeHandoffPages.add(currentIndex)
+            strictExactRollingRehydratePages.remove(currentIndex)
             if (currentIndex == currentStartPage()) {
                 strictExactInitialAnchorPixelsInstalled.countDown()
             }
@@ -35305,6 +35515,12 @@ class ReaderSession(
                     normalBitmaps.add(it)
                 }
             }
+        }
+        // Publish the exact display indexes before the listener clears them. A same-admission
+        // viewport request can then distinguish a real rolling release from high-frequency
+        // duplicate motion callbacks without widening source demand or rescanning the scene.
+        if (strictExactRollingPixelResidency.get()) {
+            strictExactRollingRehydratePages.addAll(rollingEvictedPages)
         }
         if (clearedPages.isNotEmpty() || rollingEvictedPages.isNotEmpty()) {
             main.post {

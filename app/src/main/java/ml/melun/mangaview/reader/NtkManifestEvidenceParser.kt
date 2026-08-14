@@ -7,7 +7,7 @@ import org.json.JSONObject
 import org.json.JSONTokener
 import org.jsoup.Jsoup
 import java.net.URI
-import java.util.Base64
+import ml.melun.mangaview.util.NtkBase64
 import java.util.concurrent.atomic.AtomicLong
 
 class NtkManifestEvidenceException(message: String) : IllegalArgumentException(message)
@@ -530,7 +530,7 @@ object NtkEpisodeDocumentPlanParser {
             val parts = token.split('.')
             if (parts.size != 2 || parts.any(String::isBlank)) fail("Invalid imagesToken")
             val payload = parts[0] + "=".repeat((4 - parts[0].length % 4) % 4)
-            JSONObject(Base64.getUrlDecoder().decode(payload).toString(Charsets.UTF_8))
+            JSONObject(NtkBase64.decodeUrl(payload).toString(Charsets.UTF_8))
         }.getOrElse { fail("Invalid imagesToken payload") }
     }
 }
@@ -594,7 +594,7 @@ object NtkViewerImageRequestSeedParser {
         val parts = token.split('.')
         require(parts.size == 2 && parts.none(String::isBlank))
         val payload = parts[0] + "=".repeat((4 - parts[0].length % 4) % 4)
-        JSONObject(Base64.getUrlDecoder().decode(payload).toString(Charsets.UTF_8))
+        JSONObject(NtkBase64.decodeUrl(payload).toString(Charsets.UTF_8))
     }.getOrNull()
 }
 

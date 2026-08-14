@@ -1,7 +1,9 @@
 package ml.melun.mangaview.reader
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkSchema11QualificationAccumulatorTest {
@@ -65,6 +67,88 @@ class NtkSchema11QualificationAccumulatorTest {
 
         assertNull(NtkSchema11FrameValidator.violation(successor))
         assertEquals(0, snapshot(first, successor).fixedOpportunityInvalidFrames)
+    }
+
+    @Test
+    fun normalLifetimeDoesNotRetainFullFramesBeforeInteractionIsArmed() {
+        val accumulator = NtkSchema11QualificationAccumulator(
+            interactionCapacity = 2,
+            identityCapacity = 32
+        )
+        var values = NtkSchema11FrameValidatorTest().firstStage()
+        accumulator.accept(frame(values))
+        repeat(4) {
+            values = exactLatchSuccessor(values)
+            accumulator.accept(frame(values))
+        }
+
+        val snapshot = accumulator.snapshot(LongArray(0), 0, false)
+        assertEquals(5, snapshot.lifetimeEvidenceFrames)
+        assertEquals(0, snapshot.interactionEvidenceFrames)
+        assertEquals(0, snapshot.retainedInteractionEvidenceFrames)
+        assertEquals(0L, snapshot.droppedInteractionEvidenceFrames)
+        assertFalse(snapshot.evidenceOverflow)
+    }
+
+    @Test
+    fun interactionOverflowStopsRetentionAndFailsClosedExplicitly() {
+        val accumulator = NtkSchema11QualificationAccumulator(
+            interactionCapacity = 1,
+            identityCapacity = 32
+        )
+        val first = NtkSchema11FrameValidatorTest().firstStage()
+        val successor = exactLatchSuccessor(first)
+        accumulator.accept(frame(first))
+        accumulator.beginInteractionWindow()
+        accumulator.accept(frame(successor))
+        val beforeOverflow = accumulator.snapshot(LongArray(0), 0, false)
+        assertEquals(0, beforeOverflow.base.invalidFrames)
+        assertFalse(beforeOverflow.evidenceOverflow)
+
+        // Re-publishing the same individually valid capsule is an identity/order defect, but not
+        // a per-frame validator defect.  That isolates the synthetic invalidFrames overflow bit.
+        accumulator.accept(frame(successor))
+
+        val overflow = accumulator.snapshot(LongArray(0), 0, false)
+        assertEquals(2, overflow.interactionEvidenceFrames)
+        assertEquals(1, overflow.retainedInteractionEvidenceFrames)
+        assertEquals(1L, overflow.droppedInteractionEvidenceFrames)
+        assertTrue(overflow.interactionEvidenceOverflow)
+        assertTrue(overflow.evidenceOverflow)
+        assertEquals(1, overflow.base.invalidFrames)
+
+        accumulator.beginInteractionWindow()
+        accumulator.accept(frame(exactLatchSuccessor(successor)))
+        val recovered = accumulator.snapshot(LongArray(0), 0, false)
+        assertEquals(1, recovered.interactionEvidenceFrames)
+        assertEquals(1, recovered.retainedInteractionEvidenceFrames)
+        assertEquals(0L, recovered.droppedInteractionEvidenceFrames)
+        assertFalse(recovered.interactionEvidenceOverflow)
+    }
+
+    @Test
+    fun boundedIdentityLedgerFailsClosedWhenItsExactSetIsFull() {
+        val accumulator = NtkSchema11QualificationAccumulator(
+            interactionCapacity = 8,
+            identityCapacity = 2
+        )
+        var values = NtkSchema11FrameValidatorTest().firstStage()
+        accumulator.accept(frame(values))
+        repeat(2) {
+            values = exactLatchSuccessor(values)
+            accumulator.accept(frame(values))
+        }
+
+        val snapshot = accumulator.snapshot(LongArray(0), 0, false)
+        assertTrue(snapshot.base.identityEvidenceOverflow)
+        assertTrue(snapshot.evidenceOverflow)
+        assertTrue(snapshot.base.identityOrOrderInvalidFrames > 0)
+        assertTrue(snapshot.base.invalidFrames > 0)
+    }
+
+    @Test
+    fun stripDiagnosticFrameWindowHasAnExplicitFiniteCeiling() {
+        assertEquals(2_048, NtkStripSurfaceView.MAX_PRESENT_DIAGNOSTIC_FRAMES)
     }
 
     private fun snapshot(first: LongArray, successor: LongArray):

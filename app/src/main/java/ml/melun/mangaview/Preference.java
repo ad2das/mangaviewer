@@ -86,6 +86,22 @@ public class Preference {
         void onLocalPreferenceChanged(String scope);
     }
 
+    interface BackfillCancellation {
+        boolean isCancelled();
+    }
+
+    static final class RecentProgressBackfillResult {
+        final List<MTitle> titles;
+        final boolean changed;
+        final boolean cancelled;
+
+        RecentProgressBackfillResult(List<MTitle> titles, boolean changed, boolean cancelled) {
+            this.titles = titles;
+            this.changed = changed;
+            this.cancelled = cancelled;
+        }
+    }
+
     public SharedPreferences getSharedPref(){
         return this.sharedPref;
     }
@@ -2070,6 +2086,94 @@ public class Preference {
         }
         if(changed)
             writeRecent();
+    }
+
+    List<MTitle> prepareRecentProgressBackfillSnapshot(List<MTitle> source) {
+        ensureBookmarkLoaded();
+        List<MTitle> detached = cloneTitlesForBackfill(source);
+        for(MTitle item : detached) {
+            if(item == null)
+                continue;
+            Title title = new Title(item);
+            int bookmarkId = getBookmark(title);
+            if(bookmarkId <= 0)
+                bookmarkId = item.getBookmarkEpisodeId();
+            if(bookmarkId > 0)
+                item.setReadingProgress(
+                        bookmarkId,
+                        item.getBookmarkEpisodeIndex(),
+                        item.getEpisodeCount());
+        }
+        return detached;
+    }
+
+    static RecentProgressBackfillResult backfillRecentProgressSnapshot(
+            CustomHttpClient client,
+            List<MTitle> source,
+            int limit,
+            BackfillCancellation cancellation) {
+        List<MTitle> detached = cloneTitlesForBackfill(source);
+        if(client == null || detached.isEmpty())
+            return new RecentProgressBackfillResult(detached, false, false);
+        boolean changed = false;
+        int processed = 0;
+        for(MTitle item : detached) {
+            if(cancellation != null && cancellation.isCancelled())
+                return new RecentProgressBackfillResult(detached, changed, true);
+            if(item == null || item.getId() <= 0)
+                continue;
+            if(item.getBookmarkEpisodeIndex() > 0 && item.getEpisodeCount() > 0)
+                continue;
+            Title title = new Title(item);
+            int bookmarkId = item.getBookmarkEpisodeId();
+            if(bookmarkId <= 0)
+                continue;
+            if(limit > 0 && processed >= limit)
+                break;
+            processed++;
+            try {
+                int code = title.fetchEps(client);
+                List<Manga> episodes = Utils.snapshotEpisodes(title);
+                if(code == Title.LOAD_CAPTCHA || episodes.size() == 0)
+                    continue;
+                int episodeIndex = -1;
+                for(int i = 0; i < episodes.size(); i++) {
+                    Manga episode = episodes.get(i);
+                    if(episode != null && episode.getId() == bookmarkId) {
+                        episodeIndex = i + 1;
+                        break;
+                    }
+                }
+                if(episodeIndex <= 0 && item.getResumeNtkEpisodePath().length() > 0) {
+                    String resumePath = item.getResumeNtkEpisodePath();
+                    for(int i = 0; i < episodes.size(); i++) {
+                        Manga episode = episodes.get(i);
+                        if(episode != null && resumePath.equals(episode.getNtkEpisodePath())) {
+                            bookmarkId = episode.getId();
+                            episodeIndex = i + 1;
+                            break;
+                        }
+                    }
+                }
+                if(episodeIndex > 0) {
+                    item.setReadingProgress(bookmarkId, episodeIndex, episodes.size());
+                    changed = true;
+                }
+            } catch (Exception e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+            }
+        }
+        return new RecentProgressBackfillResult(detached, changed, false);
+    }
+
+    static List<MTitle> cloneTitlesForBackfill(List<MTitle> source) {
+        List<MTitle> detached = new ArrayList<>();
+        if(source == null)
+            return detached;
+        for(MTitle item : source)
+            if(item != null)
+                detached.add(item.clone());
+        return detached;
     }
 
     public List<MTitle> getRecentForSync(){

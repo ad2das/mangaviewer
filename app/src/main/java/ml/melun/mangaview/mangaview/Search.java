@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
@@ -81,6 +82,7 @@ public class Search {
     private ArrayList<Title> result;
     private final Set<String> seenTitleKeys = new HashSet<>();
     private transient PartialResultListener partialResultListener;
+    private transient String activeFetchSourceSite = "";
 
     public interface PartialResultListener {
         void onPartialResults(ArrayList<Title> titles);
@@ -122,6 +124,19 @@ public class Search {
     }
 
     public int fetch(CustomHttpClient client) {
+        // A Search can outlive a site-toggle because it is owned by a Fragment and its network
+        // work runs off the main thread.  Bind every result to the source that owned the request
+        // at admission time; consulting the mutable global preset later can otherwise turn an NTK
+        // title into a WFWF title (or vice versa) and launch the reader with the wrong trust policy.
+        activeFetchSourceSite = sourceSiteForClient(client);
+        try {
+            return fetchBoundToSource(client);
+        } finally {
+            bindTitlesToSourceSite(result, activeFetchSourceSite);
+        }
+    }
+
+    private int fetchBoundToSource(CustomHttpClient client) {
         result = new ArrayList<>();
         if(!last) {
             if(baseMode == base_auto)
@@ -2083,7 +2098,25 @@ public class Search {
         PartialResultListener listener = partialResultListener;
         if(listener == null || titles == null || titles.size() == 0)
             return;
+        bindTitlesToSourceSite(titles, activeFetchSourceSite);
         listener.onPartialResults(new ArrayList<>(titles));
+    }
+
+    private static String sourceSiteForClient(CustomHttpClient client) {
+        return client != null && client.isNtk() ? "ntk" : "wfwf";
+    }
+
+    private static void bindTitlesToSourceSite(List<Title> titles, String sourceSite) {
+        if(titles == null)
+            return;
+        String normalized = "ntk".equalsIgnoreCase(sourceSite) ? "ntk" : "wfwf";
+        for(Title title : titles)
+            if(title != null)
+                title.setSourceSite(normalized);
+    }
+
+    static void bindTitlesToSourceSiteForTest(List<Title> titles, String sourceSite) {
+        bindTitlesToSourceSite(titles, sourceSite);
     }
 
     private NtkHybridPart fetchNtkHybridPart(CustomHttpClient client, CustomHttpClient.RequestGroup requestGroup,

@@ -11,6 +11,7 @@
         android:id="@+id/imageView"
         android:layout_width="24dp"
         android:layout_height="24dp"
+        android:contentDescription="@null"
         android:scaleType="centerInside"
         app:srcCompat="@drawable/ic_list"
         app:tint="@color/appCard" />

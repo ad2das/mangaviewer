@@ -17,6 +17,29 @@ import static org.junit.Assert.assertTrue;
 
 public class MainSearchTest {
     @Test
+    public void siteChangeClearsOnlyOnlineCatalogueState() {
+        assertTrue(MainSearch.shouldClearOnlineResultsForSiteChange(false, true, true));
+        assertTrue(MainSearch.shouldClearOnlineResultsForSiteChange(true, true, true));
+        assertTrue(MainSearch.shouldClearOnlineResultsForSiteChange(true, false, true));
+        assertFalse(MainSearch.shouldClearOnlineResultsForSiteChange(true, false, false));
+    }
+
+    @Test
+    public void onlineResultMustMatchTheCurrentlySelectedSource() {
+        Title ntk = new Title("NTK", "", "", null, "", 1, base_comic);
+        ntk.setSourceSite("ntk");
+        Title wfwf = new Title("WFWF", "", "", null, "", 2, base_comic);
+        wfwf.setSourceSite("wfwf");
+        Title unbound = new Title("unknown", "", "", null, "", 3, base_comic);
+
+        assertTrue(MainSearch.onlineResultMatchesActiveSite(ntk, true));
+        assertFalse(MainSearch.onlineResultMatchesActiveSite(ntk, false));
+        assertTrue(MainSearch.onlineResultMatchesActiveSite(wfwf, false));
+        assertFalse(MainSearch.onlineResultMatchesActiveSite(wfwf, true));
+        assertFalse(MainSearch.onlineResultMatchesActiveSite(unbound, true));
+    }
+
+    @Test
     public void ntkEpisodeClickPrefersStoredSameTitleWhenSearchLinkIsStale() {
         Title searched = new Title("Sky Invasion", "", "", null, "255화", 3540, base_comic);
         searched.setSourceSite("ntk");

@@ -1,6 +1,7 @@
 package ml.melun.mangaview.mangaview;
 
 
+import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -78,11 +79,7 @@ import java.util.regex.Pattern;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -369,6 +366,7 @@ public class CustomHttpClient {
         }
 
         @Override
+        @TargetApi(34)
         public boolean register(UrlRequest request) {
             if(request == null)
                 throw new IllegalArgumentException("Strict HttpEngine request is null");
@@ -395,6 +393,7 @@ public class CustomHttpClient {
          * Closes admission synchronously and detaches the current Calls. The returned work performs
          * only thread-safe OkHttp Call.cancel operations and may run off the lifecycle thread.
          */
+        @TargetApi(34)
         public Runnable markCancelledAndDetachCalls() {
             List<Call> snapshot;
             List<UrlRequest> engineSnapshot;
@@ -1947,7 +1946,7 @@ public class CustomHttpClient {
                 .addInterceptor(this::interceptNtkImageWithQuic))
                 .dns(activeNetworkDns)
                 .build();
-        this.unsafeFallbackClient = baseClient(getUnsafeOkHttpClient())
+        this.unsafeFallbackClient = baseClient(tlsValidatedFallbackBuilder())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
         this.ntkPageFastClient = fastNtkPageClient(new OkHttpClient.Builder()).build();
@@ -1962,7 +1961,7 @@ public class CustomHttpClient {
                         .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
                 .dns(CELLULAR_RESILIENT_DNS)
                 .build();
-        this.unsafeNtkPageFastClient = fastNtkPageClient(getUnsafeOkHttpClient())
+        this.unsafeNtkPageFastClient = fastNtkPageClient(tlsValidatedFallbackBuilder())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
         this.ntkApiFastClient = fastNtkApiClient(new OkHttpClient.Builder())
@@ -1980,7 +1979,7 @@ public class CustomHttpClient {
                         .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
                 .dns(CELLULAR_RESILIENT_DNS)
                 .build();
-        this.unsafeNtkApiFastClient = fastNtkApiClient(getUnsafeOkHttpClient())
+        this.unsafeNtkApiFastClient = fastNtkApiClient(tlsValidatedFallbackBuilder())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
         this.externalViewerPageFastClient = fastExternalViewerPageClient(new OkHttpClient.Builder()).build();
@@ -2049,11 +2048,11 @@ public class CustomHttpClient {
                 this.ntkCellularDemandBoundExactImageFallbackShards[0];
         this.ntkDemandBoundExactImageFactory = NtkDemandBoundExactImageCall::new;
         this.wolfPageFastClient = fastWolfPageClient(new OkHttpClient.Builder()).build();
-        this.unsafeWolfPageFastClient = fastWolfPageClient(getUnsafeOkHttpClient())
+        this.unsafeWolfPageFastClient = fastWolfPageClient(tlsValidatedFallbackBuilder())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
         this.wolfSearchFastClient = fastWolfSearchClient(new OkHttpClient.Builder()).build();
-        this.unsafeWolfSearchFastClient = fastWolfSearchClient(getUnsafeOkHttpClient())
+        this.unsafeWolfSearchFastClient = fastWolfSearchClient(tlsValidatedFallbackBuilder())
                 .protocols(ntkTlsFallbackProtocolsForTest())
                 .build();
 
@@ -2883,6 +2882,7 @@ public class CustomHttpClient {
         }
 
         @Override
+        @TargetApi(34)
         public void cancel() {
             cancelled.set(true);
             UrlRequest request = engineRequest.get();
@@ -2916,6 +2916,7 @@ public class CustomHttpClient {
         }
 
         @Override
+        @TargetApi(34)
         public boolean register(UrlRequest request) {
             if(request == null || cancelled.get()) return false;
             if(!engineRequest.compareAndSet(null, request)) return false;
@@ -4864,17 +4865,18 @@ public class CustomHttpClient {
                 return;
             }
             String ip = addresses.get(0).getHostAddress();
-            OkHttpClient ipClient = baseClient(getUnsafeOkHttpClient()
-                    .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
+            Dns selectedAddressDns = ignoredHost -> addresses;
+            OkHttpClient ipClient = baseClient(tlsValidatedFallbackBuilder()
+                    .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY)
+                    .dns(selectedAddressDns))
                     .protocols(ntkTlsFallbackProtocolsForTest())
                     .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     .callTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     .build();
             Request.Builder builder = new Request.Builder()
-                    .url("https://" + ip + path)
-                    .get()
-                    .header("Host", host);
+                    .url(baseUrl + path)
+                    .get();
             if(headers != null) {
                 for(String key : headers.keySet()) {
                     if("Host".equalsIgnoreCase(key))
@@ -6437,8 +6439,9 @@ public class CustomHttpClient {
             synchronized (pageLoadsLock) {
                 pageLoads.remove(loadKey);
             }
-            if(loadState != null)
-            loadState.done.countDown();
+            if(loadState != null) {
+                loadState.done.countDown();
+            }
         }
     }
 
@@ -11825,6 +11828,7 @@ public class CustomHttpClient {
         return isNtkWebtoonImageOriginHost(host) || isNtkManhwaImageOriginHost(host);
     }
 
+    @TargetApi(34)
     private HttpEngine buildNtkQuicEngine(String host) {
         return new HttpEngine.Builder(context.getApplicationContext())
                 .setEnableHttp2(true)
@@ -11940,6 +11944,7 @@ public class CustomHttpClient {
         }
     }
 
+    @TargetApi(34)
     private void dropNtkQuicEngine(String baseUrl) {
         if(baseUrl == null || baseUrl.length() == 0)
             return;
@@ -11962,6 +11967,7 @@ public class CustomHttpClient {
         }
     }
 
+    @TargetApi(34)
     private void shutdownNtkQuicEngines() {
         List<HttpEngine> engines;
         List<ExecutorService> executors;
@@ -24149,46 +24155,14 @@ public class CustomHttpClient {
         return post(url, body, new HashMap<>());
     }
 
-    /*
-    code source : https://gist.github.com/chalup/8706740
+    /**
+     * Legacy call sites still use the "unsafe" field names for a last transport attempt. Keep the
+     * transport shape, but never weaken Android's certificate-chain or hostname verification.
+     * A server with an invalid certificate must fail closed instead of exposing cookies and image
+     * requests to an active network attacker.
      */
-
-    private static OkHttpClient.Builder getUnsafeOkHttpClient() {
-        try {
-            // Create a trust manager that does not validate certificate chains
-            final TrustManager[] trustAllCerts = new TrustManager[]{
-                    new X509TrustManager() {
-                        @Override
-                        public void checkClientTrusted(java.security.cert.X509Certificate[] chain,
-                                                       String authType){
-                        }
-
-                        @Override
-                        public void checkServerTrusted(java.security.cert.X509Certificate[] chain,
-                                                       String authType){
-                        }
-
-                        @Override
-                        public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                            return new X509Certificate[0];
-                        }
-                    }
-            };
-
-            // Install the all-trusting trust manager
-            final SSLContext sslContext = SSLContext.getInstance("SSL");
-            sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
-            // Create an ssl socket factory with our all-trusting manager
-            final SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
-
-            return new OkHttpClient.Builder()
-                    .sslSocketFactory(sslSocketFactory, (X509TrustManager) trustAllCerts[0])
-                    .hostnameVerifier((hostname, session) -> true);
-
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-
+    private static OkHttpClient.Builder tlsValidatedFallbackBuilder() {
+        return new OkHttpClient.Builder();
     }
 
     private static OkHttpClient.Builder configureDispatcher(OkHttpClient.Builder builder) {

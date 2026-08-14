@@ -14,6 +14,14 @@ import static org.junit.Assert.assertTrue;
 
 public class TitleAdapterTest {
     @Test
+    public void accessibleCardAndResumeLabelsAreHumanReadable() {
+        assertEquals("작품명, 12화, 액션 / 판타지",
+                TitleAdapter.titleCardDescriptionForTest("작품명", "12화", "액션 / 판타지"));
+        assertEquals("작품명 이어보기", TitleAdapter.resumeActionDescriptionForTest("작품명"));
+        assertEquals("이어보기", TitleAdapter.resumeActionDescriptionForTest(null));
+    }
+
+    @Test
     public void validTitlePositionRejectsOutOfRangeRows() {
         assertFalse(TitleAdapter.isValidTitlePositionForTest(Arrays.asList("a", "b"), -1));
         assertFalse(TitleAdapter.isValidTitlePositionForTest(Arrays.asList("a", "b"), 2));

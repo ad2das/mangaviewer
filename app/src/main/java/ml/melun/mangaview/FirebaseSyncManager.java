@@ -25,6 +25,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicLong;
 
 import ml.melun.mangaview.mangaview.MTitle;
 import ml.melun.mangaview.repository.PreferenceStore;
@@ -40,9 +45,21 @@ public class FirebaseSyncManager {
     private final SharedPreferences metaPref;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Gson gson = new Gson();
+    private final ExecutorService syncDataExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "firebase-sync-data");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final Object syncWorkLock = new Object();
+    private final SyncGenerationGate syncGenerationGate = new SyncGenerationGate();
     private FirebaseFirestore firestore;
     private FirebaseAuth auth;
-    private boolean syncing;
+    private FirebaseAuth.AuthStateListener authStateListener;
+    private volatile Future<?> activeSyncWork;
+    private volatile long activeSyncWorkGeneration;
+    private volatile boolean syncing;
+    private volatile boolean pendingLocalUpload;
+    private volatile String activeSyncUid = "";
 
     private final Runnable uploadRunnable = this::uploadCurrentState;
 
@@ -65,10 +82,14 @@ public class FirebaseSyncManager {
             if(app != null) {
                 auth = FirebaseAuth.getInstance(app);
                 firestore = FirebaseFirestore.getInstance(app);
+                authStateListener = firebaseAuth -> invalidateSyncForChangedIdentity(
+                        uidOf(firebaseAuth == null ? null : firebaseAuth.getCurrentUser()));
+                auth.addAuthStateListener(authStateListener);
             }
         } catch (Exception e) {
             auth = null;
             firestore = null;
+            authStateListener = null;
         }
         preference.setFirebaseSyncManager(this);
     }
@@ -82,9 +103,13 @@ public class FirebaseSyncManager {
     }
 
     public void onLocalPreferencesChanged(String scope) {
-        if(syncing || !isSignedIn())
+        if(!isSignedIn())
             return;
         markLocalUpdated(scope);
+        if(syncing) {
+            pendingLocalUpload = true;
+            return;
+        }
         handler.removeCallbacks(uploadRunnable);
         handler.postDelayed(uploadRunnable, SYNC_DEBOUNCE_MS);
     }
@@ -98,8 +123,7 @@ public class FirebaseSyncManager {
 
     public void syncAfterSignIn(SyncCallback afterSync) {
         if(!isSignedIn()) {
-            if(afterSync != null)
-                afterSync.onComplete(false, "로그인이 필요합니다");
+            deliver(afterSync, false, "로그인이 필요합니다");
             return;
         }
         downloadAndMerge(afterSync);
@@ -119,13 +143,11 @@ public class FirebaseSyncManager {
     private void uploadCurrentState(SyncCallback afterUpload) {
         FirebaseUser user = currentUser();
         if(user == null) {
-            if(afterUpload != null)
-                afterUpload.onComplete(false, "로그인이 필요합니다");
+            deliver(afterUpload, false, "로그인이 필요합니다");
             return;
         }
         if(firestore == null) {
-            if(afterUpload != null)
-                afterUpload.onComplete(false, "Firestore 설정이 필요합니다");
+            deliver(afterUpload, false, "Firestore 설정이 필요합니다");
             return;
         }
         Map<String, Object> data = exportState();
@@ -145,49 +167,29 @@ public class FirebaseSyncManager {
     private void downloadAndMerge(SyncCallback afterSync) {
         FirebaseUser user = currentUser();
         if(user == null) {
-            if(afterSync != null)
-                afterSync.onComplete(false, "로그인이 필요합니다");
+            deliver(afterSync, false, "로그인이 필요합니다");
             return;
         }
         if(!isDeviceOnline()) {
-            if(afterSync != null)
-                afterSync.onComplete(false, "인터넷 연결이 필요합니다");
+            deliver(afterSync, false, "인터넷 연결이 필요합니다");
             return;
         }
         if(firestore == null) {
-            if(afterSync != null)
-                afterSync.onComplete(false, "Firestore 설정이 필요합니다");
+            deliver(afterSync, false, "Firestore 설정이 필요합니다");
             return;
         }
-        Log.i(TAG, "download_start uid=" + user.getUid());
-        stateDoc(user.getUid()).get(Source.SERVER)
-                .addOnSuccessListener(snapshot -> {
-                    try {
-                        syncing = true;
-                        try {
-                            if(snapshot != null && snapshot.exists()) {
-                                Map<String, Object> remote = snapshot.getData();
-                                Log.i(TAG, "download_success uid=" + user.getUid()
-                                        + " hasPayload=" + hasAnyRemotePayload(remote));
-                                mergeRemote(remote);
-                            } else {
-                                Log.i(TAG, "download_empty uid=" + user.getUid());
-                            }
-                        } finally {
-                            syncing = false;
-                        }
-                        uploadCurrentState(afterSync);
-                    } catch (Exception e) {
-                        String message = errorMessage("다운로드 실패", e);
-                        Log.w(TAG, "download_failed " + message, e);
-                        deliver(afterSync, false, message);
-                    }
-                })
-                .addOnFailureListener(e -> {
-                    String message = errorMessage("다운로드 실패", e);
-                    Log.w(TAG, "download_failed " + message, e);
-                    deliver(afterSync, false, message);
-                });
+        String uid = user.getUid();
+        long generation = beginSync(uid);
+        Log.i(TAG, "download_start uid=" + uid + " generation=" + generation);
+        stateDoc(uid).get(Source.SERVER)
+                .addOnSuccessListener(snapshot -> handleDownloadedState(
+                        generation,
+                        uid,
+                        snapshot != null && snapshot.exists(),
+                        snapshot == null ? null : snapshot.getData(),
+                        afterSync))
+                .addOnFailureListener(e -> completeSyncFailure(
+                        generation, uid, afterSync, "다운로드 실패", e));
     }
 
     private Map<String, Object> exportState() {
@@ -206,36 +208,349 @@ public class FirebaseSyncManager {
         return data;
     }
 
-    private void mergeRemote(Map<String, Object> remote) {
-        if(remote == null)
+    private void handleDownloadedState(long generation,
+                                       String uid,
+                                       boolean exists,
+                                       Map<String, Object> remote,
+                                       SyncCallback afterSync) {
+        if(!isSyncWorkCurrent(generation, uid)) {
+            finishSilentlyIfIdentityChanged(generation, uid);
             return;
-        preference.runWithoutSync(() -> {
-            if(shouldMerge(remote, "recent", "recentJson", "[]")) {
-                List<MTitle> recents = readTitleList(remote, "recentJson");
-                PreferenceStore.setRecents(recents);
-                setLocalUpdatedAt("recent", remoteTime(remote, "recentUpdatedAt"));
-            }
-            if(shouldMerge(remote, "favorite", "favoriteJson", "[]")) {
-                List<MTitle> favorites = readTitleList(remote, "favoriteJson");
-                PreferenceStore.setFavorites(favorites);
-                setLocalUpdatedAt("favorite", remoteTime(remote, "favoriteUpdatedAt"));
-            }
-            if(shouldMerge(remote, "bookmark", "bookmarkJson", "{}")) {
-                preference.setBookmarks(jsonObject(readString(remote, "bookmarkJson", "{}")));
-                setLocalUpdatedAt("bookmark", remoteTime(remote, "bookmarkUpdatedAt"));
-            }
-            if(shouldMerge(remote, "pageBookmark", "pageBookmarkJson", "{}")) {
-                preference.setViewerBookmarks(jsonObject(readString(remote, "pageBookmarkJson", "{}")));
-                setLocalUpdatedAt("pageBookmark", remoteTime(remote, "pageBookmarkUpdatedAt"));
-            }
-            if(remoteTime(remote, "settingsUpdatedAt") > getLocalUpdatedAt("settings")) {
-                Object settings = remote.get("settings");
-                if(settings instanceof Map)
-                    preference.importSyncSettings((Map<String, Object>)settings);
-                setLocalUpdatedAt("settings", remoteTime(remote, "settingsUpdatedAt"));
-            }
-            preference.backfillRecentProgress(MainApplication.getHttpClient(), 30);
+        }
+        if(!exists) {
+            Log.i(TAG, "download_empty uid=" + uid + " generation=" + generation);
+            postGenerationUpload(generation, uid, afterSync);
+            return;
+        }
+        Map<String, Object> detachedRemote = remote == null ? null : new HashMap<>(remote);
+        Log.i(TAG, "download_success uid=" + uid
+                + " generation=" + generation
+                + " hasPayload=" + hasAnyRemotePayload(detachedRemote));
+        if(detachedRemote == null) {
+            postGenerationUpload(generation, uid, afterSync);
+            return;
+        }
+        submitSyncWork(generation, uid, afterSync, () -> {
+            ParsedRemoteState parsed = parseRemoteState(detachedRemote);
+            if(!isSyncWorkCurrent(generation, uid))
+                return;
+            handler.post(() -> prepareBackfillOnMain(generation, uid, parsed, afterSync));
         });
+    }
+
+    private ParsedRemoteState parseRemoteState(Map<String, Object> remote) {
+        Object settingsValue = remote.get("settings");
+        Map<String, Object> settings = settingsValue instanceof Map
+                ? new HashMap<>((Map<String, Object>)settingsValue)
+                : null;
+        return new ParsedRemoteState(
+                remote,
+                readTitleList(remote, "recentJson"),
+                readTitleList(remote, "favoriteJson"),
+                jsonObject(readString(remote, "bookmarkJson", "{}")),
+                jsonObject(readString(remote, "pageBookmarkJson", "{}")),
+                settings);
+    }
+
+    private void prepareBackfillOnMain(long generation,
+                                       String uid,
+                                       ParsedRemoteState parsed,
+                                       SyncCallback afterSync) {
+        if(!isSyncWorkCurrent(generation, uid)) {
+            finishSilentlyIfIdentityChanged(generation, uid);
+            return;
+        }
+        preference.runWithoutSync(() -> applyRemoteStateOnMain(parsed));
+        long capturedRecentUpdatedAt = getLocalUpdatedAt("recent");
+        long capturedLocalDataVersion = preference.getLocalDataVersion();
+        List<MTitle> detachedRecents = preference.prepareRecentProgressBackfillSnapshot(
+                preference.getRecentForSync());
+        PreparedRemoteMerge prepared = new PreparedRemoteMerge(
+                capturedRecentUpdatedAt,
+                capturedLocalDataVersion,
+                detachedRecents);
+        submitSyncWork(generation, uid, afterSync, () -> runPreparedBackfill(
+                generation, uid, prepared, afterSync));
+    }
+
+    private void runPreparedBackfill(long generation,
+                                     String uid,
+                                     PreparedRemoteMerge prepared,
+                                     SyncCallback afterSync) {
+        Preference.RecentProgressBackfillResult backfill =
+                Preference.backfillRecentProgressSnapshot(
+                        MainApplication.getHttpClient(),
+                        prepared.detachedRecents,
+                        30,
+                        () -> Thread.currentThread().isInterrupted()
+                                || !isSyncWorkCurrent(generation, uid));
+        if(backfill.cancelled || !isSyncWorkCurrent(generation, uid))
+            return;
+        handler.post(() -> publishMergeOnMain(
+                generation, uid, prepared, backfill, afterSync));
+    }
+
+    private void applyRemoteStateOnMain(ParsedRemoteState parsed) {
+        if(shouldMerge(parsed.remote, "recent", "recentJson", "[]")) {
+            PreferenceStore.setRecents(parsed.recents);
+            setLocalUpdatedAt("recent", remoteTime(parsed.remote, "recentUpdatedAt"));
+        }
+        if(shouldMerge(parsed.remote, "favorite", "favoriteJson", "[]")) {
+            PreferenceStore.setFavorites(parsed.favorites);
+            setLocalUpdatedAt("favorite", remoteTime(parsed.remote, "favoriteUpdatedAt"));
+        }
+        if(shouldMerge(parsed.remote, "bookmark", "bookmarkJson", "{}")) {
+            preference.setBookmarks(parsed.bookmarks);
+            setLocalUpdatedAt("bookmark", remoteTime(parsed.remote, "bookmarkUpdatedAt"));
+        }
+        if(shouldMerge(parsed.remote, "pageBookmark", "pageBookmarkJson", "{}")) {
+            preference.setViewerBookmarks(parsed.pageBookmarks);
+            setLocalUpdatedAt("pageBookmark", remoteTime(parsed.remote, "pageBookmarkUpdatedAt"));
+        }
+        if(remoteTime(parsed.remote, "settingsUpdatedAt") > getLocalUpdatedAt("settings")) {
+            if(parsed.settings != null)
+                preference.importSyncSettings(parsed.settings);
+            setLocalUpdatedAt("settings", remoteTime(parsed.remote, "settingsUpdatedAt"));
+        }
+    }
+
+    private void publishMergeOnMain(long generation,
+                                    String uid,
+                                    PreparedRemoteMerge prepared,
+                                    Preference.RecentProgressBackfillResult backfill,
+                                    SyncCallback afterSync) {
+        if(!isSyncWorkCurrent(generation, uid)) {
+            finishSilentlyIfIdentityChanged(generation, uid);
+            return;
+        }
+        if(backfill.changed
+                && prepared.capturedRecentUpdatedAt == getLocalUpdatedAt("recent")
+                && prepared.capturedLocalDataVersion == preference.getLocalDataVersion()) {
+            preference.runWithoutSync(() -> {
+                PreferenceStore.setRecents(backfill.titles);
+                markLocalUpdated("recent");
+            });
+        }
+        startGenerationUpload(generation, uid, afterSync);
+    }
+
+    private void postGenerationUpload(long generation, String uid, SyncCallback afterSync) {
+        handler.post(() -> startGenerationUpload(generation, uid, afterSync));
+    }
+
+    private void startGenerationUpload(long generation, String uid, SyncCallback afterSync) {
+        if(!isSyncWorkCurrent(generation, uid)) {
+            finishSilentlyIfIdentityChanged(generation, uid);
+            return;
+        }
+        uploadCurrentState((success, message) -> completeGenerationUpload(
+                generation, uid, afterSync, success, message));
+    }
+
+    private void completeGenerationUpload(long generation,
+                                          String uid,
+                                          SyncCallback afterSync,
+                                          boolean success,
+                                          String message) {
+        if(!syncGenerationGate.isCurrent(generation))
+            return;
+        if(!uidStillCurrent(uid)) {
+            finishSyncSilently(generation);
+            return;
+        }
+        finishSync(generation, afterSync, success, message);
+    }
+
+    private void completeSyncFailure(long generation,
+                                     String uid,
+                                     SyncCallback afterSync,
+                                     String prefix,
+                                     Exception error) {
+        String message = errorMessage(prefix, error);
+        Log.w(TAG, "sync_failed generation=" + generation + " " + message, error);
+        handler.post(() -> {
+            if(!syncGenerationGate.isCurrent(generation))
+                return;
+            if(!uidStillCurrent(uid)) {
+                finishSyncSilently(generation);
+                return;
+            }
+            finishSync(generation, afterSync, false, message);
+        });
+    }
+
+    private void submitSyncWork(long generation,
+                                String uid,
+                                SyncCallback afterSync,
+                                Runnable work) {
+        if(!isSyncWorkCurrent(generation, uid))
+            return;
+        synchronized (syncWorkLock) {
+            if(!isSyncWorkCurrent(generation, uid))
+                return;
+            Future<?> previous = activeSyncWork;
+            if(previous != null && !previous.isDone()
+                    && activeSyncWorkGeneration != generation)
+                previous.cancel(true);
+            activeSyncWork = syncDataExecutor.submit(() -> {
+                if(!isSyncWorkCurrent(generation, uid))
+                    return;
+                try {
+                    work.run();
+                } catch (Exception e) {
+                    completeSyncFailure(generation, uid, afterSync, "동기화 실패", e);
+                }
+            });
+            activeSyncWorkGeneration = generation;
+        }
+    }
+
+    private long beginSync(String uid) {
+        long generation = syncGenerationGate.begin();
+        cancelActiveSyncWork();
+        activeSyncUid = uid == null ? "" : uid;
+        pendingLocalUpload = false;
+        syncing = true;
+        handler.removeCallbacks(uploadRunnable);
+        return generation;
+    }
+
+    private void finishSync(long generation,
+                            SyncCallback callback,
+                            boolean success,
+                            String message) {
+        if(!syncGenerationGate.isCurrent(generation))
+            return;
+        boolean uploadAgain = pendingLocalUpload;
+        pendingLocalUpload = false;
+        syncing = false;
+        activeSyncUid = "";
+        syncGenerationGate.invalidate();
+        clearFinishedSyncWork();
+        if(callback != null)
+            callback.onComplete(success, message);
+        if(uploadAgain && isSignedIn()) {
+            handler.removeCallbacks(uploadRunnable);
+            handler.postDelayed(uploadRunnable, SYNC_DEBOUNCE_MS);
+        }
+    }
+
+    private void finishSyncSilently(long generation) {
+        if(!syncGenerationGate.isCurrent(generation))
+            return;
+        pendingLocalUpload = false;
+        syncing = false;
+        activeSyncUid = "";
+        syncGenerationGate.invalidate();
+        cancelActiveSyncWork();
+    }
+
+    private void finishSilentlyIfIdentityChanged(long generation, String uid) {
+        if(syncGenerationGate.isCurrent(generation) && !uidStillCurrent(uid))
+            finishSyncSilently(generation);
+    }
+
+    private void invalidateSyncForChangedIdentity(String observedUid) {
+        if(!syncing || Objects.equals(activeSyncUid, observedUid == null ? "" : observedUid))
+            return;
+        finishSyncSilently(syncGenerationGate.current());
+    }
+
+    private boolean isSyncWorkCurrent(long generation, String uid) {
+        String expectedUid = uid == null ? "" : uid;
+        return syncGenerationGate.canPublish(generation, expectedUid, uidOf(currentUser()))
+                && Objects.equals(activeSyncUid, expectedUid);
+    }
+
+    private boolean uidStillCurrent(String expectedUid) {
+        return Objects.equals(expectedUid == null ? "" : expectedUid,
+                uidOf(currentUser()));
+    }
+
+    private String uidOf(FirebaseUser user) {
+        return user == null || user.getUid() == null ? "" : user.getUid();
+    }
+
+    private void cancelActiveSyncWork() {
+        synchronized (syncWorkLock) {
+            Future<?> active = activeSyncWork;
+            activeSyncWork = null;
+            activeSyncWorkGeneration = 0L;
+            if(active != null && !active.isDone())
+                active.cancel(true);
+        }
+    }
+
+    private void clearFinishedSyncWork() {
+        synchronized (syncWorkLock) {
+            if(activeSyncWork != null && activeSyncWork.isDone())
+                activeSyncWork = null;
+            if(activeSyncWork == null)
+                activeSyncWorkGeneration = 0L;
+        }
+    }
+
+    private static final class ParsedRemoteState {
+        final Map<String, Object> remote;
+        final List<MTitle> recents;
+        final List<MTitle> favorites;
+        final JSONObject bookmarks;
+        final JSONObject pageBookmarks;
+        final Map<String, Object> settings;
+
+        ParsedRemoteState(Map<String, Object> remote,
+                          List<MTitle> recents,
+                          List<MTitle> favorites,
+                          JSONObject bookmarks,
+                          JSONObject pageBookmarks,
+                          Map<String, Object> settings) {
+            this.remote = remote;
+            this.recents = recents;
+            this.favorites = favorites;
+            this.bookmarks = bookmarks;
+            this.pageBookmarks = pageBookmarks;
+            this.settings = settings;
+        }
+    }
+
+    private static final class PreparedRemoteMerge {
+        final long capturedRecentUpdatedAt;
+        final long capturedLocalDataVersion;
+        final List<MTitle> detachedRecents;
+
+        PreparedRemoteMerge(long capturedRecentUpdatedAt,
+                            long capturedLocalDataVersion,
+                            List<MTitle> detachedRecents) {
+            this.capturedRecentUpdatedAt = capturedRecentUpdatedAt;
+            this.capturedLocalDataVersion = capturedLocalDataVersion;
+            this.detachedRecents = detachedRecents;
+        }
+    }
+
+    static final class SyncGenerationGate {
+        private final AtomicLong generation = new AtomicLong();
+
+        long begin() {
+            return generation.incrementAndGet();
+        }
+
+        long invalidate() {
+            return generation.incrementAndGet();
+        }
+
+        long current() {
+            return generation.get();
+        }
+
+        boolean isCurrent(long candidate) {
+            return candidate > 0L && generation.get() == candidate;
+        }
+
+        boolean canPublish(long candidate, String expectedUid, String currentUid) {
+            String expected = expectedUid == null ? "" : expectedUid;
+            String current = currentUid == null ? "" : currentUid;
+            return isCurrent(candidate) && expected.equals(current);
+        }
     }
 
     private List<MTitle> readTitleList(Map<String, Object> remote, String key) {

@@ -10,6 +10,18 @@ data class NtkSchema10DurationStats(
     val maxNanos: Long
 )
 
+data class NtkQualificationRetentionSnapshot(
+    val evidenceOverflow: Boolean,
+    val interactionEvidenceOverflow: Boolean,
+    val identityEvidenceOverflow: Boolean,
+    val retainedInteractionEvidenceFrames: Int,
+    val droppedInteractionEvidenceFrames: Long
+) {
+    companion object {
+        val EMPTY = NtkQualificationRetentionSnapshot(false, false, false, 0, 0L)
+    }
+}
+
 data class NtkSchema10QualificationSnapshot(
     val lifetimeEvidenceFrames: Int,
     val interactionEvidenceFrames: Int,
@@ -72,11 +84,36 @@ data class NtkSchema10QualificationSnapshot(
     val mutationToLatch: NtkSchema10DurationStats,
     val physicalInputToLatch: NtkSchema10DurationStats,
     val continuousApplyInterval: NtkSchema10DurationStats,
-    val continuousLatchInterval: NtkSchema10DurationStats
-)
+    val continuousLatchInterval: NtkSchema10DurationStats,
+    /** Bounded-ledger state; overflow also contributes a synthetic [invalidFrames] entry. */
+    val retention: NtkQualificationRetentionSnapshot =
+        NtkQualificationRetentionSnapshot.EMPTY
+) {
+    val evidenceOverflow get() = retention.evidenceOverflow
+    val interactionEvidenceOverflow get() = retention.interactionEvidenceOverflow
+    val identityEvidenceOverflow get() = retention.identityEvidenceOverflow
+    val retainedInteractionEvidenceFrames
+        get() = if (retention === NtkQualificationRetentionSnapshot.EMPTY) {
+            interactionEvidenceFrames
+        } else {
+            retention.retainedInteractionEvidenceFrames
+        }
+    val droppedInteractionEvidenceFrames
+        get() = retention.droppedInteractionEvidenceFrames
+}
 
-/** Lifetime NTK10 ledger with immutable physical-interaction baselines. */
-internal class NtkSchema10QualificationAccumulator {
+/**
+ * Bounded NTK10 evidence accumulator.
+ *
+ * Lifetime values are reduced online.  Full frame arrays are retained only after an explicit
+ * [beginInteractionWindow], because those arrays are required to reproduce exact percentile and
+ * terminal-input coverage evidence.  This keeps normal reader use O(1) in both memory and per-frame
+ * allocation while preserving the existing qualification semantics for every non-overflow window.
+ */
+internal class NtkSchema10QualificationAccumulator(
+    private val interactionCapacity: Int = DEFAULT_INTERACTION_CAPACITY,
+    identityCapacity: Int = DEFAULT_IDENTITY_CAPACITY
+) {
     private data class Record(val values: LongArray, val violation: String?) {
         val kind get() = values[74].toInt()
         val gesture get() = values[22]
@@ -91,20 +128,130 @@ internal class NtkSchema10QualificationAccumulator {
         val visibleStateChanged get() = values[204] == 1L
     }
 
-    private val records = ArrayList<Record>(512)
+    private class BoundedSortedLongSet(capacity: Int) {
+        private val values = LongArray(capacity)
+        private var size = 0
+
+        /** Exact duplicate detection until the fixed backing array is full. */
+        fun add(value: Long): AddResult {
+            if (size == 0 || value > values[size - 1]) {
+                if (size == values.size) return AddResult.OVERFLOW
+                values[size++] = value
+                return AddResult.ADDED
+            }
+            val index = java.util.Arrays.binarySearch(values, 0, size, value)
+            if (index >= 0) return AddResult.DUPLICATE
+            if (size == values.size) return AddResult.OVERFLOW
+            val insertion = -index - 1
+            values.copyInto(values, insertion + 1, insertion, size)
+            values[insertion] = value
+            ++size
+            return AddResult.ADDED
+        }
+    }
+
+    private enum class AddResult { ADDED, DUPLICATE, OVERFLOW }
+
+    private val interactionRecords = ArrayList<Record>(minOf(interactionCapacity, 512))
+    private val uniqueIdentitySets = Array(UNIQUE_IDENTITY_INDEXES.size) {
+        BoundedSortedLongSet(identityCapacity)
+    }
+    private val previousValues = LongArray(NtkSchema10FrameValidator.FIELD_COUNT)
+    private var hasPreviousValues = false
+    private var lastCapsuleSequence = 0L
+    private var interactionWindowActive = false
     private var interactionBaselineCapsuleSequence = Long.MAX_VALUE
+    private var interactionEvidenceCount = 0L
+    private var interactionLastInputWatermark = 0L
+    private var droppedInteractionEvidenceCount = 0L
+    private var interactionOverflow = false
+    private var identityOverflow = false
+
+    private var lifetimeEvidenceCount = 0L
+    private var lifetimeInvalidCount = 0L
+    private var lifetimeIdentityInvalidCount = 0L
+    private var lifetimePriorChainInvalidCount = 0L
+    private var lifetimeSuccessorBeforeCommitPairs = 0L
+    private var lifetimeStageCount = 0L
+    private var lifetimeOnCommitCount = 0L
+    private var lifetimeAcquireSignalCount = 0L
+    private var lifetimeOnCompleteCount = 0L
+    private var lifetimeRetirementCount = 0L
+    private var lifetimeFullJoinCount = 0L
+    private var lifetimeAcquireOwnershipInvalidCount = 0L
+    private var lifetimeReserveBeforeDrawInvalidCount = 0L
+    private var firstRefreshPeriodNanos = 0L
+    private var lifetimeRefreshInvalidCount = 0L
+    private var maxAppliedOutstanding = 0L
+    private var targetUnretiredMax = 0L
+    private var preparedProducerMax = 0L
+    private var commitProofPendingMax = 0L
+    private var completeProofPendingMax = 0L
+    private var appliedCallbackRecordMax = 0L
+    private var previousReleaseDepthMax = 0L
+    private var frameworkHeldRefMax = 0L
+    private var freeReusableMin = Long.MAX_VALUE
+    private var appOwnedBufferDomainMin = Long.MAX_VALUE
+    private var priorLatchGateUsedCount = 0L
+    private var waitingPriorLatchStatusCount = 0L
+    private var successorApplyBeforePriorCompleteCount = 0L
+    private var backendCapacityExhaustedCount = 0L
+    private var backendCapacityWaitCount = 0L
+    private var backpressureEnableCount = 0L
+    private var backpressureDisableCount = 0L
+    private var backendInvariantFatalCount = 0L
+
+    init {
+        require(interactionCapacity > 0)
+        require(identityCapacity > 0)
+    }
 
     @Synchronized
-    fun accept(frame: NtkStripRenderEngine.FrameSnapshot) {
-        val values = frame.schema10Values.copyOf()
+    fun accept(frame: NtkStripRenderEngine.FrameSnapshot): String? {
+        val values = frame.schema10Values
         val violation = NtkSchema10FrameValidator.violation(values)
-        records += Record(values, violation)
+        ++lifetimeEvidenceCount
+        if (violation == null) ++lifetimeFullJoinCount else ++lifetimeInvalidCount
+
+        if (values.size != NtkSchema10FrameValidator.FIELD_COUNT) {
+            // A malformed frame cannot safely participate in any indexed proof.  Count it, retain
+            // no unsafe array, and make every later qualification fail closed.
+            ++lifetimeIdentityInvalidCount
+            if (interactionWindowActive) {
+                ++interactionEvidenceCount
+                ++droppedInteractionEvidenceCount
+                interactionOverflow = true
+            }
+            return violation
+        }
+
+        lastCapsuleSequence = values[8]
+        updateLifetime(values)
+
+        if (interactionWindowActive && values[8] > interactionBaselineCapsuleSequence) {
+            ++interactionEvidenceCount
+            interactionLastInputWatermark = values[23]
+            if (interactionRecords.size < interactionCapacity) {
+                // The published FrameSnapshot remains mutable for JNI filling.  Keep an immutable
+                // copy only inside an explicitly armed qualification window.
+                interactionRecords += Record(values.copyOf(), violation)
+            } else {
+                ++droppedInteractionEvidenceCount
+                interactionOverflow = true
+            }
+        }
+        return violation
     }
 
     @Synchronized
     fun beginInteractionWindow() {
-        interactionBaselineCapsuleSequence =
-            records.lastOrNull()?.capsuleSequence ?: 0L
+        interactionRecords.clear()
+        interactionEvidenceCount = 0L
+        interactionLastInputWatermark = 0L
+        droppedInteractionEvidenceCount = 0L
+        interactionOverflow = false
+        interactionBaselineCapsuleSequence = lastCapsuleSequence
+        interactionWindowActive = true
     }
 
     @Synchronized
@@ -113,64 +260,7 @@ internal class NtkSchema10QualificationAccumulator {
         acceptedTerminalInputCount: Int,
         acceptedTerminalInputOverflow: Boolean
     ): NtkSchema10QualificationSnapshot {
-        val lifetime = records.toList()
-        val interaction = lifetime.filter {
-            it.capsuleSequence > interactionBaselineCapsuleSequence
-        }
-        val periods = lifetime.map { it.period }
-        val period = periods.firstOrNull() ?: 0L
-        val refreshInvalid = periods.count {
-            kotlin.math.abs(it - NtkSchema10FrameValidator.NINETY_HZ_PERIOD_NANOS) >
-                NtkSchema10FrameValidator.REFRESH_TOLERANCE_NANOS || it != period
-        }
-
-        var identityInvalid = 0
-        var priorChainInvalid = 0
-        var successorBeforeCommitPairs = 0
-        val uniqueIndexes = intArrayOf(
-            4, 5, 6, 7, 8, 98, 39, 40, 190, 195, 196, 273
-        )
-        val seen = uniqueIndexes.associateWith { HashSet<Long>() }
-        var previous: LongArray? = null
-        lifetime.forEach { record ->
-            val v = record.values
-            if (uniqueIndexes.any { !seen.getValue(it).add(v[it]) }) {
-                ++identityInvalid
-            }
-            previous?.let { p ->
-                if (v[0] != p[0] || v[1] != p[1] || v[2] != p[2] ||
-                    v[3] != p[3] || v[4] <= p[4] || v[5] <= p[5] ||
-                    v[6] <= p[6] || v[7] <= p[7] || v[8] <= p[8]
-                ) ++identityInvalid
-                val retirementChainExact = v[238] == 1L &&
-                    v[239] == p[40] && v[240] == p[273] &&
-                    v[241] == p[0] && v[242] == p[3] &&
-                    v[243] == p[1] && v[244] == p[2] &&
-                    v[245] == p[4] && v[246] == p[5] &&
-                    v[247] == p[6] && v[248] == p[7] &&
-                    v[249] == p[8] && v[250] == p[97] &&
-                    v[251] == p[98] && v[252] == p[99] &&
-                    v[253] == p[100] && v[254] == p[101] &&
-                    v[256] <= v[88] && v[88] <= v[34]
-                val latchSidecarExact = v[233] == 1L && v[234] == 1L &&
-                    v[235] in 0L..1L && v[236] == 2L &&
-                    v[237] == 0L && v[267] == p[39] &&
-                    v[268] == p[38] && v[269] == p[107] &&
-                    v[270] == p[106] && v[271] == p[104] &&
-                    v[276] == 1L && v[34] >= p[107]
-                val exactPrior = retirementChainExact && latchSidecarExact
-                if (!exactPrior) ++priorChainInvalid
-                if (v[34] < p[107]) {
-                    ++successorBeforeCommitPairs
-                }
-            } ?: run {
-                if (v[238] != 0L || v[233] != 0L || v[234] != 0L ||
-                    v[235] != 0L || v[236] != 0L || v[237] != 0L ||
-                    v[272] != 0L || v[276] != 0L
-                ) ++priorChainInvalid
-            }
-            previous = v
-        }
+        val interaction = interactionRecords.toList()
 
         val acceptedCount = acceptedTerminalInputCount.coerceIn(
             0, acceptedTerminalInputSequences.size
@@ -243,11 +333,6 @@ internal class NtkSchema10QualificationAccumulator {
         val mutationToApply = stats(inputRecords.map { it.values[35] - it.values[31] })
         val mutationToLatch = stats(inputRecords.map { it.values[38] - it.values[31] })
         val physicalToLatch = stats(inputRecords.map { it.values[38] - it.values[25] })
-        val acquireOwnershipInvalid = lifetime.count {
-            val v = it.values
-            v[197] != 2L || v[198] != 1L ||
-                v[199] != 1L || v[200] != 0L
-        }
         val opportunityInvalid = interaction.count {
             val v = it.values
             // Field 91 is the exclusive deadline for starting the fixed submission,
@@ -259,11 +344,15 @@ internal class NtkSchema10QualificationAccumulator {
                 v[171] != 1L || v[85] != 0L
         }
         return NtkSchema10QualificationSnapshot(
-            lifetimeEvidenceFrames = lifetime.size,
-            interactionEvidenceFrames = interaction.size,
-            invalidFrames = lifetime.count { it.violation != null },
-            identityOrOrderInvalidFrames = identityInvalid,
-            lifetimeStageFrames = lifetime.count { it.kind == 0 },
+            lifetimeEvidenceFrames = saturatedInt(lifetimeEvidenceCount),
+            interactionEvidenceFrames = saturatedInt(interactionEvidenceCount),
+            invalidFrames = saturatedInt(
+                lifetimeInvalidCount + if (interactionOverflow || identityOverflow) 1L else 0L
+            ),
+            identityOrOrderInvalidFrames = saturatedInt(
+                lifetimeIdentityInvalidCount + if (identityOverflow) 1L else 0L
+            ),
+            lifetimeStageFrames = saturatedInt(lifetimeStageCount),
             interactionStageFrames = interaction.count { it.kind == 0 },
             moveFrames = interaction.count { it.kind == 1 },
             terminalFrames = interaction.count { it.kind == 2 },
@@ -275,59 +364,54 @@ internal class NtkSchema10QualificationAccumulator {
             duplicateTerminalInputCoverageCount = duplicateCoverage,
             acceptedTerminalInputOverflow = acceptedTerminalInputOverflow,
             lastAcceptedTerminalInputSequence = accepted.lastOrNull() ?: 0L,
-            lastInteractionInputWatermark =
-                interaction.lastOrNull()?.inputWatermark ?: 0L,
-            submittedCount = lifetime.size.toLong(),
-            onCommitCount = lifetime.sumOf { it.values[104] },
-            acquireSignalCount = lifetime.count { it.values[195] > 0L }.toLong(),
-            onCompleteCount = lifetime.sumOf { it.values[105] },
-            retirementCount = lifetime.sumOf { it.values[175] },
-            fullJoinCount = lifetime.count { it.violation == null }.toLong(),
+            lastInteractionInputWatermark = interactionLastInputWatermark,
+            submittedCount = lifetimeEvidenceCount,
+            onCommitCount = lifetimeOnCommitCount,
+            acquireSignalCount = lifetimeAcquireSignalCount,
+            onCompleteCount = lifetimeOnCompleteCount,
+            retirementCount = lifetimeRetirementCount,
+            fullJoinCount = lifetimeFullJoinCount,
             releaseBacklogOverlapFrames = interaction.count {
                 (0 until 8).count { slot -> it.values[180 + slot] == 4L } >= 2
             },
-            maxAppliedOutstanding = lifetime.maxOfOrNull { it.values[177] } ?: 0L,
+            maxAppliedOutstanding = maxAppliedOutstanding,
             applyBeforeAcquireSignalProvenCount =
                 interaction.count { it.values[201] == 1L },
-            acquireFenceOwnershipInvalidFrames = acquireOwnershipInvalid,
+            acquireFenceOwnershipInvalidFrames = saturatedInt(
+                lifetimeAcquireOwnershipInvalidCount
+            ),
             fixedOpportunityInvalidFrames = opportunityInvalid,
-            refreshPeriodNanos = period,
-            refreshPeriodInvalidFrames = refreshInvalid,
+            refreshPeriodNanos = firstRefreshPeriodNanos,
+            refreshPeriodInvalidFrames = saturatedInt(lifetimeRefreshInvalidCount),
             invalidTimestampOrOrderSamples = invalidTimestamps,
             continuousPairsOverFourPeriods = overFour,
             consecutivePairsOverTwoPeriods = consecutiveOverTwo,
-            targetUnretiredMax = lifetime.maxOfOrNull { it.values[230] } ?: 0L,
-            preparedProducerMax = lifetime.maxOfOrNull { it.values[232] } ?: 0L,
-            commitProofPendingMax = lifetime.maxOfOrNull { it.values[212] } ?: 0L,
-            completeProofPendingMax = lifetime.maxOfOrNull { it.values[213] } ?: 0L,
-            appliedCallbackRecordMax =
-                lifetime.maxOfOrNull { it.values[206] } ?: 0L,
-            previousReleaseDepthMax =
-                lifetime.maxOfOrNull { it.values[207] } ?: 0L,
-            frameworkHeldRefMax = lifetime.maxOfOrNull { it.values[215] } ?: 0L,
-            freeReusableMin = lifetime.minOfOrNull { it.values[217] } ?: 0L,
+            targetUnretiredMax = targetUnretiredMax,
+            preparedProducerMax = preparedProducerMax,
+            commitProofPendingMax = commitProofPendingMax,
+            completeProofPendingMax = completeProofPendingMax,
+            appliedCallbackRecordMax = appliedCallbackRecordMax,
+            previousReleaseDepthMax = previousReleaseDepthMax,
+            frameworkHeldRefMax = frameworkHeldRefMax,
+            freeReusableMin = if (freeReusableMin == Long.MAX_VALUE) 0L else freeReusableMin,
             appOwnedBufferDomainMin =
-                lifetime.minOfOrNull { it.values[219] } ?: 0L,
-            priorLatchGateUsedCount = lifetime.sumOf { it.values[234] },
-            waitingPriorLatchStatusCount = lifetime.sumOf { it.values[235] },
+                if (appOwnedBufferDomainMin == Long.MAX_VALUE) 0L
+                else appOwnedBufferDomainMin,
+            priorLatchGateUsedCount = priorLatchGateUsedCount,
+            waitingPriorLatchStatusCount = waitingPriorLatchStatusCount,
             successorApplyBeforePriorCompleteCount =
-                lifetime.maxOfOrNull { it.values[225] } ?: 0L,
-            successorApplyBeforePriorCommitPairs = successorBeforeCommitPairs,
-            backendCapacityExhaustedCount =
-                lifetime.maxOfOrNull { it.values[222] } ?: 0L,
-            backendCapacityWaitCount =
-                lifetime.maxOfOrNull { it.values[223] } ?: 0L,
-            backpressureEnableCount =
-                lifetime.maxOfOrNull { it.values[220] } ?: 0L,
-            backpressureDisableCount =
-                lifetime.maxOfOrNull { it.values[221] } ?: 0L,
-            backendInvariantFatalCount =
-                lifetime.maxOfOrNull { it.values[224] } ?: 0L,
-            priorRetirementChainInvalidFrames = priorChainInvalid,
-            reserveBeforeDrawInvalidFrames = lifetime.count {
-                it.values[281] != 1L || it.values[277] > it.values[278] ||
-                    it.values[280] <= it.values[279]
-            },
+                successorApplyBeforePriorCompleteCount,
+            successorApplyBeforePriorCommitPairs =
+                saturatedInt(lifetimeSuccessorBeforeCommitPairs),
+            backendCapacityExhaustedCount = backendCapacityExhaustedCount,
+            backendCapacityWaitCount = backendCapacityWaitCount,
+            backpressureEnableCount = backpressureEnableCount,
+            backpressureDisableCount = backpressureDisableCount,
+            backendInvariantFatalCount = backendInvariantFatalCount,
+            priorRetirementChainInvalidFrames =
+                saturatedInt(lifetimePriorChainInvalidCount),
+            reserveBeforeDrawInvalidFrames =
+                saturatedInt(lifetimeReserveBeforeDrawInvalidCount),
             transactionPrepare = transactionPrepare,
             applyCall = applyCall,
             renderToAcquireSignal = renderToSignal,
@@ -336,8 +420,105 @@ internal class NtkSchema10QualificationAccumulator {
             mutationToLatch = mutationToLatch,
             physicalInputToLatch = physicalToLatch,
             continuousApplyInterval = stats(applyIntervals),
-            continuousLatchInterval = stats(latchIntervals)
+            continuousLatchInterval = stats(latchIntervals),
+            retention = NtkQualificationRetentionSnapshot(
+                evidenceOverflow = interactionOverflow || identityOverflow,
+                interactionEvidenceOverflow = interactionOverflow,
+                identityEvidenceOverflow = identityOverflow,
+                retainedInteractionEvidenceFrames = interaction.size,
+                droppedInteractionEvidenceFrames = droppedInteractionEvidenceCount
+            )
         )
+    }
+
+    private fun updateLifetime(v: LongArray) {
+        if (v[74] == 0L) ++lifetimeStageCount
+        lifetimeOnCommitCount += v[104]
+        if (v[195] > 0L) ++lifetimeAcquireSignalCount
+        lifetimeOnCompleteCount += v[105]
+        lifetimeRetirementCount += v[175]
+        if (v[197] != 2L || v[198] != 1L ||
+            v[199] != 1L || v[200] != 0L
+        ) ++lifetimeAcquireOwnershipInvalidCount
+        if (v[281] != 1L || v[277] > v[278] || v[280] <= v[279]) {
+            ++lifetimeReserveBeforeDrawInvalidCount
+        }
+
+        val period = v[87]
+        if (lifetimeEvidenceCount == 1L) firstRefreshPeriodNanos = period
+        if (kotlin.math.abs(period - NtkSchema10FrameValidator.NINETY_HZ_PERIOD_NANOS) >
+            NtkSchema10FrameValidator.REFRESH_TOLERANCE_NANOS ||
+            period != firstRefreshPeriodNanos
+        ) ++lifetimeRefreshInvalidCount
+
+        maxAppliedOutstanding = max(maxAppliedOutstanding, v[177])
+        targetUnretiredMax = max(targetUnretiredMax, v[230])
+        preparedProducerMax = max(preparedProducerMax, v[232])
+        commitProofPendingMax = max(commitProofPendingMax, v[212])
+        completeProofPendingMax = max(completeProofPendingMax, v[213])
+        appliedCallbackRecordMax = max(appliedCallbackRecordMax, v[206])
+        previousReleaseDepthMax = max(previousReleaseDepthMax, v[207])
+        frameworkHeldRefMax = max(frameworkHeldRefMax, v[215])
+        freeReusableMin = minOf(freeReusableMin, v[217])
+        appOwnedBufferDomainMin = minOf(appOwnedBufferDomainMin, v[219])
+        priorLatchGateUsedCount += v[234]
+        waitingPriorLatchStatusCount += v[235]
+        successorApplyBeforePriorCompleteCount = max(
+            successorApplyBeforePriorCompleteCount, v[225]
+        )
+        backendCapacityExhaustedCount = max(backendCapacityExhaustedCount, v[222])
+        backendCapacityWaitCount = max(backendCapacityWaitCount, v[223])
+        backpressureEnableCount = max(backpressureEnableCount, v[220])
+        backpressureDisableCount = max(backpressureDisableCount, v[221])
+        backendInvariantFatalCount = max(backendInvariantFatalCount, v[224])
+
+        if (!identityOverflow) {
+            var duplicate = false
+            for (slot in UNIQUE_IDENTITY_INDEXES.indices) {
+                val index = UNIQUE_IDENTITY_INDEXES[slot]
+                when (uniqueIdentitySets[slot].add(v[index])) {
+                    AddResult.ADDED -> Unit
+                    AddResult.DUPLICATE -> duplicate = true
+                    AddResult.OVERFLOW -> identityOverflow = true
+                }
+            }
+            if (duplicate) ++lifetimeIdentityInvalidCount
+        }
+
+        if (hasPreviousValues) {
+            val p = previousValues
+            if (v[0] != p[0] || v[1] != p[1] || v[2] != p[2] ||
+                v[3] != p[3] || v[4] <= p[4] || v[5] <= p[5] ||
+                v[6] <= p[6] || v[7] <= p[7] || v[8] <= p[8]
+            ) ++lifetimeIdentityInvalidCount
+            val retirementChainExact = v[238] == 1L &&
+                v[239] == p[40] && v[240] == p[273] &&
+                v[241] == p[0] && v[242] == p[3] &&
+                v[243] == p[1] && v[244] == p[2] &&
+                v[245] == p[4] && v[246] == p[5] &&
+                v[247] == p[6] && v[248] == p[7] &&
+                v[249] == p[8] && v[250] == p[97] &&
+                v[251] == p[98] && v[252] == p[99] &&
+                v[253] == p[100] && v[254] == p[101] &&
+                v[256] <= v[88] && v[88] <= v[34]
+            val latchSidecarExact = v[233] == 1L && v[234] == 1L &&
+                v[235] in 0L..1L && v[236] == 2L &&
+                v[237] == 0L && v[267] == p[39] &&
+                v[268] == p[38] && v[269] == p[107] &&
+                v[270] == p[106] && v[271] == p[104] &&
+                v[276] == 1L && v[34] >= p[107]
+            if (!retirementChainExact || !latchSidecarExact) {
+                ++lifetimePriorChainInvalidCount
+            }
+            if (v[34] < p[107]) ++lifetimeSuccessorBeforeCommitPairs
+        } else if (v[238] != 0L || v[233] != 0L || v[234] != 0L ||
+            v[235] != 0L || v[236] != 0L || v[237] != 0L ||
+            v[272] != 0L || v[276] != 0L
+        ) {
+            ++lifetimePriorChainInvalidCount
+        }
+        v.copyInto(previousValues)
+        hasPreviousValues = true
     }
 
     private fun stats(values: List<Long>): NtkSchema10DurationStats {
@@ -349,6 +530,17 @@ internal class NtkSchema10QualificationAccumulator {
         ]
         return NtkSchema10DurationStats(
             sorted.size, percentile(95), percentile(99), sorted.last()
+        )
+    }
+
+    private fun saturatedInt(value: Long): Int =
+        value.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+
+    companion object {
+        internal const val DEFAULT_INTERACTION_CAPACITY = 2_048
+        internal const val DEFAULT_IDENTITY_CAPACITY = 8_192
+        private val UNIQUE_IDENTITY_INDEXES = intArrayOf(
+            4, 5, 6, 7, 8, 98, 39, 40, 190, 195, 196, 273
         )
     }
 }

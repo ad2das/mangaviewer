@@ -91,25 +91,30 @@
         <activity
             android:name=".activity.DownloadActivity"
             android:configChanges="orientation|screenSize"
-            android:label="다운로드"/>
+            android:label="다운로드"
+            android:theme="@style/AppTheme.ActionBar" />
         <activity
             android:name=".activity.SettingsActivity"
             android:configChanges="orientation|screenSize"
-            android:label="설정" />
+            android:label="설정"
+            android:theme="@style/AppTheme.ActionBar" />
         <activity
             android:name=".activity.FolderSelectActivity"
-            android:configChanges="orientation|screenSize" />
+            android:configChanges="orientation|screenSize"
+            android:theme="@style/AppTheme.ActionBar" />
         <activity
             android:name=".activity.TagSearchActivity"
             android:configChanges="orientation|screenSize"
             android:theme="@style/AppTheme.NoActionBar" />
         <activity
             android:name=".activity.LicenseActivity"
-            android:configChanges="orientation|screenSize" />
+            android:configChanges="orientation|screenSize"
+            android:theme="@style/AppTheme.ActionBar" />
         <activity
             android:name=".activity.AdvSearchActivity"
             android:configChanges="orientation|screenSize"
-            android:label="고급 검색" />
+            android:label="고급 검색"
+            android:theme="@style/AppTheme.ActionBar" />
         <activity
             android:name=".activity.DebugActivity"
             android:configChanges="orientation|screenSize" />

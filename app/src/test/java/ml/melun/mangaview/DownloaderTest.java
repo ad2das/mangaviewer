@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class DownloaderTest {
     @Test
@@ -48,7 +49,7 @@ public class DownloaderTest {
     public void imageDownloadParallelismIsBounded() {
         assertEquals(0, Downloader.imageDownloadParallelismForTest(0));
         assertEquals(1, Downloader.imageDownloadParallelismForTest(1));
-        assertEquals(4, Downloader.imageDownloadParallelismForTest(100));
+        assertEquals(2, Downloader.imageDownloadParallelismForTest(100));
     }
 
     @Test
@@ -85,6 +86,52 @@ public class DownloaderTest {
             new File(dir, "title.gson.bak").delete();
             dir.delete();
         }
+    }
+
+    @Test
+    public void stagedEpisodeReplacesExistingOnlyAfterStageIsComplete() throws Exception {
+        File parent = Files.createTempDirectory("episode-stage").toFile();
+        File existing = new File(parent, "0001.episode");
+        File staged = new File(parent,
+                Downloader.episodeStageNameForTest(existing.getName(), 123L));
+        assertTrue(existing.mkdir());
+        assertTrue(staged.mkdir());
+        Files.write(new File(existing, "0000.jpg").toPath(), "old".getBytes(StandardCharsets.UTF_8));
+        Files.write(new File(staged, "0000.jpg").toPath(), "new".getBytes(StandardCharsets.UTF_8));
+        try {
+            assertTrue(Downloader.publishStagedEpisodeForTest(existing, staged));
+            assertEquals("new", new String(Files.readAllBytes(
+                    new File(existing, "0000.jpg").toPath()), StandardCharsets.UTF_8));
+            assertFalse(staged.exists());
+        } finally {
+            deleteTree(parent);
+        }
+    }
+
+    @Test
+    public void invalidStageNeverDeletesExistingEpisode() throws Exception {
+        File parent = Files.createTempDirectory("episode-stage-invalid").toFile();
+        File existing = new File(parent, "0001.episode");
+        File missingStage = new File(parent, "missing-stage");
+        assertTrue(existing.mkdir());
+        Files.write(new File(existing, "0000.jpg").toPath(), "old".getBytes(StandardCharsets.UTF_8));
+        try {
+            assertFalse(Downloader.publishStagedEpisodeForTest(existing, missingStage));
+            assertEquals("old", new String(Files.readAllBytes(
+                    new File(existing, "0000.jpg").toPath()), StandardCharsets.UTF_8));
+        } finally {
+            deleteTree(parent);
+        }
+    }
+
+    private static void deleteTree(File file) {
+        if(file == null || !file.exists())
+            return;
+        File[] children = file.listFiles();
+        if(children != null)
+            for(File child : children)
+                deleteTree(child);
+        file.delete();
     }
 
     @Test

@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader;
 import org.junit.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -112,6 +113,58 @@ public class ReaderPipelinePolicyTest {
         assertEquals(67, committed.getAllowedFirstSource());
         assertFalse(committed.admitsSource(66));
         assertTrue(committed.admitsSource(111));
+    }
+
+    @Test
+    public void provenReverseGestureMonotonicallyWidensOnlyThreePredecessorSources() {
+        StrictRollingAdmission restored = StrictRollingAdmission.initial(112, 67, 67);
+        StrictRollingAdmission committed = StrictRollingAdmission.update(
+                restored, 112, 67, 69, 67, 69, 1, true);
+
+        StrictRollingAdmission reverse = StrictRollingAdmission.update(
+                committed, 112, 66, 68, 66, 68, -1, true, true, 63);
+        assertEquals(-1, reverse.getDirection());
+        assertEquals(63, reverse.getAllowedFirstSource());
+        assertTrue(reverse.admitsSource(63));
+        assertFalse(reverse.admitsSource(62));
+
+        StrictRollingAdmission deeperReverse = StrictRollingAdmission.update(
+                reverse, 112, 60, 62, 60, 62, -1, true, true, 57);
+        assertEquals(57, deeperReverse.getAllowedFirstSource());
+
+        StrictRollingAdmission forward = StrictRollingAdmission.update(
+                deeperReverse, 112, 70, 72, 70, 72, 1, true, false);
+        assertEquals(57, forward.getAllowedFirstSource());
+        assertTrue(forward.admitsSource(57));
+    }
+
+    @Test
+    public void busyPhysicalReverseStillWidensWhenTheExplicitDirectionHintWasCoalesced() {
+        assertEquals(17, StrictRollingAdmission.observedPhysicalReverseFloor(
+                27, 20, -1, true));
+        assertEquals(27, StrictRollingAdmission.observedPhysicalReverseFloor(
+                27, 20, -1, false));
+        assertEquals(27, StrictRollingAdmission.observedPhysicalReverseFloor(
+                27, 20, 1, true));
+        assertEquals(0, StrictRollingAdmission.observedPhysicalReverseFloor(
+                2, 1, -1, true));
+    }
+
+    @Test
+    public void reverseSoftDemandPrefersNearestPredecessorButForwardPrefersRunway() {
+        StrictRollingAdmission restored = StrictRollingAdmission.initial(112, 67, 67);
+        StrictRollingAdmission committed = StrictRollingAdmission.update(
+                restored, 112, 67, 69, 67, 69, 1, true);
+        StrictRollingAdmission reverse = StrictRollingAdmission.update(
+                committed, 112, 66, 67, 66, 67, -1, true, true, 63);
+
+        assertEquals(Arrays.asList(65, 64, 63),
+                reverse.orderedSoftSources(Arrays.asList(66, 67)).subList(0, 3));
+
+        StrictRollingAdmission forward = StrictRollingAdmission.update(
+                reverse, 112, 70, 71, 70, 71, 1, true, false);
+        assertEquals(Arrays.asList(72, 73, 74),
+                forward.orderedSoftSources(Arrays.asList(70, 71)).subList(0, 3));
     }
 
     @Test

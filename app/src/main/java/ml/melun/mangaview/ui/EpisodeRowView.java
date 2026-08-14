@@ -5,6 +5,8 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.os.Build;
+import android.os.Bundle;
+import android.os.Build;
 import android.graphics.Typeface;
 import android.text.TextUtils;
 import android.text.TextPaint;
@@ -13,8 +15,14 @@ import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.accessibility.AccessibilityNodeInfo;
 
 import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
+
+import ml.melun.mangaview.R;
 
 /** A single HWUI node for an episode row; no child views or XML inflation. */
 public final class EpisodeRowView extends View {
@@ -29,7 +37,6 @@ public final class EpisodeRowView extends View {
 
     private CharSequence rawTitle = "";
     private CharSequence rawDate = "";
-    private CharSequence episodeIdentity = "";
     private CharSequence displayTitle = "";
     private CharSequence displayDate = "";
     private boolean showNew;
@@ -45,6 +52,7 @@ public final class EpisodeRowView extends View {
     private Runnable pressListener;
     private Runnable pressCancelListener;
     private Runnable actionClickListener;
+    @StringRes private int selectedStateLabel = R.string.episode_selected_state;
 
     private int backgroundColor;
     private int titleColor;
@@ -115,26 +123,34 @@ public final class EpisodeRowView extends View {
         selected = isSelected;
         showThumbnail = hasThumbnail;
         setEnabled(enabled);
+        updateSelectionAccessibility();
         updateContentDescription();
         rebuildDisplayText();
         invalidate();
     }
 
-    /** Stable production accessibility identity; also prevents title-based wrong-row selection. */
+    /** Stable automation identity kept out of the user-facing accessibility label. */
     public void setEpisodeIdentity(@Nullable CharSequence identity) {
-        episodeIdentity = identity == null ? "" : identity;
-        updateContentDescription();
+        setTag(R.id.episode_automation_identity, identity == null ? "" : identity);
     }
 
     private void updateContentDescription() {
-        CharSequence label = rawDate.length() == 0 ? rawTitle : rawTitle + ", " + rawDate;
-        setContentDescription(episodeIdentity.length() == 0
-                ? label
-                : "episode:" + episodeIdentity + "|" + label);
+        String label = buildSpokenLabel(rawTitle, rawDate, showNew,
+                getContext().getString(R.string.episode_new_state));
+        setContentDescription(label.length() == 0 ? null : label);
+        setImportantForAccessibility(label.length() == 0
+                ? IMPORTANT_FOR_ACCESSIBILITY_NO
+                : IMPORTANT_FOR_ACCESSIBILITY_YES);
+    }
+
+    public void setSelectedStateLabel(@StringRes int label) {
+        selectedStateLabel = label;
+        updateSelectionAccessibility();
     }
 
     public void setSelectedState(boolean isSelected, int background, int title) {
         selected = isSelected;
+        updateSelectionAccessibility();
         backgroundColor = background;
         titleColor = title;
         titlePaint.setTypeface(isSelected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
@@ -144,6 +160,7 @@ public final class EpisodeRowView extends View {
     public void setShowNew(boolean value) {
         if (showNew == value) return;
         showNew = value;
+        updateContentDescription();
         rebuildDisplayText();
         invalidate();
     }
@@ -166,12 +183,47 @@ public final class EpisodeRowView extends View {
     }
 
     @Override
+    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfo(info);
+        info.setClassName("android.widget.Button");
+        info.setContentDescription(getContentDescription());
+        info.setSelected(selected);
+        AccessibilityNodeInfoCompat.wrap(info).setStateDescription(
+                ViewCompat.getStateDescription(this));
+        info.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
+        info.setClickable(isEnabled());
+        if (isEnabled()) {
+            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                    AccessibilityNodeInfo.ACTION_CLICK,
+                    getContext().getString(R.string.episode_open)));
+        }
+        if (isEnabled() && showAction) {
+            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                    R.id.accessibility_episode_row_action,
+                    getContext().getString(actionLabel(downloadAction))));
+        }
+    }
+
+    @Override
+    public boolean performAccessibilityAction(int action, @Nullable Bundle arguments) {
+        if (action == R.id.accessibility_episode_row_action) {
+            if (!isEnabled() || !showAction || actionClickListener == null) return false;
+            actionClickListener.run();
+            sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_VIEW_CLICKED);
+            return true;
+        }
+        return super.performAccessibilityAction(action, arguments);
+    }
+
+    @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         // ACTION_DOWN atomically reveals an already-staged reader. Keep the episode row on the
         // same source-scoped unbuffered path as the reader surface so ViewRoot never defers that
         // first physical sample to a later display batch.
-        requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER);
+        }
     }
 
     @Override
@@ -327,6 +379,42 @@ public final class EpisodeRowView extends View {
 
     static boolean exceededTouchSlopForTest(float deltaX, float deltaY, int slop) {
         return exceededTouchSlop(deltaX, deltaY, slop);
+    }
+
+    private void updateSelectionAccessibility() {
+        setSelected(selected);
+        ViewCompat.setStateDescription(this, selected
+                ? getContext().getString(selectedStateLabel)
+                : null);
+    }
+
+    private static String buildSpokenLabel(CharSequence title, CharSequence date, boolean isNew,
+                                           CharSequence newStateLabel) {
+        String safeTitle = title == null ? "" : title.toString().trim();
+        String safeDate = date == null ? "" : date.toString().trim();
+        StringBuilder label = new StringBuilder(safeTitle);
+        if (safeDate.length() > 0) {
+            if (label.length() > 0) label.append(", ");
+            label.append(safeDate);
+        }
+        if (isNew) {
+            if (label.length() > 0) label.append(", ");
+            label.append(newStateLabel);
+        }
+        return label.toString();
+    }
+
+    @StringRes
+    private static int actionLabel(boolean isDownloadAction) {
+        return isDownloadAction ? R.string.download_episode : R.string.episode_remove_download;
+    }
+
+    static String spokenLabelForTest(CharSequence title, CharSequence date, boolean isNew) {
+        return buildSpokenLabel(title, date, isNew, "새 회차");
+    }
+
+    static int actionLabelForTest(boolean isDownloadAction) {
+        return actionLabel(isDownloadAction);
     }
 
     @Override

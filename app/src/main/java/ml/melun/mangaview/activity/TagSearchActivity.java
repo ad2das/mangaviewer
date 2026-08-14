@@ -138,6 +138,7 @@ public class TagSearchActivity extends AppCompatActivity {
         setSupportActionBar(toolbar);
         searchResult = this.findViewById(R.id.tagSearchResult);
         noresult = this.findViewById(R.id.tagSearchNoResult);
+        noresult.setOnClickListener(view -> retryVisibleSearch());
         resultMetaTitle = this.findViewById(R.id.tagSearchMetaTitle);
         resultMetaHint = this.findViewById(R.id.tagSearchMetaHint);
         statusFilters = this.findViewById(R.id.tagSearchStatusFilters);
@@ -286,6 +287,31 @@ public class TagSearchActivity extends AppCompatActivity {
         filterOngoing.setOnClickListener(v -> applyStatusFilter("연재"));
         filterCompleted.setOnClickListener(v -> applyStatusFilter("완결"));
         updateStatusFilterChips();
+    }
+
+    private void retryVisibleSearch() {
+        if(destroyed || isFinishing() || loadTask != null)
+            return;
+        noresult.setVisibility(View.GONE);
+        noresult.setClickable(false);
+        swipe.setRefreshing(true);
+        if(mode == 5) {
+            startLoad(new getUpdated());
+        } else if(mode == 7) {
+            startLoad(new getBookmarks());
+        } else {
+            search = MangaRepository.createSearch(query, mode, baseMode);
+            startLoad(new searchManga());
+        }
+    }
+
+    private void showSearchEmptyState(String message, boolean retryable) {
+        noresult.setText(message);
+        noresult.setVisibility(View.VISIBLE);
+        noresult.setClickable(retryable);
+        noresult.setFocusable(retryable);
+        noresult.setContentDescription(retryable ? message + ". 눌러서 다시 시도" : message);
+        noresult.bringToFront();
     }
 
     private boolean isNtkCombinedGenreResult() {
@@ -683,10 +709,9 @@ public class TagSearchActivity extends AppCompatActivity {
                 releaseDeferredSearchThumbnails();
             }else{
                 if(res != 0 && !shouldOpenCaptchaAfterSearchFailure(res, searchFailure, loadStartedAt))
-                    noresult.setText("\uacb0\uacfc\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.\n\ub124\ud2b8\uc6cc\ud06c \ub610\ub294 \uc0ac\uc774\ud2b8 \uc8fc\uc18c\ub97c \ud655\uc778\ud55c \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694.");
+                    showSearchEmptyState("\uacb0\uacfc\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.\n\ub124\ud2b8\uc6cc\ud06c \ub610\ub294 \uc0ac\uc774\ud2b8 \uc8fc\uc18c\ub97c \ud655\uc778\ud55c \ub4a4 \ub204\ub974\uba74 \ub2e4\uc2dc \uc2dc\ub3c4\ud569\ub2c8\ub2e4.", true);
                 else
-                    noresult.setText("\uac80\uc0c9 \uacb0\uacfc\uac00 \uc5c6\uc2b5\ub2c8\ub2e4");
-                noresult.setVisibility(View.VISIBLE);
+                    showSearchEmptyState("\uac80\uc0c9 \uacb0\uacfc\uac00 \uc5c6\uc2b5\ub2c8\ub2e4", false);
                 adapter.setDeferThumbnails(false);
             }
             updateVirtualScrollbar();

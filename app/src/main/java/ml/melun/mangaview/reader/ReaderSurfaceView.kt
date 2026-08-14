@@ -40,6 +40,7 @@ import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import java.util.ArrayDeque
 import java.util.Locale
 
 internal object NtkExpandedNativeTextureTransitionPolicy {
@@ -57,6 +58,167 @@ internal object NtkExpandedNativeTextureTransitionPolicy {
             nextErrorText == null &&
             !nextEpisodePath.isNullOrEmpty() &&
             nextEpisodePath in authorizedEpisodePaths
+}
+
+/**
+ * Bounded episode authority for native texture residency during continuous reading.
+ *
+ * The current episode, its immediate predecessor, and one not-yet-presented forward target are
+ * the only paths that may own GPU uploads.  Keeping the forward target separate is important:
+ * an old callback must not replace the predecessor after an A -> B -> A authority cycle, while a
+ * user who scrolls upward in B must still be able to re-upload A until C is physically adopted.
+ */
+internal object NtkExpandedNativeTextureHistoryPolicy {
+    data class State(
+        val currentPath: String = "",
+        val previousPath: String = "",
+        val pendingForwardPath: String = "",
+        val pendingForwardPredecessorPath: String = "",
+        val pendingForwardRevision: Long = 0L,
+        val deferredForwardPath: String = "",
+        val deferredForwardPredecessorPath: String = "",
+        val deferredForwardRevision: Long = 0L,
+    ) {
+        fun authorizedPaths(): LinkedHashSet<String> = linkedSetOf<String>().apply {
+            if (currentPath.isNotEmpty()) add(currentPath)
+            if (previousPath.isNotEmpty()) add(previousPath)
+            if (pendingForwardPath.isNotEmpty()) add(pendingForwardPath)
+        }
+    }
+
+    fun configured(currentPath: String): State =
+        State(currentPath = currentPath.takeIf(String::isNotEmpty).orEmpty())
+
+    fun authorizeForward(
+        state: State,
+        predecessorPath: String,
+        targetPath: String,
+        revision: Long,
+    ): State {
+        if (predecessorPath.isEmpty() || targetPath.isEmpty() || revision <= 0L ||
+            targetPath == predecessorPath || targetPath == state.previousPath
+        ) return state
+        if (predecessorPath == state.currentPath) {
+            if (targetPath == state.currentPath) return state
+            if (state.pendingForwardPath.isNotEmpty() &&
+                revision <= state.pendingForwardRevision
+            ) return state
+            val keepDeferred = state.deferredForwardPredecessorPath == targetPath
+            return state.copy(
+                pendingForwardPath = targetPath,
+                pendingForwardPredecessorPath = predecessorPath,
+                pendingForwardRevision = revision,
+                deferredForwardPath = state.deferredForwardPath.takeIf { keepDeferred }.orEmpty(),
+                deferredForwardPredecessorPath =
+                    state.deferredForwardPredecessorPath.takeIf { keepDeferred }.orEmpty(),
+                deferredForwardRevision = state.deferredForwardRevision.takeIf { keepDeferred }
+                    ?: 0L,
+            )
+        }
+        // A completed B can resolve C before B is physically presented. Keep C as metadata only;
+        // authorizing its GPU uploads now would evict B's A->B transition authority.
+        if (predecessorPath == state.pendingForwardPath) {
+            if (targetPath == state.currentPath || targetPath == state.pendingForwardPath ||
+                (state.deferredForwardPath.isNotEmpty() &&
+                    revision <= state.deferredForwardRevision)
+            ) return state
+            return state.copy(
+                deferredForwardPath = targetPath,
+                deferredForwardPredecessorPath = predecessorPath,
+                deferredForwardRevision = revision,
+            )
+        }
+        return state
+    }
+
+    fun advanceAfterPhysicalCommit(
+        state: State,
+        targetPath: String,
+        committedPath: String,
+    ): State {
+        if (targetPath.isEmpty() || committedPath != targetPath) return state
+        if (targetPath == state.currentPath) return state
+        if (targetPath != state.pendingForwardPath) return state
+        val promoteDeferred = state.deferredForwardPredecessorPath == targetPath &&
+            state.deferredForwardPath.isNotEmpty() &&
+            state.deferredForwardPath != targetPath &&
+            state.deferredForwardPath != state.currentPath
+        return State(
+            currentPath = targetPath,
+            previousPath = state.currentPath,
+            pendingForwardPath = state.deferredForwardPath.takeIf { promoteDeferred }.orEmpty(),
+            pendingForwardPredecessorPath =
+                state.deferredForwardPredecessorPath.takeIf { promoteDeferred }.orEmpty(),
+            pendingForwardRevision = state.deferredForwardRevision.takeIf { promoteDeferred }
+                ?: 0L,
+        )
+    }
+
+    fun shouldBypassResumeFloorForReverse(
+        activeDirection: Int,
+        pointerDown: Boolean,
+        dragging: Boolean,
+        scrollbarDragging: Boolean,
+        scrollerFinished: Boolean,
+    ): Boolean = activeDirection == ReaderSurfaceView.DIRECTION_PREVIOUS &&
+        (pointerDown || dragging || scrollbarDragging || !scrollerFinished)
+
+    fun remapFloorAfterRemoval(
+        floor: Int,
+        startIndex: Int,
+        removedCount: Int,
+        remainingPageCount: Int,
+    ): Int {
+        if (remainingPageCount <= 0) return 0
+        val endExclusive = startIndex.toLong() + removedCount.toLong()
+        val shifted = when {
+            floor < startIndex -> floor
+            floor.toLong() >= endExclusive -> floor - removedCount
+            else -> startIndex
+        }
+        return shifted.coerceIn(0, remainingPageCount - 1)
+    }
+
+    fun remapExactPageAfterRemoval(
+        page: Int,
+        startIndex: Int,
+        removedCount: Int,
+        remainingPageCount: Int,
+    ): Int {
+        if (page < 0 || remainingPageCount <= 0) return -1
+        val endExclusive = startIndex.toLong() + removedCount.toLong()
+        if (page.toLong() >= startIndex.toLong() && page.toLong() < endExclusive) {
+            return -1
+        }
+        val shifted = if (page.toLong() >= endExclusive) page - removedCount else page
+        return shifted.takeIf { it in 0 until remainingPageCount } ?: -1
+    }
+}
+
+/** Preserves a real reverse MOVE when the latest-only UI window mailbox receives UP immediately. */
+internal object NtkReverseWindowEvidencePolicy {
+    data class Evidence(
+        val directionHint: Int = 0,
+        val reverseFirstPageHint: Int = -1,
+    )
+
+    fun capture(busy: Boolean, activeDirection: Int, firstVisiblePage: Int): Evidence = when {
+        busy && activeDirection < 0 && firstVisiblePage >= 0 ->
+            Evidence(directionHint = -1, reverseFirstPageHint = firstVisiblePage)
+        busy && activeDirection > 0 -> Evidence(directionHint = 1)
+        else -> Evidence()
+    }
+
+    fun merge(previous: Evidence?, latest: Evidence): Evidence {
+        val previousReverse = previous?.reverseFirstPageHint?.takeIf { it >= 0 }
+        val latestReverse = latest.reverseFirstPageHint.takeIf { it >= 0 }
+        val reverseFirst = listOfNotNull(previousReverse, latestReverse).minOrNull() ?: -1
+        return if (reverseFirst >= 0) {
+            Evidence(directionHint = -1, reverseFirstPageHint = reverseFirst)
+        } else {
+            latest
+        }
+    }
 }
 
 internal object NtkNativeSurfaceFrameRatePolicy {
@@ -165,6 +327,382 @@ internal object NtkDirectWifiExactVisibleStructurePolicy {
             if (displayPageIndexes[index] != displayPageIndexes[index - 1] + 1) return false
         }
         return true
+    }
+}
+
+/**
+ * Bounded hand-off between the native presentation producer and the main-thread reader listener.
+ *
+ * The producer can run at 90 Hz while the listener performs identity validation, telemetry and
+ * accessibility publication. Posting one main-thread Runnable per native frame therefore turns a
+ * short burst into an ever-growing UI queue. This mailbox keeps exactly one scheduled/running
+ * owner, coalesces an unchanged semantic viewport to its latest proof, and retains ordered
+ * identity transitions. The first proof is itself a replaceable activation slot: a burst of
+ * identical proofs before main gets CPU time still activates from the newest physical frame.
+ */
+internal class CompletedDrawDispatchQueue(
+    private val maxSemanticTransitions: Int,
+    private val ordinaryCadenceNanos: Long,
+) {
+    init {
+        require(maxSemanticTransitions > 0)
+        require(ordinaryCadenceNanos > 0L)
+    }
+
+    data class Delivery(
+        val proof: ReaderSurfaceView.CompletedDrawProof,
+        val revealNativeSurface: Boolean,
+    )
+
+    data class OfferResult(
+        val shouldPost: Boolean,
+        val delayNanos: Long,
+        val criticalOverflowed: Boolean,
+    )
+
+    data class Repost(
+        val shouldPost: Boolean,
+        val delayNanos: Long,
+    )
+
+    data class Snapshot(
+        val offers: Long,
+        val scheduleRequests: Long,
+        val selected: Long,
+        val delivered: Long,
+        val staleDropped: Long,
+        val sameSemanticCoalesced: Long,
+        val ordinarySuperseded: Long,
+        val overflowCoalesced: Long,
+        val criticalOverflowFailures: Long,
+        val postRejected: Long,
+        val clears: Long,
+        val maxQueueDepth: Int,
+        val pendingSemanticTransitions: Int,
+        val ordinaryPending: Boolean,
+        val runnerScheduled: Boolean,
+        val runnerRunning: Boolean,
+        val maxConcurrentRunnerOwners: Int,
+    )
+
+    private data class Entry(
+        val delivery: Delivery,
+        val protectedTransition: Boolean,
+    )
+
+    private val semanticTransitions = ArrayDeque<Entry>()
+    private var ordinary: Entry? = null
+    private var lastSelectedProof: ReaderSurfaceView.CompletedDrawProof? = null
+    private var lastSelectedAtNanos = Long.MIN_VALUE
+    private var runnerScheduled = false
+    private var runnerRunning = false
+
+    private var offers = 0L
+    private var scheduleRequests = 0L
+    private var selected = 0L
+    private var delivered = 0L
+    private var staleDropped = 0L
+    private var sameSemanticCoalesced = 0L
+    private var ordinarySuperseded = 0L
+    private var overflowCoalesced = 0L
+    private var criticalOverflowFailures = 0L
+    private var postRejected = 0L
+    private var clears = 0L
+    private var maxQueueDepth = 0
+    private var maxConcurrentRunnerOwners = 0
+
+    @Synchronized
+    fun offer(
+        proof: ReaderSurfaceView.CompletedDrawProof,
+        revealNativeSurface: Boolean,
+        nowNanos: Long,
+    ): OfferResult {
+        offers++
+        val next = Delivery(proof, revealNativeSurface)
+        val tail = semanticTransitions.peekLast()
+        var criticalOverflowed = false
+        when {
+            tail != null && sameSemanticViewport(tail.delivery.proof, proof) -> {
+                semanticTransitions.removeLast()
+                semanticTransitions.addLast(
+                    tail.copy(
+                        delivery = next.copy(
+                            revealNativeSurface =
+                                tail.delivery.revealNativeSurface || revealNativeSurface,
+                        ),
+                    ),
+                )
+                sameSemanticCoalesced++
+            }
+            tail != null -> {
+                val result = appendSemanticTransition(next, tail.delivery.proof)
+                criticalOverflowed = result
+            }
+            ordinary != null && sameSemanticViewport(ordinary!!.delivery.proof, proof) -> {
+                val previous = ordinary!!
+                ordinary = previous.copy(
+                    delivery = next.copy(
+                        revealNativeSurface =
+                            previous.delivery.revealNativeSurface || revealNativeSurface,
+                    ),
+                )
+                sameSemanticCoalesced++
+            }
+            ordinary != null -> {
+                val previous = ordinary!!.delivery.proof
+                ordinary = null
+                ordinarySuperseded++
+                criticalOverflowed = appendSemanticTransition(next, previous)
+            }
+            lastSelectedProof != null && sameSemanticViewport(lastSelectedProof!!, proof) -> {
+                ordinary = Entry(next, protectedTransition = false)
+            }
+            else -> {
+                criticalOverflowed = appendSemanticTransition(next, lastSelectedProof)
+            }
+        }
+        maxQueueDepth = maxOf(maxQueueDepth, pendingDepthLocked())
+        val reservation = reserveRunnerIfNeededLocked(nowNanos)
+        return OfferResult(
+            reservation.shouldPost,
+            reservation.delayNanos,
+            criticalOverflowed,
+        )
+    }
+
+    /** Moves the single scheduled owner to running. A cancelled/duplicate callback is inert. */
+    @Synchronized
+    fun beginRun(): Boolean {
+        if (runnerRunning || !runnerScheduled) return false
+        runnerScheduled = false
+        runnerRunning = true
+        noteRunnerOwnersLocked()
+        return true
+    }
+
+    /** Returns one due proof. Semantic transitions are never held behind ordinary cadence. */
+    @Synchronized
+    fun pollReady(nowNanos: Long): Delivery? {
+        check(runnerRunning) { "completed-draw runner is not active" }
+        semanticTransitions.pollFirst()?.let { entry ->
+            selectLocked(entry.delivery, nowNanos)
+            return entry.delivery
+        }
+        val pending = ordinary ?: return null
+        val dueAt = cadenceDueAtLocked()
+        if (nowNanos < dueAt) return null
+        ordinary = null
+        selectLocked(pending.delivery, nowNanos)
+        return pending.delivery
+    }
+
+    /**
+     * Atomically releases the running owner or reserves its only successor. Offers racing this
+     * method either see runnerRunning=true and are covered by this repost, or reserve their own
+     * wakeup after both flags become false; there is no lost-wakeup gap.
+     */
+    @Synchronized
+    fun finishRun(nowNanos: Long): Repost {
+        check(runnerRunning) { "completed-draw runner is not active" }
+        runnerRunning = false
+        if (pendingDepthLocked() == 0) {
+            runnerScheduled = false
+            return Repost(false, 0L)
+        }
+        runnerScheduled = true
+        scheduleRequests++
+        noteRunnerOwnersLocked()
+        val delay = if (semanticTransitions.isNotEmpty()) {
+            0L
+        } else {
+            (cadenceDueAtLocked() - nowNanos).coerceAtLeast(0L)
+        }
+        return Repost(true, delay)
+    }
+
+    @Synchronized
+    fun recordDeliveryResult(accepted: Boolean) {
+        if (accepted) delivered++ else staleDropped++
+    }
+
+    /** Releases a Handler reservation when post/postDelayed rejects during Looper teardown. */
+    @Synchronized
+    fun onPostRejected() {
+        postRejected++
+        runnerScheduled = false
+    }
+
+    /**
+     * Clears lifecycle-scoped proofs. A callback already executing keeps ownership so a new offer
+     * is consumed by that runner; a merely scheduled callback is removed by the caller first.
+     */
+    @Synchronized
+    fun clearAfterScheduledCallbackRemoval() {
+        semanticTransitions.clear()
+        ordinary = null
+        lastSelectedProof = null
+        lastSelectedAtNanos = Long.MIN_VALUE
+        runnerScheduled = false
+        clears++
+    }
+
+    @Synchronized
+    fun snapshot(): Snapshot = Snapshot(
+        offers = offers,
+        scheduleRequests = scheduleRequests,
+        selected = selected,
+        delivered = delivered,
+        staleDropped = staleDropped,
+        sameSemanticCoalesced = sameSemanticCoalesced,
+        ordinarySuperseded = ordinarySuperseded,
+        overflowCoalesced = overflowCoalesced,
+        criticalOverflowFailures = criticalOverflowFailures,
+        postRejected = postRejected,
+        clears = clears,
+        maxQueueDepth = maxQueueDepth,
+        pendingSemanticTransitions = semanticTransitions.size,
+        ordinaryPending = ordinary != null,
+        runnerScheduled = runnerScheduled,
+        runnerRunning = runnerRunning,
+        maxConcurrentRunnerOwners = maxConcurrentRunnerOwners,
+    )
+
+    private fun appendSemanticTransition(
+        delivery: Delivery,
+        previousProof: ReaderSurfaceView.CompletedDrawProof?,
+    ): Boolean {
+        val proof = delivery.proof
+        val protected = previousProof == null ||
+            !sameVisibleEpisodes(previousProof, proof) ||
+            proof.visiblePageIdentities.any { it.sourcePageIndex in 0 until 5 }
+        var protectedEntryEvicted = false
+        if (semanticTransitions.size >= maxSemanticTransitions) {
+            val iterator = semanticTransitions.iterator()
+            var removed = false
+            while (iterator.hasNext()) {
+                if (!iterator.next().protectedTransition) {
+                    iterator.remove()
+                    overflowCoalesced++
+                    removed = true
+                    break
+                }
+            }
+            if (!removed) {
+                // Every queued entry is a protected activation/episode/p0-p4 transition. Keep the
+                // fixed bound but retire the oldest proof so the newest physical viewport cannot
+                // be stranded forever if the producer stops here. The hard counter/log remains a
+                // fail-closed signal that an earlier semantic proof was not delivered.
+                semanticTransitions.removeFirst()
+                criticalOverflowFailures++
+                protectedEntryEvicted = true
+            }
+        }
+        semanticTransitions.addLast(Entry(delivery, protected))
+        return protectedEntryEvicted
+    }
+
+    private fun reserveRunnerIfNeededLocked(nowNanos: Long): Repost {
+        if (pendingDepthLocked() == 0 || runnerScheduled || runnerRunning) {
+            return Repost(false, 0L)
+        }
+        runnerScheduled = true
+        scheduleRequests++
+        noteRunnerOwnersLocked()
+        val delay = if (semanticTransitions.isNotEmpty()) {
+            0L
+        } else {
+            (cadenceDueAtLocked() - nowNanos).coerceAtLeast(0L)
+        }
+        return Repost(true, delay)
+    }
+
+    private fun selectLocked(delivery: Delivery, nowNanos: Long) {
+        lastSelectedProof = delivery.proof
+        lastSelectedAtNanos = nowNanos
+        selected++
+    }
+
+    private fun cadenceDueAtLocked(): Long {
+        if (lastSelectedAtNanos == Long.MIN_VALUE) return Long.MIN_VALUE
+        val maximumBase = Long.MAX_VALUE - ordinaryCadenceNanos
+        return lastSelectedAtNanos.coerceAtMost(maximumBase) + ordinaryCadenceNanos
+    }
+
+    private fun pendingDepthLocked(): Int = semanticTransitions.size + if (ordinary != null) 1 else 0
+
+    private fun noteRunnerOwnersLocked() {
+        val owners = (if (runnerScheduled) 1 else 0) + (if (runnerRunning) 1 else 0)
+        maxConcurrentRunnerOwners = maxOf(maxConcurrentRunnerOwners, owners)
+    }
+
+    private fun sameVisibleEpisodes(
+        first: ReaderSurfaceView.CompletedDrawProof,
+        second: ReaderSurfaceView.CompletedDrawProof,
+    ): Boolean {
+        val firstPaths = first.visiblePageIdentities.asSequence()
+            .map { it.normalizedEpisodePath }
+            .distinct()
+            .toList()
+        val secondPaths = second.visiblePageIdentities.asSequence()
+            .map { it.normalizedEpisodePath }
+            .distinct()
+            .toList()
+        return firstPaths == secondPaths
+    }
+
+    private fun sameSemanticViewport(
+        first: ReaderSurfaceView.CompletedDrawProof,
+        second: ReaderSurfaceView.CompletedDrawProof,
+    ): Boolean {
+        if (first.surfaceLifecycleEpoch != second.surfaceLifecycleEpoch ||
+            first.structureEpoch != second.structureEpoch ||
+            !first.visiblePageIndexes.contentEquals(second.visiblePageIndexes) ||
+            !samePresentationQualificationClass(first, second)
+        ) return false
+        val firstIdentities = first.visiblePageIdentities
+        val secondIdentities = second.visiblePageIdentities
+        if (firstIdentities.size != secondIdentities.size) return false
+        return firstIdentities.indices.all { index ->
+            firstIdentities[index] == secondIdentities[index]
+        }
+    }
+
+    /**
+     * A newer frame with the same page identity is not interchangeable when its physical proof
+     * or opaque-viewport class changed.  In particular, replacing an undelivered clean p0/episode
+     * proof with a later missing/placeholder frame makes the listener reject the only clean proof.
+     * Keep those frames as ordered transitions while still coalescing ordinary clean motion.
+     */
+    private fun samePresentationQualificationClass(
+        first: ReaderSurfaceView.CompletedDrawProof,
+        second: ReaderSurfaceView.CompletedDrawProof,
+    ): Boolean {
+        if (first.hardwareAccelerated != second.hardwareAccelerated ||
+            first.registeredHwuiFrameCommitCallbackObserved !=
+                second.registeredHwuiFrameCommitCallbackObserved ||
+            first.surfaceQueueSubmissionObserved != second.surfaceQueueSubmissionObserved ||
+            first.surfaceControlLatchObserved != second.surfaceControlLatchObserved ||
+            first.runwayDefect != second.runwayDefect
+        ) return false
+        return viewportQualificationClass(first.coverage) ==
+            viewportQualificationClass(second.coverage)
+    }
+
+    private fun viewportQualificationClass(coverage: ReaderSurfaceView.VisibleCoverageSnapshot): Int {
+        var result = 0
+        if (coverage.physicalViewportPx <= 0) result = result or (1 shl 0)
+        if (coverage.viewportPx < coverage.physicalViewportPx) result = result or (1 shl 1)
+        if (coverage.drawablePx < coverage.physicalViewportPx) result = result or (1 shl 2)
+        if (coverage.missingPx != 0) result = result or (1 shl 3)
+        if (coverage.placeholderPx != 0) result = result or (1 shl 4)
+        if (coverage.visibleLoading != 0) result = result or (1 shl 5)
+        if (coverage.visibleErrors != 0) result = result or (1 shl 6)
+        if (coverage.visibleCards != 0) result = result or (1 shl 7)
+        if (coverage.widthFillFailures != 0) result = result or (1 shl 8)
+        if (coverage.lowResolutionItems != 0) result = result or (1 shl 9)
+        if (coverage.directWifiForwardOnlyInitialResume) result = result or (1 shl 10)
+        if (coverage.directWifiForwardOnlyTerminalTailActual) result = result or (1 shl 11)
+        return result
     }
 }
 
@@ -314,6 +852,27 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val presentedUptimeNanos: Long = 0L,
         /** Scroll coordinate captured by this exact immutable submitted draw. */
         val scrollOffsetPx: Float = Float.NaN
+    )
+
+    /** Read-only health counters for the native-present to main-listener hand-off. */
+    data class CompletedDrawDispatchTelemetrySnapshot(
+        val offers: Long,
+        val scheduleRequests: Long,
+        val selected: Long,
+        val delivered: Long,
+        val staleDropped: Long,
+        val sameSemanticCoalesced: Long,
+        val ordinarySuperseded: Long,
+        val overflowCoalesced: Long,
+        val criticalOverflowFailures: Long,
+        val postRejected: Long,
+        val clears: Long,
+        val maxQueueDepth: Int,
+        val pendingSemanticTransitions: Int,
+        val ordinaryPending: Boolean,
+        val runnerScheduled: Boolean,
+        val runnerRunning: Boolean,
+        val maxConcurrentRunnerOwners: Int,
     )
 
     data class FrameStatsSnapshot(
@@ -499,7 +1058,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
     )
 
     interface WindowListener {
-        fun onWindowChanged(firstPage: Int, lastPage: Int, anchorPage: Int, progressPage: Int, progressOffset: Int, busy: Boolean)
+        fun onWindowChanged(
+            firstPage: Int,
+            lastPage: Int,
+            anchorPage: Int,
+            progressPage: Int,
+            progressOffset: Int,
+            busy: Boolean,
+            directionHint: Int,
+            reverseFirstPageHint: Int,
+        )
         fun onNearBoundary(direction: Int, anchorPage: Int)
         fun onBoundaryReached(direction: Int, anchorPage: Int)
         fun onTap()
@@ -645,7 +1213,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val nearStart: Boolean,
         val nearEnd: Boolean,
         val notifyNearStart: Boolean,
-        val notifyNearEnd: Boolean
+        val notifyNearEnd: Boolean,
+        val directionHint: Int = 0,
+        val reverseFirstPageHint: Int = -1,
     )
 
     private data class BoundaryRequest(
@@ -792,6 +1362,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
     } else {
         Handler(Looper.getMainLooper())
     }
+    private val completedDrawDispatchQueue = CompletedDrawDispatchQueue(
+        MAX_COMPLETED_DRAW_SEMANTIC_TRANSITIONS,
+        COMPLETED_DRAW_ORDINARY_CADENCE_NANOS,
+    )
+    private val completedDrawDispatchRunnable = Runnable { drainCompletedDrawDispatch() }
     private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
     @Volatile private var cachedDisplayRefreshRate =
         NtkDisplayTimingPolicy.normalizedRefreshRate(null)
@@ -1036,6 +1611,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var pendingHistorySamples = 0
     private var pendingWindowRequest: WindowRequest? = null
     private var windowDispatchPosted = false
+    /** Reverse MOVE evidence captured even when the window cadence suppresses that MOVE request. */
+    private var pendingReverseWindowFirstPageHint = -1
     private var pendingBlockedForwardRequest: WindowRequest? = null
     private var blockedForwardDispatchPosted = false
     private var lastBlockedForwardRequestAtMs = 0L
@@ -1068,6 +1645,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var inlineRealPixelsOnly = false
     private var forwardNativeTexturePrewarmEnabled = false
     private var directWifiExpandedNativeTextureRunway = false
+    private var directWifiExpandedNativeTextureEpisodeHistory =
+        NtkExpandedNativeTextureHistoryPolicy.State()
     private val directWifiExpandedNativeTextureEpisodePaths = linkedSetOf<String>()
     private var directWifiExpandedNativeTextureMinimumPage = 0
     private var directWifiShortWebtoonPixelWindowPrewarm = false
@@ -1511,12 +2090,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 ""
             }
             val minimumPage = if (expanded) max(0, expandedMinimumPage) else 0
-            val sameExpandedPaths = if (normalizedExpandedPath.isEmpty()) {
-                directWifiExpandedNativeTextureEpisodePaths.isEmpty()
+            val configuredHistory = if (expanded) {
+                NtkExpandedNativeTextureHistoryPolicy.configured(normalizedExpandedPath)
             } else {
-                directWifiExpandedNativeTextureEpisodePaths.size == 1 &&
-                    normalizedExpandedPath in directWifiExpandedNativeTextureEpisodePaths
+                NtkExpandedNativeTextureHistoryPolicy.State()
             }
+            val sameExpandedPaths =
+                directWifiExpandedNativeTextureEpisodeHistory == configuredHistory
             if (forwardNativeTexturePrewarmEnabled == enabled &&
                 directWifiExpandedNativeTextureRunway == expanded &&
                 sameExpandedPaths &&
@@ -1540,10 +2120,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 applyLockedRestorePositionLocked()
             }
-            directWifiExpandedNativeTextureEpisodePaths.clear()
-            if (normalizedExpandedPath.isNotEmpty()) {
-                directWifiExpandedNativeTextureEpisodePaths += normalizedExpandedPath
-            }
+            directWifiExpandedNativeTextureEpisodeHistory = configuredHistory
+            replaceDirectWifiExpandedNativeTextureEpisodePathsLocked()
             directWifiExpandedNativeTextureMinimumPage = minimumPage
             directWifiShortWebtoonPixelWindowPrewarm = false
             if (rollingNativeHandle != 0L) {
@@ -1576,13 +2154,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * Activity calls this only after every required current-episode drawable has completed, so
      * next work cannot compete with the current episode and no previous episode is admitted.
      */
-    fun authorizeCompletedForwardNativeTextureEpisode(episodePath: String) {
+    fun authorizeCompletedForwardNativeTextureEpisode(
+        predecessorEpisodePath: String,
+        episodePath: String,
+        claimRevision: Long,
+    ) {
+        val normalizedPredecessor = NtkStripDigests.normalizeEpisodePath(
+            predecessorEpisodePath,
+        )
         val normalizedPath = NtkStripDigests.normalizeEpisodePath(episodePath)
-        if (normalizedPath.isEmpty()) return
+        if (normalizedPredecessor.isEmpty() || normalizedPath.isEmpty() || claimRevision <= 0L) {
+            return
+        }
         synchronized(stateLock) {
-            if (!directWifiExpandedNativeTextureRunway ||
-                !directWifiExpandedNativeTextureEpisodePaths.add(normalizedPath)
-            ) return
+            if (!directWifiExpandedNativeTextureRunway) return
+            val updated = NtkExpandedNativeTextureHistoryPolicy.authorizeForward(
+                directWifiExpandedNativeTextureEpisodeHistory,
+                normalizedPredecessor,
+                normalizedPath,
+                claimRevision,
+            )
+            if (updated == directWifiExpandedNativeTextureEpisodeHistory) return
+            directWifiExpandedNativeTextureEpisodeHistory = updated
+            replaceDirectWifiExpandedNativeTextureEpisodePathsLocked()
             nativeTexturePrewarmAnchorPage = -1
             nativeTexturePrewarmDirty = true
             requestResidentNativeTexturePrewarmLocked()
@@ -1593,7 +2187,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
-    /** Drops the consumed episode from the forward-only profile after exact physical adoption. */
+    /** Retains one consumed predecessor after exact physical adoption for bounded reverse use. */
     fun advanceCompletedForwardNativeTextureEpisode(
         episodePath: String,
         firstDisplayPage: Int,
@@ -1602,13 +2196,31 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (normalizedPath.isEmpty()) return
         synchronized(stateLock) {
             if (!directWifiExpandedNativeTextureRunway) return
-            directWifiExpandedNativeTextureEpisodePaths.clear()
-            directWifiExpandedNativeTextureEpisodePaths += normalizedPath
+            val committedPath = pages.getOrNull(firstDisplayPage)
+                ?.committedIdentity
+                ?.normalizedEpisodePath
+                .orEmpty()
+            val updated = NtkExpandedNativeTextureHistoryPolicy.advanceAfterPhysicalCommit(
+                directWifiExpandedNativeTextureEpisodeHistory,
+                normalizedPath,
+                committedPath,
+            )
+            if (updated == directWifiExpandedNativeTextureEpisodeHistory) return
+            directWifiExpandedNativeTextureEpisodeHistory = updated
+            replaceDirectWifiExpandedNativeTextureEpisodePathsLocked()
             directWifiExpandedNativeTextureMinimumPage = max(0, firstDisplayPage)
             nativeTexturePrewarmAnchorPage = -1
             nativeTexturePrewarmDirty = true
             requestResidentNativeTexturePrewarmLocked()
         }
+    }
+
+    /** Must be called with [stateLock] held. */
+    private fun replaceDirectWifiExpandedNativeTextureEpisodePathsLocked() {
+        directWifiExpandedNativeTextureEpisodePaths.clear()
+        directWifiExpandedNativeTextureEpisodePaths.addAll(
+            directWifiExpandedNativeTextureEpisodeHistory.authorizedPaths(),
+        )
     }
 
     /**
@@ -1850,6 +2462,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastRequestedBusy = false
             pendingWindowRequest = null
             windowDispatchPosted = false
+            pendingReverseWindowFirstPageHint = -1
             pendingBlockedForwardRequest = null
             blockedForwardDispatchPosted = false
             lastBlockedForwardPage = -1
@@ -2011,6 +2624,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             boundaryArmedDirection = 0
             boundaryDispatchInFlight = false
             clampScrollLocked()
+            // Every pre-existing display index now names different content. Advance the
+            // structural epoch after all index remapping, but before a frame or prewarm request
+            // can reuse an old (epoch,index) texture/proof.
+            resetTraversalProofLocked(pages.size)
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
@@ -2047,6 +2664,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rebuildLayoutLocked()
             val viewportAnchor = progressPositionLocked()
             pages.subList(startIndex, endExclusive).clear()
+            val removed = endExclusive - startIndex
+            directWifiExpandedNativeTextureMinimumPage =
+                NtkExpandedNativeTextureHistoryPolicy.remapFloorAfterRemoval(
+                    directWifiExpandedNativeTextureMinimumPage,
+                    startIndex,
+                    removed,
+                    pages.size,
+                )
+            val remappedResumePage =
+                NtkExpandedNativeTextureHistoryPolicy.remapExactPageAfterRemoval(
+                    directWifiForwardOnlyInitialResumePage,
+                    startIndex,
+                    removed,
+                    pages.size,
+                )
+            if (directWifiForwardOnlyInitialResumePage >= 0 && remappedResumePage < 0) {
+                directWifiForwardOnlyInitialResumeOffset = 0
+                directWifiForwardOnlyInitialResumeRevealQualified = false
+                directWifiForwardOnlyTerminalTailRevealQualified = false
+            }
+            directWifiForwardOnlyInitialResumePage = remappedResumePage
+            nativeTexturePrewarmAnchorPage = -1
+            nativeTexturePrewarmDirty = true
             pageTopDeltas.clear()
             layoutDirty = true
             rebuildLayoutLocked()
@@ -2094,6 +2734,10 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             boundaryArmedDirection = 0
             boundaryDispatchInFlight = false
+            // Prefix/range removal renumbers every following display page. Retire queued native
+            // uploads and completed-draw proofs after all index remapping, before those numeric
+            // keys can bind new content.
+            resetTraversalProofLocked(pages.size)
             renderRequested = true
             scheduleFrameLocked()
             stateLock.notifyAll()
@@ -2359,7 +3003,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             // Keep GPU preparation bounded to the current forward runway; asking RenderThread to
             // upload a 500 MiB episode at once competes with the first real scroll frames.
             for (bitmap in hwuiBitmaps) {
-                if (!bitmap.isRecycled && bitmap.config != Bitmap.Config.HARDWARE) {
+                if (!bitmap.isRecycled && !bitmap.isHardwareConfigCompat()) {
                     runCatching { bitmap.prepareToDraw() }
                 }
             }
@@ -2482,7 +3126,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         if (hwuiBitmaps != null) {
             for (bitmap in hwuiBitmaps) {
-                if (!bitmap.isRecycled && bitmap.config != Bitmap.Config.HARDWARE) {
+                if (!bitmap.isRecycled && !bitmap.isHardwareConfigCompat()) {
                     runCatching { bitmap.prepareToDraw() }
                 }
             }
@@ -2519,8 +3163,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         } else {
             0
         }
+        val activeReverse = NtkExpandedNativeTextureHistoryPolicy
+            .shouldBypassResumeFloorForReverse(
+                activeInputDirection,
+                pointerDown,
+                dragging,
+                scrollbarDragging,
+                scroller.isFinished,
+            )
         return if (directWifiExpandedNativeTextureRunway &&
-            directWifiExpandedNativeTextureEpisodePaths.isNotEmpty()
+            directWifiExpandedNativeTextureEpisodePaths.isNotEmpty() && !activeReverse
         ) {
             max(visible, directWifiExpandedNativeTextureMinimumPage)
                 .coerceIn(0, pages.lastIndex)
@@ -3676,7 +4328,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if ((bitmap == null) == (tilePage == null)) return false
             if (bitmap != null) {
                 if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return false
-                directHardwareBatch = directHardwareBatch && bitmap.config == Bitmap.Config.HARDWARE
+                directHardwareBatch = directHardwareBatch && bitmap.isHardwareConfigCompat()
                 preparedBitmaps.add(bitmap)
             } else if (!usablePreparedTilePage(tilePage)) {
                 return false
@@ -3736,6 +4388,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 lastRequestedBusy = false
                 pendingWindowRequest = null
                 windowDispatchPosted = false
+                pendingReverseWindowFirstPageHint = -1
                 pendingBlockedForwardRequest = null
                 blockedForwardDispatchPosted = false
                 lastBlockedForwardPage = -1
@@ -3899,6 +4552,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastRequestedBusy = false
             pendingWindowRequest = null
             windowDispatchPosted = false
+            pendingReverseWindowFirstPageHint = -1
             pendingBlockedForwardRequest = null
             blockedForwardDispatchPosted = false
             lastBlockedForwardPage = -1
@@ -4118,7 +4772,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var successCount = 0
         for (target in plan.targets) {
             val bitmap = target.bitmap
-            if (bitmap.isRecycled || bitmap.config == Bitmap.Config.HARDWARE) continue
+            if (bitmap.isRecycled || bitmap.isHardwareConfigCompat()) continue
             try {
                 bitmap.prepareToDraw()
                 bytes += try {
@@ -4155,7 +4809,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     ): List<SoftwarePrepareTarget> {
         val selected = ArrayList<SoftwarePrepareTarget>(12)
         fun addIdentityDeduped(page: Int, bitmap: Bitmap) {
-            if (bitmap.isRecycled || bitmap.config == Bitmap.Config.HARDWARE) return
+            if (bitmap.isRecycled || bitmap.isHardwareConfigCompat()) return
             if (selected.any { it.bitmap === bitmap }) return
             selected.add(SoftwarePrepareTarget(page, bitmap))
         }
@@ -4213,7 +4867,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         if (rollingNativeHandle != 0L) return
         rebuildLayoutLocked()
         for (bitmap in collectUnpreparedHwuiRunwayLocked(HWUI_FORWARD_PREPARE_VIEWPORTS)) {
-            if (!bitmap.isRecycled && bitmap.config != Bitmap.Config.HARDWARE) {
+            if (!bitmap.isRecycled && !bitmap.isHardwareConfigCompat()) {
                 runCatching { bitmap.prepareToDraw() }
             }
         }
@@ -5470,13 +6124,14 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * background/configuration boundaries so stale `actual:` semantics cannot survive without a
      * new draw from the new lifecycle epoch.
      */
-    fun invalidateCommittedPresentationProof() {
+    @JvmOverloads
+    fun invalidateCommittedPresentationProof(scheduleIfVisible: Boolean = true) {
         synchronized(stateLock) {
             clearFramePipeLocked(preserveDirty = true)
             resetTraversalProofLocked(pages.size)
             advanceDesiredVersionLocked()
             renderRequested = true
-            if (renderRunning && pages.isNotEmpty() && isShown &&
+            if (scheduleIfVisible && renderRunning && pages.isNotEmpty() && isShown &&
                 windowVisibility == View.VISIBLE
             ) {
                 scheduleFrameLocked()
@@ -5607,6 +6262,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 committedRunwayDefectFrames = traversalCommittedRunwayDefectFrames
             )
         }
+    }
+
+    /** O(1) structure identity for commit validation; traversalSnapshot() remains the full audit. */
+    fun currentTraversalStructureEpoch(): Long = synchronized(stateLock) {
+        traversalStructureEpoch
+    }
+
+    fun completedDrawDispatchTelemetrySnapshot(): CompletedDrawDispatchTelemetrySnapshot {
+        val snapshot = completedDrawDispatchQueue.snapshot()
+        return CompletedDrawDispatchTelemetrySnapshot(
+            offers = snapshot.offers,
+            scheduleRequests = snapshot.scheduleRequests,
+            selected = snapshot.selected,
+            delivered = snapshot.delivered,
+            staleDropped = snapshot.staleDropped,
+            sameSemanticCoalesced = snapshot.sameSemanticCoalesced,
+            ordinarySuperseded = snapshot.ordinarySuperseded,
+            overflowCoalesced = snapshot.overflowCoalesced,
+            criticalOverflowFailures = snapshot.criticalOverflowFailures,
+            postRejected = snapshot.postRejected,
+            clears = snapshot.clears,
+            maxQueueDepth = snapshot.maxQueueDepth,
+            pendingSemanticTransitions = snapshot.pendingSemanticTransitions,
+            ordinaryPending = snapshot.ordinaryPending,
+            runnerScheduled = snapshot.runnerScheduled,
+            runnerRunning = snapshot.runnerRunning,
+            maxConcurrentRunnerOwners = snapshot.maxConcurrentRunnerOwners,
+        )
     }
 
     private fun resetTraversalProofLocked(expectedPageCount: Int) {
@@ -6516,10 +7199,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 dispatchWindowRequest(result.first, fromInput = true)
                 dispatchBoundaryRequest(result.second)
-                if (tap) mainHandler.post { listener?.onTap() }
+                if (tap) mainHandler.post { performClick() }
                 return true
             }
         }
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        listener?.onTap()
         return true
     }
 
@@ -8720,6 +9409,11 @@ class ReaderSurfaceView @JvmOverloads constructor(
         clearInputStateLocked()
         activeScrollerOffsetShift = 0f
         activeInputDirection = 0
+        pendingReverseWindowFirstPageHint = -1
+        pendingWindowRequest = pendingWindowRequest?.copy(
+            directionHint = 0,
+            reverseFirstPageHint = -1,
+        )
         boundaryArmedDirection = 0
         statsLastCallbackStartNs = 0L
         statsLastPostEndNs = 0L
@@ -9261,46 +9955,99 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
             stateLock.notifyAll()
         }
-if (completed != null) {
-            Log.d(
-                "ViewerPerf",
-                "reader_ntk_strict_proof_created token=" + completed!!.frameToken +
-                    ",epoch=" + completed!!.structureEpoch + ",visible=" +
-                    completed!!.visiblePageIndexes.joinToString("|") +
-                    ",register=${completed!!.registeredHwuiFrameCommitCallbackObserved}," +
-                    "queue=${completed!!.surfaceQueueSubmissionObserved}," +
-                    "latch=${completed!!.surfaceControlLatchObserved},items=${completed!!.coverage.drawableItems}"
-            )
-        }
         completed?.let { proof ->
             publishBenchmarkAdjacentP0CandidateIfEligible(proof)
-            mainHandler.post {
-                // A pause/configuration change may retire the surface after the HWUI callback but
-                // before this listener dispatch runs. Never let that queued proof republish stale
-                // `actual:` semantics in the next foreground lifecycle.
-val lifecycleStillCurrent = synchronized(stateLock) {
+            val offer = completedDrawDispatchQueue.offer(
+                proof,
+                revealNativeSurfaceAfterCompletedHwui,
+                SystemClock.elapsedRealtimeNanos(),
+            )
+            if (offer.criticalOverflowed) {
+                // A fixed-capacity queue must never silently discard a first-seen episode/p0-p4
+                // transition. Rejecting the proof is fail-closed and this hard metric makes the
+                // capacity defect visible in production and regression traces.
+                Log.e(
+                    "ViewerPerf",
+                    "reader_completed_draw_dispatch_critical_overflow " +
+                        "epoch=${proof.surfaceLifecycleEpoch},structure=${proof.structureEpoch}," +
+                        "visible=${proof.visiblePageIndexes.joinToString("|")}",
+                )
+            }
+            if (offer.shouldPost) {
+                val accepted = if (offer.delayNanos <= 0L) {
+                    mainHandler.post(completedDrawDispatchRunnable)
+                } else {
+                    val delayMillis = ceil(offer.delayNanos / 1_000_000.0)
+                        .toLong()
+                        .coerceAtLeast(1L)
+                    mainHandler.postDelayed(completedDrawDispatchRunnable, delayMillis)
+                }
+                if (!accepted) completedDrawDispatchQueue.onPostRejected()
+            }
+        }
+    }
+
+    /** Drains semantic transitions promptly while ordinary same-viewport frames remain bounded. */
+    private fun drainCompletedDrawDispatch() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (!completedDrawDispatchQueue.beginRun()) return
+        var deliveries = 0
+        var repost: CompletedDrawDispatchQueue.Repost
+        try {
+            while (deliveries < MAX_COMPLETED_DRAW_DELIVERIES_PER_RUN) {
+                val delivery = completedDrawDispatchQueue.pollReady(
+                    SystemClock.elapsedRealtimeNanos(),
+                ) ?: break
+                val proof = delivery.proof
+                // A pause, Surface replacement, or page-table mutation may retire a proof while
+                // it waits in the bounded mailbox. Both identities must still match immediately
+                // before the Activity can publish `actual:` semantics or reveal the native child.
+                val lifecycleAndStructureCurrent = synchronized(stateLock) {
                     isCompletedDrawProofLifecycleCurrent(
                         proof.surfaceLifecycleEpoch,
-                        lifecycleEpoch
-                    )
+                        lifecycleEpoch,
+                    ) && proof.structureEpoch == traversalStructureEpoch
                 }
-                if (!lifecycleStillCurrent) {
+                if (!lifecycleAndStructureCurrent) {
                     Log.w(
                         "ViewerPerf",
                         "reader_ntk_strict_proof_lifecycle_skip " +
-                            "proofEpoch=${proof.surfaceLifecycleEpoch},currentEpoch=$lifecycleEpoch"
+                            "proofEpoch=${proof.surfaceLifecycleEpoch},currentEpoch=$lifecycleEpoch," +
+                            "proofStructure=${proof.structureEpoch}," +
+                            "currentStructure=$traversalStructureEpoch",
                     )
                 }
-                if (lifecycleStillCurrent) {
-                    listener?.onCompletedDraw(proof)
-                    if (revealNativeSurfaceAfterCompletedHwui) {
-                        revealNativeSurfaceAfterFirstHwuiCommit(
-                            proof.surfaceLifecycleEpoch
-                        )
+                try {
+                    if (lifecycleAndStructureCurrent) {
+                        listener?.onCompletedDraw(proof)
+                        if (delivery.revealNativeSurface) {
+                            revealNativeSurfaceAfterFirstHwuiCommit(
+                                proof.surfaceLifecycleEpoch,
+                            )
+                        }
                     }
+                } finally {
+                    completedDrawDispatchQueue.recordDeliveryResult(
+                        lifecycleAndStructureCurrent,
+                    )
                 }
+                deliveries++
             }
+        } finally {
+            repost = completedDrawDispatchQueue.finishRun(
+                SystemClock.elapsedRealtimeNanos(),
+            )
         }
+        if (!repost.shouldPost) return
+        val accepted = if (repost.delayNanos <= 0L) {
+            mainHandler.post(completedDrawDispatchRunnable)
+        } else {
+            val delayMillis = ceil(repost.delayNanos / 1_000_000.0)
+                .toLong()
+                .coerceAtLeast(1L)
+            mainHandler.postDelayed(completedDrawDispatchRunnable, delayMillis)
+        }
+        if (!accepted) completedDrawDispatchQueue.onPostRejected()
     }
 
     /**
@@ -9397,6 +10144,11 @@ val lifecycleStillCurrent = synchronized(stateLock) {
     }
 
     private fun clearFramePipeLocked(preserveDirty: Boolean) {
+        // Remove only this dispatcher's wakeup before releasing its scheduled owner. A callback
+        // already running keeps runnerRunning=true and will either consume a new-lifecycle offer
+        // or atomically release ownership, so lifecycle teardown cannot create a lost wakeup.
+        mainHandler.removeCallbacks(completedDrawDispatchRunnable)
+        completedDrawDispatchQueue.clearAfterScheduledCallbackRemoval()
         lifecycleEpoch++
         if (lifecycleEpoch <= 0L) lifecycleEpoch = 1L
         val callback = inFlightCommitCallback
@@ -10176,11 +10928,12 @@ val lifecycleStillCurrent = synchronized(stateLock) {
 
     @Keep
     fun onNtkRollingFrameDropped(token: Long) {
-        mainHandler.post {
-            val submission = synchronized(stateLock) { pendingFrameCommits[token] }
-                ?: return@post
-            recoverDirectSurfaceSubmission(submission.frameEpoch, token)
-        }
+        // Native mailbox supersession is already serialized by [stateLock]. Retire the token on
+        // this producer callback instead of placing two Runnables behind the completed-draw/UI
+        // queue. Otherwise six delayed drop callbacks can fill the commit window and turn a
+        // transiently busy main thread into a persistent render stall until Home recreates it.
+        val epoch = synchronized(stateLock) { pendingFrameCommits[token]?.frameEpoch } ?: return
+        recoverDirectSurfaceSubmission(epoch, token)
     }
 
     @Keep
@@ -10266,18 +11019,18 @@ val lifecycleStillCurrent = synchronized(stateLock) {
     }
 
     private fun recoverDirectSurfaceSubmission(epoch: Long, token: Long) {
-        mainHandler.post {
-            synchronized(stateLock) {
-                if (epoch != lifecycleEpoch) return@synchronized
-                pendingFrameCommits.remove(token)
-                if (token == inFlightToken && epoch == inFlightEpoch) {
-                    releasePostedAdmissionLocked(preserveDirty = true)
-                }
-                drawnVersion = latestSubmittedVersionLocked()
-                if (pages.isNotEmpty()) renderRequested = true
-                scheduleNoStateRetryLocked()
-                stateLock.notifyAll()
+        synchronized(stateLock) {
+            if (epoch != lifecycleEpoch || pendingFrameCommits[token]?.frameEpoch != epoch) return
+            pendingFrameCommits.remove(token)
+            if (token == inFlightToken && epoch == inFlightEpoch) {
+                releasePostedAdmissionLocked(preserveDirty = true)
             }
+            drawnVersion = latestSubmittedVersionLocked()
+            if (pages.isNotEmpty()) renderRequested = true
+            // This method posts the eventual retry to main; no View mutation occurs on the native
+            // callback thread itself.
+            scheduleNoStateRetryLocked()
+            stateLock.notifyAll()
         }
     }
 
@@ -10286,6 +11039,22 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         val anchor = anchorPageLocked()
         val first = max(0, anchor - ReaderPipelinePolicy.windowBefore(busy))
         val last = min(pages.lastIndex, anchor + ReaderPipelinePolicy.windowAfter(busy))
+        val liveReverseEvidence = NtkReverseWindowEvidencePolicy.capture(
+            busy = busy,
+            activeDirection = activeInputDirection,
+            firstVisiblePage = firstVisiblePageLocked(scrollOffset)
+                .coerceIn(0, pages.lastIndex),
+        )
+        if (liveReverseEvidence.reverseFirstPageHint >= 0) {
+            pendingReverseWindowFirstPageHint = if (pendingReverseWindowFirstPageHint >= 0) {
+                minOf(
+                    pendingReverseWindowFirstPageHint,
+                    liveReverseEvidence.reverseFirstPageHint,
+                )
+            } else {
+                liveReverseEvidence.reverseFirstPageHint
+            }
+        }
         val boundaryPx = height * NEAR_BOUNDARY_SCREENFULS
         val nearStart = scrollOffset <= boundaryPx ||
             anchor <= NEAR_BOUNDARY_PAGE_THRESHOLD
@@ -10317,6 +11086,17 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         lastNearEnd = nearEnd
         lastRequestedBusy = busy
         if (busy) lastBusyWindowDispatchMs = SystemClock.uptimeMillis()
+        val reverseEvidence = NtkReverseWindowEvidencePolicy.merge(
+            NtkReverseWindowEvidencePolicy.Evidence(
+                directionHint = if (pendingReverseWindowFirstPageHint >= 0) {
+                    DIRECTION_PREVIOUS
+                } else {
+                    0
+                },
+                reverseFirstPageHint = pendingReverseWindowFirstPageHint,
+            ),
+            liveReverseEvidence,
+        )
         return WindowRequest(
             first,
             last,
@@ -10327,14 +11107,46 @@ val lifecycleStillCurrent = synchronized(stateLock) {
             nearStart,
             nearEnd,
             notifyNearStart,
-            notifyNearEnd
+            notifyNearEnd,
+            reverseEvidence.directionHint,
+            reverseEvidence.reverseFirstPageHint,
         )
     }
 
     private fun dispatchWindowRequest(request: WindowRequest?, fromInput: Boolean = false) {
         if (request == null) return
         synchronized(stateLock) {
-            pendingWindowRequest = request
+            val previous = pendingWindowRequest
+            val previousEvidence = previous?.let {
+                NtkReverseWindowEvidencePolicy.Evidence(
+                    it.directionHint,
+                    it.reverseFirstPageHint,
+                )
+            }
+            val cadenceSuppressedEvidence = NtkReverseWindowEvidencePolicy.Evidence(
+                directionHint = if (pendingReverseWindowFirstPageHint >= 0) {
+                    DIRECTION_PREVIOUS
+                } else {
+                    0
+                },
+                reverseFirstPageHint = pendingReverseWindowFirstPageHint,
+            )
+            val requestEvidence = NtkReverseWindowEvidencePolicy.merge(
+                cadenceSuppressedEvidence,
+                NtkReverseWindowEvidencePolicy.Evidence(
+                    request.directionHint,
+                    request.reverseFirstPageHint,
+                ),
+            )
+            val evidence = NtkReverseWindowEvidencePolicy.merge(
+                previousEvidence,
+                requestEvidence,
+            )
+            pendingReverseWindowFirstPageHint = -1
+            pendingWindowRequest = request.copy(
+                directionHint = evidence.directionHint,
+                reverseFirstPageHint = evidence.reverseFirstPageHint,
+            )
             if (windowDispatchPosted) return
             windowDispatchPosted = true
         }
@@ -10363,7 +11175,9 @@ val lifecycleStillCurrent = synchronized(stateLock) {
             latest.anchorPage,
             latest.progressPage,
             latest.progressOffset,
-            latest.busy
+            latest.busy,
+            latest.directionHint,
+            latest.reverseFirstPageHint,
         )
         if (latest.notifyNearStart) currentListener.onNearBoundary(DIRECTION_PREVIOUS, latest.anchorPage)
         if (latest.notifyNearEnd) currentListener.onNearBoundary(DIRECTION_NEXT, latest.anchorPage)
@@ -12752,6 +13566,11 @@ val lifecycleStillCurrent = synchronized(stateLock) {
         // At 90 Hz this spans about 67 ms, enough to absorb the measured host-GPU commit latency
         // while keeping callbacks, immutable coverage proofs and retained page references bounded.
         private const val MAX_PENDING_FRAME_COMMITS = 6
+        // Preserve 60 Hz telemetry cadence while preventing a 90 Hz native producer from posting
+        // an unbounded stream of Activity-heavy callbacks. Semantic identity changes bypass it.
+        private const val COMPLETED_DRAW_ORDINARY_CADENCE_NANOS = 16_000_000L
+        private const val MAX_COMPLETED_DRAW_SEMANTIC_TRANSITIONS = 64
+        private const val MAX_COMPLETED_DRAW_DELIVERIES_PER_RUN = 6
         private const val VISIBLE_LOADING_HOLD_RETRY_MS = 48L
         private const val NO_STATE_FRAME_RETRY_MS = 48L
         private const val EXACT_STRUCTURE_HOLD_LOG_INTERVAL_MS = 250L

@@ -11,7 +11,7 @@ import java.security.Signature
 import java.security.interfaces.ECPrivateKey
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
-import java.util.Base64
+import ml.melun.mangaview.util.NtkBase64
 
 /** Service-process-only server request key and one-shot exact-sign capability. */
 class NtkAckRequestKeyStore(
@@ -48,8 +48,8 @@ class NtkAckRequestKeyStore(
             "crv" to "P-256",
             "ext" to true,
             "key_ops" to listOf("verify"),
-            "x" to Base64.getUrlEncoder().withoutPadding().encodeToString(unsignedFixed32(key.w.affineX)),
-            "y" to Base64.getUrlEncoder().withoutPadding().encodeToString(unsignedFixed32(key.w.affineY)),
+            "x" to NtkBase64.encodeUrlWithoutPadding(unsignedFixed32(key.w.affineX)),
+            "y" to NtkBase64.encodeUrlWithoutPadding(unsignedFixed32(key.w.affineY)),
         )
     }
 
@@ -228,9 +228,9 @@ class NtkAckRequestKeyStore(
     ): NtkAckServerSignature {
         val timestamp = (System.currentTimeMillis() + serverTimeOffsetMs).toString()
         val nonceBytes = ByteArray(24).also(SecureRandom()::nextBytes)
-        val nonce = Base64.getUrlEncoder().withoutPadding().encodeToString(nonceBytes)
+        val nonce = NtkBase64.encodeUrlWithoutPadding(nonceBytes)
         val digest = MessageDigest.getInstance("SHA-256").digest(bodyBytes)
-        val bodyHashBase64Url = Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
+        val bodyHashBase64Url = NtkBase64.encodeUrlWithoutPadding(digest)
         val canonical = "ntk-brsig-v1\n$method\n$endpoint\n$scope\n" +
             "$requestKeyId\n$timestamp\n$nonce\n$bodyHashBase64Url"
         val signature = signP1363(
@@ -241,7 +241,7 @@ class NtkAckRequestKeyStore(
             requestKeyId,
             timestamp,
             nonce,
-            Base64.getUrlEncoder().withoutPadding().encodeToString(signature),
+            NtkBase64.encodeUrlWithoutPadding(signature),
             NtkAckProofCodec.sha256Hex(bodyBytes),
         )
     }

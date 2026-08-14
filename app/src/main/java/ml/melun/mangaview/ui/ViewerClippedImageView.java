@@ -84,7 +84,6 @@ public class ViewerClippedImageView extends AppCompatImageView {
 
     private void drawClippedBitmap(Canvas canvas, Bitmap bitmap, int alpha) {
         if(!canvas.getClipBounds(clipRect)) {
-            super.onDraw(canvas);
             return;
         }
         if(!computeVisibleRects(bitmap.getWidth(), bitmap.getHeight(), getWidth(), getHeight(),

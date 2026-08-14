@@ -34,8 +34,15 @@ public class Decoder {
     }
 
     public Bitmap decode(Bitmap input, int width){
-        input = getSampleBitmap(input, width, null);
-        return decode(input);
+        Bitmap sampled = getSampleBitmap(input, width, null);
+        Bitmap output = null;
+        try {
+            output = decode(sampled);
+            return output;
+        } finally {
+            if(sampled != input && sampled != output && !sampled.isRecycled())
+                sampled.recycle();
+        }
     }
     public Bitmap decode(Bitmap input, int width, BitmapPool pool){
         BitmapCandidate sampled = getSampleCandidate(input, width, pool);
@@ -79,8 +86,15 @@ public class Decoder {
     }
 
     public Bitmap decode(Bitmap input){
-        input = downSample(input, MAX_DISPLAY_BITMAP_BYTES);
-        return decodeDownsampled(input, null);
+        Bitmap downsampled = downSample(input, MAX_DISPLAY_BITMAP_BYTES);
+        Bitmap output = null;
+        try {
+            output = decodeDownsampled(downsampled, null);
+            return output;
+        } finally {
+            if(downsampled != input && downsampled != output && !downsampled.isRecycled())
+                downsampled.recycle();
+        }
     }
 
     public Bitmap decode(Bitmap input, BitmapPool pool){

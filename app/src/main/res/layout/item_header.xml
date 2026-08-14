@@ -15,6 +15,7 @@
         android:layout_width="132dp"
         android:layout_height="178dp"
         android:background="@drawable/app_cover_placeholder"
+        android:contentDescription="@null"
         android:clipToOutline="true"
         android:outlineProvider="background"
         android:scaleType="centerCrop"
@@ -89,8 +90,9 @@
         <ImageView
             android:id="@+id/recommendIcon"
             android:layout_width="16dp"
-            android:layout_height="16dp"
-            app:srcCompat="@drawable/ic_thumb" />
+                android:layout_height="16dp"
+                android:contentDescription="@null"
+                app:srcCompat="@drawable/ic_thumb" />
 
         <TextView
             android:id="@+id/recommendText"
@@ -143,6 +145,7 @@
                 android:id="@+id/favoriteIcon"
                 android:layout_width="22dp"
                 android:layout_height="22dp"
+                android:contentDescription="@null"
                 app:srcCompat="@drawable/ic_favorite_border" />
 
         </LinearLayout>
@@ -160,6 +163,7 @@
                 android:id="@+id/bookmarkIcon"
                 android:layout_width="22dp"
                 android:layout_height="22dp"
+                android:contentDescription="@null"
                 app:srcCompat="@drawable/ic_bookmark_border" />
 
         </LinearLayout>

@@ -1,5 +1,6 @@
 package ml.melun.mangaview.mangaview;
 
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
 import android.net.Uri;
@@ -700,7 +701,6 @@ public final class NtkWebViewFallbackManager {
                 settings.setAllowContentAccess(false);
                 settings.setUserAgentString(userAgent);
                 applyChromeUaMetadata(settings, userAgent);
-                suppressRequestedWithHeader(settings);
                 CookieManager.getInstance().setAcceptCookie(true);
                 finish[0] = () -> {
                     if(ok.get())
@@ -1755,7 +1755,6 @@ public final class NtkWebViewFallbackManager {
                 settings.setOffscreenPreRaster(false);
             settings.setUserAgentString(effectiveUserAgent);
             applyChromeUaMetadata(settings, effectiveUserAgent);
-            suppressRequestedWithHeader(settings);
             CookieManager cookieManager = CookieManager.getInstance();
             cookieManager.setAcceptCookie(true);
             cookieManager.setAcceptThirdPartyCookies(view, true);
@@ -2040,6 +2039,7 @@ public final class NtkWebViewFallbackManager {
                 }
 
                 @Override
+                @TargetApi(26)
                 public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                     Log.d(TAG, "ntk_ack_only_render_process_gone path=" + path
                             + ",didCrash=" + (detail != null && detail.didCrash())
@@ -2056,17 +2056,21 @@ public final class NtkWebViewFallbackManager {
                 ViewGroup hiddenParent = content == null ? decor : content;
                 boolean ackOnlyInteractiveCloudflareFrame = ackOnlyPlainCloudflarePass && realMainFrame
                         && !ACK_ONLY_CLOUDFLARE_NATIVE_FLOW_ONLY;
+                boolean userInteractiveFrame = visibleRealMainFrame
+                        || ackOnlyInteractiveCloudflareFrame;
                 boolean visibleAckFrame = visibleRealMainFrame
                         || (ackOnlyFrame && realMainFrame && !ackOnlyPlainCloudflarePass);
                 boolean compactHiddenAckFrame = ackOnlyFrame
                         && !visibleRealMainFrame
                         && !ackOnlyInteractiveCloudflareFrame;
+                if(!userInteractiveFrame)
+                    suppressBackgroundWebViewAccessibility(view);
                 view.setAlpha(compactHiddenAckFrame ? 0.01f
                         : (visibleAckFrame || realImageFrame || realSlugWebtoonImageFrame)
                         ? 1f : 0.01f);
-                view.setClickable(visibleRealMainFrame || ackOnlyInteractiveCloudflareFrame);
-                view.setFocusable(visibleRealMainFrame || ackOnlyInteractiveCloudflareFrame);
-                view.setFocusableInTouchMode(visibleRealMainFrame || ackOnlyInteractiveCloudflareFrame);
+                view.setClickable(userInteractiveFrame);
+                view.setFocusable(userInteractiveFrame);
+                view.setFocusableInTouchMode(userInteractiveFrame);
                 FrameLayout.LayoutParams params = compactHiddenAckFrame
                         ? new FrameLayout.LayoutParams(390, 120, Gravity.TOP | Gravity.LEFT)
                         : (realImageFrame || realSlugWebtoonImageFrame)
@@ -4653,21 +4657,6 @@ public final class NtkWebViewFallbackManager {
         return ua.contains("; wv") || ua.contains(" wv") || ua.contains("version/4.0");
     }
 
-    private static void suppressRequestedWithHeader(WebSettings settings) {
-        if(settings == null)
-            return;
-        try {
-            if(!WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
-                Log.d(TAG, "ntk_webview_requested_with_suppress unsupported");
-                return;
-            }
-            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, Collections.emptySet());
-            Log.d(TAG, "ntk_webview_requested_with_suppress enabled");
-        } catch (Exception e) {
-            Log.d(TAG, "ntk_webview_requested_with_suppress failed", e);
-        }
-    }
-
     private void scheduleAckOnlyCloudflareBridge(WebView view, boolean[] finished, String path,
                                                  long delayMs) {
         mainHandler.postDelayed(() -> installAckOnlyCloudflareBridge(view, finished, path,
@@ -5168,7 +5157,6 @@ public final class NtkWebViewFallbackManager {
         if(webView != null) {
             webView.getSettings().setUserAgentString(userAgent);
             applyChromeUaMetadata(webView.getSettings(), userAgent);
-            suppressRequestedWithHeader(webView.getSettings());
             attachSharedWebViewToActivity();
             return;
         }
@@ -5182,7 +5170,6 @@ public final class NtkWebViewFallbackManager {
         settings.setAllowContentAccess(false);
         settings.setUserAgentString(userAgent);
         applyChromeUaMetadata(settings, userAgent);
-        suppressRequestedWithHeader(settings);
         CookieManager.getInstance().setAcceptCookie(true);
         webView.addJavascriptInterface(new Bridge(), "NtkBridge");
         if(NtkQuicFetcher.isAvailable())
@@ -5420,7 +5407,10 @@ public final class NtkWebViewFallbackManager {
     }
 
     private void attachSharedWebViewToActivity() {
-        if(webView == null || webView.getParent() != null)
+        if(webView == null)
+            return;
+        suppressBackgroundWebViewAccessibility(webView);
+        if(webView.getParent() != null)
             return;
         Activity activity = MainApplication.currentActivity;
         if(activity == null || activity.isFinishing() || activity.getWindow() == null)
@@ -5428,9 +5418,6 @@ public final class NtkWebViewFallbackManager {
         try {
             ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
             webView.setAlpha(0.01f);
-            webView.setClickable(false);
-            webView.setFocusable(false);
-            webView.setFocusableInTouchMode(false);
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                     Math.max(360, decor.getWidth()), Math.max(220, decor.getHeight() / 4),
                     Gravity.BOTTOM | Gravity.LEFT);
@@ -5439,6 +5426,22 @@ public final class NtkWebViewFallbackManager {
         } catch (Exception e) {
             ml.melun.mangaview.report.CrashReporter.record(e);
         }
+    }
+
+    /**
+     * Keeps an attached rendering-only WebView out of touch, keyboard and accessibility
+     * traversal without making it invisible. The tiny alpha and live attachment are required
+     * for the browser renderer to keep executing document and challenge JavaScript.
+     */
+    private static void suppressBackgroundWebViewAccessibility(WebView view) {
+        if(view == null)
+            return;
+        view.setContentDescription(null);
+        view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        view.setClickable(false);
+        view.setLongClickable(false);
+        view.setFocusable(false);
+        view.setFocusableInTouchMode(false);
     }
 
     private void timeoutOnMain(FetchTask task) {
@@ -12061,11 +12064,16 @@ public final class NtkWebViewFallbackManager {
     }
 
     public interface ViewerQuicBridgeApi {
+        @JavascriptInterface
         String request(String url, String method, String headersJson, String bodyBase64);
+        @JavascriptInterface
         String ensureViewerBrowserKeyForUserAgent(String pageUrl, String requestUserAgent);
+        @JavascriptInterface
         String signViewerRequestFormat(String method, String signedPath, String signedScope,
                                        String bodyText, String signatureFormat);
+        @JavascriptInterface
         String hmacSha256(String key, String message);
+        @JavascriptInterface
         String recentMetricImageHits(String urlsJson);
     }
 

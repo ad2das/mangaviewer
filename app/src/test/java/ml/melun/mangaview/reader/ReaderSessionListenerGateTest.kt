@@ -402,12 +402,20 @@ class ReaderSessionListenerGateTest {
             downstream = downstream,
         )
 
-        gate.onForwardAdjacentPathResolved("/manhwa/work/episode-11")
+        gate.onForwardAdjacentPathResolved(
+            "/manhwa/work/episode-10",
+            "/manhwa/work/episode-11",
+            7L,
+        )
         activeGeneration = 9
-        gate.onForwardAdjacentPathResolved("/manhwa/work/episode-12")
+        gate.onForwardAdjacentPathResolved(
+            "/manhwa/work/episode-11",
+            "/manhwa/work/episode-12",
+            8L,
+        )
 
         assertEquals(
-            listOf("adjacent-authorized:/manhwa/work/episode-11"),
+            listOf("adjacent-authorized:/manhwa/work/episode-11:after:/manhwa/work/episode-10:rev:7"),
             downstream.events,
         )
     }
@@ -491,8 +499,12 @@ class ReaderSessionListenerGateTest {
             events += "adjacent-exact:${manga.ntkEpisodePath}:after:$predecessorEpisodePath"
         }
 
-        override fun onForwardAdjacentPathResolved(episodePath: String) {
-            events += "adjacent-authorized:$episodePath"
+        override fun onForwardAdjacentPathResolved(
+            predecessorEpisodePath: String,
+            episodePath: String,
+            claimRevision: Long,
+        ) {
+            events += "adjacent-authorized:$episodePath:after:$predecessorEpisodePath:rev:$claimRevision"
         }
 
         override fun onBoundaryAppendFinished(

@@ -75,7 +75,7 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         dark = p.getDarkTheme();
 
-        if(dark) setTheme(R.style.AppThemeDark);
+        if(dark) setTheme(R.style.AppThemeDark_ActionBar);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
         getWindow().setStatusBarColor(ContextCompat.getColor(this, dark ? R.color.colorDarkWindowBackground : R.color.appSurface));

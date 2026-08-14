@@ -20404,46 +20404,46 @@ data class NtkResolvedSourceRoute(
             var wrote = false
             val baseModes = intArrayOf(MTitle.base_webtoon, MTitle.base_comic)
             for (baseMode in baseModes) {
-            val cacheKey = key(baseMode, value)
-            val finalFile = File(dir, "$cacheKey.img")
-            val modeWrote = withCurrentCachePublication(generation) {
-                if (isUsableImage(finalFile)) {
-                    val existingProof = encodedOriginalByteProof(baseMode, value, finalFile)
-                    if (existingProof != null) {
-                        touchCacheHitForLru(finalFile)
-                        return@withCurrentCachePublication true
+                val cacheKey = key(baseMode, value)
+                val finalFile = File(dir, "$cacheKey.img")
+                val modeWrote = withCurrentCachePublication(generation) {
+                    if (isUsableImage(finalFile)) {
+                        val existingProof = encodedOriginalByteProof(baseMode, value, finalFile)
+                        if (existingProof != null) {
+                            touchCacheHitForLru(finalFile)
+                            return@withCurrentCachePublication true
+                        }
                     }
-                }
-                val tmp = File(finalFile.parentFile, "${finalFile.name}.trusted.${System.nanoTime()}")
-                try {
-                    val proof = writeEncodedBytesToFile(tmp, data)
-                    if (!isUsableImage(tmp)) {
-                        tmp.delete()
-                        return@withCurrentCachePublication false
-                    }
-                    withCacheWriteLock(cacheKey) {
-                        if (isUsableImage(finalFile)) {
-                            val existingProof = encodedOriginalByteProof(baseMode, value, finalFile)
-                            if (existingProof != null) {
-                                tmp.delete()
-                                touchCacheHitForLru(finalFile)
+                    val tmp = File(finalFile.parentFile, "${finalFile.name}.trusted.${System.nanoTime()}")
+                    try {
+                        val proof = writeEncodedBytesToFile(tmp, data)
+                        if (!isUsableImage(tmp)) {
+                            tmp.delete()
+                            return@withCurrentCachePublication false
+                        }
+                        withCacheWriteLock(cacheKey) {
+                            if (isUsableImage(finalFile)) {
+                                val existingProof = encodedOriginalByteProof(baseMode, value, finalFile)
+                                if (existingProof != null) {
+                                    tmp.delete()
+                                    touchCacheHitForLru(finalFile)
+                                } else {
+                                    replaceEncodedBody(tmp, finalFile)
+                                    finalFile.setLastModified(System.currentTimeMillis())
+                                    publishEncodedOriginalByteProof(baseMode, value, finalFile, proof)
+                                }
                             } else {
                                 replaceEncodedBody(tmp, finalFile)
                                 finalFile.setLastModified(System.currentTimeMillis())
                                 publishEncodedOriginalByteProof(baseMode, value, finalFile, proof)
                             }
-                        } else {
-                            replaceEncodedBody(tmp, finalFile)
-                            finalFile.setLastModified(System.currentTimeMillis())
-                            publishEncodedOriginalByteProof(baseMode, value, finalFile, proof)
                         }
+                        true
+                    } catch (_: Throwable) {
+                        tmp.delete()
+                        false
                     }
-                    true
-                } catch (_: Throwable) {
-                    tmp.delete()
-                    false
-                }
-            } ?: return false
+                } ?: return false
                 if (modeWrote) wrote = true
             }
             if (wrote) {

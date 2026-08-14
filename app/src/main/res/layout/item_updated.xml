@@ -30,6 +30,7 @@
                 android:layout_marginBottom="@dimen/app_space_sm"
                 android:layout_width="match_parent"
                 android:background="@drawable/app_cover_placeholder"
+                android:contentDescription="@null"
                 android:scaleType="centerCrop"
                 app:layout_constraintBottom_toTopOf="@+id/main_new_name"
                 app:layout_constraintEnd_toEndOf="parent"

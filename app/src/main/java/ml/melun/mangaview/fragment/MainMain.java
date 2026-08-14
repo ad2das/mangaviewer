@@ -18,6 +18,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.ViewCompat;
 import androidx.fragment.app.Fragment;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -64,6 +65,7 @@ public class MainMain extends Fragment{
     TextView modeComic;
     View homeLoadStatus;
     TextView homeLoadStatusText;
+    View homeRetryButton;
     int selectedBaseMode = base_webtoon;
 
     final static int FOR_YOU_TAB = 0;
@@ -143,6 +145,9 @@ public class MainMain extends Fragment{
         modeComic = rootView.findViewById(R.id.modeComic);
         homeLoadStatus = rootView.findViewById(R.id.homeLoadStatus);
         homeLoadStatusText = rootView.findViewById(R.id.homeLoadStatusText);
+        homeRetryButton = rootView.findViewById(R.id.homeRetryButton);
+        if(homeRetryButton != null)
+            homeRetryButton.setOnClickListener(view -> retrySelectedHome());
         applyHomeTheme(rootView);
 
         TabLayout.Tab forYouTab = mainTabLayout.newTab().setText("홈");
@@ -479,11 +484,14 @@ public class MainMain extends Fragment{
                 + ",to=" + baseMode
                 + ",resumed=" + isResumed()
                 + ",wait=" + wait);
-        hideHomeLoadStatus();
         RecyclerView previousRecycler = mainRecycler;
         RecyclerView targetRecycler = baseMode == base_comic ? comicRecycler : webtoonRecycler;
-        if(selectedBaseMode == baseMode && mainRecycler == targetRecycler)
+        if(selectedBaseMode == baseMode && mainRecycler == targetRecycler) {
+            if(shouldRetrySelectedHomeOnReselect(selectedFetchState()))
+                retrySelectedHome();
             return;
+        }
+        hideHomeLoadStatus();
         boolean initialAttach = mainRecycler == null;
         selectedBaseMode = baseMode;
         p.setBaseMode(baseMode);
@@ -584,6 +592,8 @@ public class MainMain extends Fragment{
     }
 
     private void styleModeButton(TextView view, boolean selected) {
+        view.setSelected(selected);
+        ViewCompat.setStateDescription(view, selected ? "선택됨" : "선택 안 됨");
         if(view instanceof MaterialButton) {
             MaterialButton button = (MaterialButton)view;
             int background = ContextCompat.getColor(getContext(), selected ? R.color.appAccent : android.R.color.transparent);
@@ -841,6 +851,20 @@ public class MainMain extends Fragment{
             homeLoadStatus.setVisibility(View.GONE);
     }
 
+    private void retrySelectedHome() {
+        if(!canUseHomeUi() || wait)
+            return;
+        hideHomeLoadStatus();
+        if(selectedBaseMode == base_comic)
+            fetchComic();
+        else
+            fetchWebtoon();
+    }
+
+    static boolean shouldRetrySelectedHomeOnReselect(int fetchState) {
+        return fetchState == HOME_FETCH_FAILED;
+    }
+
     private void refreshHomeLocalState() {
         if(mainComicAdapter != null)
             mainComicAdapter.refreshLocalState();
@@ -921,6 +945,7 @@ public class MainMain extends Fragment{
         mainWebtoonAdapter = null;
         homeLoadStatus = null;
         homeLoadStatusText = null;
+        homeRetryButton = null;
         homeClickListener = null;
         comicFetchState = HOME_FETCH_IDLE;
         webtoonFetchState = HOME_FETCH_IDLE;

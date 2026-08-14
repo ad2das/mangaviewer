@@ -309,9 +309,22 @@
 
     <!-- Accessibility descriptions -->
     <string name="cover_image">표지 이미지</string>
+    <string name="navigate_back">뒤로가기</string>
+    <string name="retry_loading">다시 불러오기</string>
     <string name="site_icon">사이트 아이콘</string>
     <string name="episode_thumbnail">에피소드 썸네일</string>
     <string name="download_episode">에피소드 다운로드</string>
+    <string name="episode_toolbar_description">회차 화면 도구 모음</string>
+    <string name="episode_toolbar_back">뒤로 가기</string>
+    <string name="episode_toolbar_add_favorite">즐겨찾기에 추가</string>
+    <string name="episode_toolbar_remove_favorite">즐겨찾기에서 제거</string>
+    <string name="episode_toolbar_download">회차 다운로드</string>
+    <string name="episode_toolbar_more">더보기</string>
+    <string name="episode_open">회차 열기</string>
+    <string name="episode_remove_download">저장한 회차 삭제</string>
+    <string name="episode_current_state">현재 읽는 회차</string>
+    <string name="episode_selected_state">선택됨</string>
+    <string name="episode_new_state">새 회차</string>
     <string name="scroll_to_top">맨 위로 스크롤</string>
     <string name="scroll_to_bottom">맨 아래로 스크롤</string>
     <string name="resume">이어서 보기</string>

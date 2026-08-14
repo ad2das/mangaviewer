@@ -441,7 +441,6 @@ object NtkBrowserSessionBroker {
             installDocumentStartCapture(view, key)
         }
         applyChromeUaMetadata(view.settings, effectiveUserAgent)
-        suppressRequestedWithHeader(view.settings)
         view.id = R.id.strip
         view.contentDescription = null
         view.visibility = View.VISIBLE
@@ -5891,16 +5890,6 @@ ${imageTags}
             WebSettingsCompat.setUserAgentMetadata(settings, metadata)
         } catch (e: Throwable) {
             Log.d(TAG, "ntk_browser_broker_ua_metadata_error $e")
-        }
-    }
-
-    private fun suppressRequestedWithHeader(settings: WebSettings?) {
-        if (settings == null) return
-        try {
-            if (!WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) return
-            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
-        } catch (e: Throwable) {
-            Log.d(TAG, "ntk_browser_broker_requested_with_error $e")
         }
     }
 

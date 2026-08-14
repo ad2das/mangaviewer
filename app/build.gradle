@@ -55,7 +55,10 @@ android {
     def code = formattedDate.toInteger() + 2112000000 + releasePatch
     defaultConfig {
         applicationId "ml.melun.mangaview"
-        minSdkVersion 23
+        // Production code relies pervasively on Java/Android APIs introduced in API 24
+        // (notably CompletableFuture). Advertising API 23 made Android 6.0 installs possible
+        // even though ordinary reader paths could fail with linkage errors at runtime.
+        minSdkVersion 24
         targetSdkVersion 33
         versionName "4.6-" + code
         versionCode code

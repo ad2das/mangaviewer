@@ -5,11 +5,14 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.BitSet
+import java.util.TreeMap
 
 private class NtkPrestartedExecutionLane(
     threadCount: Int,
@@ -103,6 +106,267 @@ internal class NtkFullSceneExecutionBootstrap : Closeable {
     }
 }
 
+/**
+ * A sorted, non-overlapping union of content intervals.
+ *
+ * Its size follows distinct uncovered gaps in the finite episode, rather than the number of
+ * presented frames.  This is the important distinction for a long reader session: repeatedly
+ * presenting the same (or adjacent) pixels is allocation-free after the union has converged.
+ */
+internal class NtkMergedPresentedCoverage {
+    private val intervalsByStart = TreeMap<Long, Long>()
+
+    val intervalCount: Int
+        get() = intervalsByStart.size
+
+    fun add(startPx: Long, endPx: Long) {
+        require(startPx >= 0L && endPx > startPx)
+        var mergedStart = startPx
+        var mergedEnd = endPx
+
+        val preceding = intervalsByStart.floorEntry(mergedStart)
+        if (preceding != null && preceding.value >= mergedStart) {
+            mergedStart = preceding.key
+            mergedEnd = maxOf(mergedEnd, preceding.value)
+            intervalsByStart.remove(preceding.key)
+        }
+
+        var following = intervalsByStart.ceilingEntry(mergedStart)
+        while (following != null && following.key <= mergedEnd) {
+            mergedEnd = maxOf(mergedEnd, following.value)
+            intervalsByStart.remove(following.key)
+            following = intervalsByStart.ceilingEntry(mergedStart)
+        }
+        intervalsByStart[mergedStart] = mergedEnd
+    }
+
+    fun addAll(intervals: Iterable<NtkPresentedContentInterval>) {
+        intervals.forEach { add(it.startPx, it.endPx) }
+    }
+
+    fun covers(startPx: Long, endPx: Long): Boolean {
+        if (endPx <= startPx) return false
+        val containing = intervalsByStart.floorEntry(startPx) ?: return false
+        return containing.value >= endPx
+    }
+
+    fun snapshot(): List<NtkPresentedContentInterval> = intervalsByStart.entries.map {
+        NtkPresentedContentInterval(it.key, it.value)
+    }
+
+    fun clear() = intervalsByStart.clear()
+}
+
+internal data class NtkViewportProofBatch(
+    val surfaceEpoch: Long,
+    val hasMixedSurfaceEpochs: Boolean,
+    val hasBindingSeed: Boolean,
+    val hasMissingProof: Boolean,
+    val hasInvalidContentInterval: Boolean,
+    val hasInvalidPageRange: Boolean,
+    val offerCount: Long,
+    val viewportDefectCount: Long,
+    val runwayDefectCount: Long,
+    val presentedIntervals: List<NtkPresentedContentInterval>,
+    val presentedPages: BitSet
+)
+
+/** Unchecked producer evidence; validation belongs to the actor-owned proof transition. */
+internal data class NtkViewportProofEvidence(
+    val surfaceEpoch: Long,
+    val isBindingSeed: Boolean,
+    val proofPresent: Boolean,
+    val visibleContentStartPx: Long,
+    val visibleContentEndPx: Long,
+    val firstVisiblePage: Int,
+    val lastVisiblePage: Int,
+    val viewportOriginalComplete: Boolean,
+    val runwayOriginalComplete: Boolean
+) {
+    companion object {
+        fun from(sample: NtkViewportSample): NtkViewportProofEvidence {
+            val proof = sample.presentedProof
+            return NtkViewportProofEvidence(
+                surfaceEpoch = sample.surfaceEpoch,
+                isBindingSeed = sample.isBindingSeed,
+                proofPresent = proof != null,
+                visibleContentStartPx = proof?.visibleContentStartPx ?: 0L,
+                visibleContentEndPx = proof?.visibleContentEndPx ?: 0L,
+                firstVisiblePage = proof?.firstVisiblePage ?: 0,
+                lastVisiblePage = proof?.lastVisiblePage ?: 0,
+                viewportOriginalComplete = proof?.viewportOriginalComplete ?: false,
+                runwayOriginalComplete = proof?.runwayOriginalComplete ?: false
+            )
+        }
+    }
+}
+
+/**
+ * Lossless single-flight mailbox for native viewport proof samples.
+ *
+ * Producers merge intervals, page coverage, and counters under a small lock.  At most one actor
+ * runnable is queued or draining.  The drain keeps the scheduled claim while invoking the
+ * consumer and checks the pending aggregate again before releasing it, closing the usual
+ * offer-versus-drain lost-wakeup race.
+ */
+internal class NtkViewportProofMailbox(
+    private val pageCount: Int,
+    private val scheduleDrain: (Runnable) -> Boolean,
+    private val consumeBatch: (NtkViewportProofBatch) -> Unit,
+    private val onScheduleFailure: (Throwable) -> Unit = {},
+    private val onDrainFailure: (Throwable) -> Unit = {}
+) {
+    init {
+        require(pageCount >= 0)
+    }
+
+    private class Pending(private val pageCount: Int) {
+        var surfaceEpoch = 0L
+        var hasMixedSurfaceEpochs = false
+        var hasBindingSeed = false
+        var hasMissingProof = false
+        var hasInvalidContentInterval = false
+        var hasInvalidPageRange = false
+        var offerCount = 0L
+        var viewportDefectCount = 0L
+        var runwayDefectCount = 0L
+        val intervals = NtkMergedPresentedCoverage()
+        val pages = BitSet(pageCount)
+
+        val isEmpty: Boolean
+            get() = offerCount == 0L
+
+        fun add(evidence: NtkViewportProofEvidence) {
+            offerCount = Math.addExact(offerCount, 1L)
+            if (surfaceEpoch == 0L) surfaceEpoch = evidence.surfaceEpoch
+            else if (surfaceEpoch != evidence.surfaceEpoch) hasMixedSurfaceEpochs = true
+            if (evidence.isBindingSeed) hasBindingSeed = true
+
+            if (!evidence.proofPresent) {
+                hasMissingProof = true
+                return
+            }
+            if (evidence.visibleContentStartPx < 0L ||
+                evidence.visibleContentEndPx <= evidence.visibleContentStartPx
+            ) {
+                hasInvalidContentInterval = true
+            } else {
+                intervals.add(evidence.visibleContentStartPx, evidence.visibleContentEndPx)
+            }
+            if (evidence.firstVisiblePage < 0 ||
+                evidence.lastVisiblePage < evidence.firstVisiblePage ||
+                evidence.lastVisiblePage >= pageCount
+            ) {
+                hasInvalidPageRange = true
+            } else {
+                pages.set(evidence.firstVisiblePage, evidence.lastVisiblePage + 1)
+            }
+            if (!evidence.viewportOriginalComplete) {
+                viewportDefectCount = Math.addExact(viewportDefectCount, 1L)
+            }
+            if (!evidence.runwayOriginalComplete) {
+                runwayDefectCount = Math.addExact(runwayDefectCount, 1L)
+            }
+        }
+
+        fun snapshot(): NtkViewportProofBatch = NtkViewportProofBatch(
+            surfaceEpoch = surfaceEpoch,
+            hasMixedSurfaceEpochs = hasMixedSurfaceEpochs,
+            hasBindingSeed = hasBindingSeed,
+            hasMissingProof = hasMissingProof,
+            hasInvalidContentInterval = hasInvalidContentInterval,
+            hasInvalidPageRange = hasInvalidPageRange,
+            offerCount = offerCount,
+            viewportDefectCount = viewportDefectCount,
+            runwayDefectCount = runwayDefectCount,
+            presentedIntervals = intervals.snapshot(),
+            presentedPages = pages.clone() as BitSet
+        )
+    }
+
+    private val lock = Any()
+    private var accepting = true
+    private var drainScheduled = false
+    private var pending = Pending(pageCount)
+    private val drainRunnable = Runnable(::drainScheduledBatches)
+
+    fun offer(sample: NtkViewportSample): Boolean = offerEvidence(
+        NtkViewportProofEvidence.from(sample)
+    )
+
+    internal fun offerEvidence(evidence: NtkViewportProofEvidence): Boolean {
+        val shouldSchedule = synchronized(lock) {
+            if (!accepting) return false
+            pending.add(evidence)
+            if (drainScheduled) false else {
+                drainScheduled = true
+                true
+            }
+        }
+        if (!shouldSchedule) return true
+        val scheduled = runCatching { scheduleDrain(drainRunnable) }.getOrDefault(false)
+        if (!scheduled) {
+            synchronized(lock) {
+                accepting = false
+                pending = Pending(pageCount)
+                drainScheduled = false
+            }
+            onScheduleFailure(
+                RejectedExecutionException("Viewport proof actor rejected its single drain")
+            )
+        }
+        return scheduled
+    }
+
+    /** Actor-thread barrier used immediately before an explicit proof snapshot. */
+    fun flushPendingOnConsumerThread() {
+        while (true) {
+            val batch = synchronized(lock) { takePendingLocked() } ?: return
+            consumeBatch(batch)
+        }
+    }
+
+    fun cancel() {
+        synchronized(lock) {
+            accepting = false
+            pending = Pending(pageCount)
+            drainScheduled = false
+            // Retirement deliberately discards proof that was not consumed before the explicit
+            // terminal-snapshot barrier. A previously queued runnable observes empty and exits;
+            // accepting=false prevents it or any later producer from scheduling another drain.
+        }
+    }
+
+    internal fun hasScheduledDrainForTesting(): Boolean = synchronized(lock) { drainScheduled }
+
+    private fun drainScheduledBatches() {
+        try {
+            while (true) {
+                val batch = synchronized(lock) {
+                    val next = takePendingLocked()
+                    if (next == null) drainScheduled = false
+                    next
+                } ?: return
+                consumeBatch(batch)
+            }
+        } catch (error: Throwable) {
+            synchronized(lock) {
+                accepting = false
+                pending = Pending(pageCount)
+                drainScheduled = false
+            }
+            onDrainFailure(error)
+        }
+    }
+
+    private fun takePendingLocked(): NtkViewportProofBatch? {
+        if (pending.isEmpty) return null
+        val batch = pending.snapshot()
+        pending = Pending(pageCount)
+        return batch
+    }
+}
+
 /** Executes [NtkFullScenePreparationMachine] against the production source/decoder/native ports. */
 internal class NtkFullScenePreparationRunner(
     private val owner: NtkEpisodeStripPipeline,
@@ -144,8 +408,12 @@ internal class NtkFullScenePreparationRunner(
     private var viewportOffers = 0L
     private var viewportDefects = 0L
     private var runwayDefects = 0L
-    private val presentedPages = LinkedHashSet<Int>()
-    private val presentedIntervals = ArrayList<NtkPresentedContentInterval>()
+    private val presentedPages = BitSet(manifestSeal.pageCount)
+    private val presentedIntervals = NtkMergedPresentedCoverage()
+    private var cachedGeometryTileKeys: Set<NtkStripTileKey>? = null
+    private var wholeContentCoverageObserved = false
+    private var viewportDefectObserved = false
+    private var runwayDefectObserved = false
     private val payloads = LinkedHashMap<Long, ReaderTile>()
     private val uploadingTiles = ConcurrentHashMap<NtkNativeInstallIdentity, ReaderTile>()
     private val leases = LinkedHashMap<Long, NtkBodyLeaseDispatcher.OpenedLease>()
@@ -163,6 +431,13 @@ internal class NtkFullScenePreparationRunner(
     private val decodeDispatcher = NtkFullSceneDecodeDispatcher(
         eventSink = { event -> post { onDecodeEvent(event) } },
         laneServicesOverride = executionEngines.decodeLanes
+    )
+    private val viewportMailbox = NtkViewportProofMailbox(
+        pageCount = manifestSeal.pageCount,
+        scheduleDrain = { runnable -> postRunnable(runnable) },
+        consumeBatch = { batch -> applyViewportBatch(batch) },
+        onScheduleFailure = { error -> failViewportMailboxSchedule(error) },
+        onDrainFailure = { error -> fail(error) }
     )
 
     fun start() {
@@ -262,29 +537,8 @@ internal class NtkFullScenePreparationRunner(
     }
 
     fun onViewportSample(sample: NtkViewportSample) {
-        post {
-            val current = state
-                ?: return@post fail(IllegalStateException("Viewport arrived before preparation"))
-            if (sample.isBindingSeed ||
-                sample.surfaceEpoch != current.publishedSurface?.surfaceEpoch
-            ) {
-                fail(IllegalStateException("Invalid native viewport authority/sequence"))
-                return@post
-            }
-            viewportOffers++
-            val proof = sample.presentedProof
-                ?: return@post fail(IllegalStateException("Presented native frame lacks proof"))
-            presentedIntervals += NtkPresentedContentInterval(
-                proof.visibleContentStartPx,
-                proof.visibleContentEndPx
-            )
-            for (page in proof.firstVisiblePage..proof.lastVisiblePage) {
-                presentedPages += page
-            }
-            if (!proof.viewportOriginalComplete) viewportDefects++
-            if (!proof.runwayOriginalComplete) runwayDefects++
-            publishProof()
-        }
+        if (retired.get()) return
+        viewportMailbox.offer(sample)
     }
 
     fun activate(completion: (Boolean) -> Unit) {
@@ -302,6 +556,7 @@ internal class NtkFullScenePreparationRunner(
     }
 
     fun terminalProofSnapshot(completion: (NtkEpisodeProofSnapshot?) -> Unit) = post {
+        flushViewportMailbox()
         publishProof()
         completion(latestProof)
     }
@@ -311,9 +566,13 @@ internal class NtkFullScenePreparationRunner(
         val latch = CountDownLatch(1)
         var result: NtkEpisodeProofSnapshot? = null
         if (!post {
-                publishProof()
-                result = latestProof
-                latch.countDown()
+                try {
+                    flushViewportMailbox()
+                    publishProof()
+                    result = latestProof
+                } finally {
+                    latch.countDown()
+                }
             }) return null
         return if (latch.await(timeoutMillis, TimeUnit.MILLISECONDS)) result else null
     }
@@ -348,6 +607,7 @@ internal class NtkFullScenePreparationRunner(
 
     fun retire(reason: String) {
         if (!retired.compareAndSet(false, true)) return
+        viewportMailbox.cancel()
         actor.execute {
             beginTerminalCleanup(reason, null)
         }
@@ -737,16 +997,68 @@ internal class NtkFullScenePreparationRunner(
         }
     }
 
+    private fun applyViewportBatch(batch: NtkViewportProofBatch) {
+        val current = state
+            ?: return fail(IllegalStateException("Viewport arrived before preparation"))
+        if (batch.hasBindingSeed || batch.hasMixedSurfaceEpochs ||
+            batch.surfaceEpoch != current.publishedSurface?.surfaceEpoch
+        ) {
+            fail(IllegalStateException("Invalid native viewport authority/sequence"))
+            return
+        }
+        if (batch.hasMissingProof) {
+            fail(IllegalStateException("Presented native frame lacks proof"))
+            return
+        }
+        if (batch.hasInvalidContentInterval || batch.hasInvalidPageRange) {
+            fail(IllegalStateException("Presented native frame proof is outside episode bounds"))
+            return
+        }
+
+        viewportOffers = Math.addExact(viewportOffers, batch.offerCount)
+        viewportDefects = Math.addExact(viewportDefects, batch.viewportDefectCount)
+        runwayDefects = Math.addExact(runwayDefects, batch.runwayDefectCount)
+        presentedIntervals.addAll(batch.presentedIntervals)
+        presentedPages.or(batch.presentedPages)
+
+        var meaningfulProofTransition = false
+        if (!viewportDefectObserved && batch.viewportDefectCount > 0L) {
+            viewportDefectObserved = true
+            meaningfulProofTransition = true
+        }
+        if (!runwayDefectObserved && batch.runwayDefectCount > 0L) {
+            runwayDefectObserved = true
+            meaningfulProofTransition = true
+        }
+        val geometry = current.geometry
+        if (!wholeContentCoverageObserved && geometry != null &&
+            presentedIntervals.covers(0L, geometry.contentHeightPx)
+        ) {
+            wholeContentCoverageObserved = true
+            meaningfulProofTransition = true
+        }
+        if (meaningfulProofTransition) publishProof()
+    }
+
+    private fun flushViewportMailbox() {
+        runCatching { viewportMailbox.flushPendingOnConsumerThread() }
+            .onFailure(::fail)
+    }
+
     private fun publishProof() {
         val current = state ?: return
         val seal = current.preparedSeal ?: return
         val geometry = current.geometry ?: return
-        val merged = NtkEpisodeProofSnapshot.mergePresentedIntervals(presentedIntervals)
+        val merged = presentedIntervals.snapshot()
         val whole = merged.size == 1 && merged[0].startPx == 0L &&
             merged[0].endPx >= geometry.contentHeightPx
-        val allKeys = geometry.pages.flatMap { page -> page.tiles.map { it.key } }.toSet()
+        val allKeys = cachedGeometryTileKeys ?: geometry.pages
+            .flatMap { page -> page.tiles.map { it.key } }
+            .toSet()
+            .also { cachedGeometryTileKeys = it }
+        val pageSnapshot = presentedPages.toPageSet(manifestSeal.pageCount)
         val missingPages = (0 until manifestSeal.pageCount).filterNot {
-            it in presentedPages
+            presentedPages.get(it)
         }.toSet()
         val counters = NtkResidencyCounters(
             viewportOffers = viewportOffers,
@@ -768,8 +1080,8 @@ internal class NtkFullScenePreparationRunner(
             everDecodedTiles = allKeys,
             everPublishedTiles = allKeys,
             presentedContentIntervals = merged,
-            presentedPages = presentedPages.toSet(),
-            traversalCommittedPages = presentedPages.size,
+            presentedPages = pageSnapshot,
+            traversalCommittedPages = presentedPages.cardinality(),
             traversalMissingPages = missingPages,
             viewportDefectFrames = viewportDefects,
             runwayDefectFrames = runwayDefects,
@@ -799,8 +1111,28 @@ internal class NtkFullScenePreparationRunner(
 
     private fun fail(error: Throwable) {
         if (retired.compareAndSet(false, true)) {
+            viewportMailbox.cancel()
             beginTerminalCleanup("failure", error)
         }
+    }
+
+    /**
+     * Scheduling normally fails only after retirement. If an active executor rejects the sole
+     * drain, retry the fail transition on the actor; if even that is impossible, close the source
+     * and notify failure directly so no unowned aggregate or apparently valid proof survives.
+     */
+    private fun failViewportMailboxSchedule(error: Throwable) {
+        if (retired.get()) return
+        val actorAccepted = runCatching {
+            actor.execute { fail(error) }
+            true
+        }.getOrDefault(false)
+        if (actorAccepted || !retired.compareAndSet(false, true)) return
+        viewportMailbox.cancel()
+        runCatching { sourceBinding?.close() }
+        sourceBinding = null
+        failureNotified = true
+        runCatching { listener.onFailed(owner, error) }
     }
 
     private fun beginTerminalCleanup(reason: String, error: Throwable?) {
@@ -884,6 +1216,7 @@ internal class NtkFullScenePreparationRunner(
     private fun finishTerminalCleanup() {
         if (terminalCleanupCompleted) return
         terminalCleanupCompleted = true
+        viewportMailbox.cancel()
         uploadingTiles.values.forEach(::recycle)
         uploadingTiles.clear()
         runCatching { listener.onTerminalCleanupComplete(owner) }
@@ -900,8 +1233,23 @@ internal class NtkFullScenePreparationRunner(
         return runCatching { actor.execute(block); true }.getOrDefault(false)
     }
 
+    private fun postRunnable(runnable: Runnable): Boolean {
+        if (retired.get() || actor.isShutdown) return false
+        return runCatching { actor.execute(runnable); true }.getOrDefault(false)
+    }
+
     private fun recycle(tile: ReaderTile) {
         if (!tile.bitmap.isRecycled) tile.bitmap.recycle()
+    }
+
+    private fun BitSet.toPageSet(pageCount: Int): Set<Int> {
+        val result = LinkedHashSet<Int>(cardinality())
+        var page = nextSetBit(0)
+        while (page >= 0 && page < pageCount) {
+            result += page
+            page = nextSetBit(page + 1)
+        }
+        return result
     }
 
     internal companion object {

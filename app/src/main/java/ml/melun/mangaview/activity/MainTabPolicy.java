@@ -18,6 +18,10 @@ final class MainTabPolicy {
         return 0;
     }
 
+    static int normalizeStartTab(int index) {
+        return index >= 0 && index <= 2 ? index : 0;
+    }
+
     static int fragmentIndex(int itemId) {
         switch(itemId) {
             case R.id.nav_main:

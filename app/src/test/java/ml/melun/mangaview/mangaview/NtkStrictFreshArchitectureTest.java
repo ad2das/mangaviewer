@@ -912,7 +912,8 @@ public final class NtkStrictFreshArchitectureTest {
                 "override fun onPause()",
                 "override fun onResume()");
         assertTrue(pause.contains("strictTelemetryActualInLifecycle = false"));
-        assertTrue(pause.contains("renderView.invalidateCommittedPresentationProof()"));
+        assertTrue(pause.contains(
+                "renderView.invalidateCommittedPresentationProof(scheduleIfVisible = false)"));
         assertTrue(pause.contains("renderView.contentDescription = null"));
 
         String rotate = method(reader,

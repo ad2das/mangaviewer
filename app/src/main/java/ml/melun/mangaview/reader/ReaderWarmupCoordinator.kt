@@ -209,11 +209,11 @@ object ReaderWarmupCoordinator {
             if (bitmap.isRecycled) return false
             if (!isCandidate(index)) {
                 return Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
-                    bitmap.config == Bitmap.Config.HARDWARE
+                    bitmap.isHardwareConfigCompat()
             }
             val wantsSoftware = chooseSoftware(
                 index,
-                if (bitmap.config == Bitmap.Config.HARDWARE) {
+                if (bitmap.isHardwareConfigCompat()) {
                     estimatedArgbAllocationBytes(bitmap.width, bitmap.height, 1)
                 } else {
                     bitmapAllocationBytes(bitmap)
@@ -224,7 +224,7 @@ object ReaderWarmupCoordinator {
                     confirmSoftware(index, bitmap)
             } else {
                 Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
-                    bitmap.config == Bitmap.Config.HARDWARE
+                    bitmap.isHardwareConfigCompat()
             }
         }
 
@@ -2389,7 +2389,7 @@ object ReaderWarmupCoordinator {
                 ViewerWarmupManager.logMetric("reader_warmup_first_decode_ms", finishedAt - startedAt)
                 ViewerWarmupManager.logMetric(
                     "reader_warmup_first_hardware_bitmap",
-                    if (decoded.config == Bitmap.Config.HARDWARE) 1L else 0L
+                    if (decoded.isHardwareConfigCompat()) 1L else 0L
                 )
             }
             // The bounded software prefix is prepared later, after the production EpisodeActivity

@@ -27,7 +27,7 @@ import java.io.ByteArrayInputStream
 import java.net.URI
 import java.security.KeyPair
 import java.security.MessageDigest
-import java.util.Base64
+import ml.melun.mangaview.util.NtkBase64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -835,12 +835,12 @@ class NtkAckBrowserEngine(
 
         @JavascriptInterface
         fun guardJavascriptBase64(token: String): String = withFlight(token) {
-            Base64.getEncoder().encodeToString(it.guardJavascript)
+            NtkBase64.encode(it.guardJavascript)
         }.orEmpty()
 
         @JavascriptInterface
         fun guardWasmBase64(token: String): String = withFlight(token) {
-            Base64.getEncoder().encodeToString(it.guardWasm)
+            NtkBase64.encode(it.guardWasm)
         }.orEmpty()
 
         @JavascriptInterface
@@ -873,7 +873,7 @@ class NtkAckBrowserEngine(
                     method.equals("POST", true) && uri.path == "/api/ad/canary" ->
                         bridgeResult(checkNotNull(current.canaryResult))
                     method.equals("POST", true) && uri.path == "/api/ad/ack" -> {
-                        val body = Base64.getDecoder().decode(bodyBase64)
+                        val body = NtkBase64.decode(bodyBase64)
                         if (body.isEmpty()) {
                             current.guardState = "ack-empty-ignored"
                             bridgeNoContent()
@@ -1394,7 +1394,7 @@ class NtkAckBrowserEngine(
         return JSONObject()
             .put("ok", true)
             .put("status", result.status)
-            .put("bodyBase64", Base64.getEncoder().encodeToString(result.body))
+            .put("bodyBase64", NtkBase64.encode(result.body))
             .put("headers", headers)
             .toString()
     }

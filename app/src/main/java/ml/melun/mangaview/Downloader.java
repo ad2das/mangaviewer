@@ -30,8 +30,10 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
 import java.text.DecimalFormat;
@@ -39,7 +41,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletionService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 
 import ml.melun.mangaview.activity.MainActivity;
@@ -58,7 +62,12 @@ public class Downloader extends Worker {
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 30000;
     private static final int BUFFER_SIZE = 8192;
-    private static final int PARALLEL_IMAGE_DOWNLOADS = 4;
+    // Each worker can briefly hold both the encoded source bitmap and the decoded output.
+    // Two concurrent images keeps offline downloads responsive without risking four full-size
+    // bitmap pairs in the app heap.
+    private static final int PARALLEL_IMAGE_DOWNLOADS = 2;
+    private static final String EPISODE_STAGE_MARKER = ".mv-stage-";
+    private static final String EPISODE_BACKUP_MARKER = ".mv-backup-";
     private static final String TITLE_SUMMARY_NAME = "title.gson";
     private static final String TITLE_SUMMARY_PART_NAME = TITLE_SUMMARY_NAME + ".part";
     String homeDir;
@@ -86,6 +95,7 @@ public class Downloader extends Worker {
     PendingIntent stopIntent;
     Context serviceContext;
     Map<String, String> cookies;
+    private final Set<URLConnection> activeConnections = ConcurrentHashMap.newKeySet();
     int failures = 0;
 
     public static boolean isRunning(){
@@ -100,6 +110,15 @@ public class Downloader extends Worker {
     public Downloader(@NonNull Context context, @NonNull WorkerParameters workerParams) {
         super(context, workerParams);
         serviceContext = context.getApplicationContext();
+    }
+
+    @Override
+    public void onStopped() {
+        running = false;
+        for(URLConnection connection : activeConnections)
+            disconnectConnection(connection);
+        activeConnections.clear();
+        super.onStopped();
     }
 
     @NonNull
@@ -235,6 +254,14 @@ public class Downloader extends Worker {
         writeTitleSummary(file, json);
     }
 
+    static boolean publishStagedEpisodeForTest(File finalDirectory, File stagedDirectory) {
+        return publishStagedEpisode(finalDirectory, stagedDirectory);
+    }
+
+    static String episodeStageNameForTest(String finalName, long nonce) {
+        return episodeStageName(finalName, nonce);
+    }
+
     private static boolean shouldDeleteQueueFileAfterRun(boolean stopped, Integer result) {
         if(result != null && result == 3)
             return false;
@@ -243,6 +270,62 @@ public class Downloader extends Worker {
 
     private static String titleSummaryPartName() {
         return TITLE_SUMMARY_PART_NAME;
+    }
+
+    private static String episodeStageName(String finalName, long nonce) {
+        return finalName + EPISODE_STAGE_MARKER + Long.toHexString(nonce);
+    }
+
+    private static String episodeBackupName(String finalName, long nonce) {
+        return finalName + EPISODE_BACKUP_MARKER + Long.toHexString(nonce);
+    }
+
+    /**
+     * Publishes a fully downloaded episode without deleting the last known-good copy first.
+     * Both directories must be siblings so the two renames stay on the same filesystem.
+     */
+    private static boolean publishStagedEpisode(File finalDirectory, File stagedDirectory) {
+        if(finalDirectory == null || stagedDirectory == null || !stagedDirectory.isDirectory())
+            return false;
+        File parent = finalDirectory.getParentFile();
+        if(parent == null || !parent.equals(stagedDirectory.getParentFile()))
+            return false;
+        File backup = new File(parent, episodeBackupName(finalDirectory.getName(), System.nanoTime()));
+        boolean hadExisting = finalDirectory.exists();
+        if(hadExisting && !finalDirectory.renameTo(backup))
+            return false;
+        if(!stagedDirectory.renameTo(finalDirectory)) {
+            if(hadExisting && !backup.renameTo(finalDirectory))
+                ml.melun.mangaview.report.CrashReporter.record(
+                        new IOException("Failed to restore offline episode backup: " + backup));
+            return false;
+        }
+        if(backup.exists())
+            deleteRecursively(backup);
+        return true;
+    }
+
+    private boolean publishStagedEpisode(DocumentFile parent, String finalName,
+                                         DocumentFile stagedDirectory) {
+        if(parent == null || stagedDirectory == null || !stagedDirectory.isDirectory())
+            return false;
+        DocumentFile existing = parent.findFile(finalName);
+        String backupName = episodeBackupName(finalName, System.nanoTime());
+        DocumentFile backup = null;
+        if(existing != null) {
+            if(!existing.renameTo(backupName))
+                return false;
+            backup = existing;
+        }
+        if(!stagedDirectory.renameTo(finalName)) {
+            if(backup != null && !backup.renameTo(finalName))
+                ml.melun.mangaview.report.CrashReporter.record(
+                        new IOException("Failed to restore scoped offline episode backup: " + backupName));
+            return false;
+        }
+        if(backup != null)
+            backup.delete();
+        return true;
     }
 
     private static void writeTitleSummary(File file, String json) throws Exception {
@@ -434,10 +517,8 @@ public class Downloader extends Worker {
                             //create dir for manga
                             int realIndex = mangas.size() - mangas.indexOf(target);
                             String name = filterFolder(new DecimalFormat("0000").format(realIndex) + "." + target.getName()) + "." + target.getId();
-                            DocumentFile dir = titleDir.findFile(name);
-                            if(dir != null)
-                                dir.delete();
-                            dir = titleDir.createDirectory(name);
+                            String stageName = episodeStageName(name, System.nanoTime());
+                            DocumentFile dir = titleDir.createDirectory(stageName);
                             if(dir == null) {
                                 failures++;
                                 continue;
@@ -451,10 +532,16 @@ public class Downloader extends Worker {
 
                             int downloadedImages = downloadImages(urls, dir, d, imgStepSize, target, currentEpisode, selectedEps.length());
 
-                            if(downloadFlag != null)
+                            boolean complete = downloadedImages == urls.size()
+                                    && !Downloader.this.isStopped();
+                            if(complete && downloadFlag != null)
                                 downloadFlag.delete();
-                            if (downloadedImages < urls.size()) {
-                                dir.delete();
+                            if(!complete || !publishStagedEpisode(titleDir, name, dir)) {
+                                // A stopped worker can still have an interrupted image task unwinding.
+                                // Keep its marked staging directory so no late writer can recreate the
+                                // published path; a later maintenance pass may safely remove it.
+                                if(!Downloader.this.isStopped())
+                                    dir.delete();
                                 failures++;
                             }
 
@@ -511,9 +598,9 @@ public class Downloader extends Worker {
 
                             //create dir for manga
                             int realIndex = mangas.size() - mangas.indexOf(target);
-                            File dir = new File(titleDir, filterFolder(new DecimalFormat("0000").format(realIndex) + "." + target.getName()) + "." + target.getId());
-                            if(dir.exists())
-                                deleteRecursively(dir);
+                            File finalDir = new File(titleDir, filterFolder(new DecimalFormat("0000").format(realIndex) + "." + target.getName()) + "." + target.getId());
+                            File dir = new File(titleDir,
+                                    episodeStageName(finalDir.getName(), System.nanoTime()));
                             if(!dir.mkdirs()) {
                                 failures++;
                                 continue;
@@ -524,9 +611,13 @@ public class Downloader extends Worker {
                             downloadFlag.createNewFile();
                             int downloadedImages = downloadImages(urls, dir, d, imgStepSize, target, currentEpisode, selectedEps.length());
 
-                            downloadFlag.delete();
-                            if (downloadedImages < urls.size()) {
-                                deleteRecursively(dir);
+                            boolean complete = downloadedImages == urls.size()
+                                    && !Downloader.this.isStopped();
+                            if(complete)
+                                downloadFlag.delete();
+                            if(!complete || !publishStagedEpisode(finalDir, dir)) {
+                                if(!Downloader.this.isStopped())
+                                    deleteRecursively(dir);
                                 failures++;
                             }
                         }
@@ -575,26 +666,27 @@ public class Downloader extends Worker {
     }
 
     boolean downloadImage(String urlStr, File outputFile, Decoder d) {
+        URLConnection connection = null;
+        Bitmap source = null;
+        Bitmap decoded = null;
         try {
             URL url = resolveUrl(urlStr);
             if (url == null) return false;
-            URLConnection connection = openDownloadConnection(url);
-            Bitmap bitmap;
+            connection = beginDownloadConnection(url);
             try (InputStream in = connection.getInputStream()) {
-                bitmap = BitmapFactory.decodeStream(in);
+                source = BitmapFactory.decodeStream(in);
             }
-            if(bitmap == null) return false;
-            bitmap = d.decode(bitmap);
+            if(source == null || downloadCancelled()) return false;
+            decoded = d.decode(source);
+            if(decoded == null || downloadCancelled()) return false;
             File finalFile = imageOutputFile(outputFile);
             File partFile = imagePartOutputFile(outputFile);
             if(partFile.exists() && !partFile.delete())
                 return false;
             boolean compressed;
             try (OutputStream outputStream = new FileOutputStream(partFile)) {
-                compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
+                compressed = decoded.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
                 outputStream.flush();
-            } finally {
-                bitmap.recycle();
             }
             if(!compressed) {
                 partFile.delete();
@@ -612,6 +704,11 @@ public class Downloader extends Worker {
             ml.melun.mangaview.report.CrashReporter.record(e);
             //retry if old image server
             return false;
+        } finally {
+            finishDownloadConnection(connection);
+            recycleBitmap(decoded);
+            if(source != decoded)
+                recycleBitmap(source);
         }
         return true;
     }
@@ -665,16 +762,19 @@ public class Downloader extends Worker {
     }
 
     boolean downloadImage(String urlStr, DocumentFile parent, String name, Decoder d) {
+        URLConnection connection = null;
+        Bitmap source = null;
+        Bitmap decoded = null;
         try {
             URL url = resolveUrl(urlStr);
             if (url == null) return false;
-            URLConnection connection = openDownloadConnection(url);
-            Bitmap bitmap;
+            connection = beginDownloadConnection(url);
             try (InputStream in = connection.getInputStream()) {
-                bitmap = BitmapFactory.decodeStream(in);
+                source = BitmapFactory.decodeStream(in);
             }
-            if(bitmap == null) return false;
-            bitmap = d.decode(bitmap);
+            if(source == null || downloadCancelled()) return false;
+            decoded = d.decode(source);
+            if(decoded == null || downloadCancelled()) return false;
             //save image
             String fname = imageOutputName(name);
             String partName = imagePartOutputName(name);
@@ -690,10 +790,8 @@ public class Downloader extends Worker {
                     partFile.delete();
                     return false;
                 }
-                compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
+                compressed = decoded.compress(Bitmap.CompressFormat.JPEG, 85, outputStream);
                 outputStream.flush();
-            } finally {
-                bitmap.recycle();
             }
             if(!compressed) {
                 partFile.delete();
@@ -712,6 +810,11 @@ public class Downloader extends Worker {
             ml.melun.mangaview.report.CrashReporter.record(e);
             //retry if old image server
             return false;
+        } finally {
+            finishDownloadConnection(connection);
+            recycleBitmap(decoded);
+            if(source != decoded)
+                recycleBitmap(source);
         }
         return true;
     }
@@ -779,7 +882,7 @@ public class Downloader extends Worker {
         return completion.submit(AppDispatchers.safeCallable(() -> {
             int tries = 0;
             while(tries < 5) {
-                if(Thread.currentThread().isInterrupted())
+                if(downloadCancelled())
                     return false;
                 if(task.download(index))
                     return true;
@@ -798,11 +901,12 @@ public class Downloader extends Worker {
     }
     File downloadFile(String urlStr, File outputFile, ProgressInterface publisher){
         //returns file name with extension
+        URLConnection connection = null;
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return null;
             String fileType = fileExtension(url.toString());
-            URLConnection connection = openDownloadConnection(url);
+            connection = beginDownloadConnection(url);
             int filesize = connection.getContentLength();
 
             //load file
@@ -816,6 +920,8 @@ public class Downloader extends Worker {
                 int len;
                 int cursize = 0;
                 while ((len = in.read(buf)) > 0){
+                    if(downloadCancelled())
+                        throw new InterruptedIOException("Offline download cancelled");
                     outputStream.write(buf, 0, len);
                     cursize += len;
                     publishDownloadProgress(publisher, cursize, filesize);
@@ -834,6 +940,8 @@ public class Downloader extends Worker {
         } catch (Exception e) {
             //
             ml.melun.mangaview.report.CrashReporter.record(e);
+        } finally {
+            finishDownloadConnection(connection);
         }
         return null;
     }
@@ -841,11 +949,12 @@ public class Downloader extends Worker {
     DocumentFile downloadFile(String urlStr, DocumentFile parent, String name, ProgressInterface publisher){
         //returns file name with extension
         DocumentFile partFile = null;
+        URLConnection connection = null;
         try {
             URL url = resolveUrl(urlStr);
             if(url == null) return null;
             String fileType = fileExtension(url.toString());
-            URLConnection connection = openDownloadConnection(url);
+            connection = beginDownloadConnection(url);
             int filesize = connection.getContentLength();
 
             //load file
@@ -868,6 +977,8 @@ public class Downloader extends Worker {
                 int len;
                 int cursize = 0;
                 while ((len = in.read(buf)) > 0){
+                    if(downloadCancelled())
+                        throw new InterruptedIOException("Offline download cancelled");
                     outputStream.write(buf, 0, len);
                     cursize += len;
                     publishDownloadProgress(publisher, cursize, filesize);
@@ -889,6 +1000,8 @@ public class Downloader extends Worker {
             ml.melun.mangaview.report.CrashReporter.record(e);
             if(partFile != null)
                 partFile.delete();
+        } finally {
+            finishDownloadConnection(connection);
         }
         return null;
     }
@@ -912,6 +1025,37 @@ public class Downloader extends Worker {
         if(cookieHeader.length() > 0)
             connection.setRequestProperty("Cookie", cookieHeader);
         return connection;
+    }
+
+    private URLConnection beginDownloadConnection(URL url) throws IOException {
+        URLConnection connection = openDownloadConnection(url);
+        activeConnections.add(connection);
+        if(downloadCancelled()) {
+            finishDownloadConnection(connection);
+            throw new InterruptedIOException("Offline download cancelled");
+        }
+        return connection;
+    }
+
+    private void finishDownloadConnection(URLConnection connection) {
+        if(connection == null)
+            return;
+        activeConnections.remove(connection);
+        disconnectConnection(connection);
+    }
+
+    private static void disconnectConnection(URLConnection connection) {
+        if(connection instanceof HttpURLConnection)
+            ((HttpURLConnection) connection).disconnect();
+    }
+
+    private boolean downloadCancelled() {
+        return isStopped() || Thread.currentThread().isInterrupted();
+    }
+
+    private static void recycleBitmap(Bitmap bitmap) {
+        if(bitmap != null && !bitmap.isRecycled())
+            bitmap.recycle();
     }
 
     private String buildDownloadCookieHeader(URL url) {
@@ -954,7 +1098,7 @@ public class Downloader extends Worker {
         return root + "/" + url;
     }
 
-    private void deleteRecursively(File file) {
+    private static void deleteRecursively(File file) {
         if(file == null || !file.exists())
             return;
         if(file.isDirectory()) {

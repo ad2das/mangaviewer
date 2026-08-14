@@ -56,7 +56,7 @@
     <androidx.appcompat.widget.LinearLayoutCompat
         android:id="@+id/mainModeToggle"
         android:layout_width="match_parent"
-        android:layout_height="40dp"
+        android:layout_height="48dp"
         android:layout_marginStart="20dp"
         android:layout_marginTop="18dp"
         android:layout_marginEnd="20dp"
@@ -157,6 +157,7 @@
         <ImageView
             android:layout_width="64dp"
             android:layout_height="64dp"
+            android:contentDescription="@null"
             android:src="@drawable/ic_search"
             app:tint="@color/appTextMuted" />
 
@@ -169,6 +170,14 @@
             android:gravity="center"
             android:text="@string/home_load_failed_message"
             android:textColor="@color/appTextSecondary" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/homeRetryButton"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginTop="@dimen/app_space_sm"
+            android:text="@string/viewer_retry" />
 
     </LinearLayout>
 
