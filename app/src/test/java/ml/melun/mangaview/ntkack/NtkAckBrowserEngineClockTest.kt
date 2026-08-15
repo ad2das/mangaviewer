@@ -43,4 +43,29 @@ class NtkAckBrowserEngineClockTest {
             ),
         )
     }
+
+    @Test
+    fun networkPrerequisiteWaitUsesTheOwningFlightDeadlineInsteadOfAFixedTimeout() {
+        assertEquals(
+            19_250L,
+            ntkAckNetworkPrerequisiteWaitBudgetMs(
+                deadlineElapsedRealtimeNanos = 30_000_000_000L,
+                nowElapsedRealtimeNanos = 10_000_000_000L,
+            ),
+        )
+        assertEquals(
+            4_250L,
+            ntkAckNetworkPrerequisiteWaitBudgetMs(
+                deadlineElapsedRealtimeNanos = 15_000_000_000L,
+                nowElapsedRealtimeNanos = 10_000_000_000L,
+            ),
+        )
+        assertEquals(
+            250L,
+            ntkAckNetworkPrerequisiteWaitBudgetMs(
+                deadlineElapsedRealtimeNanos = 10_500_000_000L,
+                nowElapsedRealtimeNanos = 10_000_000_000L,
+            ),
+        )
+    }
 }

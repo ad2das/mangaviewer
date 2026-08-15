@@ -68,11 +68,11 @@ internal class NtkFullSceneDecodeDispatcher(
         val isDrained: Boolean get() = activeTasks == 0 && occupiedLanes == 0
     }
 
-    // The emulator runs 6 cores. Keep the first-frame ("initial three-wide") cohort gated on exactly
-    // three ready pages so the viewport can reveal immediately, then allow up to the full lane count
-    // for the rest of the scene so a large episode does not decode behind a three-lane tail.
-    private val initialCohortLanes = 3
-    private val laneCount = 6
+    // This must remain the same finite topology used by the state machine, CPU transient budget,
+    // and prestarted production bootstrap. A wider local value rejects the production override at
+    // construction time and strands the prepared next episode before it can ever attach.
+    private val laneCount = NtkRollingResidencyConstants.PRE_STAGE_DECODE_CONCURRENCY
+    private val initialCohortLanes = laneCount
     private val lanes: Array<ExecutorService> = laneServicesOverride?.also {
         require(it.size == laneCount)
     } ?: Array(laneCount) { lane ->

@@ -304,6 +304,21 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
+    public void activeReverseDefersOnlyAForeignEpisodeTailAppend() {
+        assertTrue(ReaderV2Activity.shouldDeferForeignEpisodeAppendForActiveInputForTest(
+                false, true, 0L));
+        assertTrue(ReaderV2Activity.shouldDeferForeignEpisodeAppendForActiveInputForTest(
+                false, false, 120L));
+        assertFalse(ReaderV2Activity.shouldDeferForeignEpisodeAppendForActiveInputForTest(
+                true, true, 120L));
+        assertFalse(ReaderV2Activity.shouldDeferForeignEpisodeAppendForActiveInputForTest(
+                false, false, 0L));
+        assertFalse("Forward input at the current tail must publish an already-ready next runway",
+                ReaderV2Activity.shouldDeferForeignEpisodeAppendForActiveInputForTest(
+                        false, true, 2_600L, true));
+    }
+
+    @Test
     public void displayPolicyCleansEpisodeNamesForPickerLabels() {
         Manga episode = new Manga(7, "Some Title 12화", "", MTitle.base_comic);
         assertEquals("Some Title 12화", ReaderDisplayPolicy.INSTANCE.fastDisplayEpisodeTitle(episode, null));

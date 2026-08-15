@@ -45,11 +45,11 @@ class NtkForwardHistoryPolicyTest {
 
     @Test
     fun decodedPixelsKeepOnlyABoundedPredecessorTail() {
-        assertEquals(63, NtkForwardHistoryPolicy.decodedPixelRetireBefore(87, 2, true))
-        assertEquals(0, NtkForwardHistoryPolicy.decodedPixelRetireBefore(20, 2, true))
+        assertEquals(79, NtkForwardHistoryPolicy.decodedPixelRetireBefore(87, 2, true))
+        assertEquals(12, NtkForwardHistoryPolicy.decodedPixelRetireBefore(20, 2, true))
         assertEquals(0, NtkForwardHistoryPolicy.decodedPixelRetireBefore(87, 1, true))
         assertEquals(
-            63,
+            79,
             NtkForwardHistoryPolicy.decodedPixelRetireBefore(
                 firstCurrentImageIndex = 87,
                 currentImageOrdinal = 0,
@@ -58,6 +58,30 @@ class NtkForwardHistoryPolicyTest {
             ),
         )
         assertEquals(0, NtkForwardHistoryPolicy.decodedPixelRetireBefore(87, 20, false))
+    }
+
+    @Test
+    fun decodedTailCapDoesNotLimitPredecessorStructureOrDeepReverseAccess() {
+        val firstCurrentImage = 21
+        assertEquals(
+            firstCurrentImage - NtkForwardHistoryPolicy.RETAINED_PREVIOUS_DECODED_TAIL_PAGES,
+            NtkForwardHistoryPolicy.decodedPixelRetireBefore(
+                firstCurrentImageIndex = firstCurrentImage,
+                currentImageOrdinal = 2,
+                forwardReading = true,
+            ),
+        )
+        // Pixel retirement is deliberately independent from structure retirement.  The complete
+        // predecessor starts at zero and remains addressable for an on-demand exact re-decode.
+        assertEquals(
+            0,
+            NtkForwardHistoryPolicy.removablePrefix(
+                firstCurrentImageIndex = firstCurrentImage,
+                currentImageOrdinal = 2,
+                forwardReading = true,
+                retainedPreviousEpisodeStartIndex = 0,
+            ),
+        )
     }
 
     @Test

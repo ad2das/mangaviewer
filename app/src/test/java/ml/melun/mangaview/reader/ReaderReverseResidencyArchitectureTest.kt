@@ -14,6 +14,24 @@ class ReaderReverseResidencyArchitectureTest {
 
     @Test
     fun aReverseMoveSurvivesLatestOnlyWindowCoalescingAndOpensTheSourceFloor() {
+        val drag = slice(
+            surface,
+            "private fun applyPhysicalDragPositionLocked(",
+            "private fun applyDragOffsetLocked(",
+        )
+        val directionRecorded = drag.indexOf("activeInputDirection = direction")
+        val reverseRecorded = drag.indexOf("pendingReverseWindowFirstPageHint =")
+        val edgeReturn = drag.indexOf("if (isAtInputEdgeLocked(direction)) return false")
+        assertTrue(directionRecorded >= 0)
+        assertTrue(reverseRecorded > directionRecorded)
+        assertTrue(edgeReturn > reverseRecorded)
+
+        val input = slice(surface, "override fun onTouchEvent(", "override fun performClick(")
+        val noMovement = input.indexOf("suppressEdgeNoMovementScrollStatsLocked(nowMs)")
+        val reverseDispatch = input.indexOf("windowRequestLocked(true)", noMovement)
+        assertTrue(noMovement >= 0)
+        assertTrue(reverseDispatch > noMovement)
+
         val capture = slice(
             surface,
             "private fun windowRequestLocked(",

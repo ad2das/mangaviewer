@@ -188,6 +188,16 @@ public class ReaderSurfaceViewTest {
     }
 
     @Test
+    public void blockedForwardGestureResumesOnlyThroughTheDrawableLimit() {
+        assertEquals(11_000f, ReaderSurfaceView.blockedForwardResumeOffsetForTest(
+                10_188f, 12_400f, 11_000f), 0f);
+        assertEquals(12_400f, ReaderSurfaceView.blockedForwardResumeOffsetForTest(
+                11_000f, 12_400f, 13_000f), 0f);
+        assertEquals(10_188f, ReaderSurfaceView.blockedForwardResumeOffsetForTest(
+                10_188f, 12_400f, 9_000f), 0f);
+    }
+
+    @Test
     public void initialPrepareCoversViewportPlusCeiledOneAndHalfAhead() {
         assertEquals(5345, ReaderSurfaceView.initialSoftwarePrepareBottomForTest(0, 2138, 10000));
         assertEquals(5448, ReaderSurfaceView.initialSoftwarePrepareBottomForTest(100, 2139, 10000));

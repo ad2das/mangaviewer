@@ -19,6 +19,7 @@ import org.junit.Test;
 
 import java.util.Collections;
 
+import ml.melun.mangaview.LiveNetworkAssume;
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.MTitle;
@@ -32,6 +33,7 @@ public class NtkHomeContinueTitleInstrumentedTest {
 
     @Test
     public void homeContinueRepairsStoredAdThumbnail() {
+        LiveNetworkAssume.assumeEnabled();
         Context context = ApplicationProvider.getApplicationContext();
         context.getSharedPreferences("mangaView", Context.MODE_PRIVATE).edit().clear().commit();
         MainApplication.p.init(context);

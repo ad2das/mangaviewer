@@ -146,6 +146,30 @@ class NtkSourceDemandSnapshot(
     }
 }
 
+/**
+ * Converts a rolling viewer demand into the physical source set owned by the transport.
+ *
+ * A restored session normally starts at [initialPageIndex], but an explicit reverse gesture can
+ * move HARD/SOFT demand below that saved floor.  BACKGROUND entries are intentionally ignored:
+ * they describe sources that the renderer has not asked to revisit and must not silently turn a
+ * resume into a full-prefix download.
+ */
+internal object NtkRollingPhysicalAdmissionPolicy {
+    fun admittedForwardPages(
+        initialPageIndex: Int,
+        pageCount: Int,
+        demand: NtkSourceDemandSnapshot,
+    ): Set<Int> {
+        require(pageCount > 0)
+        val initial = initialPageIndex.coerceIn(0, pageCount - 1)
+        val foregroundFloor = (demand.hardPages.asSequence() + demand.softPages.asSequence())
+            .filter { it in 0 until pageCount }
+            .minOrNull()
+        val floor = minOf(initial, foregroundFloor ?: initial)
+        return (floor until pageCount).toSet()
+    }
+}
+
 internal enum class NtkSourceDemandOfferDecision { ACCEPT, IDEMPOTENT, STALE, CONFLICT }
 
 /** Fail-closed epoch admission used before a source demand reaches the session actor mailbox. */

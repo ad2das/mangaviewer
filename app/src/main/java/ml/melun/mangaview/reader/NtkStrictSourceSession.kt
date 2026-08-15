@@ -3020,6 +3020,30 @@ internal class NtkStrictSourceSession(
         }
     }
 
+    /**
+     * A forward-resume session deliberately leaves prefix route futures incomplete. Once a real
+     * reverse gesture lowers the immutable source floor, replace only those never-started
+     * placeholders with the same exact route preparation used by the initial suffix. No Call is
+     * created here; the actor/ownership ledger still admits each body exactly once.
+     */
+    private fun startRollingLateRoutePreparationsActor(pageIndexes: Set<Int>) {
+        assertActorThread()
+        if (!rollingAdmission || adjacentPrefetch ||
+            !::quarantineRoutePreparations.isInitialized ||
+            quarantineRoutePreparations.isEmpty()
+        ) return
+        for (pageIndex in pageIndexes.sorted()) {
+            val page = pages.getOrNull(pageIndex) ?: continue
+            if (page.seededExactBody != null || page.streamedExactBodyPending ||
+                page.primaryStarted || page.terminalEvent != null ||
+                quarantineRoutePreparations[pageIndex].isDone
+            ) continue
+            val preparation = createRoutePreparation(pageIndex)
+            quarantineRoutePreparations[pageIndex] = preparation
+            preparation.whenComplete { _, _ -> scheduleRoutePreparationRefill() }
+        }
+    }
+
     private fun scheduleRoutePreparationRefill() {
         if (!routePreparationRefillScheduled.compareAndSet(false, true)) return
         executeActor(
@@ -3470,13 +3494,46 @@ internal class NtkStrictSourceSession(
                     // The exact manifest is already owned by the visible viewer. Keep physical
                     // calls bounded, but admit the whole remaining forward source path so a fast
                     // downward fling never waits for another viewport event before byte fetch.
+                    // A proven reverse gesture may move HARD/SOFT demand below the saved resume
+                    // floor; keeping initialPageIndex here made that source permanently
+                    // descriptor-less and pinned both scroll directions at the loading edge.
                     if (!adjacentPrefetch || adjacentPrefetchReleased) {
-                        rollingAdmittedPages = (initialPageIndex until pages.size).toSet()
+                        val previousAdmission = rollingAdmittedPages
+                        val expandedAdmission =
+                            NtkRollingPhysicalAdmissionPolicy.admittedForwardPages(
+                                initialPageIndex,
+                                pages.size,
+                                delivery.candidate,
+                            )
+                        val newlyAdmitted = expandedAdmission - previousAdmission
+                        if (newlyAdmitted.isNotEmpty()) {
+                            if (primaryAdmissionsSealed && isGeometrySealed()) {
+                                val seal = exactOpenManifestActor().seal
+                                if (!NtkStrictSourceOwnershipRegistry.authorizeRollingLateAdmissions(
+                                        planBinding.episodePath,
+                                        seal.digestSha256,
+                                        sessionId,
+                                        newlyAdmitted,
+                                    )
+                                ) {
+                                    failSessionActor(
+                                        NtkSourceIdentityException(
+                                            "Rolling reverse admission lost its exact source owner"
+                                        )
+                                    )
+                                    return@executeActor
+                                }
+                            }
+                            startRollingLateRoutePreparationsActor(newlyAdmitted)
+                        }
+                        rollingAdmittedPages = expandedAdmission
                         pendingRollingAdmittedPages = null
                     }
+                    val admittedFloor = rollingAdmittedPages.minOrNull() ?: initialPageIndex
                     logSourceEvent(
                         "reader_strip_source_forward_runway_admitted",
-                        "initialPage=$initialPageIndex,admitted=${rollingAdmittedPages.size}"
+                        "initialPage=$initialPageIndex,admittedFloor=$admittedFloor," +
+                            "admitted=${rollingAdmittedPages.size}"
                     )
                 }
                 sourceDemandAppliedCount.incrementAndGet()

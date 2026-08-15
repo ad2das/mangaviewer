@@ -198,6 +198,7 @@
         android:id="@+id/advSearchBtn"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:contentDescription="@string/advanced_search"
         android:layout_margin="@dimen/app_space_lg"
         android:elevation="8dp"
         android:visibility="gone"

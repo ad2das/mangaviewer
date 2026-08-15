@@ -48,6 +48,19 @@ internal fun ntkAckServerTimeOffsetAtRegistrationMidpoint(
     return serverNowEpochMs - localMidpoint
 }
 
+internal fun ntkAckNetworkPrerequisiteWaitBudgetMs(
+    deadlineElapsedRealtimeNanos: Long,
+    nowElapsedRealtimeNanos: Long,
+): Long {
+    val remainingNanos = (deadlineElapsedRealtimeNanos - nowElapsedRealtimeNanos).coerceAtLeast(0L)
+    val remainingMs = remainingNanos / 1_000_000L
+    // The service-owned deadline remains authoritative. Leave enough time for its main-looper
+    // callback to terminate the flight, but never let the private WebView's polling loop fail a
+    // healthy flight after an unrelated fixed 2.5 seconds. Rotation, split-screen resize, or a
+    // temporarily busy origin can legitimately make the already-running transport take longer.
+    return (remainingMs - 750L).coerceAtLeast(250L)
+}
+
 /** Sole owner of the remote ACK WebView and its one proof-critical flight. */
 class NtkAckBrowserEngine(
     private val context: Context,
@@ -852,6 +865,14 @@ class NtkAckBrowserEngine(
         } ?: false
 
         @JavascriptInterface
+        fun prerequisitesWaitBudgetMs(token: String): Long = withFlight(token) {
+            ntkAckNetworkPrerequisiteWaitBudgetMs(
+                it.request.deadlineElapsedRealtimeNanos,
+                SystemClock.elapsedRealtimeNanos(),
+            )
+        } ?: 250L
+
+        @JavascriptInterface
         fun onGuardState(token: String, value: String) {
             withFlight(token) {
                 it.guardState = value.take(160)
@@ -1500,8 +1521,9 @@ class NtkAckBrowserEngine(
                 if(!mod.__i4)throw new Error('guard __i4 missing');
                 note('module-ready');
                 const prerequisiteWaitStart=performance.now();
+                const prerequisiteWaitBudgetMs=Math.max(250,Number(bridge.prerequisitesWaitBudgetMs(token)||250));
                 while(!bridge.prerequisitesReady(token)){
-                  if(performance.now()-prerequisiteWaitStart>2500)throw new Error('network prerequisites timeout');
+                  if(performance.now()-prerequisiteWaitStart>prerequisiteWaitBudgetMs)throw new Error('network prerequisites timeout');
                   await new Promise(function(resolve){setTimeout(resolve,4);});
                 }
                 note('prerequisites-ready');

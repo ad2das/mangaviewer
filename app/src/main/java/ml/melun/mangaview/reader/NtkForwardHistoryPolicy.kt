@@ -14,7 +14,13 @@ package ml.melun.mangaview.reader
 internal object NtkForwardHistoryPolicy {
     const val MIN_CURRENT_EPISODE_IMAGE_ORDINAL = 2
     const val SHORT_EPISODE_MAX_SOURCE_COUNT = 2
-    const val RETAINED_PREVIOUS_DECODED_TAIL_PAGES = 24
+    // Keep a short instant-backtrack runway, not an entire decoded chapter.  Canonical encoded
+    // bodies and the complete predecessor page table remain available for on-demand re-decode,
+    // so this cap does not limit how far the user may scroll back.  A 24-page RGBA tail exceeded
+    // several hundred MiB on ordinary manhwa and compounded with the current/next GPU copies
+    // during uninterrupted reading; eight pages keeps the immediate gesture smooth while making
+    // long multi-episode sessions memory-bounded.
+    const val RETAINED_PREVIOUS_DECODED_TAIL_PAGES = 8
 
     @JvmOverloads
     fun removablePrefix(

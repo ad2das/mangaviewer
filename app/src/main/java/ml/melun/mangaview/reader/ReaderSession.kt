@@ -458,6 +458,14 @@ class ReaderSession(
     private val strictExactLaunchSeal: StrictExactLaunchSeal? = null
 ) {
     private val strictExactColdRolling: Boolean = strictExactLaunchSeal != null
+    /**
+     * Legacy saved titles can lack sourceSite. Resolve that fallback once for this reader instead
+     * of consulting the mutable home-screen HTTP client on every policy check. A site switch while
+     * the reader is open must never turn the same episode from WFWF into NTK (or vice versa).
+     */
+    private val legacyBlankSourceNtkAtCreation: Boolean = runCatching {
+        MainApplication.getHttpClient().isNtk
+    }.getOrDefault(false)
     private val initialNtkEpisodePath = manga.ntkEpisodePath?.trim().orEmpty()
     private val strictExactForegroundViewerGenerationAtCreation: Long = run {
         val generation = ViewerTelemetry.activeGeneration()
@@ -10743,7 +10751,15 @@ class ReaderSession(
             }
             return
         }
-        val generation = windowGeneration.incrementAndGet()
+        val sourceDemandChanged = !previous.hasSameSourceDemand(admission)
+        // Display-boundary jitter still updates pixel retention and visible decode requests, but
+        // it must not invalidate the same physical source work. Reusing the generation keeps a
+        // long 0-3/0-5 boundary oscillation from building an endless cancel/redecode queue.
+        val generation = if (sourceDemandChanged) {
+            windowGeneration.incrementAndGet()
+        } else {
+            windowGeneration.get()
+        }
         strictRollingAdmission.set(admission)
         strictActiveSourceFloor.getAndUpdate { current ->
             minOf(current, admission.allowedFirstSource)
@@ -10767,15 +10783,26 @@ class ReaderSession(
             }
             return
         }
-        applyStrictExactSourceDemand(admission)
+        if (sourceDemandChanged) applyStrictExactSourceDemand(admission)
 
         val demandedDisplays = synchronized(pagesLock) {
-            pages.withIndex()
-                .filter { (_, page) ->
+            // Rolling residency needs source bytes for the admitted episode runway, but decoded
+            // pixels only for the physical viewport. Iterating and re-requesting every admitted
+            // display on each 60/90 Hz viewport sample made the control lane progressively busy
+            // even though requestStrictExactSourcePage rejected all off-window pixels. The source
+            // transport continues fetching the full admitted range independently.
+            val indexes = if (strictExactRollingPixelResidency.get()) {
+                visibleFirst..visibleLast
+            } else {
+                pages.indices
+            }
+            indexes.mapNotNull { index ->
+                val page = pages.getOrNull(index) ?: return@mapNotNull null
+                index.takeIf {
                     page.transitionTitle == null && isStrictExactLaunchPage(page) &&
                         admission.admitsSource(page.sourceIndex)
                 }
-                .map { it.index }
+            }
         }
         if (demandedDisplays.isEmpty()) return
         val demandFirst = demandedDisplays.minOrNull() ?: visibleFirst
@@ -10859,14 +10886,16 @@ class ReaderSession(
             )
         }
         trimDecodedWidth(safeAnchor, busy)
-        Log.d(
-            TAG,
-            "reader_ntk_strict_cold_demand generation=$generation,anchor=$safeAnchor," +
-                "epoch=${admission.epoch},direction=$direction," +
-                "actual=${admission.physicalDrawPresented},visible=$visibleFirst-$visibleLast," +
-                "displayDemand=$demandFirst-$demandLast," +
-                "sourceDemand=${admission.allowedFirstSource}-${admission.allowedLastSource}"
-        )
+        if (sourceDemandChanged) {
+            Log.d(
+                TAG,
+                "reader_ntk_strict_cold_demand generation=$generation,anchor=$safeAnchor," +
+                    "epoch=${admission.epoch},sourceChanged=true,direction=$direction," +
+                    "actual=${admission.physicalDrawPresented},visible=$visibleFirst-$visibleLast," +
+                    "displayDemand=$demandFirst-$demandLast," +
+                    "sourceDemand=${admission.allowedFirstSource}-${admission.allowedLastSource}"
+            )
+        }
     }
 
     private fun rehydrateSameStrictExactColdWindow(
@@ -13523,7 +13552,12 @@ class ReaderSession(
     }
 
     private fun isNtkContinuousAdjacentCompletionPolicyActive(): Boolean {
-        return MainApplication.getHttpClient().isNtk
+        // The shared HTTP client follows the currently selected home-site mode and can change
+        // independently of an already-open reader.  Using that global bit here made a WFWF
+        // episode inherit NTK's forward-only completion policy whenever the home screen happened
+        // to be set to NTK, which disabled the physical previous-episode boundary entirely.
+        // Bind the policy to this session's immutable source identity instead.
+        return isNtkSource(manga, title)
     }
 
     private fun isDirectWifiStrictAdjacentTransportActive(): Boolean {
@@ -19246,10 +19280,15 @@ class ReaderSession(
     }
 
     private fun prependedHoldUntilReadyCount(target: Manga, refs: List<PageRef>): Int {
-        if (!isNtkSource(target, title) || !firstBitmapLogged.get()) return 0
-        if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return 0
         val drawableCount = refs.count { it.transitionTitle == null }
         if (drawableCount <= 0) return 0
+        // Ordinary manga used to reveal the prepend card immediately and let another reverse
+        // gesture run into an unrendered page 0. Hold at the card until at least one adjacent image
+        // is drawable; ReaderSurfaceView separately prevents a new PREVIOUS boundary while page 0
+        // is still empty.
+        if (!isNtkSource(target, title)) return 1
+        if (!firstBitmapLogged.get()) return 0
+        if (!isNtkManhwaEpisodePath(target.ntkEpisodePath)) return 0
         val knownCount = when {
             target.ntkImageCount > 1 -> target.ntkImageCount
             drawableCount > 1 -> drawableCount
@@ -19849,7 +19888,7 @@ class ReaderSession(
         val cardIndex = inserted - 1
         requestPage(cardIndex, busy = busy, anchor = false, generation = generation)
         val firstImageIndex = if (pageRef(cardIndex)?.transitionTitle != null) cardIndex - 1 else cardIndex
-        if (firstImageIndex >= 1) {
+        if (firstImageIndex >= 0) {
             requestPage(
                 firstImageIndex,
                 busy = busy,
@@ -19857,13 +19896,15 @@ class ReaderSession(
                 generation = if (ntk) FOREGROUND_PRIME_WARM_GENERATION else generation
             )
         }
-        val firstDecoded = max(1, inserted - decodeAhead)
+        // Index 0 is a real image for prepend layouts. Excluding it left the absolute beginning of
+        // every previous episode as a permanent white page after the user scrolled back far enough.
+        val firstDecoded = max(0, inserted - decodeAhead)
         if (firstImageIndex - 1 >= firstDecoded) {
             for (index in (firstImageIndex - 1) downTo firstDecoded) {
                 requestPage(index, busy = busy, anchor = false, generation = generation)
             }
         }
-        val firstByte = max(1, inserted - byteAhead)
+        val firstByte = max(0, inserted - byteAhead)
         for (index in (firstDecoded - 1) downTo firstByte) {
             val page = pageRef(index) ?: continue
             network.execute { prefetchImageFileQuietly(index, page) }
@@ -32248,6 +32289,42 @@ class ReaderSession(
         if (hasForwardNtkEpisodeAfterSource(snapshot.episode)) return
         val path = snapshot.episode.ntkEpisodePath?.trim().orEmpty()
         if (path.isEmpty()) return
+        // A re-entry can restore every decoded current page before the replacement viewer has
+        // installed its own exact source owner.  Starting the adjacent discovery in that gap is
+        // unsafe: the ACK browser is process-single-flight, so the newer adjacent generation can
+        // supersede the still-running current discovery.  The replacement then has pixels in its
+        // page list but no current source/manifest capable of publishing a frame, which presents
+        // as a permanently black, motionless reader.  Keep the fully decoded episode warm, but do
+        // not let speculative adjacent work outrank the exact foreground owner.
+        if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) == null) {
+            val ownerWaitKey =
+                "${ReaderSurfaceView.DIRECTION_NEXT}:$path:complete_idle_current_owner"
+            if (completedEpisodeWarmupKeys.add(ownerWaitKey)) {
+                Log.d(
+                    TAG,
+                    "append_adjacent_complete_idle_wait_current_owner source=$path " +
+                        "discoveryActive=${NtkSourceSpoolRegistry.isDiscoveryActive(path)}",
+                )
+                main.postDelayed(
+                    {
+                        completedEpisodeWarmupKeys.remove(ownerWaitKey)
+                        if (!cancelled.get() && isViewportInsideEpisode(snapshot.episode)) {
+                            val retryAnchor = currentViewportAnchor.get()
+                                .takeIf { it >= 0 }
+                                ?: currentStartPage()
+                            if (retryAnchor >= 0) {
+                                maybeWarmCompletedForwardEpisode(
+                                    retryAnchor,
+                                    snapshot.episode,
+                                )
+                            }
+                        }
+                    },
+                    NTK_CURRENT_OWNER_WARMUP_RETRY_MS,
+                )
+            }
+            return
+        }
         // Every current-episode drawable is decoded and handed to the Activity at this point.
         // Continuous forward input must not postpone the next-episode metadata/runway
         // indefinitely; the bounded adjacent work runs off-main and no unfinished current image
@@ -35984,7 +36061,7 @@ class ReaderSession(
             .trim()
             .lowercase(java.util.Locale.ROOT)
         return source == "wfwf" ||
-            (source.isBlank() && !ml.melun.mangaview.MainApplication.getHttpClient().isNtk)
+            (source.isBlank() && !legacyBlankSourceNtkAtCreation)
     }
 
     private fun isNtkSource(manga: Manga?, title: Title?): Boolean {
@@ -35992,7 +36069,7 @@ class ReaderSession(
             .trim()
             .lowercase(java.util.Locale.ROOT)
         return source == "ntk" ||
-            (source.isBlank() && ml.melun.mangaview.MainApplication.getHttpClient().isNtk)
+            (source.isBlank() && legacyBlankSourceNtkAtCreation)
     }
 
     private fun isNtkWebtoonSource(manga: Manga?, title: Title?): Boolean {
@@ -36402,6 +36479,7 @@ class ReaderSession(
         private const val NTK_DIRECT_WIFI_FORWARD_HISTORY_NATIVE_QUIET_MS = 750L
         private const val NTK_FORWARD_HISTORY_TRIM_RETRY_MS = 120L
         private const val NTK_COMPLETED_EPISODE_WARMUP_RETRY_MS = 3600L
+        private const val NTK_CURRENT_OWNER_WARMUP_RETRY_MS = 120L
         private const val NTK_ADJACENT_APPEND_START_SUPPRESS_MS = 1800L
         private const val NTK_UNTRUSTED_GENERATED_APPEND_MAX_PAGES = 30
         private const val NTK_MAX_AUTHORITATIVE_ADJACENT_PAGES = 300

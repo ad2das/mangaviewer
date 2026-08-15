@@ -14,18 +14,29 @@ import org.junit.Test;
 import java.util.Collections;
 
 import ml.melun.mangaview.MainApplication;
+import ml.melun.mangaview.LiveNetworkAssume;
 
 public class NtkSlugCanonicalRefreshInstrumentedTest {
     private static final String TAG = "ViewerPerf";
 
     @Test
     public void webtoonSlugRefreshesThroughSearchResultPath() {
-        String titleName = InstrumentationRegistry.getArguments().getString("ntkTitleName", "최강 매니저");
-        String initialPath = InstrumentationRegistry.getArguments().getString("ntkInitialPath", "/webtoon/최강-매니저");
-        String expectedPath = InstrumentationRegistry.getArguments().getString("ntkExpectedPath", "/webtoon/840894");
-        String siteRoot = InstrumentationRegistry.getArguments().getString("ntkSiteRoot", "https://sbxh4.com");
+        LiveNetworkAssume.assumeEnabled();
+        // Keep the default fixture tied to a currently published work from the qualification
+        // corpus.  The former title was removed from the live catalog and sbxh4 is a retired
+        // origin, so that combination exercised only a permanent 404/search miss instead of the
+        // slug-to-canonical recovery path this test owns.
+        String titleName = InstrumentationRegistry.getArguments().getString(
+                "ntkTitleName", "나만 볼 수 있는 아카식 레코드");
+        String initialPath = InstrumentationRegistry.getArguments().getString(
+                "ntkInitialPath", "/webtoon/나만-볼-수-있는-아카식-레코드");
+        String expectedPath = InstrumentationRegistry.getArguments().getString(
+                "ntkExpectedPath", "/webtoon/844541");
+        String siteRoot = InstrumentationRegistry.getArguments().getString(
+                "ntkSiteRoot", "https://sbxh9.com");
         String customUserAgent = InstrumentationRegistry.getArguments().getString("ntkUserAgent", "");
-        int titleId = Integer.parseInt(InstrumentationRegistry.getArguments().getString("ntkTitleId", "192568083"));
+        int titleId = Integer.parseInt(
+                InstrumentationRegistry.getArguments().getString("ntkTitleId", "844541"));
 
         MainApplication.p.setNtkSitePreset(siteRoot);
         MainApplication.getHttpClient().clearPageCache();

@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicReference
 @RunWith(AndroidJUnit4::class)
 class NtkAckBrowserProcessIsolationTest {
     @Test
-    fun warmWebViewIsCreatedOnlyInDedicatedProcess() {
+    fun warmHandshakeUsesDedicatedProcessWithoutCreatingAnIdleWebView() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val hello = AtomicReference<NtkAckServiceHello>()
         val failure = AtomicReference<NtkAckFailure>()
@@ -72,7 +72,10 @@ class NtkAckBrowserProcessIsolationTest {
             check(failure.get() == null) { "service failure=${failure.get()}" }
             val value = checkNotNull(hello.get())
             assertNotEquals(Process.myPid(), value.servicePid)
-            assertEquals(value.servicePid, value.webViewCreatedPid)
+            // Warm authenticates the isolated signer only. Chromium is intentionally created on
+            // demand if a server selects the JavaScript/WASM challenge branch; keeping an idle
+            // WebView here wastes memory and made this old assertion contradict production.
+            assertEquals(0, value.webViewCreatedPid)
             assertEquals(NtkAckProtocol.DATA_DIRECTORY_SUFFIX, value.dataDirectorySuffix)
             assertTrue(value.proofPublicKeyX509.isNotEmpty())
             NtkAckProofVerifier.verifyHelloOrThrow(value, value.servicePid)

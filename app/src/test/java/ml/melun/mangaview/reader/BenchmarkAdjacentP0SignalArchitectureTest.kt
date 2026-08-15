@@ -128,7 +128,9 @@ class BenchmarkAdjacentP0SignalArchitectureTest {
         assertTrue(idlePublish.contains("BenchmarkAdjacentCommitSignal.publishPhysicalMotionIdle("))
         assertTrue(
             surfaceSource.contains(
-                "scheduleBenchmarkPhysicalMotionIdleCheckLocked()\n                    dispatch"
+                "scheduleBenchmarkPhysicalMotionIdleCheckLocked()\n" +
+                    "                    scheduleBlockedForwardIntentResumeLocked()\n" +
+                    "                    dispatch"
             )
         )
 

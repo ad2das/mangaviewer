@@ -43,6 +43,43 @@ import kotlin.math.roundToInt
 import java.util.ArrayDeque
 import java.util.Locale
 
+/**
+ * Allocation-free rolling evidence for a potentially unbounded physical scroll gesture.
+ *
+ * ArrayList<Float> used to retain every callback/sample until the gesture finalized. Repeated
+ * swipes can keep that gesture active for minutes, creating boxed Float garbage and an ever more
+ * expensive terminal sort; HOME appeared to fix the reader because lifecycle teardown cleared the
+ * lists. Keep the most recent fixed window instead. The authoritative SurfaceFlinger qualification
+ * remains independent, while this diagnostic window still spans well over 45 seconds at 90 Hz.
+ */
+internal class NtkBoundedFloatSamples(private val capacity: Int) {
+    private val values = FloatArray(capacity.also { require(it > 0) })
+    private var writeIndex = 0
+    var size: Int = 0
+        private set
+
+    fun add(value: Float) {
+        values[writeIndex] = value
+        writeIndex = (writeIndex + 1) % capacity
+        if (size < capacity) size++
+    }
+
+    fun clear() {
+        writeIndex = 0
+        size = 0
+    }
+
+    fun snapshot(): ArrayList<Float> {
+        val result = ArrayList<Float>(size)
+        if (size == 0) return result
+        val first = if (size == capacity) writeIndex else 0
+        repeat(size) { offset ->
+            result.add(values[(first + offset) % capacity])
+        }
+        return result
+    }
+}
+
 internal object NtkExpandedNativeTextureTransitionPolicy {
     fun mayCrossCard(
         cardText: String?,
@@ -1367,6 +1404,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         COMPLETED_DRAW_ORDINARY_CADENCE_NANOS,
     )
     private val completedDrawDispatchRunnable = Runnable { drainCompletedDrawDispatch() }
+    private val blockedForwardIntentResumeRunnable = Runnable { resumeBlockedForwardIntent() }
     private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
     @Volatile private var cachedDisplayRefreshRate =
         NtkDisplayTimingPolicy.normalizedRefreshRate(null)
@@ -1439,7 +1477,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
      * producer; a test process can force the already-supported HWUI path before constructing the
      * reader without changing content admission, scroll coordinates, or adjacent loading policy.
      */
-    private val rollingNativePresentationEnabled =
+    private var rollingNativePresentationEnabled =
         !java.lang.Boolean.getBoolean(TEST_FORCE_HWUI_SYSTEM_PROPERTY)
     private val emulatorNativeSurfaceRuntime = NtkNativeSurfaceFrameRatePolicy.isEmulatorRuntime(
         Build.FINGERPRINT,
@@ -1462,6 +1500,26 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var rollingNativePreparedWidth = 0
     private var rollingNativePreparedHeight = 0
     /**
+     * A SurfaceView can keep the same Java Surface object while its host task is resized.  The
+     * old renderer attachment must not keep ownership merely because identityHashCode(surface)
+     * and the source-native target happen to be unchanged.  Coalesce divider drags, keep the
+     * HWUI fallback visible meanwhile, then attach once to the final stable bounds.
+     */
+    private var nativeHostBoundsReattachPending = false
+    private val nativeHostBoundsReattachRunnable = Runnable {
+        val surface = nativeSurfaceView.holder.surface
+        val surfaceWidth = nativeSurfaceView.width
+        val surfaceHeight = nativeSurfaceView.height
+        val shouldAttach = synchronized(stateLock) {
+            nativeHostBoundsReattachPending = false
+            rollingNativePresentationEnabled && renderRunning && directSurfaceReady &&
+                pages.isNotEmpty() && surface.isValid && surfaceWidth > 0 && surfaceHeight > 0
+        }
+        if (shouldAttach) {
+            attachRollingNativeSurface(surface, surfaceWidth, surfaceHeight)
+        }
+    }
+    /**
      * Pure geometry captured at the first measured viewport, before decoded page storage can turn
      * an intended source-native target back into a full-window host-GPU buffer. No native object,
      * Surface or pixel resource is created at this point.
@@ -1472,6 +1530,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var rollingNativeFrozenTargetHeight = 0
     private var rollingNativeFatal = false
     private var nativePresentationVisible = false
+    /**
+     * True only after the current Surface attachment has latched a real reader buffer and the
+     * child SurfaceView may replace the HWUI fallback. Android can discard a Surface across Home
+     * while keeping this View and all decoded pixels alive; revealing the empty replacement
+     * BufferQueue before its first upload covers the valid fallback with black.
+     */
+    private var nativeSurfaceContentRevealed = false
     /** Content identity of the exact native buffer currently retained by SurfaceFlinger. */
     private var nativePresentedStructureEpoch = 0L
     private var rollingNativeRecoveryPending = false
@@ -1593,18 +1658,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
         } ?: return@Runnable
         logFrameStatsSnapshot(snapshot)
     }
-    private val statsCallbackSpacingMs = ArrayList<Float>(240)
-    private val statsPostSpacingMs = ArrayList<Float>(240)
-    private val statsLockWaitMs = ArrayList<Float>(240)
-    private val statsDrawMs = ArrayList<Float>(240)
-    private val statsPostMs = ArrayList<Float>(240)
-    private val statsTotalMs = ArrayList<Float>(240)
-    private val statsInputOldestMs = ArrayList<Float>(240)
-    private val statsInputNewestMs = ArrayList<Float>(240)
-    private val statsMutationOldestToCallbackMs = ArrayList<Float>(240)
-    private val statsMutationNewestToCallbackMs = ArrayList<Float>(240)
-    private val statsMutationOldestToPostMs = ArrayList<Float>(240)
-    private val statsMutationNewestToPostMs = ArrayList<Float>(240)
+    private val statsCallbackSpacingMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsPostSpacingMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsLockWaitMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsDrawMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsPostMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsTotalMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsInputOldestMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsInputNewestMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsMutationOldestToCallbackMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsMutationNewestToCallbackMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsMutationOldestToPostMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
+    private val statsMutationNewestToPostMs = NtkBoundedFloatSamples(MAX_FRAME_STATS_SAMPLES)
     private var pendingOldestInputNs = 0L
     private var pendingNewestInputNs = 0L
     private var pendingInputEvents = 0
@@ -1617,6 +1682,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
     private var blockedForwardDispatchPosted = false
     private var lastBlockedForwardRequestAtMs = 0L
     private var lastBlockedForwardPage = -1
+    /**
+     * A drawable-prefix fence may stop a physical drag/fling while the exact page immediately
+     * ahead is still decoding.  The old implementation also discarded the gesture's remaining
+     * destination when it stopped [scroller], so the reader stayed motionless after those pixels
+     * arrived.  Keep only the newest gesture-owned destination for a short, bounded interval and
+     * advance to it incrementally as complete drawable viewports become available.
+     */
+    private var blockedForwardIntentTarget = Float.NaN
+    private var blockedForwardIntentGestureRevision = 0L
+    private var blockedForwardIntentExpiresAtMs = 0L
+    private var blockedForwardIntentResumePosted = false
     private var boundaryArmedDirection = 0
     private var boundaryDispatchInFlight = false
     private var nextBoundaryAppendInFlight = false
@@ -2236,6 +2312,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 "source-native compositing must be selected before native attachment"
             }
             sourceNativeWebtoonCompositingEnabled = enabled
+            // The EGL/SurfaceView producer is optimized and qualified for continuous vertical
+            // webtoon/manhwa sources. Enabling it for ordinary paged manga exposed an empty native
+            // buffer until the first touch changed the scroll coordinates, producing the exact
+            // entry/HOME black screen reported on devices. Prefer the stable HWUI renderer for
+            // those profiles; image delivery and decoded bitmap identity are unchanged.
+            if (!enabled) rollingNativePresentationEnabled = false
             if (rollingNativeAttachEpoch == 0L) {
                 rollingNativeFrozenViewportWidth = 0
                 rollingNativeFrozenViewportHeight = 0
@@ -2335,7 +2417,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
         // not a reveal gate for the parent reader: the first exact page can draw immediately.
         nativeSurfaceView.visibility =
             if (enabled || !rollingNativePresentationEnabled) View.GONE else View.VISIBLE
-        nativeSurfaceView.alpha = 1f
+        nativeSurfaceView.alpha = synchronized(stateLock) {
+            if (nativeSurfaceContentRevealed) 1f else 0f
+        }
     }
 
     /**
@@ -2364,7 +2448,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         // shown that cold BufferQueue/EGL attachment can occasionally stop the entire HWUI lane
         // for tens of seconds. Keep the real-image fallback as the only producer until its first
         // registered HWUI frame-commit proof has been delivered.
-        nativeSurfaceView.alpha = 1f
+        nativeSurfaceView.alpha = 0f
         invalidate()
         (parent as? View)?.invalidate()
         postInvalidateOnAnimation()
@@ -2396,6 +2480,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 return@synchronized null
             }
             clearRetainedPageNodesStateLocked()
+            clearBlockedForwardIntentLocked()
             val nextCount = max(0, count)
             if (pages.isNotEmpty() && nextCount == pages.size) {
                 this.deferInitialEmptyDraw = deferInitialEmptyDraw
@@ -2467,6 +2552,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             blockedForwardDispatchPosted = false
             lastBlockedForwardPage = -1
             lastBlockedForwardRequestAtMs = 0L
+            clearBlockedForwardIntentLocked()
             val preservedPages = pages.toList()
             pages.clear()
             prependedRevealHoldPage = -1
@@ -2517,7 +2603,12 @@ class ReaderSurfaceView @JvmOverloads constructor(
     fun appendPageCount(count: Int, revealAppendedBoundary: Boolean = false) {
         val request = synchronized(stateLock) {
             if (count <= pages.size) return
-            invalidatePreparedRenderSceneStateLocked()
+            // Appending empty structural slots does not change the display index, geometry, or
+            // bitmap identity of the already-visible prefix. Advancing visualGeneration here
+            // invalidated its retained/native scene before any appended pixel existed, allowing a
+            // black frame to replace the valid buffer until the next touch rebuilt the scene.
+            // Each appended page invalidates the scene when its real pixels are installed; keep
+            // the proven prefix resident and drawable in the meantime.
             rebuildLayoutLocked()
             val oldMaxScroll = max(0f, contentHeight - height).toInt()
             val shouldExtendActiveFling = !scroller.isFinished &&
@@ -2576,6 +2667,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val request = synchronized(stateLock) {
             if (insertedCount <= 0 || count <= pages.size) return
             clearRetainedPageNodesStateLocked()
+            clearBlockedForwardIntentLocked()
             rebuildLayoutLocked()
             materializeLayoutDeltasLocked()
             val oldFirstTop = pageTopOrElseLocked(0, 0f)
@@ -2600,7 +2692,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (lockedRestorePage >= 0) lockedRestorePage += insertedCount
             if (revealPrependedBoundary) {
                 clearPrependedReadyHoldLocked()
-                prependedRevealHoldPage = -1
+                if (holdUntilReadyCount > 0) {
+                    prependedReadyHoldInserted = insertedCount
+                    prependedReadyHoldRequired = holdUntilReadyCount
+                    // Reveal the transition card, but do not let a following gesture enter blank
+                    // prepended pixels until their first drawable has actually arrived.
+                    prependedRevealHoldPage = (insertedCount - 1).coerceIn(0, pages.lastIndex)
+                } else {
+                    prependedRevealHoldPage = -1
+                }
             } else if (holdUntilReadyCount > 0) {
                 prependedReadyHoldInserted = insertedCount
                 prependedReadyHoldRequired = holdUntilReadyCount
@@ -2659,6 +2759,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             val endExclusive = min(pages.size, startIndex + removedCount)
             if (endExclusive <= startIndex) return
             clearRetainedPageNodesStateLocked()
+            clearBlockedForwardIntentLocked()
             val wasAtEnd = height > 0 &&
                 scrollOffset >= maxScrollLocked() - BOUNDARY_EPSILON_PX
             rebuildLayoutLocked()
@@ -4393,6 +4494,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 blockedForwardDispatchPosted = false
                 lastBlockedForwardPage = -1
                 lastBlockedForwardRequestAtMs = 0L
+                clearBlockedForwardIntentLocked()
                 boundaryArmedDirection = 0
                 boundaryDispatchInFlight = false
                 nextBoundaryAppendInFlight = false
@@ -4557,6 +4659,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             blockedForwardDispatchPosted = false
             lastBlockedForwardPage = -1
             lastBlockedForwardRequestAtMs = 0L
+            clearBlockedForwardIntentLocked()
             boundaryArmedDirection = 0
             boundaryDispatchInFlight = false
             nextBoundaryAppendInFlight = false
@@ -5663,6 +5766,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             blockedForwardDispatchPosted = false
             lastBlockedForwardPage = -1
             lastBlockedForwardRequestAtMs = 0L
+            clearBlockedForwardIntentLocked()
             layoutDirty = true
             renderRequested = true
             scheduleFrameLocked()
@@ -5695,6 +5799,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             blockedForwardDispatchPosted = false
             lastBlockedForwardPage = -1
             lastBlockedForwardRequestAtMs = 0L
+            clearBlockedForwardIntentLocked()
             layoutDirty = true
             stopRenderThreadLocked()
             stateLock.notifyAll()
@@ -6110,7 +6215,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             "native=${rollingNativeHandle != 0L},attach=$rollingNativeAttachEpoch," +
             "suppressed=$frameSchedulingSuppressed,requested=$renderRequested," +
             "versions=$desiredVersion/$drawnVersion/$committedVersion," +
-            "pointer=$pointerDown,dragging=$dragging,scrolling=${!scroller.isFinished}"
+            "pointer=$pointerDown,dragging=$dragging,scrolling=${!scroller.isFinished}," +
+            "direction=$activeInputDirection,reverseHint=$pendingReverseWindowFirstPageHint," +
+            "prewarmPaused=$nativeTexturePrewarmPaused,nativeRevealed=$nativeSurfaceContentRevealed"
     }
 
     fun visibleCoverageSnapshot(): VisibleCoverageSnapshot? {
@@ -6267,6 +6374,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
     /** O(1) structure identity for commit validation; traversalSnapshot() remains the full audit. */
     fun currentTraversalStructureEpoch(): Long = synchronized(stateLock) {
         traversalStructureEpoch
+    }
+
+    /**
+     * A visible SurfaceView can punch a black compositor hole even while its alpha is zero on
+     * some devices. The Activity keeps explicit loading chrome until the first exact native
+     * buffer is physically presented, rather than treating the earlier HWUI commit as final.
+     */
+    fun isNativeSurfaceRevealPendingForLoadingStatus(): Boolean = synchronized(stateLock) {
+        rollingNativePresentationEnabled &&
+            !nativeSurfaceContentRevealed &&
+            !rollingNativeFatal
     }
 
     fun completedDrawDispatchTelemetrySnapshot(): CompletedDrawDispatchTelemetrySnapshot {
@@ -6568,6 +6686,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         var physicalMotionEnded = false
+        var retiredNativeAttachment: Pair<Long, Long>? = null
+        var scheduleNativeReattach = false
         val request = synchronized(stateLock) {
             if (width != oldWidth || height != oldHeight) {
                 if (oldWidth > 0 && oldHeight > 0) {
@@ -6575,6 +6695,29 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 }
                 materializeLayoutDeltasLocked()
                 layoutDirty = true
+                if (rollingNativePresentationEnabled && rollingNativeHandle != 0L &&
+                    rollingNativeAttachEpoch > 0L
+                ) {
+                    // The old child buffer is sized/positioned for different task bounds.  Make
+                    // the HWUI image authoritative before requesting another native attachment;
+                    // otherwise onDraw() skips the fallback while the replacement Surface is
+                    // still empty, producing a persistent white/black split-screen pane.
+                    retireDirectSurfaceSchedulingLocked()
+                    retiredNativeAttachment = rollingNativeHandle to rollingNativeAttachEpoch
+                    advanceRollingNativeSurfaceEpochLocked()
+                    rollingNativeAttachEpoch = 0L
+                    rollingNativeSurfaceIdentity = 0
+                    rollingNativeWidth = 0
+                    rollingNativeHeight = 0
+                    rollingNativeViewportWidth = 0
+                    rollingNativeViewportHeight = 0
+                    nativePresentationVisible = false
+                    nativeSurfaceContentRevealed = false
+                    nativePresentedStructureEpoch = 0L
+                    clearFramePipeLocked(preserveDirty = true)
+                    nativeHostBoundsReattachPending = true
+                    scheduleNativeReattach = true
+                }
             }
             val scene = preparedRenderScene
             val directWidthMismatch = directPreparedBitmapGeneration == visualGeneration &&
@@ -6611,6 +6754,17 @@ class ReaderSurfaceView @JvmOverloads constructor(
             if (renderRequested) scheduleFrameLocked()
             stateLock.notifyAll()
             if (hasPages) windowRequestLocked(lastBusy) else null
+        }
+        retiredNativeAttachment?.let { (handle, epoch) ->
+            nativeSurfaceView.alpha = 0f
+            NtkRollingNativeBridge.nativeDetach(handle, epoch)
+        }
+        if (scheduleNativeReattach) {
+            mainHandler.removeCallbacks(nativeHostBoundsReattachRunnable)
+            mainHandler.postDelayed(
+                nativeHostBoundsReattachRunnable,
+                HOST_BOUNDS_REATTACH_SETTLE_MS,
+            )
         }
         if (physicalMotionEnded) listener?.onPhysicalScrollMotionEnded()
         dispatchWindowRequest(request)
@@ -6654,6 +6808,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rollingNativeFrozenTargetWidth = 0
             rollingNativeFrozenTargetHeight = 0
             nativePresentationVisible = false
+            nativeSurfaceContentRevealed = false
             nativePresentedStructureEpoch = 0L
             rollingTextureSurface = null
             directSurfaceReady = false
@@ -6675,6 +6830,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (!rollingNativePresentationEnabled) return
+        // The new Surface starts with no reader buffer. Keep the committed HWUI image exposed
+        // until an exact native frame for this attachment is physically presented.
+        nativeSurfaceView.alpha = 0f
         val surface = holder.surface
         val surfaceWidth = nativeSurfaceView.width
         val surfaceHeight = nativeSurfaceView.height
@@ -6698,7 +6856,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
             )
         }
         applyQualifiedNativeSurfaceFrameRateVote(refreshRate)
-        attachRollingNativeSurface(surface, surfaceWidth, surfaceHeight)
+        val deferForBounds = synchronized(stateLock) { nativeHostBoundsReattachPending }
+        if (deferForBounds) {
+            mainHandler.removeCallbacks(nativeHostBoundsReattachRunnable)
+            mainHandler.postDelayed(
+                nativeHostBoundsReattachRunnable,
+                HOST_BOUNDS_REATTACH_SETTLE_MS,
+            )
+        } else {
+            attachRollingNativeSurface(surface, surfaceWidth, surfaceHeight)
+        }
     }
 
     override fun surfaceChanged(
@@ -6719,7 +6886,16 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         val refreshRate = refreshCachedDisplayTiming()
         applyQualifiedNativeSurfaceFrameRateVote(refreshRate)
-        attachRollingNativeSurface(surface, width, height)
+        val deferForBounds = synchronized(stateLock) { nativeHostBoundsReattachPending }
+        if (deferForBounds) {
+            mainHandler.removeCallbacks(nativeHostBoundsReattachRunnable)
+            mainHandler.postDelayed(
+                nativeHostBoundsReattachRunnable,
+                HOST_BOUNDS_REATTACH_SETTLE_MS,
+            )
+        } else {
+            attachRollingNativeSurface(surface, width, height)
+        }
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -6748,11 +6924,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
             rollingNativePreparedWidth = 0
             rollingNativePreparedHeight = 0
             nativePresentationVisible = false
+            nativeSurfaceContentRevealed = false
             nativePresentedStructureEpoch = 0L
             clearFramePipeLocked(preserveDirty = true)
             stateLock.notifyAll()
             value
         }
+        nativeSurfaceView.alpha = 0f
         if (physicalMotionEnded) listener?.onPhysicalScrollMotionEnded()
         if (detach.first != 0L && detach.second > 0L) {
             NtkRollingNativeBridge.nativeDetach(detach.first, detach.second)
@@ -6908,6 +7086,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 rollingNativeViewportWidth = surfaceWidth
                 rollingNativeViewportHeight = surfaceHeight
                 nativePresentationVisible = false
+                nativeSurfaceContentRevealed = false
                 nativePresentedStructureEpoch = 0L
                 Log.i(
                     TAG,
@@ -6939,6 +7118,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     // the renderer has no changed frame queued. Freeze opportunistic uploads for
                     // the physical gesture and let visible frames retain the entire GPU budget.
                     setNativeTexturePrewarmPausedLocked(true)
+                    clearBlockedForwardIntentLocked()
                     if (startScrollbarDragLocked(event.x, event.y)) {
                         noteInputLocked(event)
                         lastScrollInteractionMs = event.eventTime
@@ -7050,7 +7230,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     } else {
                         val nowMs = SystemClock.uptimeMillis()
                         suppressEdgeNoMovementScrollStatsLocked(nowMs)
-                        null
+                        // A zero-pixel reverse MOVE at the local top can still request older
+                        // source images that were intentionally evicted below the saved resume
+                        // floor. Deliver that evidence while the gesture is busy; waiting for UP
+                        // made the initial drag look dead and allowed an idle request to erase it.
+                        if (pendingReverseWindowFirstPageHint >= 0) {
+                            windowRequestLocked(true)
+                        } else {
+                            null
+                        }
                     }
                 }
                 if (sampleVelocity) velocityTracker?.addMovement(event)
@@ -7195,6 +7383,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     // valid gesture may move zero pixels, so there may be no trace cookie whose
                     // later close could otherwise produce the final-idle proof.
                     scheduleBenchmarkPhysicalMotionIdleCheckLocked()
+                    scheduleBlockedForwardIntentResumeLocked()
                     dispatch
                 }
                 dispatchWindowRequest(result.first, fromInput = true)
@@ -7217,7 +7406,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val nativeSurfaceOwnsFrame = synchronized(stateLock) {
             directSurfaceReady && rollingNativeHandle != 0L &&
                 rollingNativeAttachEpoch > 0L && !rollingNativeFatal &&
-                nativePresentationVisible &&
+                nativePresentationVisible && nativeSurfaceContentRevealed &&
                 nativePresentedStructureEpoch == traversalStructureEpoch
         }
         if (!nativeSurfaceOwnsFrame) {
@@ -7260,8 +7449,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 if (!(limitScrollToDrawablePrefix && direction == DIRECTION_NEXT)) {
                     clampForwardScrollLocked()
                 } else if (boundedNext < rawNext - SCROLL_OFFSET_EPSILON_PX) {
+                    // The current scroller sample is usually only a few pixels beyond the
+                    // drawable fence. Preserve its full physical destination before stopping the
+                    // unsafe animation; later exact pixels may resume only up to a clean viewport.
+                    rememberBlockedForwardIntentLocked(
+                        max(rawNext, scroller.finalY.toFloat() + activeScrollerOffsetShift)
+                    )
                     scroller.forceFinished(true)
                     activeScrollerOffsetShift = 0f
+                    scheduleBlockedForwardIntentResumeLocked()
                 }
                 val movedByFrame = abs(scrollOffset - beforeScroll) > SCROLL_OFFSET_EPSILON_PX
                 // A scroller tick mutates reader pixels just like a MOVE.  Preserve the
@@ -9776,7 +9972,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             }
         }
         if (!reveal) return
-        nativeSurfaceView.alpha = 1f
+        // Visibility creates the Surface, but alpha remains zero until its first exact buffer is
+        // latched. The already-committed HWUI reader stays visible during asynchronous EGL setup.
+        nativeSurfaceView.alpha = 0f
         nativeSurfaceView.visibility = View.VISIBLE
         nativeSurfaceView.requestLayout()
         invalidate()
@@ -10794,6 +10992,40 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
     }
 
+    private fun revealNativeSurfaceAfterPresentedFrame(
+        expectedAttachEpoch: Long,
+        expectedStructureEpoch: Long,
+    ) {
+        mainHandler.post {
+            val reveal = synchronized(stateLock) {
+                val current = rollingNativeAttachEpoch == expectedAttachEpoch &&
+                    expectedAttachEpoch > 0L && !rollingNativeFatal &&
+                    directSurfaceReady && nativePresentationVisible &&
+                    nativePresentedStructureEpoch == expectedStructureEpoch &&
+                    traversalStructureEpoch == expectedStructureEpoch &&
+                    nativeSurfaceView.visibility == View.VISIBLE
+                if (current && !nativeSurfaceContentRevealed) {
+                    nativeSurfaceContentRevealed = true
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!reveal) return@post
+            // The exact buffer is already latched. Switching alpha now cannot expose an empty or
+            // stale Surface, and the HWUI fallback remains the owner until this point.
+            nativeSurfaceView.alpha = 1f
+            invalidate()
+            (parent as? View)?.invalidate()
+            postInvalidateOnAnimation()
+            Log.d(
+                TAG,
+                "reader_native_surface_revealed_after_present " +
+                    "attach=$expectedAttachEpoch,structure=$expectedStructureEpoch",
+            )
+        }
+    }
+
     @Keep
     fun onNtkRollingFrameLatched(
         token: Long,
@@ -10832,14 +11064,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 onNtkRollingFrameDropped(token)
                 return@post
             }
-            synchronized(stateLock) {
+            val reveal = synchronized(stateLock) {
                 if (rollingNativeAttachEpoch == submission.nativeSurfaceEpoch &&
                     submission.nativeSurfaceEpoch > 0L && !rollingNativeFatal &&
                     traversalStructureEpoch == submission.proof.structureEpoch
                 ) {
                     nativePresentationVisible = true
                     nativePresentedStructureEpoch = submission.proof.structureEpoch
-                }
+                    submission.nativeSurfaceEpoch to submission.proof.structureEpoch
+                } else null
+            }
+            reveal?.let { (attachEpoch, structureEpoch) ->
+                revealNativeSurfaceAfterPresentedFrame(attachEpoch, structureEpoch)
             }
             onFrameCommitted(
                 epoch,
@@ -10907,14 +11143,18 @@ class ReaderSurfaceView @JvmOverloads constructor(
             onNtkRollingFrameDropped(token)
             return
         }
-        synchronized(stateLock) {
+        val reveal = synchronized(stateLock) {
             if (rollingNativeAttachEpoch == submission.nativeSurfaceEpoch &&
                 submission.nativeSurfaceEpoch > 0L && !rollingNativeFatal &&
                 traversalStructureEpoch == submission.proof.structureEpoch
             ) {
                 nativePresentationVisible = true
                 nativePresentedStructureEpoch = submission.proof.structureEpoch
-            }
+                submission.nativeSurfaceEpoch to submission.proof.structureEpoch
+            } else null
+        }
+        reveal?.let { (attachEpoch, structureEpoch) ->
+            revealNativeSurfaceAfterPresentedFrame(attachEpoch, structureEpoch)
         }
         onFrameCommitted(
             submission.frameEpoch,
@@ -10963,6 +11203,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     rollingNativePreparedWidth = 0
                     rollingNativePreparedHeight = 0
                     nativePresentationVisible = false
+                    nativeSurfaceContentRevealed = false
                     nativePresentedStructureEpoch = 0L
                     rollingNativeFatal = true
                     rollingNativeRecoveryPending = true
@@ -11075,9 +11316,13 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 notifyNearStart = false
                 notifyNearEnd = false
             }
-            if (!anchorMoved && !intervalElapsed && !nearChanged) return null
+            if (!anchorMoved && !intervalElapsed && !nearChanged &&
+                pendingReverseWindowFirstPageHint < 0
+            ) return null
         }
-        if (anchor == lastAnchor && busy == lastRequestedBusy && !nearChanged) return null
+        if (anchor == lastAnchor && busy == lastRequestedBusy && !nearChanged &&
+            pendingReverseWindowFirstPageHint < 0
+        ) return null
         if (busy && (notifyNearStart || notifyNearEnd)) {
             lastBusyNearDispatchMs = SystemClock.uptimeMillis()
         }
@@ -11508,6 +11753,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
     }
 
     private fun capForwardInputScrollLocked(rawNext: Float, direction: Int): Float {
+        if (direction == DIRECTION_PREVIOUS) clearBlockedForwardIntentLocked()
         if (!limitScrollToDrawablePrefix || direction != DIRECTION_NEXT) return rawNext
         if (pages.isEmpty() || height <= 0) return rawNext
         if (hasPendingPageResolvesLocked()) {
@@ -11525,6 +11771,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         }
         val limit = forwardScrollLimitLocked(scheduleBlocked = false)
         if (rawNext <= limit + SCROLL_OFFSET_EPSILON_PX) return rawNext
+        rememberBlockedForwardIntentLocked(rawNext)
         scheduleBlockedForwardWindowRequestLocked()
         if (shouldLogForwardCapLocked()) {
             val blockedForward = blockedForwardTargetPageLocked()
@@ -11538,6 +11785,85 @@ class ReaderSurfaceView @JvmOverloads constructor(
             )
         }
         return max(scrollOffset, limit)
+    }
+
+    private fun rememberBlockedForwardIntentLocked(target: Float) {
+        if (!target.isFinite() || target <= scrollOffset + SCROLL_OFFSET_EPSILON_PX) return
+        val boundedTarget = target.coerceIn(0f, maxScrollLocked())
+        blockedForwardIntentTarget = if (
+            blockedForwardIntentTarget.isFinite() &&
+            blockedForwardIntentGestureRevision == physicalGestureRevision
+        ) {
+            max(blockedForwardIntentTarget, boundedTarget)
+        } else {
+            boundedTarget
+        }
+        blockedForwardIntentGestureRevision = physicalGestureRevision
+        blockedForwardIntentExpiresAtMs =
+            SystemClock.uptimeMillis() + BLOCKED_FORWARD_INTENT_TTL_MS
+    }
+
+    private fun clearBlockedForwardIntentLocked() {
+        mainHandler.removeCallbacks(blockedForwardIntentResumeRunnable)
+        blockedForwardIntentTarget = Float.NaN
+        blockedForwardIntentGestureRevision = 0L
+        blockedForwardIntentExpiresAtMs = 0L
+        blockedForwardIntentResumePosted = false
+    }
+
+    private fun scheduleBlockedForwardIntentResumeLocked() {
+        if (!blockedForwardIntentTarget.isFinite() || blockedForwardIntentResumePosted) return
+        blockedForwardIntentResumePosted = true
+        mainHandler.post(blockedForwardIntentResumeRunnable)
+    }
+
+    private fun resumeBlockedForwardIntent() {
+        val request = synchronized(stateLock) {
+            blockedForwardIntentResumePosted = false
+            if (!renderRunning || pages.isEmpty() || pointerDown || dragging || !scroller.isFinished) {
+                return@synchronized null
+            }
+            val now = SystemClock.uptimeMillis()
+            if (
+                blockedForwardIntentGestureRevision != physicalGestureRevision ||
+                now > blockedForwardIntentExpiresAtMs
+            ) {
+                clearBlockedForwardIntentLocked()
+                return@synchronized null
+            }
+            rebuildLayoutLocked()
+            if (hasPendingPageResolvesLocked()) applyVisiblePendingDrawableResolvesLocked()
+            val limit = forwardScrollLimitLocked(scheduleBlocked = false)
+            val resumedOffset = blockedForwardResumeOffset(
+                currentOffset = scrollOffset,
+                pendingTarget = blockedForwardIntentTarget,
+                drawableLimit = limit,
+            )
+            if (
+                resumedOffset <= scrollOffset + SCROLL_OFFSET_EPSILON_PX ||
+                !drawableViewportCleanAtScrollLocked(resumedOffset)
+            ) {
+                scheduleBlockedForwardWindowRequestLocked()
+                return@synchronized null
+            }
+            val target = blockedForwardIntentTarget
+            activeInputDirection = DIRECTION_NEXT
+            setScrollOffsetLocked(resumedOffset)
+            activeInputDirection = 0
+            if (resumedOffset >= target - SCROLL_OFFSET_EPSILON_PX) {
+                clearBlockedForwardIntentLocked()
+            } else {
+                scheduleBlockedForwardWindowRequestLocked()
+            }
+            Log.d(
+                TAG,
+                "reader_forward_cap_resumed to=${resumedOffset.toInt()} " +
+                    "target=${target.toInt()} limit=${limit.toInt()}"
+            )
+            stateLock.notifyAll()
+            windowRequestLocked(false)
+        }
+        dispatchWindowRequest(request)
     }
 
     private fun shouldLogForwardCapLocked(): Boolean {
@@ -11690,6 +12016,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
             lastBlockedForwardPage = -1
             lastBlockedForwardRequestAtMs = 0L
         }
+        if (pageHasCompleteDrawableContentLocked(index)) {
+            scheduleBlockedForwardIntentResumeLocked()
+        }
     }
 
     private fun shouldSuppressDrawablePrefixFlingLocked(wasReleased: Boolean, dragDistance: Float): Boolean {
@@ -11717,6 +12046,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val fullMaxScroll = max(0f, totalHeightLocked() - height)
         val atStart = scrollOffset <= BOUNDARY_EPSILON_PX
         val atEnd = scrollOffset >= fullMaxScroll - BOUNDARY_EPSILON_PX
+        if (direction == DIRECTION_PREVIOUS && atStart &&
+            !pageHasCompleteDrawableContentLocked(0)
+        ) {
+            // Do not cascade A<-B<-C structure prepends while A/page0 is still an empty
+            // placeholder. Its warm/window request remains active; the next physical gesture can
+            // cross the boundary after the real first image is installed.
+            Log.d(TAG, "reader_boundary_previous_blocked_unresolved_head")
+            return null
+        }
         if (direction == DIRECTION_NEXT && atEnd) {
             armNextBoundaryGeometryHoldLocked(pages.lastIndex)
         }
@@ -12478,12 +12816,25 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val requestedOffset = dragOriginScrollOffset +
             (dragOriginY - y) * DRAG_SCROLL_MULTIPLIER
         val direction = directionForDelta(requestedOffset - scrollOffset)
-        if (direction == 0 || isAtInputEdgeLocked(direction)) return false
+        if (direction == 0) return false
+        // Record the physical intent before the edge check. A restored rolling reader commonly
+        // starts at local scroll offset zero even though earlier source images exist outside the
+        // admitted window. Returning here without reverse evidence made that saved floor
+        // impossible to reopen; with one resident viewport the next gesture looked frozen too.
+        boundaryArmedDirection = direction
+        activeInputDirection = direction
+        if (direction == DIRECTION_PREVIOUS && pages.isNotEmpty()) {
+            val firstVisible = firstVisiblePageLocked(scrollOffset).coerceIn(0, pages.lastIndex)
+            pendingReverseWindowFirstPageHint = if (pendingReverseWindowFirstPageHint >= 0) {
+                minOf(pendingReverseWindowFirstPageHint, firstVisible)
+            } else {
+                firstVisible
+            }
+        }
+        if (isAtInputEdgeLocked(direction)) return false
         clearLockedRestorePositionLocked()
         if (!dragging) dragging = true
         setBusyLocked(true)
-        boundaryArmedDirection = direction
-        activeInputDirection = direction
         lastScrollInteractionMs = (eventTimeNs / NANOS_PER_MILLISECOND)
             .coerceAtLeast(SystemClock.uptimeMillis() - 1L)
         if (dragTargetRevision == Long.MAX_VALUE) {
@@ -12700,19 +13051,19 @@ class ReaderSurfaceView @JvmOverloads constructor(
 
     private fun finalizeActiveFrameStatsLocked(log: Boolean): FrameStatsSnapshot? {
         if (!statsActive) return lastFrameStatsSnapshot
-        val callbackIntervals = ArrayList(statsCallbackSpacingMs)
-        val postIntervals = ArrayList(statsPostSpacingMs)
-        val lockWait = ArrayList(statsLockWaitMs)
-        val draw = ArrayList(statsDrawMs)
-        val post = ArrayList(statsPostMs)
-        val total = ArrayList(statsTotalMs)
-        val renderTotal = ArrayList(statsDrawMs)
-        val inputOldest = ArrayList(statsInputOldestMs)
-        val inputNewest = ArrayList(statsInputNewestMs)
-        val mutationOldestToCallback = ArrayList(statsMutationOldestToCallbackMs)
-        val mutationNewestToCallback = ArrayList(statsMutationNewestToCallbackMs)
-        val mutationOldestToPost = ArrayList(statsMutationOldestToPostMs)
-        val mutationNewestToPost = ArrayList(statsMutationNewestToPostMs)
+        val callbackIntervals = statsCallbackSpacingMs.snapshot()
+        val postIntervals = statsPostSpacingMs.snapshot()
+        val lockWait = statsLockWaitMs.snapshot()
+        val draw = statsDrawMs.snapshot()
+        val post = statsPostMs.snapshot()
+        val total = statsTotalMs.snapshot()
+        val renderTotal = statsDrawMs.snapshot()
+        val inputOldest = statsInputOldestMs.snapshot()
+        val inputNewest = statsInputNewestMs.snapshot()
+        val mutationOldestToCallback = statsMutationOldestToCallbackMs.snapshot()
+        val mutationNewestToCallback = statsMutationNewestToCallbackMs.snapshot()
+        val mutationOldestToPost = statsMutationOldestToPostMs.snapshot()
+        val mutationNewestToPost = statsMutationNewestToPostMs.snapshot()
         val noCanvas = statsNoCanvasFrames
         val coalesced = statsCoalescedRequests
         val maxMissingPx = statsMaxMissingPx
@@ -13176,6 +13527,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         const val DIRECTION_PREVIOUS = -1
         const val DIRECTION_NEXT = 1
         private const val ROLLING_AUTHORITATIVE_RECYCLE_DELAY_MS = 250L
+        private const val HOST_BOUNDS_REATTACH_SETTLE_MS = 96L
 
         @JvmStatic
         fun transitionCardPageHeightForTest(): Float = TRANSITION_CARD_PAGE_HEIGHT_PX
@@ -13326,6 +13678,28 @@ class ReaderSurfaceView @JvmOverloads constructor(
             return currentOffset > contentMaxScroll + SCROLL_OFFSET_EPSILON_PX &&
                 requestedOffset <= contentMaxScroll + SCROLL_OFFSET_EPSILON_PX
         }
+
+        private fun blockedForwardResumeOffset(
+            currentOffset: Float,
+            pendingTarget: Float,
+            drawableLimit: Float,
+        ): Float {
+            if (!currentOffset.isFinite() || !pendingTarget.isFinite() ||
+                !drawableLimit.isFinite()
+            ) return currentOffset
+            return max(currentOffset, min(pendingTarget, drawableLimit))
+        }
+
+        @JvmStatic
+        fun blockedForwardResumeOffsetForTest(
+            currentOffset: Float,
+            pendingTarget: Float,
+            drawableLimit: Float,
+        ): Float = blockedForwardResumeOffset(
+            currentOffset,
+            pendingTarget,
+            drawableLimit,
+        )
 
         private fun repairForwardOnlyRestoreOffset(
             savedOffsetPx: Int,
@@ -13522,6 +13896,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val DEFAULT_FRAME_BUDGET_MS = 16.67f
         private const val MISSED_VSYNC_FACTOR = 2.0f
         private const val MIN_FRAME_SAMPLES = 8
+        private const val MAX_FRAME_STATS_SAMPLES = 4096
         private const val DEFAULT_PAGE_GAP_PX = 0
         private const val PREPARED_SUBSET_TILE_SOURCE_HEIGHT =
             ReaderStrictPerformanceContract.ORIGINAL_TILE_SOURCE_HEIGHT_PX
@@ -13535,15 +13910,15 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val NATIVE_PREWARM_AHEAD_VIEWPORTS = 6f
         private const val NATIVE_PREWARM_FALLBACK_AHEAD_PAGES = 6
         private const val NATIVE_PREWARM_MAX_TILES = 12
-        private const val DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 16
-        // A resumed r90 manhwa can have twelve current-tail pages, one transition card and the
-        // required p0-p4 runway ahead of the first visible page. Sixteen therefore stopped at p2:
-        // p3 paid its first glTexImage upload in the presented frame even though its decoded body
-        // had been resident for seconds. Expand only the host-GPU/direct-Wi-Fi profile; physical
-        // direct Wi-Fi retains its established sixteen-page window.
-        private const val HOST_GPU_DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 24
-        private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES = 48
-        private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES = 288L * 1024L * 1024L
+        // Keep GPU residency deliberately smaller than the immutable decoded/encoded cache. A
+        // HOME resume previously re-uploaded 44 textures (about 198 MiB) before the first reading
+        // gesture and caused 0.7-1.3 second RenderThread stalls. Eight page-atomic entries cover
+        // the visible page plus a useful runway without turning a decoded episode into a burst of
+        // GL allocation work. Pages outside this window remain losslessly rehydratable.
+        private const val DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 8
+        private const val HOST_GPU_DIRECT_WIFI_NATIVE_PREWARM_AHEAD_PAGES = 8
+        private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_TILES = 16
+        private const val DIRECT_WIFI_NATIVE_PREWARM_MAX_BYTES = 96L * 1024L * 1024L
         private const val DIRECT_WIFI_SHORT_WEBTOON_PREWARM_AHEAD_VIEWPORTS = 6f
         // Kept in one production policy point while the exact no-sampling NTK proof is bound.
         private const val FORWARD_REQUEST_END_EPSILON_PX = 0.01f
@@ -13576,6 +13951,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
         private const val EXACT_STRUCTURE_HOLD_LOG_INTERVAL_MS = 250L
         private const val BLOCKED_FORWARD_REQUEST_THROTTLE_MS = 48L
         private const val BLOCKED_FORWARD_RUNWAY_AFTER_PAGES = 5
+        private const val BLOCKED_FORWARD_INTENT_TTL_MS = 8_000L
         private const val IDLE_SLOW_FRAME_LOG_BUDGET_MS = 200f
         private const val SUSTAINED_SLOW_FRAME_LOG_BUDGET_MS = 32f
         private const val HARD_SCROLL_CALLBACK_GAP_MS = 50f

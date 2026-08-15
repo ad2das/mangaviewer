@@ -87,12 +87,19 @@ class NtkAdjacentControlSplitGateArchitectureTest {
             "releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete("
         )
         val preappend = warm.indexOf("maybeStartInitialTailAdjacentPreappend(")
+        val currentOwnerGate = warm.indexOf(
+            "NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) == null"
+        )
 
         assertTrue(warm.contains("NtkCompletedForwardEpisodePolicy.isComplete("))
+        assertTrue(currentOwnerGate >= 0)
         assertTrue(exact >= 0)
+        assertTrue(currentOwnerGate < exact)
         assertTrue(release > exact)
         assertTrue(preappend > release)
         assertTrue(warm.contains("exactTargetPath"))
+        assertTrue(warm.contains("append_adjacent_complete_idle_wait_current_owner"))
+        assertTrue(warm.contains("NTK_CURRENT_OWNER_WARMUP_RETRY_MS"))
     }
 
     @Test

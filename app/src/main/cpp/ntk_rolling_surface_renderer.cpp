@@ -64,12 +64,14 @@ constexpr std::int64_t kPrewarmResumeQuietNanos = 750'000'000;
 // without network or decode work. A 200-page 1280px trace otherwise retained 49 old textures
 // (about 299 MiB) and made gfxstream block eglSwapBuffers for 106 ms during a forward fling.
 constexpr int kRetainedBackwardTexturePages = 2;
-// This is the ordinary rolling-window floor. Once Kotlin hands over one exact immutable full-scene
-// snapshot, the renderer raises the epoch budget to that snapshot's checked RGBA byte count. A
-// fixed 288 MiB ceiling made a 112-page episode continually evict and re-upload about sixty pages,
-// so the last page could never become render-ready even on an 8 GiB host-GPU emulator.
-constexpr std::uint64_t kMaxTextureBudgetBytes = 288ULL * 1024ULL * 1024ULL;
-constexpr std::size_t kMaxResidentTextureCount = 1024;
+// GPU residency is a viewport cache, not episode ownership. A 288 MiB ceiling retained the unread
+// forward runway while reverse scrolling re-uploaded older pages, growing to 171-198 MiB and
+// causing long host/driver stalls. Immutable Java pixels remain available for lossless re-upload,
+// so cap both bytes and tiny-tile cardinality and let the existing distance-aware eviction keep
+// the visible span plus its nearest runway. An explicitly proven complete-scene snapshot can still
+// raise this soft floor for its own epoch below.
+constexpr std::uint64_t kMaxTextureBudgetBytes = 96ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMaxResidentTextureCount = 24;
 // Deleting and recreating texture storage on the emulator's host GL translator serializes the
 // render pipe. Keep a very small, byte-bounded storage pool so later pages reuse existing
 // allocations. This is GPU storage only: it neither retains encoded bodies nor starts requests.

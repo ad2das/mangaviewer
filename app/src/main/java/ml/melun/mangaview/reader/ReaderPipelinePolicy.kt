@@ -117,6 +117,18 @@ data class StrictRollingAdmission(
             allowedFirstSource == other.allowedFirstSource &&
             allowedLastSource == other.allowedLastSource
 
+    /**
+     * Source transport work changes only when its gate, direction priority, or admitted source
+     * range changes. Visible display bounds still update decoded-pixel residency, but must not
+     * create a new source epoch: boundary jitter otherwise cancels/requeues the same bodies for
+     * every presented frame and makes long reading progressively janky.
+     */
+    fun hasSameSourceDemand(other: StrictRollingAdmission): Boolean =
+        physicalDrawPresented == other.physicalDrawPresented &&
+            direction == other.direction &&
+            allowedFirstSource == other.allowedFirstSource &&
+            allowedLastSource == other.allowedLastSource
+
     companion object {
         @JvmStatic
         @JvmOverloads
@@ -188,7 +200,13 @@ data class StrictRollingAdmission(
             // A first layout callback with that same window is evidence only, just like every
             // later repeated compositor commit.
             if (previous.hasSameDemand(candidate)) return previous
-            return candidate.copy(epoch = previous.epoch + 1L)
+            return candidate.copy(
+                epoch = if (previous.hasSameSourceDemand(candidate)) {
+                    previous.epoch
+                } else {
+                    previous.epoch + 1L
+                }
+            )
         }
 
         /**

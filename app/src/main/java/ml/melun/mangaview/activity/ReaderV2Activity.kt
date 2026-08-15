@@ -119,6 +119,8 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var terminalImageFailureDescription: String? = null
     private var toolbarAttached = false
     private var toolbarWindowManager: WindowManager? = null
+    private var initialLoadingWindowManager: WindowManager? = null
+    private var initialLoadingWindowView: TextView? = null
     private var session: ReaderSession? = null
     private data class StrictEarlySession(
         val path: String,
@@ -193,6 +195,16 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
      * that focus edge also forces a fresh reader draw.
      */
     private var strictTelemetryForegroundCommitArmed = false
+    /**
+     * Android can invoke [onResume] before the returning task's ViewRoot becomes visible.  A
+     * redraw requested in that narrow interval is retained by ReaderSurfaceView, but some device
+     * launchers never deliver a matching focus/visibility callback and the window remains black
+     * until the first touch supplies another invalidation.  Keep a small, generation-fenced set
+     * of resume redraw probes; [onPause] invalidates every outstanding probe so none can publish
+     * or draw while the task is backgrounded.
+     */
+    private var readerHostResumed = false
+    private var readerHostResumeRedrawGeneration = 0L
     private var strictTelemetryValidCommittedFrames = 0L
     private var strictTelemetryInvalidCommittedFrames = 0L
     private var strictTelemetryViewportDefectFrames = 0L
@@ -280,6 +292,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingPrependRevealRequests = 0
     private var pendingAppendRevealRequests = 0
     private var readerWindowBusy = false
+    /** Latest physical reader direction; used to distinguish a forward tail demand from a
+     * reverse gesture when an already-decoded foreign-episode runway is ready to publish. */
+    private var lastReaderWindowDirectionHint = 0
     /** Last physical strip offset observed for reverse-demand admission; reset per Session. */
     private var lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
     private var deferredBoundaryDirection = 0
@@ -317,6 +332,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var pendingCaptchaRetryDirection = 0
     private var pendingCaptchaRetryAnchor = -1
     private var initialStatusPending = false
+    private var initialVisibleDrawableApplied = false
     private var initialDrawGateOpen = true
     private var initialDrawGateView: View? = null
     private var initialDrawGateListener: ViewTreeObserver.OnPreDrawListener? = null
@@ -564,10 +580,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
                 return
             }
             if (!pagesReady && !destroyed && !isFinishing) {
-                initialStatusPending = false
-                statusHandler.removeCallbacks(showInitialStatusRunnable)
-                status.visibility = TextView.VISIBLE
-                status.text = displayEpisodeTitle(currentManga, currentTitle)
+                if (strictExactLaunchSeal != null) {
+                    showInitialPhysicalLoadingStatus()
+                } else {
+                    showInitialDrawableLoadingStatus()
+                }
             }
             releaseInitialDrawGate("timeout")
         }
@@ -592,6 +609,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             status.visibility = TextView.VISIBLE
             status.text = displayEpisodeTitle(currentManga, currentTitle)
         }
+    }
+    private val finishInitialPhysicalLoadingStatusRunnable = Runnable {
+        finishInitialPhysicalLoadingStatus()
+    }
+    private val showInitialPhysicalLoadingWindowRunnable = Runnable {
+        attachInitialPhysicalLoadingWindow()
     }
     private val showBoundaryStatusRunnable = Runnable {
         if (pendingBoundaryStatus && pagesReady && !destroyed && !isFinishing) {
@@ -1000,20 +1023,10 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
             viewerLaunchStartedAtMs > 0L &&
             manga.isOnline
         ) {
-            val ntkLaunch = viewerLaunchSourceSite.equals("ntk", ignoreCase = true) ||
-                manga.ntkEpisodePath?.isNotBlank() == true
-            val gateTimeoutMs = if (ntkLaunch) {
-                0L
-            } else if (viewerLaunchSourceSite.equals("ntk", ignoreCase = true)) {
-                NTK_INITIAL_DRAW_GATE_TIMEOUT_MS
-            } else {
-                INITIAL_DRAW_GATE_TIMEOUT_MS
-            }
-            if (gateTimeoutMs > 0L) {
-                installInitialDrawGate(root, gateTimeoutMs)
-            } else {
-                Log.d(TAG, "initial_draw_gate_skip reason=ntk,path=${manga.ntkEpisodePath}")
-            }
+            // Blocking the root OnPreDraw also blocks the loading chrome and exposes a featureless
+            // black window until the first network image finishes. The explicit loading states now
+            // own this transition, so the reader remains drawable and responsive from frame one.
+            Log.d(TAG, "initial_draw_gate_skip reason=explicit_loading_chrome,path=${manga.ntkEpisodePath}")
         }
         setContentView(root)
         if (
@@ -1203,6 +1216,7 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
         lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
         initialStartAtFirstPage = startAtFirstPage
         initialStatusPending = false
+        hideInitialPhysicalLoadingWindow()
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
         activeInitialRestorePage = -1
@@ -1380,8 +1394,11 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     }
 
     override fun onPause() {
+        readerHostResumed = false
+        readerHostResumeRedrawGeneration++
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT)
         saveCurrentReadingProgress()
+        hideInitialPhysicalLoadingWindow()
         if (::renderView.isInitialized) renderView.interruptPhysicalScrollForLifecycle()
         resetStrictPhysicalPresentationCadence()
         strictTelemetryForegroundCommitArmed = false
@@ -1417,6 +1434,9 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
 
     override fun onResume() {
         super.onResume()
+        readerHostResumed = true
+        readerHostResumeRedrawGeneration++
+        val resumeRedrawGeneration = readerHostResumeRedrawGeneration
         PerformanceMonitor.resume()
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1433,12 +1453,41 @@ if (firstResumeArmedUptimeNanos == 0L) {
         // (which can be lazily initialized after onResume) and of strictTelemetryOwned (set later);
         // the shown/VISIBLE check and the separate owned guard still reject background buffers.
         strictTelemetryForegroundCommitArmed = true
+        if (strictTelemetryOwned && pagesReady && !strictTelemetryActualInLifecycle) {
+            // Surface destruction during HOME intentionally hides the native layer until a new
+            // physical buffer is proven. Keep explicit loading chrome above that short interval
+            // rather than exposing a black window and implying that all images were lost.
+            showInitialPhysicalLoadingStatus()
+        }
         if (::renderView.isInitialized) {
             // A SurfaceView buffer is not guaranteed to survive Home even when Android keeps the
             // Activity and Java view hierarchy alive. Force a new dirty version; requestRender()
             // alone intentionally ignores a clean model and can otherwise leave a black Surface.
             renderView.invalidateCommittedPresentationProof()
         }
+        scheduleReaderHostResumeRedraw(resumeRedrawGeneration)
+    }
+
+    private fun scheduleReaderHostResumeRedraw(generation: Long) {
+        fun postProbe(delayMs: Long) {
+            criticalUiHandler.postDelayed({
+                if (!readerHostResumed || generation != readerHostResumeRedrawGeneration ||
+                    destroyed || isFinishing || isDestroyed || !::renderView.isInitialized
+                ) {
+                    return@postDelayed
+                }
+                // Invalidate the ViewRoot as well as the reader.  The reader's first onResume
+                // invalidation can precede window visibility; this later visible-window probe is
+                // what closes that lost-wakeup without requiring a user touch.
+                renderView.invalidateCommittedPresentationProof()
+                renderView.postInvalidateOnAnimation()
+                readerRoot?.postInvalidateOnAnimation()
+                window.decorView.postInvalidateOnAnimation()
+            }, delayMs)
+        }
+        postProbe(HOST_RESUME_REDRAW_FIRST_DELAY_MS)
+        postProbe(HOST_RESUME_REDRAW_SECOND_DELAY_MS)
+        postProbe(HOST_RESUME_REDRAW_FINAL_DELAY_MS)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -1512,10 +1561,16 @@ if (firstResumeArmedUptimeNanos == 0L) {
             }
             if (!strictTelemetryForegroundCommitArmed) {
                 strictTelemetryForegroundCommitArmed = true
+                // Focus can return after the task switcher, a dialog, or either pane of a
+                // multi-window pair without another onResume/configuration callback. The old
+                // buffer is not proof that pixels still exist in the new window surface, and
+                // requestRender() intentionally ignores a clean committed model. Retire the
+                // committed pixels for every reader profile and let the bounded redraw probes
+                // close a focus-only lost wake-up as well.
+                invalidateReaderAfterHostBoundsChanged(resetStrictTelemetry = strictTelemetryOwned)
                 if (strictTelemetryOwned) {
                     // onPause can be followed by an off-screen HWUI commit before the task is
                     // fully hidden. Retire that commit as well and require a focus-owned draw.
-                    renderView.invalidateCommittedPresentationProof()
                     if (renderView.contentDescription?.toString()?.startsWith("actual:") == true) {
                         renderView.contentDescription = null
                     }
@@ -1538,14 +1593,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         ReaderChromeStyler.applyReaderWindow(this)
-        if (strictTelemetryOwned && ::renderView.isInitialized) {
-            strictTelemetryLifecycleEpoch++
-            strictTelemetryActualInLifecycle = false
-            renderView.invalidateCommittedPresentationProof()
-            renderView.contentDescription = null
-            readerRoot?.contentDescription = null
-            renderView.requestLayout()
-            renderView.requestRender()
+        if (::renderView.isInitialized) {
+            invalidateReaderAfterHostBoundsChanged(resetStrictTelemetry = strictTelemetryOwned)
         }
     }
 
@@ -1553,8 +1602,28 @@ if (firstResumeArmedUptimeNanos == 0L) {
         super.onMultiWindowModeChanged(isInMultiWindowMode)
         ReaderChromeStyler.applyReaderWindow(this)
         if (::renderView.isInitialized) {
-            renderView.requestLayout()
-            renderView.requestRender()
+            invalidateReaderAfterHostBoundsChanged(resetStrictTelemetry = strictTelemetryOwned)
+        }
+    }
+
+    private fun invalidateReaderAfterHostBoundsChanged(resetStrictTelemetry: Boolean) {
+        if (resetStrictTelemetry) {
+            strictTelemetryLifecycleEpoch++
+            strictTelemetryActualInLifecycle = false
+            renderView.contentDescription = null
+            readerRoot?.contentDescription = null
+        }
+        // requestRender() deliberately ignores a clean committed model. A host-bounds change is
+        // nevertheless a pixel mutation: the old buffer has the wrong crop/size and must never
+        // remain authoritative in split screen or freeform mode.
+        renderView.invalidateCommittedPresentationProof()
+        renderView.requestLayout()
+        renderView.postInvalidateOnAnimation()
+        readerRoot?.postInvalidateOnAnimation()
+        window.decorView.postInvalidateOnAnimation()
+        if (readerHostResumed) {
+            readerHostResumeRedrawGeneration++
+            scheduleReaderHostResumeRedraw(readerHostResumeRedrawGeneration)
         }
     }
 
@@ -1615,6 +1684,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
         }
         progressHandler.removeCallbacks(saveProgressRunnable)
         statusHandler.removeCallbacks(showInitialStatusRunnable)
+        statusHandler.removeCallbacks(showInitialPhysicalLoadingWindowRunnable)
+        statusHandler.removeCallbacks(finishInitialPhysicalLoadingStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
         statusHandler.removeCallbacks(initialDrawGateTimeoutRunnable)
@@ -1628,6 +1699,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         hybridNtkEarlyUrlListenerDisposer?.invoke()
         hybridNtkEarlyUrlListenerDisposer = null
         missingEpisodePromptState.dismiss()
+        hideInitialPhysicalLoadingWindow()
         detachToolbarWindows()
         removeInitialDrawGateListener()
         saveCurrentReadingProgress()
@@ -1722,9 +1794,18 @@ if (firstResumeArmedUptimeNanos == 0L) {
     override fun onPagesReady(count: Int) {
         val startedAt = SystemClock.elapsedRealtime()
         pagesReady = true
-        initialStatusPending = false
-        statusHandler.removeCallbacks(showInitialStatusRunnable)
-        hideBoundaryStatus()
+        if (shouldHoldInitialStatusUntilPhysicalCommit()) {
+            showInitialPhysicalLoadingStatus()
+        } else if (initialStatusPending && !initialVisibleDrawableApplied) {
+            // Metadata/page-count readiness is not visual readiness. Keeping the chrome until the
+            // first visible bitmap/tile is installed avoids exposing a black reader that looks
+            // frozen while its first image is still in flight.
+            showInitialDrawableLoadingStatus()
+        } else {
+            initialStatusPending = false
+            statusHandler.removeCallbacks(showInitialStatusRunnable)
+            hideBoundaryStatus()
+        }
         val effectiveCount = effectiveNtkPagesReadyCount(count)
         val oldCount = pageCount
         var appliedCount = effectiveCount
@@ -1986,7 +2067,31 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     deferredBoundaryDirection = 0
                     deferredBoundaryAnchor = -1
                 }
+                val activeAppendDelayMs = ntkActiveAppendPublishQuietRemainingMs()
                 if (isCurrentNtkManhwaOrWebtoonPath() && count > pageCount) {
+                    val appendedEpisodeMatchesPhysicalAnchor =
+                        appendedEpisodeMatchesPhysicalAnchor(count)
+                    val forwardTailAppendDemanded =
+                        lastReaderWindowDirectionHint == ReaderSurfaceView.DIRECTION_NEXT &&
+                            currentPage >= (pageCount - NTK_APPEND_PUBLISH_TAIL_PAGE_THRESHOLD)
+                    if (shouldDeferForeignEpisodeAppendForActiveInput(
+                            appendedEpisodeMatchesPhysicalAnchor,
+                            readerWindowBusy,
+                            activeAppendDelayMs,
+                            forwardTailAppendDemanded,
+                        )
+                    ) {
+                        scheduleDeferredAppendPages(count, activeAppendDelayMs)
+                        if (shouldLogPagesAppendedHotPath()) {
+                            Log.d(
+                                TAG,
+                                "pages_appended_defer_foreign_episode_during_input " +
+                                    "total=$count current=$pageCount currentPage=$currentPage " +
+                                    "delayMs=$activeAppendDelayMs",
+                            )
+                        }
+                        return@trace
+                    }
                     val oldCount = pageCount
                     pageCount = count
                     renderView.appendPageCount(count, revealAppendedBoundary = false)
@@ -2004,7 +2109,6 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     )
                     return@trace
                 }
-                val activeAppendDelayMs = ntkActiveAppendPublishQuietRemainingMs()
                 if (shouldDeferSmallTailAppendUntilFullyReady(count, activeAppendDelayMs)) {
                     val retryMs = appendUntilReadyRetryDelayMs(count)
                     scheduleDeferredAppendPages(count, retryMs)
@@ -2317,6 +2421,25 @@ if (firstResumeArmedUptimeNanos == 0L) {
     private fun isCurrentNtkManhwaOrWebtoonPath(): Boolean {
         val path = currentManga?.ntkEpisodePath?.trim().orEmpty()
         return path.startsWith("/webtoon/") || path.startsWith("/manhwa/")
+    }
+
+    /**
+     * The toolbar episode can intentionally lag the physical viewport while input is busy. Use
+     * the session page at [currentPage], rather than mutable toolbar metadata, to decide whether a
+     * newly published suffix belongs to what the user is actually viewing. Inserting a later
+     * episode while the finger is moving through the retained predecessor can regenerate a
+     * Surface window against the new tail and snap the viewport forward.
+     */
+    private fun appendedEpisodeMatchesPhysicalAnchor(count: Int): Boolean {
+        if (count <= pageCount) return true
+        val activeSession = session ?: return false
+        val anchor = activeSession.pageInfo(currentPage) ?: return false
+        val appended = activeSession.pageInfo(pageCount) ?: return false
+        if (anchor.transitionCard || appended.transitionCard) return false
+        if (Manga.sameEpisodeIdentity(anchor.manga, appended.manga)) return true
+        val anchorPath = anchor.manga.ntkEpisodePath?.trim().orEmpty()
+        val appendedPath = appended.manga.ntkEpisodePath?.trim().orEmpty()
+        return anchorPath.isNotEmpty() && anchorPath == appendedPath
     }
 
     private fun shouldDeferSmallTailAppendUntilFullyReady(count: Int, activeAppendDelayMs: Long): Boolean {
@@ -3361,6 +3484,24 @@ if (firstResumeArmedUptimeNanos == 0L) {
 
     private fun applyCurrentReadyRunwayPageCount(newCount: Int, reason: String) {
         if (newCount <= pageCount) return
+        val activeAppendDelayMs = ntkActiveAppendPublishQuietRemainingMs()
+        if (shouldDeferForeignEpisodeAppendForActiveInput(
+                appendedEpisodeMatchesPhysicalAnchor(newCount),
+                readerWindowBusy,
+                activeAppendDelayMs,
+            )
+        ) {
+            scheduleDeferredCurrentReadyRunway(newCount, activeAppendDelayMs)
+            if (shouldLogPagesAppendedHotPath()) {
+                Log.d(
+                    TAG,
+                    "pages_appended_current_ready_runway_defer_foreign_episode " +
+                        "reason=$reason from=$pageCount total=$newCount " +
+                        "currentPage=$currentPage delayMs=$activeAppendDelayMs",
+                )
+            }
+            return
+        }
         val oldCount = pageCount
         val publishCount = currentReadyRunwayPublishCount(newCount)
         if (publishCount < newCount) {
@@ -4092,6 +4233,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         syncRenderPageIdentity(index)
         renderView.setPageBitmap(index, bitmap, forceImmediateGeometry)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+        if (visibleInitialDrawable) finishInitialDrawableLoadingStatus()
         val coversInitialViewport = visibleInitialDrawable &&
             drawableCoversInitialViewport(bitmap.width, bitmap.height)
         val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
@@ -4130,6 +4272,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         syncRenderPageIdentity(index)
         renderView.setPageTiles(index, pageWidth, pageHeight, tiles, forceImmediateGeometry)
         val visibleInitialDrawable = shouldMarkFirstDrawable(index, currentPage)
+        if (visibleInitialDrawable) finishInitialDrawableLoadingStatus()
         val coversInitialViewport = visibleInitialDrawable &&
             drawableCoversInitialViewport(pageWidth, pageHeight)
         val waitForContinuous = shouldWaitForNtkInitialContinuousDrawable(visibleInitialDrawable) &&
@@ -4163,6 +4306,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
     }
 
     private fun applyPageError(index: Int, message: String) {
+        if (index == currentPage) initialStatusPending = false
         hideBoundaryStatus()
         Log.d(TAG, "page_error_visible index=$index currentPage=$currentPage message=$message")
         renderView.setPageError(index, message)
@@ -5347,6 +5491,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
     override fun onMessage(message: String) {
         pendingBoundaryStatus = false
         initialStatusPending = false
+        initialVisibleDrawableApplied = false
+        hideInitialPhysicalLoadingWindow()
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
         activeInitialRestorePage = -1
@@ -5390,6 +5536,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         pendingBoundaryStatus = false
         pendingBoundaryCaptchaRetry = false
         initialStatusPending = false
+        hideInitialPhysicalLoadingWindow()
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
         activeInitialRestorePage = -1
@@ -5465,6 +5612,14 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     ReaderSurfaceView.DIRECTION_PREVIOUS
                 directionHint > 0 -> ReaderSurfaceView.DIRECTION_NEXT
                 else -> sampledShortWebtoonDirectionHint
+            }
+            val physicalDirectionHint = if (shortWebtoonRolling) {
+                shortWebtoonDirectionHint
+            } else {
+                directionHint
+            }
+            if (physicalDirectionHint != 0) {
+                lastReaderWindowDirectionHint = physicalDirectionHint
             }
             if (shortWebtoonRolling && physicalScrollOffset != Int.MIN_VALUE) {
                 lastShortWebtoonPhysicalScrollOffset = physicalScrollOffset
@@ -7113,6 +7268,7 @@ if (!renderView.isShown ||
             strictTelemetryVelocityPxPerSecond
         )
         strictTelemetryActualInLifecycle = true
+        finishInitialPhysicalLoadingStatus()
         activeSession.onExactNtkPhysicalDrawPresented(first, last, direction)
         publishStrictViewerEdge(
             first == 0,
@@ -7989,6 +8145,8 @@ if (!renderView.isShown ||
         lastSavedOffset = Int.MIN_VALUE
         lastSavedSide = Int.MIN_VALUE
         initialStatusPending = false
+        initialVisibleDrawableApplied = false
+        hideInitialPhysicalLoadingWindow()
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.removeCallbacks(showAdjacentStatusRunnable)
@@ -8054,7 +8212,11 @@ if (!renderView.isShown ||
                     "ms=${SystemClock.elapsedRealtime() - createStartedAt}"
             )
             initialStatusPending = true
-            statusHandler.postDelayed(showInitialStatusRunnable, INITIAL_STATUS_DELAY_MS)
+            if (exactLaunchSeal != null) {
+                showInitialPhysicalLoadingStatus()
+            } else {
+                showInitialDrawableLoadingStatus()
+            }
         } else {
             session = ReaderSession(
                 context = this,
@@ -8074,7 +8236,11 @@ if (!renderView.isShown ||
                     "reader_activity_create_session_done path=$ntkPath,ms=${SystemClock.elapsedRealtime() - createStartedAt}"
                 )
                 initialStatusPending = true
-                statusHandler.postDelayed(showInitialStatusRunnable, INITIAL_STATUS_DELAY_MS)
+                if (exactLaunchSeal != null) {
+                    showInitialPhysicalLoadingStatus()
+                } else {
+                    showInitialDrawableLoadingStatus()
+                }
                 val startStartedAt = SystemClock.elapsedRealtime()
                 it.start()
                 Log.d(
@@ -11211,6 +11377,19 @@ if (!renderView.isShown ||
     }
 
     private fun hideBoundaryStatus() {
+        if (shouldHoldInitialStatusUntilPhysicalCommit()) {
+            // Page metadata/decoded tiles can arrive before SurfaceFlinger has accepted a real
+            // buffer. Hiding here exposes a black native window and makes an immediate gesture
+            // look frozen. Only the identity-valid physical commit may retire this status.
+            pendingBoundaryStatus = false
+            statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+            showInitialPhysicalLoadingStatus()
+            return
+        }
+        if (initialStatusPending && !initialVisibleDrawableApplied) {
+            showInitialDrawableLoadingStatus()
+            return
+        }
         if (!pendingBoundaryStatus &&
             !initialStatusPending &&
             status.visibility == TextView.GONE
@@ -11221,7 +11400,135 @@ if (!renderView.isShown ||
         initialStatusPending = false
         statusHandler.removeCallbacks(showInitialStatusRunnable)
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
+        hideInitialPhysicalLoadingWindow()
         if (status.visibility != TextView.GONE) status.visibility = TextView.GONE
+    }
+
+    private fun shouldHoldInitialStatusUntilPhysicalCommit(): Boolean =
+        initialStatusPending &&
+            strictExactLaunchSeal != null &&
+            (!strictTelemetryActualInLifecycle ||
+                (::renderView.isInitialized &&
+                    renderView.isNativeSurfaceRevealPendingForLoadingStatus())) &&
+            !destroyed &&
+            !isFinishing
+
+    private fun showInitialPhysicalLoadingStatus() {
+        initialStatusPending = true
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        status.visibility = TextView.VISIBLE
+        status.text = "로딩 중"
+        statusHandler.removeCallbacks(showInitialPhysicalLoadingWindowRunnable)
+        statusHandler.post(showInitialPhysicalLoadingWindowRunnable)
+    }
+
+    private fun showInitialDrawableLoadingStatus() {
+        initialStatusPending = true
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        // The ordinary paged/HWUI renderer is in this Activity window, so a sibling loading view
+        // is sufficient and avoids an application-panel window covering a newly installed image.
+        hideInitialPhysicalLoadingWindow()
+        status.visibility = TextView.VISIBLE
+        status.text = "로딩 중"
+    }
+
+    private fun finishInitialDrawableLoadingStatus() {
+        initialVisibleDrawableApplied = true
+        if (strictExactLaunchSeal != null || !initialStatusPending) return
+        initialStatusPending = false
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        hideInitialPhysicalLoadingWindow()
+        if (!pendingBoundaryStatus && !adjacentNavigationInFlight &&
+            status.visibility != TextView.GONE
+        ) {
+            status.visibility = TextView.GONE
+        }
+    }
+
+    /**
+     * The native reader SurfaceView is above the Activity window. A sibling status View therefore
+     * cannot cover every device's empty Surface while its first exact buffer is being latched.
+     * Keep a non-interactive application panel above that Surface until the native reveal is
+     * proven, and remove it at every lifecycle boundary so it cannot leak outside the reader.
+     */
+    private fun attachInitialPhysicalLoadingWindow() {
+        if (!initialStatusPending || destroyed || isFinishing) {
+            hideInitialPhysicalLoadingWindow()
+            return
+        }
+        val existing = initialLoadingWindowView
+        if (existing?.parent != null) return
+        val decor = window.decorView
+        val token = decor.windowToken
+        if (token == null) {
+            decor.removeCallbacks(showInitialPhysicalLoadingWindowRunnable)
+            decor.postOnAnimation(showInitialPhysicalLoadingWindowRunnable)
+            return
+        }
+        val manager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val loadingView = existing ?: TextView(this).apply {
+            setBackgroundColor(Color.BLACK)
+            setTextColor(0xffeeeeee.toInt())
+            textSize = 16f
+            gravity = Gravity.CENTER
+            text = "로딩 중"
+            contentDescription = READER_LOADING_DESCRIPTION
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.OPAQUE,
+        ).apply {
+            this.token = token
+            gravity = Gravity.FILL
+            title = "Reader initial physical loading"
+        }
+        try {
+            manager.addView(loadingView, params)
+            initialLoadingWindowManager = manager
+            initialLoadingWindowView = loadingView
+        } catch (failure: RuntimeException) {
+            Log.e(TAG, "reader_initial_loading_window_attach_failed", failure)
+        }
+    }
+
+    private fun hideInitialPhysicalLoadingWindow() {
+        statusHandler.removeCallbacks(showInitialPhysicalLoadingWindowRunnable)
+        window.decorView.removeCallbacks(showInitialPhysicalLoadingWindowRunnable)
+        val view = initialLoadingWindowView ?: return
+        val manager = initialLoadingWindowManager
+        if (view.parent != null && manager != null) {
+            runCatching { manager.removeViewImmediate(view) }
+                .onFailure { Log.w(TAG, "reader_initial_loading_window_remove_failed", it) }
+        }
+        initialLoadingWindowManager = null
+    }
+
+    private fun finishInitialPhysicalLoadingStatus() {
+        if (!initialStatusPending) return
+        if (!destroyed && !isFinishing && ::renderView.isInitialized &&
+            renderView.isNativeSurfaceRevealPendingForLoadingStatus()
+        ) {
+            showInitialPhysicalLoadingStatus()
+            statusHandler.removeCallbacks(finishInitialPhysicalLoadingStatusRunnable)
+            statusHandler.postDelayed(
+                finishInitialPhysicalLoadingStatusRunnable,
+                NATIVE_SURFACE_REVEAL_STATUS_POLL_MS,
+            )
+            return
+        }
+        initialStatusPending = false
+        statusHandler.removeCallbacks(showInitialStatusRunnable)
+        statusHandler.removeCallbacks(finishInitialPhysicalLoadingStatusRunnable)
+        hideInitialPhysicalLoadingWindow()
+        if (!pendingBoundaryStatus && !adjacentNavigationInFlight) {
+            if (status.visibility != TextView.GONE) status.visibility = TextView.GONE
+        }
     }
 
     private fun clearPendingBoundaryCaptchaRetry() {
@@ -11705,6 +12012,13 @@ if (!renderView.isShown ||
         return renderView.frameStatsSnapshot()
     }
 
+    fun testTakeFrameStatsSnapshots(): List<ReaderSurfaceView.FrameStatsSnapshot> {
+        if (hybridNtkBrowserActive) {
+            return listOfNotNull(testFrameStatsSnapshot())
+        }
+        return renderView.takeFrameStatsSnapshots()
+    }
+
     fun testResetFrameStatsSnapshot() {
         if (hybridNtkBrowserActive) {
             val path = currentManga?.ntkEpisodePath
@@ -11855,6 +12169,9 @@ if (!renderView.isShown ||
         private const val PROGRESS_SAVE_DEBOUNCE_MS = 1000L
         private const val STRICT_ALL_IMAGES_NATIVE_QUEUE_RETRY_MS = 16L
         private const val INITIAL_STATUS_DELAY_MS = 450L
+        private const val HOST_RESUME_REDRAW_FIRST_DELAY_MS = 16L
+        private const val HOST_RESUME_REDRAW_SECOND_DELAY_MS = 120L
+        private const val HOST_RESUME_REDRAW_FINAL_DELAY_MS = 480L
         private const val BOUNDARY_STATUS_DELAY_MS = 250L
         private const val BOUNDARY_APPEND_QUIET_MS = 1600L
         private const val NTK_APPEND_PUBLISH_INPUT_QUIET_MS = 900L
@@ -11908,6 +12225,7 @@ if (!renderView.isShown ||
         private const val NTK_DIRECT_WIFI_SHORT_WEBTOON_FORWARD_VIEWPORTS = 6f
         private const val NTK_ACK_WEBVIEW_PREFLIGHT_ATTEMPTS = 1
         private const val READER_LOADING_DESCRIPTION = "reader-loading"
+        private const val NATIVE_SURFACE_REVEAL_STATUS_POLL_MS = 50L
         private const val READER_DRAWABLE_READY_DESCRIPTION = "reader-drawable-ready"
         private const val PENDING_PAGE_CALLBACK_FLUSH_BATCH_SIZE = 1
         private const val PENDING_PAGE_CALLBACK_FLUSH_BATCH_DELAY_MS = 16L
@@ -11986,6 +12304,41 @@ if (!renderView.isShown ||
             boundaryStatusPending,
             deferredDirection,
         )
+
+        @JvmStatic
+        fun shouldDeferForeignEpisodeAppendForActiveInputForTest(
+            appendedEpisodeMatchesPhysicalAnchor: Boolean,
+            readerWindowBusy: Boolean,
+            activeAppendDelayMs: Long,
+        ): Boolean = shouldDeferForeignEpisodeAppendForActiveInput(
+            appendedEpisodeMatchesPhysicalAnchor,
+            readerWindowBusy,
+            activeAppendDelayMs,
+            false,
+        )
+
+        @JvmStatic
+        fun shouldDeferForeignEpisodeAppendForActiveInputForTest(
+            appendedEpisodeMatchesPhysicalAnchor: Boolean,
+            readerWindowBusy: Boolean,
+            activeAppendDelayMs: Long,
+            forwardTailAppendDemanded: Boolean,
+        ): Boolean = shouldDeferForeignEpisodeAppendForActiveInput(
+            appendedEpisodeMatchesPhysicalAnchor,
+            readerWindowBusy,
+            activeAppendDelayMs,
+            forwardTailAppendDemanded,
+        )
+
+        private fun shouldDeferForeignEpisodeAppendForActiveInput(
+            appendedEpisodeMatchesPhysicalAnchor: Boolean,
+            readerWindowBusy: Boolean,
+            activeAppendDelayMs: Long,
+            forwardTailAppendDemanded: Boolean = false,
+        ): Boolean {
+            if (appendedEpisodeMatchesPhysicalAnchor || forwardTailAppendDemanded) return false
+            return readerWindowBusy || activeAppendDelayMs > 0L
+        }
 
         private fun shouldRetryBusyBoundaryAppend(
             direction: Int,

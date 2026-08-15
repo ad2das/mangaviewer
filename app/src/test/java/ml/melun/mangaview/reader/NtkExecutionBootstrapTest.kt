@@ -117,6 +117,25 @@ class NtkExecutionBootstrapTest {
         engines.actor.shutdownNow()
     }
 
+    @Test
+    fun productionFullSceneDecodeTopologyIsAcceptedByTheDispatcher() {
+        val bootstrap = NtkFullSceneExecutionBootstrap()
+        val engines = bootstrap.adopt()
+        val dispatcher = NtkFullSceneDecodeDispatcher(
+            eventSink = { false },
+            setCurrentThreadPriority = {},
+            laneServicesOverride = engines.decodeLanes,
+        )
+
+        assertEquals(
+            NtkRollingResidencyConstants.PRE_STAGE_DECODE_CONCURRENCY,
+            dispatcher.snapshot().occupiedLanes + engines.decodeLanes.size,
+        )
+        dispatcher.shutdown()
+        engines.bodyLease.shutdownNow()
+        engines.actor.shutdownNow()
+    }
+
     private fun awaitThreads(expected: Int, count: () -> Int) {
         val deadline = System.nanoTime() + 2_000_000_000L
         while (count() < expected && System.nanoTime() < deadline) Thread.yield()

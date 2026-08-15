@@ -297,6 +297,7 @@
     <string name="agree_without_url">동의하고 기본주소 없이 계속하기</string>
     <string name="search_hint">전체 검색</string>
     <string name="search_action">검색</string>
+    <string name="advanced_search">상세 검색</string>
     <string name="sort_recent_update">최근 업데이트</string>
     <string name="no_items_message">최근 읽거나 보관한 작품이 없습니다</string>
     <string name="save_offline">오프라인 저장</string>

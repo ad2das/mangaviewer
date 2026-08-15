@@ -722,6 +722,26 @@ class NtkStripRenderEngineProtocolTest {
     }
 
     @Test
+    fun frameIdentityProofRemainsConstantSpaceForTheWholeSurfaceLifetime() {
+        val renderer = readRepositoryFile("app/src/main/cpp/ntk_strip_renderer.cpp")
+
+        // The process-global allocator is already monotonic. Retaining every historical id in an
+        // unordered_set made a long reading session periodically rehash on the render owner, and
+        // HOME appeared to fix the hitch only because surface attach cleared that table.
+        assertFalse(renderer.contains("epoch_frame_ids_"))
+        assertTrue(renderer.contains("EGLuint64KHR epoch_last_frame_id_ = 0;"))
+        assertTrue(renderer.contains("std::uint64_t epoch_frame_id_count_ = 0;"))
+        assertTrue(renderer.contains("if (frame_id <= epoch_last_frame_id_)"))
+        assertTrue(renderer.contains("if (admitted.frame_id <= epoch_last_frame_id_)"))
+        assertOrdered(
+            renderer,
+            "epoch_last_frame_id_ = admitted.frame_id;",
+            "++epoch_frame_id_count_;",
+            "++successful_swap_count_;"
+        )
+    }
+
+    @Test
     fun productionPresentationThreadsUseUrgentDisplayPriorityWithSafeFallback() {
         val renderer = readRepositoryFile("app/src/main/cpp/ntk_strip_renderer.cpp")
         assertTrue(renderer.contains("constexpr int kUrgentDisplayNice = -8;"))

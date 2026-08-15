@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
@@ -27,6 +28,10 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -40,12 +45,14 @@ public class CaptchaActivityCookieInstrumentedTest {
 
     @Test
     public void clearanceCookieClosesCaptchaAndSyncsHttpClient() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        SharedPreferences preferences = context.getSharedPreferences("mangaView", Context.MODE_PRIVATE);
+        Map<String, ?> savedPreferences = new HashMap<>(preferences.getAll());
         TestServer server = new TestServer();
         server.start();
         try {
             String root = "http://127.0.0.1:" + server.port();
-            Context context = ApplicationProvider.getApplicationContext();
-            context.getSharedPreferences("mangaView", Context.MODE_PRIVATE).edit().clear().commit();
+            preferences.edit().clear().commit();
             MainApplication.p.init(context);
             MainApplication.p.setNtkSitePreset(root);
             MainApplication.p.setBaseMode(MTitle.base_comic);
@@ -76,7 +83,36 @@ public class CaptchaActivityCookieInstrumentedTest {
             }
         } finally {
             server.close();
+            restorePreferences(preferences, savedPreferences);
+            MainApplication.p.init(context);
+            // The HTTP client caches both cookies and the selected site. Recreate it so this
+            // isolated localhost test cannot poison the next reader launch in the same suite.
+            MainApplication.httpClient = null;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void restorePreferences(
+            SharedPreferences preferences,
+            Map<String, ?> values
+    ) {
+        SharedPreferences.Editor editor = preferences.edit().clear();
+        for(Map.Entry<String, ?> entry : values.entrySet()) {
+            Object value = entry.getValue();
+            if(value instanceof String)
+                editor.putString(entry.getKey(), (String)value);
+            else if(value instanceof Integer)
+                editor.putInt(entry.getKey(), (Integer)value);
+            else if(value instanceof Long)
+                editor.putLong(entry.getKey(), (Long)value);
+            else if(value instanceof Float)
+                editor.putFloat(entry.getKey(), (Float)value);
+            else if(value instanceof Boolean)
+                editor.putBoolean(entry.getKey(), (Boolean)value);
+            else if(value instanceof Set)
+                editor.putStringSet(entry.getKey(), new HashSet<>((Set<String>)value));
+        }
+        editor.commit();
     }
 
     private boolean activityVisible() {

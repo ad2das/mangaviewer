@@ -185,6 +185,20 @@ public class Preference {
     public void init(Context mcontext){
         sharedPref = mcontext.getSharedPreferences("mangaView",Context.MODE_PRIVATE);
         prefsEditor = sharedPref.edit();
+        // init() is also used after importing/restoring preferences.  The lists below are
+        // replaced, so every lazy-load flag and derived index must be retired with them.
+        // Keeping an index from the previous list can make getIndexOf() return (for example)
+        // zero for a newly empty list and crash addRecent() during the next lifecycle save.
+        historyLoaded = false;
+        bookmarkLoaded = false;
+        viewerBookmarkLoaded = false;
+        historyIndexDirty = true;
+        recentIndexByKey.clear();
+        favoriteIndexByKey.clear();
+        recentByKey.clear();
+        favoriteByKey.clear();
+        bookmarkValueByKey.clear();
+        knownSourceByKey.clear();
         recent = new ArrayList<>();
         favorite = new ArrayList<>();
         pagebookmark = new JSONObject();

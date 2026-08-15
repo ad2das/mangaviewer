@@ -201,6 +201,11 @@ object NtkStrictSourceOwnershipRegistry {
         // This keeps retries bounded and failure-only while allowing them to outlive the ordinary
         // first-attempt admission seal established once every page has published metadata.
         val retryEligiblePages = LinkedHashSet<Int>()
+        // A restored rolling reader initially owns only the suffix at/after its saved page.  A
+        // real reverse gesture can later lower that floor after geometry and the ordinary
+        // first-attempt wave are sealed.  Those pages are admitted explicitly, once, under the
+        // same immutable manifest/session owner; no arbitrary post-seal first attempt is allowed.
+        val rollingLateAdmissionPages = LinkedHashSet<Int>()
         val successfulPrimaryPages = LinkedHashSet<Int>()
         val retiredSessionMetrics = LinkedHashMap<Pair<Long, String>, RetiredSessionMetrics>()
 
@@ -443,6 +448,38 @@ object NtkStrictSourceOwnershipRegistry {
         }
     }
 
+    /**
+     * Authorizes exactly the newly exposed prefix pages of one live rolling-resume owner.
+     *
+     * The ordinary seal remains monotonic.  This narrow exception exists only after geometry is
+     * bound, and [beginOperation] consumes each page token atomically with its first producer.
+     */
+    fun authorizeRollingLateAdmissions(
+        path: String,
+        manifestDigest: String,
+        sessionId: Long,
+        pageIndexes: Set<Int>,
+    ): Boolean {
+        require(pageIndexes.all { it >= 0 })
+        if (pageIndexes.isEmpty()) return true
+        val normalized = normalize(path)
+        return synchronized(globalLock) {
+            val record = ownedRecordLocked(normalized, manifestDigest, sessionId)
+                ?: return@synchronized false
+            if (record.state != State.OWNED || !record.primaryAdmissionsSealed ||
+                !record.geometrySealed
+            ) return@synchronized false
+            if (pageIndexes.any { pageIndex ->
+                    pageIndex in record.primaryStartedPages ||
+                        pageIndex in record.successfulPrimaryPages ||
+                        pageIndex in record.retryEligiblePages
+                }
+            ) return@synchronized false
+            record.rollingLateAdmissionPages.addAll(pageIndexes)
+            true
+        }
+    }
+
     @JvmStatic
     fun activeOperationCount(path: String, manifestDigest: String, sessionId: Long): Int =
         synchronized(globalLock) {
@@ -569,7 +606,8 @@ object NtkStrictSourceOwnershipRegistry {
             val record = ownedRecordLocked(normalized, manifestDigest, sessionId)
                 ?: return@synchronized false
             if (record.state != State.OWNED ||
-                (record.primaryAdmissionsSealed && record.retryEligiblePages.isEmpty())
+                (record.primaryAdmissionsSealed && record.retryEligiblePages.isEmpty() &&
+                    record.rollingLateAdmissionPages.isEmpty())
             ) {
                 return@synchronized false
             }
@@ -680,11 +718,21 @@ object NtkStrictSourceOwnershipRegistry {
                 "Strict primary full body must be an un-ranged GET"
             }
             if (attempt == 1) {
-                check(!record.geometrySealed && !record.primaryAdmissionsSealed) {
+                val rollingLateAdmission = record.geometrySealed &&
+                    record.primaryAdmissionsSealed &&
+                    tag.pageIndex in record.rollingLateAdmissionPages
+                check((!record.geometrySealed && !record.primaryAdmissionsSealed) ||
+                    rollingLateAdmission
+                ) {
                     "Strict first-attempt primary admission started after its seal"
                 }
                 check(record.primaryStartedPages.add(tag.pageIndex)) {
                     "Strict source key attempted a second first-attempt producer"
+                }
+                if (rollingLateAdmission) {
+                    check(record.rollingLateAdmissionPages.remove(tag.pageIndex)) {
+                        "Strict rolling late admission token disappeared"
+                    }
                 }
             } else {
                 check(tag.pageIndex in record.primaryStartedPages &&

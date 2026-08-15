@@ -1339,6 +1339,9 @@ public class MainActivity extends AppCompatActivity
         ensureMainFragment(index);
         boolean res = false;
         if(index>-1 && index != currentTab){
+            if(currentTab >= 0 && currentTab < fragments.length
+                    && fragments[currentTab] instanceof MainSearch)
+                ((MainSearch) fragments[currentTab]).onTabHidden();
             cancelHiddenHomeWork(index);
             if(index == 1 && fragments[1] instanceof MainSearch)
                 ((MainSearch) fragments[1]).enterSearchMode();

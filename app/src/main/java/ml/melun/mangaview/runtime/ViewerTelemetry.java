@@ -454,7 +454,9 @@ public final class ViewerTelemetry {
             long presentedAtNanos,
             boolean viewportOriginalComplete,
             long firstVisibleGapPx,
-            float velocityPxPerSecond) {
+            float velocityPxPerSecond,
+            long inputOldestNanos,
+            long inputNewestNanos) {
         recordQualifiedActualFrame(
                 renderView,
                 authority,
@@ -467,7 +469,10 @@ public final class ViewerTelemetry {
                 "present",
                 "surfacecontrol_compositor_latch",
                 "openToPresentMs",
-                "responseToPresentMs");
+                "responseToPresentMs",
+                null,
+                inputOldestNanos,
+                inputNewestNanos);
     }
 
     /**
@@ -519,7 +524,9 @@ public final class ViewerTelemetry {
                 evidenceKind,
                 openDurationField,
                 responseDurationField,
-                null);
+                null,
+                0L,
+                0L);
     }
 
     private static void recordQualifiedActualFrame(
@@ -536,6 +543,40 @@ public final class ViewerTelemetry {
             String openDurationField,
             String responseDurationField,
             String physicalEpisodeId) {
+        recordQualifiedActualFrame(
+                renderView,
+                authority,
+                firstVisiblePage,
+                lastVisiblePage,
+                evidenceAtNanos,
+                viewportOriginalComplete,
+                firstVisibleGapPx,
+                velocityPxPerSecond,
+                eventName,
+                evidenceKind,
+                openDurationField,
+                responseDurationField,
+                physicalEpisodeId,
+                0L,
+                0L);
+    }
+
+    private static void recordQualifiedActualFrame(
+            View renderView,
+            long authority,
+            int firstVisiblePage,
+            int lastVisiblePage,
+            long evidenceAtNanos,
+            boolean viewportOriginalComplete,
+            long firstVisibleGapPx,
+            float velocityPxPerSecond,
+            String eventName,
+            String evidenceKind,
+            String openDurationField,
+            String responseDurationField,
+            String physicalEpisodeId,
+            long inputOldestNanos,
+            long inputNewestNanos) {
         Session session = SESSION.get();
         if(session == null || !viewportOriginalComplete || firstVisibleGapPx >= 0L ||
                 firstVisiblePage < 0 || lastVisiblePage < firstVisiblePage)
@@ -547,7 +588,9 @@ public final class ViewerTelemetry {
         session.recordQualifiedActualFrame(
                 evidenceAtNanos > 0L ? evidenceAtNanos : SystemClock.elapsedRealtimeNanos(),
                 velocityPxPerSecond,
-                refreshRate);
+                refreshRate,
+                inputOldestNanos,
+                inputNewestNanos);
 
         boolean firstActualFrame;
         synchronized(session) {
@@ -1553,7 +1596,9 @@ public final class ViewerTelemetry {
         synchronized void recordQualifiedActualFrame(
                 long actualFrameNanos,
                 float velocityPxPerSecond,
-                float refreshRate) {
+                float refreshRate,
+                long inputOldestNanos,
+                long inputNewestNanos) {
             if(Math.abs(velocityPxPerSecond) <= 25.0f) {
                 lastNativeScrollPresentationNanos = 0L;
                 nativeConsecutiveSlowIntervals = 0L;
@@ -1567,13 +1612,18 @@ public final class ViewerTelemetry {
             if(previous <= 0L || actualFrameNanos <= previous)
                 return;
             long interval = actualFrameNanos - previous;
-            // Idle callbacks above define gesture boundaries. Any active-to-active interval,
-            // including a multi-second freeze, is real user-visible frame latency and must stay
-            // in worst/slow qualification statistics.
+            // Keep the raw interval distribution for diagnostics. Slow-frame qualification is
+            // causal: sparse touch samples are not missed app frames, while queued input remains
+            // visible through the native frame's oldest input timestamp.
             nativeScrollIntervalCount++;
             nativeScrollIntervalNanos += interval;
             nativeWorstIntervalNanos = Math.max(nativeWorstIntervalNanos, interval);
-            if(interval > refreshPeriod + refreshPeriod / 2L) {
+            if(ViewerFrameCadencePolicy.isDemandBackedSlowInterval(
+                    interval,
+                    refreshPeriod,
+                    actualFrameNanos,
+                    inputOldestNanos,
+                    inputNewestNanos)) {
                 nativeSlowIntervals++;
                 int slot = (int) ((nativeSlowIntervals - 1L) %
                         MAX_RECORDED_SLOW_INTERVALS);

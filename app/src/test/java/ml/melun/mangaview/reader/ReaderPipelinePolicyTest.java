@@ -190,6 +190,25 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void visibleBoundaryJitterUpdatesPixelWindowWithoutRestartingSourceDemand() {
+        StrictRollingAdmission initial = StrictRollingAdmission.initial(77, 25, 25);
+        StrictRollingAdmission committed = StrictRollingAdmission.update(
+                initial, 77, 25, 28, 25, 28, 1, true);
+        StrictRollingAdmission widerVisible = StrictRollingAdmission.update(
+                committed, 77, 25, 30, 25, 30, 1, true);
+
+        assertFalse(committed == widerVisible);
+        assertEquals(30, widerVisible.getVisibleLastDisplay());
+        assertEquals(committed.getEpoch(), widerVisible.getEpoch());
+        assertTrue(committed.hasSameSourceDemand(widerVisible));
+
+        StrictRollingAdmission reverse = StrictRollingAdmission.update(
+                widerVisible, 77, 24, 27, 24, 27, -1, true, true, 21);
+        assertEquals(committed.getEpoch() + 1L, reverse.getEpoch());
+        assertFalse(widerVisible.hasSameSourceDemand(reverse));
+    }
+
+    @Test
     public void terminalEdgeRequiresFullRealPixelCoverageAndNoPermanentError() {
         String clean = ReaderPipelinePolicy.strictViewportDefectReasons(
                 2139, 2139, 2139, 0, 0, 0, 0, 0, 0, 0);

@@ -55,6 +55,35 @@ class StrictRollingControlMailboxTest {
         assertEquals(NtkSourceDemandOfferDecision.STALE, gate.offer(episode, first))
     }
 
+    @Test
+    fun physicalAdmissionLowersOnlyForForegroundReverseDemand() {
+        val episode = NtkEpisodeToken(9L)
+        val forward = NtkSourceDemandSnapshot(
+            authority = episode.value,
+            demandEpoch = 1L,
+            hardPages = intArrayOf(25, 26),
+            softPages = (27 until 77).toList().toIntArray(),
+            backgroundPages = (0 until 25).toList().toIntArray(),
+        )
+        val reverse = NtkSourceDemandSnapshot(
+            authority = episode.value,
+            demandEpoch = 2L,
+            hardPages = intArrayOf(3, 4),
+            softPages = (0 until 3).toList().toIntArray() +
+                (5 until 77).toList().toIntArray(),
+            backgroundPages = IntArray(0),
+        )
+
+        assertEquals(
+            25,
+            NtkRollingPhysicalAdmissionPolicy.admittedForwardPages(25, 77, forward).minOrNull(),
+        )
+        assertEquals(
+            0,
+            NtkRollingPhysicalAdmissionPolicy.admittedForwardPages(25, 77, reverse).minOrNull(),
+        )
+    }
+
     private fun demand(
         episode: NtkEpisodeToken,
         epoch: Long,

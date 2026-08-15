@@ -45,7 +45,6 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <time.h>
@@ -7202,7 +7201,13 @@ private:
         duplicate_frame_id_count_ = 0;
         max_logical_unlatched_submissions_ = 0;
         admission_predecessor_.reset();
-        epoch_frame_ids_.clear();
+        // Frame ids come from one process-global atomic counter and are therefore strictly
+        // increasing.  Keeping every id in an unordered_set made the render thread periodically
+        // rehash an ever-growing table; the table was cleared only by a Surface reattach, which is
+        // why a long reading session could become choppy and immediately recover after HOME.
+        // Preserve the duplicate/out-of-order invariant with constant memory and O(1) work.
+        epoch_last_frame_id_ = 0;
+        epoch_frame_id_count_ = 0;
         cadence_qualification_state_.store(
             CadenceQualificationState::NO_SURFACE,
             std::memory_order_release);
@@ -11334,9 +11339,8 @@ private:
             g_ntk_frame_id.fetch_add(1, std::memory_order_acq_rel) + 1;
         prepared.frame_id_reserved_ns = monotonic_now_ns();
         if (frame_id == 0) return fail_prepared_frame("ntk-frame-id-overflow");
-        prepared.frame_id_count_before_submission =
-            static_cast<std::uint64_t>(epoch_frame_ids_.size());
-        if (epoch_frame_ids_.find(frame_id) != epoch_frame_ids_.end()) {
+        prepared.frame_id_count_before_submission = epoch_frame_id_count_;
+        if (frame_id <= epoch_last_frame_id_) {
             ++duplicate_frame_id_count_;
             NTK_LOGE("fatal duplicate frame id before fixed submission frameId=%llu",
                      static_cast<unsigned long long>(frame_id));
@@ -11701,7 +11705,7 @@ private:
                        std::memory_order_release, std::memory_order_acquire)) {
             }
         }
-        if (!epoch_frame_ids_.insert(admitted.frame_id).second) {
+        if (admitted.frame_id <= epoch_last_frame_id_) {
             ++duplicate_frame_id_count_;
             publishPostSubmitSnapshot(
                 RendererPostApplyFatalBranch::DUPLICATE_FRAME_ID);
@@ -11721,6 +11725,8 @@ private:
                 surfaceReceipt, swappyReceipt);
             return PreparedCommitResult::SUBMITTED_FATAL_AFTER_EGL_TRUE;
         }
+        epoch_last_frame_id_ = admitted.frame_id;
+        ++epoch_frame_id_count_;
         ++successful_swap_count_;
         const std::uint64_t terminalProofCount =
             latched_proof_count_ + terminal_lost_proof_count_;
@@ -12265,7 +12271,11 @@ private:
     std::atomic<std::int64_t> upload_context_destroyed_ns_{0};
     std::atomic<std::int64_t> stage_latch_ns_{0};
     std::atomic<std::int64_t> first_down_ingress_ns_{0};
-    std::unordered_set<EGLuint64KHR> epoch_frame_ids_;
+    // Constant-space proof for the process-global monotonic frame-id generator.  A historical
+    // set is both unnecessary and unsafe on the presentation thread: rehash cost grows with the
+    // duration of the reading session.  Count remains exact for schema telemetry.
+    EGLuint64KHR epoch_last_frame_id_ = 0;
+    std::uint64_t epoch_frame_id_count_ = 0;
     std::uint64_t surface_epoch_ = 0;
     std::atomic<std::uint64_t> admitted_surface_epoch_{0};
     std::uint64_t successful_swap_count_ = 0;

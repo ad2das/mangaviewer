@@ -2592,7 +2592,9 @@ class NtkStripSurfaceView private constructor(
                     frame.presentedAtNanos,
                     frame.viewportOriginalComplete,
                     frame.firstVisibleGapPx,
-                    frame.velocityPxPerSecond
+                    frame.velocityPxPerSecond,
+                    frame.inputOldestNanos,
+                    frame.inputNewestNanos
                 )
             } finally {
                 PerfTrace.end()

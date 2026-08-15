@@ -598,6 +598,17 @@ public class MainSearch extends Fragment {
             showLibrary();
     }
 
+    /**
+     * Cancels this tab's deferred IME request before another retained main fragment becomes
+     * visible.  Retained fragments remain attached while hidden, so relying on focus loss alone
+     * leaves the keyboard covering Home/Library and an already-posted show request can reopen it.
+     */
+    public void onTabHidden() {
+        pendingOpenSearch = false;
+        keyboardShowGeneration++;
+        hideKeyboard();
+    }
+
     private void setupLibraryTabs() {
         if(libraryTab == null || libraryTab.getTabCount() > 0)
             return;

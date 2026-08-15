@@ -4,9 +4,12 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.graphics.Rect;
+import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -18,6 +21,7 @@ import org.junit.runner.RunWith;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import ml.melun.mangaview.MainApplication;
 import ml.melun.mangaview.R;
@@ -94,6 +98,52 @@ public class AppScreenResizeSmokeInstrumentedTest {
         } finally {
             currentActivity = null;
         }
+    }
+
+    @Test
+    public void leavingSearchTabDismissesImeInsteadOfCoveringLibrary() {
+        try(ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                currentActivity = activity;
+                activity.navigateToTab(1);
+                activity.getSupportFragmentManager().executePendingTransactions();
+                View search = activity.findViewById(R.id.searchBox);
+                assertNotNull(search);
+                assertTrue(search.requestFocus());
+                InputMethodManager input = (InputMethodManager)
+                        activity.getSystemService(Activity.INPUT_METHOD_SERVICE);
+                assertNotNull(input);
+                input.showSoftInput(search, InputMethodManager.SHOW_IMPLICIT);
+            });
+            assertTrue("search IME never became visible", waitForIme(scenario, true));
+            scenario.onActivity(activity -> activity.navigateToTab(2));
+            assertTrue("search IME still covers the library after tab change",
+                    waitForIme(scenario, false));
+            scenario.onActivity(activity -> {
+                View search = activity.fragments[1] == null ||
+                        activity.fragments[1].getView() == null ? null :
+                        activity.fragments[1].getView().findViewById(R.id.searchBox);
+                assertNotNull(search);
+                assertFalse("hidden search field retained input focus", search.hasFocus());
+            });
+        } finally {
+            currentActivity = null;
+        }
+    }
+
+    private boolean waitForIme(ActivityScenario<MainActivity> scenario, boolean visible) {
+        long deadline = SystemClock.uptimeMillis() + 5_000L;
+        while(SystemClock.uptimeMillis() < deadline) {
+            AtomicBoolean matches = new AtomicBoolean(false);
+            scenario.onActivity(activity -> {
+                WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+                matches.set(insets != null && insets.isVisible(WindowInsets.Type.ime()) == visible);
+            });
+            if(matches.get())
+                return true;
+            SystemClock.sleep(50L);
+        }
+        return false;
     }
 
     private void exercise(Intent intent) {

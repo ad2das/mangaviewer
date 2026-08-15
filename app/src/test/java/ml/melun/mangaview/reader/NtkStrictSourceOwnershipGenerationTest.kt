@@ -118,6 +118,90 @@ class NtkStrictSourceOwnershipGenerationTest {
     }
 
     @Test
+    fun reverseExposedPageGetsExactlyOneFirstProducerAfterGeometrySeal() {
+        val token = token(generation = 13L, sessionId = 130L, nonce = 1_300L)
+        NtkStrictSourceOwnershipRegistry.beginDiscoveryFence(path, token.discoveryGeneration)
+        NtkStrictSourceOwnershipRegistry.claimExact(
+            NtkStrictSourceOwnershipRegistry.reserveExact(token),
+            token.sessionId,
+        )
+        assertTrue(
+            NtkStrictSourceOwnershipRegistry.sealPrimaryAdmissions(
+                path,
+                token.exactManifestDigest,
+                token.sessionId,
+            )
+        )
+        assertTrue(
+            NtkStrictSourceOwnershipRegistry.setGeometrySealed(
+                path,
+                token.exactManifestDigest,
+                token.sessionId,
+            )
+        )
+        assertTrue(
+            NtkStrictSourceOwnershipRegistry.authorizeRollingLateAdmissions(
+                path,
+                token.exactManifestDigest,
+                token.sessionId,
+                setOf(3),
+            )
+        )
+        assertTrue(
+            NtkStrictSourceOwnershipRegistry.canBeginOperationNow(
+                path,
+                token.exactManifestDigest,
+                token.sessionId,
+            )
+        )
+
+        val tag = NtkStrictSourceCallTag.strict(
+            token.sessionId,
+            token.exactManifestDigest,
+            NtkStrictSourceOwnershipRegistry.nextOperationId(),
+            0,
+            3,
+            attemptOrdinal = 1,
+        )
+        NtkStrictSourceOwnershipRegistry.beginOperation(
+            path,
+            tag,
+            routeKeyHash = NtkStripDigests.sha256Tokens("route", "reverse"),
+            callFactoryId = "test",
+            attempt = 1,
+        ).complete(succeeded = true)
+
+        assertFalse(
+            NtkStrictSourceOwnershipRegistry.canBeginOperationNow(
+                path,
+                token.exactManifestDigest,
+                token.sessionId,
+            )
+        )
+        var rejected = false
+        try {
+            val unauthorized = NtkStrictSourceCallTag.strict(
+                token.sessionId,
+                token.exactManifestDigest,
+                NtkStrictSourceOwnershipRegistry.nextOperationId(),
+                0,
+                4,
+                attemptOrdinal = 1,
+            )
+            NtkStrictSourceOwnershipRegistry.beginOperation(
+                path,
+                unauthorized,
+                routeKeyHash = NtkStripDigests.sha256Tokens("route", "unauthorized"),
+                callFactoryId = "test",
+                attempt = 1,
+            )
+        } catch (_: IllegalStateException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+    }
+
+    @Test
     fun mixedCaseSlugKeepsOneExactOwnershipIdentity() {
         val mixedCasePath = "/webtoon/u-bt-I_killed-863ce912/u-mqaz97dp-sc5w"
         val token = token(
