@@ -1406,10 +1406,7 @@ class ReaderSession(
     private val ntkInitialUnavailableReplacementStarted = AtomicBoolean(false)
     private val deferredGeneratedTailTrimKeys = ConcurrentHashMap.newKeySet<String>()
     private val ntkEpisodeMetadataLoading = AtomicBoolean(false)
-    private val deferredAdjacentPrepareScheduled = AtomicBoolean(false)
-    private val deferredAdjacentPrepareAnchor = AtomicInteger(-1)
-    private val deferredAdjacentPrepareDirection = AtomicInteger(0)
-    private val deferredAdjacentPrepareSilent = AtomicBoolean(true)
+    private val deferredAdjacentPrepareMailbox = NtkDeferredAdjacentPrepareMailbox()
     private val ntkAdjacentAfterAckReleaseAtMs = AtomicLong(0L)
     private val timelinePrimeLoading = AtomicBoolean(false)
     private val timelinePrimeRequested = AtomicBoolean(false)
@@ -11514,6 +11511,17 @@ class ReaderSession(
                     TAG,
                     "reader_adjacent_prepare_wait_current_complete anchor=$anchor"
                 )
+                // ReaderSurfaceView emits the near-tail transition once. If that transition wins
+                // the race with the final current-episode drawable, simply returning here loses
+                // the only preparation signal: the coordinate can already be clamped at the end,
+                // so no later scroll event is guaranteed. Keep one session-owned, lifecycle-bound
+                // retry and revalidate the boundary on every turn.
+                scheduleDeferredAdjacentPrepare(
+                    anchor,
+                    direction,
+                    NTK_ADJACENT_COMPLETION_WAIT_RECHECK_MS,
+                    silentMissing = true,
+                )
                 return
             }
         }
@@ -11531,16 +11539,13 @@ class ReaderSession(
         delayMs: Long,
         silentMissing: Boolean
     ) {
-        deferredAdjacentPrepareAnchor.set(anchor)
-        deferredAdjacentPrepareDirection.set(direction)
-        deferredAdjacentPrepareSilent.set(silentMissing)
-        if (!deferredAdjacentPrepareScheduled.compareAndSet(false, true)) return
-        main.postDelayed({ flushDeferredAdjacentPrepare() }, delayMs)
+        val shouldPost = deferredAdjacentPrepareMailbox.offer(anchor, direction, silentMissing)
+        if (shouldPost) main.postDelayed({ flushDeferredAdjacentPrepare() }, delayMs)
     }
 
     private fun flushDeferredAdjacentPrepare() {
         if (cancelled.get()) {
-            deferredAdjacentPrepareScheduled.set(false)
+            deferredAdjacentPrepareMailbox.clear()
             return
         }
         val quietMs = ntkAdjacentAppendStartDelayMs()
@@ -11548,10 +11553,10 @@ class ReaderSession(
             main.postDelayed({ flushDeferredAdjacentPrepare() }, quietMs)
             return
         }
-        val anchor = deferredAdjacentPrepareAnchor.getAndSet(-1)
-        val direction = deferredAdjacentPrepareDirection.getAndSet(0)
-        val silentMissing = deferredAdjacentPrepareSilent.getAndSet(true)
-        deferredAdjacentPrepareScheduled.set(false)
+        val pending = deferredAdjacentPrepareMailbox.take() ?: return
+        val anchor = pending.anchor
+        val direction = pending.direction
+        val silentMissing = pending.silentMissing
         if (anchor >= 0 && direction != 0) {
             val effectiveAnchor = normalizedAdjacentBoundaryAnchor(anchor, direction)
             if (!isNtkSilentAdjacentStillNearBoundary(effectiveAnchor, direction)) {
@@ -11561,6 +11566,17 @@ class ReaderSession(
                         "effective=$effectiveAnchor " +
                         "path=${manga.ntkEpisodePath}"
                 )
+                // An explicit boundary request may have installed a Surface hold before this
+                // deferred turn. Retire that ownership when the user has moved away; silent
+                // look-ahead has no Activity-owned boundary state to finish.
+                if (!silentMissing) {
+                    postBoundaryAppendFinished(
+                        anchor,
+                        direction,
+                        silent = false,
+                        suppressedCaptcha = false,
+                    )
+                }
                 return
             }
             // Preserve the anchor that actually reached the boundary. appendAdjacentEpisode will
@@ -11984,7 +12000,17 @@ class ReaderSession(
                     TAG,
                     "append_adjacent_wait_current_complete direction=$direction anchor=$anchor"
                 )
-                return AppendStartResult.CANCELLED
+                // This is a transient predecessor-completion race, not cancellation. Accept the
+                // boundary request and retain it inside the Session; otherwise Activity clears its
+                // edge intent and a reader already clamped at maxScroll has no event with which to
+                // request the next episode again.
+                scheduleDeferredAdjacentPrepare(
+                    anchor,
+                    direction,
+                    NTK_ADJACENT_COMPLETION_WAIT_RECHECK_MS,
+                    silentMissing,
+                )
+                return AppendStartResult.STARTED
             }
         }
         // The launch episode remains sealed and continues to use its immutable source transport.
@@ -12000,7 +12026,15 @@ class ReaderSession(
             !firstDrawableDelivered.get() &&
             ntkFirstBitmapAtMs.get() <= 0L
         ) {
-            return AppendStartResult.CANCELLED
+            // Native presentation can reach the physical edge one main-loop turn before the
+            // Session mirrors its first-drawable proof. Preserve the request across that handoff.
+            scheduleDeferredAdjacentPrepare(
+                anchor,
+                direction,
+                NTK_ADJACENT_COMPLETION_WAIT_RECHECK_MS,
+                silentMissing,
+            )
+            return AppendStartResult.STARTED
         }
         val effectiveAnchor = if (isNtkSource(manga, title) && direction != 0) {
             normalizedAdjacentBoundaryAnchor(anchor, direction)
@@ -32286,6 +32320,12 @@ class ReaderSession(
             ),
         )
         if (!complete) return
+        // A physical-tail request can be waiting for this exact predecessor completion. Wake its
+        // coalesced mailbox immediately instead of waiting for the low-frequency safety poll. The
+        // already-posted delayed callback is harmless: [take] gives only one caller ownership.
+        if (deferredAdjacentPrepareMailbox.hasPending()) {
+            main.post { flushDeferredAdjacentPrepare() }
+        }
         if (hasForwardNtkEpisodeAfterSource(snapshot.episode)) return
         val path = snapshot.episode.ntkEpisodePath?.trim().orEmpty()
         if (path.isEmpty()) return
@@ -36615,6 +36655,7 @@ class ReaderSession(
         private const val NTK_GENERATED_FULL_PUBLISH_PROOF_AHEAD_PAGES = 32
         private const val NTK_GENERATED_FULL_APPEND_RECHECK_MS = 180L
         private const val NTK_ADJACENT_FOREGROUND_STREAM_RECHECK_MS = 128L
+        private const val NTK_ADJACENT_COMPLETION_WAIT_RECHECK_MS = 512L
         private const val NTK_ADJACENT_ASSET_LISTENER_RETRY_TIMEOUT_MS = 1500L
         private const val NTK_ADJACENT_FOREGROUND_INPUT_QUIET_MS = 650L
         private const val NTK_EPISODE_METADATA_AFTER_FIRST_BITMAP_DELAY_MS = 300L

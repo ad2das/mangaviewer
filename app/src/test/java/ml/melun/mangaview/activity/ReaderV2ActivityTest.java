@@ -110,6 +110,22 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
+    public void completedNtkBoundaryRevealsOnlyForAReaderParkedAtTheOldTail() {
+        assertTrue(ReaderV2Activity.shouldRevealCompletedNtkBoundaryGrowthForTest(
+                true, true, 14, 15));
+        assertTrue(ReaderV2Activity.shouldRevealCompletedNtkBoundaryGrowthForTest(
+                true, true, 15, 15));
+        assertFalse(ReaderV2Activity.shouldRevealCompletedNtkBoundaryGrowthForTest(
+                false, true, 14, 15));
+        assertFalse(ReaderV2Activity.shouldRevealCompletedNtkBoundaryGrowthForTest(
+                true, false, 14, 15));
+        assertFalse(ReaderV2Activity.shouldRevealCompletedNtkBoundaryGrowthForTest(
+                true, true, 13, 15));
+        assertFalse(ReaderV2Activity.shouldRevealCompletedNtkBoundaryGrowthForTest(
+                true, true, 0, 0));
+    }
+
+    @Test
     public void newReaderReusesClickGenerationOnlyBeforeAnyActivityClaimsIt() {
         assertTrue(ReaderV2Activity.shouldReuseStrictTelemetryForActivityCreateForTest(
                 true, true, false));

@@ -321,6 +321,85 @@ public class NtkOnePiecePreviousScrollReproTest {
     }
 
     @Test
+    public void onePieceTailWaitAttachesNextWithoutASecondGesture() throws Exception {
+        LiveNetworkAssume.assumeEnabled();
+        launchOnePieceEpisodes();
+
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        UiObject2 episodeRow = findEpisodeRowByDescription(device, "1185화", 90000L);
+        assertNotNull("Expected current One Piece 1185 episode row", episodeRow);
+        episodeRow.click();
+        assertNotNull(
+                "Expected NTK reader surface",
+                device.wait(Until.findObject(By.res(PACKAGE_NAME, "strip")), 90000L));
+
+        ReaderV2Activity reader = resumedReader();
+        assertNotNull("Expected resumed One Piece reader", reader);
+        Manga current = reader.testEpisode("1185화");
+        Manga next = reader.testEpisode("1186화");
+        assertNotNull("Expected current One Piece 1185 metadata", current);
+        assertNotNull("Expected next One Piece 1186 metadata", next);
+
+        long structureDeadline = SystemClock.elapsedRealtime() + 15000L;
+        while (SystemClock.elapsedRealtime() < structureDeadline && reader.testPageCount() <= 1) {
+            SystemClock.sleep(16L);
+        }
+        int currentCount = reader.testPageCount();
+        assertTrue("Expected a multi-page current episode", currentCount > 1);
+
+        String transitioned = current.getNtkEpisodePath();
+        boolean runwayReadyBeforeTail = false;
+        // Publish exactly one edge interaction. UiAutomator swipes are intentionally not used:
+        // they can be ignored while an emulator is still settling layout, which tests gesture
+        // injection rather than the lost-wakeup this case owns. The production scroll setter and
+        // production boundary callback below are the two halves of one physical edge event.
+        runOnMain(() -> {
+            reader.testScrollByPixels(Float.MAX_VALUE);
+            reader.onBoundaryReached(ReaderSurfaceView.DIRECTION_NEXT, currentCount - 1);
+        });
+        long tailDeadline = SystemClock.elapsedRealtime() + 5000L;
+        while (SystemClock.elapsedRealtime() < tailDeadline &&
+                reader.testCurrentPage() < currentCount - 1) {
+            SystemClock.sleep(16L);
+        }
+        boolean stoppedAtTail = reader.testCurrentPage() >= currentCount - 1;
+        runwayReadyBeforeTail = reader.testHasReadyEpisodeRunway(next, 1) && !stoppedAtTail;
+        assertTrue("The one edge interaction must park the reader at the old tail", stoppedAtTail);
+
+        // Once the original physical tail is reached, send no more input. This is the reported
+        // failure mode: maxScroll cannot emit another edge transition, so the retained request
+        // itself must wake when current completion/manifest publication catches up.
+        long idleAttachStartedAt = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - idleAttachStartedAt < 45000L &&
+                current.getNtkEpisodePath().equals(transitioned)) {
+            SystemClock.sleep(16L);
+            transitioned = reader.testCurrentNtkEpisodePath();
+        }
+        long idleAttachMs = SystemClock.elapsedRealtime() - idleAttachStartedAt;
+        long runwayDeadline = SystemClock.elapsedRealtime() + 10000L;
+        while (SystemClock.elapsedRealtime() < runwayDeadline &&
+                !reader.testHasReadyEpisodeRunway(next, 4)) {
+            SystemClock.sleep(16L);
+        }
+
+        Log.i(
+                TAG,
+                "onePieceTailWaitBoundary source=" + current.getNtkEpisodePath()
+                        + ",target=" + transitioned
+                        + ",runwayReadyBeforeTail=" + runwayReadyBeforeTail
+                        + ",stoppedAtTail=" + stoppedAtTail
+                        + ",idleAttachMs=" + idleAttachMs
+                        + ",currentCount=" + currentCount);
+        assertEquals(
+                "The exact next episode must attach without a second edge gesture",
+                next.getNtkEpisodePath(),
+                transitioned);
+        assertTrue(
+                "The attached next episode must expose four drawable runway pages",
+                reader.testHasReadyEpisodeRunway(next, 4));
+    }
+
+    @Test
     public void onePieceIdleThenPhysicalForwardScrollKeepsNextRunway() throws Exception {
         LiveNetworkAssume.assumeEnabled();
         launchOnePieceEpisodes();

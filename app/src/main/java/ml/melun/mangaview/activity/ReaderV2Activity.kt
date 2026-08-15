@@ -299,6 +299,13 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private var lastShortWebtoonPhysicalScrollOffset = Int.MIN_VALUE
     private var deferredBoundaryDirection = 0
     private var deferredBoundaryAnchor = -1
+    /**
+     * Durable ownership of a real NEXT edge. Async append workers may finish before their
+     * structure publication reaches this Activity, so this must not share the status/captcha
+     * fields those completion callbacks clear.
+     */
+    private var pendingNextBoundaryReveal = false
+    private var pendingNextBoundaryRevealPredecessorKey = ""
     private var deferredAppendPageCount = 0
     private var deferredAppendPageGeneration = 0
     private var lastAppendUntilReadyCount = 0
@@ -1709,6 +1716,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         pendingPrependRevealRequests = 0
         deferredBoundaryDirection = 0
         deferredBoundaryAnchor = -1
+        clearPendingNextBoundaryReveal()
         criticalUiHandler.removeCallbacksAndMessages(null)
         if (::renderView.isInitialized) {
             renderView.setWindowListener(null)
@@ -2069,6 +2077,14 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 }
                 val activeAppendDelayMs = ntkActiveAppendPublishQuietRemainingMs()
                 if (isCurrentNtkManhwaOrWebtoonPath() && count > pageCount) {
+                    val oldCount = pageCount
+                    val appendedForeignEpisode = appendedForeignEpisodeStartsAt(oldCount)
+                    val revealOwnershipMatches = pendingNextBoundaryReveal &&
+                        pendingNextBoundaryRevealPredecessorKey.isNotEmpty() &&
+                        session?.pageInfo(oldCount - 1)?.manga?.let { predecessor ->
+                            Manga.episodeIdentityKey(predecessor) ==
+                                pendingNextBoundaryRevealPredecessorKey
+                        } == true
                     val appendedEpisodeMatchesPhysicalAnchor =
                         appendedEpisodeMatchesPhysicalAnchor(count)
                     val forwardTailAppendDemanded =
@@ -2092,9 +2108,20 @@ if (firstResumeArmedUptimeNanos == 0L) {
                         }
                         return@trace
                     }
-                    val oldCount = pageCount
+                    val revealCompletedBoundary = shouldRevealCompletedNtkBoundaryGrowth(
+                        revealOwnershipMatches,
+                        appendedForeignEpisode,
+                        currentPage,
+                        oldCount,
+                    )
+                    if (appendedForeignEpisode && pendingNextBoundaryReveal) {
+                        clearPendingNextBoundaryReveal()
+                    }
                     pageCount = count
-                    renderView.appendPageCount(count, revealAppendedBoundary = false)
+                    renderView.appendPageCount(
+                        count,
+                        revealAppendedBoundary = revealCompletedBoundary,
+                    )
                     syncRenderPageIdentities(count)
                     flushPendingPageCallbacks()
                     updateCurrentEpisode(currentPage)
@@ -2105,7 +2132,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     }
                     Log.d(
                         TAG,
-                        "pages_appended_current_episode_full_surface from=$oldCount total=$count currentPage=$currentPage"
+                        "pages_appended_current_episode_full_surface from=$oldCount total=$count " +
+                            "currentPage=$currentPage reveal=$revealCompletedBoundary"
                     )
                     return@trace
                 }
@@ -6035,7 +6063,14 @@ if (firstResumeArmedUptimeNanos == 0L) {
         // hide the already displayed last pixels from accessibility/qualification observers.
         publishStrictCompletedEpisodeBottomEdge(direction, anchorPage)
         session?.pageInfo(anchorPage)?.let {
-            if (!it.transitionCard) currentManga = it.manga
+            if (!it.transitionCard) {
+                currentManga = it.manga
+                if (direction == ReaderSurfaceView.DIRECTION_NEXT) {
+                    pendingNextBoundaryReveal = true
+                    pendingNextBoundaryRevealPredecessorKey =
+                        Manga.episodeIdentityKey(it.manga)
+                }
+            }
         }
         startBoundaryAppend(direction, anchorPage)
     }
@@ -6232,6 +6267,19 @@ if (firstResumeArmedUptimeNanos == 0L) {
         if (!isCurrentNtkManhwaOrWebtoonPath()) return false
         if (pageCount < 0) return false
         return session?.pageInfo(pageCount) != null
+    }
+
+    private fun appendedForeignEpisodeStartsAt(firstAppendedIndex: Int): Boolean {
+        if (firstAppendedIndex <= 0) return false
+        val activeSession = session ?: return false
+        val predecessor = activeSession.pageInfo(firstAppendedIndex - 1)?.manga ?: return false
+        val appended = activeSession.pageInfo(firstAppendedIndex)?.manga ?: return false
+        return !Manga.sameEpisodeIdentity(predecessor, appended)
+    }
+
+    private fun clearPendingNextBoundaryReveal() {
+        pendingNextBoundaryReveal = false
+        pendingNextBoundaryRevealPredecessorKey = ""
     }
 
     override fun onTap() {
@@ -8129,6 +8177,7 @@ if (!renderView.isShown ||
         lastDisplayedPageText = ""
         pendingBoundaryStatus = false
         clearPendingBoundaryCaptchaRetry()
+        clearPendingNextBoundaryReveal()
         pendingInitialRestorePage = -1
         pendingInitialRestoreOffset = 0
         activeInitialRestorePage = -1
@@ -11550,6 +11599,7 @@ if (!renderView.isShown ||
         pendingBoundaryStartInteractionMs = 0L
         deferredBoundaryDirection = 0
         deferredBoundaryAnchor = -1
+        clearPendingNextBoundaryReveal()
         statusHandler.removeCallbacks(showBoundaryStatusRunnable)
         statusHandler.removeCallbacks(deferredBoundaryAppendRunnable)
         hideBoundaryStatus()
@@ -11709,6 +11759,7 @@ if (!renderView.isShown ||
         pendingPrependRevealRequests = 0
         deferredBoundaryDirection = 0
         deferredBoundaryAnchor = -1
+        clearPendingNextBoundaryReveal()
         getHttpClient().cancelNtkWebViewFallbacks()
         criticalUiHandler.removeCallbacksAndMessages(null)
         if (::renderView.isInitialized) {
@@ -12306,6 +12357,19 @@ if (!renderView.isShown ||
         )
 
         @JvmStatic
+        fun shouldRevealCompletedNtkBoundaryGrowthForTest(
+            pendingNextBoundaryReveal: Boolean,
+            appendedForeignEpisode: Boolean,
+            currentPage: Int,
+            previousCount: Int,
+        ): Boolean = shouldRevealCompletedNtkBoundaryGrowth(
+            pendingNextBoundaryReveal,
+            appendedForeignEpisode,
+            currentPage,
+            previousCount,
+        )
+
+        @JvmStatic
         fun shouldDeferForeignEpisodeAppendForActiveInputForTest(
             appendedEpisodeMatchesPhysicalAnchor: Boolean,
             readerWindowBusy: Boolean,
@@ -12357,6 +12421,21 @@ if (!renderView.isShown ||
             return publishedCount > currentCount &&
                 (boundaryStatusPending ||
                     deferredDirection == ReaderSurfaceView.DIRECTION_NEXT)
+        }
+
+        private fun shouldRevealCompletedNtkBoundaryGrowth(
+            pendingNextBoundaryReveal: Boolean,
+            appendedForeignEpisode: Boolean,
+            currentPage: Int,
+            previousCount: Int,
+        ): Boolean {
+            if (!pendingNextBoundaryReveal || !appendedForeignEpisode || previousCount <= 0) {
+                return false
+            }
+            // Only a real boundary owner parked on the old physical tail may advance into a late
+            // append. Near-boundary prefetch and a reader who has scrolled back keep their exact
+            // position, while the maxScroll waiter is connected without requiring a second swipe.
+            return currentPage >= previousCount - 1
         }
 
         @JvmStatic

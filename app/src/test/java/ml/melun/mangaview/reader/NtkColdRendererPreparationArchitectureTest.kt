@@ -2407,6 +2407,25 @@ class NtkColdRendererPreparationArchitectureTest {
     }
 
     @Test
+    fun aCompletedBoundaryKeepsRevealOwnershipUntilTheForeignEpisodeIsPublished() {
+        val boundary = functionBody("override fun onBoundaryReached(", activitySource)
+        val appended = functionBody("override fun onPagesAppended(", activitySource)
+        val finished = functionBody("override fun onBoundaryAppendFinished(", activitySource)
+
+        assertTrue(boundary.contains("pendingNextBoundaryReveal = true"))
+        assertTrue(boundary.contains("pendingNextBoundaryRevealPredecessorKey ="))
+        assertTrue(boundary.contains("Manga.episodeIdentityKey(it.manga)"))
+        assertTrue(appended.contains("appendedForeignEpisodeStartsAt(oldCount)"))
+        assertTrue(appended.contains("pendingNextBoundaryRevealPredecessorKey"))
+        assertTrue(appended.contains("shouldRevealCompletedNtkBoundaryGrowth("))
+        assertTrue(appended.contains("revealAppendedBoundary = revealCompletedBoundary"))
+        assertTrue(appended.contains("if (appendedForeignEpisode && pendingNextBoundaryReveal)"))
+        // Worker completion is not structural publication. Clearing here recreated the exact
+        // lost-wakeup where the reader stayed clamped on the old tail until a second gesture.
+        assertFalse(finished.contains("clearPendingNextBoundaryReveal()"))
+    }
+
+    @Test
     fun everyNtkNetworkHasNoPreCompletionOrPreviousAutoFetchEntry() {
         val prepare = functionBody("fun prepareAdjacentEpisode(", sessionSource)
         val append = functionBody("fun appendAdjacentEpisode(", sessionSource)
@@ -2421,6 +2440,10 @@ class NtkColdRendererPreparationArchitectureTest {
         val prime = functionBody(
             "private fun primeAdjacentLaunchWindow(",
             activitySource
+        )
+        val completion = functionBody(
+            "private fun maybeWarmCompletedForwardEpisode(",
+            sessionSource,
         )
 
         assertTrue(prepare.contains("reader_adjacent_previous_auto_prepare_disabled"))
@@ -2441,9 +2464,31 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(append.contains("isNtkContinuousAdjacentCompletionPolicyActive()"))
         assertFalse(append.contains("isDirectWifiStrictAdjacentTransportActive()"))
         assertTrue(
+            prepare.indexOf("reader_adjacent_prepare_wait_current_complete") <
+                prepare.indexOf("scheduleDeferredAdjacentPrepare(")
+        )
+        assertTrue(
+            append.indexOf("append_adjacent_wait_current_complete") <
+                append.indexOf("scheduleDeferredAdjacentPrepare(")
+        )
+        assertTrue(
+            append.substring(
+                append.indexOf("append_adjacent_wait_current_complete"),
+                append.indexOf("// The launch episode remains sealed"),
+            ).contains("return AppendStartResult.STARTED")
+        )
+        assertFalse(
+            append.substring(
+                append.indexOf("append_adjacent_wait_current_complete"),
+                append.indexOf("// The launch episode remains sealed"),
+            ).contains("return AppendStartResult.CANCELLED")
+        )
+        assertTrue(
             append.indexOf("append_adjacent_wait_current_complete") <
                 append.indexOf("appendExecutor.execute")
         )
+        assertTrue(completion.contains("deferredAdjacentPrepareMailbox.hasPending()"))
+        assertTrue(completion.contains("main.post { flushDeferredAdjacentPrepare() }"))
         assertTrue(append.contains("ViewerTelemetry.adjacentWorkStarted("))
         assertTrue(unavailable.contains("listOf(ReaderSurfaceView.DIRECTION_NEXT)"))
         assertFalse(unavailable.contains("ReaderSurfaceView.DIRECTION_PREVIOUS"))
