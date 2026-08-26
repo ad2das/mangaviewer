@@ -21,6 +21,24 @@ internal object NtkForwardHistoryPolicy {
     // during uninterrupted reading; eight pages keeps the immediate gesture smooth while making
     // long multi-episode sessions memory-bounded.
     const val RETAINED_PREVIOUS_DECODED_TAIL_PAGES = 8
+    const val RETAINED_PREVIOUS_FULL_EPISODE_MAX_NODES = 17
+
+    /**
+     * A history mutation is allowed only for the exact physical progress observation that chose
+     * its candidate.  The Activity may report a newer reverse position while an older control
+     * turn is waiting for [ReaderSession]'s page lock; comparing only numeric display indexes lets
+     * that stale turn prune the episode that has just become visible again.
+     */
+    fun currentViewportAuthorizesHistoryMutation(
+        expectedObservationRevision: Long,
+        publishedObservationRevision: Long,
+        latestObservationRevision: Long,
+        candidateMatchesPublishedPage: Boolean,
+    ): Boolean =
+        expectedObservationRevision > 0L &&
+            publishedObservationRevision == expectedObservationRevision &&
+            latestObservationRevision == expectedObservationRevision &&
+            candidateMatchesPublishedPage
 
     @JvmOverloads
     fun removablePrefix(
@@ -29,11 +47,23 @@ internal object NtkForwardHistoryPolicy {
         forwardReading: Boolean,
         retainedPreviousEpisodeStartIndex: Int = firstCurrentImageIndex,
         terminalShortEpisode: Boolean = false,
+        allowOlderThanRetainedPredecessorBeforePixelThreshold: Boolean = false,
     ): Int {
         if (!forwardReading) return 0
         if (firstCurrentImageIndex <= 0) return 0
-        if (!mayRetireHistory(currentImageOrdinal, terminalShortEpisode)) return 0
-        return retainedPreviousEpisodeStartIndex.coerceIn(0, firstCurrentImageIndex)
+        val retainedStart = retainedPreviousEpisodeStartIndex.coerceIn(
+            0,
+            firstCurrentImageIndex,
+        )
+        val hasOlderStructureOutsideImmediatePredecessor = retainedStart in 1 until
+            firstCurrentImageIndex
+        if (!mayRetireHistory(currentImageOrdinal, terminalShortEpisode) &&
+            !(allowOlderThanRetainedPredecessorBeforePixelThreshold &&
+                hasOlderStructureOutsideImmediatePredecessor)
+        ) {
+            return 0
+        }
+        return retainedStart
     }
 
     @JvmOverloads
@@ -42,12 +72,24 @@ internal object NtkForwardHistoryPolicy {
         currentImageOrdinal: Int,
         forwardReading: Boolean,
         terminalShortEpisode: Boolean = false,
+        retainedPreviousEpisodeStartIndex: Int = -1,
     ): Int {
         if (!forwardReading ||
             !mayRetireHistory(currentImageOrdinal, terminalShortEpisode)
         ) return 0
-        return (firstCurrentImageIndex - RETAINED_PREVIOUS_DECODED_TAIL_PAGES)
-            .coerceAtLeast(0)
+        if (retainedPreviousEpisodeStartIndex < 0) {
+            return (firstCurrentImageIndex - RETAINED_PREVIOUS_DECODED_TAIL_PAGES)
+                .coerceAtLeast(0)
+        }
+        val retainedStart = retainedPreviousEpisodeStartIndex.coerceIn(0, firstCurrentImageIndex)
+        val retainedPredecessorNodes = firstCurrentImageIndex - retainedStart
+        if (retainedPredecessorNodes <= RETAINED_PREVIOUS_FULL_EPISODE_MAX_NODES) {
+            return retainedStart
+        }
+        return maxOf(
+            retainedStart,
+            firstCurrentImageIndex - RETAINED_PREVIOUS_DECODED_TAIL_PAGES,
+        )
     }
 
     /**
@@ -109,5 +151,77 @@ internal object NtkForwardHistoryPolicy {
         } else {
             predecessorFirstImage
         }
+    }
+}
+
+/**
+ * Exact active-episode identity that owns the one destructive predecessor-pixel retirement.
+ * Display indexes are deliberately absent: prefix pruning renumbers them while this identity
+ * remains immutable for the lifetime of the manifest generation.
+ */
+internal data class NtkForwardPixelRetirementIdentity private constructor(
+    val normalizedEpisodePath: String,
+    val manifestDigest: String,
+    val manifestRevision: Long,
+    val manifestPageCount: Int,
+) {
+    companion object {
+        fun create(
+            episodePath: String,
+            manifestDigest: String,
+            manifestRevision: Long,
+            manifestPageCount: Int,
+        ): NtkForwardPixelRetirementIdentity? {
+            val path = NtkStripDigests.normalizeEpisodePath(episodePath)
+            val digest = manifestDigest.trim().lowercase()
+            if (path.isEmpty() || !NtkStripDigests.isSha256(digest) ||
+                manifestRevision < 0L || manifestPageCount <= 0
+            ) {
+                return null
+            }
+            return NtkForwardPixelRetirementIdentity(
+                normalizedEpisodePath = path,
+                manifestDigest = digest,
+                manifestRevision = manifestRevision,
+                manifestPageCount = manifestPageCount,
+            )
+        }
+    }
+}
+
+/**
+ * Session-scoped ownership for forward-history pixel retirement.
+ *
+ * A claim is intentionally retained even when the first destructive pass finds no releasable
+ * pixels (for example, because the physical window still protects them). Decoded-pixel budget/LRU
+ * ownership handles later population; reopening the destructive pass after every reverse visit
+ * would otherwise recreate the decode -> clear -> decode loop. Consumed episode paths prune the
+ * ledger, so continuous A -> B -> C reading keeps only the current and predecessor identities.
+ */
+internal class NtkForwardPixelRetirementLedger {
+    private val lock = Any()
+    private val claimed = LinkedHashSet<NtkForwardPixelRetirementIdentity>()
+
+    fun tryClaim(identity: NtkForwardPixelRetirementIdentity): Boolean = synchronized(lock) {
+        claimed.add(identity)
+    }
+
+    fun removeEpisodePaths(episodePaths: Collection<String>): Int = synchronized(lock) {
+        val normalizedPaths = episodePaths
+            .map(NtkStripDigests::normalizeEpisodePath)
+            .filter(String::isNotEmpty)
+            .toHashSet()
+        if (normalizedPaths.isEmpty()) return@synchronized 0
+        val before = claimed.size
+        claimed.removeAll { identity -> identity.normalizedEpisodePath in normalizedPaths }
+        before - claimed.size
+    }
+
+    fun clear() = synchronized(lock) {
+        claimed.clear()
+    }
+
+    internal fun snapshotForTest(): Set<NtkForwardPixelRetirementIdentity> = synchronized(lock) {
+        claimed.toSet()
     }
 }

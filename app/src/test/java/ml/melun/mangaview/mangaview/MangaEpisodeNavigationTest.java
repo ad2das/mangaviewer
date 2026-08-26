@@ -13,6 +13,7 @@ import static ml.melun.mangaview.mangaview.MTitle.base_webtoon;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class MangaEpisodeNavigationTest {
@@ -308,6 +309,44 @@ public class MangaEpisodeNavigationTest {
         assertEquals(77, Manga.parseEpisodeOptionId(" 77 "));
         assertEquals(-1, Manga.parseEpisodeOptionId(""));
         assertEquals(-1, Manga.parseEpisodeOptionId("latest"));
+    }
+
+    @Test
+    public void sharedEpisodeSnapshotsReceiveSeriesMetadataWithoutRecursiveSetterWalks() {
+        Title title = new Title("title", "", "", new ArrayList<>(), "", 91, base_webtoon);
+        List<Manga> episodes = new ArrayList<>();
+        for(int id = 1; id <= 260; id++) {
+            episodes.add(new Manga(id, String.valueOf(id), "", base_webtoon));
+        }
+        for(Manga episode : episodes) {
+            episode.setEps(episodes);
+        }
+
+        Manga owner = episodes.get(0);
+        owner.setTitle(title);
+
+        for(Manga episode : episodes) {
+            assertSame(title, episode.getTitle());
+            assertEquals(title.getId(), episode.getTitleId());
+        }
+        // Reattaching the same identity is a no-op and must not walk the shared 260-row graph.
+        owner.setTitle(title);
+        owner.setTitleId(title.getId());
+    }
+
+    @Test
+    public void authoritativeEpisodeSnapshotPreservesItsExistingOrder() {
+        List<Manga> ordered = new ArrayList<>();
+        ordered.add(new Manga(1, "1화", "", base_webtoon));
+        ordered.add(new Manga(3, "3화", "", base_webtoon));
+        ordered.add(new Manga(2, "2화", "", base_webtoon));
+        Manga owner = new Manga(3, "3화", "", base_webtoon);
+
+        owner.setAuthoritativelyOrderedEps(ordered);
+
+        assertEquals(1, owner.getEps().get(0).getId());
+        assertEquals(3, owner.getEps().get(1).getId());
+        assertEquals(2, owner.getEps().get(2).getId());
     }
 
     private Title titleWithEpisodes(int... ids) {

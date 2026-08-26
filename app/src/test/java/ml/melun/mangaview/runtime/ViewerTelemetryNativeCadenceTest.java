@@ -66,4 +66,28 @@ public final class ViewerTelemetryNativeCadenceTest {
                 PRESENTED - 500_000_000L,
                 PRESENTED - 1_000_000L));
     }
+
+    @Test
+    public void staleInjectedEventDoesNotBecomeRendererJankAfterFreshAppReceipt() {
+        assertFalse(ViewerFrameCadencePolicy.isDemandBackedSlowInterval(
+                220_000_000L,
+                REFRESH,
+                PRESENTED,
+                PRESENTED - 320_000_000L,
+                PRESENTED - 320_000_000L,
+                PRESENTED - 18_000_000L,
+                PRESENTED - 18_000_000L));
+    }
+
+    @Test
+    public void oldAppReceiptStillFailsWhenHardwareEventWasAlreadyOld() {
+        assertTrue(ViewerFrameCadencePolicy.isDemandBackedSlowInterval(
+                220_000_000L,
+                REFRESH,
+                PRESENTED,
+                PRESENTED - 320_000_000L,
+                PRESENTED - 320_000_000L,
+                PRESENTED - 120_000_000L,
+                PRESENTED - 120_000_000L));
+    }
 }

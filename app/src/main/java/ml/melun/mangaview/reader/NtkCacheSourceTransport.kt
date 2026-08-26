@@ -26,6 +26,9 @@ internal class NtkCacheSourceTransport(
     override val exactSealAtMs: Long
         get() = strictSession.exactSealAtMs
 
+    override val directWifiAdjacentRunwayProfile: Boolean
+        get() = strictSession.directWifiAdjacentRunwayProfile
+
     val strictSessionId: Long
         get() = strictSession.sessionId
 
@@ -86,6 +89,12 @@ internal class NtkCacheSourceTransport(
 
     override fun onAdjacentDrawableRunwayCommitted(episode: NtkEpisodeToken) =
         strictSession.onAdjacentDrawableRunwayCommitted(episode)
+
+    override fun onForegroundIdleCompletionRequested(episode: NtkEpisodeToken) =
+        strictSession.onForegroundIdleCompletionRequested(episode)
+
+    override fun unresolvedStreamedExactBodyCount(): Int =
+        strictSession.unresolvedStreamedExactBodyCount()
 
     override fun requestPreparationDrain(
         episode: NtkEpisodeToken,

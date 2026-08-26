@@ -53,8 +53,9 @@ internal object NtkAdjacentRunwayRefreshPolicy {
         latestImages: List<String>
     ): List<Assignment> {
         if (existing.isEmpty() || latestImages.isEmpty()) return existing
+        val distinctExistingSources = existing.distinctBy { it.sourceIndex }
         val replacements = assignments(
-            existing.map { it.sourceIndex },
+            distinctExistingSources.map { it.sourceIndex },
             latestImages
         ).associateBy { it.sourceIndex }
         if (replacements.isEmpty()) return existing

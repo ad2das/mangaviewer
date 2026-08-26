@@ -30,9 +30,12 @@ internal object NtkClickOwnedManhwaWavePolicy {
     // long episodes.
     const val CONNECTION_SHARDS = 24
     // Metadata probes begin at the committed click and overlap the independent episode document.
-    // One lane per bounded page prevents a second extension-discovery turn; by the time document
-    // authority releases bodies, these H2/TLS sessions are normally already established.
-    const val PROBE_LANES = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
+    // The finite frontier can contain 120 candidates, but materializing one Java thread per HEAD
+    // request makes low-core devices spend the physical fling scheduling idle socket waiters. An
+    // eight-lane rolling frontier still resolves both four-sample extension cohorts concurrently;
+    // completion immediately admits the next candidate, and exact document authority cancels the
+    // unused suffix without changing source identity or the set of recoverable pages.
+    const val PROBE_LANES = 8
     // Admission now happens before Call creation, not after all page GETs have already opened
     // their response headers. One transfer per measured connection shard bounds real server/H2
     // pressure, while eight executor slots keep the ring full as completed bodies are committed.
@@ -73,12 +76,15 @@ internal object NtkClickOwnedManhwaWavePolicy {
 
     fun hostGpuCurrentBulkTransferLadder(): IntArray =
         HOST_GPU_CURRENT_BULK_TRANSFER_LADDER.copyOf()
-    // The completion-gated adjacent p0-p4 runway must be fully resident before the boundary, but
-    // releasing the remaining ninety-plus bodies into the forty-call ring at viewport activation
-    // competes with SurfaceFlinger while the user is scrolling. Keep only one five-page suffix
-    // window physical at a time on the host-GPU emulator. Current episodes and every physical,
-    // cellular, SNI, and webtoon route retain their measured admission policy.
-    const val HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS = 5
+    // The completion-gated adjacent p0-p4 runway must be fully resident before the suffix opens.
+    // Once the predecessor and that runway are complete, retain one bounded four-source window.
+    // Two lanes let one slow replica response serialize the rest of a 14-page chapter: measured
+    // p11/p12 bodies arrived 44/56 seconds after entry even though each transfer itself needed
+    // only 2-3 seconds. Four matches the physical runway width, isolates one slow response, and
+    // remains one tenth of the current-episode ring. Webtoon pixels retain their separate
+    // viewport/drawable release gate.
+    const val HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS = 4
+    const val HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_EXECUTOR_LANES = 4
     const val MIXED_UNCOMMON_BODY_TRANSFERS = 8
     // Keep the authority document's cold QUIC request alive: starting 32 bodies before exact-count
     // proof saturated the emulator and made that independent request time out at 3.5 seconds.

@@ -1,5 +1,6 @@
 package ml.melun.mangaview.reader
 
+import android.os.Process
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -7,6 +8,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkStrictEpisodeDiscoveryCoordinatorPathTest {
+    @Test
+    fun exactDiscoveryControlWorkerYieldsToDisplayOwners() {
+        assertEquals(
+            Process.THREAD_PRIORITY_BACKGROUND,
+            NtkStrictDiscoveryThreadPolicy.ANDROID_PRIORITY,
+        )
+        assertTrue(NtkStrictDiscoveryThreadPolicy.JAVA_PRIORITY < Thread.NORM_PRIORITY)
+    }
+
     @Test
     fun slugEpisodePathPreservesServerSignificantCase() {
         val path = "/webtoon/u-bt-I_killed-863ce912/u-mqaz97dp-sc5w"

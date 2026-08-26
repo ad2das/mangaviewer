@@ -243,6 +243,24 @@ object NtkEpisodeDocumentPlanParser {
         pageCount
     }.getOrNull()
 
+    /** Reuses a fully validated draft so the production path never parses one document twice. */
+    @JvmStatic
+    fun completeNumericPageCountHint(
+        lease: NtkDiscoveryLease,
+        episodePath: String,
+        draft: NtkEpisodeDocumentPlanDraft,
+    ): Int? = runCatching {
+        val normalizedPath = NtkStripDigests.normalizeEpisodePath(episodePath)
+        check(normalizedPath == lease.episodePath)
+        val pathMatch = numericEpisodePath.matchEntire(normalizedPath) ?: return@runCatching null
+        check(draft.normalizedEpisodePath == normalizedPath)
+        check(draft.discoveryGeneration == lease.generation.value)
+        check(draft.requestIdentity.normalizedSourceWorkId == pathMatch.groupValues[2])
+        check(draft.requestIdentity.normalizedEpisodeId == pathMatch.groupValues[3])
+        check(draft.pageCount in 1..NtkSourceLanePolicy.MAX_EPISODE_PAGES)
+        draft.pageCount
+    }.getOrNull()
+
     private fun fastHtmlComponentPayloads(document: String): List<String> {
         val directPayloads = ArrayList<String>()
         val flightStream = StringBuilder()
@@ -537,9 +555,8 @@ object NtkEpisodeDocumentPlanParser {
 
 /** Extracts only the signed image-request identity from an incomplete RSC document prefix. */
 object NtkViewerImageRequestSeedParser {
-    private val plainToken = Regex("""\"(?:imagesToken|token)\"\s*:\s*\"([^\"]+)\"""")
-    private val escapedToken =
-        Regex("""\\\"(?:imagesToken|token)\\\"\s*:\s*\\\"([^\\\"]+)\\\"""")
+    private val imagesTokenKey = "imagesToken".toByteArray(Charsets.US_ASCII)
+    private val tokenKey = "token".toByteArray(Charsets.US_ASCII)
     private val episodePath =
         Regex("""^/(manhwa|webtoon)/([^/?#]+)/([^/?#]+)$""", RegexOption.IGNORE_CASE)
 
@@ -547,15 +564,35 @@ object NtkViewerImageRequestSeedParser {
         lease: NtkDiscoveryLease,
         path: String,
         bodyPrefix: ByteArray,
+    ): NtkViewerImageRequestSeed? =
+        parseIfPresent(lease, path, bodyPrefix, bodyPrefix.size)
+
+    /**
+     * Parses a synchronous borrowed prefix without decoding or copying its unused capacity. RSC
+     * request tokens are ASCII base64url values, so locating the quoted field in bytes preserves
+     * the former JSON-fragment semantics while avoiding a growing UTF-8 String on every 4-KiB
+     * streaming boundary.
+     */
+    fun parseIfPresent(
+        lease: NtkDiscoveryLease,
+        path: String,
+        bodyPrefix: ByteArray,
+        bodyPrefixLength: Int,
     ): NtkViewerImageRequestSeed? {
-        if (bodyPrefix.isEmpty()) return null
+        if (bodyPrefixLength <= 0 || bodyPrefixLength > bodyPrefix.size) return null
         val normalizedPath = NtkStripDigests.normalizeEpisodePath(path)
         if (normalizedPath != lease.episodePath) return null
         val pathMatch = episodePath.matchEntire(normalizedPath) ?: return null
-        val body = bodyPrefix.toString(Charsets.UTF_8)
-        val token = plainToken.find(body)?.groupValues?.getOrNull(1)
-            ?: escapedToken.find(body)?.groupValues?.getOrNull(1)
+        val plainRange = findTokenRange(bodyPrefix, bodyPrefixLength, escaped = false)
+        val tokenRange = plainRange
+            ?: findTokenRange(bodyPrefix, bodyPrefixLength, escaped = true)
             ?: return null
+        val token = String(
+            bodyPrefix,
+            tokenRange.first,
+            tokenRange.last - tokenRange.first + 1,
+            Charsets.US_ASCII,
+        )
         val claims = tokenClaimsOrNull(token) ?: return null
         val workId = claims.optString("w", "").trim()
         val episodeId = claims.optString("e", "").trim()
@@ -588,6 +625,115 @@ object NtkViewerImageRequestSeedParser {
             requestIdentity = identity,
             imagesToken = token,
         )
+    }
+
+    private fun findTokenRange(
+        bytes: ByteArray,
+        length: Int,
+        escaped: Boolean,
+    ): IntRange? {
+        val slashBytes = if (escaped) 1 else 0
+        var cursor = 0
+        while (cursor < length) {
+            if (escaped) {
+                if (bytes[cursor] != '\\'.code.toByte() ||
+                    cursor + 1 >= length ||
+                    bytes[cursor + 1] != '"'.code.toByte()
+                ) {
+                    cursor++
+                    continue
+                }
+                cursor++
+            } else if (bytes[cursor] != '"'.code.toByte()) {
+                cursor++
+                continue
+            }
+            val keyStart = cursor + 1
+            val keyLength = when {
+                matchesAscii(bytes, length, keyStart, imagesTokenKey) -> imagesTokenKey.size
+                matchesAscii(bytes, length, keyStart, tokenKey) -> tokenKey.size
+                else -> {
+                    cursor++
+                    continue
+                }
+            }
+            var at = keyStart + keyLength
+            if (escaped) {
+                if (at + 1 >= length ||
+                    bytes[at] != '\\'.code.toByte() ||
+                    bytes[at + 1] != '"'.code.toByte()
+                ) {
+                    cursor++
+                    continue
+                }
+                at += 2
+            } else {
+                if (at >= length || bytes[at] != '"'.code.toByte()) {
+                    cursor++
+                    continue
+                }
+                at++
+            }
+            while (at < length && isAsciiWhitespace(bytes[at])) at++
+            if (at >= length || bytes[at] != ':'.code.toByte()) {
+                cursor++
+                continue
+            }
+            at++
+            while (at < length && isAsciiWhitespace(bytes[at])) at++
+            if (escaped) {
+                if (at + 1 >= length ||
+                    bytes[at] != '\\'.code.toByte() ||
+                    bytes[at + 1] != '"'.code.toByte()
+                ) {
+                    cursor++
+                    continue
+                }
+                at += 2
+            } else {
+                if (at >= length || bytes[at] != '"'.code.toByte()) {
+                    cursor++
+                    continue
+                }
+                at++
+            }
+            val tokenStart = at
+            while (at < length) {
+                if (escaped) {
+                    if (bytes[at] == '\\'.code.toByte() &&
+                        at + 1 < length &&
+                        bytes[at + 1] == '"'.code.toByte()
+                    ) {
+                        if (at > tokenStart) return tokenStart until at
+                        break
+                    }
+                } else if (bytes[at] == '"'.code.toByte()) {
+                    if (at > tokenStart) return tokenStart until at
+                    break
+                }
+                at++
+            }
+            cursor = tokenStart + slashBytes + 1
+        }
+        return null
+    }
+
+    private fun matchesAscii(
+        bytes: ByteArray,
+        length: Int,
+        offset: Int,
+        expected: ByteArray,
+    ): Boolean {
+        if (offset < 0 || offset + expected.size > length) return false
+        for (index in expected.indices) {
+            if (bytes[offset + index] != expected[index]) return false
+        }
+        return true
+    }
+
+    private fun isAsciiWhitespace(value: Byte): Boolean = when (value.toInt().toChar()) {
+        ' ', '\t', '\n', '\r', '\u000C' -> true
+        else -> false
     }
 
     private fun tokenClaimsOrNull(token: String): JSONObject? = runCatching {

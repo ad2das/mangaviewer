@@ -22,10 +22,11 @@ class NtkAckBrowserService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // This is a one-shot, user-click-owned signing path on the viewer critical path. The
-        // isolated process is cold by design, so give its main looper display priority instead of
-        // letting WebView bootstrap compete as a background service.
-        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) }
+        // This process also proves adjacent episodes while the foreground reader is receiving
+        // physical input.  Giving its WebView control looper display priority lets an offscreen
+        // shell preempt that input.  Protocol deadlines provide liveness; background scheduling
+        // preserves the actual foreground display contract.
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
         engine = NtkAckBrowserEngine(applicationContext, serviceInstanceId, proofKey, requestKeyStore)
     }
 

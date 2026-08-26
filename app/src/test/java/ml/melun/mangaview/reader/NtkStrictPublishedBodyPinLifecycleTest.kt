@@ -118,6 +118,22 @@ class NtkStrictPublishedBodyPinLifecycleTest {
             completionBody.contains("(delegate as? NtkRangeContinuationProvenance)")
         )
         assertTrue(completionBody.contains("?.usedAnyContinuation() == true"))
+        assertTrue(completionBody.contains("override fun source(): BufferedSource = delegateSource"))
+        assertTrue(completionBody.contains("fun markVerifiedEof(verifiedBytes: Long)"))
+        assertFalse(completionBody.contains("object : ForwardingSource("))
+        assertFalse(completionBody.contains("}.buffer()"))
+
+        val customHttp = readRepositoryFile(
+            "app/src/main/java/ml/melun/mangaview/mangaview/CustomHttpClient.java"
+        )
+        val fallbackLifetime = functionSlice(
+            customHttp,
+            "private Response retainFallbackCallUntilBodyComplete(",
+            "private boolean shouldLogNtkExactImageSuccess("
+        )
+        assertTrue(fallbackLifetime.contains("BufferedSource source = delegate.source()"))
+        assertFalse(fallbackLifetime.contains("Okio.buffer("))
+        assertFalse(fallbackLifetime.contains("new ForwardingSource("))
 
         val quicRecovery = functionSlice(
             cacheSource,
@@ -169,6 +185,13 @@ class NtkStrictPublishedBodyPinLifecycleTest {
             "usedRangeContinuation =",
             "usedAnyContinuation() == true"
         )
+        assertOrdered(
+            strictSpool,
+            "bodyEofAtNs = SystemClock.elapsedRealtimeNanos()",
+            "bodyDigest = NtkStripDigests.bytesToLowerHex(fullDigest.digest())",
+            "call.markVerifiedBodyEof(encodedLength)",
+            "succeeded = true"
+        )
         assertTrue(
             strictSpool.indexOf("return cachedBeforeCall") <
                 strictSpool.indexOf("onPhysicalBodyProven?.let { sink ->")
@@ -191,6 +214,10 @@ class NtkStrictPublishedBodyPinLifecycleTest {
             "usedRangeContinuation =",
             "usedAnyContinuation() == true",
             "succeeded = true"
+        )
+        assertTrue(
+            quarantineSpool.indexOf("call.markVerifiedBodyEof(encodedLength)") <
+                quarantineSpool.indexOf("succeeded = true")
         )
     }
 

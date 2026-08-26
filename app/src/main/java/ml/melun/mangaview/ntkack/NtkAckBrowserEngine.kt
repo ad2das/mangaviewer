@@ -113,7 +113,12 @@ class NtkAckBrowserEngine(
     private val workers: ExecutorService = Executors.newFixedThreadPool(6) { runnable ->
         Thread(
             {
-                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) }
+                // The ACK flight prepares the *next* continuous-reader episode while the current
+                // one is being physically scrolled.  Running six network/crypto workers at display
+                // priority can preempt the reader main/producer threads and turn otherwise tiny
+                // frames into 100-200 ms input gaps.  The hard protocol deadline still bounds this
+                // work; keep it below interactive rendering in the scheduler instead of racing it.
+                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
                 runnable.run()
             },
             "ntk-ack-service-worker",
@@ -280,8 +285,34 @@ class NtkAckBrowserEngine(
                     }
                 }
                 callback(result)
+                if (result.isSuccess) {
+                    mainHandler.post { retireCompletedFlightAfterExact(current) }
+                }
             },
         )
+    }
+
+    /**
+     * Retires a consumed sealed flight without retaining speculative Chromium state.
+     *
+     * The proof renderer is already destroyed before [signExact], and the one-shot exact exchange
+     * is the flight's final operation.  Keeping a newly created inert renderer parked until the
+     * next chapter appeared attractive as a latency optimization, but a long comic keeps that
+     * renderer resident throughout physical scrolling. Under host/emulator memory pressure it was
+     * repeatedly killed just as the next ACK reused it, causing renderer-process teardown and
+     * system-service work to stall unrelated display threads. The next committed ACK has ample
+     * network runway and creates its own first-document WebView on demand; no browser process is
+     * retained between exact episode authorities.
+     */
+    private fun retireCompletedFlightAfterExact(current: Flight) {
+        assertMainLooper()
+        if (flight !== current || current.seal == null || state != State.EMPTY ||
+            webView != null || current.tasks.isCancelled()
+        ) return
+        flight = null
+        warmRequest = null
+        current.transport?.cancelAll()
+        Log.d(TAG, "ack_completed_idle path=${current.request.episodePath}")
     }
 
     fun clearStrictState(request: NtkAckClearRequest, callback: (Result<Unit>) -> Unit) {
@@ -310,8 +341,9 @@ class NtkAckBrowserEngine(
     private fun createWebView(request: NtkAckWarmRequest) {
         val created = WebView(context)
         check(created.parent == null)
+        configureNonVisualShell(created)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            created.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
+            created.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true)
         }
         configureSettings(created.settings, request.userAgent)
         installWebViewClients(created)
@@ -328,8 +360,9 @@ class NtkAckBrowserEngine(
         val request = current.request.toWarmRequest()
         val created = WebView(context)
         check(created.parent == null)
+        configureNonVisualShell(created)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            created.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
+            created.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true)
         }
         configureSettings(created.settings, request.userAgent)
         installWebViewClients(created)
@@ -377,13 +410,29 @@ class NtkAckBrowserEngine(
         if (webView !== created) return
         if (state == State.WARMING) {
             state = State.READY
+            // This renderer has finished the only work required for the next flight: committing
+            // the inert shell. Leaving a measured WebView resumed makes Chromium keep scheduling
+            // Choreographer animation turns in the isolated process while the foreground reader
+            // is physically scrolling. Park it without destroying its warm renderer; the exact
+            // committed flight resumes it below before installing any per-flight authority.
+            parkReadyWarmRenderer(created)
+            Log.d(TAG, "ack_next_renderer_warm_ready")
             completeWarm(Result.success(Unit))
+            flight?.let { pending -> prepareFlightShell(pending) }
             return
         }
         val current = flight
         if (state == State.RUNNING && current != null) {
             markFlightShellReady(current.request.flightId, "page_callback")
         }
+    }
+
+    private fun parkReadyWarmRenderer(view: WebView) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_WAIVED, false)
+        }
+        view.onPause()
+        view.pauseTimers()
     }
 
     /**
@@ -437,6 +486,9 @@ class NtkAckBrowserEngine(
         val flightBridge = FlightBridge()
         bridge = flightBridge
         view.addJavascriptInterface(flightBridge, BRIDGE_NAME)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true)
+        }
         view.onResume()
         view.resumeTimers()
         // Keep the platform cookie jar synchronized, but do not serialize the first document on
@@ -1318,6 +1370,17 @@ class NtkAckBrowserEngine(
             // an already closed URL set.
             settings.safeBrowsingEnabled = false
         }
+    }
+
+    private fun configureNonVisualShell(view: WebView) {
+        // This process exists only to execute the origin-bound ACK DOM and never attaches its
+        // WebView to a window. Keeping ordinary View visibility preserves page-visibility,
+        // timers, layout geometry, and guard observations, while willNotDraw prevents Chromium's
+        // unused tiles from competing with the foreground reader's GPU during continuous scroll.
+        view.setWillNotDraw(true)
+        view.isHorizontalScrollBarEnabled = false
+        view.isVerticalScrollBarEnabled = false
+        view.overScrollMode = View.OVER_SCROLL_NEVER
     }
 
     private fun measure(view: WebView, viewport: NtkAckViewport) {

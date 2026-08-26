@@ -1,6 +1,7 @@
 package ml.melun.mangaview.activity
 
 import java.io.File
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -71,9 +72,47 @@ class ReaderForegroundCommitLifecycleTest {
         val probe = source.substring(probeStart, probeEnd)
         assertTrue(probe.contains("generation != readerHostResumeRedrawGeneration"))
         assertTrue(probe.contains("!readerHostResumed"))
-        assertTrue(probe.contains("renderView.invalidateCommittedPresentationProof()"))
+        assertTrue(probe.contains("destroyed || isFinishing || isDestroyed"))
+        assertTrue(probe.contains("renderView.requestPendingNativeSurfaceHwuiCommit()"))
+        val repulse = probe.indexOf("renderView.requestPendingNativeSurfaceHwuiCommit()")
+        val budgetCheck = probe.indexOf("val pendingRetryBudgetOpen")
+        assertTrue(repulse >= 0)
+        assertTrue(budgetCheck > repulse)
+        assertTrue(
+            probe.contains("nativeRecoveryPending && pendingRetryBudgetOpen -> postProbe(")
+        )
+        assertTrue(probe.contains("nativeRecoveryPending -> Log.w("))
+        assertTrue(probe.contains("reader_host_resume_redraw_budget_exhausted"))
+        assertTrue(probe.contains("HOST_RESUME_REDRAW_PENDING_RETRY_MS"))
+        assertTrue(probe.contains("HOST_RESUME_REDRAW_PENDING_BUDGET_MS"))
+        assertTrue(
+            probe.contains(
+                "postProbe(HOST_RESUME_REDRAW_FIRST_DELAY_MS, baselineStage = 0)"
+            )
+        )
+        assertTrue(probe.contains("baselineStage == 0"))
+        assertTrue(probe.contains("baselineStage == 1"))
+        assertFalse(probe.contains("renderView.invalidateCommittedPresentationProof()"))
         assertTrue(probe.contains("window.decorView.postInvalidateOnAnimation()"))
         assertTrue(probe.contains("HOST_RESUME_REDRAW_FINAL_DELAY_MS"))
+        assertTrue(
+            source.contains("HOST_RESUME_REDRAW_PENDING_BUDGET_MS = 45_000L")
+        )
+
+        val pagesReadyStart = source.indexOf("override fun onPagesReady(count: Int)")
+        val pagesReadyEnd = source.indexOf(
+            "private fun effectiveNtkPagesReadyCount(",
+            pagesReadyStart,
+        )
+        assertTrue(pagesReadyStart >= 0 && pagesReadyEnd > pagesReadyStart)
+        val pagesReady = source.substring(pagesReadyStart, pagesReadyEnd)
+        assertTrue(pagesReady.contains("if (readerHostResumed && ::renderView.isInitialized)"))
+        assertTrue(pagesReady.contains("readerHostResumeRedrawGeneration++"))
+        assertTrue(
+            pagesReady.contains(
+                "scheduleReaderHostResumeRedraw(readerHostResumeRedrawGeneration)"
+            )
+        )
     }
 
     @Test
@@ -93,6 +132,11 @@ class ReaderForegroundCommitLifecycleTest {
 
         assertTrue(configuration.contains("invalidateReaderAfterHostBoundsChanged("))
         assertTrue(multiWindow.contains("invalidateReaderAfterHostBoundsChanged("))
+        assertTrue(helper.contains("resetStrictPhysicalPresentationCadence()"))
+        assertTrue(
+            helper.indexOf("resetStrictPhysicalPresentationCadence()") <
+                helper.indexOf("renderView.contentDescription = null")
+        )
         assertTrue(helper.contains("renderView.invalidateCommittedPresentationProof()"))
         assertTrue(helper.contains("renderView.requestLayout()"))
         assertTrue(helper.contains("scheduleReaderHostResumeRedraw("))

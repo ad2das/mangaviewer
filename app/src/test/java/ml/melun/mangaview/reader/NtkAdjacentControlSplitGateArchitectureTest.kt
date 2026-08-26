@@ -40,7 +40,47 @@ class NtkAdjacentControlSplitGateArchitectureTest {
     }
 
     @Test
-    fun earlyReleaseIsExactTargetScopedAndNeverOpensMobileOrManhwa() {
+    fun directWifiManhwaDocumentAdmissionStillStopsBeforeEveryPhysicalStage() {
+        val flight = block("private fun runFlight(", coordinator)
+        val documentResponse = flight.indexOf(
+            "requireDiscoveryOwnership(flight, \"document_response\")"
+        )
+        val documentReady = flight.indexOf("logStage(flight, \"document_plan_ready\")")
+        val nonWebtoonWall = flight.indexOf(
+            "if (flight.adjacentPredecessorGate && !directWebtoon)"
+        )
+        val parse = flight.indexOf("NtkEpisodeDocumentPlanParser.parse(", nonWebtoonWall)
+        val bodyAuthority = flight.indexOf(
+            "createTokenBoundGeneratedManhwaDocumentAuthority("
+        )
+        val imageApi = flight.indexOf(
+            "awaitDirectTrustedGrantOrStartIsolated(",
+            nonWebtoonWall,
+        )
+
+        assertTrue(documentResponse >= 0)
+        assertTrue(nonWebtoonWall > documentResponse)
+        assertTrue(parse > nonWebtoonWall)
+        assertTrue(documentReady > parse)
+        assertTrue(bodyAuthority > documentReady)
+        assertTrue(imageApi > nonWebtoonWall)
+        assertTrue(
+            flight.substring(nonWebtoonWall, bodyAuthority)
+                .contains("awaitAdjacentPredecessorComplete(flight)")
+        )
+        assertTrue(
+            flight.substring(nonWebtoonWall, parse)
+                .contains("NtkReaderTransferPacer.awaitMotionIdle")
+        )
+        assertTrue(
+            coordinator.contains(
+                "NtkAdjacentMetadataControlPolicy.mayOpenAtFlightAdmission("
+            )
+        )
+    }
+
+    @Test
+    fun bodyResidentWebtoonReleaseIsExactTargetScopedAndNeverOpensMobileOrManhwa() {
         val release = block(
             "fun releaseAdjacentControlAfterPredecessorBodiesResident(",
             coordinator,
@@ -82,6 +122,12 @@ class NtkAdjacentControlSplitGateArchitectureTest {
     @Test
     fun fullyDecodedEpisodeStartsExactRunwayBeforeNativeTextureCompletion() {
         val warm = block("private fun maybeWarmCompletedForwardEpisode(", session)
+        val attached = warm.indexOf("val attachedForwardPath =")
+        val attachedRelease = warm.indexOf(
+            ".releaseAdjacentBodiesAfterPredecessorComplete(",
+            attached,
+        )
+        val attachedReturn = warm.indexOf("return", attachedRelease)
         val exact = warm.indexOf("startForwardAdjacentExactDiscoveryAtCompletion(")
         val release = warm.indexOf(
             "releaseClaimedForwardAdjacentBodiesAfterPredecessorComplete("
@@ -92,6 +138,11 @@ class NtkAdjacentControlSplitGateArchitectureTest {
         )
 
         assertTrue(warm.contains("NtkCompletedForwardEpisodePolicy.isComplete("))
+        assertTrue(attached >= 0)
+        assertTrue(attachedRelease > attached)
+        assertTrue(attachedReturn > attachedRelease)
+        assertTrue(attachedReturn < exact)
+        assertTrue(warm.contains("ntk_attached_adjacent_body_gate_release"))
         assertTrue(currentOwnerGate >= 0)
         assertTrue(exact >= 0)
         assertTrue(currentOwnerGate < exact)
@@ -109,7 +160,7 @@ class NtkAdjacentControlSplitGateArchitectureTest {
         assertTrue(listener.contains("postAdjacentExactManifestForGeneration("))
         assertTrue(listener.contains("generation,"))
         assertTrue(post.contains("generation != activeReaderSessionGeneration.get()"))
-        assertTrue(post.contains("capturedSession.canPrepareForwardAdjacentNow("))
+        assertTrue(post.contains("ownerSession.canPrepareForwardAdjacentNow("))
     }
 
     @Test

@@ -59,6 +59,90 @@ class StrictExactLaunchSeal private constructor(
     }
 }
 
+/**
+ * O(1) eligibility for a forward-resume scene whose immutable suffix is already on Surface.
+ * This is deliberately narrower than the full-scene fast path: any reverse-floor expansion or
+ * source-demand change must still request the historical prefix.
+ */
+object NtkStrictForwardSuffixFastPathPolicy {
+    /** Source-count seals may use more display refs after auto-cut; only identity mapping is safe. */
+    @JvmStatic
+    fun hasCanonicalLaunchDisplayShape(
+        displayIndexes: IntArray,
+        sourceIndexes: IntArray,
+        manifestPageCount: Int,
+    ): Boolean {
+        if (manifestPageCount <= 0 || displayIndexes.size != manifestPageCount ||
+            sourceIndexes.size != manifestPageCount
+        ) return false
+        return displayIndexes.indices.all { ordinal ->
+            displayIndexes[ordinal] == ordinal && sourceIndexes[ordinal] == ordinal
+        }
+    }
+
+    @JvmStatic
+    fun canQuery(
+        rollingPixelResidency: Boolean,
+        physicalDrawPresented: Boolean,
+        sourceDemandChanged: Boolean,
+        pageCount: Int,
+        launchPageCount: Int,
+        forwardSourceFloor: Int,
+        activeSourceFloorBeforeProof: Int,
+        allowedFirstSource: Int,
+        allowedLastSource: Int,
+    ): Boolean = !rollingPixelResidency &&
+        physicalDrawPresented &&
+        !sourceDemandChanged &&
+        pageCount >= launchPageCount &&
+        forwardSourceFloor in 1 until launchPageCount &&
+        activeSourceFloorBeforeProof == forwardSourceFloor &&
+        allowedFirstSource == forwardSourceFloor &&
+        allowedLastSource == launchPageCount - 1
+
+    @JvmStatic
+    fun canCommit(
+        rollingPixelResidency: Boolean,
+        physicalDrawPresented: Boolean,
+        sourceDemandChanged: Boolean,
+        pageCount: Int,
+        launchPageCount: Int,
+        forwardSourceFloor: Int,
+        activeSourceFloorBeforeProof: Int,
+        activeSourceFloorAfterProof: Int,
+        allowedFirstSource: Int,
+        allowedLastSource: Int,
+        suffixInstalled: Boolean,
+    ): Boolean = suffixInstalled &&
+        activeSourceFloorAfterProof == forwardSourceFloor &&
+        canQuery(
+            rollingPixelResidency,
+            physicalDrawPresented,
+            sourceDemandChanged,
+            pageCount,
+            launchPageCount,
+            forwardSourceFloor,
+            activeSourceFloorBeforeProof,
+            allowedFirstSource,
+            allowedLastSource,
+        )
+
+    /** Final lock-linearized proof check; a clear/reinstall must never ABA-match an old query. */
+    @JvmStatic
+    fun isCommitProofCurrent(
+        capturedProofRevision: Long,
+        currentProofRevision: Long,
+        forwardSourceFloor: Int,
+        activeSourceFloor: Int,
+        launchShapeValid: Boolean,
+        rollingPixelResidency: Boolean,
+    ): Boolean = capturedProofRevision > 0L &&
+        currentProofRevision == capturedProofRevision &&
+        activeSourceFloor == forwardSourceFloor &&
+        launchShapeValid &&
+        !rollingPixelResidency
+}
+
 /** Latest-only source admission. Display indexes never substitute for immutable source indexes. */
 data class StrictRollingAdmission(
     val epoch: Long,
@@ -358,10 +442,94 @@ internal class StrictRollingControlMailbox {
     }
 }
 
+/**
+ * Suppresses pixel-only viewport repeats before they allocate control events or wake ReaderControl.
+ * The structure owner publishes a new immutable index object for every page-table mutation, so
+ * reference identity makes an equal numeric window new again whenever its page meaning changes.
+ */
+internal class PublishedWindowIngressGate<T : Any> {
+    private class Stamp<T : Any>(
+        val structure: T,
+        val first: Int,
+        val last: Int,
+        val anchor: Int,
+        val physicalFirst: Int,
+        val physicalLast: Int,
+        val busy: Boolean,
+        val directionHint: Int,
+    ) {
+        fun matches(
+            candidateStructure: T,
+            candidateFirst: Int,
+            candidateLast: Int,
+            candidateAnchor: Int,
+            candidatePhysicalFirst: Int,
+            candidatePhysicalLast: Int,
+            candidateBusy: Boolean,
+            candidateDirectionHint: Int,
+        ): Boolean = structure === candidateStructure &&
+            first == candidateFirst && last == candidateLast && anchor == candidateAnchor &&
+            physicalFirst == candidatePhysicalFirst && physicalLast == candidatePhysicalLast &&
+            busy == candidateBusy && directionHint == candidateDirectionHint
+    }
+
+    private val latest = java.util.concurrent.atomic.AtomicReference<Stamp<T>?>(null)
+
+    fun reserve(
+        structure: T,
+        first: Int,
+        last: Int,
+        anchor: Int,
+        physicalFirst: Int,
+        physicalLast: Int,
+        busy: Boolean,
+        directionHint: Int,
+    ): Boolean {
+        val boundedDirection = directionHint.coerceIn(-1, 1)
+        while (true) {
+            val current = latest.get()
+            if (current?.matches(
+                    structure,
+                    first,
+                    last,
+                    anchor,
+                    physicalFirst,
+                    physicalLast,
+                    busy,
+                    boundedDirection,
+                ) == true
+            ) {
+                return false
+            }
+            val replacement = Stamp(
+                structure,
+                first,
+                last,
+                anchor,
+                physicalFirst,
+                physicalLast,
+                busy,
+                boundedDirection,
+            )
+            if (latest.compareAndSet(current, replacement)) return true
+        }
+    }
+
+    fun clear() {
+        latest.set(null)
+    }
+}
+
 object ReaderPipelinePolicy {
     const val FOREGROUND_NETWORK_PARALLELISM = 4
     const val IDLE_DECODE_PARALLELISM = 4
     const val BUSY_DECODE_PARALLELISM = 2
+    // Protected numeric pages can be decoded broadly on a physical device. On the host-GPU
+    // emulator, however, each large ARGB allocation also drives gfxstream/native-allocation GC.
+    // Serializing those decodes keeps the immutable byte runway intact while preventing concurrent
+    // large bitmap allocations from repeatedly forcing native-allocation GC on the UI/renderer.
+    const val NTK_PROTECTED_NUMERIC_DECODE_PARALLELISM = 12
+    const val HOST_GPU_NTK_PROTECTED_NUMERIC_DECODE_PARALLELISM = 1
     // The verified lane is still source-only I/O, but it may admit only the viewport and the
     // bounded directional runway. More workers merely turn a manifest into hidden full-work.
     const val NTK_VERIFIED_SOURCE_FANOUT_PARALLELISM = 3
@@ -390,6 +558,14 @@ object ReaderPipelinePolicy {
 
     @JvmStatic
     fun decodeParallelism(busy: Boolean): Int = if (busy) BUSY_DECODE_PARALLELISM else IDLE_DECODE_PARALLELISM
+
+    @JvmStatic
+    fun protectedNumericDecodeParallelism(hostGpuEmulatorRuntime: Boolean): Int =
+        if (hostGpuEmulatorRuntime) {
+            HOST_GPU_NTK_PROTECTED_NUMERIC_DECODE_PARALLELISM
+        } else {
+            NTK_PROTECTED_NUMERIC_DECODE_PARALLELISM
+        }
 
     @JvmStatic
     fun isNtkLaunchCriticalSource(pageIndex: Int, requiredLastPage: Int): Boolean {

@@ -224,6 +224,14 @@ public class CustomHttpClientTest {
     }
 
     @Test
+    public void sequentialBulkDocumentsUseAReusableHttp1ReceiveLane() {
+        assertEquals(1, CustomHttpClient.strictNtkBulkDocumentProtocolsForTest().size());
+        assertEquals(
+                Protocol.HTTP_1_1,
+                CustomHttpClient.strictNtkBulkDocumentProtocolsForTest().get(0));
+    }
+
+    @Test
     public void clientHintsFollowDesktopUserAgentShape() {
         String desktop = CustomHttpClient.NTK_DESKTOP_DOCUMENT_UA;
 

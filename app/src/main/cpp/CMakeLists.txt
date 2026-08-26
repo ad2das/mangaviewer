@@ -8,6 +8,8 @@ if(NOT DEFINED NTK_QUALIFICATION_PROFILE_ID OR
 endif()
 
 find_package(games-frame-pacing REQUIRED CONFIG)
+find_package(libjpeg-turbo REQUIRED CONFIG)
+find_package(libpng REQUIRED CONFIG)
 
 set(SWAPPY_LOCAL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/swappy")
 set(SWAPPY_DEX_DIR "${CMAKE_CURRENT_BINARY_DIR}/swappy-dex")
@@ -53,11 +55,18 @@ add_library(ntk_strip_renderer SHARED
         ntk_strip_renderer.cpp
         ntk_rolling_surface_renderer.cpp
         ntk_fixed_depth_one_scheduler.cpp
+        present/DirectTileSurfacePresenter.cpp
         present/HardwareBufferRenderTargetPool.cpp
         present/SurfaceControlPresentBackend.cpp)
 
 target_compile_features(ntk_strip_renderer PRIVATE cxx_std_20)
 target_compile_options(ntk_strip_renderer PRIVATE
+        # The rolling renderer is arithmetic- and copy-heavy production code even in a Debug APK.
+        # Leaving CMake's Debug default at -O0 made exact PNG/JPEG resampling and viewport packing
+        # consume hundreds of milliseconds on the emulator, starving the urgent input producer.
+        # Keep symbols/assertions from the selected build type, but compile the shipped renderer
+        # with the same optimization class used by its frame-pacing dependency.
+        -O3
         -Wall
         -Wextra
         -Werror
@@ -76,6 +85,8 @@ target_link_libraries(ntk_strip_renderer PRIVATE
         GLESv2
         GLESv3
         jnigraphics
+        libjpeg-turbo::turbojpeg
+        libpng::png16
         log)
 
 # The phase tests are Android executables, not host binaries: they link the
@@ -214,6 +225,24 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(DetachedWarmLifecycleContractTest PRIVATE
             -Wall -Wextra -Werror)
 
+    add_executable(ReleaseTrackerHistoryContractTest
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/ReleaseTrackerHistoryContractTest.cpp)
+    target_compile_features(ReleaseTrackerHistoryContractTest PRIVATE cxx_std_20)
+    target_compile_options(ReleaseTrackerHistoryContractTest PRIVATE
+            -Wall -Wextra -Werror)
+
+    add_executable(RollingTextureHeadroomPlannerTest
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/RollingTextureHeadroomPlannerTest.cpp)
+    target_compile_features(RollingTextureHeadroomPlannerTest PRIVATE cxx_std_20)
+    target_compile_options(RollingTextureHeadroomPlannerTest PRIVATE
+            -Wall -Wextra -Werror)
+
+    add_executable(BitmapReferenceLedgerTest
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/BitmapReferenceLedgerTest.cpp)
+    target_compile_features(BitmapReferenceLedgerTest PRIVATE cxx_std_20)
+    target_compile_options(BitmapReferenceLedgerTest PRIVATE
+            -Wall -Wextra -Werror)
+
     # AGP supplies an ABI-specific library output directory.  Put executables
     # beside libc++_shared.so so the device runner has one unambiguous source.
     if(CMAKE_LIBRARY_OUTPUT_DIRECTORY)
@@ -235,6 +264,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
                 AttachGenerationContractTest
                 NativeSurfaceLeaseRegistryTest
                 DetachedWarmLifecycleContractTest
+                ReleaseTrackerHistoryContractTest
+                RollingTextureHeadroomPlannerTest
+                BitmapReferenceLedgerTest
                 PROPERTIES
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
     endif()
@@ -260,4 +292,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_dependencies(ntk_strip_renderer AttachGenerationContractTest)
     add_dependencies(ntk_strip_renderer NativeSurfaceLeaseRegistryTest)
     add_dependencies(ntk_strip_renderer DetachedWarmLifecycleContractTest)
+    add_dependencies(ntk_strip_renderer ReleaseTrackerHistoryContractTest)
+    add_dependencies(ntk_strip_renderer RollingTextureHeadroomPlannerTest)
+    add_dependencies(ntk_strip_renderer BitmapReferenceLedgerTest)
 endif()

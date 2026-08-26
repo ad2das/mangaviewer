@@ -15,6 +15,7 @@ class NtkAdjacentExactP0ArchitectureTest {
     private val cacheTransport = source("NtkCacheSourceTransport.kt")
     private val registry = source("NtkSourceSpoolRegistry.kt")
     private val listenerGate = source("ReaderSessionListenerGate.kt")
+    private val adjacentContracts = source("NtkAdjacentExactP0.kt")
     private val activity = File(
         "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt",
     ).readText()
@@ -35,11 +36,32 @@ class NtkAdjacentExactP0ArchitectureTest {
     }
 
     @Test
+    fun exactP0TailWorkerReleasesItsLeaseAfterEveryExit() {
+        val schedule = block("private fun scheduleDirectWifiAdjacentExactP0Tail(", reader)
+        val worker = block("strictExactOverlapDecode.execute {", schedule)
+        val cancel = block("private fun cancelInternal(", reader)
+        val workerStarted = worker.indexOf("flight.tailWorkerStarted.set(true)")
+        val earlyExit = worker.indexOf("return@execute")
+        val terminalFinally = worker.lastIndexOf("finally {")
+        val terminalRelease = worker.lastIndexOf("releaseAdjacentExactP0Flight(flight)")
+        val queuedRelease = cancel.indexOf(
+            "if (!flight.tailWorkerStarted.get()) releaseAdjacentExactP0Flight(flight)",
+        )
+        val overlapShutdown = cancel.indexOf("strictExactOverlapDecode.shutdownNow()")
+
+        assertTrue(workerStarted >= 0 && earlyExit > workerStarted)
+        assertTrue(terminalFinally > earlyExit)
+        assertTrue(terminalRelease > terminalFinally)
+        assertTrue(queuedRelease >= 0 && overlapShutdown > queuedRelease)
+        assertTrue(reader.contains("if (!flight.released.compareAndSet(false, true)) return"))
+    }
+
+    @Test
     fun headPublicationIsFrameAtomicAndFailureRollsBackBothModels() {
         val callback = block("override fun onAdjacentExactP0HeadReady(", activity)
         val publish = block("private fun publishDirectWifiAdjacentExactP0Head(", reader)
         assertTrue(callback.contains("setFrameSchedulingSuppressed(true)"))
-        assertTrue(callback.contains("onPagesAppended(publication.totalPageCount)"))
+        assertTrue(callback.contains("onPreparedAdjacentPagesAppended(publication.totalPageCount)"))
         assertTrue(callback.contains("setPageCard(publication.cardIndex"))
         assertTrue(callback.contains("installAdjacentExactP0Delta(publication.delta)"))
         assertTrue(callback.contains("setFrameSchedulingSuppressed(false)"))
@@ -66,7 +88,7 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(catchupRunnable.contains("inFlightToken == expectedToken"))
         assertTrue(catchupRunnable.contains("rollingNativeAttachEpoch == expectedAttachEpoch"))
         assertTrue(catchupRunnable.contains("removeCallbacks(directFramePostRunnable)"))
-        assertTrue(publish.contains("rollbackAdjacentRunwayStructure(cardIndex, initialRefs)"))
+        assertTrue(publish.contains("rollbackAdjacentRunwayStructure(cardIndex, allRefs)"))
         assertTrue(publish.contains("recycleAdjacentExactP0Delta(flight.head)"))
     }
 
@@ -172,7 +194,7 @@ class NtkAdjacentExactP0ArchitectureTest {
         val prepare = block("private fun prepareDirectWifiAdjacentExactP0Head(", reader)
         val publish = block("private fun appendResolvedEpisodeInitialRunway(", reader)
         val construction = block("internal class NtkStrictSourceSession(", strict)
-        assertTrue(candidate.contains("isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(candidate.contains("isDirectWifiStrictAdjacentRunwayProfile(target)"))
         assertTrue(candidate.contains("path.startsWith(\"/webtoon/\")"))
         assertTrue(candidate.contains("p0.sourceIndex == 0"))
         assertTrue(prepare.contains("decodeAdjacentExactP0Slots(lease, plan, headSlots, parallel = true)"))
@@ -188,20 +210,22 @@ class NtkAdjacentExactP0ArchitectureTest {
     @Test
     fun exactP0ResidentBodyWakesTheInitialAppendWithoutChangingOtherTransports() {
         val bind = block("private fun ensureAdjacentStrictSourceClaim(", reader)
+        val install = block("private fun acceptAdjacentStrictBodyDescriptor(", reader)
         val wake = block("private fun wakeInitialAdjacentExactP0Append(", reader)
         val schedule = block("private fun scheduleInitialAdjacentRunwayAppendRetry(", reader)
         val scope = block("private fun initialAdjacentExactP0WakePath(", reader)
 
         assertTrue(reader.contains("waitingInitialAdjacentExactP0Appends"))
         assertTrue(bind.contains("seal.digestSha256"))
-        assertTrue(bind.contains("wakeInitialAdjacentExactP0Append("))
+        assertTrue(bind.contains("acceptAdjacentStrictBodyDescriptor("))
+        assertTrue(install.contains("wakeInitialAdjacentExactP0Append("))
         assertTrue(
-            bind.indexOf("adjacentStrictBodyDescriptors.putIfAbsent") <
-                bind.indexOf("wakeInitialAdjacentExactP0Append("),
+            install.indexOf("adjacentStrictBodyDescriptors.putIfAbsent") <
+                install.indexOf("wakeInitialAdjacentExactP0Append("),
         )
         assertTrue(wake.contains("sourceIndex != 0"))
         assertTrue(wake.contains("path.startsWith(\"/webtoon/\")"))
-        assertTrue(wake.contains("!isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(wake.contains("!isDirectWifiStrictAdjacentRunwayProfile(episodePath = path)"))
         assertTrue(wake.contains("adjacentExactP0WakeKey(path, manifestDigest)"))
         assertTrue(wake.contains("waitingInitialAdjacentExactP0Appends.wake"))
         assertTrue(scope.contains("Manga.sameEpisodeIdentity(manga, target)"))
@@ -249,17 +273,21 @@ class NtkAdjacentExactP0ArchitectureTest {
     }
 
     @Test
-    fun completeResidentManhwaRunwayWakesTheSameRaceSafeInitialAppendRegistry() {
+    fun residentManhwaP0WakesTheSameRaceSafeInitialAppendRegistry() {
         val bind = block("private fun ensureAdjacentStrictSourceClaim(", reader)
+        val install = block("private fun acceptAdjacentStrictBodyDescriptor(", reader)
         val wake = block("private fun wakeInitialAdjacentManhwaRunwayAppend(", reader)
         val scope = block("private fun initialAdjacentExactP0WakePath(", reader)
         val schedule = block("private fun scheduleInitialAdjacentRunwayAppendRetry(", reader)
 
-        assertTrue(bind.contains("wakeInitialAdjacentManhwaRunwayAppend("))
+        assertTrue(bind.contains("acceptAdjacentStrictBodyDescriptor("))
+        assertTrue(install.contains("wakeInitialAdjacentManhwaRunwayAppend("))
         assertTrue(wake.contains("path.startsWith(\"/manhwa/\")"))
-        assertTrue(wake.contains("isDirectWifiStrictAdjacentTransportActive()"))
+        assertTrue(wake.contains("isDirectWifiStrictAdjacentRunwayProfile(episodePath = path)"))
         assertTrue(wake.contains("minOf(initialAdjacentRunwayPageLimit(path), pageCount)"))
-        assertTrue(wake.contains("(0 until requiredRunwayPages).all"))
+        assertTrue(wake.contains("requiredRunwayPages <= 0 || sourceIndex != 0"))
+        assertTrue(wake.contains("adjacentStrictBodyDescriptorKey(path, manifestDigest, 0)"))
+        assertFalse(wake.contains("(0 until requiredRunwayPages).all"))
         assertTrue(wake.contains("adjacentStrictBodyDescriptors.containsKey("))
         assertTrue(wake.contains("waitingInitialAdjacentManhwaRunwayAppends.wake("))
         assertTrue(wake.contains("initialAdjacentManhwaRunwayEventWakeKeys.add(wakeKey)"))
@@ -396,7 +424,7 @@ class NtkAdjacentExactP0ArchitectureTest {
         )
         assertTrue(sparseHandoff >= 0)
         assertTrue(prepare.indexOf("strictBodiesReady", 0) in 0 until sparseHandoff)
-        assertTrue(prepare.indexOf("isDirectWifiStrictAdjacentTransportActive()", 0) in 0 until sparseHandoff)
+        assertTrue(prepare.indexOf("isDirectWifiStrictAdjacentRunwayProfile(target)", 0) in 0 until sparseHandoff)
         assertTrue(prepare.indexOf("path).startsWith(\"/webtoon/\")", 0) in 0 until sparseHandoff)
         assertTrue(prepare.indexOf("refs.singleOrNull()?.sourceIndex == 0", 0) in 0 until sparseHandoff)
 
@@ -432,10 +460,15 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(publish.contains("commitAdjacentExactRunwayDrawableBatch(drawableBatch)"))
         assertTrue(publish.contains("requiresStrictExactRemainingAdjacentRunway(candidateSnapshot)"))
         assertTrue(publish.contains("requireStrictDescriptor = strictExactDescriptorOnly"))
-        assertTrue(publish.contains("strictExactDescriptorOnly && exactRunwayPublication == null"))
+        assertTrue(publish.contains("nativeExactBatchRequired && exactRunwayPublication == null"))
         assertTrue(publish.contains("append_adjacent_exact_runway_invalid_publication"))
         assertTrue(build.contains("result.originalProof ?: return null"))
         assertTrue(build.contains("page.sourceIndex < 1"))
+        assertTrue(build.contains("!path.startsWith(\"/webtoon/\")"))
+        assertTrue(build.contains("!path.startsWith(\"/manhwa/\")"))
+        val runwayContract = block("data class NtkAdjacentExactRunwayTilePage(", adjacentContracts)
+        assertTrue(runwayContract.contains("startsWith(\"/webtoon/\")"))
+        assertTrue(runwayContract.contains("startsWith(\"/manhwa/\")"))
         val proofValidation = build.indexOf("ReaderPreparedStore.isCanonicalOriginalProof(")
         val publicationConstruction = build.indexOf("NtkAdjacentExactRunwayTilePage(")
         assertTrue(proofValidation >= 0)
@@ -444,6 +477,7 @@ class NtkAdjacentExactP0ArchitectureTest {
         assertTrue(gate.contains("downstream.onAdjacentExactRunwayBatchReady(publication)"))
         assertTrue(gate.contains("replaceWithCurrentAuthoritative"))
         assertTrue(callback.contains("installAdjacentExactRunwayBatch(publication)"))
+        assertTrue(callback.contains("onPreparedAdjacentPagesAppended(publication.totalPageCount)"))
         assertTrue(callback.contains("rollbackAdjacentExactAppendedTail("))
         assertTrue(install.contains("identity.normalizedEpisodePath == command.normalizedEpisodePath"))
         assertTrue(install.contains("page.stripAuthority == 0L"))

@@ -83,6 +83,7 @@ enum class FixedPresentEventKind : std::uint8_t {
 enum class FixedLatchSource : std::uint32_t {
     NONE = 0,
     ANDROID_SURFACE_CONTROL_ON_COMMIT = 1,
+    ANDROID_SURFACE_CONTROL_ON_COMPLETE = 2,
 };
 
 struct FixedPresentEvent {

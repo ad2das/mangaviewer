@@ -12,8 +12,10 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -33,6 +35,20 @@ private fun ntkClickWorkerThread(
     } else {
         Thread.NORM_PRIORITY - 1
     }
+}
+
+/**
+ * Click-time pools retain their production concurrency while work exists, but not their complete
+ * thread ring after a finite episode settles. The next episode recreates workers on demand. This
+ * keeps hundreds of dead stacks and Thread roots out of every later ART GC without serializing a
+ * request, changing an admission permit, or sharing an executor lane between logical roles.
+ */
+private fun <T : ExecutorService> T.retireIdleNtkClickWorkers(): T {
+    (this as? ThreadPoolExecutor)?.apply {
+        setKeepAliveTime(500L, TimeUnit.MILLISECONDS)
+        allowCoreThreadTimeOut(true)
+    }
+    return this
 }
 
 /** Exact, manifest-bound completions for one finite post-click transfer wave. */
@@ -62,6 +78,8 @@ class NtkClickOwnedExactBodyStream(
     val bulkSourcePhysicalAdmissionReady: CompletableFuture<Unit> =
         sourceRoutePreparationReady,
     val manhwaWaveRecoveryState: NtkManhwaWaveRecoveryState? = null,
+    /** The strict source actor, not this finite click wave, owns pN+ viewport admission. */
+    private val viewportDemandOwnsSuffix: Boolean = false,
 ) : Closeable {
     private val closed = AtomicBoolean(false)
     private val initialViewportActivationSignaled = AtomicBoolean(false)
@@ -73,6 +91,15 @@ class NtkClickOwnedExactBodyStream(
         require(bodyFutures.isNotEmpty())
         require(bodyFutures.keys.all { it >= 0 })
     }
+
+    /**
+     * Futures in this immutable exact wave own real source work even before a worker has crossed
+     * the final Call-admission seam. In particular, an adjacent suffix waits for its drawable
+     * runway and can then queue behind the last runway body without appearing in either active
+     * HTTP-operation registry. Keep that bounded ownership visible to the descriptor watchdog so
+     * it cannot retire a healthy manifest while its own finite wave is still draining.
+     */
+    fun unresolvedBodyCount(): Int = bodyFutures.values.count { !it.isDone }
 
     fun onFirstActualFramePresented() {
         if (!closed.get()) firstActualFramePresented()
@@ -98,6 +125,7 @@ class NtkClickOwnedExactBodyStream(
     }
 
     fun onAdjacentRunwayReady() {
+        if (viewportDemandOwnsSuffix) return
         if (!closed.get() && adjacentRunwayReadySignaled.compareAndSet(false, true)) {
             adjacentRunwayReady()
         }
@@ -418,7 +446,7 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
 
         private val SETUP_EXECUTOR = Executors.newFixedThreadPool(8) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-probe-setup")
-        }
+        }.retireIdleNtkClickWorkers()
         private const val PHYSICAL_PLAN_WAIT_MS = 1_200L
         private const val DIRECT_WIFI_LARGE_PNG_BODY_BYTES = 4L * 1024L * 1024L
         private val PHYSICAL_PLAN_DEADLINE_EXECUTOR =
@@ -508,6 +536,13 @@ internal class NtkClickOwnedManhwaProbeFrontier private constructor(
                                     pageIndex,
                                     forwardFirstPage,
                                 ),
+                            // Metadata does not need one connection pool per eventual body
+                            // shard. On direct Wi-Fi, multiplex all finite HEAD candidates on the
+                            // existing Network-bound probe client. Creating the 24 carrier/H2
+                            // body shards here made losing HEAD cancellation enqueue dozens of
+                            // HTTP/2 reset tasks while the reader was physically scrolling.
+                            isolatedMetadataTransport = directWifiMixedResolutionActive,
+                            directWifiNetwork = directWifiNetwork,
                             onUsableResponse = { asset, byteCount ->
                                 rememberProbeSize(pageIndex, asset, byteCount)
                             },
@@ -1076,8 +1111,8 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         true,
     )
     // p0-p4 keep their existing independent runway admission. Once that runway is resident, roll
-    // the suffix through five physical Calls instead of letting a 97-page chapter enqueue forty
-    // concurrent body completions and bitmap publications during the active boundary fling.
+    // the suffix through one physical Call instead of letting a chapter enqueue a burst of local
+    // setup, body completions and bitmap publications during the active boundary fling.
     private val hostGpuAdjacentTailBodyTransferPermits = Semaphore(
         NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS,
         true,
@@ -1164,9 +1199,23 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     // after the existing network-release gate. No waiting worker occupies BODY_EXECUTOR.
     private val numericAdmissionFutures = (0 until plan.pageCount)
         .associateWith { CompletableFuture<Unit>() }
-    // Wave construction starts when the click-owned document proves the immutable page count. The
-    // actual GETs still wait on networkRelease, so they cannot crowd ACK-critical transport.
-    private val waveFuture = CompletableFuture.supplyAsync(::startForwardWave, COORDINATOR_EXECUTOR)
+    // A maximum-bound click plan contains 384 synthetic numeric slots until the document proves
+    // the real page count. Build only the physical entry runway before that proof. Materializing a
+    // candidate/body/predecode graph for every synthetic slot created hundreds of callbacks and
+    // short-lived objects per chapter even though their network admission was closed. Once the
+    // document is authoritative, append only its real finite suffix to the same click-owned wave.
+    private val waveFuture: CompletableFuture<Wave?> =
+        CompletableFuture.supplyAsync(::startForwardWave, COORDINATOR_EXECUTOR)
+            .thenCompose { provisionalWave ->
+                if (!plan.maximumNumericBound || provisionalWave == null) {
+                    CompletableFuture.completedFuture(provisionalWave)
+                } else {
+                    documentValidated.thenApplyAsync(
+                        { completeExactForwardWave(provisionalWave) },
+                        COORDINATOR_EXECUTOR,
+                    )
+                }
+            }
 
     init {
         documentValidated.whenComplete { _, documentFailure ->
@@ -1664,8 +1713,16 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         if (closed.get()) {
             return null
         }
+        val viewportDemandOwnsSuffix = directWifiAdjacentOwned && hostGpuEmulatorRuntime
+        val clickOwnedEndExclusive = minOf(
+            effectivePageCount.get(),
+            forwardFirstPage + directWifiAdjacentPhysicalRunwayPages,
+        )
         val exactFutures = wave.futures
-            .filterKeys { it < effectivePageCount.get() }
+            .filterKeys { pageIndex ->
+                pageIndex < effectivePageCount.get() &&
+                    (!viewportDemandOwnsSuffix || pageIndex < clickOwnedEndExclusive)
+            }
             .toSortedMap()
             .mapValues { (pageIndex, future) ->
             val residentAdoption = tryAdoptDirectWifiAdjacentResidentExactBody(
@@ -1714,6 +1771,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             // delaying source-session promotion or route preparation.
             bulkSourcePhysicalAdmissionReady = bulkRouteReady,
             manhwaWaveRecoveryState = manhwaWaveRecoveryState,
+            viewportDemandOwnsSuffix = viewportDemandOwnsSuffix,
         )
         CompletableFuture.allOf(*exactFutures.values.toTypedArray()).whenComplete { _, _ ->
             val published = exactFutures.values.mapNotNull { it.getNow(null) }
@@ -1789,9 +1847,29 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         held: HeldBody,
     ): HeldBody {
         if (held.predecodedOriginal != null || closed.get()) return held
+        if (NtkAdjacentBodyStoragePolicy.useNativeFileDecodeInsteadOfPrivateBitmap(
+                hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+                directWifiAdjacentOwned = directWifiAdjacentOwned,
+                encodedBytesAvailable = held.body.encodedBytes != null,
+                sealedFileAvailable = held.body.sealedFile.isFile,
+            )
+        ) {
+            // The exact EOF/SHA-owned file is the input to HostExactHardwareTilePool. A private
+            // Bitmap here would be consumed once and immediately replaced by the same file's AHB
+            // decode, adding a full-page NativeAllocationRegistry owner during live scrolling.
+            return held
+        }
+        val adjacentRunwayOffset = pageIndex - forwardFirstPage
         val executor = if (
+            directWifiAdjacentOwned && adjacentRunwayOffset == 0
+        ) {
+            // Only p0 is on the entry-critical path. Keep its decode on the single display lane;
+            // letting p1..p4 share that priority caused five NativeAlloc-heavy decodes to contend
+            // with the renderer during the current episode's physical scroll.
+            ANCHOR_PREDECODE_EXECUTOR
+        } else if (
             directWifiAdjacentOwned &&
-            pageIndex - forwardFirstPage in 0 until directWifiAdjacentPhysicalRunwayPages
+            adjacentRunwayOffset in 1 until directWifiAdjacentPhysicalRunwayPages
         ) {
             DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR
         } else if (pageIndex == forwardFirstPage) {
@@ -1882,11 +1960,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }.onSuccess { exactBody ->
         adoptedPhysicalCandidates[pageIndex]?.complete(held.body.canonicalAsset)
         held.fileLease.consume()
-        Log.d(
-            TAG,
-            "click_anchor_quarantine_page_adopted path=${plan.normalizedEpisodePath}," +
-                "page=$pageIndex,bytes=${exactBody.proof.encodedLength}",
-        )
     }.onFailure { failure ->
         held.predecodedOriginal?.close()
         held.fileLease.close()
@@ -1898,18 +1971,79 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }.getOrNull()
 
     private fun startForwardWave(): Wave? {
-        val pageLimit = minOf(MAX_CLICK_FORWARD_PAGES, plan.pageCount)
+        val absolutePageLimit = minOf(MAX_CLICK_FORWARD_PAGES, plan.pageCount)
+        val pageLimit = if (plan.maximumNumericBound) {
+            minOf(
+                absolutePageLimit,
+                forwardFirstPage + initialSpeculationPages,
+            )
+        } else {
+            absolutePageLimit
+        }
         if (closed.get() || pageLimit == 0) return null
         // This runs only after the committed viewer click. It performs no network operation: the
-        // exact-count document remains the authority gate for tail image GETs. Materializing the
-        // local client map now keeps its object/lock cost out of the finite release fan-out.
+        // exact-count document remains the authority gate for tail image GETs. A maximum-bound
+        // plan materializes only its physical entry runway here; the document-completion stage
+        // appends the real suffix and never constructs the synthetic 384-page tail.
         ReaderImageCache.prepareClickOwnedManhwaClientTopology()
-        // Build the one common 384-entry binding once on the coordinator. Previously the first
-        // body worker initialized this synchronized lazy value while every other worker contended
-        // on it during the finite request fan-out.
+        // Build the common binding once on the coordinator. Previously the first body worker
+        // initialized this synchronized lazy value while every other worker contended on it during
+        // the finite request fan-out.
         defaultJpgBinding
+        val initialBodies = buildForwardBodyFutures(forwardFirstPage, pageLimit)
+        Log.d(
+            TAG,
+            "click_forward_quarantine_wave path=${plan.normalizedEpisodePath}," +
+                "pages=${initialBodies.size},initialScheduled=${initialBodies.size}," +
+                "totalPages=${plan.pageCount},provisional=${plan.maximumNumericBound}," +
+                "probeLanes=${NtkClickOwnedManhwaWavePolicy.PROBE_LANES}," +
+                "earlyJpg=${earlyJpgCandidates.size}," +
+                "immediateBodies=$initialSpeculationPages," +
+                "formatVerifiedBodies=$FORMAT_VERIFIED_SPECULATIVE_PAGES," +
+                "pipelined=true",
+        )
+        armHostGpuCurrentRestoredViewportBodyRelease(initialBodies)
+        return Wave(initialBodies)
+    }
+
+    /**
+     * Extends the click-owned entry runway only after the fresh document has replaced the numeric
+     * maximum with its exact page count. The provisional futures are reused verbatim so p0-p4 can
+     * overlap document I/O without creating duplicate producers.
+     */
+    private fun completeExactForwardWave(provisionalWave: Wave): Wave? {
+        if (closed.get()) return null
+        val exactPageLimit = minOf(MAX_CLICK_FORWARD_PAGES, effectivePageCount.get())
+        val retainedProvisional = provisionalWave.futures
+            .filterKeys { pageIndex -> pageIndex < exactPageLimit }
+            .toSortedMap()
+        val tailStart = maxOf(
+            forwardFirstPage,
+            (provisionalWave.futures.keys.maxOrNull() ?: (forwardFirstPage - 1)) + 1,
+        )
+        if (tailStart >= exactPageLimit) {
+            return Wave(retainedProvisional)
+        }
+        val exactTail = buildForwardBodyFutures(tailStart, exactPageLimit)
+        val exactBodies = java.util.TreeMap<Int, CompletableFuture<HeldBody?>>()
+        exactBodies.putAll(retainedProvisional)
+        exactBodies.putAll(exactTail)
+        Log.d(
+            TAG,
+            "click_forward_quarantine_exact_wave path=${plan.normalizedEpisodePath}," +
+                "entry=${retainedProvisional.size},tail=${exactTail.size}," +
+                "exactPages=$exactPageLimit,scheduled=${exactBodies.size}",
+        )
+        return Wave(exactBodies)
+    }
+
+    private fun buildForwardBodyFutures(
+        pageStart: Int,
+        pageLimit: Int,
+    ): Map<Int, CompletableFuture<HeldBody?>> {
+        if (pageStart >= pageLimit || closed.get()) return emptyMap()
         if (earlyJpgCandidates.isEmpty()) {
-            val directBodies = (forwardFirstPage until pageLimit).associateWith { pageIndex ->
+            val directBodies = (pageStart until pageLimit).associateWith { pageIndex ->
                 if (directWifiAdjacentOwned &&
                     pageIndex - forwardFirstPage in
                         0 until directWifiAdjacentPhysicalRunwayPages
@@ -1928,33 +2062,11 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     startBoundedNumericCandidate(pageIndex)
                 }
             }
-            Log.d(
-                TAG,
-                "click_forward_quarantine_wave path=${plan.normalizedEpisodePath}," +
-                    "pages=${directBodies.size},totalPages=${plan.pageCount}," +
-                    "bodyLanes=${NtkClickOwnedManhwaWavePolicy.BODY_LANES}," +
-                    "directNumericGet=true",
-            )
-            armHostGpuCurrentRestoredViewportBodyRelease(directBodies)
-            return Wave(attachPrivatePredecodes(directBodies))
+            return attachPrivatePredecodes(directBodies)
         }
-        // HEAD responses contain no image body. Give every finite page its own lane so extension
-        // resolution has no second executor wave; each completed page immediately starts its one
-        // body GET on the separately bounded 120-operation ring.
-        // Materialize one future for every finite candidate. Only the initial speculation debt can
-        // issue a body before the fresh document is authoritative; applyExactPageCount cancels the
-        // rest of the 384-page numeric bound, and documentValidated + the real first-frame gate
-        // admits only the exact retained pages. streamIfExact then marks every retained future as
-        // externally owned, so NtkStrictSourceSession cannot start a competing GET for the tail.
-        //
-        // Restricting this map to eight pages was safe but accidentally moved every remaining page
-        // back to the slower source actor. Fresh random runs consequently needed 8-18 seconds for
-        // ordinary 15-34 page books. The earlier complete click-owned wave downloaded a 112-page,
-        // 30.36 MiB volume in 4.022 seconds. Restoring complete ownership here keeps the newer
-        // identity/adoption/fallback protections while removing the duplicate-owner condition that
-        // made the old full-wave experiment unsafe.
-        val initialPageLimit = pageLimit
-        val candidateFutures = (forwardFirstPage until initialPageLimit).associateWith { pageIndex ->
+        // Candidate and body stages are built only for this concrete range. Before document
+        // authority that is the physical entry runway; afterwards it is the exact finite suffix.
+        val candidateFutures = (pageStart until pageLimit).associateWith { pageIndex ->
             val earlyJpg = earlyJpgCandidates[pageIndex]
             if (earlyJpg == null) {
                 if (plan.maximumNumericBound) {
@@ -2023,23 +2135,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 }
             }
         }
-        Log.d(
-            TAG,
-            "click_forward_quarantine_wave path=${plan.normalizedEpisodePath}," +
-                "pages=$pageLimit,initialScheduled=${initialBodyFutures.size}," +
-                "totalPages=${plan.pageCount}," +
-                    "probeLanes=${NtkClickOwnedManhwaWavePolicy.PROBE_LANES}," +
-                    "earlyJpg=${earlyJpgCandidates.size}," +
-                    "immediateBodies=$initialSpeculationPages," +
-                    "formatVerifiedBodies=$FORMAT_VERIFIED_SPECULATIVE_PAGES," +
-                "pipelined=true",
-        )
-        armHostGpuCurrentRestoredViewportBodyRelease(initialBodyFutures)
-        val preparedInitial = attachPrivatePredecodes(initialBodyFutures)
-        // Once exact ownership opens, a second quarantine session cannot legally acquire the same
-        // episode. Every exact page is represented by this stream; the source owner only supplies
-        // a bounded fallback for an individual future that returns null.
-        return Wave(preparedInitial)
+        return attachPrivatePredecodes(initialBodyFutures)
     }
 
     /**
@@ -2238,6 +2334,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 Executor { runnable -> runnable.run() }
             } else {
                 primaryBodyExecutor(
+                    pageIndex,
                     inheritedCandidate,
                     predecessorProvenOrdinaryDirectWifi,
                 )
@@ -2570,6 +2667,19 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 // The raw inherited completion already won the exact-manifest race. Its lease was
                 // consumed by that adoption; never retain or predecode the later HEAD wrapper.
                 null
+            } else if (NtkAdjacentBodyStoragePolicy.useNativeFileDecodeInsteadOfPrivateBitmap(
+                    hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+                    directWifiAdjacentOwned = directWifiAdjacentOwned,
+                    encodedBytesAvailable = held.body.encodedBytes != null,
+                    sealedFileAvailable = held.body.sealedFile.isFile,
+                )
+            ) {
+                // This is the click-race counterpart of the resident-adoption guard. Adjacent
+                // p0-p4 also pass through this generic wave before the exact manifest adopts
+                // them; starting their private Bitmap decodes here caused one NativeAlloc GC per
+                // chapter even though the sealed file was immediately decoded into pooled AHBs.
+                retained[pageIndex] = held
+                held
             } else if (pageIndex - forwardFirstPage >= PRIVATE_PREDECODE_RUNWAY_PAGES) {
                 // Exact-manifest promotion normally precedes the bulk body tail. Starting a
                 // second speculative full-size Bitmap for every one of 100-200 pages therefore
@@ -2642,7 +2752,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                             isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                     )
                 }
-            }, primaryBodyExecutor(canonicalCandidate))
+            }, primaryBodyExecutor(pageIndex, canonicalCandidate))
         val alternative = candidateFuture.handle { candidate, failure ->
             if (failure == null) candidate else null
         }.thenCompose { candidate ->
@@ -2715,7 +2825,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                             isRestoredOrdinaryDirectWifiRunwayPage(pageIndex),
                     )
             },
-            primaryBodyExecutor(candidate),
+            primaryBodyExecutor(pageIndex, candidate),
         )
     }
 
@@ -2795,7 +2905,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     )
                 }
             },
-            primaryBodyExecutor(candidateAsset(pageIndex, DEFAULT_EXTENSION)),
+            primaryBodyExecutor(pageIndex, candidateAsset(pageIndex, DEFAULT_EXTENSION)),
         )
         // The fresh document arrives while the common JPG body is still transferring. Resolve
         // uncommon extensions with metadata-only HEADs at that point instead of waiting for a
@@ -3430,10 +3540,20 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     }
 
     private fun primaryBodyExecutor(
+        pageIndex: Int,
         candidate: String,
         predecessorProvenOrdinaryDirectWifi: Boolean = false,
     ): Executor = Executor { runnable ->
-        if ((predecessorProvenOrdinaryDirectWifi && isCapturedDirectWifiTransportLive()) ||
+        if (NtkClickOwnedManhwaWavePolicy.shouldBoundHostGpuAdjacentTailTransfers(
+                hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+                directWifiAdjacentOwned = directWifiAdjacentOwned,
+                pageIndex = pageIndex,
+                forwardFirstPage = forwardFirstPage,
+                physicalRunwayPages = directWifiAdjacentPhysicalRunwayPages,
+            )
+        ) {
+            HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_EXECUTOR.execute(runnable)
+        } else if ((predecessorProvenOrdinaryDirectWifi && isCapturedDirectWifiTransportLive()) ||
             isLiveOrdinaryDirectWifiCandidate(candidate)
         ) {
             DIRECT_WIFI_ORDINARY_BODY_EXECUTOR.execute(runnable)
@@ -3453,7 +3573,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         ) {
             DIRECT_WIFI_RESTORED_VIEWPORT_BODY_EXECUTOR
         } else {
-            primaryBodyExecutor(candidate)
+            primaryBodyExecutor(pageIndex, candidate)
         }
     }
 
@@ -3465,7 +3585,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
      * condition is re-read here so a handoff retains the original executor path.
      */
     private fun verifiedExactBodyExecutor(pageIndex: Int, candidate: String): Executor {
-        val original = primaryBodyExecutor(candidate)
+        val original = primaryBodyExecutor(pageIndex, candidate)
         val httpClient = getHttpClient()
         val liveWifiTransport = runCatching {
             httpClient.isNtkWifiTransportActive
@@ -3513,6 +3633,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
 
     private fun fallbackBodyExecutor(pageIndex: Int) = when {
         pageIndex == forwardFirstPage -> ANCHOR_FALLBACK_BODY_EXECUTOR
+        NtkClickOwnedManhwaWavePolicy.shouldBoundHostGpuAdjacentTailTransfers(
+            hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+            directWifiAdjacentOwned = directWifiAdjacentOwned,
+            pageIndex = pageIndex,
+            forwardFirstPage = forwardFirstPage,
+            physicalRunwayPages = directWifiAdjacentPhysicalRunwayPages,
+        ) -> HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_EXECUTOR
         NtkClickOwnedManhwaWavePolicy.shouldUseWifiEntryFallbackLane(
             wifiEntryPriorityMode,
             pageIndex - forwardFirstPage,
@@ -3736,11 +3863,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
         )
         var fileLease: ReaderImageCache.NtkQuarantineFileLease? = null
         return try {
-            Log.d(
-                TAG,
-                "click_anchor_quarantine_start path=${binding.episodePath}," +
-                    "page=$pageIndex,candidate=${candidateAsset.substringAfterLast('/')}",
-            )
             stage = "open_file_lease"
             val opened = ReaderImageCache.openQuarantineFileLease(
                 appContext,
@@ -3884,6 +4006,25 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                     // Keep it local to this one operation; it never enters body identity state.
                     currentRestoredPhysicalEvidence = evidence
                 },
+                preferFileBackedBody =
+                    NtkAdjacentBodyStoragePolicy.useFileBackedQuarantine(
+                        hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+                        directWifiTransport = directWifiAdjacentOwned,
+                        cellularResilientTransport = false,
+                        adjacentPrefetch = directWifiAdjacentOwned,
+                        episodePath = binding.episodePath,
+                    ),
+                // p0-p4 are the immutable boundary runway and retain their original prompt read.
+                // Later adjacent pages are offscreen authority: pause only their byte/EOF work
+                // during real foreground motion and resume the same response in idle gaps.
+                deferBodyReadsWhilePhysicalMotion =
+                    NtkClickOwnedManhwaWavePolicy.shouldBoundHostGpuAdjacentTailTransfers(
+                        hostGpuEmulatorRuntime = hostGpuEmulatorRuntime,
+                        directWifiAdjacentOwned = directWifiAdjacentOwned,
+                        pageIndex = pageIndex,
+                        forwardFirstPage = forwardFirstPage,
+                        physicalRunwayPages = directWifiAdjacentPhysicalRunwayPages,
+                    ),
             )
             val capturedProfileLive = isCapturedDirectWifiTransportLive()
             val ordinaryClassificationLive = isLiveOrdinaryDirectWifiCandidate(
@@ -3933,11 +4074,6 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 held.fileLease.close()
                 null
             } else {
-                Log.d(
-                    TAG,
-                    "click_anchor_quarantine_ready path=${binding.episodePath}," +
-                        "page=$pageIndex,bytes=${body.encodedLength}",
-                )
                 held
             }
         } catch (failure: Throwable) {
@@ -4074,19 +4210,25 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             NtkClickOwnedManhwaWavePolicy.PROBE_LANES,
         ) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-replica-probe")
-        }
+        }.retireIdleNtkClickWorkers()
         // Connections stay bounded by the replica-local pool ring. The executor admits every
         // finite body to those pools without forcing a second client-side wave.
         private val BODY_EXECUTOR = Executors.newFixedThreadPool(
             NtkClickOwnedManhwaWavePolicy.BODY_LANES,
         ) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-anchor-quarantine")
-        }
+        }.retireIdleNtkClickWorkers()
         private val DIRECT_WIFI_ORDINARY_BODY_EXECUTOR = Executors.newFixedThreadPool(
             NtkClickOwnedManhwaWavePolicy.DIRECT_WIFI_ORDINARY_BODY_TRANSFERS,
         ) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-direct-wifi-ordinary")
-        }
+        }.retireIdleNtkClickWorkers()
+        private val HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_EXECUTOR =
+            Executors.newFixedThreadPool(
+                NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_EXECUTOR_LANES,
+            ) { runnable ->
+                ntkClickWorkerThread(runnable, "ntk-click-adjacent-tail")
+            }.retireIdleNtkClickWorkers()
         private val DIRECT_WIFI_RESTORED_VIEWPORT_BODY_EXECUTOR =
             Executors.newSingleThreadExecutor { runnable ->
                 ntkClickWorkerThread(
@@ -4104,7 +4246,7 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
             NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS,
         ) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-anchor-fallback")
-        }
+        }.retireIdleNtkClickWorkers()
         private val ANCHOR_FALLBACK_BODY_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
             ntkClickWorkerThread(
                 runnable,
@@ -4124,10 +4266,10 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 "ntk-click-wifi-entry-fallback",
                 Process.THREAD_PRIORITY_DISPLAY,
             )
-        }
+        }.retireIdleNtkClickWorkers()
         private val COORDINATOR_EXECUTOR = Executors.newFixedThreadPool(2) { runnable ->
             ntkClickWorkerThread(runnable, "ntk-click-forward-coordinator")
-        }
+        }.retireIdleNtkClickWorkers()
         private val ENTRY_RELEASE_SCHEDULER =
             Executors.newSingleThreadScheduledExecutor { runnable ->
                 ntkClickWorkerThread(
@@ -4149,15 +4291,13 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
                 "ntk-click-bulk-predecode",
                 Process.THREAD_PRIORITY_BACKGROUND,
             )
-        }
+        }.retireIdleNtkClickWorkers()
         private val DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR =
-            Executors.newFixedThreadPool(
-                HOST_GPU_DIRECT_WIFI_ADJACENT_PHYSICAL_RUNWAY_PAGES,
-            ) { runnable ->
+            Executors.newSingleThreadExecutor { runnable ->
                 ntkClickWorkerThread(
                     runnable,
                     "ntk-click-adjacent-runway-predecode",
-                    Process.THREAD_PRIORITY_DISPLAY,
+                    Process.THREAD_PRIORITY_BACKGROUND,
                 )
             }
 

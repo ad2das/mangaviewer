@@ -344,6 +344,7 @@ object NtkSourceSpoolRegistry {
         val cause: Throwable,
         val endDiscoveryFence: Boolean,
         val executionBootstrapFuture: CompletableFuture<NtkStrictSourceExecutionBootstrap>? = null,
+        val allowPendingTokenRollback: Boolean = false,
     )
 
     /** Immutable inputs captured under the path lock and materialized without holding it. */
@@ -437,12 +438,34 @@ object NtkSourceSpoolRegistry {
         )
     }
 
+    /**
+     * Network-regain admission must never reuse an older live/closing lease after its coordinator
+     * flight disappeared. Only an empty or terminal-closed path may create the fresh generation.
+     */
+    @JvmStatic
+    fun beginFreshColdRollingDiscoveryAfterValidated(
+        context: Context?,
+        manga: Manga?,
+        initialPageIndexHint: Int,
+        forwardResumeViewerGeneration: Long,
+    ): NtkDiscoveryLease? {
+        return beginDiscoveryInternal(
+            context,
+            manga,
+            rollingAdmission = true,
+            rollingInitialPageIndexHint = initialPageIndexHint,
+            forwardResumeViewerGeneration = forwardResumeViewerGeneration,
+            requireFreshGeneration = true,
+        )
+    }
+
     private fun beginDiscoveryInternal(
         context: Context?,
         manga: Manga?,
         rollingAdmission: Boolean,
         rollingInitialPageIndexHint: Int = 0,
         forwardResumeViewerGeneration: Long = 0L,
+        requireFreshGeneration: Boolean = false,
     ): NtkDiscoveryLease? {
         if (context == null || manga == null) return null
         val path = normalizedPath(manga.ntkEpisodePath) ?: return null
@@ -455,6 +478,7 @@ object NtkSourceSpoolRegistry {
                     return@synchronized null
                 }
                 if (current.state != NtkSourceState.TERMINAL_CLOSED) {
+                    if (requireFreshGeneration) return@synchronized null
                     return@synchronized current.lease
                 }
             }
@@ -491,35 +515,48 @@ object NtkSourceSpoolRegistry {
                     directWifiTransport = directWifiBootstrap,
                     cellularResilientTransport = cellularResilientBootstrap,
                 )
-            entry.executionBootstrapFuture = CompletableFuture.supplyAsync({
-                NtkStrictSourceExecutionBootstrap(
-                    deferWorkerLanes =
-                        path.startsWith("/manhwa/", ignoreCase = true) ||
-                            deferDirectWifiAdjacentBootstrap,
-                ).also { bootstrap ->
-                    Log.d(
-                        "ViewerPerf",
-                        "reader_source_execution_bootstrap_ready path=$path," +
-                            "generation=${lease.generation.value}," +
-                            "adjacentFinite=$deferDirectWifiAdjacentBootstrap," +
-                            "threads=${bootstrap.startedThreadCount()}," +
-                            "elapsedMs=${SystemClock.elapsedRealtime() - bootstrapStartedAt}"
-                    )
-                }
-            }, executionBootstrapConstructor)
-            entries[path] = entry
             NtkStrictSourceOwnershipRegistry.beginDiscoveryFence(path, lease.generation.value)
-            ReaderImageCache.cancelNtkGeneratedForegroundWorkForEpisode(
-                path,
-                manga.baseMode,
-                "strict_manifest_discovery"
-            )
-            ReaderImageCache.suppressPermitlessInitialGeneratedForeground(
-                path,
-                "strict_manifest_discovery"
-            )
-            logState(entry, NtkSourceState.ABSENT, NtkSourceState.DISCOVERING, "begin")
-            lease
+            try {
+                entry.executionBootstrapFuture = CompletableFuture.supplyAsync({
+                    NtkStrictSourceExecutionBootstrap(
+                        deferWorkerLanes =
+                            path.startsWith("/manhwa/", ignoreCase = true) ||
+                                deferDirectWifiAdjacentBootstrap,
+                        shareDeferredWorkerLanes = deferDirectWifiAdjacentBootstrap,
+                    ).also { bootstrap ->
+                        Log.d(
+                            "ViewerPerf",
+                            "reader_source_execution_bootstrap_ready path=$path," +
+                                "generation=${lease.generation.value}," +
+                                "adjacentFinite=$deferDirectWifiAdjacentBootstrap," +
+                                "threads=${bootstrap.startedThreadCount()}," +
+                                "elapsedMs=${SystemClock.elapsedRealtime() - bootstrapStartedAt}"
+                        )
+                    }
+                }, executionBootstrapConstructor)
+                entries[path] = entry
+                ReaderImageCache.cancelNtkGeneratedForegroundWorkForEpisode(
+                    path,
+                    manga.baseMode,
+                    "strict_manifest_discovery"
+                )
+                ReaderImageCache.suppressPermitlessInitialGeneratedForeground(
+                    path,
+                    "strict_manifest_discovery"
+                )
+                logState(entry, NtkSourceState.ABSENT, NtkSourceState.DISCOVERING, "begin")
+                lease
+            } catch (failure: Throwable) {
+                entries.remove(path, entry)
+                entry.executionBootstrapFuture
+                    ?.also { entry.executionBootstrapFuture = null }
+                    ?.whenComplete { bootstrap, _ -> bootstrap?.close() }
+                NtkStrictSourceOwnershipRegistry.endDiscoveryFence(
+                    path,
+                    lease.generation.value,
+                )
+                throw failure
+            }
         }
     }
 
@@ -752,11 +789,21 @@ object NtkSourceSpoolRegistry {
                 ViewerTelemetry.isActiveEpisode(binding.episodePath) &&
                 ViewerTelemetry.activeGeneration() == it
         } ?: 0L
-        val adjacentViewerGrant =
-            currentForegroundViewerGeneration == 0L &&
+        // The coordinator's generation/path-bound body gate is the source-of-truth adjacent
+        // authority. ReaderImageCache installs its publication grant on a different callback and
+        // can legitimately arrive a few milliseconds after this source actor is constructed.
+        // Treating that mutable cache edge as the sole authority misclassified the first exact
+        // adjacent owner as a current/ordinary session and permanently sealed its suffix.
+        val coordinatorAdjacentGrant = currentForegroundViewerGeneration == 0L &&
+            NtkStrictEpisodeDiscoveryCoordinator.isAdjacentBodyGateOpen(
+                binding.episodePath,
+                observedViewerGeneration,
+            )
+        val adjacentViewerGrant = currentForegroundViewerGeneration == 0L &&
+            (coordinatorAdjacentGrant ||
                 ReaderImageCache.hasActiveAdjacentNtkForegroundViewerGrant(
                     binding.episodePath,
-                )
+                ))
         // Render ownership is an exact-manifest/UI identity, not a Wi-Fi scheduling policy.  An
         // emulator backed by wired host networking can transiently report no Wi-Fi transport even
         // though it remains non-cellular.  Keep every transport optimization behind the original
@@ -765,11 +812,8 @@ object NtkSourceSpoolRegistry {
         // existing path because cellularResilientTransport rejects this publication capability.
         val adjacentRenderPublication = !cellularResilientTransport && adjacentViewerGrant
         val adjacentPrefetch = directWifiTransport && adjacentViewerGrant
-        val adjacentPredecessorAlreadyComplete = adjacentPrefetch &&
-            NtkStrictEpisodeDiscoveryCoordinator.isAdjacentBodyGateOpen(
-                binding.episodePath,
-                observedViewerGeneration,
-            )
+        val adjacentPredecessorAlreadyComplete =
+            adjacentPrefetch && coordinatorAdjacentGrant
         // Resolve the optimization once, at the exact source-session construction edge. A raw
         // bookmark is not authority: direct Wi-Fi must still be live, cellular/SNI must be off,
         // and the requesting viewer generation/path must still own the foreground. Invalid or
@@ -1580,9 +1624,51 @@ object NtkSourceSpoolRegistry {
         return retired
     }
 
+    enum class ValidatedReplacementSlot {
+        EMPTY_OR_TERMINAL,
+        RETIRED_TERMINAL_CLOSING,
+        LIVE_PROGRESS,
+    }
+
+    /**
+     * Frees only a failed generation which is already terminal-closing. Network regain must not
+     * reuse that lease, but it also must not wait for its asynchronous source close barrier to
+     * release the active path slot. A genuinely live/discovering entry is never disturbed.
+     */
+    @JvmStatic
+    fun prepareCurrentSlotForValidatedReplacement(
+        path: String?,
+    ): ValidatedReplacementSlot {
+        val key = normalizedPath(path) ?: return ValidatedReplacementSlot.LIVE_PROGRESS
+        var action: CloseAction? = null
+        val result = synchronized(mutationLock(key)) {
+            val entry = entries[key]
+                ?: return@synchronized ValidatedReplacementSlot.EMPTY_OR_TERMINAL
+            when (entry.state) {
+                NtkSourceState.TERMINAL_CLOSED ->
+                    ValidatedReplacementSlot.EMPTY_OR_TERMINAL
+
+                NtkSourceState.TERMINAL_CLOSING -> {
+                    action = retireEntryForReplacementLocked(
+                        entry,
+                        "validated_network_terminal_replacement",
+                    )
+                    // A pre-session terminal entry has no actor callback which needs a tombstone.
+                    // Session-backed entries were already moved to retiredEntries by the helper.
+                    entries.remove(key, entry)
+                    ValidatedReplacementSlot.RETIRED_TERMINAL_CLOSING
+                }
+
+                else -> ValidatedReplacementSlot.LIVE_PROGRESS
+            }
+        }
+        performCloseAction(action)
+        return result
+    }
+
     private fun retireEntryForReplacementLocked(entry: Entry, cause: String?): CloseAction? {
         val lease = entry.lease
-        val action = failClosedLocked(
+        var action = failClosedLocked(
             entry,
             cause?.takeIf(String::isNotBlank) ?: "discovery_owner_retired"
         )
@@ -1591,6 +1677,18 @@ object NtkSourceSpoolRegistry {
             // same path lock, so it can observe either the active identity or this one.
             retiredEntries[lease] = entry
             entries.remove(lease.episodePath, entry)
+        }
+        // End the exact old fence before this path's mutation lock is released, including when a
+        // different closer already moved the entry to TERMINAL_CLOSING and therefore produced no
+        // new action here. Otherwise a fresh generation can publish in that closer's dispatch gap
+        // while the old fence still owns the path. Generation-qualified end is idempotent and can
+        // never remove a newer fence.
+        NtkStrictSourceOwnershipRegistry.endDiscoveryFence(
+            lease.episodePath,
+            lease.generation.value,
+        )
+        if (action?.endDiscoveryFence == true) {
+            action = action.copy(endDiscoveryFence = false)
         }
         return action
     }
@@ -1606,9 +1704,19 @@ object NtkSourceSpoolRegistry {
     }
 
     @JvmStatic
+    fun hasCurrentDiscoveryEntry(path: String?): Boolean {
+        val key = normalizedPath(path) ?: return false
+        return synchronized(mutationLock(key)) { entries[key] != null }
+    }
+
+    @JvmStatic
     fun currentAuthoritativeManifest(path: String?): NtkAuthoritativeManifest? =
         normalizedPath(path)?.let { key ->
-            synchronized(mutationLock(key)) { entries[key]?.authoritative }
+            synchronized(mutationLock(key)) {
+                entries[key]
+                    ?.takeIf { it.state.ordinal < NtkSourceState.TERMINAL_CLOSING.ordinal }
+                    ?.authoritative
+            }
         }
 
     /** One-shot effective floor for the exact foreground viewer generation that requested it. */
@@ -1839,6 +1947,9 @@ object NtkSourceSpoolRegistry {
             cause = IllegalStateException(cause),
             endDiscoveryFence = true,
             executionBootstrapFuture = executionBootstrapFuture,
+            allowPendingTokenRollback = pending != null &&
+                pending.owner == null &&
+                pending.stage == PromotionStage.OWNERSHIP_RESERVING,
         )
     }
 
@@ -1932,30 +2043,54 @@ object NtkSourceSpoolRegistry {
         action.executionBootstrapFuture?.whenComplete { bootstrap, _ ->
             bootstrap?.close()
         }
-        action.session?.requestClose(action.cause)
         if (!action.installSucceeded) {
             val owner = action.owner
             if (owner != null) {
-                val released =
-                    NtkStrictSourceOwnershipRegistry.rollbackUninstalledOwner(owner)
-                if (!released) {
-                    val installFuture = action.installFuture
-                    check(installFuture != null) {
-                        "Uninstalled exact owner could not be rolled back"
+                val installFuture = action.installFuture
+                if (installFuture == null) {
+                    check(NtkStrictSourceOwnershipRegistry.rollbackUninstalledOwner(owner)) {
+                        "Unqueued exact owner could not be rolled back"
                     }
-                    installFuture.whenComplete { _, _ ->
+                } else {
+                    // Close can invalidate the pending token after the actor's final validity
+                    // check but before the spool thread records installSucceeded. The Future is
+                    // the commit handshake for that gap: a successful actor install must retain
+                    // its owner for the ordinary close barrier, while an exceptional install is
+                    // still an uninstalled owner and may be rolled back.
+                    installFuture.whenComplete { _, installFailure ->
+                        if (installFailure == null && !installFuture.isCancelled) return@whenComplete
                         check(
                             NtkStrictSourceOwnershipRegistry.rollbackUninstalledOwner(owner)
                         ) { "Settled uninstalled exact owner could not be rolled back" }
                     }
                 }
             } else {
-                action.reservation?.let {
-                    NtkStrictSourceOwnershipRegistry.rollbackReservation(it)
+                if (action.allowPendingTokenRollback) {
+                    action.token?.let {
+                        // Covers RESERVED, reserve-before-publication, and the narrow claimExact
+                        // OWNED-before-owner-publication interval with one generation/nonce
+                        // identity. Never use this fallback after actor install: a later generic
+                        // failure action may have lost its local Owner while the original close
+                        // action still owns the definitive successful-install barrier.
+                        NtkStrictSourceOwnershipRegistry.rollbackPendingExactAuthority(it)
+                    }
+                } else {
+                    action.reservation?.let {
+                        NtkStrictSourceOwnershipRegistry.rollbackReservation(it)
+                    }
                 }
             }
         }
-        action.promotionResult?.complete(failedExactResult())
+        // Install rollback/commit observation must be armed before close can synchronously emit
+        // its barrier or terminal callback. Otherwise a reentrant close can remove the spool
+        // entry first and strand the still-uninstalled exact owner after this method unwinds.
+        try {
+            action.session?.requestClose(action.cause)
+        } finally {
+            // Recovery may start as soon as this future settles. Publish closeRequested first so
+            // the replacement can never overlap the old Session's still-admitted quarantine work.
+            action.promotionResult?.complete(failedExactResult())
+        }
     }
 
     private fun <T> awaitActorFuture(future: CompletableFuture<T>): T {
@@ -2042,6 +2177,9 @@ object NtkSourceSpoolRegistry {
         override val exactSealAtMs: Long
             get() = transport.exactSealAtMs
 
+        override val directWifiAdjacentRunwayProfile: Boolean
+            get() = transport.directWifiAdjacentRunwayProfile
+
         override fun register(
             request: NtkEpisodeStripPipeline.SourceRequest,
             completion: (Result<NtkEpisodeStripPipeline.SourceHandle>) -> Unit
@@ -2098,6 +2236,9 @@ object NtkSourceSpoolRegistry {
 
         override fun onAdjacentDrawableRunwayCommitted(episode: NtkEpisodeToken) =
             transport.onAdjacentDrawableRunwayCommitted(episode)
+
+        override fun onForegroundIdleCompletionRequested(episode: NtkEpisodeToken) =
+            transport.onForegroundIdleCompletionRequested(episode)
 
         override fun requestPreparationDrain(
             episode: NtkEpisodeToken,

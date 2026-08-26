@@ -1,6 +1,7 @@
 package ml.melun.mangaview.reader
 
 import android.os.Build
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import ml.melun.mangaview.mangaview.CustomHttpClient
@@ -16,7 +17,20 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+internal object NtkStrictDiscoveryThreadPolicy {
+    const val ANDROID_PRIORITY: Int = Process.THREAD_PRIORITY_BACKGROUND
+    const val JAVA_PRIORITY: Int = Thread.NORM_PRIORITY - 1
+
+    fun enterWorker() {
+        runCatching { Process.setThreadPriority(ANDROID_PRIORITY) }
+    }
+}
 
 internal object NtkHostGpuEmulatorWebtoonControlPlanePolicy {
     fun isEligible(
@@ -35,6 +49,131 @@ internal object NtkHostGpuEmulatorWebtoonControlPlanePolicy {
     }
 }
 
+enum class NtkValidatedAdjacentFlightPhase {
+    GATE_WAIT,
+    GATE_RELEASED,
+    NETWORK_ENTERED,
+    ROUTE_RECOVERY_SLOT_HELD,
+}
+
+internal data class NtkValidatedAdjacentFlightRetirementCandidate(
+    val exactAdjacentIdentity: Boolean,
+    val discoveryGeneration: Long,
+    val startedAtMs: Long,
+    val foregroundNetworkEntered: Boolean,
+    val foregroundNetworkEnteredAtMs: Long,
+    val phase: NtkValidatedAdjacentFlightPhase,
+    val routeRecoverySlotHeldAtMs: Long,
+    val controlReady: Boolean,
+    val predecessorReady: Boolean,
+    val predecessorReadyAtMs: Long,
+    val completed: Boolean,
+    val retired: Boolean,
+    val networkOwnershipRetiring: Boolean,
+    val authorityReady: Boolean,
+    val activeViewer: Boolean,
+    val validatedEpoch: Long,
+    val lastRetiredValidatedEpoch: Long,
+)
+
+/** Pure eligibility shared by observation and the exact validated-epoch retirement commit. */
+internal object NtkValidatedAdjacentFlightRetirementPolicy {
+    fun eligibleSinceMs(
+        candidate: NtkValidatedAdjacentFlightRetirementCandidate,
+    ): Long? {
+        val physicalPhaseEligible = when (candidate.phase) {
+            NtkValidatedAdjacentFlightPhase.GATE_WAIT -> false
+            NtkValidatedAdjacentFlightPhase.GATE_RELEASED ->
+                !candidate.foregroundNetworkEntered &&
+                    !candidate.networkOwnershipRetiring &&
+                    candidate.predecessorReadyAtMs > 0L
+            NtkValidatedAdjacentFlightPhase.NETWORK_ENTERED ->
+                candidate.foregroundNetworkEntered &&
+                    !candidate.networkOwnershipRetiring &&
+                    candidate.foregroundNetworkEnteredAtMs > 0L
+            NtkValidatedAdjacentFlightPhase.ROUTE_RECOVERY_SLOT_HELD ->
+                !candidate.foregroundNetworkEntered &&
+                    candidate.networkOwnershipRetiring &&
+                    candidate.routeRecoverySlotHeldAtMs > 0L
+        }
+        if (!candidate.exactAdjacentIdentity ||
+            candidate.discoveryGeneration <= 0L ||
+            candidate.startedAtMs < 0L ||
+            !physicalPhaseEligible ||
+            !candidate.controlReady ||
+            !candidate.predecessorReady ||
+            candidate.predecessorReadyAtMs <= 0L ||
+            candidate.completed || candidate.retired ||
+            candidate.authorityReady ||
+            !candidate.activeViewer || candidate.validatedEpoch <= 0L ||
+            candidate.validatedEpoch <= candidate.lastRetiredValidatedEpoch
+        ) return null
+        val physicalEligibleAtMs = when (candidate.phase) {
+            NtkValidatedAdjacentFlightPhase.GATE_RELEASED ->
+                candidate.predecessorReadyAtMs
+            NtkValidatedAdjacentFlightPhase.NETWORK_ENTERED ->
+                candidate.foregroundNetworkEnteredAtMs
+            NtkValidatedAdjacentFlightPhase.ROUTE_RECOVERY_SLOT_HELD ->
+                candidate.routeRecoverySlotHeldAtMs
+            NtkValidatedAdjacentFlightPhase.GATE_WAIT -> return null
+        }
+        return maxOf(
+            candidate.startedAtMs,
+            physicalEligibleAtMs,
+            candidate.predecessorReadyAtMs,
+        )
+    }
+}
+
+internal enum class NtkForegroundNetworkLeaveAction {
+    LEAVE,
+    AWAIT_EXISTING_LEAVE,
+    NONE,
+}
+
+/** Pure state decision for one Flight's exactly-once client foreground leave. */
+internal object NtkForegroundNetworkLeavePolicy {
+    fun action(
+        foregroundNetworkEntered: Boolean,
+        leaveStarted: Boolean,
+        leaveCompleted: Boolean,
+    ): NtkForegroundNetworkLeaveAction {
+        require(!foregroundNetworkEntered || !leaveStarted) {
+            "Foreground network cannot remain entered after leave ownership was claimed"
+        }
+        return when {
+            foregroundNetworkEntered -> NtkForegroundNetworkLeaveAction.LEAVE
+            leaveStarted && !leaveCompleted ->
+                NtkForegroundNetworkLeaveAction.AWAIT_EXISTING_LEAVE
+            else -> NtkForegroundNetworkLeaveAction.NONE
+        }
+    }
+}
+
+internal object NtkCompletedAdjacentRegistryPolicy {
+    fun isUnusable(
+        authorityReady: Boolean,
+        snapshotPresent: Boolean,
+        snapshotMatchesDiscovery: Boolean,
+        snapshotTerminalClosing: Boolean,
+    ): Boolean = !authorityReady && (
+        !snapshotPresent || !snapshotMatchesDiscovery || snapshotTerminalClosing
+    )
+}
+
+internal object NtkPauseAdjustedTimestampPolicy {
+    fun shift(timestampMs: Long, pausedAtMs: Long, resumedAtMs: Long): Long {
+        require(pausedAtMs >= 0L && resumedAtMs >= pausedAtMs)
+        if (timestampMs <= 0L || timestampMs >= resumedAtMs) return timestampMs
+        val pausedDurationMs = resumedAtMs - pausedAtMs
+        return if (timestampMs <= pausedAtMs) {
+            timestampMs + pausedDurationMs
+        } else {
+            resumedAtMs
+        }
+    }
+}
+
 /**
  * The only StrictFresh document + server grant -> exact image manifest coordinator.
  *
@@ -45,6 +184,8 @@ internal object NtkHostGpuEmulatorWebtoonControlPlanePolicy {
  * challenge retain the isolated browser/key-signing authority.
  */
 object NtkStrictEpisodeDiscoveryCoordinator {
+    private const val ADJACENT_GATE_OWNERSHIP_SLICE_MS = 1_000L
+
     private enum class AdjacentBodyGateRelease {
         OPENED,
         ALREADY_OPEN,
@@ -141,6 +282,15 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         /** Exact authority is retained here until its viewer explicitly retires ownership. */
         val completed = AtomicBoolean(false)
         val foregroundNetworkEntered = AtomicBoolean(false)
+        /** Monotonic admission time; zero means this Flight has never owned foreground network. */
+        val foregroundNetworkEnteredAtMs = AtomicLong(0L)
+        val foregroundNetworkLeaveStarted = AtomicBoolean(false)
+        val foregroundNetworkLeaveCompleted = CompletableFuture<Unit>()
+        val validatedAdjacentPhase = AtomicReference(
+            NtkValidatedAdjacentFlightPhase.GATE_WAIT,
+        )
+        /** Set only after a route-failed worker has left network but retained the path slot. */
+        val routeRecoverySlotHeldAtMs = AtomicLong(0L)
         /**
          * Linearizes the last possible adjacent foreground-network enter with viewer retirement.
          * Retirement claims this flag under the same Flight monitor used by body-gate release,
@@ -148,13 +298,20 @@ object NtkStrictEpisodeDiscoveryCoordinator {
          */
         val networkOwnershipRetiring = AtomicBoolean(false)
         /**
-         * The host-emulator direct-Wi-Fi resume path may overlap only the target document and its
-         * trusted challenge after every required predecessor image body has reached verified EOF.
-         * API, image bodies, source promotion and decode remain closed by
-         * [adjacentPredecessorComplete]. Every other adjacent profile opens both events together.
+         * Control admission may overlap only the target document and its trusted challenge. The
+         * scoped direct-Wi-Fi manhwa path can open at flight admission for its document and bounded
+         * format HEAD probes; API, image bodies, source promotion and decode remain closed by
+         * [adjacentPredecessorComplete]. The host-emulator webtoon path opens this event only after
+         * every predecessor body is resident. Every other adjacent profile opens both events
+         * together at full predecessor completion.
          */
         val adjacentControlReady = CompletableFuture<Unit>().also { release ->
-            if (!adjacentPredecessorGate) {
+            if (!adjacentPredecessorGate ||
+                NtkAdjacentMetadataControlPolicy.mayOpenAtFlightAdmission(
+                    directWifiAdjacentBodyGate,
+                    episodePath,
+                )
+            ) {
                 release.complete(Unit)
             }
         }
@@ -165,6 +322,16 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 release.complete(Unit)
             }
         }
+        /**
+         * Surface-proven physical demand for this exact predecessor/target pair. This does not
+         * open network/body admission; it only stops optional control allocation from waiting for
+         * motion-idle after the user is already clamped at the completed predecessor's end.
+         */
+        val adjacentPhysicalBoundaryDemand = CompletableFuture<Unit>()
+        /** Monotonic full body-gate release time; control-only release deliberately leaves zero. */
+        val adjacentPredecessorReadyAtMs = AtomicLong(
+            if (adjacentPredecessorGate) 0L else startedAtMs,
+        )
 
         init {
             check(
@@ -177,7 +344,16 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     private val flights = ConcurrentHashMap<String, Flight>()
     private val flightLifecycleLocks = ConcurrentHashMap<String, Any>()
+    /** Keeps same-path admission closed while a detached Flight balances its client gate. */
+    private val foregroundNetworkLeaveBarriers = ConcurrentHashMap<String, Flight>()
     private data class AdjacentGateKey(
+        val predecessorPath: String,
+        val targetPath: String,
+    )
+
+    private data class ValidatedAdjacentRetirementKey(
+        val viewerGeneration: Long,
+        val viewerOwnerPath: String,
         val predecessorPath: String,
         val targetPath: String,
     )
@@ -185,6 +361,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
     private val bodyResidentAdjacentTargets = ConcurrentHashMap<AdjacentGateKey, Long>()
     private val completedAdjacentTargets = ConcurrentHashMap<AdjacentGateKey, Long>()
     private val completedAdjacentPredecessors = ConcurrentHashMap<String, Long>()
+    private val physicalBoundaryAdjacentTargets = ConcurrentHashMap<AdjacentGateKey, Long>()
+    private val physicalBoundaryAdjacentPredecessors = ConcurrentHashMap<String, Long>()
+    /** Last successful exact retirement epoch; discovery generation is intentionally not a key. */
+    private val validatedAdjacentRetirementEpochs =
+        ConcurrentHashMap<ValidatedAdjacentRetirementKey, Long>()
 
     private fun adjacentGateKey(predecessorPath: String, targetPath: String): AdjacentGateKey =
         AdjacentGateKey(predecessorPath, targetPath)
@@ -222,6 +403,113 @@ object NtkStrictEpisodeDiscoveryCoordinator {
     }
 
     /**
+     * Activity-owned current discovery. Unlike the compatibility/pre-click entry point, this
+     * carries the already-claimed viewer identity into the path-lock admission boundary.
+     */
+    @JvmStatic
+    fun startOwnedColdRolling(
+        client: CustomHttpClient?,
+        manga: Manga?,
+        initialPageIndexHint: Int,
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String?,
+    ): Boolean = startInternal(
+        client,
+        manga,
+        rollingAdmission = true,
+        initialPageIndexHint = initialPageIndexHint,
+        completedRouteRecoveryAttempts = 0,
+        viewerOwnerEpisodePath = expectedOwnerEpisodePath,
+        adjacentPredecessorEpisodePath = null,
+        expectedCurrentViewerGeneration = expectedViewerGeneration,
+        expectedCurrentOwnerEpisodePath = expectedOwnerEpisodePath,
+    )
+
+    /**
+     * Restarts only the exact current viewer after a validated-network edge. Unlike the ordinary
+     * entry point, this carries the Activity's immutable viewer generation into the path lock so
+     * a stale same-path Activity cannot start work for a replacement reader.
+     */
+    enum class CurrentValidatedRedriveResult {
+        STARTED,
+        ACTIVE,
+        AUTHORITY_READY,
+        SOURCE_SETTLING,
+        STALE_OWNER,
+        ATTEMPT_FAILED,
+    }
+
+    @JvmStatic
+    fun startCurrentColdRollingAfterValidated(
+        client: CustomHttpClient?,
+        manga: Manga?,
+        initialPageIndexHint: Int,
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String?,
+    ): CurrentValidatedRedriveResult {
+        val path = normalizedPath(manga?.ntkEpisodePath)
+            ?: return CurrentValidatedRedriveResult.STALE_OWNER
+        val ownerPath = normalizedPath(expectedOwnerEpisodePath)
+        if (client == null || manga == null || expectedViewerGeneration <= 0L ||
+            ownerPath != path ||
+            !ViewerTelemetry.isActiveViewer(expectedViewerGeneration, ownerPath)
+        ) return CurrentValidatedRedriveResult.STALE_OWNER
+        if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null) {
+            return CurrentValidatedRedriveResult.AUTHORITY_READY
+        }
+        if (currentValidatedFlightObservation(
+                path,
+                expectedViewerGeneration,
+                ownerPath,
+            ) != null
+        ) return CurrentValidatedRedriveResult.ACTIVE
+        retireCompletedTerminalCurrentFlightForValidatedReplacement(
+            path,
+            expectedViewerGeneration,
+            ownerPath,
+        )
+        val freshAdmissionAttempted = AtomicBoolean(false)
+        val existingProgressObserved = AtomicBoolean(false)
+        val started = startInternal(
+            client,
+            manga,
+            rollingAdmission = true,
+            initialPageIndexHint = initialPageIndexHint,
+            completedRouteRecoveryAttempts = 0,
+            viewerOwnerEpisodePath = expectedOwnerEpisodePath,
+            adjacentPredecessorEpisodePath = null,
+            expectedCurrentViewerGeneration = expectedViewerGeneration,
+            expectedCurrentOwnerEpisodePath = expectedOwnerEpisodePath,
+            requireFreshValidatedGeneration = true,
+            validatedRedriveAdmissionAttempted = freshAdmissionAttempted,
+            validatedRedriveProgressObserved = existingProgressObserved,
+        )
+        if (started) return CurrentValidatedRedriveResult.STARTED
+        if (!ViewerTelemetry.isActiveViewer(expectedViewerGeneration, ownerPath)
+        ) return CurrentValidatedRedriveResult.STALE_OWNER
+        if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null) {
+            return CurrentValidatedRedriveResult.AUTHORITY_READY
+        }
+        if (currentValidatedFlightObservation(
+                path,
+                expectedViewerGeneration,
+                ownerPath,
+            ) != null
+        ) return CurrentValidatedRedriveResult.ACTIVE
+        if (freshAdmissionAttempted.get()) {
+            return CurrentValidatedRedriveResult.ATTEMPT_FAILED
+        }
+        if (existingProgressObserved.get()) {
+            return CurrentValidatedRedriveResult.SOURCE_SETTLING
+        }
+        return if (NtkSourceSpoolRegistry.hasCurrentDiscoveryEntry(path)) {
+            CurrentValidatedRedriveResult.SOURCE_SETTLING
+        } else {
+            CurrentValidatedRedriveResult.ATTEMPT_FAILED
+        }
+    }
+
+    /**
      * Starts the one exact manifest flight for the immediate continuous-reader neighbor while the
      * original click-owned viewer remains active. The target must stay inside the same work path;
      * this does not authorize arbitrary background/pre-click discovery.
@@ -232,6 +520,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         manga: Manga?,
         viewerOwnerEpisodePath: String?,
         adjacentPredecessorEpisodePath: String? = viewerOwnerEpisodePath,
+        expectedViewerGeneration: Long,
     ): Boolean {
         return startInternal(
             client,
@@ -241,6 +530,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             completedRouteRecoveryAttempts = 0,
             viewerOwnerEpisodePath = viewerOwnerEpisodePath,
             adjacentPredecessorEpisodePath = adjacentPredecessorEpisodePath,
+            expectedCurrentViewerGeneration = expectedViewerGeneration,
+            expectedCurrentOwnerEpisodePath = viewerOwnerEpisodePath,
         )
     }
 
@@ -253,10 +544,23 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         viewerOwnerEpisodePath: String?,
         adjacentPredecessorEpisodePath: String?,
         sameOriginFallbackConsumed: Boolean = false,
+        expectedCurrentViewerGeneration: Long? = null,
+        expectedCurrentOwnerEpisodePath: String? = null,
+        requireFreshValidatedGeneration: Boolean = false,
+        validatedRedriveAdmissionAttempted: AtomicBoolean? = null,
+        validatedRedriveProgressObserved: AtomicBoolean? = null,
     ): Boolean {
         if (client == null || manga == null) return false
         val path = normalizedPath(manga.ntkEpisodePath) ?: return false
         val ownerPath = normalizedPath(viewerOwnerEpisodePath) ?: path
+        val expectedOwnerPath = normalizedPath(expectedCurrentOwnerEpisodePath)
+        if (expectedCurrentViewerGeneration != null &&
+            (expectedCurrentViewerGeneration <= 0L || expectedOwnerPath == null ||
+                ownerPath != expectedOwnerPath)
+        ) return false
+        if (requireFreshValidatedGeneration &&
+            (expectedCurrentViewerGeneration == null || ownerPath != path)
+        ) return false
         val adjacentOwned = ownerPath != path &&
             ntkAdjacentOwnerAllowsTarget(ownerPath, path)
         val predecessorPath = normalizedPath(adjacentPredecessorEpisodePath) ?: ownerPath
@@ -288,15 +592,29 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val directWifiAdjacentBodyGate = adjacentAdmission.directWifiPhysicalRunway
         val directWifiCurrentViewer = !adjacentOwned &&
             transportState.first && !transportState.second
-        if (!ViewerTelemetry.hasActiveSession() ||
-            !ViewerTelemetry.isActiveEpisode(ownerPath) ||
+        val viewerGeneration = expectedCurrentViewerGeneration
+            ?: ViewerTelemetry.activeGeneration()
+        if (!ViewerTelemetry.isActiveViewer(viewerGeneration, ownerPath) ||
             (ownerPath != path && !adjacentOwned)
         ) {
             Log.d("ViewerPerf", "ntk_strict_exact_discovery_preclick_suppressed path=$path")
             return false
         }
-        val viewerGeneration = ViewerTelemetry.activeGeneration()
-        if (viewerGeneration <= 0L) return false
+        if (expectedCurrentViewerGeneration != null &&
+            (viewerGeneration != expectedCurrentViewerGeneration ||
+                !ViewerTelemetry.isActiveViewer(
+                    expectedCurrentViewerGeneration,
+                    expectedOwnerPath,
+                ))
+        ) return false
+        if (adjacentOwned) {
+            retireCompletedUnusableAdjacentFlightForReplacement(
+                path,
+                predecessorPath,
+                viewerGeneration,
+                ownerPath,
+            )
+        }
         val adjacentAdmissionLock = flightLifecycleLock("adjacent-gate:$predecessorPath")
         val flight = synchronized(adjacentAdmissionLock) {
             if (adjacentOwned) {
@@ -318,20 +636,53 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 }
             }
             synchronized(flightLifecycleLock(path)) {
-                if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null ||
-                    flights[path] != null
+                // Every admission, including the first adjacent target, is fenced again at the
+                // exact point where its lease/Flight becomes visible. A viewer replacement can
+                // occur after the earlier transport snapshot and before this path lock.
+                if (!ViewerTelemetry.isActiveViewer(viewerGeneration, ownerPath)) return false
+                if (expectedCurrentViewerGeneration != null &&
+                    (!ViewerTelemetry.isActiveViewer(
+                        expectedCurrentViewerGeneration,
+                        expectedOwnerPath,
+                    ) ||
+                        ownerPath != expectedOwnerPath)
                 ) return false
+                if (NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null ||
+                    flights[path] != null || foregroundNetworkLeaveBarriers[path] != null
+                ) {
+                    validatedRedriveProgressObserved?.set(true)
+                    return false
+                }
+                if (requireFreshValidatedGeneration &&
+                    NtkSourceSpoolRegistry.prepareCurrentSlotForValidatedReplacement(path) ==
+                    NtkSourceSpoolRegistry.ValidatedReplacementSlot.LIVE_PROGRESS
+                ) {
+                    validatedRedriveProgressObserved?.set(true)
+                    return false
+                }
                 val lease = if (rollingAdmission) {
-                    NtkSourceSpoolRegistry.beginColdRollingDiscovery(
-                        client.context,
-                        manga,
-                        effectiveInitialPageIndexHint,
-                        viewerGeneration,
-                    )
+                    if (requireFreshValidatedGeneration) {
+                        NtkSourceSpoolRegistry.beginFreshColdRollingDiscoveryAfterValidated(
+                            client.context,
+                            manga,
+                            effectiveInitialPageIndexHint,
+                            checkNotNull(expectedCurrentViewerGeneration),
+                        )
+                    } else {
+                        NtkSourceSpoolRegistry.beginColdRollingDiscovery(
+                            client.context,
+                            manga,
+                            effectiveInitialPageIndexHint,
+                            viewerGeneration,
+                        )
+                    }
                 } else {
                     NtkSourceSpoolRegistry.beginDiscovery(client.context, manga)
-                } ?: return false
-                Flight(
+                } ?: run {
+                    validatedRedriveProgressObserved?.set(true)
+                    return false
+                }
+                val admitted = Flight(
                     client,
                     lease,
                     SystemClock.elapsedRealtime(),
@@ -347,9 +698,37 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     completedRouteRecoveryAttempts,
                     sameOriginFallbackConsumed,
                     routeSnapshot,
-                ).also {
-                    flights[path] = it
+                )
+                flights[path] = admitted
+                if (adjacentOwned && (
+                        physicalBoundaryAdjacentTargets[
+                            adjacentGateKey(predecessorPath, path)
+                        ] == viewerGeneration ||
+                            physicalBoundaryAdjacentPredecessors[predecessorPath] ==
+                            viewerGeneration
+                    )
+                ) {
+                    admitted.adjacentPhysicalBoundaryDemand.complete(Unit)
                 }
+                if (!ViewerTelemetry.isActiveViewer(viewerGeneration, ownerPath)) {
+                    // Linearize against viewerOpen(): if replacement began before insertion this
+                    // post-publish check retires us; if it begins afterwards its ownership scan
+                    // observes this visible Flight and retires the same identity.
+                    claimNetworkOwnershipRetirement(admitted)
+                    admitted.retirement.retire(path, viewerGeneration)
+                    NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                        admitted.lease,
+                        "strict_exact_stale_post_admission",
+                    )
+                    check(!admitted.foregroundNetworkEntered.get())
+                    check(detachFlightForForegroundLeaveLocked(admitted))
+                    // No foreground enter is possible before worker/bootstrap admission, so this
+                    // only compare-removes the short common barrier under the reentrant path lock.
+                    completeDetachedFlightForegroundLeave(admitted)
+                    return false
+                }
+                validatedRedriveAdmissionAttempted?.set(true)
+                admitted
             }
         }
 
@@ -415,13 +794,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             }
             route
         } catch (failure: Throwable) {
-            synchronized(flightLifecycleLock(path)) {
+            val detached = synchronized(flightLifecycleLock(path)) {
                 claimNetworkOwnershipRetirement(flight)
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                     flight.lease,
                     "strict_exact_ack_start_${failure.javaClass.simpleName}"
                 )
-                flights.remove(path, flight)
+                detachFlightForForegroundLeaveLocked(flight)
             }
             Log.e(
                 "ViewerPerf",
@@ -429,16 +808,29 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     "generation=${flight.lease.generation.value}",
                 failure
             )
-            client.leaveNtkStrictForegroundNetwork(path, viewerGeneration)
+            if (detached) {
+                completeDetachedFlightForegroundLeave(flight)
+            } else {
+                leaveForegroundNetworkIfEntered(flight)
+            }
             return false
         }
         try {
             val worker = Thread(
-                { runFlight(client, manga, path, flight, ackRoute) },
+                {
+                    // Exact discovery owns network/control progress, not a display deadline.
+                    // Running this CPU-heavy coordinator at Java priority NORM+1 translated to
+                    // nice -2 on Android and let one discovery consume a complete guest core
+                    // while the Surface producer was servicing physical scroll. Keep every
+                    // request, permit and completion unchanged, but make the coordinator yield
+                    // to input/render owners just like its body-transfer workers.
+                    NtkStrictDiscoveryThreadPolicy.enterWorker()
+                    runFlight(client, manga, path, flight, ackRoute)
+                },
                 "ntk-strict-exact-discovery"
             ).apply {
                 isDaemon = true
-                priority = (Thread.NORM_PRIORITY + 1).coerceAtMost(Thread.MAX_PRIORITY)
+                priority = NtkStrictDiscoveryThreadPolicy.JAVA_PRIORITY
             }
             if (!flight.retirement.attachWorker(worker)) {
                 throw InterruptedIOException("Viewer ownership retired while worker was starting")
@@ -447,13 +839,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         } catch (failure: Throwable) {
             ackRoute.cancel()
             flight.physicalCalls.cancelAll()
-            synchronized(flightLifecycleLock(path)) {
+            val detached = synchronized(flightLifecycleLock(path)) {
                 claimNetworkOwnershipRetirement(flight)
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                     flight.lease,
                     "strict_exact_worker_start_${failure.javaClass.simpleName}"
                 )
-                flights.remove(path, flight)
+                detachFlightForForegroundLeaveLocked(flight)
             }
             Log.e(
                 "ViewerPerf",
@@ -461,7 +853,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     "generation=${flight.lease.generation.value}",
                 failure
             )
-            client.leaveNtkStrictForegroundNetwork(path, viewerGeneration)
+            if (detached) {
+                completeDetachedFlightForegroundLeave(flight)
+            } else {
+                leaveForegroundNetworkIfEntered(flight)
+            }
             return false
         }
         return true
@@ -472,6 +868,490 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         normalizedPath(path)?.let { key ->
             flights[key]?.let { !it.completed.get() && !it.retirement.isRetired() } == true
         } == true
+
+    /**
+     * Returns the generation-owned route decision captured before discovery admission. The shared
+     * HTTP client may change modes while the exact adjacent body is decoding, so UI publication
+     * must never reconstruct this decision from that later mutable state.
+     */
+    @JvmStatic
+    fun isDirectWifiAdjacentRouteProfile(
+        path: String?,
+        discoveryGeneration: Long = 0L,
+    ): Boolean {
+        val key = normalizedPath(path) ?: return false
+        val flight = flights[key] ?: return false
+        return !flight.retirement.isRetired() &&
+            (discoveryGeneration <= 0L || flight.lease.generation.value == discoveryGeneration) &&
+            flight.viewerOwnerEpisodePath != key &&
+            ntkAdjacentOwnerAllowsTarget(flight.viewerOwnerEpisodePath, key) &&
+            flight.routeSnapshot.directWifiTransport &&
+            !flight.routeSnapshot.cellularResilientTransport
+    }
+
+    /** Excludes HOME/background duration from every active adjacent physical eligibility clock. */
+    @JvmStatic
+    fun shiftActiveAdjacentPhysicalEligibilityAfterPause(
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String?,
+        pausedAtMs: Long,
+        resumedAtMs: Long,
+    ): Int {
+        val owner = normalizedPath(expectedOwnerEpisodePath) ?: return 0
+        if (expectedViewerGeneration <= 0L || pausedAtMs <= 0L ||
+            resumedAtMs < pausedAtMs ||
+            !ViewerTelemetry.isActiveViewer(expectedViewerGeneration, owner)
+        ) return 0
+        val ownedAdjacentPaths = flights.values
+            .filter { flight ->
+                flight.viewerGeneration == expectedViewerGeneration &&
+                    flight.viewerOwnerEpisodePath == owner &&
+                    flight.episodePath != owner && flight.adjacentPredecessorGate
+            }
+            .map(Flight::episodePath)
+            .distinct()
+        var shiftedFlights = 0
+        ownedAdjacentPaths.forEach { path ->
+            val shifted = synchronized(flightLifecycleLock(path)) {
+                val flight = flights[path] ?: return@synchronized false
+                if (flight.viewerGeneration != expectedViewerGeneration ||
+                    flight.viewerOwnerEpisodePath != owner ||
+                    flight.episodePath == owner || !flight.adjacentPredecessorGate ||
+                    flight.completed.get() || flight.retirement.isRetired() ||
+                    !ViewerTelemetry.isActiveViewer(expectedViewerGeneration, owner)
+                ) return@synchronized false
+                synchronized(flight) {
+                    var changed = false
+                    changed = shiftAdjacentPhysicalTimestampAfterPause(
+                        flight.foregroundNetworkEnteredAtMs,
+                        pausedAtMs,
+                        resumedAtMs,
+                    ) || changed
+                    changed = shiftAdjacentPhysicalTimestampAfterPause(
+                        flight.adjacentPredecessorReadyAtMs,
+                        pausedAtMs,
+                        resumedAtMs,
+                    ) || changed
+                    changed = shiftAdjacentPhysicalTimestampAfterPause(
+                        flight.routeRecoverySlotHeldAtMs,
+                        pausedAtMs,
+                        resumedAtMs,
+                    ) || changed
+                    changed
+                }
+            }
+            if (shifted) shiftedFlights++
+        }
+        return shiftedFlights
+    }
+
+    private fun shiftAdjacentPhysicalTimestampAfterPause(
+        timestamp: AtomicLong,
+        pausedAtMs: Long,
+        resumedAtMs: Long,
+    ): Boolean {
+        while (true) {
+            val current = timestamp.get()
+            val shifted = NtkPauseAdjustedTimestampPolicy.shift(
+                current,
+                pausedAtMs,
+                resumedAtMs,
+            )
+            if (shifted == current) return false
+            if (timestamp.compareAndSet(current, shifted)) return true
+        }
+    }
+
+    data class CurrentValidatedFlightObservation(
+        val discoveryGeneration: Long,
+        val startedAtMs: Long,
+    )
+
+    @JvmStatic
+    fun currentValidatedFlightObservation(
+        path: String?,
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String?,
+    ): CurrentValidatedFlightObservation? {
+        val key = normalizedPath(path) ?: return null
+        val ownerPath = normalizedPath(expectedOwnerEpisodePath) ?: return null
+        if (key != ownerPath || expectedViewerGeneration <= 0L) return null
+        val flight = flights[key] ?: return null
+        if (flight.viewerGeneration != expectedViewerGeneration ||
+            flight.viewerOwnerEpisodePath != ownerPath ||
+            flight.completed.get() || flight.retirement.isRetired() ||
+            !ViewerTelemetry.isActiveViewer(expectedViewerGeneration, ownerPath)
+        ) return null
+        return CurrentValidatedFlightObservation(
+            flight.lease.generation.value,
+            flight.startedAtMs,
+        )
+    }
+
+    /** Replaces only the exact current flight which outlived one validated recovery deadline. */
+    @JvmStatic
+    fun retireCurrentFlightForValidatedReplacement(
+        path: String?,
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String?,
+        expectedDiscoveryGeneration: Long,
+    ): Boolean {
+        val key = normalizedPath(path) ?: return false
+        val ownerPath = normalizedPath(expectedOwnerEpisodePath) ?: return false
+        if (key != ownerPath || expectedViewerGeneration <= 0L ||
+            expectedDiscoveryGeneration <= 0L
+        ) return false
+        val retired = synchronized(flightLifecycleLock(key)) {
+            val flight = flights[key] ?: return@synchronized null
+            if (flight.viewerGeneration != expectedViewerGeneration ||
+                flight.viewerOwnerEpisodePath != ownerPath ||
+                flight.lease.generation.value != expectedDiscoveryGeneration ||
+                flight.completed.get() || flight.retirement.isRetired() ||
+                NtkSourceSpoolRegistry.currentAuthoritativeManifest(key) != null ||
+                !ViewerTelemetry.isActiveViewer(expectedViewerGeneration, ownerPath)
+            ) return@synchronized null
+            claimNetworkOwnershipRetirement(flight)
+            if (!flight.retirement.retire(key, expectedViewerGeneration)) return@synchronized null
+            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                flight.lease,
+                "validated_network_flight_deadline",
+            )
+            if (!detachFlightForForegroundLeaveLocked(flight)) return@synchronized null
+            flight
+        } ?: return false
+        completeDetachedFlightForegroundLeave(retired)
+        Log.w(
+            "ViewerPerf",
+            "ntk_strict_validated_flight_replaced path=$key," +
+                "viewerGeneration=$expectedViewerGeneration," +
+                "discoveryGeneration=$expectedDiscoveryGeneration",
+        )
+        return true
+    }
+
+    data class AdjacentValidatedFlightObservation(
+        val targetEpisodePath: String,
+        val predecessorEpisodePath: String,
+        val viewerGeneration: Long,
+        val viewerOwnerEpisodePath: String,
+        val validatedEpoch: Long,
+        val discoveryGeneration: Long,
+        val startedAtMs: Long,
+        val phase: NtkValidatedAdjacentFlightPhase,
+        val physicalPhaseEnteredAtMs: Long,
+        val predecessorReadyAtMs: Long,
+        val eligibleSinceMs: Long,
+        val observedAtMs: Long,
+    )
+
+    /**
+     * Observes only an exact adjacent Flight which has crossed every normal reading-order gate.
+     * Control/predecessor waiters are intentionally invisible even if a control-only profile has
+     * entered foreground network. A route-recovery reservation is visible only in its explicit
+     * post-network slot-held phase.
+     */
+    @JvmStatic
+    fun adjacentValidatedFlightObservation(
+        targetPath: String?,
+        predecessorPath: String?,
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String?,
+        validatedEpoch: Long,
+    ): AdjacentValidatedFlightObservation? {
+        val target = normalizedPath(targetPath) ?: return null
+        val predecessor = normalizedPath(predecessorPath) ?: return null
+        val owner = normalizedPath(expectedOwnerEpisodePath) ?: return null
+        if (expectedViewerGeneration <= 0L || validatedEpoch <= 0L ||
+            !ntkAdjacentOwnerAllowsTarget(owner, target) ||
+            !ntkAdjacentOwnerAllowsTarget(predecessor, target)
+        ) return null
+        val retirementKey = ValidatedAdjacentRetirementKey(
+            expectedViewerGeneration,
+            owner,
+            predecessor,
+            target,
+        )
+        return synchronized(flightLifecycleLock(target)) {
+            val flight = flights[target] ?: return@synchronized null
+            val lastRetiredEpoch = validatedAdjacentRetirementEpochs[retirementKey] ?: 0L
+            val candidate = synchronized(flight) {
+                validatedAdjacentRetirementCandidate(
+                    flight,
+                    target,
+                    predecessor,
+                    expectedViewerGeneration,
+                    owner,
+                    validatedEpoch,
+                    lastRetiredEpoch,
+                )
+            }
+            val eligibleSinceMs =
+                NtkValidatedAdjacentFlightRetirementPolicy.eligibleSinceMs(candidate)
+                    ?: return@synchronized null
+            val phaseEnteredAtMs = when (candidate.phase) {
+                NtkValidatedAdjacentFlightPhase.GATE_RELEASED ->
+                    candidate.predecessorReadyAtMs
+                NtkValidatedAdjacentFlightPhase.NETWORK_ENTERED ->
+                    candidate.foregroundNetworkEnteredAtMs
+                NtkValidatedAdjacentFlightPhase.ROUTE_RECOVERY_SLOT_HELD ->
+                    candidate.routeRecoverySlotHeldAtMs
+                NtkValidatedAdjacentFlightPhase.GATE_WAIT -> return@synchronized null
+            }
+            AdjacentValidatedFlightObservation(
+                target,
+                predecessor,
+                expectedViewerGeneration,
+                owner,
+                validatedEpoch,
+                candidate.discoveryGeneration,
+                candidate.startedAtMs,
+                candidate.phase,
+                phaseEnteredAtMs,
+                candidate.predecessorReadyAtMs,
+                eligibleSinceMs,
+                SystemClock.elapsedRealtime(),
+            )
+        }
+    }
+
+    /**
+     * Retires the still-current exact observation once for its validated epoch. The epoch ledger
+     * deliberately omits discovery generation, so a replacement cannot also be retired by a late
+     * callback from the same network edge.
+     */
+    @JvmStatic
+    fun retireObservedAdjacentFlightForValidatedReplacement(
+        observation: AdjacentValidatedFlightObservation,
+    ): Boolean {
+        val target = normalizedPath(observation.targetEpisodePath) ?: return false
+        val predecessor = normalizedPath(observation.predecessorEpisodePath) ?: return false
+        val owner = normalizedPath(observation.viewerOwnerEpisodePath) ?: return false
+        if (target != observation.targetEpisodePath ||
+            predecessor != observation.predecessorEpisodePath ||
+            owner != observation.viewerOwnerEpisodePath ||
+            observation.viewerGeneration <= 0L || observation.validatedEpoch <= 0L ||
+            observation.discoveryGeneration <= 0L || observation.startedAtMs < 0L ||
+            !ntkAdjacentOwnerAllowsTarget(owner, target) ||
+            !ntkAdjacentOwnerAllowsTarget(predecessor, target)
+        ) return false
+        val retirementKey = ValidatedAdjacentRetirementKey(
+            observation.viewerGeneration,
+            owner,
+            predecessor,
+            target,
+        )
+        val retired = synchronized(flightLifecycleLock(target)) {
+            val flight = flights[target] ?: return@synchronized null
+            if (flight.lease.generation.value != observation.discoveryGeneration ||
+                flight.startedAtMs != observation.startedAtMs
+            ) return@synchronized null
+            val lastRetiredEpoch = validatedAdjacentRetirementEpochs[retirementKey] ?: 0L
+            val claimed = synchronized(flight) {
+                val candidate = validatedAdjacentRetirementCandidate(
+                    flight,
+                    target,
+                    predecessor,
+                    observation.viewerGeneration,
+                    owner,
+                    observation.validatedEpoch,
+                    lastRetiredEpoch,
+                )
+                val currentEligibleSinceMs =
+                    NtkValidatedAdjacentFlightRetirementPolicy.eligibleSinceMs(candidate)
+                val currentPhysicalPhaseEnteredAtMs = when (candidate.phase) {
+                    NtkValidatedAdjacentFlightPhase.GATE_RELEASED ->
+                        candidate.predecessorReadyAtMs
+                    NtkValidatedAdjacentFlightPhase.NETWORK_ENTERED ->
+                        candidate.foregroundNetworkEnteredAtMs
+                    NtkValidatedAdjacentFlightPhase.ROUTE_RECOVERY_SLOT_HELD ->
+                        candidate.routeRecoverySlotHeldAtMs
+                    NtkValidatedAdjacentFlightPhase.GATE_WAIT -> 0L
+                }
+                if (currentEligibleSinceMs == null ||
+                    candidate.phase != observation.phase ||
+                    currentPhysicalPhaseEnteredAtMs != observation.physicalPhaseEnteredAtMs ||
+                    candidate.predecessorReadyAtMs != observation.predecessorReadyAtMs ||
+                    currentEligibleSinceMs != observation.eligibleSinceMs
+                ) {
+                    false
+                } else {
+                    when (candidate.phase) {
+                        NtkValidatedAdjacentFlightPhase.NETWORK_ENTERED ->
+                            claimNetworkOwnershipRetirement(flight)
+                        NtkValidatedAdjacentFlightPhase.GATE_RELEASED ->
+                            claimNetworkOwnershipRetirement(flight)
+                        NtkValidatedAdjacentFlightPhase.ROUTE_RECOVERY_SLOT_HELD ->
+                            flight.networkOwnershipRetiring.get()
+                        NtkValidatedAdjacentFlightPhase.GATE_WAIT -> false
+                    }
+                }
+            }
+            if (!claimed ||
+                !flight.retirement.retire(target, observation.viewerGeneration)
+            ) return@synchronized null
+            validatedAdjacentRetirementEpochs[retirementKey] = observation.validatedEpoch
+            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                flight.lease,
+                "validated_network_adjacent_flight_deadline",
+            )
+            if (!detachFlightForForegroundLeaveLocked(flight)) return@synchronized null
+            flight
+        } ?: return false
+        completeDetachedFlightForegroundLeave(retired)
+        Log.w(
+            "ViewerPerf",
+            "ntk_strict_validated_adjacent_flight_replaced target=$target," +
+                "predecessor=$predecessor,viewerOwnerPath=$owner," +
+                "viewerGeneration=${observation.viewerGeneration}," +
+                "discoveryGeneration=${observation.discoveryGeneration}," +
+                "validatedEpoch=${observation.validatedEpoch},phase=${observation.phase}",
+        )
+        return true
+    }
+
+    private fun validatedAdjacentRetirementCandidate(
+        flight: Flight,
+        target: String,
+        predecessor: String,
+        expectedViewerGeneration: Long,
+        expectedOwner: String,
+        validatedEpoch: Long,
+        lastRetiredEpoch: Long,
+    ): NtkValidatedAdjacentFlightRetirementCandidate =
+        NtkValidatedAdjacentFlightRetirementCandidate(
+            exactAdjacentIdentity = flight.episodePath == target &&
+                flight.adjacentPredecessorEpisodePath == predecessor &&
+                flight.viewerGeneration == expectedViewerGeneration &&
+                flight.viewerOwnerEpisodePath == expectedOwner &&
+                flight.adjacentPredecessorGate,
+            discoveryGeneration = flight.lease.generation.value,
+            startedAtMs = flight.startedAtMs,
+            foregroundNetworkEntered = flight.foregroundNetworkEntered.get(),
+            foregroundNetworkEnteredAtMs = flight.foregroundNetworkEnteredAtMs.get(),
+            phase = flight.validatedAdjacentPhase.get(),
+            routeRecoverySlotHeldAtMs = flight.routeRecoverySlotHeldAtMs.get(),
+            controlReady = flight.adjacentControlReady.isDone,
+            predecessorReady = flight.adjacentPredecessorComplete.isDone,
+            predecessorReadyAtMs = flight.adjacentPredecessorReadyAtMs.get(),
+            completed = flight.completed.get(),
+            retired = flight.retirement.isRetired(),
+            networkOwnershipRetiring = flight.networkOwnershipRetiring.get(),
+            authorityReady =
+                NtkSourceSpoolRegistry.currentAuthoritativeManifest(target) != null,
+            activeViewer = ViewerTelemetry.isActiveViewer(
+                expectedViewerGeneration,
+                expectedOwner,
+            ),
+            validatedEpoch = validatedEpoch,
+            lastRetiredValidatedEpoch = lastRetiredEpoch,
+        )
+
+    /**
+     * A successful Flight remains the source-lifetime owner after its worker exits. If that exact
+     * source later becomes terminal-closing, the completed Flight must be detached before a
+     * validated-network admission can publish a replacement generation.
+     */
+    private fun retireCompletedTerminalCurrentFlightForValidatedReplacement(
+        path: String,
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String,
+    ): Boolean {
+        val retired = synchronized(flightLifecycleLock(path)) {
+            val flight = flights[path] ?: return@synchronized null
+            if (flight.viewerGeneration != expectedViewerGeneration ||
+                flight.viewerOwnerEpisodePath != expectedOwnerEpisodePath ||
+                !flight.completed.get() || flight.retirement.isRetired() ||
+                NtkSourceSpoolRegistry.currentAuthoritativeManifest(path) != null ||
+                !ViewerTelemetry.isActiveViewer(
+                    expectedViewerGeneration,
+                    expectedOwnerEpisodePath,
+                )
+            ) return@synchronized null
+            val snapshot = NtkSourceSpoolRegistry.currentSnapshot(path)
+            if (snapshot != null &&
+                (snapshot.generation != flight.lease.generation.value ||
+                    snapshot.state.ordinal < NtkSourceState.TERMINAL_CLOSING.ordinal)
+            ) return@synchronized null
+            claimNetworkOwnershipRetirement(flight)
+            if (!flight.retirement.retire(path, expectedViewerGeneration)) {
+                return@synchronized null
+            }
+            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                flight.lease,
+                "validated_network_completed_terminal",
+            )
+            if (!detachFlightForForegroundLeaveLocked(flight)) return@synchronized null
+            flight
+        } ?: return false
+        completeDetachedFlightForegroundLeave(retired)
+        Log.w(
+            "ViewerPerf",
+            "ntk_strict_validated_completed_terminal_replaced path=$path," +
+                "viewerGeneration=$expectedViewerGeneration," +
+                "discoveryGeneration=${retired.lease.generation.value}",
+        )
+        return true
+    }
+
+    /**
+     * Detaches a completed adjacent source owner only after its published registry generation has
+     * become unusable. A live completed manifest remains authoritative and ordinary gate waiters
+     * cannot satisfy the completed predicate.
+     */
+    private fun retireCompletedUnusableAdjacentFlightForReplacement(
+        targetPath: String,
+        predecessorPath: String,
+        expectedViewerGeneration: Long,
+        expectedOwnerEpisodePath: String,
+    ): Boolean {
+        if (expectedViewerGeneration <= 0L ||
+            !ntkAdjacentOwnerAllowsTarget(expectedOwnerEpisodePath, targetPath) ||
+            !ntkAdjacentOwnerAllowsTarget(predecessorPath, targetPath)
+        ) return false
+        val retired = synchronized(flightLifecycleLock(targetPath)) {
+            val flight = flights[targetPath] ?: return@synchronized null
+            if (flight.episodePath != targetPath ||
+                flight.adjacentPredecessorEpisodePath != predecessorPath ||
+                flight.viewerGeneration != expectedViewerGeneration ||
+                flight.viewerOwnerEpisodePath != expectedOwnerEpisodePath ||
+                !flight.adjacentPredecessorGate || !flight.completed.get() ||
+                flight.retirement.isRetired() ||
+                !ViewerTelemetry.isActiveViewer(
+                    expectedViewerGeneration,
+                    expectedOwnerEpisodePath,
+                )
+            ) return@synchronized null
+            val snapshot = NtkSourceSpoolRegistry.currentSnapshot(targetPath)
+            val registryUnusable = NtkCompletedAdjacentRegistryPolicy.isUnusable(
+                authorityReady =
+                    NtkSourceSpoolRegistry.currentAuthoritativeManifest(targetPath) != null,
+                snapshotPresent = snapshot != null,
+                snapshotMatchesDiscovery =
+                    snapshot?.generation == flight.lease.generation.value,
+                snapshotTerminalClosing = snapshot != null &&
+                    snapshot.state.ordinal >= NtkSourceState.TERMINAL_CLOSING.ordinal,
+            )
+            if (!registryUnusable || !claimNetworkOwnershipRetirement(flight) ||
+                !flight.retirement.retire(targetPath, expectedViewerGeneration)
+            ) return@synchronized null
+            NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
+                flight.lease,
+                "strict_completed_adjacent_registry_unusable",
+            )
+            if (!detachFlightForForegroundLeaveLocked(flight)) return@synchronized null
+            flight
+        } ?: return false
+        completeDetachedFlightForegroundLeave(retired)
+        Log.w(
+            "ViewerPerf",
+            "ntk_strict_completed_adjacent_registry_unusable_retired " +
+                "target=$targetPath,predecessor=$predecessorPath," +
+                "viewerOwnerPath=$expectedOwnerEpisodePath," +
+                "viewerGeneration=$expectedViewerGeneration," +
+                "discoveryGeneration=${retired.lease.generation.value}",
+        )
+        return true
+    }
 
     /**
      * Source-session construction can race ahead of the later resident-body claim callback. Carry
@@ -491,6 +1371,22 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             !flight.retirement.isRetired()
     }
 
+    /** Observation only: callers use this to park UI retry polling while the document-only owner
+     * waits on the independent predecessor-complete gate. */
+    internal fun isAdjacentControlGateOpen(
+        path: String?,
+        viewerGeneration: Long,
+    ): Boolean {
+        val key = normalizedPath(path) ?: return false
+        if (viewerGeneration <= 0L) return false
+        val flight = flights[key] ?: return false
+        return flight.viewerGeneration == viewerGeneration &&
+            flight.adjacentPredecessorGate &&
+            flight.adjacentControlReady.isDone &&
+            !flight.adjacentPredecessorComplete.isDone &&
+            !flight.retirement.isRetired()
+    }
+
     /**
      * Opens only the target document/challenge overlap for the one exact current-resume profile.
      * The caller has proved every required current image body reached EOF; it grants no target API,
@@ -500,6 +1396,8 @@ object NtkStrictEpisodeDiscoveryCoordinator {
     fun releaseAdjacentControlAfterPredecessorBodiesResident(
         predecessorPath: String?,
         targetPath: String?,
+        expectedViewerGeneration: Long,
+        expectedViewerOwnerPath: String?,
     ): Int {
         val key = normalizedPath(predecessorPath) ?: return 0
         val targetKey = normalizedPath(targetPath) ?: return 0
@@ -513,9 +1411,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 Build.PRODUCT,
             )
         ) return 0
-        val generation = ViewerTelemetry.activeGeneration()
-        if (generation <= 0L || !ViewerTelemetry.hasActiveSession()) return 0
+        val ownerPath = normalizedPath(expectedViewerOwnerPath) ?: return 0
+        val generation = expectedViewerGeneration
+        if (generation <= 0L || !ViewerTelemetry.isActiveViewer(generation, ownerPath)) return 0
         return synchronized(flightLifecycleLock("adjacent-gate:$key")) {
+            if (!ViewerTelemetry.isActiveViewer(generation, ownerPath)) return@synchronized 0
             val predecessorReconciled = completedAdjacentTargets.entries.any { entry ->
                 entry.value == generation && entry.key.predecessorPath == key
             }
@@ -546,22 +1446,25 @@ object NtkStrictEpisodeDiscoveryCoordinator {
      * normal ordering where completion wins just before the adjacent flight is created.
      */
     @JvmStatic
-    @JvmOverloads
     fun releaseAdjacentBodiesAfterPredecessorComplete(
         path: String?,
-        expectedTargetPath: String? = null,
+        expectedTargetPath: String?,
+        expectedViewerGeneration: Long,
+        expectedViewerOwnerPath: String?,
     ): Int {
         val key = normalizedPath(path) ?: return 0
         val expectedTarget = expectedTargetPath?.let(::normalizedPath)
         if (expectedTargetPath != null && expectedTarget == null) return 0
         if (expectedTarget != null && !ntkAdjacentOwnerAllowsTarget(key, expectedTarget)) return 0
-        val generation = ViewerTelemetry.activeGeneration()
+        val ownerPath = normalizedPath(expectedViewerOwnerPath) ?: return 0
+        val generation = expectedViewerGeneration
         // A continuously appended reader retains the launch episode as its telemetry owner, so an
         // appended predecessor is intentionally not ViewerTelemetry's active episode. The exact
         // path match plus the active generation keeps this release scoped to the foreground
         // Session while allowing B-complete to unlock B->C.
-        if (generation <= 0L || !ViewerTelemetry.hasActiveSession()) return 0
+        if (generation <= 0L || !ViewerTelemetry.isActiveViewer(generation, ownerPath)) return 0
         return synchronized(flightLifecycleLock("adjacent-gate:$key")) {
+            if (!ViewerTelemetry.isActiveViewer(generation, ownerPath)) return@synchronized 0
             if (expectedTarget != null) {
                 // Publish one authoritative pair, then remove every older pair for the same
                 // predecessor before any flight admission can observe the ledger. Exact image
@@ -629,10 +1532,65 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         }
     }
 
+    /**
+     * Publishes only real, clamped Surface demand. It cannot select a structural target, release a
+     * body gate, or create a discovery flight. The generation marker closes the ordering where the
+     * boundary arrives immediately before the exact target flight is admitted.
+     */
+    @JvmStatic
+    fun releaseAdjacentPhysicalBoundaryDemand(
+        path: String?,
+        expectedTargetPath: String?,
+        expectedViewerGeneration: Long,
+        expectedViewerOwnerPath: String?,
+    ): Int {
+        val key = normalizedPath(path) ?: return 0
+        val expectedTarget = expectedTargetPath?.let(::normalizedPath)
+        if (expectedTargetPath != null && expectedTarget == null) return 0
+        if (expectedTarget != null && !ntkAdjacentOwnerAllowsTarget(key, expectedTarget)) return 0
+        val ownerPath = normalizedPath(expectedViewerOwnerPath) ?: return 0
+        val generation = expectedViewerGeneration
+        if (generation <= 0L || !ViewerTelemetry.isActiveViewer(generation, ownerPath)) return 0
+        return synchronized(flightLifecycleLock("adjacent-gate:$key")) {
+            if (!ViewerTelemetry.isActiveViewer(generation, ownerPath)) return@synchronized 0
+            if (expectedTarget == null) {
+                physicalBoundaryAdjacentPredecessors[key] = generation
+            } else {
+                physicalBoundaryAdjacentTargets[adjacentGateKey(key, expectedTarget)] = generation
+                physicalBoundaryAdjacentTargets.entries.forEach { entry ->
+                    if (entry.value == generation &&
+                        entry.key.predecessorPath == key &&
+                        entry.key.targetPath != expectedTarget
+                    ) {
+                        physicalBoundaryAdjacentTargets.remove(entry.key, entry.value)
+                    }
+                }
+            }
+            var released = 0
+            flights.values.forEach { flight ->
+                if (flight.viewerGeneration == generation &&
+                    flight.adjacentPredecessorGate &&
+                    flight.adjacentPredecessorEpisodePath == key &&
+                    (expectedTarget == null || flight.episodePath == expectedTarget) &&
+                    flight.adjacentPhysicalBoundaryDemand.complete(Unit)
+                ) {
+                    released++
+                }
+            }
+            Log.d(
+                "ViewerPerf",
+                "ntk_adjacent_physical_boundary_demand predecessor=$key," +
+                    "target=${expectedTarget.orEmpty()},generation=$generation,released=$released",
+            )
+            released
+        }
+    }
+
     private fun enterForegroundNetworkIfNeeded(flight: Flight) {
         val entered = synchronized(flight) {
             if (flight.foregroundNetworkEntered.get()) return
             if (flight.networkOwnershipRetiring.get() ||
+                flight.foregroundNetworkLeaveStarted.get() ||
                 flight.retirement.isRetired() ||
                 flights[flight.episodePath] !== flight ||
                 !isViewerOwnerActive(flight)
@@ -645,9 +1603,15 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     flight.episodePath,
                     flight.viewerGeneration,
                 )
+                flight.foregroundNetworkEnteredAtMs.set(SystemClock.elapsedRealtime())
+                flight.validatedAdjacentPhase.set(
+                    NtkValidatedAdjacentFlightPhase.NETWORK_ENTERED,
+                )
                 true
             } catch (failure: Throwable) {
-                flight.foregroundNetworkEntered.set(false)
+                // The client may have installed its path+generation owner before a later cutover
+                // callback failed. Preserve our logical enter claim so the common detach path
+                // performs the one balancing client leave instead of leaking that partial owner.
                 throw failure
             }
         }
@@ -659,13 +1623,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             // here creates a deterministic two-second lock inversion on short resume tails.
             flight.client.cancelNtkWebViewFallbacks()
         } catch (failure: Throwable) {
-            flight.client.leaveNtkStrictForegroundNetwork(
-                flight.episodePath,
-                flight.viewerGeneration,
-            )
-            synchronized(flight) {
-                flight.foregroundNetworkEntered.set(false)
-            }
+            leaveForegroundNetworkIfEntered(flight)
             throw failure
         }
         synchronized(flight) {
@@ -679,12 +1637,95 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         }
     }
 
+    /** Exactly-once balance for a Flight's path+viewer foreground admission. */
+    private fun leaveForegroundNetworkIfEntered(flight: Flight) {
+        val action = synchronized(flight) {
+            NtkForegroundNetworkLeavePolicy.action(
+                flight.foregroundNetworkEntered.get(),
+                flight.foregroundNetworkLeaveStarted.get(),
+                flight.foregroundNetworkLeaveCompleted.isDone,
+            ).also { selected ->
+                if (selected == NtkForegroundNetworkLeaveAction.LEAVE) {
+                    check(flight.foregroundNetworkEntered.compareAndSet(true, false))
+                    check(flight.foregroundNetworkLeaveStarted.compareAndSet(false, true))
+                    flight.validatedAdjacentPhase.compareAndSet(
+                        NtkValidatedAdjacentFlightPhase.NETWORK_ENTERED,
+                        NtkValidatedAdjacentFlightPhase.GATE_WAIT,
+                    )
+                }
+            }
+        }
+        when (action) {
+            NtkForegroundNetworkLeaveAction.LEAVE -> {
+                try {
+                    flight.client.leaveNtkStrictForegroundNetwork(
+                        flight.episodePath,
+                        flight.viewerGeneration,
+                    )
+                } finally {
+                    flight.foregroundNetworkLeaveCompleted.complete(Unit)
+                }
+            }
+            NtkForegroundNetworkLeaveAction.AWAIT_EXISTING_LEAVE ->
+                awaitForegroundNetworkLeaveUninterruptibly(flight)
+            NtkForegroundNetworkLeaveAction.NONE -> Unit
+        }
+    }
+
+    private fun awaitForegroundNetworkLeaveUninterruptibly(flight: Flight) {
+        var interrupted = false
+        while (true) {
+            try {
+                flight.foregroundNetworkLeaveCompleted.get()
+                break
+            } catch (_: InterruptedException) {
+                interrupted = true
+            } catch (wrapped: ExecutionException) {
+                throw (wrapped.cause ?: wrapped)
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt()
+    }
+
+    /** Must run under this Flight's path lock before its map identity becomes replaceable. */
+    private fun detachFlightForForegroundLeaveLocked(flight: Flight): Boolean {
+        val path = flight.episodePath
+        check(Thread.holdsLock(flightLifecycleLock(path))) {
+            "Strict Flight detach requires its path lifecycle lock"
+        }
+        if (flights[path] !== flight) return false
+        val existingBarrier = foregroundNetworkLeaveBarriers.putIfAbsent(path, flight)
+        check(existingBarrier == null || existingBarrier === flight) {
+            "Another strict Flight owns the foreground leave barrier"
+        }
+        if (flights.remove(path, flight)) return true
+        foregroundNetworkLeaveBarriers.remove(path, flight)
+        return false
+    }
+
+    /** Balances or joins the one client leave, then reopens same-path Flight admission. */
+    private fun completeDetachedFlightForegroundLeave(flight: Flight) {
+        try {
+            leaveForegroundNetworkIfEntered(flight)
+        } finally {
+            synchronized(flightLifecycleLock(flight.episodePath)) {
+                foregroundNetworkLeaveBarriers.remove(flight.episodePath, flight)
+            }
+        }
+    }
+
     private fun releaseAdjacentBodyGate(flight: Flight): AdjacentBodyGateRelease {
         return synchronized(flight) {
             if (flight.adjacentPredecessorComplete.isDone) {
+                publishAdjacentPredecessorReady(flight)
                 return@synchronized AdjacentBodyGateRelease.ALREADY_OPEN
             }
-            if (flight.networkOwnershipRetiring.get() ||
+            val routeRecoverySlotHeld =
+                flight.validatedAdjacentPhase.get() ==
+                    NtkValidatedAdjacentFlightPhase.ROUTE_RECOVERY_SLOT_HELD &&
+                    flight.networkOwnershipRetiring.get() &&
+                    !flight.foregroundNetworkEntered.get()
+            if ((flight.networkOwnershipRetiring.get() && !routeRecoverySlotHeld) ||
                 flight.retirement.isRetired() ||
                 flights[flight.episodePath] !== flight ||
                 !isViewerOwnerActive(flight)
@@ -694,8 +1735,10 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             try {
                 flight.adjacentControlReady.complete(Unit)
                 if (!flight.adjacentPredecessorComplete.complete(Unit)) {
+                    publishAdjacentPredecessorReady(flight)
                     return@synchronized AdjacentBodyGateRelease.ALREADY_OPEN
                 }
+                publishAdjacentPredecessorReady(flight)
                 ViewerTelemetry.adjacentWorkStarted(flight.adjacentPredecessorEpisodePath)
                 Log.d(
                     "ViewerPerf",
@@ -713,6 +1756,18 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 AdjacentBodyGateRelease.FAILED
             }
         }
+    }
+
+    /** Full reading-order release; a control-only event can never publish this phase. */
+    private fun publishAdjacentPredecessorReady(flight: Flight) {
+        flight.adjacentPredecessorReadyAtMs.compareAndSet(
+            0L,
+            SystemClock.elapsedRealtime(),
+        )
+        flight.validatedAdjacentPhase.compareAndSet(
+            NtkValidatedAdjacentFlightPhase.GATE_WAIT,
+            NtkValidatedAdjacentFlightPhase.GATE_RELEASED,
+        )
     }
 
     private fun releaseAdjacentControlGate(flight: Flight): AdjacentBodyGateRelease {
@@ -781,19 +1836,19 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 // network. Claim retirement here first: either release finishes before this claim
                 // and leave below balances its enter, or every stale release observes the claim and
                 // exits without entering after leave.
-                val retirementClaimed = claimNetworkOwnershipRetirement(owned)
-                if (!retirementClaimed ||
-                    !owned.retirement.retire(ownedPath, viewerGeneration)
-                ) return@synchronized null
+                claimNetworkOwnershipRetirement(owned)
+                if (!owned.retirement.retire(ownedPath, viewerGeneration)) {
+                    return@synchronized null
+                }
             // Detach the terminal lease before releasing this path's flight slot. Its asynchronous
             // close barrier is generation-routed through a tombstone and cannot mutate a replacement.
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                     owned.lease,
                     "strict_exact_owner_retired_${safeReason(reason)}"
                 )
-                // Removing by identity lets a newer same-path viewer create its own generation now;
-                // the retired worker's finally block cannot remove that newer entry.
-                flights.remove(ownedPath, owned)
+                if (!detachFlightForForegroundLeaveLocked(owned)) {
+                    return@synchronized null
+                }
                 owned
             } ?: continue
             Log.d(
@@ -803,12 +1858,22 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     "discoveryGeneration=${flight.lease.generation.value}," +
                     "reason=${safeReason(reason)}"
             )
-            flight.client.leaveNtkStrictForegroundNetwork(ownedPath, flight.viewerGeneration)
+            completeDetachedFlightForegroundLeave(flight)
             retiredAny = true
         }
         completedAdjacentPredecessors.entries.forEach { entry ->
             if (entry.value == viewerGeneration) {
                 completedAdjacentPredecessors.remove(entry.key, entry.value)
+            }
+        }
+        physicalBoundaryAdjacentPredecessors.entries.forEach { entry ->
+            if (entry.value == viewerGeneration) {
+                physicalBoundaryAdjacentPredecessors.remove(entry.key, entry.value)
+            }
+        }
+        physicalBoundaryAdjacentTargets.entries.forEach { entry ->
+            if (entry.value == viewerGeneration) {
+                physicalBoundaryAdjacentTargets.remove(entry.key, entry.value)
             }
         }
         bodyResidentAdjacentTargets.entries.forEach { entry ->
@@ -819,6 +1884,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         completedAdjacentTargets.entries.forEach { entry ->
             if (entry.value == viewerGeneration) {
                 completedAdjacentTargets.remove(entry.key, entry.value)
+            }
+        }
+        validatedAdjacentRetirementEpochs.entries.forEach { entry ->
+            if (entry.key.viewerGeneration == viewerGeneration &&
+                entry.key.viewerOwnerPath == key
+            ) {
+                validatedAdjacentRetirementEpochs.remove(entry.key, entry.value)
             }
         }
         return retiredAny
@@ -848,16 +1920,15 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             ) {
                 return@synchronized null
             }
-            if (!claimNetworkOwnershipRetirement(owned) ||
-                !owned.retirement.retire(key, viewerGeneration)
-            ) {
+            claimNetworkOwnershipRetirement(owned)
+            if (!owned.retirement.retire(key, viewerGeneration)) {
                 return@synchronized null
             }
             NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                 owned.lease,
                 "strict_exact_adjacent_recovery_${safeReason(reason)}",
             )
-            flights.remove(key, owned)
+            if (!detachFlightForForegroundLeaveLocked(owned)) return@synchronized null
             owned
         } ?: return false
         Log.d(
@@ -868,7 +1939,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 "discoveryGeneration=$discoveryGeneration," +
                 "reason=${safeReason(reason)}",
         )
-        flight.client.leaveNtkStrictForegroundNetwork(key, viewerGeneration)
+        completeDetachedFlightForegroundLeave(flight)
         return true
     }
 
@@ -898,16 +1969,15 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             ) {
                 return@synchronized null
             }
-            if (!claimNetworkOwnershipRetirement(owned) ||
-                !owned.retirement.retire(key, viewerGeneration)
-            ) {
+            claimNetworkOwnershipRetirement(owned)
+            if (!owned.retirement.retire(key, viewerGeneration)) {
                 return@synchronized null
             }
             NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                 owned.lease,
                 "strict_exact_adjacent_cancelled_${safeReason(reason)}",
             )
-            flights.remove(key, owned)
+            if (!detachFlightForForegroundLeaveLocked(owned)) return@synchronized null
             owned
         } ?: return false
         Log.d(
@@ -918,7 +1988,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 "discoveryGeneration=${flight.lease.generation.value}," +
                 "reason=${safeReason(reason)}",
         )
-        flight.client.leaveNtkStrictForegroundNetwork(key, viewerGeneration)
+        completeDetachedFlightForegroundLeave(flight)
         return true
     }
 
@@ -943,19 +2013,26 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             ) {
                 return@synchronized null
             }
-            if (!claimNetworkOwnershipRetirement(owned) ||
-                !owned.retirement.retire(key, viewerGeneration)
-            ) {
+            claimNetworkOwnershipRetirement(owned)
+            if (!owned.retirement.retire(key, viewerGeneration)) {
                 return@synchronized null
             }
             NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                 owned.lease,
                 "strict_exact_consumed_${safeReason(reason)}",
             )
-            flights.remove(key, owned)
+            if (!detachFlightForForegroundLeaveLocked(owned)) return@synchronized null
             owned
         } ?: return false
         completedAdjacentPredecessors.remove(key, viewerGeneration)
+        physicalBoundaryAdjacentPredecessors.remove(key, viewerGeneration)
+        physicalBoundaryAdjacentTargets.entries.forEach { entry ->
+            if (entry.value == viewerGeneration &&
+                (entry.key.predecessorPath == key || entry.key.targetPath == key)
+            ) {
+                physicalBoundaryAdjacentTargets.remove(entry.key, entry.value)
+            }
+        }
         bodyResidentAdjacentTargets.entries.forEach { entry ->
             if (entry.value == viewerGeneration &&
                 (entry.key.predecessorPath == key || entry.key.targetPath == key)
@@ -970,7 +2047,15 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 completedAdjacentTargets.remove(entry.key, entry.value)
             }
         }
-        flight.client.leaveNtkStrictForegroundNetwork(key, viewerGeneration)
+        validatedAdjacentRetirementEpochs.entries.forEach { entry ->
+            if (entry.key.viewerGeneration == viewerGeneration &&
+                entry.key.viewerOwnerPath == ownerKey &&
+                entry.key.targetPath == key
+            ) {
+                validatedAdjacentRetirementEpochs.remove(entry.key, entry.value)
+            }
+        }
+        completeDetachedFlightForegroundLeave(flight)
         Log.d(
             "ViewerPerf",
             "ntk_strict_exact_consumed_retired path=$key," +
@@ -1265,20 +2350,24 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                                             }
                                         }
 
-                                        override fun onBodyPrefix(bodyPrefix: ByteArray): Boolean {
+                                        override fun onBodyPrefix(
+                                            bodyPrefix: ByteArray,
+                                            bodyPrefixLength: Int,
+                                        ): Boolean {
                                             if (requestSeedFuture.isDone) return true
                                             val seed =
                                                 NtkViewerImageRequestSeedParser.parseIfPresent(
                                                     flight.lease,
                                                     path,
                                                     bodyPrefix,
+                                                    bodyPrefixLength,
                                                 ) ?: return false
                                             if (requestSeedFuture.complete(seed)) {
                                                 Log.d(
                                                     "ViewerPerf",
                                                     "ntk_strict_document_request_seed_ready path=$path," +
                                                         "generation=${flight.lease.generation.value}," +
-                                                        "bytes=${bodyPrefix.size}," +
+                                                    "bytes=$bodyPrefixLength," +
                                                         "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
                                                 )
                                             }
@@ -1395,12 +2484,23 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     ) { "Strict document cookie publication lost flight ownership" }
                 }
             }
-            clickOwnedAnchor?.let { anchor ->
-                NtkEpisodeDocumentPlanParser.completeNumericPageCountHint(
-                    flight.lease,
-                    path,
-                    documentResponse,
-                )?.let(anchor::releaseForCompleteDocumentPageCount)
+            if (flight.adjacentPredecessorGate && !directWebtoon) {
+                // The exact document GET and bounded format probes may overlap the predecessor,
+                // but parsing their complete RSC/JSON response creates the discovery flight's
+                // largest short-lived Java object graph. No adjacent image body may cross the
+                // predecessor gate anyway, so parsing earlier has no publication benefit. Wait
+                // until predecessor bodies are resident, then keep this allocation burst out of
+                // an actual drag/fling. Network ownership and the already-consumed response stay
+                // intact; lifecycle ownership is checked during every short motion wait.
+                awaitAdjacentPredecessorComplete(flight)
+                if (hostGpuEmulatorRuntime) {
+                    NtkReaderTransferPacer.awaitMotionIdleUntilRequired(
+                        requiredNow = flight.adjacentPhysicalBoundaryDemand::isDone,
+                        stillOwned = {
+                            requireDiscoveryOwnership(flight, "document_parse_motion_wait")
+                        },
+                    )
+                }
             }
             val draft = traceStage("NtkDocumentPlanParse") {
                 NtkEpisodeDocumentPlanParser.parse(
@@ -1408,6 +2508,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                     path,
                     documentResponse
                 )
+            }
+            clickOwnedAnchor?.let { anchor ->
+                NtkEpisodeDocumentPlanParser.completeNumericPageCountHint(
+                    flight.lease,
+                    path,
+                    draft,
+                )?.let(anchor::releaseForCompleteDocumentPageCount)
             }
             requireDiscoveryOwnership(flight, "document_parse_complete")
             streamedRequestSeed?.let { seed ->
@@ -1953,7 +3060,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             } else if (exactInstalled && !flight.completed.get()) {
                 // Promotion succeeded but final viewer ownership did not. Never leave the claimed
                 // source reachable without a lifecycle retirement handle.
-                synchronized(flightLifecycleLock(path)) {
+                val detached = synchronized(flightLifecycleLock(path)) {
                     if (flights[path] === flight) {
                         claimNetworkOwnershipRetirement(flight)
                         flight.retirement.retire(path, flight.viewerGeneration)
@@ -1961,9 +3068,12 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                             flight.lease,
                             "strict_exact_post_install_${failure.javaClass.simpleName}"
                         )
-                        flights.remove(path, flight)
+                        detachFlightForForegroundLeaveLocked(flight)
+                    } else {
+                        false
                     }
                 }
+                if (detached) completeDetachedFlightForegroundLeave(flight)
             }
             Log.e(
                 "ViewerPerf",
@@ -1981,11 +3091,23 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                 // The resolver is intentionally demand-driven and may run only after the failed
                 // strict owner releases its network gate. The path slot stays reserved above.
                 claimNetworkOwnershipRetirement(flight)
-                client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)
+                leaveForegroundNetworkIfEntered(flight)
+                synchronized(flight) {
+                    flight.routeRecoverySlotHeldAtMs.set(SystemClock.elapsedRealtime())
+                    flight.validatedAdjacentPhase.set(
+                        NtkValidatedAdjacentFlightPhase.ROUTE_RECOVERY_SLOT_HELD,
+                    )
+                }
             } else if (!flight.completed.get() || flight.retirement.isRetired()) {
-                claimNetworkOwnershipRetirement(flight)
-                flights.remove(path, flight)
-                client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)
+                val detached = synchronized(flightLifecycleLock(path)) {
+                    claimNetworkOwnershipRetirement(flight)
+                    detachFlightForForegroundLeaveLocked(flight)
+                }
+                if (detached) {
+                    completeDetachedFlightForegroundLeave(flight)
+                } else {
+                    leaveForegroundNetworkIfEntered(flight)
+                }
             }
         }
         if (routeRecoveryRequested) {
@@ -2023,8 +3145,7 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         val stillOwned = isViewerOwnerActive(failedFlight)
         val nextRouteRecoveryAttempts = failedFlight.completedRouteRecoveryAttempts +
             if (skipDomainResolution) 0 else 1
-        var releasedForReplacement = false
-        synchronized(flightLifecycleLock(path)) {
+        val releasedForReplacement = synchronized(flightLifecycleLock(path)) {
             if (flights[path] === failedFlight) {
                 NtkSourceSpoolRegistry.retireDiscoveryForReplacement(
                     failedFlight.lease,
@@ -2034,9 +3155,13 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         "strict_route_recovery_$nextRouteRecoveryAttempts"
                     },
                 )
-                flights.remove(path, failedFlight)
-                releasedForReplacement = true
+                detachFlightForForegroundLeaveLocked(failedFlight)
+            } else {
+                false
             }
+        }
+        if (releasedForReplacement) {
+            completeDetachedFlightForegroundLeave(failedFlight)
         }
         if (!stillOwned || !releasedForReplacement) {
             Log.d(
@@ -2057,6 +3182,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
             failedFlight.adjacentPredecessorEpisodePath,
             sameOriginFallbackConsumed =
                 failedFlight.sameOriginFallbackConsumed || skipDomainResolution,
+            // Every recovery remains fenced to the viewer which owned the failed flight. This is
+            // also required for an adjacent target: between retiring the old target flight and
+            // admitting its replacement, a new viewer can open the same launch path.
+            expectedCurrentViewerGeneration = failedFlight.viewerGeneration,
+            expectedCurrentOwnerEpisodePath = failedFlight.viewerOwnerEpisodePath,
         )
         val joined = restarted ||
             isInFlight(path) ||
@@ -2084,14 +3214,39 @@ object NtkStrictEpisodeDiscoveryCoordinator {
         flight: Flight,
         boundary: String,
         action: () -> T
-    ): T = flight.retirement.withActiveOwnership(
-        flight.episodePath,
-        flight.viewerGeneration,
-        boundary
-    ) {
-        requireFlightIdentity(flight, boundary)
-        action()
+    ): T {
+        // Adjacent control work has no visible result until its predecessor is crossed. Registry
+        // reservation and authority installation create the stage's largest object graphs and
+        // hold process-wide source locks; entering one during a physical gesture lets a
+        // background worker be descheduled while owning those locks and stalls the display/JIT
+        // producer for multiple frames. Wait before taking retirement/source ownership, then run
+        // the unchanged atomic boundary in the next real input-idle gap. Current-episode work and
+        // all network I/O retain their original admission and concurrency.
+        if (flight.adjacentPredecessorGate &&
+            isAdjacentDisplayDeferredOwnershipBoundary(boundary)
+        ) {
+            NtkReaderTransferPacer.awaitMotionIdleUntilRequired(
+                requiredNow = flight.adjacentPhysicalBoundaryDemand::isDone,
+                stillOwned = {
+                    requireFlightIdentity(flight, "${boundary}_motion_wait")
+                },
+            )
+        }
+        return flight.retirement.withActiveOwnership(
+            flight.episodePath,
+            flight.viewerGeneration,
+            boundary
+        ) {
+            requireFlightIdentity(flight, boundary)
+            action()
+        }
     }
+
+    private fun isAdjacentDisplayDeferredOwnershipBoundary(boundary: String): Boolean =
+        boundary.contains("plan_reserve") ||
+            boundary.contains("manifest_install") ||
+            boundary == "quarantine_evidence_observe" ||
+            boundary == "signed_api_replica_transport_proof"
 
     /** Only local cookie-map commits may use this state-lock-linearized boundary. */
     private fun <T> withBoundedDiscoveryOwnership(
@@ -2119,9 +3274,10 @@ object NtkStrictEpisodeDiscoveryCoordinator {
     }
 
     private fun isViewerOwnerActive(flight: Flight): Boolean =
-        ViewerTelemetry.hasActiveSession() &&
-            ViewerTelemetry.activeGeneration() == flight.viewerGeneration &&
-            ViewerTelemetry.isActiveEpisode(flight.viewerOwnerEpisodePath)
+        ViewerTelemetry.isActiveViewer(
+            flight.viewerGeneration,
+            flight.viewerOwnerEpisodePath,
+        )
 
     private fun <T> withOwnedAuthority(
         flight: Flight,
@@ -2210,7 +3366,11 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     private fun awaitAdjacentPredecessorComplete(flight: Flight) {
         if (!flight.adjacentPredecessorGate) return
-        awaitFuture(flight.adjacentPredecessorComplete)
+        awaitAdjacentGateWithOwnership(
+            flight,
+            flight.adjacentPredecessorComplete,
+            "adjacent_predecessor_wait",
+        )
         requireDiscoveryOwnership(flight, "adjacent_predecessor_complete")
         Log.d(
             "ViewerPerf",
@@ -2223,15 +3383,42 @@ object NtkStrictEpisodeDiscoveryCoordinator {
 
     private fun awaitAdjacentControlReady(flight: Flight) {
         if (!flight.adjacentPredecessorGate) return
-        awaitFuture(flight.adjacentControlReady)
+        awaitAdjacentGateWithOwnership(
+            flight,
+            flight.adjacentControlReady,
+            "adjacent_control_wait",
+        )
         requireDiscoveryOwnership(flight, "adjacent_control_ready")
         Log.d(
             "ViewerPerf",
             "ntk_adjacent_control_ready " +
                 "predecessor=${flight.adjacentPredecessorEpisodePath}," +
                 "target=${flight.episodePath}," +
-                "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
+            "elapsedMs=${SystemClock.elapsedRealtime() - flight.startedAtMs}",
         )
+    }
+
+    private fun <T> awaitAdjacentGateWithOwnership(
+        flight: Flight,
+        future: Future<T>,
+        boundary: String,
+    ): T {
+        while (true) {
+            try {
+                return future.get(ADJACENT_GATE_OWNERSHIP_SLICE_MS, TimeUnit.MILLISECONDS)
+            } catch (_: TimeoutException) {
+                // A reader can legitimately spend minutes before reaching its prepared neighbor.
+                // Keep the gate open-ended, but never let a retired/stale worker remain parked.
+                requireDiscoveryOwnership(flight, boundary)
+            } catch (wrapped: ExecutionException) {
+                throw (wrapped.cause ?: wrapped)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException("Strict adjacent gate was interrupted").also {
+                    it.initCause(interrupted)
+                }
+            }
+        }
     }
 
     private fun logStage(flight: Flight, stage: String) {

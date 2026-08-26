@@ -91,11 +91,21 @@ class NtkAdjacentRunwayBodyAuthorityPolicyTest {
             readiness.indexOf("if (strictManifestAuthority) return false") <
                 readiness.indexOf("strictAdjacentPublishedBody(ref)"),
         )
-        assertTrue(delivery.contains("val strictBody = if (strictExactBodyRequired)"))
+        assertTrue(
+            delivery.contains(
+                "val strictBody = if (\n                strictExactBodyRequired && " +
+                    "!allowCurrentPublishedStrictBodyForRehydrate",
+            ),
+        )
+        assertTrue(
+            delivery.contains(
+                "requireStrictDescriptor || allowCurrentPublishedStrictBodyForRehydrate",
+            ),
+        )
         assertTrue(delivery.contains("Adjacent exact body has no generation-bound descriptor"))
         assertTrue(batch.contains("requireStrictDescriptor: Boolean = false"))
         assertTrue(batch.contains("requireStrictDescriptor,"))
-        assertTrue(batch.contains("Adjacent exact descriptor transport changed"))
+        assertFalse(batch.contains("Adjacent exact descriptor transport changed"))
         assertTrue(descriptor.contains("ref.manifestDigest == authority.seal.digestSha256"))
         assertTrue(descriptor.contains("ref.manifestPageCount == authority.seal.pageCount"))
         assertTrue(descriptor.contains("ref.canonicalAsset == canonical"))
@@ -135,7 +145,7 @@ class NtkAdjacentRunwayBodyAuthorityPolicyTest {
         assertTrue(append.contains("requiresStrictExactRemainingAdjacentRunway(candidateSnapshot)"))
         assertTrue(append.contains("candidateSnapshot.takeWhile { strictAdjacentBodyDescriptor(it) != null }"))
         assertTrue(append.contains("requireStrictDescriptor = strictExactDescriptorOnly"))
-        assertTrue(append.contains("if (strictExactDescriptorOnly && exactRunwayPublication == null)"))
+        assertTrue(append.contains("if (nativeExactBatchRequired && exactRunwayPublication == null)"))
         assertTrue(append.contains("rollbackAdjacentRunwayStructure(startIndex, appendable)"))
         assertTrue(append.contains("recycleAdjacentRunwayDrawableBatch(drawableBatch)"))
         assertTrue(delivery.contains("Adjacent exact body has no generation-bound descriptor"))

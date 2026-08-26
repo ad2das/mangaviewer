@@ -17,6 +17,98 @@ import java.util.concurrent.atomic.AtomicBoolean
 @RunWith(AndroidJUnit4::class)
 class ReaderSessionOwnershipInstrumentedTest {
     @Test
+    fun delayedCleanupCannotRecycleCurrentOwnedBitmapIdentity() {
+        val session = newSession("current-owned-bitmap-release")
+        val bitmap = immutableBitmap(PAGE_WIDTH, PAGE_HEIGHT)
+        val delivered = mutableDeliveredBitmaps(session)
+        val owned = mutableDeliveredOwned(session)
+
+        try {
+            delivered[0] = bitmap
+            owned.add(0)
+
+            invokePrivate(
+                session,
+                "releaseBitmapToPoolOrRecycle",
+                arrayOf(Bitmap::class.java),
+                bitmap,
+            )
+
+            assertFalse("Current owned delivery was recycled by stale cleanup", bitmap.isRecycled)
+
+            delivered.clear()
+            owned.clear()
+            invokePrivate(
+                session,
+                "releaseBitmapToPoolOrRecycle",
+                arrayOf(Bitmap::class.java),
+                bitmap,
+            )
+            assertTrue("Stale unreferenced delivery was not retired", bitmap.isRecycled)
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { session.cancel() }
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    @Test
+    fun delayedCleanupCannotRecycleCurrentOwnedTileIdentity() {
+        val session = newSession("current-owned-release")
+        val bitmap = immutableBitmap(PAGE_WIDTH, PAGE_HEIGHT)
+        val tiles = mutableDeliveredTiles(session)
+        val owned = mutableDeliveredOwned(session)
+
+        try {
+            tiles[0] = listOf(fullPageTile(bitmap))
+            owned.add(0)
+
+            invokePrivate(
+                session,
+                "releaseBitmapToPoolOrRecycle",
+                arrayOf(Bitmap::class.java),
+                bitmap,
+            )
+
+            assertFalse("Current owned delivery was recycled by stale cleanup", bitmap.isRecycled)
+
+            tiles.clear()
+            owned.clear()
+            invokePrivate(
+                session,
+                "releaseBitmapToPoolOrRecycle",
+                arrayOf(Bitmap::class.java),
+                bitmap,
+            )
+            assertTrue("Stale unreferenced delivery was not retired", bitmap.isRecycled)
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { session.cancel() }
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    @Test
+    fun delayedCleanupCannotRecycleExternallyOwnedIdentity() {
+        val session = newSession("external-release")
+        val bitmap = immutableBitmap(PAGE_WIDTH, PAGE_HEIGHT)
+        val external = externallyOwnedBitmaps(session)
+
+        try {
+            external.add(bitmap)
+            invokePrivate(
+                session,
+                "releaseBitmapToPoolOrRecycle",
+                arrayOf(Bitmap::class.java),
+                bitmap,
+            )
+
+            assertFalse("External Surface owner lost its immutable bitmap", bitmap.isRecycled)
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { session.cancel() }
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    @Test
     fun exactInstalledPreparedStoreTilePageIsReportedAsBorrowedWinner() {
         val bitmap = immutableBitmap(PAGE_WIDTH, PAGE_HEIGHT)
         val tiles = listOf(fullPageTile(bitmap))
@@ -140,15 +232,24 @@ class ReaderSessionOwnershipInstrumentedTest {
                         Boolean::class.javaPrimitiveType!!, Boolean::class.javaPrimitiveType!!),
                     listOf("https://example.invalid/page.jpg"), 0, false, false
                 )
+                val installedPage = checkNotNull(
+                    invokePrivate(
+                        session,
+                        "pageRef",
+                        arrayOf(Int::class.javaPrimitiveType!!),
+                        0,
+                    ),
+                )
 
                 // This is the ownership state produced when a Session decode wins, followed by
                 // the common listener gate publishing and adopting that exact tile identity.
                 invokePrivate(
                     session,
                     "trackDeliveredTiles",
-                    arrayOf(Int::class.javaPrimitiveType!!, List::class.java,
+                    arrayOf(Int::class.javaPrimitiveType!!, installedPage.javaClass,
+                        List::class.java,
                         Boolean::class.javaPrimitiveType!!),
-                    0, sessionTiles, true
+                    0, installedPage, sessionTiles, true
                 )
                 gate.onPageTilesReady(0, PAGE_WIDTH, PAGE_HEIGHT, sessionTiles)
 
@@ -217,6 +318,22 @@ class ReaderSessionOwnershipInstrumentedTest {
         )
     }
 
+    private fun newSession(name: String): ReaderSession {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        return ReaderSession(
+            context = context,
+            manga = Manga(1, name, "", MTitle.base_comic),
+            title = null,
+            viewerWidth = PAGE_WIDTH,
+            viewerHeight = PAGE_HEIGHT,
+            autoCut = false,
+            reverse = false,
+            preparedKey = null,
+            startAtFirstPage = true,
+            listener = RecordingListener(AtomicBoolean(false)),
+        )
+    }
+
     private fun invokePrivate(
         target: Any,
         name: String,
@@ -244,6 +361,34 @@ class ReaderSessionOwnershipInstrumentedTest {
         val field = ReaderSession::class.java.getDeclaredField("deliveredOwned")
         field.isAccessible = true
         return field.get(session) as Set<Int>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun mutableDeliveredBitmaps(session: ReaderSession): MutableMap<Int, Bitmap> {
+        val field = ReaderSession::class.java.getDeclaredField("deliveredBitmaps")
+        field.isAccessible = true
+        return field.get(session) as MutableMap<Int, Bitmap>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun mutableDeliveredTiles(session: ReaderSession): MutableMap<Int, List<ReaderTile>> {
+        val field = ReaderSession::class.java.getDeclaredField("deliveredTiles")
+        field.isAccessible = true
+        return field.get(session) as MutableMap<Int, List<ReaderTile>>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun mutableDeliveredOwned(session: ReaderSession): MutableSet<Int> {
+        val field = ReaderSession::class.java.getDeclaredField("deliveredOwned")
+        field.isAccessible = true
+        return field.get(session) as MutableSet<Int>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun externallyOwnedBitmaps(session: ReaderSession): MutableSet<Bitmap> {
+        val field = ReaderSession::class.java.getDeclaredField("externallyOwnedBitmaps")
+        field.isAccessible = true
+        return field.get(session) as MutableSet<Bitmap>
     }
 
     private class RecordingListener(

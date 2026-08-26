@@ -44,6 +44,92 @@ internal object NtkVisibleIdentityPolicy {
             .toList()
     }
 
+    /**
+     * Allocation-bounded counterpart for the identity objects already captured by Surface.
+     *
+     * The completed-draw listener used to copy every committed identity into [Identity], then
+     * build sequence/distinct/sorted collections on every physical frame. These objects already
+     * are immutable exact-token evidence, so scan them directly. The third parameter keeps this
+     * overload distinct after JVM generic erasure and makes accidental use with an uncommitted
+     * list explicit at the call site.
+     */
+    fun traversalSourceIndexesForEpisode(
+        identities: List<ReaderSurfaceView.CommittedPageIdentity>,
+        episodePath: String,
+        committedIdentityProof: Boolean,
+    ): IntArray {
+        if (!committedIdentityProof || episodePath.isBlank() || identities.isEmpty()) {
+            return IntArray(0)
+        }
+        val indexes = IntArray(identities.size)
+        var count = 0
+        for (identity in identities) {
+            if (identity.normalizedEpisodePath != episodePath) continue
+            val source = identity.sourcePageIndex
+            var insertion = 0
+            while (insertion < count && indexes[insertion] < source) insertion++
+            if (insertion < count && indexes[insertion] == source) continue
+            if (insertion < count) {
+                System.arraycopy(indexes, insertion, indexes, insertion + 1, count - insertion)
+            }
+            indexes[insertion] = source
+            count++
+        }
+        return if (count == indexes.size) indexes else indexes.copyOf(count)
+    }
+
+    /** Validates exact Surface identities without per-frame wrapper/block/set allocations. */
+    fun isValidCommitted(
+        identities: List<ReaderSurfaceView.CommittedPageIdentity>,
+        launchEpisodePath: String,
+        launchManifestDigest: String,
+        launchCanonicalAssets: List<String>,
+    ): Boolean {
+        if (identities.isEmpty() || launchEpisodePath.isBlank() ||
+            !NtkStripDigests.isSha256(launchManifestDigest) || launchCanonicalAssets.isEmpty()
+        ) return false
+
+        var blockCount = 0
+        var firstBlockPath = ""
+        var activePath = ""
+        var activeDigest = ""
+        var activePageCount = 0
+        var previousSource = -1
+        for (identity in identities) {
+            val path = identity.normalizedEpisodePath
+            val source = identity.sourcePageIndex
+            val pageCount = identity.manifestPageCount
+            if (path.isBlank() || !NtkStripDigests.isSha256(identity.manifestDigest) ||
+                pageCount <= 0 || source !in 0 until pageCount ||
+                identity.canonicalAsset.isBlank()
+            ) return false
+
+            if (path == launchEpisodePath &&
+                (identity.manifestDigest != launchManifestDigest ||
+                    pageCount != launchCanonicalAssets.size ||
+                    identity.canonicalAsset != launchCanonicalAssets[source])
+            ) return false
+
+            if (path != activePath) {
+                if (blockCount >= 2 || (blockCount > 0 && path == firstBlockPath)) return false
+                if (blockCount > 0 &&
+                    (previousSource != activePageCount - 1 || source != 0)
+                ) return false
+                blockCount++
+                if (blockCount == 1) firstBlockPath = path
+                activePath = path
+                activeDigest = identity.manifestDigest
+                activePageCount = pageCount
+            } else if (identity.manifestDigest != activeDigest ||
+                pageCount != activePageCount || source < previousSource
+            ) {
+                return false
+            }
+            previousSource = source
+        }
+        return true
+    }
+
     fun isValid(
         identities: List<Identity>,
         launch: LaunchManifest

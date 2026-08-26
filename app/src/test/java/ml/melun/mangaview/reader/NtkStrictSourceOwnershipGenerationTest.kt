@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Before
@@ -225,6 +226,68 @@ class NtkStrictSourceOwnershipGenerationTest {
             owner,
             NtkStrictSourceOwnershipRegistry.owner(mixedCasePath),
         )
+    }
+
+    @Test
+    fun retiredDiscoveryFenceRejectsAReservationThatArrivesAfterClose() {
+        val token = token(generation = 14L, sessionId = 140L, nonce = 1_400L)
+        NtkStrictSourceOwnershipRegistry.beginDiscoveryFence(path, token.discoveryGeneration)
+        assertTrue(
+            NtkStrictSourceOwnershipRegistry.endDiscoveryFence(
+                path,
+                token.discoveryGeneration,
+            )
+        )
+
+        var rejected = false
+        try {
+            NtkStrictSourceOwnershipRegistry.reserveExact(token)
+        } catch (_: IllegalStateException) {
+            rejected = true
+        }
+
+        assertTrue(rejected)
+        assertNull(NtkStrictSourceOwnershipRegistry.owner(path))
+    }
+
+    @Test
+    fun pendingTokenRollsBackAClaimBeforeOwnerPublication() {
+        val token = token(generation = 15L, sessionId = 150L, nonce = 1_500L)
+        NtkStrictSourceOwnershipRegistry.beginDiscoveryFence(path, token.discoveryGeneration)
+        val reservation = NtkStrictSourceOwnershipRegistry.reserveExact(token)
+        NtkStrictSourceOwnershipRegistry.claimExact(reservation, token.sessionId)
+
+        assertTrue(NtkStrictSourceOwnershipRegistry.rollbackPendingExactAuthority(token))
+        assertNull(NtkStrictSourceOwnershipRegistry.owner(path))
+    }
+
+    @Test
+    fun pendingTokenCannotRollBackAnOwnerWithStartedWork() {
+        val token = token(generation = 16L, sessionId = 160L, nonce = 1_600L)
+        NtkStrictSourceOwnershipRegistry.beginDiscoveryFence(path, token.discoveryGeneration)
+        NtkStrictSourceOwnershipRegistry.claimExact(
+            NtkStrictSourceOwnershipRegistry.reserveExact(token),
+            token.sessionId,
+        )
+        val operation = NtkStrictSourceOwnershipRegistry.beginOperation(
+            path,
+            NtkStrictSourceCallTag.strict(
+                token.sessionId,
+                token.exactManifestDigest,
+                NtkStrictSourceOwnershipRegistry.nextOperationId(),
+                laneIndex = 0,
+                pageIndex = 0,
+                attemptOrdinal = 1,
+            ),
+            routeKeyHash = NtkStripDigests.sha256Tokens("route", "pending-rollback"),
+            callFactoryId = "test",
+            attempt = 1,
+        )
+
+        assertFalse(NtkStrictSourceOwnershipRegistry.rollbackPendingExactAuthority(token))
+        operation.complete(succeeded = true)
+        assertFalse(NtkStrictSourceOwnershipRegistry.rollbackPendingExactAuthority(token))
+        assertNotNull(NtkStrictSourceOwnershipRegistry.owner(path))
     }
 
     private fun assertNotNullOwner(): NtkStrictSourceOwnershipRegistry.Owner {

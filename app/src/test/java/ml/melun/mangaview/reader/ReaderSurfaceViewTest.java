@@ -75,6 +75,14 @@ public class ReaderSurfaceViewTest {
     }
 
     @Test
+    public void terminalScrollerSampleReleasesBusyEvenWhenItProducedFinalPixels() {
+        assertFalse(ReaderSurfaceView.isScrollBusyAfterSampleForTest(false, false, true));
+        assertTrue(ReaderSurfaceView.isScrollBusyAfterSampleForTest(false, false, false));
+        assertTrue(ReaderSurfaceView.isScrollBusyAfterSampleForTest(true, false, true));
+        assertTrue(ReaderSurfaceView.isScrollBusyAfterSampleForTest(false, true, true));
+    }
+
+    @Test
     public void idleBetweenGesturesIsNotChargedToTheNextMutation() {
         float causalAgeMs = ReaderSurfaceView.causalPixelMutationAgeMsForTest(
                 100_000_000L, 116_000_000L);
@@ -123,7 +131,7 @@ public class ReaderSurfaceViewTest {
     @Test
     public void gpuCommitBacklogUsesABoundedMultiFlightWindow() {
         int capacity = ReaderSurfaceView.maxPendingFrameCommitsForTest();
-        assertTrue(capacity >= 3);
+        assertTrue(capacity >= 96);
         assertTrue(ReaderSurfaceView.canAdmitPendingFrameCommitForTest(0));
         assertTrue(ReaderSurfaceView.canAdmitPendingFrameCommitForTest(capacity - 1));
         assertFalse(ReaderSurfaceView.canAdmitPendingFrameCommitForTest(capacity));
@@ -195,6 +203,27 @@ public class ReaderSurfaceViewTest {
                 11_000f, 12_400f, 13_000f), 0f);
         assertEquals(10_188f, ReaderSurfaceView.blockedForwardResumeOffsetForTest(
                 10_188f, 12_400f, 9_000f), 0f);
+    }
+
+    @Test
+    public void blockedForwardResumeUsesBoundedVisibleAnimationDuration() {
+        assertEquals(180, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(1800f, 2400));
+        assertEquals(96, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(100f, 2400));
+        assertEquals(240, ReaderSurfaceView.blockedForwardResumeDurationMsForTest(2400f, 2400));
+    }
+
+    @Test
+    public void emulatorNativeBandRetainsTwoViewportForwardOverlap() {
+        assertEquals(7200f, ReaderSurfaceView.emulatorNativeBandStepForTest(12000f, 2400f), 0f);
+        assertEquals(4800f, ReaderSurfaceView.emulatorNativeBandStepForTest(9600f, 2400f), 0f);
+        assertEquals(2400f, ReaderSurfaceView.emulatorNativeBandStepForTest(4800f, 2400f), 0f);
+    }
+
+    @Test
+    public void emulatorNativeBandAdaptsToTargetByteCost() {
+        assertEquals(4, ReaderSurfaceView.emulatorNativeBandViewportCountForTest(800, 1733));
+        assertEquals(6, ReaderSurfaceView.emulatorNativeBandViewportCountForTest(400, 800));
+        assertEquals(3, ReaderSurfaceView.emulatorNativeBandViewportCountForTest(1440, 3200));
     }
 
     @Test

@@ -5,11 +5,12 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.ThreadPoolExecutor
 
 class NtkExecutionBootstrapTest {
 
     @Test
-    fun finiteTopologyIsExclusiveToTheDirectWifiAdjacentWebtoonGrant() {
+    fun finiteTopologyCoversDirectWifiAdjacentManhwaAndWebtoonGrants() {
         val policy = NtkDirectWifiAdjacentExecutionTopology
 
         assertTrue(policy.shouldDeferBootstrap(
@@ -24,15 +25,15 @@ class NtkExecutionBootstrapTest {
         assertFalse(policy.shouldDeferBootstrap(
             "/webtoon/work/next", true, false, true, false,
         ))
-        assertFalse(policy.shouldDeferBootstrap(
+        assertTrue(policy.shouldDeferBootstrap(
             "/manhwa/work/next", true, true, true, false,
         ))
         assertFalse(policy.shouldDeferBootstrap(
             "/webtoon/work/next", false, true, true, false,
         ))
-        assertEquals(12, policy.physicalLaneCount(true, 61))
+        assertEquals(5, policy.physicalLaneCount(true, 61))
         assertEquals(61, policy.physicalLaneCount(false, 61))
-        assertEquals(4, policy.routeLaneCount(true, 8))
+        assertEquals(2, policy.routeLaneCount(true, 8))
         assertEquals(8, policy.routeLaneCount(false, 8))
     }
 
@@ -47,6 +48,13 @@ class NtkExecutionBootstrapTest {
         val engines = bootstrap.adopt()
         assertTrue(bootstrap.isAdopted())
         assertRejected { bootstrap.adopt() }
+        assertFalse((engines.actor as ThreadPoolExecutor).allowsCoreThreadTimeOut())
+        assertTrue(engines.physicalLanes.all {
+            (it as ThreadPoolExecutor).allowsCoreThreadTimeOut()
+        })
+        assertTrue(engines.routePreparationLanes.all {
+            (it as ThreadPoolExecutor).allowsCoreThreadTimeOut()
+        })
 
         engines.routePreparationLanes.forEach(ExecutorService::shutdownNow)
         engines.physicalLanes.forEach(ExecutorService::shutdownNow)
@@ -97,6 +105,42 @@ class NtkExecutionBootstrapTest {
         engines.routePreparationLanes.forEach(ExecutorService::shutdownNow)
         engines.physicalLanes.forEach(ExecutorService::shutdownNow)
         engines.actor.shutdownNow()
+    }
+
+    @Test
+    fun consecutiveAdjacentBootstrapsShareTheBoundedWorkerRing() {
+        val first = NtkStrictSourceExecutionBootstrap(
+            deferWorkerLanes = true,
+        )
+        val second = NtkStrictSourceExecutionBootstrap(
+            deferWorkerLanes = true,
+        )
+
+        val firstEngines = first.adopt(
+            requiredPhysicalLanes = 5,
+            requiredRoutePreparationLanes = 2,
+            shareWorkerLanes = true,
+        )
+        val secondEngines = second.adopt(
+            requiredPhysicalLanes = 5,
+            requiredRoutePreparationLanes = 2,
+            shareWorkerLanes = true,
+        )
+
+        // Only each manifest actor is episode-owned. Shared views create no per-episode worker.
+        awaitThreads(1) { first.startedThreadCount() }
+        awaitThreads(1) { second.startedThreadCount() }
+        assertEquals(1, first.startedThreadCount())
+        assertEquals(1, second.startedThreadCount())
+        assertEquals(5, firstEngines.physicalLanes.size)
+        assertEquals(5, secondEngines.physicalLanes.size)
+        assertEquals(2, firstEngines.routePreparationLanes.size)
+        assertEquals(2, secondEngines.routePreparationLanes.size)
+        firstEngines.physicalLanes.forEach(ExecutorService::shutdownNow)
+        assertFalse(secondEngines.physicalLanes.first().isShutdown)
+
+        firstEngines.actor.shutdownNow()
+        secondEngines.actor.shutdownNow()
     }
 
     @Test

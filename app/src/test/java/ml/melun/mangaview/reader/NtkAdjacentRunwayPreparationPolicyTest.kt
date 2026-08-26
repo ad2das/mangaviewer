@@ -187,6 +187,33 @@ class NtkAdjacentRunwayPreparationPolicyTest {
     }
 
     @Test
+    fun hostExactRunwayPublishesStructureOnlyAfterPhysicalMotionRetires() {
+        fun defer(
+            motion: Boolean = false,
+            busy: Boolean = false,
+            quietMs: Long = 0L,
+            host: Boolean = true,
+            direct: Boolean = true,
+            supportedPath: Boolean = true,
+        ) = NtkAdjacentRunwayPreparationPolicy.shouldDeferAtomicStructurePublication(
+            hostGpuEmulatorRuntime = host,
+            directWifiStrictAdjacent = direct,
+            supportedEpisodePath = supportedPath,
+            foregroundMotionActive = motion,
+            viewportBusy = busy,
+            physicalQuietRemainingMs = quietMs,
+        )
+
+        assertTrue(defer(motion = true))
+        assertTrue(defer(busy = true))
+        assertTrue(defer(quietMs = 1L))
+        assertFalse(defer())
+        assertFalse(defer(motion = true, host = false))
+        assertFalse(defer(motion = true, direct = false))
+        assertFalse(defer(motion = true, supportedPath = false))
+    }
+
+    @Test
     fun runwayFileFetchRetriesAreFiniteAndDeadlineBound() {
         assertTrue(NtkAdjacentRunwayPreparationPolicy.mayRetryFileFetch(1, 1_000L, 2_000L))
         assertFalse(

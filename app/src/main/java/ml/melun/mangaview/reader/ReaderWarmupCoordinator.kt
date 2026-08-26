@@ -2012,7 +2012,8 @@ object ReaderWarmupCoordinator {
                     tile.sourceWidth == page.pageWidth && tile.sourceHeight == page.pageHeight &&
                     tile.sourceTop >= 0 && tile.sourceBottom > tile.sourceTop &&
                     tile.sourceBottom <= page.pageHeight &&
-                    tile.bitmap.config == Bitmap.Config.ARGB_8888 && !tile.bitmap.isMutable
+                    tile.bitmap.hasImmutableExactPixelConfig() &&
+                    tile.hasExactSourcePixelStorage()
             }
     }
 
@@ -2054,13 +2055,10 @@ object ReaderWarmupCoordinator {
             return false
         }
         return page.tiles.all { tile ->
-            tile.sourceWidth == page.pageWidth &&
+                tile.sourceWidth == page.pageWidth &&
                 tile.sourceHeight == page.pageHeight &&
-                !tile.bitmap.isRecycled &&
-                tile.bitmap.width == proof.originalWidth &&
-                tile.bitmap.height == tile.sourceBottom - tile.sourceTop &&
-                tile.bitmap.config == Bitmap.Config.ARGB_8888 &&
-                !tile.bitmap.isMutable
+                tile.bitmap.hasImmutableExactPixelConfig() &&
+                tile.hasExactSourcePixelStorage()
         }
     }
 

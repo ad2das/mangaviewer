@@ -306,10 +306,24 @@ public final class NtkWebViewFallbackManager {
     }
 
     private void quietForegroundNativeReader(String path, String reason) {
+        String requestedPath = path == null ? "" : path.trim();
+        if(requestedPath.length() == 0)
+            return;
+        long requestedAtMs = SystemClock.elapsedRealtime();
+        if(requestedPath.equals(foregroundNativeReaderPath)
+                && requestedAtMs < foregroundNativeReaderUntilMs) {
+            foregroundNativeReaderUntilMs = Math.max(foregroundNativeReaderUntilMs,
+                    requestedAtMs + FOREGROUND_HYBRID_PROXY_SUPPRESS_MS);
+            foregroundNativeReaderWebViewDeferUntilMs = Math.max(
+                    foregroundNativeReaderWebViewDeferUntilMs,
+                    requestedAtMs + FOREGROUND_NATIVE_WEBVIEW_DEFER_MS);
+            foregroundHybridReaderPath = requestedPath;
+            foregroundHybridReaderUntilMs = Math.max(foregroundHybridReaderUntilMs,
+                    requestedAtMs + FOREGROUND_HYBRID_PROXY_SUPPRESS_MS);
+            return;
+        }
         Runnable work = () -> {
-            String safePath = path == null ? "" : path.trim();
-            if(safePath.length() == 0)
-                return;
+            String safePath = requestedPath;
             foregroundNativeReaderPath = safePath;
             long now = SystemClock.elapsedRealtime();
             foregroundNativeReaderUntilMs = now + FOREGROUND_HYBRID_PROXY_SUPPRESS_MS;

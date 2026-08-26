@@ -19,6 +19,7 @@ class NtkStrictPredecodedOriginal internal constructor(
     private val completion: CompletableFuture<Bitmap?>,
     private val abandoned: AtomicBoolean = AtomicBoolean(false),
     private val started: AtomicBoolean = AtomicBoolean(completion.isDone),
+    private val releaseQueuedSource: (() -> Unit)? = null,
 ) : Closeable {
     private val lock = Any()
     private var closed = false
@@ -105,6 +106,10 @@ class NtkStrictPredecodedOriginal internal constructor(
             abandoned.set(true)
             !transferred
         }
+        // The producer atomically takes its input before setting started. Calling this for every
+        // close is therefore race-safe: it either closes a still-queued descriptor or observes
+        // that the running producer already owns it and lets that producer's finally close it.
+        releaseQueuedSource?.invoke()
         if (recycleNow) {
             completion.whenComplete { bitmap, _ ->
                 bitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
@@ -156,6 +161,14 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
     /** Monotonic timestamp of the one exact production seal that created this transport. */
     val exactSealAtMs: Long
         get() = -1L
+
+    /**
+     * Immutable transport profile captured when this exact adjacent source session was created.
+     * Reader publication must not reclassify the same manifest from the process-wide HTTP
+     * client's later, mutable network state.
+     */
+    val directWifiAdjacentRunwayProfile: Boolean
+        get() = false
 
     fun bindEpisode(
         episode: NtkEpisodeToken,
@@ -209,6 +222,17 @@ interface NtkStrictSourceTransport : NtkSourceEventTransport {
 
     /** Reports that the bounded p0..p3 drawable runway has committed to the reader. */
     fun onAdjacentDrawableRunwayCommitted(episode: NtkEpisodeToken)
+
+    /**
+     * Completes the remaining immutable source table after this adjacent episode is physically
+     * foreground and real input has become quiet. Implementations must keep active-motion demand
+     * bounded; this is an idle-completion edge, not permission to widen speculative work while a
+     * user is scrolling.
+     */
+    fun onForegroundIdleCompletionRequested(episode: NtkEpisodeToken) = Unit
+
+    /** Generation-owned exact bodies which have not reached a terminal future yet. */
+    fun unresolvedStreamedExactBodyCount(): Int = 0
 
     /** Completes only at the exact no-call/no-lease source drain boundary. */
     fun requestPreparationDrain(

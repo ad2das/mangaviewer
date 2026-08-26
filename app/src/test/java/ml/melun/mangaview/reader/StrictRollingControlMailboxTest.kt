@@ -7,6 +7,22 @@ import org.junit.Test
 
 class StrictRollingControlMailboxTest {
     @Test
+    fun publishedWindowIngressSuppressesPixelOnlyRepeatsButNotStructureChanges() {
+        val gate = PublishedWindowIngressGate<Any>()
+        val firstStructure = Any()
+        val replacementStructure = Any()
+
+        assertTrue(gate.reserve(firstStructure, 3, 5, 4, 3, 4, true, 1))
+        assertFalse(gate.reserve(firstStructure, 3, 5, 4, 3, 4, true, 1))
+        assertTrue(gate.reserve(replacementStructure, 3, 5, 4, 3, 4, true, 1))
+        assertTrue(gate.reserve(replacementStructure, 3, 5, 4, 3, 5, true, 1))
+        assertTrue(gate.reserve(replacementStructure, 3, 5, 4, 3, 5, false, 1))
+
+        gate.clear()
+        assertTrue(gate.reserve(replacementStructure, 3, 5, 4, 3, 5, false, 1))
+    }
+
+    @Test
     fun physicalProofIsStickyWhileWindowTrafficRemainsLatestOnly() {
         val mailbox = StrictRollingControlMailbox()
         assertTrue(mailbox.offerWindow(0, 1, 0, true))
@@ -81,6 +97,46 @@ class StrictRollingControlMailboxTest {
         assertEquals(
             0,
             NtkRollingPhysicalAdmissionPolicy.admittedForwardPages(25, 77, reverse).minOrNull(),
+        )
+    }
+
+    @Test
+    fun physicalAdmissionIgnoresBackgroundPagesOutsideTheViewportRunway() {
+        val episode = NtkEpisodeToken(10L)
+        val bounded = NtkSourceDemandSnapshot(
+            authority = episode.value,
+            demandEpoch = 3L,
+            hardPages = intArrayOf(8, 9),
+            softPages = intArrayOf(10, 11, 12, 7),
+            backgroundPages = ((0 until 7) + (13 until 80)).toIntArray(),
+        )
+
+        assertEquals(
+            setOf(7, 8, 9, 10, 11, 12),
+            NtkRollingPhysicalAdmissionPolicy.admittedForwardPages(0, 80, bounded),
+        )
+    }
+
+    @Test
+    fun idleCompletionAdmissionCannotBeShrunkByLaterViewportDemand() {
+        val completedAdmission = (0 until 12).toSet()
+        val laterViewportDemand = (3 until 10).toSet()
+
+        assertEquals(
+            completedAdmission,
+            NtkRollingPhysicalAdmissionPolicy.reconcileDemandedPages(
+                previousAdmission = completedAdmission,
+                demandedAdmission = laterViewportDemand,
+                preserveExistingAdmission = true,
+            ),
+        )
+        assertEquals(
+            laterViewportDemand,
+            NtkRollingPhysicalAdmissionPolicy.reconcileDemandedPages(
+                previousAdmission = completedAdmission,
+                demandedAdmission = laterViewportDemand,
+                preserveExistingAdmission = false,
+            ),
         )
     }
 

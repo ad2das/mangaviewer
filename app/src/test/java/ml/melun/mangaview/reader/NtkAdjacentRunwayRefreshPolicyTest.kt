@@ -87,6 +87,53 @@ class NtkAdjacentRunwayRefreshPolicyTest {
     }
 
     @Test
+    fun refreshPreservesBothDisplaySidesOfOneSourceSlot() {
+        val existing = listOf(
+            NtkAdjacentRunwayRefreshPolicy.Assignment(0, "old-p0-side0"),
+            NtkAdjacentRunwayRefreshPolicy.Assignment(0, "old-p0-side1"),
+            NtkAdjacentRunwayRefreshPolicy.Assignment(1, "old-p1"),
+        )
+
+        val reconciled = NtkAdjacentRunwayRefreshPolicy.reconcile(
+            existing,
+            listOf(
+                "https://alternate.example/manhwa/work/p001.jpg",
+                "https://alternate.example/manhwa/work/p002.jpg",
+            ),
+        )
+
+        assertEquals(listOf(0, 0, 1), reconciled.map { it.sourceIndex })
+        assertEquals(reconciled[0].image, reconciled[1].image)
+        assertTrue(reconciled[0].image.endsWith("p001.jpg"))
+        assertTrue(reconciled[2].image.endsWith("p002.jpg"))
+    }
+
+    @Test
+    fun opaqueRefreshUsesSourceCardinalityAndNeverDisplayRefCardinality() {
+        val existing = listOf(
+            NtkAdjacentRunwayRefreshPolicy.Assignment(1, "old-p1-side0"),
+            NtkAdjacentRunwayRefreshPolicy.Assignment(1, "old-p1-side1"),
+            NtkAdjacentRunwayRefreshPolicy.Assignment(2, "old-p2"),
+            NtkAdjacentRunwayRefreshPolicy.Assignment(3, "old-p3"),
+        )
+
+        assertEquals(
+            existing,
+            NtkAdjacentRunwayRefreshPolicy.reconcile(
+                existing,
+                listOf("opaque-a", "opaque-b", "opaque-c", "opaque-d"),
+            ),
+        )
+
+        val reconciled = NtkAdjacentRunwayRefreshPolicy.reconcile(
+            existing,
+            listOf("new-p1", "new-p2", "new-p3"),
+        )
+        assertEquals(listOf(1, 1, 2, 3), reconciled.map { it.sourceIndex })
+        assertEquals(listOf("new-p1", "new-p1", "new-p2", "new-p3"), reconciled.map { it.image })
+    }
+
+    @Test
     fun staleReadySuffixCannotJumpOverPendingSourceSlots() {
         assertEquals(
             0,

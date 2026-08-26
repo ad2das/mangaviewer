@@ -28,4 +28,18 @@ class NtkStrictPredecodedOriginalTest {
         assertNull(handoff.takeIfReadyOrAbandon(sourceWidth = 1080, sourceHeight = 1920))
         assertTrue(handoff.isAbandoned())
     }
+
+    @Test(timeout = 250L)
+    fun abandoningQueuedDecodeReleasesItsCapturedSource() {
+        val released = AtomicBoolean(false)
+        val handoff = NtkStrictPredecodedOriginal(
+            CompletableFuture<Bitmap?>(),
+            releaseQueuedSource = { released.set(true) },
+        )
+
+        handoff.close()
+
+        assertTrue(released.get())
+        assertTrue(handoff.isAbandoned())
+    }
 }

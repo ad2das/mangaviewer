@@ -72,6 +72,8 @@ public class Preference {
     boolean historyLoaded;
     boolean bookmarkLoaded;
     boolean viewerBookmarkLoaded;
+    /** Reader hot-path mutations are durable at the Activity pause boundary, never per frame. */
+    private boolean deferredReaderProgressDirty;
     private boolean historyIndexDirty = true;
     private final Map<String, Integer> recentIndexByKey = new HashMap<>();
     private final Map<String, Integer> favoriteIndexByKey = new HashMap<>();
@@ -1304,6 +1306,28 @@ public class Preference {
     }
 
     public void setBookmark(Title title, int id){
+        setBookmarkInternal(title, id, -1, -1, true);
+    }
+
+    /**
+     * Persists reader progress from an already ordered episode snapshot.
+     *
+     * The continuous reader has already resolved the exact one-based index and cardinality from
+     * its stable Title snapshot. Re-snapshotting and regex-sorting the complete release list here
+     * on every episode boundary duplicates that work on the input thread and creates a large
+     * short-lived allocation wave. Other callers retain the legacy resolving overload above.
+     */
+    public void setBookmark(Title title, int id, int orderedEpisodeIndex, int orderedEpisodeCount){
+        setBookmarkInternal(title, id, orderedEpisodeIndex, orderedEpisodeCount, false);
+    }
+
+    private void setBookmarkInternal(
+            Title title,
+            int id,
+            int orderedEpisodeIndex,
+            int orderedEpisodeCount,
+            boolean persistNow
+    ) {
         ensureBookmarkLoaded();
         if(title == null)
             return;
@@ -1314,7 +1338,10 @@ public class Preference {
             try {
                 if(bookmark.has(key) && bookmark.getInt(key) == id) {
                     markHistoryIndexDirty();
-                    updateRecentProgress(title, id);
+                    updateRecentProgress(
+                            title, id, orderedEpisodeIndex, orderedEpisodeCount, persistNow);
+                    if(!persistNow)
+                        deferredReaderProgressDirty = true;
                     return;
                 }
                 bookmark.put(key, id);
@@ -1322,26 +1349,56 @@ public class Preference {
                 //
             }
             markHistoryIndexDirty();
-            updateRecentProgress(title, id);
-            writeBookmark();
+            updateRecentProgress(
+                    title, id, orderedEpisodeIndex, orderedEpisodeCount, persistNow);
+            if(persistNow)
+                writeBookmark();
+            else
+                deferredReaderProgressDirty = true;
         }
     }
 
     private void updateRecentProgress(Title title, int episodeId) {
+        updateRecentProgress(title, episodeId, -1, -1, true);
+    }
+
+    private void updateRecentProgress(
+            Title title,
+            int episodeId,
+            int orderedEpisodeIndex,
+            int orderedEpisodeCount,
+            boolean persistNow
+    ) {
         ensureHistoryLoaded();
         if(title == null || episodeId <= 0)
             return;
         int index = getIndexOf(title);
-        if(index < 0)
-            return;
-        int episodeIndex = -1;
+        if(index < 0) {
+            // Reader progress used to call addRecent(title) before setBookmark(...). That rebuilt a
+            // minimized Title, scanned the complete episode list for resume metadata and serialized
+            // the recent list on every debounced scroll save, then this method serialized it again.
+            // Create the record only when it is genuinely absent and let the single write below
+            // persist both identity and progress. Existing records remain allocation-free here.
+            MTitle created = title.minimize();
+            ensureSourceSite(created);
+            created.setPath(null);
+            normalizeNtkProgressFromRelease(created);
+            recent.add(0, created);
+            markHistoryIndexDirty();
+            index = 0;
+        }
+        int episodeIndex = orderedEpisodeIndex > 0 ? orderedEpisodeIndex : -1;
         MTitle recentTitle = recent.get(index);
         int existingCount = recentTitle.getEpisodeCount();
-        int incomingCount = title.getEpsCount();
+        int incomingCount = orderedEpisodeCount > 0
+                ? orderedEpisodeCount
+                : title.getEpsCount();
         boolean incomingHasCompleteList = incomingCount > 0
                 && (existingCount <= 0 || incomingCount >= existingCount);
-        List<Manga> episodes = Utils.snapshotEpisodes(title);
-        if(incomingHasCompleteList && episodes.size() > 0) {
+        List<Manga> episodes = orderedEpisodeIndex > 0
+                ? java.util.Collections.emptyList()
+                : Utils.snapshotEpisodes(title);
+        if(episodeIndex <= 0 && incomingHasCompleteList && episodes.size() > 0) {
             for(int i = 0; i < episodes.size(); i++) {
                 if(episodes.get(i) != null && episodes.get(i).getId() == episodeId) {
                     episodeIndex = i + 1;
@@ -1361,7 +1418,8 @@ public class Preference {
         if(resumePath.length() > 0)
             recentTitle.setResumeNtkEpisodePath(resumePath);
         normalizeNtkProgressFromRelease(recentTitle);
-        writeRecent();
+        if(persistNow)
+            writeRecent();
     }
 
     private static int inferEpisodeIndexFromEpisodeId(MTitle title, int episodeId, int episodeCount) {
@@ -1619,20 +1677,35 @@ public class Preference {
 
 
     public void setViewerBookmark(Manga m,int index){
-        setViewerBookmark(m, index, 0);
+        setViewerBookmarkInternal(m, index, 0, 0, true);
     }
 
     public void setViewerBookmark(Manga m, int index, int offset){
-        setViewerBookmark(m, index, offset, 0);
+        setViewerBookmarkInternal(m, index, offset, 0, true);
     }
 
     public void setViewerBookmark(Manga m, int index, int offset, int side){
+        setViewerBookmarkInternal(m, index, offset, side, true);
+    }
+
+    /** Updates exact reader state without serializing the complete bookmark map during motion. */
+    public void setViewerBookmarkDeferred(Manga m, int index, int offset, int side){
+        setViewerBookmarkInternal(m, index, offset, side, false);
+    }
+
+    private void setViewerBookmarkInternal(
+            Manga m,
+            int index,
+            int offset,
+            int side,
+            boolean persistNow
+    ) {
         ensureViewerBookmarkLoaded();
         if(m == null)
             return;
         if(m.getId()>-1) {
             if(index <= 0 && offset == 0 && side == 0) {
-                removeViewerBookmark(m);
+                removeViewerBookmarkInternal(m, persistNow);
                 return;
             }
             if (index > 0 || offset != 0 || side != 0) {
@@ -1654,7 +1727,10 @@ public class Preference {
                 } catch (Exception e) {
                     //
                 }
-                writeViewerBookmark();
+                if(persistNow)
+                    writeViewerBookmark();
+                else
+                    deferredReaderProgressDirty = true;
             }
         }
     }
@@ -1740,6 +1816,10 @@ public class Preference {
         return 0;
     }
     public void removeViewerBookmark(Manga m){
+        removeViewerBookmarkInternal(m, true);
+    }
+
+    private void removeViewerBookmarkInternal(Manga m, boolean persistNow){
         ensureViewerBookmarkLoaded();
         if(m == null)
             return;
@@ -1770,7 +1850,10 @@ public class Preference {
             pagebookmark.remove(legacyOffset);
             pagebookmark.remove(legacySide);
         }
-        writeViewerBookmark();
+        if(persistNow)
+            writeViewerBookmark();
+        else
+            deferredReaderProgressDirty = true;
     }
 
     private String viewerBookmarkKey(Manga m) {
@@ -1923,6 +2006,23 @@ public class Preference {
         prefsEditor.apply();
         notifyLocalChange("pageBookmark");
         notifySync("pageBookmark");
+    }
+
+    /**
+     * Makes all coalesced reader progress durable at the lifecycle boundary.
+     *
+     * Serializing recent, episode bookmark and page bookmark after every scroll debounce creates
+     * several complete JSON object graphs and process-wide GC pauses. Their in-memory authorities
+     * are already updated synchronously; one pause-boundary transaction preserves crash-safe
+     * lifecycle semantics without placing collection-size work in physical scrolling.
+     */
+    public void flushDeferredReaderProgress(){
+        if(!deferredReaderProgressDirty)
+            return;
+        deferredReaderProgressDirty = false;
+        writeRecent();
+        writeBookmark();
+        writeViewerBookmark();
     }
 
     public boolean toggleFavorite(Title tmp, int position){

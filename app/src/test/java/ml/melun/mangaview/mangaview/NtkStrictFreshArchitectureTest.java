@@ -16,6 +16,34 @@ import static org.junit.Assert.assertTrue;
 /** Structural gates for the isolated StrictFresh production path. */
 public final class NtkStrictFreshArchitectureTest {
     @Test
+    public void hotTransportReadsUseThePublishedNetworkCallbackSnapshot() throws Exception {
+        String client = read(sourcePath("CustomHttpClient.java"));
+        String cellular = method(client,
+                "private boolean shouldUseNtkCellularResilientTransport()",
+                "public boolean isNtkCellularResilientTransportActive()");
+        String wifi = method(client,
+                "public boolean isNtkWifiTransportActive()",
+                "public Network getNtkDirectWifiNetwork()");
+        String directWifi = method(client,
+                "public Network getNtkDirectWifiNetwork()",
+                "/** Captures one immutable strict-flight route");
+        String strictRoute = method(client,
+                "public NtkStrictRouteSnapshot captureNtkStrictRouteSnapshot(",
+                "private static boolean isCellularBackedNetwork(");
+
+        assertTrue(client.contains("manager.registerDefaultNetworkCallback(callback)"));
+        assertTrue(client.contains("volatile NtkNetworkTransportState ntkNetworkTransportState"));
+        assertTrue(cellular.contains("ntkNetworkTransportState.cellularResilient"));
+        assertTrue(wifi.contains("ntkNetworkTransportState.directWifi"));
+        assertTrue(directWifi.contains("NtkNetworkTransportState observed = ntkNetworkTransportState"));
+        assertTrue(strictRoute.contains("NtkNetworkTransportState observed = ntkNetworkTransportState"));
+        assertFalse(cellular.contains("getActiveNetwork()"));
+        assertFalse(wifi.contains("getActiveNetwork()"));
+        assertFalse(directWifi.contains("getActiveNetwork()"));
+        assertFalse(strictRoute.contains("getActiveNetwork()"));
+    }
+
+    @Test
     public void strictAckWebViewIsOwnedOnlyByTheIsolatedServiceProcess() throws Exception {
         String manifest = read(projectPath("src", "main", "AndroidManifest.xml"));
         String client = read(ntkAckSourcePath("NtkAckBrowserClient.kt"));
@@ -384,6 +412,70 @@ public final class NtkStrictFreshArchitectureTest {
     }
 
     @Test
+    public void completedExactExchangeRetiresWithoutSpeculativeChromiumRenderer() throws Exception {
+        String engine = read(ntkAckSourcePath("NtkAckBrowserEngine.kt"));
+        String execute = method(engine,
+                "fun executeExact(",
+                "fun clearStrictState(");
+        int callback = execute.indexOf("callback(result)");
+        int retirePost = execute.indexOf(
+                "mainHandler.post { retireCompletedFlightAfterExact(current) }");
+        assertTrue(callback >= 0 && retirePost > callback);
+        assertTrue(execute.contains("if (result.isSuccess)"));
+
+        String retire = method(engine,
+                "private fun retireCompletedFlightAfterExact(current: Flight)",
+                "fun clearStrictState(");
+        assertTrue(retire.contains("flight !== current"));
+        assertTrue(retire.contains("current.seal == null"));
+        assertTrue(retire.contains("state != State.EMPTY"));
+        assertTrue(retire.contains("webView != null"));
+        assertTrue(retire.contains("flight = null"));
+        assertTrue(retire.contains("warmRequest = null"));
+        assertTrue(retire.contains("current.transport?.cancelAll()"));
+        assertFalse(retire.contains("createWebView("));
+        assertFalse(retire.contains("state = State.WARMING"));
+
+        // Explicit preflight warm requests still park their private renderer. Only automatic
+        // cross-episode speculation is removed.
+        String pageReady = method(engine,
+                "private fun pageReady(created: WebView)",
+                "private fun startNetworkPrerequisites(");
+        int readyState = pageReady.indexOf("state = State.READY");
+        int parkRenderer = pageReady.indexOf("parkReadyWarmRenderer(created)");
+        int exposeWarm = pageReady.indexOf("completeWarm(Result.success(Unit))");
+        assertTrue(readyState >= 0 && parkRenderer > readyState && exposeWarm > parkRenderer);
+        assertTrue(pageReady.contains("flight?.let { pending -> prepareFlightShell(pending) }"));
+
+        String park = method(engine,
+                "private fun parkReadyWarmRenderer(view: WebView)",
+                "private fun startNetworkPrerequisites(");
+        assertTrue(park.contains("WebView.RENDERER_PRIORITY_WAIVED"));
+        assertTrue(park.contains("view.onPause()"));
+        assertTrue(park.contains("view.pauseTimers()"));
+
+        String flightShell = method(engine,
+                "private fun prepareFlightShell(current: Flight)",
+                "private fun runNetworkPrerequisites(");
+        int restorePriority = flightShell.indexOf("WebView.RENDERER_PRIORITY_BOUND");
+        int resume = flightShell.indexOf("view.onResume()");
+        int load = flightShell.indexOf("view.loadDataWithBaseURL(");
+        assertTrue(restorePriority >= 0 && resume > restorePriority && load > resume);
+        assertTrue(flightShell.contains("view.resumeTimers()"));
+
+        String warmCreate = method(engine,
+                "private fun createWebView(request: NtkAckWarmRequest)",
+                "private fun createFlightWebView(current: Flight)");
+        String flightCreate = method(engine,
+                "private fun createFlightWebView(current: Flight)",
+                "private fun installWebViewClients(created: WebView)");
+        assertTrue(warmCreate.contains("WebView.RENDERER_PRIORITY_BOUND"));
+        assertTrue(flightCreate.contains("WebView.RENDERER_PRIORITY_BOUND"));
+        assertFalse(warmCreate.contains("WebView.RENDERER_PRIORITY_IMPORTANT"));
+        assertFalse(flightCreate.contains("WebView.RENDERER_PRIORITY_IMPORTANT"));
+    }
+
+    @Test
     public void strictAckCancellationAndFirstWaveGuardHaveFailClosedOwnership() throws Exception {
         String transport = read(ntkAckSourcePath("NtkAckTransport.kt"));
         String execute = method(transport,
@@ -507,7 +599,8 @@ public final class NtkStrictFreshArchitectureTest {
         String startInternal = method(coordinator,
                 "private fun startInternal(",
                 "private fun startIsolatedAck(");
-        int committedDemandGuard = startInternal.indexOf("ViewerTelemetry.isActiveEpisode(ownerPath)");
+        int committedDemandGuard = startInternal.indexOf(
+                "ViewerTelemetry.isActiveViewer(viewerGeneration, ownerPath)");
         int networkAdmission = startInternal.indexOf(
                 "enterForegroundNetworkIfNeeded(flight)", committedDemandGuard);
         int ackNetworkStart = startInternal.indexOf(
@@ -539,7 +632,7 @@ public final class NtkStrictFreshArchitectureTest {
                 "ensureIsolatedAck(client, flight, ackRoute)");
         assertTrue(serverDecision >= 0 && isolatedOwner > serverDecision);
         assertTrue(coordinator.contains(
-                "client.leaveNtkStrictForegroundNetwork(path, flight.viewerGeneration)"));
+                "flight.client.leaveNtkStrictForegroundNetwork("));
 
         String spool = read(readerSourcePath("NtkSourceSpoolRegistry.kt"));
         String begin = method(spool,
@@ -724,12 +817,12 @@ public final class NtkStrictFreshArchitectureTest {
                 "private fun refreshRemainingAdjacentRunwayRefs(");
 
         assertTrue(initial.indexOf("finishStructurePublish()") <
-                initial.indexOf("listener.onPagesAppended(total)"));
-        assertTrue(initial.indexOf("listener.onPagesAppended(total)") <
+                initial.indexOf("listener.onPreparedAdjacentPagesAppended(total)"));
+        assertTrue(initial.indexOf("listener.onPreparedAdjacentPagesAppended(total)") <
                 initial.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
         assertTrue(remaining.indexOf("finishStructurePublish()") <
-                remaining.indexOf("listener.onPagesAppended(total)"));
-        assertTrue(remaining.indexOf("listener.onPagesAppended(total)") <
+                remaining.indexOf("listener.onPreparedAdjacentPagesAppended(total)"));
+        assertTrue(remaining.indexOf("listener.onPreparedAdjacentPagesAppended(total)") <
                 remaining.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
     }
 
@@ -747,13 +840,13 @@ public final class NtkStrictFreshArchitectureTest {
                 "private fun trimConsumedForwardHistory(",
                 "private data class ForwardHistoryTrimCandidate(");
 
-        assertTrue(initial.indexOf("beginAdjacentDrawableBatchPublication()") <
+        assertTrue(initial.indexOf("beginAdjacentDrawableBatchPublication(initialRefs)") <
                 initial.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
-        assertTrue(initial.lastIndexOf("finishAdjacentDrawableBatchPublication()") >
+        assertTrue(initial.lastIndexOf("finishAdjacentDrawableBatchPublication(drawablePublication)") >
                 initial.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
-        assertTrue(remaining.indexOf("beginAdjacentDrawableBatchPublication()") <
+        assertTrue(remaining.indexOf("beginAdjacentDrawableBatchPublication(appendable)") <
                 remaining.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
-        assertTrue(remaining.lastIndexOf("finishAdjacentDrawableBatchPublication()") >
+        assertTrue(remaining.lastIndexOf("finishAdjacentDrawableBatchPublication(activeDrawablePublication)") >
                 remaining.indexOf("commitAdjacentRunwayDrawableBatch(drawableBatch)"));
         assertTrue(trim.contains("if (isAdjacentDrawableBatchPublicationPending())"));
         assertTrue(occurrences(trim, "if (isAdjacentDrawableBatchPublicationPending())") >= 2);
@@ -844,7 +937,7 @@ public final class NtkStrictFreshArchitectureTest {
     public void nativeSurfaceFailureRetiresItsHandleBeforeDemandReattach() throws Exception {
         String surface = read(readerSourcePath("ReaderSurfaceView.kt"));
         String failure = method(surface,
-                "fun onNtkRollingRendererFatal(reason: String)",
+                "fun onNtkRollingRendererFatal(",
                 "private fun completeRollingNativeRecovery(reason: String)");
         String completion = method(surface,
                 "private fun completeRollingNativeRecovery(reason: String)",
@@ -856,7 +949,13 @@ public final class NtkStrictFreshArchitectureTest {
         int destroy = failure.indexOf("NtkRollingNativeBridge.nativeDestroy(retiredHandle)");
         assertTrue(capture >= 0 && retire > capture);
         assertTrue(invalidate > retire && destroy > invalidate);
-        assertTrue(failure.contains("rollingNativeRecoveryPending = true"));
+        assertTrue(failure.contains("rollingNativeRecoveryAttempts += 1"));
+        assertTrue(failure.contains(
+                "rollingNativeRecoveryPending = recreateNative"));
+        assertTrue(failure.contains(
+                "shouldRecreateRollingNativeRenderer("));
+        assertTrue(surface.contains("MAX_NATIVE_RECOVERY_ATTEMPTS = 1"));
+        assertTrue(failure.contains("nativeSurfaceView.visibility = View.GONE"));
         assertTrue(completion.contains("rollingNativeRecoveryPending = false"));
         assertTrue(completion.contains("rollingNativeFatal = false"));
         assertTrue(completion.contains(
@@ -997,7 +1096,7 @@ public final class NtkStrictFreshArchitectureTest {
                 "fun retireViewerOwnership(",
                 "private fun runFlight(");
         int detachLease = retirement.indexOf("retireDiscoveryForReplacement(");
-        int removeFlight = retirement.indexOf("flights.remove(ownedPath, owned)");
+        int removeFlight = retirement.indexOf("detachFlightForForegroundLeaveLocked(owned)");
         assertTrue(detachLease >= 0 && removeFlight > detachLease);
 
         String fence = read(readerSourcePath("NtkStrictDiscoveryRetirementFence.kt"));

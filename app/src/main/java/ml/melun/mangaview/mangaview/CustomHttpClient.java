@@ -68,6 +68,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -215,7 +218,7 @@ public class CustomHttpClient {
     public interface NtkStrictDocumentStreamObserver {
         void onResponseHeaders(NtkBoundHttpResponse response) throws Exception;
         /** Returns true once the observer has found everything it needs from subsequent bytes. */
-        boolean onBodyPrefix(byte[] bodyPrefix) throws Exception;
+        boolean onBodyPrefix(byte[] bodyPrefix, int bodyPrefixLength) throws Exception;
 
         default int initialBodyPrefixBytes() {
             return 112 * 1024;
@@ -251,11 +254,21 @@ public class CustomHttpClient {
                                     int status, byte[] bodyBytes,
                                     Map<String, List<String>> responseHeaders,
                                     boolean consumedToEof) {
+            this(request, requestUrl, finalUrl, status, bodyBytes, responseHeaders,
+                    consumedToEof, false);
+        }
+
+        private NtkBoundHttpResponse(NtkBoundHttpRequest request, String requestUrl,
+                                     String finalUrl, int status, byte[] bodyBytes,
+                                     Map<String, List<String>> responseHeaders,
+                                     boolean consumedToEof, boolean takeBodyOwnership) {
             this.request = request;
             this.requestUrl = requestUrl == null ? "" : requestUrl.trim();
             this.finalUrl = finalUrl == null ? "" : finalUrl.trim();
             this.status = status;
-            this.bodyBytes = bodyBytes == null ? new byte[0] : bodyBytes.clone();
+            this.bodyBytes = bodyBytes == null
+                    ? new byte[0]
+                    : takeBodyOwnership ? bodyBytes : bodyBytes.clone();
             LinkedHashMap<String, List<String>> headers = new LinkedHashMap<>();
             if(responseHeaders != null) {
                 for(Map.Entry<String, List<String>> entry : responseHeaders.entrySet()) {
@@ -266,6 +279,20 @@ public class CustomHttpClient {
             }
             this.responseHeaders = Collections.unmodifiableMap(headers);
             this.consumedToEof = consumedToEof;
+        }
+
+        private static NtkBoundHttpResponse fromOwnedBody(
+                NtkBoundHttpRequest request,
+                String requestUrl,
+                String finalUrl,
+                int status,
+                byte[] bodyBytes,
+                Map<String, List<String>> responseHeaders,
+                boolean consumedToEof
+        ) {
+            return new NtkBoundHttpResponse(
+                    request, requestUrl, finalUrl, status, bodyBytes, responseHeaders,
+                    consumedToEof, true);
         }
     }
 
@@ -774,7 +801,9 @@ public class CustomHttpClient {
                 thread.setDaemon(true);
                 return thread;
             });
-    private static final Dispatcher SHARED_IMAGE_DISPATCHER = new Dispatcher();
+    private static final Dispatcher SHARED_IMAGE_DISPATCHER = backgroundDispatcher(
+            "ntk-image-http", MAX_IMAGE_HTTP_REQUESTS, MAX_IMAGE_HTTP_REQUESTS_PER_HOST,
+            android.os.Process.THREAD_PRIORITY_DEFAULT);
     private static final AtomicInteger ACTIVE_NTK_FOREGROUND_IMAGE_HEDGES = new AtomicInteger();
     private static final AtomicInteger PEAK_NTK_FOREGROUND_IMAGE_HEDGES = new AtomicInteger();
     static {
@@ -1771,6 +1800,9 @@ public class CustomHttpClient {
     private OkHttpClient ntkCellularPageFastClient;
     private OkHttpClient ntkStrictDocumentClient;
     private OkHttpClient ntkCellularStrictDocumentClient;
+    /** Sequential bulk RSC bodies avoid cross-thread HTTP/2 segment churn during scrolling. */
+    private OkHttpClient ntkStrictBulkDocumentClient;
+    private OkHttpClient ntkCellularStrictBulkDocumentClient;
     private OkHttpClient unsafeNtkPageFastClient;
     private OkHttpClient ntkApiFastClient;
     private OkHttpClient ntkApiDirectClient;
@@ -1847,6 +1879,34 @@ public class CustomHttpClient {
     private long ntkDomainLastCheck = 0;
     private String ntkDomainLastCheckedRoot = "";
     private Context context;
+    /**
+     * ConnectivityManager is a synchronous Binder API. Reader readiness and route selection are
+     * queried many times while a finger is moving, so consulting the service from those getters
+     * can make input wait behind system_server hundreds of times per episode. Keep one immutable
+     * default-network observation, updated only by Android's network callback.
+     */
+    private static final class NtkNetworkTransportState {
+        static final NtkNetworkTransportState UNAVAILABLE =
+                new NtkNetworkTransportState(null, false, false);
+
+        final Network network;
+        final boolean cellularResilient;
+        final boolean directWifi;
+        final long networkHandle;
+
+        NtkNetworkTransportState(Network network,
+                                 boolean cellularResilient,
+                                 boolean directWifi) {
+            this.network = network;
+            this.cellularResilient = cellularResilient;
+            this.directWifi = directWifi;
+            this.networkHandle = network == null ? 0L : network.getNetworkHandle();
+        }
+    }
+    private volatile NtkNetworkTransportState ntkNetworkTransportState =
+            NtkNetworkTransportState.UNAVAILABLE;
+    private ConnectivityManager ntkConnectivityManager;
+    private ConnectivityManager.NetworkCallback ntkNetworkCallback;
     private final Object ntkQuicEngineLock = new Object();
     private final Map<String, HttpEngine> ntkQuicEngines = new HashMap<>();
     private final Map<String, FutureTask<HttpEngine>> ntkQuicEngineTasks = new HashMap<>();
@@ -1866,6 +1926,7 @@ public class CustomHttpClient {
     private final AtomicLong ntkForegroundImageRaces = new AtomicLong();
     private final AtomicLong ntkForegroundImageHedges = new AtomicLong();
     private final AtomicLong ntkForegroundImageHedgesSuppressed = new AtomicLong();
+    private final AtomicLong ntkViewerCookieSkipLastLogMs = new AtomicLong();
     private final AtomicInteger activeNtkForegroundImageRaces = new AtomicInteger();
     private final AtomicBoolean ntkCellularResilientTransportLogged = new AtomicBoolean();
     private final AtomicBoolean ntkCellularExactImageTransportLogged = new AtomicBoolean();
@@ -1918,6 +1979,7 @@ public class CustomHttpClient {
 
     public CustomHttpClient(Context context){
         this.context = context.getApplicationContext();
+        initializeNtkNetworkTransportMonitor();
         this.agent = DEFAULT_HTTP_USER_AGENT;
         dnsCacheRoot = CacheFileStore.fileRoot(this.context);
         this.cookies = new HashMap<>();
@@ -1957,6 +2019,13 @@ public class CustomHttpClient {
         this.ntkStrictDocumentClient =
                 strictNtkDocumentClient(this.client.newBuilder()).build();
         this.ntkCellularStrictDocumentClient = strictNtkDocumentClient(
+                this.client.newBuilder()
+                        .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
+                .dns(CELLULAR_RESILIENT_DNS)
+                .build();
+        this.ntkStrictBulkDocumentClient = strictNtkBulkDocumentClient(
+                this.client.newBuilder()).build();
+        this.ntkCellularStrictBulkDocumentClient = strictNtkBulkDocumentClient(
                 this.client.newBuilder()
                         .socketFactory(SNI_FRAGMENTING_SOCKET_FACTORY))
                 .dns(CELLULAR_RESILIENT_DNS)
@@ -2064,31 +2133,90 @@ public class CustomHttpClient {
         return context;
     }
 
-    private boolean shouldUseNtkCellularResilientTransport() {
+    private void initializeNtkNetworkTransportMonitor() {
         if(context == null)
-            return false;
+            return;
         try {
             ConnectivityManager manager =
                     (ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
             if(manager == null)
-                return false;
-            Network active = manager.getActiveNetwork();
-            NetworkCapabilities capabilities =
-                    active == null ? null : manager.getNetworkCapabilities(active);
-            boolean vpn = capabilities != null
-                    && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
-            boolean cellular = isCellularBackedNetwork(manager, capabilities);
-            boolean selected = shouldUseNtkCellularResilientTransport(cellular, vpn);
-            if(selected && ntkCellularResilientTransportLogged.compareAndSet(false, true)) {
-                Log.d(TAG, "ntk_cellular_resilient_transport_selected"
-                        + " dns=network_resilient"
-                        + ",tls=fragmented"
-                        + ",vpn=" + vpn);
-            }
-            return selected;
-        } catch(Exception e) {
-            return false;
+                return;
+            ntkConnectivityManager = manager;
+            ConnectivityManager.NetworkCallback callback =
+                    new ConnectivityManager.NetworkCallback() {
+                        @Override
+                        public void onAvailable(Network network) {
+                            refreshNtkNetworkTransportState();
+                        }
+
+                        @Override
+                        public void onCapabilitiesChanged(Network network,
+                                                          NetworkCapabilities capabilities) {
+                            publishNtkNetworkTransportState(manager, network, capabilities);
+                        }
+
+                        @Override
+                        public void onLost(Network network) {
+                            NtkNetworkTransportState observed = ntkNetworkTransportState;
+                            if(observed.network != null && observed.network.equals(network)) {
+                                ntkNetworkTransportState = NtkNetworkTransportState.UNAVAILABLE;
+                            }
+                            refreshNtkNetworkTransportState();
+                        }
+                    };
+            ntkNetworkCallback = callback;
+            manager.registerDefaultNetworkCallback(callback);
+            // Establish a usable value before any OkHttp DNS callback can run. A simultaneous
+            // network transition is safe: both this read and the registered callback publish a
+            // complete default-network observation rather than independent booleans.
+            refreshNtkNetworkTransportState();
+        } catch(Exception ignored) {
+            ntkNetworkTransportState = NtkNetworkTransportState.UNAVAILABLE;
         }
+    }
+
+    private void refreshNtkNetworkTransportState() {
+        ConnectivityManager manager = ntkConnectivityManager;
+        if(manager == null) {
+            ntkNetworkTransportState = NtkNetworkTransportState.UNAVAILABLE;
+            return;
+        }
+        try {
+            Network active = manager.getActiveNetwork();
+            NetworkCapabilities capabilities = active == null
+                    ? null
+                    : manager.getNetworkCapabilities(active);
+            publishNtkNetworkTransportState(manager, active, capabilities);
+        } catch(Exception ignored) {
+            ntkNetworkTransportState = NtkNetworkTransportState.UNAVAILABLE;
+        }
+    }
+
+    private void publishNtkNetworkTransportState(ConnectivityManager manager,
+                                                 Network network,
+                                                 NetworkCapabilities capabilities) {
+        if(network == null || capabilities == null) {
+            ntkNetworkTransportState = NtkNetworkTransportState.UNAVAILABLE;
+            return;
+        }
+        boolean vpn = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
+        boolean cellular = shouldUseNtkCellularResilientTransport(
+                isCellularBackedNetwork(manager, capabilities), vpn);
+        boolean directWifi = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                && !vpn
+                && !cellular;
+        ntkNetworkTransportState =
+                new NtkNetworkTransportState(network, cellular, directWifi);
+    }
+
+    private boolean shouldUseNtkCellularResilientTransport() {
+        boolean selected = ntkNetworkTransportState.cellularResilient;
+        if(selected && ntkCellularResilientTransportLogged.compareAndSet(false, true)) {
+            Log.d(TAG, "ntk_cellular_resilient_transport_selected"
+                    + " dns=network_resilient"
+                    + ",tls=fragmented");
+        }
+        return selected;
     }
 
     public boolean isNtkCellularResilientTransportActive() {
@@ -2102,23 +2230,7 @@ public class CustomHttpClient {
      * bearer, and the cellular-resilient selector below remains the sole authority for that case.
      */
     public boolean isNtkWifiTransportActive() {
-        if(context == null)
-            return false;
-        try {
-            ConnectivityManager manager =
-                    (ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
-            if(manager == null)
-                return false;
-            Network active = manager.getActiveNetwork();
-            NetworkCapabilities capabilities =
-                    active == null ? null : manager.getNetworkCapabilities(active);
-            return capabilities != null
-                    && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                    && !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-                    && !isCellularBackedNetwork(manager, capabilities);
-        } catch(Exception e) {
-            return false;
-        }
+        return ntkNetworkTransportState.directWifi;
     }
 
     /**
@@ -2128,25 +2240,8 @@ public class CustomHttpClient {
      * the retired bearer rather than silently reopening their Wi-Fi-only protocol on cellular.
      */
     public Network getNtkDirectWifiNetwork() {
-        if(context == null)
-            return null;
-        try {
-            ConnectivityManager manager =
-                    (ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
-            if(manager == null)
-                return null;
-            Network active = manager.getActiveNetwork();
-            NetworkCapabilities capabilities =
-                    active == null ? null : manager.getNetworkCapabilities(active);
-            if(capabilities == null
-                    || !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                    || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
-                    || isCellularBackedNetwork(manager, capabilities))
-                return null;
-            return active;
-        } catch(Exception e) {
-            return null;
-        }
+        NtkNetworkTransportState observed = ntkNetworkTransportState;
+        return observed.directWifi ? observed.network : null;
     }
 
     /** Captures one immutable strict-flight route from one active network observation. */
@@ -2154,37 +2249,10 @@ public class CustomHttpClient {
         String normalized = normalizeComparableNtkPath(episodePath);
         if(!normalized.matches("(?i)^/(?:manhwa|webtoon)/[^/?#]+/[^/?#]+$"))
             throw new IllegalArgumentException("Invalid strict route-snapshot episode path");
-        boolean cellular = false;
-        boolean directWifi = false;
-        long networkHandle = 0L;
-        if(context != null) {
-            try {
-                ConnectivityManager manager = (ConnectivityManager)context.getSystemService(
-                        Context.CONNECTIVITY_SERVICE);
-                if(manager != null) {
-                    Network active = manager.getActiveNetwork();
-                    NetworkCapabilities capabilities = active == null
-                            ? null
-                            : manager.getNetworkCapabilities(active);
-                    if(active != null)
-                        networkHandle = active.getNetworkHandle();
-                    boolean vpn = capabilities != null
-                            && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
-                    cellular = shouldUseNtkCellularResilientTransport(
-                            isCellularBackedNetwork(manager, capabilities), vpn);
-                    directWifi = capabilities != null
-                            && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                            && !vpn
-                            && !cellular;
-                }
-            } catch(Exception ignored) {
-                // The configured HTTPS origin remains a valid fail-closed route. It simply does
-                // not receive any Wi-Fi/cellular specialization until a replacement flight.
-                cellular = false;
-                directWifi = false;
-                networkHandle = 0L;
-            }
-        }
+        NtkNetworkTransportState observed = ntkNetworkTransportState;
+        boolean cellular = observed.cellularResilient;
+        boolean directWifi = observed.directWifi;
+        long networkHandle = observed.networkHandle;
         String origin = getBaseUrlForTransport(normalized, cellular);
         NtkStrictRouteSnapshot snapshot = new NtkStrictRouteSnapshot(
                 origin, cellular, directWifi, networkHandle);
@@ -2278,6 +2346,15 @@ public class CustomHttpClient {
         if(ntkStrictDocumentClient != null)
             return ntkStrictDocumentClient;
         return ntkPageFastClient != null ? ntkPageFastClient : client;
+    }
+
+    private OkHttpClient ntkStrictBulkDocumentClientForTransport(
+            boolean cellularResilientTransport) {
+        if(cellularResilientTransport && ntkCellularStrictBulkDocumentClient != null)
+            return ntkCellularStrictBulkDocumentClient;
+        if(ntkStrictBulkDocumentClient != null)
+            return ntkStrictBulkDocumentClient;
+        return ntkStrictDocumentClientForTransport(cellularResilientTransport);
     }
 
     private OkHttpClient ntkStrictExactImageApiClientForActiveNetwork() {
@@ -2590,43 +2667,19 @@ public class CustomHttpClient {
                 throw new IllegalStateException("Exact image response body owner conflict");
             }
             try {
-                BufferedSource source = Okio.buffer(new ForwardingSource(delegate.source()) {
-                    private final AtomicBoolean released = new AtomicBoolean(false);
-
-                    private void releasePhysicalCall() {
-                        if(released.compareAndSet(false, true)) {
-                            fallbackResponseBody.compareAndSet(delegate, null);
-                            fallbackCall.compareAndSet(physical, null);
-                        }
+                // delegate.source() is already a BufferedSource. Adding another
+                // ForwardingSource(...).buffer() copied every exact image through an additional
+                // Okio segment chain before the Kotlin ownership wrapper added yet another one.
+                // The Response is always Closeable-owned by its consumer, so retain the physical
+                // call until that same terminal close without interposing any byte storage.
+                BufferedSource source = delegate.source();
+                AtomicBoolean released = new AtomicBoolean(false);
+                Runnable releasePhysicalCall = () -> {
+                    if(released.compareAndSet(false, true)) {
+                        fallbackResponseBody.compareAndSet(delegate, null);
+                        fallbackCall.compareAndSet(physical, null);
                     }
-
-                    @Override
-                    public long read(Buffer sink, long byteCount) throws IOException {
-                        try {
-                            long read = super.read(sink, byteCount);
-                            if(read == -1L)
-                                releasePhysicalCall();
-                            return read;
-                        } catch(IOException failure) {
-                            try {
-                                super.close();
-                            } catch(IOException closeFailure) {
-                                failure.addSuppressed(closeFailure);
-                            }
-                            releasePhysicalCall();
-                            throw failure;
-                        }
-                    }
-
-                    @Override
-                    public void close() throws IOException {
-                        try {
-                            super.close();
-                        } finally {
-                            releasePhysicalCall();
-                        }
-                    }
-                });
+                };
                 ResponseBody ownedBody = new ResponseBody() {
                     @Override
                     public MediaType contentType() {
@@ -2641,6 +2694,15 @@ public class CustomHttpClient {
                     @Override
                     public BufferedSource source() {
                         return source;
+                    }
+
+                    @Override
+                    public void close() {
+                        try {
+                            delegate.close();
+                        } finally {
+                            releasePhysicalCall.run();
+                        }
                     }
                 };
                 Response ownedResponse = response.newBuilder().body(ownedBody).build();
@@ -4574,7 +4636,11 @@ public class CustomHttpClient {
         String nativeHeader = getCookieHeaderForNtkPath(path);
         String webViewHeader = "";
         if(shouldSkipNtkForegroundWebViewCookieBridge(baseUrl)) {
-            Log.d(TAG, "ntk_viewer_images_cookie_merge_skip_webview_native_reader path=" + path);
+            long now = SystemClock.elapsedRealtime();
+            long previous = ntkViewerCookieSkipLastLogMs.get();
+            if(now - previous >= 2_000L
+                    && ntkViewerCookieSkipLastLogMs.compareAndSet(previous, now))
+                Log.d(TAG, "ntk_viewer_images_cookie_merge_skip_webview_native_reader path=" + path);
         } else {
             try {
                 CookieManager manager = CookieManager.getInstance();
@@ -13197,8 +13263,13 @@ public class CustomHttpClient {
                         }
 
                         @Override
-                        public boolean onBodyPrefix(byte[] bodyPrefix) throws Exception {
-                            return documentObserver.onBodyPrefix(bodyPrefix);
+                        public boolean onBodyPrefix(
+                                byte[] bodyPrefix,
+                                int bodyPrefixLength
+                        ) throws Exception {
+                            return documentObserver.onBodyPrefix(
+                                    bodyPrefix,
+                                    bodyPrefixLength);
                         }
 
                         @Override
@@ -13237,7 +13308,7 @@ public class CustomHttpClient {
             }
             if(result.code > 0)
                 markNtkQuicStrictTransportSuccess(baseUrl);
-            NtkBoundHttpResponse exchange = new NtkBoundHttpResponse(
+            NtkBoundHttpResponse exchange = NtkBoundHttpResponse.fromOwnedBody(
                     boundRequest,
                     boundRequest.url,
                     boundRequest.url,
@@ -13308,7 +13379,7 @@ public class CustomHttpClient {
                     + ",code=" + response.code()
                     + ",bytes=" + bytes.length
                     + ",ms=" + (System.currentTimeMillis() - startedAt));
-            return new NtkBoundHttpResponse(
+            return NtkBoundHttpResponse.fromOwnedBody(
                     boundRequest,
                     boundRequest.url,
                     finalUrl,
@@ -13330,7 +13401,7 @@ public class CustomHttpClient {
         int initialSize = contentLength > 0L && contentLength <= 1024L * 1024L
                 ? (int) contentLength
                 : 128 * 1024;
-        ByteArrayOutputStream out = new ByteArrayOutputStream(initialSize);
+        NtkDocumentBodyAccumulator out = new NtkDocumentBodyAccumulator(initialSize);
         byte[] buffer = new byte[8 * 1024];
         boolean observerComplete = false;
         int preferredPrefixBytes = Math.max(4 * 1024, observer.initialBodyPrefixBytes());
@@ -13347,7 +13418,9 @@ public class CustomHttpClient {
                 // and competes with cold image admission. Observe exponentially growing prefixes,
                 // then stop copying as soon as the signed request seed has been found.
                 if(!observerComplete && out.size() >= nextPrefixObservation) {
-                    observerComplete = observer.onBodyPrefix(out.toByteArray());
+                    observerComplete = observer.onBodyPrefix(
+                            out.backingArray(),
+                            out.size());
                     nextPrefixObservation = fixedCompactPrefixCadence
                             ? Math.min(Integer.MAX_VALUE / 2,
                             nextPrefixObservation + preferredPrefixBytes)
@@ -13356,10 +13429,24 @@ public class CustomHttpClient {
                 }
             }
         }
-        byte[] bytes = out.toByteArray();
         if(!observerComplete)
-            observer.onBodyPrefix(bytes);
-        return bytes;
+            observer.onBodyPrefix(out.backingArray(), out.size());
+        return out.takeExactArray();
+    }
+
+    /** Synchronous prefix observers borrow this buffer only for the duration of their callback. */
+    private static final class NtkDocumentBodyAccumulator extends ByteArrayOutputStream {
+        NtkDocumentBodyAccumulator(int initialSize) {
+            super(initialSize);
+        }
+
+        byte[] backingArray() {
+            return buf;
+        }
+
+        byte[] takeExactArray() {
+            return count == buf.length ? buf : Arrays.copyOf(buf, count);
+        }
     }
 
     /**
@@ -13509,7 +13596,7 @@ public class CustomHttpClient {
         headers.put("User-Agent", agent);
         NtkBoundHttpRequest boundRequest =
                 new NtkBoundHttpRequest("GET", requestUrl, headers, new byte[0]);
-        OkHttpClient exactClient = ntkStrictDocumentClientForTransport(
+        OkHttpClient exactClient = ntkStrictBulkDocumentClientForTransport(
                 callRegistry.cellularResilientTransport());
         ntkStrictDocumentLogicalRequestCount.incrementAndGet();
         return executeStrictExactSameOriginRequest(
@@ -24170,10 +24257,37 @@ public class CustomHttpClient {
     }
 
     private static OkHttpClient.Builder configureDispatcher(OkHttpClient.Builder builder, int maxRequests, int maxRequestsPerHost) {
-        Dispatcher dispatcher = new Dispatcher();
+        return builder.dispatcher(backgroundDispatcher(
+                "ntk-http", maxRequests, maxRequestsPerHost,
+                android.os.Process.THREAD_PRIORITY_BACKGROUND));
+    }
+
+    private static Dispatcher backgroundDispatcher(
+            String name, int maxRequests, int maxRequestsPerHost, int androidPriority) {
+        AtomicInteger ids = new AtomicInteger();
+        ThreadFactory factory = runnable -> {
+            Thread thread = new Thread(() -> {
+                try {
+                    android.os.Process.setThreadPriority(
+                            androidPriority);
+                } catch(Throwable ignored) {
+                }
+                runnable.run();
+            }, name + "-" + ids.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        ExecutorService executor = new ThreadPoolExecutor(
+                0,
+                Integer.MAX_VALUE,
+                60L,
+                TimeUnit.SECONDS,
+                new SynchronousQueue<>(),
+                factory);
+        Dispatcher dispatcher = new Dispatcher(executor);
         dispatcher.setMaxRequests(maxRequests);
         dispatcher.setMaxRequestsPerHost(maxRequestsPerHost);
-        return builder.dispatcher(dispatcher);
+        return dispatcher;
     }
 
     private static OkHttpClient.Builder baseClient(OkHttpClient.Builder builder) {
@@ -24235,6 +24349,19 @@ public class CustomHttpClient {
                 .connectTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .readTimeout(NTK_PAGE_DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                 .callTimeout(0L, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Exact episode documents are large, sequential RSC bodies. HTTP/2 receives DATA on its
+     * connection reader and hands each 8 KiB Okio segment to a different consumer thread; on ART
+     * that cross-thread pool topology allocated several megabytes every scroll chapter. A
+     * persistent HTTP/1.1 connection reads and recycles the same segments on the flight worker.
+     * Tiny concurrent ACK/nv/image-control exchanges deliberately keep the ordinary H2 client.
+     */
+    private static OkHttpClient.Builder strictNtkBulkDocumentClient(
+            OkHttpClient.Builder builder) {
+        return strictNtkDocumentClient(builder)
+                .protocols(java.util.Collections.singletonList(Protocol.HTTP_1_1));
     }
 
     private static OkHttpClient.Builder fastNtkApiClient(OkHttpClient.Builder builder) {
@@ -24325,6 +24452,12 @@ public class CustomHttpClient {
         return strictNtkDocumentClient(new OkHttpClient.Builder())
                 .build()
                 .callTimeoutMillis();
+    }
+
+    static List<Protocol> strictNtkBulkDocumentProtocolsForTest() {
+        return strictNtkBulkDocumentClient(new OkHttpClient.Builder())
+                .build()
+                .protocols();
     }
 
     static List<Protocol> ntkTlsFallbackProtocolsForTest() {

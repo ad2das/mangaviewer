@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class NtkAsyncTelemetry(
     capacity: Int = DEFAULT_CAPACITY,
+    private val enabled: () -> Boolean = { Log.isLoggable(TAG, Log.DEBUG) },
     private val sink: (String, String) -> Unit = { tag, message -> Log.d(tag, message) }
 ) : Closeable {
     data class Snapshot(
@@ -80,7 +81,16 @@ internal class NtkAsyncTelemetry(
         return submit { sink(TAG, message()) }
     }
 
+    fun isEnabled(): Boolean = !closed.get() && enabled()
+
     private fun submit(operation: () -> Unit): Boolean {
+        if (!isEnabled()) {
+            synchronized(accountingLock) {
+                offered.incrementAndGet()
+                dropped.incrementAndGet()
+            }
+            return false
+        }
         val task = Runnable {
             try {
                 operation()

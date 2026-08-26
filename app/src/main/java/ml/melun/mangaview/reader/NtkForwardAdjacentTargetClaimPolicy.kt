@@ -23,6 +23,16 @@ internal object NtkForwardAdjacentTargetClaimPolicy {
         REJECT,
     }
 
+    /**
+     * Episode objects are mutable repository projections and may be reconstructed while an exact
+     * append waits for physical motion to become idle. The canonical provider path, not JVM object
+     * identity, owns a forward-target claim.
+     */
+    fun sameTarget(existingTargetPath: String?, proposedTargetPath: String?): Boolean =
+        !existingTargetPath.isNullOrEmpty() &&
+            !proposedTargetPath.isNullOrEmpty() &&
+            existingTargetPath.equals(proposedTargetPath, ignoreCase = true)
+
     fun decide(
         existingTargetPath: String?,
         existingAuthority: Authority?,
@@ -33,7 +43,7 @@ internal object NtkForwardAdjacentTargetClaimPolicy {
         if (existingTargetPath.isNullOrEmpty() || existingAuthority == null) {
             return Decision.ACCEPT
         }
-        if (existingTargetPath.equals(proposedTargetPath, ignoreCase = true)) {
+        if (sameTarget(existingTargetPath, proposedTargetPath)) {
             return Decision.JOIN
         }
         if (existingStructureCommitted) return Decision.REJECT

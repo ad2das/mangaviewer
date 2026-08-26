@@ -429,6 +429,64 @@ public final class ViewerTelemetry {
             boolean viewportOriginalComplete,
             long firstVisibleGapPx,
             float velocityPxPerSecond) {
+        actualImageDrawCommittedForEpisode(
+                renderView,
+                authority,
+                physicalEpisodeId,
+                firstVisibleSourcePage,
+                lastVisibleSourcePage,
+                committedAtNanos,
+                viewportOriginalComplete,
+                firstVisibleGapPx,
+                velocityPxPerSecond,
+                0L,
+                0L);
+    }
+
+    /** Same identity proof with the exact physical samples that changed this submitted viewport. */
+    public static void actualImageDrawCommittedForEpisode(
+            View renderView,
+            long authority,
+            String physicalEpisodeId,
+            int firstVisibleSourcePage,
+            int lastVisibleSourcePage,
+            long committedAtNanos,
+            boolean viewportOriginalComplete,
+            long firstVisibleGapPx,
+            float velocityPxPerSecond,
+            long inputOldestNanos,
+            long inputNewestNanos) {
+        actualImageDrawCommittedForEpisode(
+                renderView,
+                authority,
+                physicalEpisodeId,
+                firstVisibleSourcePage,
+                lastVisibleSourcePage,
+                committedAtNanos,
+                viewportOriginalComplete,
+                firstVisibleGapPx,
+                velocityPxPerSecond,
+                inputOldestNanos,
+                inputNewestNanos,
+                0L,
+                0L);
+    }
+
+    /** Same proof with both hardware event time and app dispatch-receipt time. */
+    public static void actualImageDrawCommittedForEpisode(
+            View renderView,
+            long authority,
+            String physicalEpisodeId,
+            int firstVisibleSourcePage,
+            int lastVisibleSourcePage,
+            long committedAtNanos,
+            boolean viewportOriginalComplete,
+            long firstVisibleGapPx,
+            float velocityPxPerSecond,
+            long inputOldestNanos,
+            long inputNewestNanos,
+            long inputReceivedOldestNanos,
+            long inputReceivedNewestNanos) {
         recordQualifiedActualFrame(
                 renderView,
                 authority,
@@ -442,7 +500,11 @@ public final class ViewerTelemetry {
                 "hwui_frame_commit",
                 "openToCommittedDrawMs",
                 "responseToCommittedDrawMs",
-                physicalEpisodeId);
+                physicalEpisodeId,
+                inputOldestNanos,
+                inputNewestNanos,
+                inputReceivedOldestNanos,
+                inputReceivedNewestNanos);
     }
 
     /** Called only when the native SurfaceControl path has a real compositor-latch proof. */
@@ -496,6 +558,35 @@ public final class ViewerTelemetry {
             // returning to the old every-frame timestamp churn.
             session.actualStatePublicationGate.reset();
         }
+    }
+
+    /**
+     * Records cadence for one already-qualified physical presentation without publishing first-
+     * image, episode, accessibility, or response semantics.
+     *
+     * <p>The reader's semantic main-thread mailbox deliberately coalesces frames that show the
+     * same page identities. Presentation cadence must be recorded before that mailbox or ordinary
+     * scroll movement inside one page disappears from the native interval distribution.</p>
+     */
+    public static void nativePresentationCadence(
+            long presentedAtNanos,
+            float velocityPxPerSecond,
+            float refreshRate,
+            long inputOldestNanos,
+            long inputNewestNanos,
+            long inputReceivedOldestNanos,
+            long inputReceivedNewestNanos) {
+        Session session = SESSION.get();
+        if(session == null || presentedAtNanos <= 0L)
+            return;
+        session.recordQualifiedActualFrame(
+                presentedAtNanos,
+                velocityPxPerSecond,
+                refreshRate,
+                inputOldestNanos,
+                inputNewestNanos,
+                inputReceivedOldestNanos,
+                inputReceivedNewestNanos);
     }
 
     private static void recordQualifiedActualFrame(
@@ -577,6 +668,44 @@ public final class ViewerTelemetry {
             String physicalEpisodeId,
             long inputOldestNanos,
             long inputNewestNanos) {
+        recordQualifiedActualFrame(
+                renderView,
+                authority,
+                firstVisiblePage,
+                lastVisiblePage,
+                evidenceAtNanos,
+                viewportOriginalComplete,
+                firstVisibleGapPx,
+                velocityPxPerSecond,
+                eventName,
+                evidenceKind,
+                openDurationField,
+                responseDurationField,
+                physicalEpisodeId,
+                inputOldestNanos,
+                inputNewestNanos,
+                0L,
+                0L);
+    }
+
+    private static void recordQualifiedActualFrame(
+            View renderView,
+            long authority,
+            int firstVisiblePage,
+            int lastVisiblePage,
+            long evidenceAtNanos,
+            boolean viewportOriginalComplete,
+            long firstVisibleGapPx,
+            float velocityPxPerSecond,
+            String eventName,
+            String evidenceKind,
+            String openDurationField,
+            String responseDurationField,
+            String physicalEpisodeId,
+            long inputOldestNanos,
+            long inputNewestNanos,
+            long inputReceivedOldestNanos,
+            long inputReceivedNewestNanos) {
         Session session = SESSION.get();
         if(session == null || !viewportOriginalComplete || firstVisibleGapPx >= 0L ||
                 firstVisiblePage < 0 || lastVisiblePage < firstVisiblePage)
@@ -590,7 +719,9 @@ public final class ViewerTelemetry {
                 velocityPxPerSecond,
                 refreshRate,
                 inputOldestNanos,
-                inputNewestNanos);
+                inputNewestNanos,
+                inputReceivedOldestNanos,
+                inputReceivedNewestNanos);
 
         boolean firstActualFrame;
         synchronized(session) {
@@ -984,6 +1115,16 @@ public final class ViewerTelemetry {
     public static boolean isActiveEpisode(String episodeId) {
         Session session = SESSION.get();
         return session != null && episodeId != null && episodeId.equals(session.episodeId);
+    }
+
+    /** Atomically validates generation and episode against one immutable Session snapshot. */
+    public static boolean isActiveViewer(long generation, String episodeId) {
+        Session session = SESSION.get();
+        return session != null
+                && generation > 0L
+                && session.generation == generation
+                && episodeId != null
+                && episodeId.equals(session.episodeId);
     }
 
     public static void terminalImagePipelineSummary(String episodeId) {
@@ -1534,6 +1675,7 @@ public final class ViewerTelemetry {
         volatile String latestActualDescription;
         volatile ScheduledFuture<?> memorySampler;
         long lastNativeScrollPresentationNanos;
+        long nativePhysicalGestureStartedNanos;
         long nativeScrollIntervalCount;
         long nativeScrollIntervalNanos;
         long nativeWorstIntervalNanos;
@@ -1541,6 +1683,7 @@ public final class ViewerTelemetry {
         long nativeConsecutiveSlowIntervals;
         long nativeMaxConsecutiveSlowIntervals;
         long nativeRefreshPeriodNanos;
+        long lastNativeSlowCauseLogNanos;
         static final int MAX_RECORDED_SLOW_INTERVALS = 32;
         final long[] nativeSlowIntervalEndNanos =
                 new long[MAX_RECORDED_SLOW_INTERVALS];
@@ -1599,6 +1742,37 @@ public final class ViewerTelemetry {
                 float refreshRate,
                 long inputOldestNanos,
                 long inputNewestNanos) {
+            recordQualifiedActualFrame(
+                    actualFrameNanos,
+                    velocityPxPerSecond,
+                    refreshRate,
+                    inputOldestNanos,
+                    inputNewestNanos,
+                    0L,
+                    0L);
+        }
+
+        synchronized void recordQualifiedActualFrame(
+                long actualFrameNanos,
+                float velocityPxPerSecond,
+                float refreshRate,
+                long inputOldestNanos,
+                long inputNewestNanos,
+                long inputReceivedOldestNanos,
+                long inputReceivedNewestNanos) {
+            // Completed-draw delivery is intentionally bounded and can arrive after the next
+            // ACTION_DOWN. Such a proof still describes real pixels, but it belongs to the
+            // previous gesture and must not repopulate the cadence baseline that DOWN just reset.
+            if(nativePhysicalGestureStartedNanos > 0L &&
+                    actualFrameNanos < nativePhysicalGestureStartedNanos)
+                return;
+            long previous = lastNativeScrollPresentationNanos;
+            // A delayed semantic/accessibility publication can carry an older presentation after
+            // the producer-side cadence path has already recorded newer frames. Reject it before
+            // the stationary-frame branch so an old coalesced proof cannot erase the live cadence
+            // baseline for the next compositor commit.
+            if(previous > 0L && actualFrameNanos <= previous)
+                return;
             if(Math.abs(velocityPxPerSecond) <= 25.0f) {
                 lastNativeScrollPresentationNanos = 0L;
                 nativeConsecutiveSlowIntervals = 0L;
@@ -1607,9 +1781,8 @@ public final class ViewerTelemetry {
             long refreshPeriod = (long) (1_000_000_000.0d /
                     Math.max(30.0d, Math.min(240.0d, refreshRate)));
             nativeRefreshPeriodNanos = refreshPeriod;
-            long previous = lastNativeScrollPresentationNanos;
             lastNativeScrollPresentationNanos = actualFrameNanos;
-            if(previous <= 0L || actualFrameNanos <= previous)
+            if(previous <= 0L)
                 return;
             long interval = actualFrameNanos - previous;
             // Keep the raw interval distribution for diagnostics. Slow-frame qualification is
@@ -1623,8 +1796,27 @@ public final class ViewerTelemetry {
                     refreshPeriod,
                     actualFrameNanos,
                     inputOldestNanos,
-                    inputNewestNanos)) {
+                    inputNewestNanos,
+                    inputReceivedOldestNanos,
+                    inputReceivedNewestNanos)) {
                 nativeSlowIntervals++;
+                if(interval >= 100_000_000L && Log.isLoggable(TAG, Log.DEBUG) &&
+                        (lastNativeSlowCauseLogNanos <= 0L ||
+                         actualFrameNanos - lastNativeSlowCauseLogNanos >= 500_000_000L)) {
+                    lastNativeSlowCauseLogNanos = actualFrameNanos;
+                    long receiptSpan = inputReceivedOldestNanos > 0L &&
+                            inputReceivedNewestNanos >= inputReceivedOldestNanos
+                            ? inputReceivedNewestNanos - inputReceivedOldestNanos : -1L;
+                    long receiptOldestAge = inputReceivedOldestNanos > 0L
+                            ? actualFrameNanos - inputReceivedOldestNanos : -1L;
+                    long receiptNewestAge = inputReceivedNewestNanos > 0L
+                            ? actualFrameNanos - inputReceivedNewestNanos : -1L;
+                    Log.i(TAG, "native_slow_cause intervalMs=" + interval / 1_000_000.0
+                            + ",velocity=" + velocityPxPerSecond
+                            + ",receiptSpanMs=" + receiptSpan / 1_000_000.0
+                            + ",receiptOldestAgeMs=" + receiptOldestAge / 1_000_000.0
+                            + ",receiptNewestAgeMs=" + receiptNewestAge / 1_000_000.0);
+                }
                 int slot = (int) ((nativeSlowIntervals - 1L) %
                         MAX_RECORDED_SLOW_INTERVALS);
                 nativeSlowIntervalEndNanos[slot] = actualFrameNanos;
@@ -1639,11 +1831,13 @@ public final class ViewerTelemetry {
         }
 
         synchronized void startPhysicalScrollGesture() {
+            nativePhysicalGestureStartedNanos = SystemClock.elapsedRealtimeNanos();
             lastNativeScrollPresentationNanos = 0L;
             nativeConsecutiveSlowIntervals = 0L;
         }
 
         synchronized void endPhysicalScrollMotion() {
+            nativePhysicalGestureStartedNanos = 0L;
             lastNativeScrollPresentationNanos = 0L;
             nativeConsecutiveSlowIntervals = 0L;
         }

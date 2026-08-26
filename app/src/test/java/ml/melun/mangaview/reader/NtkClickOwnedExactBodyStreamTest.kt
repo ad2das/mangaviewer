@@ -271,6 +271,9 @@ class NtkClickOwnedExactBodyStreamTest {
         val residentAdoption = quarantine.substringAfter(
             "private fun tryAdoptDirectWifiAdjacentResidentExactBody("
         ).substringBefore("private fun adoptHeldBody(")
+        val residentPredecode = quarantine.substringAfter(
+            "private fun attachDirectWifiAdjacentResidentPredecode("
+        ).substringBefore("private fun tryAdoptDirectWifiAdjacentResidentExactBody(")
         val evidence = quarantine.substringAfter(
             "private fun armPredecessorPhysicalExtensionEvidence()"
         ).substringBefore("fun observedDocumentAuthorityFuture(")
@@ -297,7 +300,8 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(inherited.contains(".thenCombine(inheritedHostHandoff.first)"))
         assertTrue(inherited.contains("inherited.whenComplete"))
         assertTrue(inherited.contains(
-            "primaryBodyExecutor(\n                    inheritedCandidate,\n" +
+            "primaryBodyExecutor(\n                    pageIndex,\n" +
+                "                    inheritedCandidate,\n" +
                 "                    predecessorProvenOrdinaryDirectWifi,"
         ))
         assertTrue(inherited.contains("val inheritedFollower = !inheritedHostHandoff.first.isDone"))
@@ -328,6 +332,43 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(residentAdoption.contains("attachDirectWifiAdjacentResidentPredecode("))
         assertTrue(residentAdoption.contains("predecodeQuarantinedOriginalAsync("))
         assertTrue(residentAdoption.contains("DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR"))
+        assertTrue(residentPredecode.contains(
+            "useNativeFileDecodeInsteadOfPrivateBitmap("
+        ))
+        assertTrue(
+            residentPredecode.indexOf("useNativeFileDecodeInsteadOfPrivateBitmap(") <
+                residentPredecode.indexOf("predecodeQuarantinedOriginalAsync(")
+        )
+        val genericPredecodeStart = quarantine.indexOf("private fun attachPrivatePredecodes(")
+        val genericPredecodeEnd = quarantine.indexOf(
+            "private fun startClickPrimaryCandidateRace(",
+            genericPredecodeStart,
+        )
+        assertTrue(genericPredecodeStart >= 0 && genericPredecodeEnd > genericPredecodeStart)
+        val genericPredecode = quarantine.substring(
+            genericPredecodeStart,
+            genericPredecodeEnd,
+        )
+        assertTrue(genericPredecode.contains(
+            "useNativeFileDecodeInsteadOfPrivateBitmap("
+        ))
+        assertTrue(
+            genericPredecode.indexOf("useNativeFileDecodeInsteadOfPrivateBitmap(") <
+                genericPredecode.indexOf("predecodeQuarantinedOriginalAsync(")
+        )
+        assertTrue(residentPredecode.contains("adjacentRunwayOffset == 0"))
+        assertTrue(
+            residentPredecode.indexOf("ANCHOR_PREDECODE_EXECUTOR") <
+                residentPredecode.indexOf("DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR")
+        )
+        assertTrue(quarantine.contains(
+            "private val DIRECT_WIFI_ADJACENT_RUNWAY_PREDECODE_EXECUTOR =\n" +
+                "            Executors.newSingleThreadExecutor"
+        ))
+        assertTrue(quarantine.contains(
+            "\"ntk-click-adjacent-runway-predecode\",\n" +
+                "                    Process.THREAD_PRIORITY_BACKGROUND"
+        ))
         assertTrue(quarantine.contains(
             "residentAnchorProofMayPrecedeSampledCandidate =\n" +
                 "                directWifiAdjacentOwned &&"
@@ -562,6 +603,22 @@ class NtkClickOwnedExactBodyStreamTest {
     }
 
     @Test
+    fun viewportDemandOwnedSuffixNeverReopensTheClickWave() {
+        val releases = AtomicInteger()
+        val stream = NtkClickOwnedExactBodyStream(
+            mapOf(0 to CompletableFuture.completedFuture(null)),
+            Closeable { },
+            adjacentRunwayReady = { releases.incrementAndGet() },
+            viewportDemandOwnsSuffix = true,
+        )
+
+        stream.onAdjacentRunwayReady()
+        stream.onAdjacentRunwayReady()
+
+        assertEquals(0, releases.get())
+    }
+
+    @Test
     fun restoredInitialViewportReleasesExactlyOneBoundPage() {
         val releasedPages = mutableListOf<Int>()
         val drawableCommits = AtomicInteger()
@@ -695,7 +752,9 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(streamBody.contains("published.size == exactFutures.size"))
         assertTrue(streamBody.contains("if (completeEpisodeStream) close()"))
         assertTrue(quarantine.contains("probeLanes="))
-        assertTrue(quarantine.contains("(forwardFirstPage until pageLimit).associateWith"))
+        assertTrue(quarantine.contains("(pageStart until pageLimit).associateWith"))
+        assertTrue(quarantine.contains("documentValidated.thenApplyAsync("))
+        assertTrue(quarantine.contains("completeExactForwardWave(provisionalWave)"))
         assertTrue(quarantine.contains("candidateFuture.thenCompose"))
         assertTrue(coordinator.contains("streamIfExact(exactManifestPreview)"))
         assertTrue(coordinator.contains("clickOwnedExactStream,"))
@@ -887,16 +946,17 @@ class NtkClickOwnedExactBodyStreamTest {
         assertTrue(quarantine.contains("val sourceRoutePreparationReady = preferredExtension.thenApply"))
         assertTrue(quarantine.contains("val bulkRouteReady = extensionRouteReady.thenCombine(firstActualFramePresented)"))
         assertFalse(quarantine.contains("val latePlaceholders ="))
-        assertTrue(wave.contains("val initialPageLimit = pageLimit"))
-        assertTrue(
-            wave.contains("(forwardFirstPage until initialPageLimit).associateWith")
-        )
+        assertTrue(wave.contains("forwardFirstPage + initialSpeculationPages"))
+        assertTrue(wave.contains("buildForwardBodyFutures(forwardFirstPage, pageLimit)"))
+        assertTrue(wave.contains("buildForwardBodyFutures(tailStart, exactPageLimit)"))
+        assertTrue(wave.contains("(pageStart until pageLimit).associateWith"))
         assertFalse(
             wave.contains(
                 "minOf(pageLimit, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)"
             )
         )
-        assertTrue(wave.contains("return Wave(preparedInitial)"))
+        assertTrue(wave.contains("return Wave(initialBodies)"))
+        assertTrue(wave.contains("return Wave(exactBodies)"))
         assertTrue(race.contains("val canonicalCandidate = candidateAsset("))
         assertTrue(race.contains("startCompletedHeadMissCandidate(pageIndex)"))
         assertTrue(cache.contains("val hintedTransportAsset = hintedNtkGeneratedImageUrl(asset) ?: asset"))
@@ -937,7 +997,7 @@ class NtkClickOwnedExactBodyStreamTest {
     fun hostGpuAdjacentSuffixIsBoundedBeforeOrdinaryWifiAndPhysicalCallAdmission() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val admissionStart = quarantine.indexOf("bodyReadAdmission = {")
-        val admissionEnd = quarantine.indexOf("\n                },\n            )", admissionStart)
+        val admissionEnd = quarantine.indexOf("onPhysicalBodyProven = {", admissionStart)
         val admission = quarantine.substring(admissionStart, admissionEnd)
         val tailWindow = admission.indexOf("acquireHostGpuAdjacentTailBodyTransferLease(")
         val ordinaryWindow = admission.indexOf("acquireOrdinaryDirectWifiTransferLease(")
@@ -954,6 +1014,11 @@ class NtkClickOwnedExactBodyStreamTest {
         )
         assertTrue(
             quarantine.contains(
+                "HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_EXECUTOR.execute(runnable)"
+            )
+        )
+        assertTrue(
+            quarantine.contains(
                 "shouldBoundHostGpuAdjacentTailTransfers("
             )
         )
@@ -963,7 +1028,7 @@ class NtkClickOwnedExactBodyStreamTest {
     fun hostGpuCurrentResumeViewportFenceRunsBeforeEveryPhysicalCallAdmission() {
         val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
         val admissionStart = quarantine.indexOf("bodyReadAdmission = {")
-        val admissionEnd = quarantine.indexOf("\n                },\n            )", admissionStart)
+        val admissionEnd = quarantine.indexOf("onPhysicalBodyProven = {", admissionStart)
         val admission = quarantine.substring(admissionStart, admissionEnd)
         val viewportFence = admission.indexOf(
             "awaitHostGpuCurrentRestoredViewportBodyAdmission("
@@ -993,7 +1058,7 @@ class NtkClickOwnedExactBodyStreamTest {
         assertFalse(beforeAdmission.contains("mixedUncommonLease = acquireMixedUncommonTransferLease("))
         assertTrue(
             quarantine.contains(
-                "armHostGpuCurrentRestoredViewportBodyRelease(initialBodyFutures)"
+                "armHostGpuCurrentRestoredViewportBodyRelease(initialBodies)"
             )
         )
         assertTrue(
@@ -1105,6 +1170,19 @@ class NtkClickOwnedExactBodyStreamTest {
         )
         assertTrue(attach.contains("retained[pageIndex] = held"))
         assertTrue(attach.contains("ReaderImageCache.predecodeQuarantinedOriginalAsync("))
+    }
+
+    @Test
+    fun proofBackedAdjacentExactBodiesUseTheNetworkBoundH1BodyLane() {
+        val cache = readSource("ReaderImageCache.kt")
+        val start = cache.indexOf("val directWifiProofBackedExactBody =")
+        val end = cache.indexOf("return NtkResolvedSourceRoute(", start)
+        val route = cache.substring(start, end)
+
+        assertTrue(route.contains("exactApiReplicaTag != null"))
+        assertTrue(route.contains("httpClient.isNtkWifiTransportActive()"))
+        assertTrue(route.contains("clickOwnedDirectWifiOrdinaryBodyClient("))
+        assertTrue(route.contains("ntk-click-adjacent-exact-api-replica-h1"))
     }
 
     private fun readSource(name: String): String {

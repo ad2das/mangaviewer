@@ -10,7 +10,7 @@ class NtkClickOwnedManhwaWavePolicyTest {
     @Test
     fun completeOwnershipRingHasBoundedH2MultiplexingHeadroom() {
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.BODY_LANES)
-        assertEquals(120, NtkClickOwnedManhwaWavePolicy.PROBE_LANES)
+        assertEquals(8, NtkClickOwnedManhwaWavePolicy.PROBE_LANES)
         assertEquals(24, NtkClickOwnedManhwaWavePolicy.CONNECTION_SHARDS)
         assertEquals(3, NtkClickOwnedManhwaWavePolicy.REPLICA_STRIPE_SIZE)
         assertEquals(40, NtkClickOwnedManhwaWavePolicy.ACTIVE_BODY_TRANSFERS)
@@ -36,8 +36,12 @@ class NtkClickOwnedManhwaWavePolicyTest {
             NtkClickOwnedManhwaWavePolicy.hostGpuCurrentBulkTransferLadder().toList(),
         )
         assertEquals(
-            5,
+            4,
             NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_BODY_TRANSFERS,
+        )
+        assertEquals(
+            4,
+            NtkClickOwnedManhwaWavePolicy.HOST_GPU_DIRECT_WIFI_ADJACENT_TAIL_EXECUTOR_LANES,
         )
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.MIXED_UNCOMMON_BODY_TRANSFERS)
         assertEquals(8, NtkClickOwnedManhwaWavePolicy.SPECULATION_DEBT_LIMIT)

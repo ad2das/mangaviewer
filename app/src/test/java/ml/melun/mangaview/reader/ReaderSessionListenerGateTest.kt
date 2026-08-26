@@ -161,6 +161,21 @@ class ReaderSessionListenerGateTest {
     }
 
     @Test
+    fun staleGenerationStillForwardsNativeRetirementOwnership() {
+        val downstream = RecordingListener()
+        val gate = ReaderSessionListenerGate(
+            generation = 7,
+            isActive = { false },
+            adopted = AdoptedDrawableRegistry(),
+            installed = InstalledDrawableQuery { false },
+            downstream = downstream,
+        )
+
+        assertTrue(gate.onSessionOwnedBitmapRetirement(emptyList()))
+        assertEquals(listOf("bitmap-retirement:0"), downstream.events)
+    }
+
+    @Test
     fun installedPreparedDrawableSuppressesVisualMutation() {
         val downstream = RecordingListener()
         val registry = AdoptedDrawableRegistry().apply {
@@ -365,6 +380,26 @@ class ReaderSessionListenerGateTest {
     }
 
     @Test
+    fun hostPressureRollingEvictionUsesTheDedicatedDownstreamEventAndInvalidatesRegistry() {
+        val downstream = RecordingListener()
+        val registry = AdoptedDrawableRegistry().apply {
+            adopt(5, DrawableOrigin.READER_SESSION, AdoptedDrawableIdentity.token(Any()))
+        }
+        val gate = ReaderSessionListenerGate(
+            generation = 1,
+            isActive = { true },
+            adopted = registry,
+            installed = InstalledDrawableQuery { false },
+            downstream = downstream
+        )
+
+        gate.onPageHostPressureRollingEvicted(5)
+
+        assertEquals(listOf("host-pressure-rolling-evicted:5"), downstream.events)
+        assertNull(registry.origin(5))
+    }
+
+    @Test
     fun adjacentExactManifestRequestReachesOnlyTheActiveSessionListener() {
         val downstream = RecordingListener()
         var activeGeneration = 4
@@ -482,6 +517,15 @@ class ReaderSessionListenerGateTest {
 
         override fun onPageRollingEvicted(index: Int) {
             events += "rolling-evicted:$index"
+        }
+
+        override fun onPageHostPressureRollingEvicted(index: Int) {
+            events += "host-pressure-rolling-evicted:$index"
+        }
+
+        override fun onSessionOwnedBitmapRetirement(bitmaps: List<Bitmap>): Boolean {
+            events += "bitmap-retirement:${bitmaps.size}"
+            return true
         }
 
         override fun onMessage(message: String) {

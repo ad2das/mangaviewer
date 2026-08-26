@@ -52,8 +52,10 @@ import java.io.Closeable
 import java.io.EOFException
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.InterruptedIOException
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -63,6 +65,7 @@ import java.util.ArrayDeque
 import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.Callable
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -74,7 +77,9 @@ import java.util.concurrent.Future
 import java.util.concurrent.FutureTask
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
+import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
@@ -2042,13 +2047,30 @@ private val ntkWifiWebtoonReplicaPreferences =
     private const val DIRECT_STREAM_TILE_ASPECT_RATIO = 3.0f
     private const val DIRECT_STREAM_TILE_MIN_ESTIMATED_BYTES = 12L * 1024L * 1024L
     private const val FULL_DECODE_VALIDATION_MAX_BYTES = 256L * 1024L
+    private const val VALIDATED_USABLE_IMAGE_FILE_LIMIT = 4096
     private const val NTK_SOURCE_METADATA_INITIAL_PROBE_BYTES = 8 * 1024
     private const val NTK_SOURCE_METADATA_MAX_PROBE_BYTES = 512 * 1024
-    // Exact cold bodies are written on independent network lanes. Buffering each lane avoids
-    // turning OkHttp's small source chunks into one filesystem syscall apiece on emulator-hosted
-    // storage while preserving the same byte-for-byte digest and atomic publication contract.
+    // Exact bodies arrive on independent network lanes. A BufferedOutputStream allocated another
+    // 256 KiB array for every page even though each write below is already coalesced into 64 KiB
+    // chunks. ART allocation profiles showed that array constructor as the dominant live-scroll
+    // allocation branch. Reuse the read/write chunk itself across requests and write it directly;
+    // the byte-for-byte digest, EOF proof and atomic publication boundary remain unchanged.
     private const val NTK_EXACT_BODY_READ_BUFFER_BYTES = 64 * 1024
-    private const val NTK_EXACT_BODY_WRITE_BUFFER_BYTES = 256 * 1024
+    private const val NTK_EXACT_BODY_READ_BUFFER_POOL_CAPACITY = 32
+    private const val NTK_EXACT_BODY_MEMORY_INITIAL_BYTES = 256 * 1024
+    private val ntkExactBodyReadBuffers = ArrayBlockingQueue<ByteArray>(
+        NTK_EXACT_BODY_READ_BUFFER_POOL_CAPACITY,
+    )
+
+    private inline fun <T> withNtkExactBodyReadBuffer(block: (ByteArray) -> T): T {
+        val buffer = ntkExactBodyReadBuffers.poll()
+            ?: ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
+        return try {
+            block(buffer)
+        } finally {
+            ntkExactBodyReadBuffers.offer(buffer)
+        }
+    }
     private const val NTK_GENERATED_RANGE_CHUNK_BYTES = 64 * 1024
     private const val NTK_GENERATED_RANGE_INITIAL_FIRST_CHUNK_BYTES = 512 * 1024
     private const val NTK_GENERATED_RANGE_ADJACENT_FIRST_CHUNK_BYTES = 512 * 1024
@@ -2122,6 +2144,17 @@ private val ntkWifiWebtoonReplicaPreferences =
         ConcurrentHashMap<String, StoredEncodedOriginalByteProof>()
     private val residentStrictPublishedBodies =
         ConcurrentHashMap<String, ResidentStrictPublishedBody>()
+    private data class ValidatedUsableImageFile(
+        val length: Long,
+        val lastModified: Long,
+    )
+    /**
+     * Cache bodies are immutable between publications. Remember a completed decoder validation
+     * by its file identity stamp so readiness polling never allocates a decoder for the same body
+     * on every pass.
+     */
+    private val validatedUsableImageFiles =
+        ConcurrentHashMap<String, ValidatedUsableImageFile>()
     private val pendingStrictProofPublications =
         ConcurrentHashMap<String, ResidentStrictPublishedBody>()
     private data class StrictSourceBoundsHint(
@@ -2194,33 +2227,40 @@ private val ntkWifiWebtoonReplicaPreferences =
         ConcurrentHashMap<DirectWifiOrdinaryRouteKey, Call.Factory>()
     private val replicaFailoverFactories = ConcurrentHashMap<Int, Call.Factory>()
     private val clickOwnedDnsBySharedClient = ConcurrentHashMap<Int, Dns>()
-    private val clickOwnedProbeDispatcher = Dispatcher().apply {
-        maxRequests = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
-        maxRequestsPerHost = NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS
-    }
-    private val clickOwnedMixedBodyDispatcher = Dispatcher().apply {
-        maxRequests = 40
-        maxRequestsPerHost = 40
-    }
-    private val clickOwnedDirectWifiOrdinaryBodyDispatcher = Dispatcher().apply {
-        maxRequests = NtkClickOwnedManhwaWavePolicy.DIRECT_WIFI_ORDINARY_BODY_TRANSFERS
-        maxRequestsPerHost = NtkClickOwnedManhwaWavePolicy.DIRECT_WIFI_ORDINARY_BODY_TRANSFERS
-    }
-    private val clickOwnedDirectWifiRangeDispatcher = Dispatcher().apply {
-        maxRequests = NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS
-        maxRequestsPerHost = NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS
-    }
-    private val clickOwnedDirectWifiShortWebtoonRangeDispatcher = Dispatcher().apply {
-        maxRequests = NtkDirectWifiShortWebtoonTailProfile.GLOBAL_MAX_CONCURRENT_EXTRA_TAILS
-        maxRequestsPerHost =
-            NtkDirectWifiShortWebtoonTailProfile.GLOBAL_MAX_CONCURRENT_EXTRA_TAILS
-    }
-    private val clickOwnedDirectWifiAdjacentWebtoonRecoveryDispatcher = Dispatcher().apply {
-        maxRequests =
-            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT
-        maxRequestsPerHost =
-            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT
-    }
+    private val clickOwnedProbeDispatcher = backgroundOkHttpDispatcher(
+        "ReaderProbeHttp",
+        NtkClickOwnedManhwaWavePolicy.PROBE_LANES,
+        NtkClickOwnedManhwaWavePolicy.PROBE_LANES,
+    )
+    private val clickOwnedMixedBodyDispatcher =
+        backgroundOkHttpDispatcher(
+            "ReaderMixedBodyHttp", 40, 40, Process.THREAD_PRIORITY_BACKGROUND,
+        )
+    private val clickOwnedDirectWifiOrdinaryBodyDispatcher = backgroundOkHttpDispatcher(
+        "ReaderDirectWifiBodyHttp",
+        NtkClickOwnedManhwaWavePolicy.DIRECT_WIFI_ORDINARY_BODY_TRANSFERS,
+        NtkClickOwnedManhwaWavePolicy.DIRECT_WIFI_ORDINARY_BODY_TRANSFERS,
+        Process.THREAD_PRIORITY_BACKGROUND,
+    )
+    private val clickOwnedDirectWifiRangeDispatcher = backgroundOkHttpDispatcher(
+        "ReaderDirectWifiRangeHttp",
+        NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS,
+        NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS,
+        Process.THREAD_PRIORITY_BACKGROUND,
+    )
+    private val clickOwnedDirectWifiShortWebtoonRangeDispatcher = backgroundOkHttpDispatcher(
+        "ReaderShortWebtoonHttp",
+        NtkDirectWifiShortWebtoonTailProfile.GLOBAL_MAX_CONCURRENT_EXTRA_TAILS,
+        NtkDirectWifiShortWebtoonTailProfile.GLOBAL_MAX_CONCURRENT_EXTRA_TAILS,
+        Process.THREAD_PRIORITY_BACKGROUND,
+    )
+    private val clickOwnedDirectWifiAdjacentWebtoonRecoveryDispatcher =
+        backgroundOkHttpDispatcher(
+            "ReaderAdjacentRecoveryHttp",
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT,
+            NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT,
+            Process.THREAD_PRIORITY_BACKGROUND,
+        )
     private val clickOwnedDirectWifiAdjacentWebtoonRecoveryPermits = Semaphore(
         NtkWebtoonReplicaHeaderPolicy.WIFI_DIRECT_ADJACENT_H1_RECOVERY_MAX_CONCURRENT,
         true,
@@ -2243,14 +2283,31 @@ private val ntkWifiWebtoonReplicaPreferences =
                 priority = Thread.NORM_PRIORITY
             }
         }
-    // A tail task owns at most one disjoint 128 KiB segment. The executor remains bounded even
-    // though the normal production route above does not use segmented transport.
+    private const val STRICT_REPLICA_FAILOVER_LOG_INTERVAL_MS = 1000L
+    // Dispatcher identities isolate request policy, not long-lived thread ownership. Once a
+    // finite source wave is idle, release its worker stacks promptly; OkHttp connection pools
+    // retain transport reuse independently.
+    private const val BACKGROUND_HTTP_IDLE_KEEP_ALIVE_SECONDS = 5L
+    private val lastStrictReplicaFailoverLogAtMs = AtomicLong(0L)
+    private val suppressedStrictReplicaFailoverLogs = AtomicLong(0L)
+    // A tail task owns at most one disjoint 128 KiB segment. Do not size this executor from the
+    // 120 logical source lanes: one large image can otherwise create fourteen high-priority
+    // workers, and several simultaneously admitted pages can starve input, RenderThread and
+    // gfxstream. The existing continuation budget is also the physical CPU/socket budget for the
+    // complete-body segmented route. Queued disjoint ranges remain lossless and normally finish
+    // faster because the replica is no longer flooded with competing streams.
     private val strictManhwaRangeExecutor = Executors.newFixedThreadPool(
-        NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS,
+        NTK_MANHWA_MAX_CONCURRENT_RANGE_CONTINUATIONS,
     ) { runnable ->
-        Thread(runnable, "ntk-manhwa-range-segment").apply {
+        Thread(
+            {
+                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
+                runnable.run()
+            },
+            "ntk-manhwa-range-segment",
+        ).apply {
             isDaemon = true
-            priority = Thread.NORM_PRIORITY + 1
+            priority = Thread.NORM_PRIORITY
         }
     }
     private val suppressedPermitlessInitialGeneratedUntil = ConcurrentHashMap<String, Long>()
@@ -2372,16 +2429,62 @@ private val ntkWifiWebtoonReplicaPreferences =
         backgroundThreadFactory("ReaderNtkApiFallback")
     )
 
-    private fun backgroundThreadFactory(name: String): ThreadFactory = ThreadFactory { runnable ->
-        Thread({
-            try {
-                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-            } catch (_: Throwable) {
+    private fun backgroundThreadFactory(name: String): ThreadFactory =
+        prioritizedThreadFactory(name, Process.THREAD_PRIORITY_BACKGROUND)
+
+    private fun prioritizedThreadFactory(name: String, androidPriority: Int): ThreadFactory =
+        ThreadFactory { runnable ->
+            Thread({
+                try {
+                    Process.setThreadPriority(androidPriority)
+                } catch (_: Throwable) {
+                }
+                runnable.run()
+            }, name).apply {
+                isDaemon = true
+                priority = Thread.NORM_PRIORITY - 1
             }
-            runnable.run()
-        }, name).apply {
-            isDaemon = true
-            priority = Thread.NORM_PRIORITY - 1
+        }
+
+    private fun backgroundOkHttpDispatcher(
+        name: String,
+        maxRequests: Int,
+        maxRequestsPerHost: Int,
+        androidPriority: Int = Process.THREAD_PRIORITY_BACKGROUND,
+    ): Dispatcher {
+        val executor = ThreadPoolExecutor(
+            0,
+            Int.MAX_VALUE,
+            BACKGROUND_HTTP_IDLE_KEEP_ALIVE_SECONDS,
+            TimeUnit.SECONDS,
+            SynchronousQueue(),
+            prioritizedThreadFactory(name, androidPriority),
+        )
+        return Dispatcher(executor).apply {
+            this.maxRequests = maxRequests
+            this.maxRequestsPerHost = maxRequestsPerHost
+        }
+    }
+
+    /**
+     * A dead replica can fail dozens of page lanes together. Logging every host edge synchronously
+     * wakes logd and formats strings on all of those network workers while the reader is moving.
+     * Retain representative diagnostics and the exact suppressed count without making transient
+     * mirror failure part of the display workload.
+     */
+    private fun logStrictReplicaFailover(message: () -> String) {
+        val nowMs = SystemClock.uptimeMillis()
+        while (true) {
+            val previousMs = lastStrictReplicaFailoverLogAtMs.get()
+            if (nowMs - previousMs < STRICT_REPLICA_FAILOVER_LOG_INTERVAL_MS) {
+                suppressedStrictReplicaFailoverLogs.incrementAndGet()
+                return
+            }
+            if (!lastStrictReplicaFailoverLogAtMs.compareAndSet(previousMs, nowMs)) continue
+            val suppressed = suppressedStrictReplicaFailoverLogs.getAndSet(0L)
+            val suffix = if (suppressed > 0L) ",suppressed=$suppressed" else ""
+            Log.w(TAG, message() + suffix)
+            return
         }
     }
 
@@ -2678,6 +2781,7 @@ data class NtkResolvedSourceRoute(
     private class NtkReplicaFailoverCall(
         private val delegateFactory: Call.Factory,
         private val originalRequest: Request,
+        private val excludedInitialAttemptUrls: Set<String> = emptySet(),
     ) : Call {
         private val executed = AtomicBoolean(false)
         private val cancelled = AtomicBoolean(false)
@@ -2692,12 +2796,33 @@ data class NtkResolvedSourceRoute(
             AtomicReference<NtkStalledReplicaResponseBody?>(null)
         private val firstCall = delegateFactory.newCall(originalRequest)
 
+        /**
+         * Mutable control for one logical replica operation. Keeping these values together lets
+         * the transport phases compile as independent, bounded methods instead of one giant ART
+         * compilation unit while preserving the exact retry state across phases.
+         */
+        private class AttemptState {
+            var lastFailure: IOException? = null
+            var index = 0
+            var manhwaExtensionFallbackAdded = false
+            var wifiFocusedRecoveryStartIndex = Int.MAX_VALUE
+            var wifiFocusedRecoveryAdded = false
+            var carrierManhwaQuicRecoveryAttempted = false
+            var exactQuicRecoveryAttempted = false
+            var wifiWebtoonExactQuicRecoveryAttempted = false
+            var wifiWebtoonPrimaryExplicitMisses = 0
+            var exactFragmentedRecoveryAttempted = false
+            var wifiManhwaExplicitQuicMisses = 0
+        }
+
         override fun request(): Request = originalRequest
 
         override fun execute(): Response {
             check(executed.compareAndSet(false, true)) { "Already Executed" }
             val logicalCallStartedAtNanos = SystemClock.elapsedRealtimeNanos()
-            val canonicalCandidates = strictReplicaRequests(originalRequest)
+            val canonicalCandidates = strictReplicaRequests(originalRequest).filterNot {
+                it.url.toString() in excludedInitialAttemptUrls
+            }
             val preferredOrdinaryReplicaHost = originalRequest
                 .tag(NtkDirectWifiOrdinaryTransportSelection::class.java)
                 ?.selectedPreferredReplicaHost()
@@ -2855,22 +2980,12 @@ data class NtkResolvedSourceRoute(
             } else {
                 0L
             }
-            var lastFailure: IOException? = null
-            var index = 0
-            var manhwaExtensionFallbackAdded = false
+            val attemptState = AttemptState()
             val earlyExtensionRecoveryUrls = mutableSetOf<String>()
-            var wifiFocusedRecoveryStartIndex = Int.MAX_VALUE
-            var wifiFocusedRecoveryAdded = false
             val explicitReplicaMissHosts = mutableSetOf<String>()
-            var carrierManhwaQuicRecoveryAttempted = false
-            var exactQuicRecoveryAttempted = false
-            var wifiWebtoonExactQuicRecoveryAttempted = false
-            var wifiWebtoonPrimaryExplicitMisses = 0
-            var exactFragmentedRecoveryAttempted = false
-            var wifiManhwaExplicitQuicMisses = 0
             val manhwaHeaderRecoveryPermitHeld = AtomicBoolean(false)
             fun appendWifiFocusedRecoveryIfEligible(): Boolean {
-                if (wifiFocusedRecoveryAdded ||
+                if (attemptState.wifiFocusedRecoveryAdded ||
                     !NtkWebtoonReplicaHeaderPolicy.shouldAppendFocusedRecovery(
                         cellularResilientTransport,
                         webtoonReplica,
@@ -2879,8 +2994,8 @@ data class NtkResolvedSourceRoute(
                 val focusedCandidate = candidates.asReversed().firstOrNull {
                     it.url.host.lowercase(Locale.ROOT) !in explicitReplicaMissHosts
                 } ?: return false
-                wifiFocusedRecoveryAdded = true
-                wifiFocusedRecoveryStartIndex = attemptCandidates.size
+                attemptState.wifiFocusedRecoveryAdded = true
+                attemptState.wifiFocusedRecoveryStartIndex = attemptCandidates.size
                 repeat(NtkWebtoonReplicaHeaderPolicy.WIFI_FOCUSED_RECOVERY_ATTEMPTS) {
                     attemptCandidates.add(focusedCandidate)
                 }
@@ -2893,12 +3008,13 @@ data class NtkResolvedSourceRoute(
                 )
                 return true
             }
-            if (shouldTryWifiWebtoonPrimaryExactQuic(
-                    strictPageIndex,
-                    webtoonReplica,
-                )
-            ) {
-                wifiWebtoonExactQuicRecoveryAttempted = true
+            fun tryWifiWebtoonPrimaryExactQuic(): Response? {
+                if (!shouldTryWifiWebtoonPrimaryExactQuic(
+                        strictPageIndex,
+                        webtoonReplica,
+                    )
+                ) return null
+                attemptState.wifiWebtoonExactQuicRecoveryAttempted = true
                 val primaryCandidate = candidates.first()
                 executeExactQuicImageRecovery(
                     primaryCandidate,
@@ -2914,7 +3030,7 @@ data class NtkResolvedSourceRoute(
                             NtkWifiExactQuicSessionPool.WEBTOON_CALLBACK_THREADS_PER_SESSION,
                     ),
                     onExplicitMiss = {
-                        wifiWebtoonPrimaryExplicitMisses++
+                        attemptState.wifiWebtoonPrimaryExplicitMisses++
                         explicitReplicaMissHosts.add(
                             primaryCandidate.url.host.lowercase(Locale.ROOT)
                         )
@@ -2942,7 +3058,7 @@ data class NtkResolvedSourceRoute(
                         wifiTransportActive,
                         webtoonReplica,
                         strictPageIndex,
-                        wifiWebtoonPrimaryExplicitMisses,
+                        attemptState.wifiWebtoonPrimaryExplicitMisses,
                     ) && liveDirectWifi && sameViewerGeneration
                 ) {
                     val alternateCandidate = candidates.firstOrNull {
@@ -2998,11 +3114,14 @@ data class NtkResolvedSourceRoute(
                         attemptCandidates.addAll(unprovenCandidates)
                     }
                 }
-            } else if (shouldTryWifiManhwaPrimaryExactQuic(
-                    strictPageIndex,
-                    manhwaReplica,
-                )
-            ) {
+                return null
+            }
+            fun tryWifiManhwaPrimaryExactQuic(): Response? {
+                if (!shouldTryWifiManhwaPrimaryExactQuic(
+                        strictPageIndex,
+                        manhwaReplica,
+                    )
+                ) return null
                 val primaryHostIndex = Math.floorMod(
                     strictPageIndex,
                     NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size,
@@ -3022,7 +3141,7 @@ data class NtkResolvedSourceRoute(
                             NtkWifiExactQuicSessionPool.MANHWA_SESSION_STRIPES_PER_HOST,
                             NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size,
                         ),
-                    onExplicitMiss = { wifiManhwaExplicitQuicMisses++ },
+                    onExplicitMiss = { attemptState.wifiManhwaExplicitQuicMisses++ },
                 )?.let { return it }
                 val alternateHost = NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS[
                     (primaryHostIndex + 1) % NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size
@@ -3042,11 +3161,11 @@ data class NtkResolvedSourceRoute(
                             NtkWifiExactQuicSessionPool.MANHWA_SESSION_STRIPES_PER_HOST,
                             NTK_WIFI_MANHWA_PRIMARY_QUIC_HOSTS.size,
                         ),
-                        onExplicitMiss = { wifiManhwaExplicitQuicMisses++ },
+                        onExplicitMiss = { attemptState.wifiManhwaExplicitQuicMisses++ },
                     )?.let { return it }
                 }
                 if (NtkManhwaWifiTransportPolicy.shouldTryExtensionFirst(
-                        wifiManhwaExplicitQuicMisses
+                        attemptState.wifiManhwaExplicitQuicMisses
                     )
                 ) {
                     val extensionFallbacks = strictManhwaExtensionFallbackRequests(
@@ -3055,7 +3174,7 @@ data class NtkResolvedSourceRoute(
                         interleaveExtensions = true,
                     )
                     if (extensionFallbacks.isNotEmpty()) {
-                        manhwaExtensionFallbackAdded = true
+                        attemptState.manhwaExtensionFallbackAdded = true
                         attemptCandidates.clear()
                         attemptCandidates.addAll(extensionFallbacks)
                         // A mirror-local miss can still leave the canonical suffix available on a
@@ -3065,7 +3184,7 @@ data class NtkResolvedSourceRoute(
                         Log.w(
                             TAG,
                             "reader_strict_wifi_manhwa_extension_first " +
-                                "page=$strictPageIndex,quicMisses=$wifiManhwaExplicitQuicMisses," +
+                                "page=$strictPageIndex,quicMisses=${attemptState.wifiManhwaExplicitQuicMisses}," +
                                 "candidates=${extensionFallbacks.size}",
                         )
                         // Two independent exact-JPG misses prove that no accepted body exists yet.
@@ -3105,16 +3224,21 @@ data class NtkResolvedSourceRoute(
                         }
                     }
                 }
+                return null
             }
-            try {
-                while (index < attemptCandidates.size) {
+            tryWifiWebtoonPrimaryExactQuic()?.let { return it }
+            tryWifiManhwaPrimaryExactQuic()?.let { return it }
+
+            fun executeReplicaAttemptLoop(): Response {
+              try {
+                while (attemptState.index < attemptCandidates.size) {
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
-                val candidate = attemptCandidates[index]
-                val physicalCandidate = if (index > 0) {
+                val candidate = attemptCandidates[attemptState.index]
+                val physicalCandidate = if (attemptState.index > 0) {
                     candidate.newBuilder()
                         .tag(
                             CustomHttpClient.NtkExactImagePhysicalAttempt::class.java,
-                            CustomHttpClient.NtkExactImagePhysicalAttempt(index),
+                            CustomHttpClient.NtkExactImagePhysicalAttempt(attemptState.index),
                         )
                         .build()
                 } else {
@@ -3123,7 +3247,7 @@ data class NtkResolvedSourceRoute(
                 // The first attempt retains the eagerly-created canonical Call. Later physical
                 // attempts carry a wire-only pool rotation tag and must therefore be constructed
                 // from the same bounded factory with that tagged request.
-                val call = if (index == 0 && candidate.url == originalRequest.url) {
+                val call = if (attemptState.index == 0 && candidate.url == originalRequest.url) {
                     firstCall
                 } else {
                     delegateFactory.newCall(physicalCandidate)
@@ -3131,7 +3255,8 @@ data class NtkResolvedSourceRoute(
                 active.set(call)
                 val headerResolved = AtomicBoolean(false)
                 val headerDeadlineMs = when {
-                    webtoonReplica && index >= wifiFocusedRecoveryStartIndex ->
+                    webtoonReplica &&
+                        attemptState.index >= attemptState.wifiFocusedRecoveryStartIndex ->
                         NtkWebtoonReplicaHeaderPolicy.WIFI_FOCUSED_RECOVERY_HEADER_MS
                     webtoonReplica -> webtoonHeaderFailoverMs
                     // The anchor retains its dedicated segmented transport. Every other exact page
@@ -3176,7 +3301,7 @@ data class NtkResolvedSourceRoute(
                                     TAG,
                                     "reader_strict_replica_header_deadline " +
                                         "page=${identity?.pageIndex ?: strictTag?.pageIndex ?: -1}," +
-                                        "host=${candidate.url.host},attempt=$index," +
+                                        "host=${candidate.url.host},attempt=${attemptState.index}," +
                                         "deadlineMs=$headerDeadlineMs," +
                                         "permitAcquired=$permitAcquired," +
                                         "permitHeld=${manhwaHeaderRecoveryPermitHeld.get()}",
@@ -3196,7 +3321,7 @@ data class NtkResolvedSourceRoute(
                     null
                 }
                 try {
-                    val response = call.execute()
+                    fun acceptReplicaResponse(response: Response): Response? {
                     if (!headerResolved.compareAndSet(false, true)) {
                         response.close()
                         throw java.net.SocketTimeoutException(
@@ -3275,8 +3400,9 @@ data class NtkResolvedSourceRoute(
                             directWifiOrdinaryJpeg =
                                 isDirectWifiClickOwnedOrdinaryManhwaJpeg(),
                             retryableMiss = retryableMiss,
-                            candidateIndex = index,
-                            extensionFallbackAlreadyAdded = manhwaExtensionFallbackAdded,
+                            candidateIndex = attemptState.index,
+                            extensionFallbackAlreadyAdded =
+                                attemptState.manhwaExtensionFallbackAdded,
                         )
                     ) {
                         val extensionFallbacks = strictManhwaExtensionFallbackRequests(
@@ -3294,9 +3420,10 @@ data class NtkResolvedSourceRoute(
                                     )
                         }
                         if (earlyPngCandidate != null) {
-                            val remainingCanonical = attemptCandidates.drop(index + 1)
+                            val remainingCanonical =
+                                attemptCandidates.drop(attemptState.index + 1)
                             attemptCandidates.subList(
-                                index + 1,
+                                attemptState.index + 1,
                                 attemptCandidates.size,
                             ).clear()
                             attemptCandidates.add(earlyPngCandidate)
@@ -3318,15 +3445,15 @@ data class NtkResolvedSourceRoute(
                     }
                     if (
                         retryableMiss &&
-                        index == attemptCandidates.lastIndex &&
+                        attemptState.index == attemptCandidates.lastIndex &&
                         manhwaReplica &&
-                        !manhwaExtensionFallbackAdded
+                        !attemptState.manhwaExtensionFallbackAdded
                     ) {
                         val extensionFallbacks = strictManhwaExtensionFallbackRequests(
                             originalRequest,
                         ).filterNot { it.url.toString() in earlyExtensionRecoveryUrls }
                         if (extensionFallbacks.isNotEmpty()) {
-                            manhwaExtensionFallbackAdded = true
+                            attemptState.manhwaExtensionFallbackAdded = true
                             attemptCandidates.addAll(extensionFallbacks)
                             Log.w(
                                 TAG,
@@ -3337,10 +3464,10 @@ data class NtkResolvedSourceRoute(
                             )
                         }
                     }
-                    if (retryableMiss && index == attemptCandidates.lastIndex) {
+                    if (retryableMiss && attemptState.index == attemptCandidates.lastIndex) {
                         appendWifiFocusedRecoveryIfEligible()
                     }
-                    if (!retryableMiss || index == attemptCandidates.lastIndex) {
+                    if (!retryableMiss || attemptState.index == attemptCandidates.lastIndex) {
                         // On Wi-Fi an uncommon-extension body may have been found after the signed
                         // manifest's stale JPG suffix missed. Range recovery must preserve that
                         // successful extension; reusing the original JPG ring makes every exact
@@ -3368,73 +3495,84 @@ data class NtkResolvedSourceRoute(
                         )
                     }
                     response.close()
-                    Log.w(
-                        TAG,
+                    logStrictReplicaFailover {
                         "reader_strict_webtoon_replica_failover code=${response.code}," +
                             "empty=$emptySuccessfulBody," +
                             "invalidCompleteBody=$completeInvalidImageBody," +
                             "from=${candidate.url.host}," +
-                            "to=${attemptCandidates[index + 1].url.host}"
-                    )
+                            "to=${attemptCandidates[attemptState.index + 1].url.host}"
+                    }
+                    return null
+                    }
+                    val response = call.execute()
+                    acceptReplicaResponse(response)?.let { return it }
                 } catch (failure: IOException) {
-                    if (!carrierManhwaQuicRecoveryAttempted &&
+                    fun recoverReplicaFailure(): Response? {
+                    if (!attemptState.carrierManhwaQuicRecoveryAttempted &&
                         shouldTryCarrierManhwaQuicRecovery(physicalCandidate, failure)
                     ) {
-                        carrierManhwaQuicRecoveryAttempted = true
+                        attemptState.carrierManhwaQuicRecoveryAttempted = true
                         executeCarrierManhwaQuicRecovery(physicalCandidate, failure)?.let {
                             return it
                         }
                     }
-                    if (!exactQuicRecoveryAttempted &&
+                    if (!attemptState.exactQuicRecoveryAttempted &&
                         shouldTryExactQuicLegacyImageRecovery(physicalCandidate)
                     ) {
-                        exactQuicRecoveryAttempted = true
+                        attemptState.exactQuicRecoveryAttempted = true
                         executeExactQuicLegacyImageRecovery(physicalCandidate, failure)?.let {
                             return it
                         }
                     }
-                    if (!exactFragmentedRecoveryAttempted &&
+                    if (!attemptState.exactFragmentedRecoveryAttempted &&
                         isLegacyBlockedImageRequest(physicalCandidate)
                     ) {
-                        exactFragmentedRecoveryAttempted = true
+                        attemptState.exactFragmentedRecoveryAttempted = true
                         executeExactFragmentedLegacyImageRecovery(
                             physicalCandidate,
                             failure,
                         )?.let { return it }
                     }
-                    if (!wifiWebtoonExactQuicRecoveryAttempted &&
-                        index == attemptCandidates.lastIndex &&
+                    if (!attemptState.wifiWebtoonExactQuicRecoveryAttempted &&
+                        attemptState.index == attemptCandidates.lastIndex &&
                         shouldTryWifiWebtoonExactQuicRecovery(physicalCandidate)
                     ) {
-                        wifiWebtoonExactQuicRecoveryAttempted = true
+                        attemptState.wifiWebtoonExactQuicRecoveryAttempted = true
                         executeExactQuicWifiWebtoonRecovery(
                             physicalCandidate,
                             failure,
                         )?.let { return it }
                     }
-                    if (index == attemptCandidates.lastIndex) {
+                    if (attemptState.index == attemptCandidates.lastIndex) {
                         appendWifiFocusedRecoveryIfEligible()
                     }
-                    if (cancelled.get() || index == attemptCandidates.lastIndex) throw failure
-                    lastFailure = failure
-                    Log.w(
-                        TAG,
+                    if (cancelled.get() ||
+                        attemptState.index == attemptCandidates.lastIndex
+                    ) throw failure
+                    attemptState.lastFailure = failure
+                    logStrictReplicaFailover {
                         "reader_strict_webtoon_replica_failover error=${failure.javaClass.simpleName}," +
                             "from=${candidate.url.host}," +
-                            "to=${attemptCandidates[index + 1].url.host}"
-                    )
+                            "to=${attemptCandidates[attemptState.index + 1].url.host}"
+                    }
+                    return null
+                    }
+                    recoverReplicaFailure()?.let { return it }
                 } finally {
                     headerResolved.set(true)
                     headerDeadline?.cancel(false)
                 }
-                index++
+                attemptState.index++
             }
-                throw lastFailure ?: IOException("Webtoon replica image Call exhausted")
-            } finally {
+                throw attemptState.lastFailure
+                    ?: IOException("Webtoon replica image Call exhausted")
+              } finally {
                 if (manhwaHeaderRecoveryPermitHeld.compareAndSet(true, false)) {
                     ntkManhwaHeaderFailoverPermits.release()
                 }
+              }
             }
+            return executeReplicaAttemptLoop()
         }
 
         /**
@@ -5235,14 +5373,20 @@ data class NtkResolvedSourceRoute(
             if (expectedSegmentLength <= 0L || expectedSegmentLength > Int.MAX_VALUE) {
                 throw IOException("Invalid manhwa range segment $start-$end")
             }
-            val output = ByteArrayOutputStream(expectedSegmentLength.toInt())
+            // The exact Content-Range fixes the final length before the first byte. Writing into
+            // ByteArrayOutputStream and then calling toByteArray() retained two complete copies
+            // of every 128 KiB range (plus a 16 KiB scratch array), multiplying LOS pressure for
+            // each multi-range page. A segment is unpublished until complete, so one owned exact
+            // array provides the same atomic result without either copy.
+            val output = ByteArray(expectedSegmentLength.toInt())
+            var received = 0
             for (offset in candidates.indices) {
                 if (cancelled.get()) throw InterruptedIOException("Replica image Call cancelled")
                 val requestStart = NtkManhwaRangeResumePolicy.nextStart(
                     start,
-                    output.size().toLong(),
+                    received.toLong(),
                     end,
-                ) ?: return output.toByteArray()
+                ) ?: return output
                 val candidate = candidates[(firstCandidateIndex + offset) % candidates.size]
                 val request = candidate.newBuilder()
                     .header("Accept-Encoding", "identity")
@@ -5314,42 +5458,41 @@ data class NtkResolvedSourceRoute(
                                 TimeUnit.MILLISECONDS,
                             )
                         }
-                        val chunk = ByteArray(16 * 1024)
-                        val beforeAttempt = output.size()
+                        val beforeAttempt = received
                         try {
-                            while (output.size().toLong() < expectedSegmentLength) {
+                            while (received < output.size) {
                                 if (cancelled.get()) {
                                     throw InterruptedIOException("Replica image Call cancelled")
                                 }
                                 val wanted = minOf(
-                                    chunk.size.toLong(),
-                                    expectedSegmentLength - output.size().toLong(),
-                                ).toInt()
-                                val count = source.read(chunk, 0, wanted)
+                                    16 * 1024,
+                                    output.size - received,
+                                )
+                                val count = source.read(output, received, wanted)
                                 if (count < 0) {
                                     throw EOFException(
-                                        "Manhwa segment ended at ${output.size()}/$expectedSegmentLength"
+                                        "Manhwa segment ended at $received/$expectedSegmentLength"
                                     )
                                 }
                                 if (count == 0) continue
-                                output.write(chunk, 0, count)
+                                received += count
                             }
                         } catch (failure: IOException) {
                             if (cancelled.get()) throw failure
                             lastFailure = failure
-                            val next = start + output.size().toLong()
+                            val next = start + received.toLong()
                             Log.w(
                                 TAG,
                                 "reader_strict_manhwa_segment_body_resume " +
                                     "host=${candidate.url.host}," +
-                                    "attemptBytes=${output.size() - beforeAttempt}," +
-                                    "received=${output.size()},next=$next,end=$end," +
+                                    "attemptBytes=${received - beforeAttempt}," +
+                                    "received=$received,next=$next,end=$end," +
                                     "idleMs=$bodyIdleMs," +
                                     "reason=${failure.javaClass.simpleName}",
                             )
                             return@use
                         }
-                        return output.toByteArray()
+                        return output
                     }
                 } catch (failure: IOException) {
                     if (cancelled.get()) throw failure
@@ -5829,7 +5972,11 @@ data class NtkResolvedSourceRoute(
 
         override fun timeout(): okio.Timeout = firstCall.timeout()
 
-        override fun clone(): Call = NtkReplicaFailoverCall(delegateFactory, originalRequest)
+        override fun clone(): Call = NtkReplicaFailoverCall(
+            delegateFactory,
+            originalRequest,
+            excludedInitialAttemptUrls,
+        )
     }
 
     private data class NtkManhwaRangeSegment(
@@ -7002,17 +7149,109 @@ data class NtkResolvedSourceRoute(
         fun cancelFromOwningCall() = closeBody()
     }
 
+    /**
+     * Common direct-Wi-Fi manhwa success path kept separate from the multi-transport recovery
+     * state machine. The returned body still passes the same streaming header, EOF, length and
+     * SHA authority in spoolQuarantinedEncodedOriginal/spoolStrictPublishedBody. Only a clean
+     * complete image response returns here; every miss or transport error resumes the unchanged
+     * replica/extension/QUIC recovery method without retrying the failed physical URL.
+     */
+    private class NtkDirectWifiManhwaSuccessCall(
+        private val delegateFactory: Call.Factory,
+        private val originalRequest: Request,
+    ) : Call {
+        private val executed = AtomicBoolean(false)
+        private val cancelled = AtomicBoolean(false)
+        private val active = AtomicReference<Call?>(null)
+        private val firstCall = delegateFactory.newCall(originalRequest)
+
+        override fun request(): Request = originalRequest
+
+        override fun execute(): Response {
+            check(executed.compareAndSet(false, true)) { "Already Executed" }
+            active.set(firstCall)
+            if (cancelled.get()) firstCall.cancel()
+            val response = try {
+                firstCall.execute()
+            } catch (failure: IOException) {
+                if (cancelled.get()) throw failure
+                return executeRecovery()
+            }
+            val contentType = response.header("Content-Type")
+                .orEmpty()
+                .substringBefore(';')
+                .trim()
+                .lowercase(Locale.ROOT)
+            val completeImageHeaders = response.code == 200 &&
+                response.header("Content-Range") == null &&
+                response.header("x-mangaviewer-partial-image") != "1" &&
+                contentType.startsWith("image/") &&
+                (response.body?.contentLength() ?: 0L) != 0L
+            if (completeImageHeaders) return response
+            response.close()
+            if (cancelled.get()) {
+                throw InterruptedIOException("Replica image Call cancelled")
+            }
+            return executeRecovery()
+        }
+
+        private fun executeRecovery(): Response {
+            val recovery = NtkReplicaFailoverCall(
+                delegateFactory,
+                originalRequest,
+                setOf(originalRequest.url.toString()),
+            )
+            active.set(recovery)
+            if (cancelled.get()) recovery.cancel()
+            return recovery.execute()
+        }
+
+        override fun enqueue(responseCallback: okhttp3.Callback) {
+            throw UnsupportedOperationException("Strict replica image Calls are synchronous")
+        }
+
+        override fun cancel() {
+            cancelled.set(true)
+            active.get()?.cancel() ?: firstCall.cancel()
+        }
+
+        override fun isExecuted(): Boolean = executed.get()
+        override fun isCanceled(): Boolean = cancelled.get()
+        override fun timeout(): okio.Timeout = firstCall.timeout()
+        override fun clone(): Call = NtkDirectWifiManhwaSuccessCall(
+            delegateFactory,
+            originalRequest,
+        )
+    }
+
     private class NtkReplicaFailoverCallFactory(
         private val delegate: Call.Factory,
     ) : Call.Factory {
-        override fun newCall(request: Request): Call =
-            if (strictReplicaRequests(request).size > 1 ||
-                isLegacyBlockedImageRequest(request)
-            ) {
-                NtkReplicaFailoverCall(delegate, request)
+        override fun newCall(request: Request): Call {
+            val replicas = strictReplicaRequests(request)
+            return if (replicas.size > 1 || isLegacyBlockedImageRequest(request)) {
+                if (replicas.size > 1 && isDirectWifiManhwaSuccessCandidate(request)) {
+                    NtkDirectWifiManhwaSuccessCall(delegate, request)
+                } else {
+                    NtkReplicaFailoverCall(delegate, request)
+                }
             } else {
                 delegate.newCall(request)
             }
+        }
+
+        private fun isDirectWifiManhwaSuccessCandidate(request: Request): Boolean {
+            if (request.tag(NtkStrictSourceCallTag::class.java) == null &&
+                request.tag(NtkQuarantineSourceCallIdentity::class.java) == null
+            ) return false
+            val ref = ntkGeneratedImageRef(request.url.toString()) ?: return false
+            if (!ref.episodeKey.startsWith("manhwa/", ignoreCase = true) ||
+                request.url.host.lowercase(Locale.ROOT) !in NTK_MANHWA_IMAGE_REPLICA_HOSTS
+            ) return false
+            val client = getHttpClient()
+            return !client.isNtkCellularResilientTransportActive() &&
+                client.isNtkWifiTransportActive()
+        }
     }
 
     data class NtkStrictPublishedBody(
@@ -7430,6 +7669,7 @@ data class NtkResolvedSourceRoute(
             strictForegroundByteFlightsByStream.clear()
             encodedOriginalByteProofs.clear()
             residentStrictPublishedBodies.clear()
+            validatedUsableImageFiles.clear()
             strictSourceBoundsHints.clear()
             pendingStrictProofPublications.clear()
             metadataTelemetryPublished.clear()
@@ -7902,6 +8142,10 @@ data class NtkResolvedSourceRoute(
             throw UnsupportedOperationException("Tracked image Calls are synchronous")
         }
 
+        fun markVerifiedBodyEof(verifiedBytes: Long) {
+            responseBody.get()?.markVerifiedEof(verifiedBytes)
+        }
+
         private fun finish(
             responseBytes: Long = 0L,
             reachedEof: Boolean = false,
@@ -7947,88 +8191,41 @@ data class NtkResolvedSourceRoute(
             }
         }
 
-        private val completionSourceDelegate =
-            object : ForwardingSource(delegate.source()) {
-                private val readStateLock = Any()
-                private val sourceClosed = AtomicBoolean(false)
-                private var activeReads = 0
-                private var cancellationCloseRequested = false
+        private val delegateSource = delegate.source()
 
-                fun requestCancellationClose() {
-                    val closeNow = synchronized(readStateLock) {
-                        cancellationCloseRequested = true
-                        activeReads == 0
-                    }
-                    if (closeNow) runCatching { closeOnce() }
-                }
-
-                private fun enterRead() {
-                    synchronized(readStateLock) {
-                        if (cancellationCloseRequested) {
-                            throw InterruptedIOException("Image response body cancelled")
-                        }
-                        activeReads++
-                    }
-                }
-
-                private fun exitRead(): Boolean =
-                    synchronized(readStateLock) {
-                        check(activeReads > 0)
-                        activeReads--
-                        cancellationCloseRequested && activeReads == 0
-                    }
-
-                private fun closeOnce(failure: Throwable? = null) {
-                    if (!sourceClosed.compareAndSet(false, true)) return
-                    try {
-                        super.close()
-                    } catch (closeFailure: Throwable) {
-                        if (failure != null) {
-                            failure.addSuppressed(closeFailure)
-                        } else {
-                            throw closeFailure
-                        }
-                    } finally {
-                        complete(failure)
-                    }
-                }
-
-                override fun read(sink: Buffer, byteCount: Long): Long {
-                    enterRead()
-                    return try {
-                        super.read(sink, byteCount).also { read ->
-                            if (read > 0L) bytesRead.addAndGet(read)
-                            if (read == -1L) {
-                                reachedEof.set(true)
-                                complete()
-                            }
-                        }
-                    } catch (failure: Throwable) {
-                        closeOnce(failure)
-                        throw failure
-                    } finally {
-                        if (exitRead()) closeOnce()
-                    }
-                }
-
-                override fun close() = closeOnce()
-            }
-
-        private val completionSource: BufferedSource = completionSourceDelegate.buffer()
+        /** Called by the exact spool only after its length/SHA loop has observed real EOF. */
+        fun markVerifiedEof(verifiedBytes: Long) {
+            require(verifiedBytes >= 0L)
+            bytesRead.set(verifiedBytes)
+            reachedEof.set(true)
+            complete()
+        }
 
         override fun contentType(): MediaType? = delegate.contentType()
 
         override fun contentLength(): Long = delegate.contentLength()
 
-        override fun source(): BufferedSource = completionSource
+        // The delegate is already buffered. The former ForwardingSource(...).buffer() layer
+        // multiplied each network byte into another Okio segment lifetime and drove 16-23 MiB/s
+        // of ART allocation during physical scrolling. Exact spool loops explicitly mark their
+        // verified EOF; close remains the terminal cleanup for every failure/cancellation path.
+        override fun source(): BufferedSource = delegateSource
 
-        override fun close() = completionSource.close()
+        override fun close() {
+            try {
+                delegate.close()
+            } finally {
+                complete()
+            }
+        }
 
         override fun usedAnyContinuation(): Boolean =
             (delegate as? NtkRangeContinuationProvenance)?.usedAnyContinuation() == true
 
         fun cancelWithoutConcurrentClose() {
-            completionSourceDelegate.requestCancellationClose()
+            // Call.cancel() is the one interruption authority. Closing Okio concurrently with an
+            // active read races AsyncTimeout enter/exit; the response owner's finally-close will
+            // run immediately after that read unblocks and complete this wrapper exactly once.
         }
     }
 
@@ -8043,32 +8240,21 @@ data class NtkResolvedSourceRoute(
             if (released.compareAndSet(false, true)) releasePermit()
         }
 
-        private val permitSource = object : ForwardingSource(delegate.source()) {
-            override fun read(sink: Buffer, byteCount: Long): Long = try {
-                super.read(sink, byteCount).also { read ->
-                    if (read == -1L) releaseOnce()
-                }
-            } catch (failure: Throwable) {
-                releaseOnce()
-                throw failure
-            }
-
-            override fun close() {
-                try {
-                    super.close()
-                } finally {
-                    releaseOnce()
-                }
-            }
-        }.buffer()
+        private val delegateSource = delegate.source()
 
         override fun contentType(): MediaType? = delegate.contentType()
 
         override fun contentLength(): Long = delegate.contentLength()
 
-        override fun source(): BufferedSource = permitSource
+        override fun source(): BufferedSource = delegateSource
 
-        override fun close() = permitSource.close()
+        override fun close() {
+            try {
+                delegate.close()
+            } finally {
+                releaseOnce()
+            }
+        }
     }
 
     private fun ntkEpisodeCallPath(manga: Manga, image: String): String? {
@@ -9377,6 +9563,10 @@ data class NtkResolvedSourceRoute(
                     candidates,
                 )
             }
+        val directWifiProofBackedExactBody = exactApiReplicaTag != null &&
+            directWifiNetwork != null &&
+            !httpClient.isNtkCellularResilientTransportActive() &&
+            httpClient.isNtkWifiTransportActive()
         val transportAsset = if (exactApiReplicaTag != null) {
             exactApiReplicaTag.orderedCandidates.first()
         } else if (directWifiMixedPngPage) {
@@ -9428,6 +9618,16 @@ data class NtkResolvedSourceRoute(
             strictInstrumentedClient(
                 clickOwnedMixedFormatBodyClient(shared, checkNotNull(directWifiNetwork)),
             )
+        } else if (directWifiProofBackedExactBody) {
+            // The server proof replaces only the URL derivation; this is still a large exact
+            // image body. Keeping it on the shared Network-bound H1 body lane avoids OkHttp H2's
+            // reader-thread -> worker-thread Segment transfer and the resulting ART GC burst.
+            strictInstrumentedClient(
+                clickOwnedDirectWifiOrdinaryBodyClient(
+                    shared,
+                    checkNotNull(directWifiNetwork),
+                ),
+            )
         } else if (directWifiOrdinaryJpegPage) {
             clickOwnedDirectWifiOrdinaryRouteFactory(
                 shared,
@@ -9440,8 +9640,10 @@ data class NtkResolvedSourceRoute(
         val factory = replicaFailoverFactory(transportFactory)
         val factoryId = if (directWifiMixedPngPage) {
             "ntk-click-mixed-png-h1"
+        } else if (directWifiProofBackedExactBody) {
+            "ntk-click-adjacent-exact-api-replica-h1"
         } else if (exactApiReplicaTag != null) {
-            "ntk-click-adjacent-exact-api-replica"
+            "ntk-click-adjacent-exact-api-replica-fallback"
         } else if (directWifiOrdinaryJpegPage && preferProbeWarmRoute) {
             "ntk-click-adjacent-probe-warm-existing"
         } else if (directWifiOrdinaryJpegPage) {
@@ -9913,9 +10115,6 @@ data class NtkResolvedSourceRoute(
             val ordinaryFactory = strictInstrumentedClient(
                 clickOwnedDirectWifiOrdinaryBodyClient(shared, directWifiNetwork),
             )
-            val fallbackFactory = strictInstrumentedClient(
-                clickOwnedManhwaClient(shared, pageIndex),
-            )
             Call.Factory { request ->
                 // Physical admission chooses both the permit ring and transport mode as one
                 // decision. Once it chose a Network-bound H1 request, a subsequent handoff cannot
@@ -9927,7 +10126,11 @@ data class NtkResolvedSourceRoute(
                 val selected = if (useNetworkBoundH1) {
                     ordinaryFactory
                 } else {
-                    fallbackFactory
+                    // The direct-Wi-Fi path is the normal owner. Do not eagerly materialize a
+                    // carrier/H2 shard merely because a route object exists: a 14-page adjacent
+                    // chapter otherwise creates fourteen idle pools and later cancellation/reset
+                    // work even though every body selected the Network-bound H1 transport.
+                    strictInstrumentedClient(clickOwnedManhwaClient(shared, pageIndex))
                 }
                 selected.newCall(request)
             }
@@ -9982,6 +10185,25 @@ data class NtkResolvedSourceRoute(
         }.getOrNull()?.takeIf {
             !httpClient.isNtkCellularResilientTransportActive()
         }
+        if (directWifiNetwork != null) {
+            // One multiplexed metadata pool and one bounded H1 body pool are the complete
+            // direct-Wi-Fi topology. Carrier/H2 shards are a fallback and are now created lazily
+            // only if a real request selects that transport. This keeps a long continuous reader
+            // from accumulating dormant pools and a process-wide OkHttp TaskRunner reset storm.
+            strictInstrumentedClient(
+                clickOwnedMixedFormatProbeClient(
+                    shared,
+                    directWifiNetwork,
+                )
+            )
+            strictInstrumentedClient(
+                clickOwnedDirectWifiOrdinaryBodyClient(
+                    shared,
+                    directWifiNetwork,
+                )
+            )
+            return
+        }
         repeat(NtkClickOwnedManhwaWavePolicy.CONNECTION_SHARDS) { shard ->
             val representativePage =
                 NtkClickOwnedManhwaWavePolicy.representativePageIndexForConnectionShard(shard)
@@ -9989,14 +10211,6 @@ data class NtkResolvedSourceRoute(
                 clickOwnedManhwaClient(
                     shared,
                     representativePage,
-                )
-            )
-        }
-        if (directWifiNetwork != null) {
-            strictInstrumentedClient(
-                clickOwnedDirectWifiOrdinaryBodyClient(
-                    shared,
-                    directWifiNetwork,
                 )
             )
         }
@@ -10441,7 +10655,8 @@ data class NtkResolvedSourceRoute(
                             val buffer = ByteArray(8 * 1024)
                             while (output.size() < requestedBytes) {
                                 cancellation.throwIfCancelled()
-                                val count = input.read(
+                                val count = NtkReaderTransferPacer.readChunk(
+                                    input,
                                     buffer,
                                     0,
                                     minOf(buffer.size, requestedBytes - output.size())
@@ -10854,6 +11069,8 @@ data class NtkResolvedSourceRoute(
         metadataSink: (NtkQuarantineMetadataEvidence) -> Unit,
         bodyReadAdmission: (() -> Closeable)? = null,
         onPhysicalBodyProven: ((NtkStrictPhysicalBodyEvidence) -> Unit)? = null,
+        preferFileBackedBody: Boolean = false,
+        deferBodyReadsWhilePhysicalMotion: Boolean = false,
     ): NtkQuarantinedBody {
         require(pageIndex in binding.normalizedOrderedCanonicalAssets.indices) {
             "Quarantine page index is outside the bound plan"
@@ -10910,17 +11127,6 @@ data class NtkResolvedSourceRoute(
 
         val physicalStartedAtNs = SystemClock.elapsedRealtimeNanos()
         var headersAtNs = 0L
-        var firstBodyByteAtNs = 0L
-        var lastBodyReadAtNs = 0L
-        var maxBodyReadGapNs = 0L
-        fun recordBodyRead() {
-            val now = SystemClock.elapsedRealtimeNanos()
-            if (firstBodyByteAtNs == 0L) firstBodyByteAtNs = now
-            if (lastBodyReadAtNs != 0L) {
-                maxBodyReadGapNs = maxOf(maxBodyReadGapNs, now - lastBodyReadAtNs)
-            }
-            lastBodyReadAtNs = now
-        }
 
         var succeeded = false
         var protocol = ""
@@ -10970,93 +11176,30 @@ data class NtkResolvedSourceRoute(
                 val body = response.body ?: throw IOException("Empty quarantine body")
                 val contentLength = body.contentLength()
                 if (contentLength == 0L) throw IOException("Empty quarantine body")
-                val fullDigest = MessageDigest.getInstance("SHA-256")
-                val parser = NtkStreamingImageHeaderParser()
-                var parsed: NtkStreamingImageHeaderParser.Result.Exact? = null
-                var encodedLength = 0L
-                val boundedContentLength = contentLength
-                    .takeIf { it in 1..(64L * 1024L * 1024L) }
-                    ?.toInt()
-                val encodedBytes = if (boundedContentLength != null) {
-                    // This array is the final session-owned compressed body. The previous
-                    // ByteArrayOutputStream path allocated an equally large backing array and
-                    // copied it in toByteArray(), while also allocating one read buffer per
-                    // response. A 114-page strip consequently left 200+ large temporary arrays
-                    // for the first bitmap allocation wave to collect. ART's NativeAlloc GC then
-                    // overlapped and blocked the cold decoders for up to two seconds.
-                    val direct = ByteArray(boundedContentLength)
-                    body.byteStream().use { input ->
-                        var offset = 0
-                        while (offset < direct.size) {
-                            cancellation.throwIfCancelled()
-                            val count = input.read(direct, offset, direct.size - offset)
-                            if (count < 0) break
-                            if (count == 0) continue
-                            recordBodyRead()
-                            fullDigest.update(direct, offset, count)
-                            encodedLength += count.toLong()
-                            if (parsed == null) {
-                                when (val header = parser.feed(direct, offset, count)) {
-                                    NtkStreamingImageHeaderParser.Result.NeedMore -> Unit
-                                    is NtkStreamingImageHeaderParser.Result.Invalid ->
-                                        throw NtkSourceIdentityException(
-                                            "Quarantine header invalid: ${header.reason}"
-                                        )
-                                    is NtkStreamingImageHeaderParser.Result.Exact -> {
-                                        parsed = header
-                                        runCatching { exactImageHeaderSink(header) }
-                                    }
-                                }
-                            }
-                            offset += count
-                        }
-                        if (offset != direct.size || input.read() >= 0) {
-                            throw NtkSourceIdentityException(
-                                "Quarantine Content-Length body mismatch"
+                val encodedRead = readQuarantinedEncodedOriginal(
+                    body = body,
+                    contentLength = contentLength,
+                    preferFileBackedBody = preferFileBackedBody,
+                    tempLease = tempLease,
+                    cancellation = cancellation,
+                    exactImageHeaderSink = exactImageHeaderSink,
+                    shouldDeferBodyReadsWhilePhysicalMotion = {
+                        deferBodyReadsWhilePhysicalMotion &&
+                            !NtkReaderTransferPacer.isPhysicalForegroundEpisode(
+                                binding.episodePath,
                             )
-                        }
-                    }
-                    direct
-                } else {
-                    val output = ByteArrayOutputStream(NTK_EXACT_BODY_WRITE_BUFFER_BYTES)
-                    output.use {
-                        body.byteStream().use { input ->
-                            val buffer = ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
-                            while (true) {
-                                cancellation.throwIfCancelled()
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                if (count == 0) continue
-                                recordBodyRead()
-                                it.write(buffer, 0, count)
-                                fullDigest.update(buffer, 0, count)
-                                encodedLength += count.toLong()
-                                if (parsed == null) {
-                                    when (val header = parser.feed(buffer, 0, count)) {
-                                        NtkStreamingImageHeaderParser.Result.NeedMore -> Unit
-                                        is NtkStreamingImageHeaderParser.Result.Invalid ->
-                                            throw NtkSourceIdentityException(
-                                                "Quarantine header invalid: ${header.reason}"
-                                            )
-                                        is NtkStreamingImageHeaderParser.Result.Exact -> {
-                                            parsed = header
-                                            runCatching { exactImageHeaderSink(header) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    output.toByteArray()
-                }
-                cancellation.throwIfCancelled()
-                val exact = parsed ?: throw NtkSourceIdentityException(
-                    "Quarantine body has no exact image header"
+                    },
                 )
+                val encodedBytes = encodedRead.encodedBytes
+                val exact = encodedRead.exact
+                val encodedLength = encodedRead.encodedLength
+                val firstBodyByteAtNs = encodedRead.firstBodyByteAtNs
+                val maxBodyReadGapNs = encodedRead.maxBodyReadGapNs
+                cancellation.throwIfCancelled()
                 if (encodedLength <= 0L ||
                     (contentLength > 0L && encodedLength != contentLength)
                 ) throw NtkSourceIdentityException("Quarantine encoded length mismatch")
-                val bodyDigest = NtkStripDigests.bytesToLowerHex(fullDigest.digest())
+                val bodyDigest = encodedRead.bodyDigest
                 val selectedResponseHeaders = selectedHeadersDigest(
                     response.headers.toMultimap()
                 )
@@ -11084,9 +11227,16 @@ data class NtkResolvedSourceRoute(
                     sourceHeight = exact.height,
                     imageFormat = NtkSourceMetadataAuthority.normalizeImageFormat(exact.format)
                 )
+                val sealedBody = if (preferFileBackedBody) {
+                    tempLease.seal(encodedLength)
+                } else {
+                    tempLease.sealedFile
+                }
                 metadataSink(metadata)
                 val completedAtNs = SystemClock.elapsedRealtimeNanos()
-                if (completedAtNs - physicalStartedAtNs >= 2_000_000_000L) {
+                if (completedAtNs - physicalStartedAtNs >= 2_000_000_000L &&
+                    Log.isLoggable(TAG, Log.DEBUG)
+                ) {
                     fun elapsedMs(from: Long, to: Long): String =
                         String.format(Locale.ROOT, "%.3f", (to - from) / 1_000_000.0)
                     Log.d(
@@ -11129,9 +11279,10 @@ data class NtkResolvedSourceRoute(
                         )
                     }
                 }
+                call.markVerifiedBodyEof(encodedLength)
                 succeeded = true
                 return NtkQuarantinedBody(
-                    tempLease.sealedFile,
+                    sealedBody,
                     pageIndex,
                     canonical,
                     identity,
@@ -11161,6 +11312,196 @@ data class NtkResolvedSourceRoute(
         }
     }
 
+    private data class NtkQuarantineEncodedRead(
+        val encodedBytes: ByteArray?,
+        val exact: NtkStreamingImageHeaderParser.Result.Exact,
+        val encodedLength: Long,
+        val bodyDigest: String,
+        val firstBodyByteAtNs: Long,
+        val maxBodyReadGapNs: Long,
+    )
+
+    /**
+     * Reads one immutable quarantine response without keeping the network/proof method as a
+     * single several-hundred-line JIT compilation unit. All three storage forms share the exact
+     * same per-chunk digest, header parser, cancellation, EOF and Content-Length checks.
+     */
+    private fun readQuarantinedEncodedOriginal(
+        body: ResponseBody,
+        contentLength: Long,
+        preferFileBackedBody: Boolean,
+        tempLease: NtkQuarantineFileLease,
+        cancellation: Cancellation,
+        exactImageHeaderSink: (NtkStreamingImageHeaderParser.Result.Exact) -> Unit,
+        shouldDeferBodyReadsWhilePhysicalMotion: () -> Boolean,
+    ): NtkQuarantineEncodedRead {
+        val fullDigest = MessageDigest.getInstance("SHA-256")
+        val parser = NtkStreamingImageHeaderParser()
+        var parsed: NtkStreamingImageHeaderParser.Result.Exact? = null
+        var encodedLength = 0L
+        var firstBodyByteAtNs = 0L
+        var lastBodyReadAtNs = 0L
+        var maxBodyReadGapNs = 0L
+
+        fun recordBodyRead() {
+            val now = SystemClock.elapsedRealtimeNanos()
+            if (firstBodyByteAtNs == 0L) firstBodyByteAtNs = now
+            if (lastBodyReadAtNs != 0L) {
+                maxBodyReadGapNs = maxOf(maxBodyReadGapNs, now - lastBodyReadAtNs)
+            }
+            lastBodyReadAtNs = now
+        }
+
+        fun consumeChunk(buffer: ByteArray, offset: Int, count: Int) {
+            recordBodyRead()
+            fullDigest.update(buffer, offset, count)
+            encodedLength += count.toLong()
+            if (parsed != null) return
+            when (val header = parser.feed(buffer, offset, count)) {
+                NtkStreamingImageHeaderParser.Result.NeedMore -> Unit
+                is NtkStreamingImageHeaderParser.Result.Invalid ->
+                    throw NtkSourceIdentityException(
+                        "Quarantine header invalid: ${header.reason}",
+                    )
+                is NtkStreamingImageHeaderParser.Result.Exact -> {
+                    parsed = header
+                    runCatching { exactImageHeaderSink(header) }
+                }
+            }
+        }
+
+        fun consumeFileChunk(buffer: ByteArray, count: Int) {
+            recordBodyRead()
+            fullDigest.update(buffer, 0, count)
+            encodedLength += count.toLong()
+            if (parsed != null) return
+            when (val header = parser.feed(buffer, 0, count)) {
+                NtkStreamingImageHeaderParser.Result.NeedMore -> Unit
+                is NtkStreamingImageHeaderParser.Result.Invalid ->
+                    throw NtkSourceIdentityException(
+                        "Quarantine header invalid: ${header.reason}",
+                    )
+                is NtkStreamingImageHeaderParser.Result.Exact -> {
+                    parsed = header
+                    runCatching { exactImageHeaderSink(header) }
+                }
+            }
+        }
+
+        fun readBodyChunk(
+            input: InputStream,
+            buffer: ByteArray,
+            offset: Int = 0,
+            length: Int = buffer.size,
+        ): Int = if (shouldDeferBodyReadsWhilePhysicalMotion()) {
+            NtkReaderTransferPacer.readOptionalChunk(
+                input,
+                buffer,
+                offset,
+                length,
+                shouldRemainDeferred = shouldDeferBodyReadsWhilePhysicalMotion,
+                stillOwned = { cancellation.throwIfCancelled() },
+            )
+        } else {
+            NtkReaderTransferPacer.readChunk(input, buffer, offset, length)
+        }
+
+        fun readTrailingByte(input: InputStream): Int =
+            if (shouldDeferBodyReadsWhilePhysicalMotion()) {
+                NtkReaderTransferPacer.readOptionalByte(
+                    input,
+                    shouldRemainDeferred = shouldDeferBodyReadsWhilePhysicalMotion,
+                    stillOwned = { cancellation.throwIfCancelled() },
+                )
+            } else {
+                NtkReaderTransferPacer.readByte(input)
+            }
+
+        val boundedContentLength = contentLength
+            .takeIf { it in 1..(64L * 1024L * 1024L) }
+            ?.toInt()
+        val encodedBytes: ByteArray? = if (preferFileBackedBody) {
+            // The sealed part file is already the final EOF/SHA-owned source for native decode.
+            // Stream into it with one fixed read buffer instead of materializing a second body.
+            FileOutputStream(tempLease.partFile).use { output ->
+                withNtkExactBodyReadBuffer { buffer ->
+                    body.byteStream().use { input ->
+                        while (true) {
+                            cancellation.throwIfCancelled()
+                            val count = readBodyChunk(input, buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            output.write(buffer, 0, count)
+                            consumeFileChunk(buffer, count)
+                        }
+                    }
+                }
+                output.flush()
+            }
+            null
+        } else if (boundedContentLength != null) {
+            // This array becomes the session-owned compressed body; no temporary duplicate is
+            // created by ByteArrayOutputStream.toByteArray().
+            val direct = ByteArray(boundedContentLength)
+            body.byteStream().use { input ->
+                var offset = 0
+                while (offset < direct.size) {
+                    cancellation.throwIfCancelled()
+                    val count = readBodyChunk(
+                        input,
+                        direct,
+                        offset,
+                        direct.size - offset,
+                    )
+                    if (count < 0) break
+                    if (count == 0) continue
+                    consumeChunk(direct, offset, count)
+                    offset += count
+                }
+                if (offset != direct.size || readTrailingByte(input) >= 0) {
+                    throw NtkSourceIdentityException(
+                        "Quarantine Content-Length body mismatch",
+                    )
+                }
+            }
+            direct
+        } else {
+            val output = ByteArrayOutputStream(NTK_EXACT_BODY_MEMORY_INITIAL_BYTES)
+            output.use { sink ->
+                withNtkExactBodyReadBuffer { buffer ->
+                    body.byteStream().use { input ->
+                        while (true) {
+                            cancellation.throwIfCancelled()
+                            val count = readBodyChunk(input, buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            sink.write(buffer, 0, count)
+                            consumeChunk(buffer, 0, count)
+                        }
+                    }
+                }
+            }
+            output.toByteArray()
+        }
+        cancellation.throwIfCancelled()
+        val exact = parsed ?: throw NtkSourceIdentityException(
+            "Quarantine body has no exact image header",
+        )
+        if (encodedLength <= 0L ||
+            (contentLength > 0L && encodedLength != contentLength)
+        ) {
+            throw NtkSourceIdentityException("Quarantine encoded length mismatch")
+        }
+        return NtkQuarantineEncodedRead(
+            encodedBytes = encodedBytes,
+            exact = exact,
+            encodedLength = encodedLength,
+            bodyDigest = NtkStripDigests.bytesToLowerHex(fullDigest.digest()),
+            firstBodyByteAtNs = firstBodyByteAtNs,
+            maxBodyReadGapNs = maxBodyReadGapNs,
+        )
+    }
+
     /**
      * Decodes a sealed click-owned body without publishing it or consulting any app cache.
      * Authority is intentionally absent here: the returned one-shot can be consumed only through
@@ -11172,71 +11513,104 @@ data class NtkResolvedSourceRoute(
     ): NtkStrictPredecodedOriginal {
         val abandoned = AtomicBoolean(false)
         val started = AtomicBoolean(false)
+        val encodedBytes = quarantinedBody.encodedBytes
+        // Adoption atomically moves the sealed body into its published location. Open the file
+        // before enqueueing speculative work so that queued decode retains the same inode across
+        // that rename (and even across unlink on cancellation). The atomic holder gives close() a
+        // race-free way to release a descriptor whose executor task has not started yet.
+        val queuedFileInput = AtomicReference<FileInputStream?>(
+            if (encodedBytes == null) {
+                runCatching { FileInputStream(quarantinedBody.sealedFile) }.getOrNull()
+            } else {
+                null
+            },
+        )
+        if (encodedBytes == null && queuedFileInput.get() == null) {
+            return NtkStrictPredecodedOriginal(
+                CompletableFuture.completedFuture(null),
+                abandoned,
+                started,
+            )
+        }
         val completion: CompletableFuture<Bitmap?> = try {
             CompletableFuture.supplyAsync<Bitmap?>(
                 {
+                    val fileInput = queuedFileInput.getAndSet(null)
                     started.set(true)
-                    // An authoritative source worker may have reached these bytes before this
-                    // speculative executor lane. Do not spend CPU or allocate a duplicate bitmap
-                    // after that worker has chosen the immediate encoded-byte decode path.
-                    if (abandoned.get()) return@supplyAsync null
-                    val sourceKeyHash = quarantinedBody.callIdentity.canonicalAssetDigest
-                    val operationId = ViewerTelemetry.imageDecodeStarted(
-                        sourceKeyHash,
-                        quarantinedBody.pageIndex,
-                    )
-                    var decoded: Bitmap? = null
                     try {
-                        val options = BitmapFactory.Options().apply {
-                            inPreferredConfig = Bitmap.Config.ARGB_8888
-                            inSampleSize = 1
-                            inScaled = false
-                            inMutable = false
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
+                        // An authoritative source worker may have reached these bytes before this
+                        // speculative executor lane. Do not spend CPU or allocate a duplicate
+                        // bitmap after it has chosen the immediate encoded-body decode path.
+                        if (abandoned.get()) return@supplyAsync null
+                        val sourceKeyHash = quarantinedBody.callIdentity.canonicalAssetDigest
+                        val operationId = ViewerTelemetry.imageDecodeStarted(
+                            sourceKeyHash,
+                            quarantinedBody.pageIndex,
+                        )
+                        var decoded: Bitmap? = null
+                        try {
+                            val options = BitmapFactory.Options().apply {
+                                inPreferredConfig = Bitmap.Config.ARGB_8888
+                                inSampleSize = 1
+                                inScaled = false
+                                inMutable = false
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    inPreferredColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
+                                }
                             }
+                            decoded = encodedBytes?.let { bytes ->
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                            } ?: fileInput?.let { input ->
+                                BitmapFactory.decodeFileDescriptor(input.fd, null, options)
+                            }
+                            val bitmap = decoded ?:
+                                throw IOException("Private exact bitmap decode failed")
+                            val evidence = quarantinedBody.metadataEvidence
+                            check(
+                                bitmap.width == evidence.sourceWidth &&
+                                    bitmap.height == evidence.sourceHeight &&
+                                    bitmap.config == Bitmap.Config.ARGB_8888 &&
+                                    !bitmap.isMutable
+                            ) { "Private exact bitmap decode changed source pixels" }
+                            ViewerTelemetry.imageDecodeFinished(
+                                operationId,
+                                bitmap.allocationByteCount.toLong(),
+                                "private_postclick_success",
+                            )
+                            bitmap.also { decoded = null }
+                        } catch (failure: Throwable) {
+                            decoded?.takeUnless(Bitmap::isRecycled)?.recycle()
+                            ViewerTelemetry.imageDecodeFinished(
+                                operationId,
+                                0L,
+                                "private_postclick_${failure.javaClass.simpleName}",
+                            )
+                            Log.d(
+                                "ViewerPerf",
+                                "reader_private_postclick_decode_failed " +
+                                    "page=${quarantinedBody.pageIndex}," +
+                                    "error=${failure.javaClass.simpleName}",
+                            )
+                            null
                         }
-                        decoded = quarantinedBody.encodedBytes?.let { bytes ->
-                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-                        } ?: BitmapFactory.decodeFile(
-                            quarantinedBody.sealedFile.absolutePath,
-                            options,
-                        )
-                        val bitmap = decoded ?: throw IOException("Private exact bitmap decode failed")
-                        val evidence = quarantinedBody.metadataEvidence
-                        check(
-                            bitmap.width == evidence.sourceWidth &&
-                                bitmap.height == evidence.sourceHeight &&
-                                bitmap.config == Bitmap.Config.ARGB_8888 &&
-                                !bitmap.isMutable
-                        ) { "Private exact bitmap decode changed source pixels" }
-                        ViewerTelemetry.imageDecodeFinished(
-                            operationId,
-                            bitmap.allocationByteCount.toLong(),
-                            "private_postclick_success",
-                        )
-                        bitmap.also { decoded = null }
-                    } catch (failure: Throwable) {
-                        decoded?.takeUnless(Bitmap::isRecycled)?.recycle()
-                        ViewerTelemetry.imageDecodeFinished(
-                            operationId,
-                            0L,
-                            "private_postclick_${failure.javaClass.simpleName}",
-                        )
-                        Log.d(
-                            "ViewerPerf",
-                            "reader_private_postclick_decode_failed page=${quarantinedBody.pageIndex}," +
-                                "error=${failure.javaClass.simpleName}",
-                        )
-                        null
+                    } finally {
+                        runCatching { fileInput?.close() }
                     }
                 },
                 executor,
             )
         } catch (_: RejectedExecutionException) {
+            runCatching { queuedFileInput.getAndSet(null)?.close() }
             CompletableFuture.completedFuture(null)
         }
-        return NtkStrictPredecodedOriginal(completion, abandoned, started)
+        return NtkStrictPredecodedOriginal(
+            completion,
+            abandoned,
+            started,
+            releaseQueuedSource = {
+                runCatching { queuedFileInput.getAndSet(null)?.close() }
+            },
+        )
     }
 
     fun adoptQuarantinedEncodedOriginal(
@@ -11404,8 +11778,7 @@ data class NtkResolvedSourceRoute(
                             "$cacheKey.memory-${System.nanoTime().coerceAtLeast(1L)}.part"
                         )
                         staged = tmp
-                        FileOutputStream(tmp).buffered(NTK_EXACT_BODY_WRITE_BUFFER_BYTES).use {
-                            output ->
+                        FileOutputStream(tmp).use { output ->
                             output.write(bytes)
                             output.flush()
                         }
@@ -11490,6 +11863,8 @@ data class NtkResolvedSourceRoute(
         onMetadata: (NtkSourceMetadata) -> Unit,
         waveRecoveryState: NtkManhwaWaveRecoveryState? = null,
         onPhysicalBodyProven: ((NtkStrictPhysicalBodyEvidence) -> Unit)? = null,
+        preferFileBackedBody: Boolean = false,
+        deferBodyReadsWhilePhysicalMotion: Boolean = false,
     ): NtkStrictPublishedBody {
         require(manifestSeal.isStructurallyComplete)
         require(pageIndex in manifestSeal.normalizedCanonicalAssets.indices)
@@ -11625,6 +12000,7 @@ data class NtkResolvedSourceRoute(
             String.format(Locale.ROOT, "%.3f", (endNs - startNs) / 1_000_000.0)
         try {
             call.execute().use { response ->
+                fun processStrictPublishedResponse(): NtkStrictPublishedBody {
                 headersAtNs = SystemClock.elapsedRealtimeNanos()
                 code = response.code
                 protocol = response.protocol.toString()
@@ -11746,26 +12122,70 @@ data class NtkResolvedSourceRoute(
                     }
                 }
 
+                fun shouldDeferStrictBodyRead(): Boolean =
+                    deferBodyReadsWhilePhysicalMotion &&
+                        !NtkReaderTransferPacer.isPhysicalForegroundEpisode(
+                            manifestSeal.normalizedEpisodePath,
+                        )
+
+                fun readStrictBodyChunk(
+                    input: InputStream,
+                    buffer: ByteArray,
+                    offset: Int = 0,
+                    length: Int = buffer.size,
+                ): Int = if (shouldDeferStrictBodyRead()) {
+                    NtkReaderTransferPacer.readOptionalChunk(
+                        input,
+                        buffer,
+                        offset,
+                        length,
+                        shouldRemainDeferred = ::shouldDeferStrictBodyRead,
+                        stillOwned = { cancellation.throwIfCancelled() },
+                    )
+                } else {
+                    NtkReaderTransferPacer.readChunk(input, buffer, offset, length)
+                }
+
+                fun readStrictTrailingByte(input: InputStream): Int =
+                    if (shouldDeferStrictBodyRead()) {
+                        NtkReaderTransferPacer.readOptionalByte(
+                            input,
+                            shouldRemainDeferred = ::shouldDeferStrictBodyRead,
+                            stillOwned = { cancellation.throwIfCancelled() },
+                        )
+                    } else {
+                        NtkReaderTransferPacer.readByte(input)
+                    }
+
                 // The exact response is already bounded, immutable and SHA/header checked. Keep
                 // normal-sized bodies in their final session-owned byte array so decode can start
                 // at EOF while the rest of the episode is still downloading. Disk persistence is
                 // performed by persistAcceptedStrictPublishedBodyAsync only after viewer retire.
-                val residentBytes = contentLength
-                    .takeIf { it in 1..(64L * 1024L * 1024L) }
-                    ?.toInt()
-                    ?.let { expectedLength ->
+                fun readAndSpoolStrictBody(): ByteArray? {
+                val residentBytes = if (preferFileBackedBody) {
+                    null
+                } else {
+                    contentLength
+                        .takeIf { it in 1..(64L * 1024L * 1024L) }
+                        ?.toInt()
+                }?.let { expectedLength ->
                         val direct = ByteArray(expectedLength)
                         body.byteStream().use { input ->
                             var offset = 0
                             while (offset < direct.size) {
                                 cancellation.throwIfCancelled()
-                                val count = input.read(direct, offset, direct.size - offset)
+                                val count = readStrictBodyChunk(
+                                    input,
+                                    direct,
+                                    offset,
+                                    direct.size - offset,
+                                )
                                 if (count < 0) break
                                 if (count == 0) continue
                                 consumeChunk(direct, offset, count)
                                 offset += count
                             }
-                            if (offset != direct.size || input.read() >= 0) {
+                            if (offset != direct.size || readStrictTrailingByte(input) >= 0) {
                                 throw NtkSourceIdentityException(
                                     "Strict primary Content-Length body mismatch"
                                 )
@@ -11778,23 +12198,25 @@ data class NtkResolvedSourceRoute(
                         context.applicationContext,
                         "strict-primary-${callContext.tag.operationId}-"
                     ).also { tmp = it }
-                    FileOutputStream(diskTmp)
-                        .buffered(NTK_EXACT_BODY_WRITE_BUFFER_BYTES)
-                        .use { output ->
+                    FileOutputStream(diskTmp).use { output ->
+                        withNtkExactBodyReadBuffer { buffer ->
                             body.byteStream().use { input ->
-                                val buffer = ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
                                 while (true) {
                                     cancellation.throwIfCancelled()
-                                    val count = input.read(buffer)
+                                    val count = readStrictBodyChunk(input, buffer)
                                     if (count < 0) break
                                     if (count == 0) continue
                                     output.write(buffer, 0, count)
                                     consumeChunk(buffer, 0, count)
                                 }
-                                output.flush()
                             }
                         }
+                        output.flush()
+                    }
                 }
+                return residentBytes
+                }
+                val residentBytes = readAndSpoolStrictBody()
                 bodyEofAtNs = SystemClock.elapsedRealtimeNanos()
 
                 cancellation.throwIfCancelled()
@@ -11818,6 +12240,7 @@ data class NtkResolvedSourceRoute(
                 proof.requireProductionAuthority(acceptedMetadata)
                 proofReadyAtNs = SystemClock.elapsedRealtimeNanos()
 
+                fun publishAcceptedStrictBody(): NtkStrictPublishedBody {
                 val published = if (residentBytes != null) {
                     strictPublishedBody(finalFile, acceptedMetadata, proof, residentBytes)
                 } else {
@@ -11863,6 +12286,7 @@ data class NtkResolvedSourceRoute(
                     strictPublishedBody(publishedFile, acceptedMetadata, proof)
                 }
                 publishedAtNs = SystemClock.elapsedRealtimeNanos()
+                call.markVerifiedBodyEof(encodedLength)
                 succeeded = true
                 // Only an actual response that reached EOF and completed the strict SHA/length
                 // proof can emit transport-health evidence. The cache-before-call return above
@@ -11913,6 +12337,10 @@ data class NtkResolvedSourceRoute(
                     )
                 }
                 return published
+                }
+                return publishAcceptedStrictBody()
+                }
+                return processStrictPublishedResponse()
             }
         } finally {
             if (!succeeded && headersAtNs > 0L) {
@@ -11996,9 +12424,7 @@ data class NtkResolvedSourceRoute(
             val digest = MessageDigest.getInstance("SHA-256")
             val header = ByteArrayOutputStream(NTK_SOURCE_METADATA_MAX_PROBE_BYTES)
             var encodedLength = 0L
-            FileOutputStream(tmp)
-                .buffered(NTK_EXACT_BODY_WRITE_BUFFER_BYTES)
-                .use { output ->
+            FileOutputStream(tmp).use { output ->
                 fun writeChunk(bytes: ByteArray, offset: Int, length: Int) {
                     if (length <= 0) return
                     output.write(bytes, offset, length)
@@ -12011,14 +12437,15 @@ data class NtkResolvedSourceRoute(
                 }
                 prefixToPrepend?.let { writeChunk(it, 0, it.size) }
                 val body = response.body ?: throw IOException("Empty strict source body")
-                body.byteStream().use { input ->
-                    val buffer = ByteArray(NTK_EXACT_BODY_READ_BUFFER_BYTES)
-                    while (true) {
-                        cancellation.throwIfCancelled()
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (count == 0) continue
-                        writeChunk(buffer, 0, count)
+                withNtkExactBodyReadBuffer { buffer ->
+                    body.byteStream().use { input ->
+                        while (true) {
+                            cancellation.throwIfCancelled()
+                            val count = NtkReaderTransferPacer.readChunk(input, buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            writeChunk(buffer, 0, count)
+                        }
                     }
                 }
             }
@@ -12461,6 +12888,14 @@ data class NtkResolvedSourceRoute(
         if (!strictProofPersistenceScheduled.compareAndSet(false, true)) return
         trimExecutor.schedule({
             try {
+                // Proof sidecars are durable cache metadata, not display authority. Buffered
+                // writer/JSON allocations measured hundreds of KiB during physical motion; wait
+                // until the reader is idle while keeping the resident proof immediately usable.
+                NtkReaderTransferPacer.awaitMotionIdle {
+                    if (Thread.currentThread().isInterrupted) {
+                        throw InterruptedException("Strict proof persistence interrupted")
+                    }
+                }
                 pendingStrictProofPublications.values.toList().forEach { resident ->
                     persistResidentStrictProof(resident)
                 }
@@ -22337,9 +22772,46 @@ data class NtkResolvedSourceRoute(
         val dir = cacheDir(context)
         for (candidate in ntkGeneratedCacheLookupImages(image)) {
             val file = File(dir, "${key(manga.baseMode, candidate)}.img")
-            if (isUsableImage(file)) return file
+            if (hasResidentStrictUsableImage(manga, candidate, file) || isUsableImage(file)) {
+                return file
+            }
         }
         return null
+    }
+
+    /**
+     * A strict body published by this process already carries exact dimensions, format, length,
+     * SHA and manifest authority. Reopening that immutable body through BitmapFactory merely to
+     * answer a Boolean readiness query duplicates the actor's validation and can trigger native
+     * allocations during touch input.
+     */
+    private fun hasResidentStrictUsableImage(
+        manga: Manga,
+        image: String,
+        file: File,
+    ): Boolean {
+        val resident = residentStrictPublishedBodies[file.absolutePath] ?: return false
+        val canonical = ReaderPreparedStore.canonicalOriginalAssetIdentity(image)
+        val length = file.length()
+        val matches = resident.generation == cacheGeneration.get() &&
+            resident.baseMode == manga.baseMode &&
+            resident.cacheKey == key(manga.baseMode, canonical) &&
+            resident.canonicalAsset == canonical &&
+            resident.file.absolutePath == file.absolutePath &&
+            file.isFile &&
+            length == resident.fileLength &&
+            file.lastModified() == resident.fileLastModified &&
+            length == resident.proof.encodedLength &&
+            resident.metadata.canonicalAsset == canonical &&
+            hasUsableImageDimensions(
+                resident.metadata.sourceWidth,
+                resident.metadata.sourceHeight,
+            )
+        if (!matches) {
+            residentStrictPublishedBodies.remove(file.absolutePath, resident)
+            pendingStrictProofPublications.remove(file.absolutePath, resident)
+        }
+        return matches
     }
 
     private fun ntkGeneratedCacheLookupImages(image: String): List<String> {
@@ -22933,42 +23405,43 @@ data class NtkResolvedSourceRoute(
         val digest = MessageDigest.getInstance("SHA-256")
         var encodedLength = 0L
         FileOutputStream(target).use { out ->
-            val input = body.byteStream()
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                cancellation?.throwIfCancelled()
-                if (progressiveTailState?.cancelled?.get() == true) {
-                    throw InterruptedIOException("Progressive tail body retired")
-                }
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count == 0) continue
-                if (progressiveTailState != null && progressiveTailState.bodyBytes.get() == 0L) {
-                    if (progressiveTailState.batchWork?.isCurrent() == false) {
-                        throw InterruptedIOException("Progressive tail batch retired")
+            withNtkExactBodyReadBuffer { buffer ->
+                val input = body.byteStream()
+                while (true) {
+                    cancellation?.throwIfCancelled()
+                    if (progressiveTailState?.cancelled?.get() == true) {
+                        throw InterruptedIOException("Progressive tail body retired")
                     }
-                    // Serialize the first durable write with visible supersession. A visible
-                    // request can replace this flight throughout DNS/connect/headers, but once
-                    // this block completes it observes real accumulated body bytes and joins.
-                    synchronized(cacheFlightAdmissionLock) {
-                        if (progressiveTailState.cancelled.get() ||
-                            cacheGeneration.get() != progressiveTailState.generation
-                        ) {
-                            throw InterruptedIOException("Progressive tail body lost ownership")
+                    val count = NtkReaderTransferPacer.readChunk(input, buffer)
+                    if (count < 0) break
+                    if (count == 0) continue
+                    if (progressiveTailState != null && progressiveTailState.bodyBytes.get() == 0L) {
+                        if (progressiveTailState.batchWork?.isCurrent() == false) {
+                            throw InterruptedIOException("Progressive tail batch retired")
+                        }
+                        // Serialize the first durable write with visible supersession. A visible
+                        // request can replace this flight throughout DNS/connect/headers, but once
+                        // this block completes it observes real accumulated body bytes and joins.
+                        synchronized(cacheFlightAdmissionLock) {
+                            if (progressiveTailState.cancelled.get() ||
+                                cacheGeneration.get() != progressiveTailState.generation
+                            ) {
+                                throw InterruptedIOException("Progressive tail body lost ownership")
+                            }
+                            out.write(buffer, 0, count)
+                            digest.update(buffer, 0, count)
+                            encodedLength = Math.addExact(encodedLength, count.toLong())
+                            progressiveTailState.bodyBytes.addAndGet(count.toLong())
+                        }
+                    } else {
+                        if (progressiveTailState?.cancelled?.get() == true) {
+                            throw InterruptedIOException("Progressive tail body cancelled")
                         }
                         out.write(buffer, 0, count)
                         digest.update(buffer, 0, count)
                         encodedLength = Math.addExact(encodedLength, count.toLong())
-                        progressiveTailState.bodyBytes.addAndGet(count.toLong())
+                        progressiveTailState?.bodyBytes?.addAndGet(count.toLong())
                     }
-                } else {
-                    if (progressiveTailState?.cancelled?.get() == true) {
-                        throw InterruptedIOException("Progressive tail body cancelled")
-                    }
-                    out.write(buffer, 0, count)
-                    digest.update(buffer, 0, count)
-                    encodedLength = Math.addExact(encodedLength, count.toLong())
-                    progressiveTailState?.bodyBytes?.addAndGet(count.toLong())
                 }
             }
         }
@@ -27852,7 +28325,9 @@ data class NtkResolvedSourceRoute(
             } else {
             if (previousPage == null) {
                 ntkGeneratedPageExtensions[ref.pageKey] = ref.extension
-                Log.d(TAG, "ntk_generated_page_extension_hint key=${ref.pageKey},extension=${ref.extension},previous=")
+                if (Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "ntk_generated_page_extension_hint key=${ref.pageKey},extension=${ref.extension},previous=")
+                }
             } else if (previousPage != ref.extension) {
                 Log.d(
                     TAG,
@@ -27869,7 +28344,7 @@ data class NtkResolvedSourceRoute(
             }
         }
         val updatedPreviousPage = ntkGeneratedPageExtensions.put(ref.pageKey, ref.extension)
-        if (updatedPreviousPage != ref.extension) {
+        if (updatedPreviousPage != ref.extension && Log.isLoggable(TAG, Log.DEBUG)) {
             Log.d(TAG, "ntk_generated_page_extension_hint key=${ref.pageKey},extension=${ref.extension},previous=${updatedPreviousPage.orEmpty()}")
         }
         if (ref.extension == "jpg" && existingEpisode != null && existingEpisode != "jpg") {
@@ -28171,7 +28646,7 @@ data class NtkResolvedSourceRoute(
         val key = ntkGeneratedResolvedPageKey(target)
         val added = ntkGeneratedResolvedPages.add(key)
         val removedMissing = ntkGeneratedNotFoundPages.removeAll { it.startsWith("$key|") }
-        if ((added || removedMissing) && logResolved) {
+        if ((added || removedMissing) && logResolved && Log.isLoggable(TAG, Log.DEBUG)) {
             Log.d(
                 TAG,
                 "ntk_generated_resolved_page key=$key,source=$source," +
@@ -28636,22 +29111,65 @@ data class NtkResolvedSourceRoute(
     }
 
     private fun isUsableImage(file: File): Boolean {
-        if (!file.isFile || file.length() < 32L) return false
+        if (!file.isFile) {
+            validatedUsableImageFiles.remove(file.absolutePath)
+            return false
+        }
+        val length = file.length()
+        if (length < 32L) {
+            validatedUsableImageFiles.remove(file.absolutePath)
+            return false
+        }
+        val stamp = ValidatedUsableImageFile(length, file.lastModified())
+        validatedUsableImageFiles[file.absolutePath]?.let { validated ->
+            if (validated == stamp) return true
+            validatedUsableImageFiles.remove(file.absolutePath, validated)
+        }
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.absolutePath, bounds)
-            if (!hasUsableImageDimensions(bounds.outWidth, bounds.outHeight)) return false
-            if (file.length() > FULL_DECODE_VALIDATION_MAX_BYTES) return true
-            val options = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.RGB_565
-                inSampleSize = sampledValidationDecodeSize(bounds.outWidth, bounds.outHeight)
+            if (!hasUsableImageDimensions(bounds.outWidth, bounds.outHeight)) {
+                validatedUsableImageFiles.remove(file.absolutePath)
+                false
+            } else if (length > FULL_DECODE_VALIDATION_MAX_BYTES) {
+                rememberValidatedUsableImageFile(file.absolutePath, stamp)
+                true
+            } else {
+                val options = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                    inSampleSize = sampledValidationDecodeSize(bounds.outWidth, bounds.outHeight)
+                }
+                val bitmap = BitmapFactory.decodeFile(file.absolutePath, options)
+                if (bitmap == null) {
+                    validatedUsableImageFiles.remove(file.absolutePath)
+                    false
+                } else {
+                    bitmap.recycle()
+                    rememberValidatedUsableImageFile(file.absolutePath, stamp)
+                    true
+                }
             }
-            val bitmap = BitmapFactory.decodeFile(file.absolutePath, options) ?: return false
-            bitmap.recycle()
-            true
         } catch (_: Exception) {
+            validatedUsableImageFiles.remove(file.absolutePath)
             false
         }
+    }
+
+    private fun rememberValidatedUsableImageFile(
+        path: String,
+        stamp: ValidatedUsableImageFile,
+    ) {
+        if (validatedUsableImageFiles.size >= VALIDATED_USABLE_IMAGE_FILE_LIMIT &&
+            !validatedUsableImageFiles.containsKey(path)
+        ) {
+            var remaining = VALIDATED_USABLE_IMAGE_FILE_LIMIT / 8
+            for (entry in validatedUsableImageFiles.entries) {
+                validatedUsableImageFiles.remove(entry.key, entry.value)
+                remaining--
+                if (remaining <= 0) break
+            }
+        }
+        validatedUsableImageFiles[path] = stamp
     }
 
     private fun hasUsableImageDimensions(width: Int, height: Int): Boolean {

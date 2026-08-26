@@ -43,6 +43,29 @@ class NtkLateInputCatchupPolicyTest {
     }
 
     @Test
+    fun overdueReservedSuccessorIsReplacedForSamePhysicalGesture() {
+        assertTrue(
+            shouldPost(
+                targetRevision = 9L,
+                callbackObservedTargetRevision = 8L,
+                nowNanos = observedAtNanos + refreshPeriodNanos,
+                callbackHadAdmission = true
+            )
+        )
+    }
+
+    @Test
+    fun overdueUnadmittedReservationIsAlsoRecovered() {
+        assertTrue(
+            shouldPost(
+                targetRevision = 9L,
+                callbackObservedTargetRevision = 8L,
+                nowNanos = observedAtNanos + refreshPeriodNanos * 3L
+            )
+        )
+    }
+
+    @Test
     fun firstMoveOfNewGestureCanReplaceAdmittedPriorFrameSuccessor() {
         assertTrue(
             shouldPost(

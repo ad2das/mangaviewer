@@ -8,11 +8,84 @@ import org.junit.Test
 class NtkForwardHistoryPolicyTest {
     private data class Marker(val episode: String, val card: Boolean = false)
 
+    private fun retirementIdentity(
+        path: String,
+        digestChar: Char,
+        revision: Long,
+        pageCount: Int = 25,
+    ): NtkForwardPixelRetirementIdentity = requireNotNull(
+        NtkForwardPixelRetirementIdentity.create(
+            episodePath = path,
+            manifestDigest = digestChar.toString().repeat(64),
+            manifestRevision = revision,
+            manifestPageCount = pageCount,
+        ),
+    )
+
+    @Test
+    fun historyMutationRequiresTheExactLatestPhysicalViewportObservation() {
+        assertTrue(
+            NtkForwardHistoryPolicy.currentViewportAuthorizesHistoryMutation(
+                expectedObservationRevision = 7L,
+                publishedObservationRevision = 7L,
+                latestObservationRevision = 7L,
+                candidateMatchesPublishedPage = true,
+            )
+        )
+        assertFalse(
+            NtkForwardHistoryPolicy.currentViewportAuthorizesHistoryMutation(
+                expectedObservationRevision = 7L,
+                publishedObservationRevision = 7L,
+                latestObservationRevision = 8L,
+                candidateMatchesPublishedPage = true,
+            )
+        )
+        assertFalse(
+            NtkForwardHistoryPolicy.currentViewportAuthorizesHistoryMutation(
+                expectedObservationRevision = 7L,
+                publishedObservationRevision = 8L,
+                latestObservationRevision = 8L,
+                candidateMatchesPublishedPage = true,
+            )
+        )
+        assertFalse(
+            NtkForwardHistoryPolicy.currentViewportAuthorizesHistoryMutation(
+                expectedObservationRevision = 7L,
+                publishedObservationRevision = 7L,
+                latestObservationRevision = 7L,
+                candidateMatchesPublishedPage = false,
+            )
+        )
+    }
+
     @Test
     fun keepsBoundaryUntilThirdRealImageOfNextEpisode() {
         assertEquals(0, NtkForwardHistoryPolicy.removablePrefix(86, 0, true))
         assertEquals(0, NtkForwardHistoryPolicy.removablePrefix(86, 1, true))
         assertEquals(86, NtkForwardHistoryPolicy.removablePrefix(86, 2, true))
+    }
+
+    @Test
+    fun quietSuccessorP0RemovesOnlyHistoryOlderThanTheImmediatePredecessor() {
+        assertEquals(
+            3,
+            NtkForwardHistoryPolicy.removablePrefix(
+                firstCurrentImageIndex = 7,
+                currentImageOrdinal = 0,
+                forwardReading = true,
+                retainedPreviousEpisodeStartIndex = 3,
+                allowOlderThanRetainedPredecessorBeforePixelThreshold = true,
+            ),
+        )
+        assertEquals(
+            0,
+            NtkForwardHistoryPolicy.decodedPixelRetireBefore(
+                firstCurrentImageIndex = 7,
+                currentImageOrdinal = 0,
+                forwardReading = true,
+                retainedPreviousEpisodeStartIndex = 3,
+            ),
+        )
     }
 
     @Test
@@ -58,6 +131,28 @@ class NtkForwardHistoryPolicyTest {
             ),
         )
         assertEquals(0, NtkForwardHistoryPolicy.decodedPixelRetireBefore(87, 20, false))
+    }
+
+    @Test
+    fun ordinaryShortPredecessorKeepsEveryPixelUntilTheBitmapBudgetNeedsSpace() {
+        assertEquals(
+            0,
+            NtkForwardHistoryPolicy.decodedPixelRetireBefore(
+                firstCurrentImageIndex = 16,
+                currentImageOrdinal = 2,
+                forwardReading = true,
+                retainedPreviousEpisodeStartIndex = 0,
+            ),
+        )
+        assertEquals(
+            20,
+            NtkForwardHistoryPolicy.decodedPixelRetireBefore(
+                firstCurrentImageIndex = 28,
+                currentImageOrdinal = 2,
+                forwardReading = true,
+                retainedPreviousEpisodeStartIndex = 3,
+            ),
+        )
     }
 
     @Test
@@ -266,6 +361,42 @@ class NtkForwardHistoryPolicyTest {
                 firstCurrentImageIndex = 4,
                 isTransitionCard = Marker::card,
                 sameEpisode = { first, second -> first.episode == second.episode },
+            ),
+        )
+    }
+
+    @Test
+    fun repeatedCurrentEpisodeEntryKeepsClaimEvenWhenFirstReleaseSetWasEmpty() {
+        val ledger = NtkForwardPixelRetirementLedger()
+        val currentC = retirementIdentity("/manhwa/2/c", 'c', revision = 3L)
+
+        assertTrue(ledger.tryClaim(currentC))
+        val firstDestructiveReleaseSet = emptyList<Any>()
+        assertTrue(firstDestructiveReleaseSet.isEmpty())
+
+        // Empty/protected is still a completed ownership turn. Reverse rehydrate must not reopen
+        // the destructive predecessor clear for the same exact C manifest.
+        assertFalse(ledger.tryClaim(currentC))
+        assertEquals(setOf(currentC), ledger.snapshotForTest())
+    }
+
+    @Test
+    fun consumedPathCleanupKeepsLedgerBoundedAcrossAToBToC() {
+        val ledger = NtkForwardPixelRetirementLedger()
+        val episodeA = retirementIdentity("/manhwa/2/a", 'a', revision = 1L)
+        val episodeB = retirementIdentity("/manhwa/2/b", 'b', revision = 2L)
+        val episodeC = retirementIdentity("/manhwa/2/c", 'c', revision = 3L)
+
+        assertTrue(ledger.tryClaim(episodeA))
+        assertTrue(ledger.tryClaim(episodeB))
+        assertEquals(1, ledger.removeEpisodePaths(setOf("https://newtoki.test/manhwa/2/a")))
+        assertTrue(ledger.tryClaim(episodeC))
+
+        assertEquals(setOf(episodeB, episodeC), ledger.snapshotForTest())
+        assertFalse(ledger.tryClaim(episodeC))
+        assertTrue(
+            ledger.tryClaim(
+                retirementIdentity("/manhwa/2/c", 'd', revision = 4L, pageCount = 26),
             ),
         )
     }

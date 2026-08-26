@@ -3,6 +3,7 @@ import android.content.Context;
 import android.content.res.ColorStateList;
 
 import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -27,7 +28,9 @@ import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
 
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.regex.Pattern;
 
 import ml.melun.mangaview.ui.NpaLinearLayoutManager;
@@ -45,7 +48,7 @@ import static ml.melun.mangaview.Utils.safeGlideClear;
 public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private String ntkPressEligiblePath = "";
 
-    private final List<Manga> mData;
+    private final ArrayList<Manga> mData;
     private final LayoutInflater mInflater;
     private ItemClickListener mClickListener;
     private RecyclerView attachedRecyclerView;
@@ -74,7 +77,7 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
     public EpisodeAdapter(Context context, List<Manga> data, Title title, int mode) {
         this.mInflater = LayoutInflater.from(context);
         mainContext = context;
-        this.mData = data;
+        this.mData = new ArrayList<>(data == null ? java.util.Collections.emptyList() : data);
         this.title = title;
         this.mode = mode;
         outValue = new TypedValue();
@@ -223,6 +226,68 @@ public class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder
                     mode == 0, selected, pressEligible, true);
             h.row.setEpisodeIdentity(episode.getNtkEpisodePath());
         }
+    }
+
+    public Manga episodeAtAdapterPosition(int adapterPosition) {
+        return isValidEpisodePosition(mData, adapterPosition)
+                ? mData.get(adapterPosition - 1)
+                : null;
+    }
+
+    /**
+     * Refreshes a rendered episode list without replacing the RecyclerView adapter or its stable
+     * row identities. A physical/accessibility click that started on a cached row therefore still
+     * targets the same holder while the fresh network snapshot is committed.
+     */
+    public void replaceData(List<Manga> fresh) {
+        final ArrayList<Manga> oldData = new ArrayList<>(mData);
+        final ArrayList<Manga> newData = new ArrayList<>(
+                fresh == null ? java.util.Collections.emptyList() : fresh);
+        DiffUtil.DiffResult diff = DiffUtil.calculateDiff(new DiffUtil.Callback() {
+            @Override
+            public int getOldListSize() {
+                return oldData.size();
+            }
+
+            @Override
+            public int getNewListSize() {
+                return newData.size();
+            }
+
+            @Override
+            public boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+                Manga oldItem = oldData.get(oldItemPosition);
+                Manga newItem = newData.get(newItemPosition);
+                if(oldItem == null || newItem == null)
+                    return oldItem == newItem;
+                if(oldItem.getId() >= 0 || newItem.getId() >= 0)
+                    return oldItem.getId() >= 0
+                            && newItem.getId() >= 0
+                            && fastEpisodeStableId(oldItem) == fastEpisodeStableId(newItem);
+                String oldOfflinePath = oldItem.getOfflinePath();
+                String newOfflinePath = newItem.getOfflinePath();
+                if(oldOfflinePath != null || newOfflinePath != null)
+                    return Objects.equals(oldOfflinePath, newOfflinePath);
+                return Objects.equals(oldItem.getNtkEpisodePath(), newItem.getNtkEpisodePath())
+                        && Objects.equals(oldItem.getName(), newItem.getName());
+            }
+
+            @Override
+            public boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+                Manga oldItem = oldData.get(oldItemPosition);
+                Manga newItem = newData.get(newItemPosition);
+                if(oldItem == null || newItem == null)
+                    return oldItem == newItem;
+                return oldItem.getId() == newItem.getId()
+                        && oldItem.getBaseMode() == newItem.getBaseMode()
+                        && Objects.equals(oldItem.getName(), newItem.getName())
+                        && Objects.equals(oldItem.getDate(), newItem.getDate())
+                        && Objects.equals(oldItem.getNtkEpisodePath(), newItem.getNtkEpisodePath());
+            }
+        }, false);
+        mData.clear();
+        mData.addAll(newData);
+        diff.dispatchUpdatesTo(this);
     }
 
     @Override

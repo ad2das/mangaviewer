@@ -97,6 +97,13 @@ android {
         }
         debug {
             signingConfig signingConfigs.debug
+            // This variant is the connected performance-qualification target. A debuggable APK
+            // is installed with verify-only dexopt, so the first real reader gesture competes
+            // with ART compiling thousands of ReaderSession/ReaderSurfaceView methods. Keep the
+            // test host and diagnostics source set, but install the same embedded Baseline Profile
+            // contract as production. AGP 8.4+ emits/install-compiles DexMetadata only for a
+            // non-debuggable target; debugging remains available through ntkDiagnostic.
+            debuggable false
         }
         benchmark {
             initWith release
@@ -320,6 +327,8 @@ tasks.register("runNtkNativeOracleTests") {
                 "SwappyExternalSubmissionContractTest",
                 "SwappyExternalTransportStateTest",
                 "RendererPostSubmitFatalContractTest",
+                "RollingTextureHeadroomPlannerTest",
+                "BitmapReferenceLedgerTest",
                 "GpuSceneAdmissionLedgerTest",
                 "PreparedSceneBankLedgerTest",
                 "FixedDepthOneSchedulerTest",
@@ -329,6 +338,7 @@ tasks.register("runNtkNativeOracleTests") {
                 "AttachGenerationContractTest",
                 "NativeSurfaceLeaseRegistryTest",
                 "DetachedWarmLifecycleContractTest",
+                "ReleaseTrackerHistoryContractTest",
         ]
         def nativeTests = testNames.collectEntries { [(it): currentAbiFile(it)] }
         def sharedCpp = currentAbiFile("libc++_shared.so")
@@ -362,6 +372,12 @@ repositories {
 
 dependencies {
     implementation 'androidx.games:games-frame-pacing:2.1.3'
+    // Exact host-emulator JPEG rows decode in native memory so ART GC cannot pause the renderer.
+    implementation 'com.viliussutkus89.ndk.thirdparty:libjpeg-turbo-ndk26-shared:3.0.1-beta-3'
+    // Exact PNG originals use the same bounded native scratch path. Bundling the official
+    // reference decoder avoids Android's inaccessible platform libpng and AImageDecoder's ART
+    // native-allocation churn during a physical chapter boundary.
+    implementation 'com.viliussutkus89.ndk.thirdparty:libpng-ndk26-shared:1.6.40-beta-7'
     implementation 'com.google.android.flexbox:flexbox:3.0.0'
     implementation 'androidx.documentfile:documentfile:1.0.1'
     implementation 'androidx.appcompat:appcompat:1.5.1'

@@ -113,6 +113,43 @@ class NtkSamePathGenerationRetirementContractTest {
     }
 
     @Test
+    fun registryFenceAndPathSlotPublishAsOneReplacementTransaction() {
+        val registry = readSource("reader", "NtkSourceSpoolRegistry.kt")
+        val begin = sourceFunction(
+            registry,
+            "private fun beginDiscoveryInternal(",
+            "fun observeQuarantineAssetEvidence(",
+        )
+        val fence = begin.indexOf("beginDiscoveryFence(path, lease.generation.value)")
+        val publish = begin.indexOf("entries[path] = entry")
+        val rollback = begin.indexOf("catch (failure: Throwable)")
+        assertTrue(fence >= 0)
+        assertTrue("A path slot must never precede its ownership fence", publish > fence)
+        assertTrue(rollback > publish)
+        assertTrue(begin.indexOf("entries.remove(path, entry)", rollback) > rollback)
+        assertTrue(begin.indexOf("endDiscoveryFence(", rollback) > rollback)
+
+        val retire = sourceFunction(
+            registry,
+            "private fun retireEntryForReplacementLocked(",
+            "fun isDiscoveryActive(",
+        )
+        val detach = retire.indexOf("entries.remove(lease.episodePath, entry)")
+        val endFence = retire.indexOf("endDiscoveryFence(")
+        assertTrue(detach >= 0)
+        assertTrue("The old exact fence must end before the path lock is released", endFence > detach)
+        assertTrue(retire.contains("action.copy(endDiscoveryFence = false)"))
+
+        val currentAuthority = sourceFunction(
+            registry,
+            "fun currentAuthoritativeManifest(",
+            "/** One-shot effective floor",
+        )
+        assertTrue(currentAuthority.contains("NtkSourceState.TERMINAL_CLOSING"))
+        assertTrue(currentAuthority.contains("takeIf"))
+    }
+
+    @Test
     fun successfulCoordinatorFlightRemainsOwnedUntilExplicitRetirement() {
         val coordinator = readSource(
             "reader",
@@ -149,7 +186,10 @@ class NtkSamePathGenerationRetirementContractTest {
         val completionCall = runFlight.indexOf("completeOwnedFlight(")
         val finallyBlock = runFlight.indexOf("finally")
         val conditionalRemoval = runFlight.indexOf("if (!flight.completed.get()", finallyBlock)
-        val flightRemoval = runFlight.indexOf("flights.remove(path, flight)", conditionalRemoval)
+        val flightRemoval = runFlight.indexOf(
+            "detachFlightForForegroundLeaveLocked(flight)",
+            conditionalRemoval,
+        )
         assertTrue(ownershipComplete >= 0)
         assertTrue(completedPublication > ownershipComplete)
         assertTrue(completionCall >= 0)
@@ -169,7 +209,14 @@ class NtkSamePathGenerationRetirementContractTest {
 
         assertTrue(retireOwner.contains("retirement.retire("))
         assertTrue(retireOwner.contains("retireDiscoveryForReplacement("))
-        assertTrue(retireOwner.contains("flights.remove(ownedPath, owned)"))
+        assertTrue(retireOwner.contains("detachFlightForForegroundLeaveLocked(owned)"))
+        assertTrue(retireOwner.contains("completeDetachedFlightForegroundLeave(flight)"))
+        assertFalse(
+            "A route resolver may pre-claim network shutdown; lifecycle retirement is owned by " +
+                "the generation-qualified retirement fence, not the advisory claim result",
+            retireOwner.contains("if (!retirementClaimed") ||
+                retireOwner.contains("if (!claimNetworkOwnershipRetirement"),
+        )
     }
 
     @Test

@@ -4,6 +4,7 @@ import ml.melun.mangaview.mangaview.CustomHttpClient
 import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.charset.StandardCharsets
@@ -12,6 +13,48 @@ import java.util.Base64
 class NtkManifestEvidenceParserTest {
     private val path = "/manhwa/33727/1692251"
     private val lease = NtkDiscoveryLease(path, NtkDiscoveryGeneration(41L))
+
+    @Test
+    fun streamingRequestSeedUsesOnlyTheBorrowedPlainPrefixLength() {
+        val value = token("33727", "1692251", "manhwa")
+        val prefix = "noise { \"imagesToken\" \n: \"$value\" }".toByteArray()
+        val borrowed = ByteArray(prefix.size + 512) { 'x'.code.toByte() }
+        prefix.copyInto(borrowed)
+
+        val seed = NtkViewerImageRequestSeedParser.parseIfPresent(
+            lease,
+            path,
+            borrowed,
+            prefix.size,
+        )
+
+        assertEquals(value, seed?.imagesToken)
+        assertEquals("33727", seed?.requestIdentity?.normalizedSourceWorkId)
+        assertNull(
+            NtkViewerImageRequestSeedParser.parseIfPresent(
+                lease,
+                path,
+                borrowed,
+                "noise".length,
+            ),
+        )
+    }
+
+    @Test
+    fun streamingRequestSeedFindsEscapedFlightTokenWithoutDecodingWholePrefix() {
+        val value = token("33727", "1692251", "manhwa")
+        val prefix = "flight \\\"token\\\" : \\\"$value\\\" tail".toByteArray()
+
+        val seed = NtkViewerImageRequestSeedParser.parseIfPresent(
+            lease,
+            path,
+            prefix,
+            prefix.size,
+        )
+
+        assertEquals(value, seed?.imagesToken)
+        assertEquals("1692251", seed?.requestIdentity?.normalizedEpisodeId)
+    }
 
     @Test
     fun documentAndApiAreParsedExactlyOnceIntoBoundImmutableEvidence() {
@@ -57,6 +100,14 @@ class NtkManifestEvidenceParserTest {
             NtkEpisodeDocumentPlanParser.completeNumericPageCountHint(lease, path, response),
         )
         val draft = NtkEpisodeDocumentPlanParser.parse(lease, path, response)
+        assertEquals(
+            31,
+            NtkEpisodeDocumentPlanParser.completeNumericPageCountHint(
+                lease,
+                path,
+                draft,
+            ),
+        )
         val assets = (1..31).map { "https://img.example/cv/$it.jpg" }
         val plan = draft.bind(
             NtkQuarantineAssetEvidence.create(

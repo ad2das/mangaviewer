@@ -163,7 +163,7 @@ data class NtkAdjacentExactP0HeadPublication(
 }
 
 /**
- * One complete, immutable forward page from the same direct-Wi-Fi adjacent webtoon.
+ * One complete, immutable forward page from the same direct-Wi-Fi adjacent strip.
  * Unlike the legacy tile callback this carries the committed manifest identity and original
  * proof all the way into the Surface transaction. The contract deliberately covers the whole
  * adjacent episode, not only the initial p1-p3 runway, so the later tail cannot fall back to a
@@ -183,7 +183,10 @@ data class NtkAdjacentExactRunwayTilePage(
 ) {
     init {
         require(displayPageIndex >= 0)
-        require(normalizedEpisodePath.startsWith("/webtoon/"))
+        require(
+            normalizedEpisodePath.startsWith("/webtoon/") ||
+                normalizedEpisodePath.startsWith("/manhwa/")
+        )
         require(sourcePageIndex >= 1)
         require(canonicalAsset.isNotBlank() && NtkStripDigests.isSha256(manifestDigest))
         require(manifestPageCount > sourcePageIndex)

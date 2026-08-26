@@ -14,7 +14,7 @@ class NtkAsyncTelemetryTest {
         val caller = Thread.currentThread()
         val serializedOffCaller = AtomicBoolean(false)
         val completed = CountDownLatch(1)
-        val telemetry = NtkAsyncTelemetry(capacity = 2, sink = { _, message ->
+        val telemetry = NtkAsyncTelemetry(capacity = 2, enabled = { true }, sink = { _, message ->
             serializedOffCaller.set(Thread.currentThread() !== caller)
             assertTrue(message.contains("event authority=7,value=ready,elapsedMs=9"))
             completed.countDown()
@@ -37,7 +37,7 @@ class NtkAsyncTelemetryTest {
         val workerEntered = CountDownLatch(1)
         val releaseWorker = CountDownLatch(1)
         val thirdSerialized = AtomicBoolean(false)
-        val telemetry = NtkAsyncTelemetry(capacity = 1, sink = { _, message ->
+        val telemetry = NtkAsyncTelemetry(capacity = 1, enabled = { true }, sink = { _, message ->
             if (message.startsWith("first ")) {
                 workerEntered.countDown()
                 releaseWorker.await(2, TimeUnit.SECONDS)
@@ -65,7 +65,7 @@ class NtkAsyncTelemetryTest {
     @Test
     fun closedLaneRejectsWithoutEvaluatingFields() {
         val evaluated = AtomicBoolean(false)
-        val telemetry = NtkAsyncTelemetry(sink = { _, _ -> })
+        val telemetry = NtkAsyncTelemetry(enabled = { true }, sink = { _, _ -> })
         telemetry.close()
 
         assertFalse(telemetry.offer("closed", 7L, 1L) {
@@ -82,7 +82,7 @@ class NtkAsyncTelemetryTest {
         val completed = CountDownLatch(1)
         val serializedOffCaller = AtomicBoolean(false)
         var actual = ""
-        val telemetry = NtkAsyncTelemetry(capacity = 2, sink = { _, message ->
+        val telemetry = NtkAsyncTelemetry(capacity = 2, enabled = { true }, sink = { _, message ->
             serializedOffCaller.set(Thread.currentThread() !== caller)
             actual = message
             completed.countDown()

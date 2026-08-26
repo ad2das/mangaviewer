@@ -12,6 +12,10 @@ struct HardwareBufferRenderTargetPoolTestAccess {
         for (std::size_t index = 0; index < pool.targets_.size(); ++index) {
             pool.targets_[index].slot = index;
             pool.targets_[index].generation = 0;
+            // State-only tests have no EGL/AHardwareBuffer entry points. A
+            // non-zero sentinel keeps acquireForRendering on the ownership
+            // path instead of entering the production lazy allocator.
+            pool.targets_[index].framebuffer = static_cast<GLuint>(index + 1);
             pool.targets_[index].state =
                 HardwareBufferRenderTargetPool::SlotState::FREE;
         }

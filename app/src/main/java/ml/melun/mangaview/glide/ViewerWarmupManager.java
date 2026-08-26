@@ -937,6 +937,28 @@ public class ViewerWarmupManager {
         return null;
     }
 
+    /**
+     * Returns a private software copy which the caller may eventually recycle.
+     *
+     * The ordinary cache accessor is deliberately borrowed: the same identity can be displayed
+     * by StripImageBinder or a prepared Reader surface at the same time.  Copy while holding the
+     * cache lock so clearDecodedWork cannot release the Glide target between lookup and copy.
+     */
+    public static Bitmap getDecodedBitmapExclusive(PageItem page, boolean autoCut, boolean reverse,
+                                                    int width, boolean preview) {
+        String key = decodedPageKey(page, autoCut, reverse, preview ? decodedWarmupWidth(width) : width);
+        if(key.length() == 0)
+            return null;
+        synchronized (ViewerWarmupManager.class) {
+            CachedBitmap cached = decodedBitmapCache.get(key);
+            if(cached != null && cached.isUsable())
+                return copyBitmapForExclusiveConsumer(cached.bitmap);
+            if(cached != null)
+                decodedBitmapCache.remove(key);
+        }
+        return null;
+    }
+
     public static void clearDecodedWork(Context context) {
         List<CustomTarget<Bitmap>> targets;
         synchronized (ViewerWarmupManager.class) {
@@ -1993,6 +2015,22 @@ public class ViewerWarmupManager {
         if(bitmap == null || bitmap.isRecycled() || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0)
             return null;
         return bitmap;
+    }
+
+    static Bitmap copyBitmapForExclusiveConsumer(Bitmap bitmap) {
+        if(bitmap == null || bitmap.isRecycled() || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0)
+            return null;
+        try {
+            Bitmap copy = bitmap.copy(Bitmap.Config.ARGB_8888, false);
+            if(copy == null || copy == bitmap || copy.isRecycled()) {
+                if(copy != null && copy != bitmap && !copy.isRecycled())
+                    copy.recycle();
+                return null;
+            }
+            return copy;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static int bitmapSizeKb(Bitmap bitmap) {

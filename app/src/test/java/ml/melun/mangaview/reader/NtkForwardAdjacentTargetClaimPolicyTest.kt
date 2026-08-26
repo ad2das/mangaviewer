@@ -1,6 +1,8 @@
 package ml.melun.mangaview.reader
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtkForwardAdjacentTargetClaimPolicyTest {
@@ -51,6 +53,9 @@ class NtkForwardAdjacentTargetClaimPolicyTest {
                 NtkForwardAdjacentTargetClaimPolicy.Authority.PERSISTED_EXACT_PAIR,
             ),
         )
+        assertTrue(policy.sameTarget("/manhwa/work/episode-b", "/MANHWA/work/episode-b"))
+        assertFalse(policy.sameTarget("/manhwa/work/episode-b", "/manhwa/work/episode-c"))
+        assertFalse(policy.sameTarget("", "/manhwa/work/episode-b"))
     }
 
     @Test

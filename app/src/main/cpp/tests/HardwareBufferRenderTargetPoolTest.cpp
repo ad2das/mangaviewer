@@ -4,8 +4,21 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <sys/eventfd.h>
+#include <unistd.h>
+#include <utility>
 
 namespace ntk::present {
+
+namespace {
+int fakeCpuCompletionFenceFd = -1;
+
+int fakeHardwareBufferUnlock(AHardwareBuffer*, std::int32_t* completionFenceFd) {
+    if (completionFenceFd == nullptr) return -1;
+    *completionFenceFd = std::exchange(fakeCpuCompletionFenceFd, -1);
+    return 0;
+}
+}  // namespace
 
 struct HardwareBufferRenderTargetPoolTestAccess {
     static void initializeStateOnly(HardwareBufferRenderTargetPool& pool) {
@@ -13,9 +26,21 @@ struct HardwareBufferRenderTargetPoolTestAccess {
         for (std::size_t index = 0; index < pool.targets_.size(); ++index) {
             pool.targets_[index].slot = index;
             pool.targets_[index].generation = 0;
+            // These tests exercise the ownership state machine without an EGL
+            // context. Mark every slot as already materialized so the lazy
+            // allocator never calls the production AHardwareBuffer entry
+            // points, which are intentionally unset in this state-only seam.
+            pool.targets_[index].framebuffer = static_cast<GLuint>(index + 1);
             pool.targets_[index].state =
                 HardwareBufferRenderTargetPool::SlotState::FREE;
         }
+    }
+
+    static void installCpuUnlock(
+            HardwareBufferRenderTargetPool& pool,
+            int completionFenceFd) {
+        fakeCpuCompletionFenceFd = completionFenceFd;
+        pool.hardwareBufferUnlock_ = &fakeHardwareBufferUnlock;
     }
 };
 
@@ -184,6 +209,63 @@ void uninitializedPoolRejectsOwnership() {
             "uninitialized pool admitted ownership");
 }
 
+void cpuUnlockTransfersRealFenceWithoutWaiting() {
+    Pool pool;
+    Access::initializeStateOnly(pool);
+    auto* target = pool.acquireForRendering();
+    require(target != nullptr, "async CPU target acquire failed");
+    const int completionFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    require(completionFd >= 0, "async CPU completion fence allocation failed");
+    Access::installCpuUnlock(pool, completionFd);
+    int transferredFd = -1;
+    require(pool.finishCpuWrite(*target, &transferredFd) &&
+                transferredFd == completionFd &&
+                target->state == Pool::SlotState::ACQUIRE_FENCE_EXPORTED &&
+                !target->readyWithoutAcquireFence,
+            "real CPU completion fence was waited or discarded");
+    require(close(transferredFd) == 0 &&
+                pool.abortBeforeSubmission(target->slot, target->generation),
+            "async CPU fence target cleanup failed");
+}
+
+void synchronousCpuUnlockKeepsFenceFreePath() {
+    Pool pool;
+    Access::initializeStateOnly(pool);
+    auto* target = pool.acquireForRendering();
+    require(target != nullptr, "synchronous CPU target acquire failed");
+    Access::installCpuUnlock(pool, -1);
+    int transferredFd = 42;
+    require(pool.finishCpuWrite(*target, &transferredFd) &&
+                transferredFd == -1 &&
+                target->state == Pool::SlotState::ACQUIRE_FENCE_EXPORTED &&
+                target->readyWithoutAcquireFence &&
+                pool.abortBeforeSubmission(target->slot, target->generation),
+            "synchronous CPU unlock did not retain the fence-free path");
+}
+
+void offThreadCpuPrecompositionPublishesOnlyOnOwner() {
+    Pool pool;
+    Access::initializeStateOnly(pool);
+    auto* target = pool.acquireForRendering();
+    require(target != nullptr, "precomposition target acquire failed");
+    target->hardwareBuffer = reinterpret_cast<AHardwareBuffer*>(1);
+    Access::installCpuUnlock(pool, -1);
+    int completionFenceFd = 91;
+    require(pool.beginCpuPrecomposition(*target) &&
+                target->state == Pool::SlotState::PRECOMPOSING &&
+                pool.finishCpuPrecompositionOffThread(
+                    *target, &completionFenceFd) &&
+                completionFenceFd == -1 &&
+                target->state == Pool::SlotState::PRECOMPOSING &&
+                pool.publishFinishedCpuPrecomposition(*target, true) &&
+                target->state == Pool::SlotState::ACQUIRE_FENCE_EXPORTED &&
+                target->readyWithoutAcquireFence,
+            "off-thread CPU work mutated or failed owner publication");
+    require(pool.abortBeforeSubmission(target->slot, target->generation),
+            "precomposition target cleanup failed");
+    target->hardwareBuffer = nullptr;
+}
+
 }  // namespace
 
 int main() {
@@ -193,6 +275,9 @@ int main() {
     replacementPairIsAtomicAndRollbackableBeforeApply();
     fullEightNodeChainReleasesOnlyExactReplacedRefs();
     uninitializedPoolRejectsOwnership();
-    std::cout << "PASS HardwareBufferRenderTargetPoolTest schema11 6/6\n";
+    cpuUnlockTransfersRealFenceWithoutWaiting();
+    synchronousCpuUnlockKeepsFenceFreePath();
+    offThreadCpuPrecompositionPublishesOnlyOnOwner();
+    std::cout << "PASS HardwareBufferRenderTargetPoolTest schema13 9/9\n";
     return 0;
 }

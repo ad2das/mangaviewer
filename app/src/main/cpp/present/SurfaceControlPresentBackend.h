@@ -80,6 +80,12 @@ public:
     using WakeCallback = void (*)(void*) noexcept;
     using SyncFileInfoFn = ::sync_file_info* (*)(std::int32_t);
     using SyncFileInfoFreeFn = void (*)(::sync_file_info*);
+    using HardwareBufferAllocateFn = int (*)(
+        const AHardwareBuffer_Desc*, AHardwareBuffer**);
+    using HardwareBufferReleaseFn = void (*)(AHardwareBuffer*);
+    using HardwareBufferLockFn = int (*)(
+        AHardwareBuffer*, std::uint64_t, std::int32_t, const ARect*, void**);
+    using HardwareBufferUnlockFn = int (*)(AHardwareBuffer*, std::int32_t*);
 
     enum class PreparedTransactionState : std::uint8_t {
         EMPTY = 0,
@@ -142,6 +148,7 @@ public:
         std::uint32_t callbackCookieIndex = UINT32_MAX;
         AppliedBufferRef previousAppliedBufferRef{};
         std::uint64_t reservedAppliedBufferRefSerial = 0;
+        bool readyWithoutAcquireFence = false;
         bool backpressureEnablePending = false;
         bool firstStage = false;
         PreparedTransactionState state = PreparedTransactionState::EMPTY;
@@ -161,6 +168,32 @@ public:
         AppliedBufferRef appliedBufferRef{};
         bool applyBeforeAcquireSignalProven = false;
         bool submitted = false;
+    };
+
+    /**
+     * Renderer-thread half of a GPU acquire-fence export.
+     *
+     * eglCreateSyncKHR must run while the producing GL context is current.  The native-fence
+     * extension does not impose that requirement on eglDupNativeFenceFDANDROID or
+     * eglDestroySyncKHR, so the expensive host-driver round trip may finish on a worker after
+     * this exact sync object has been issued and the GL stream flushed.
+     */
+    struct PendingGpuFenceExport {
+        EGLSyncKHR sync = EGL_NO_SYNC_KHR;
+        std::int64_t renderBeginNanos = 0;
+        std::int64_t renderEndNanos = 0;
+        std::int64_t fenceIssuedNanos = 0;
+    };
+
+    /** Worker result. File descriptors remain app-owned until the renderer publishes it. */
+    struct FinishedGpuFenceExport {
+        int frameworkAcquireFd = -1;
+        int proofAcquireFd = -1;
+        std::int64_t renderBeginNanos = 0;
+        std::int64_t renderEndNanos = 0;
+        std::int64_t fenceIssuedNanos = 0;
+        std::int64_t exportReturnNanos = 0;
+        bool success = false;
     };
 
     struct ConservationSnapshot {
@@ -229,11 +262,14 @@ public:
     bool prepare(
         EGLDisplay display,
         std::uint32_t width,
-        std::uint32_t height);
+        std::uint32_t height,
+        bool cpuComposerOnly = false);
 
     bool attach(
         EGLDisplay display,
         ANativeWindow* parentWindow,
+        ASurfaceControl* providedChildSurface,
+        ASurfaceControl* providedGeometrySurface,
         std::uint32_t width,
         std::uint32_t height,
         std::uint64_t surfaceEpoch,
@@ -242,6 +278,39 @@ public:
 
     HardwareBufferRenderTargetPool::RenderTarget* acquireRenderTarget();
     bool bindRenderTarget(HardwareBufferRenderTargetPool::RenderTarget& target);
+    bool lockRenderTargetForCpuWrite(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        void** pixels,
+        std::uint32_t* stridePixels);
+    bool finishCpuWrite(
+        HardwareBufferRenderTargetPool::RenderTarget& target);
+    bool beginCpuPrecomposition(
+        HardwareBufferRenderTargetPool::RenderTarget& target);
+    bool lockCpuPrecompositionOffThread(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        void** pixels,
+        std::uint32_t* stridePixels);
+    bool finishCpuPrecompositionOffThread(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        int* completionFenceFd);
+    /** Consumes completionFenceFd on every return path. */
+    bool publishFinishedCpuPrecomposition(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        int completionFenceFd);
+    bool beginGpuFenceExport(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        std::int64_t renderBeginNanos,
+        std::int64_t renderEndNanos,
+        PendingGpuFenceExport* pending);
+    /** Consumes pending.sync on every return path and mutates no pool/ledger state. */
+    void finishGpuFenceExportOffThread(
+        PendingGpuFenceExport* pending,
+        FinishedGpuFenceExport* finished) const;
+    /** Consumes both finished file descriptors on every return path. */
+    bool publishFinishedGpuFenceExport(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        FinishedGpuFenceExport* finished,
+        GpuSubmissionProof* proof);
     bool exportAcquireFence(
         HardwareBufferRenderTargetPool::RenderTarget& target,
         std::int64_t renderBeginNanos,
@@ -255,6 +324,10 @@ public:
         const FixedTransportProfile& profile,
         PreparedSurfaceSubmission* prepared,
         SwappyFixedExternalTransportReady* proof);
+    /** Stable literal identifying the most recent prepare rejection on the renderer owner. */
+    const char* lastPreparationFailureReason() const noexcept {
+        return lastPreparationFailureReason_;
+    }
 
     ApplyReadiness queryApplyReadiness(
         const PreparedSurfaceSubmission& prepared) noexcept;
@@ -280,6 +353,30 @@ public:
      */
     ApplyDisposition applyPreparedBufferTransactionDirect(
         PreparedSurfaceSubmission& prepared,
+        std::int64_t frameTimelineVsyncId,
+        SubmissionReceipt* receipt);
+
+    /**
+     * Replaces the first-stage full-buffer geometry with an exact source crop. The buffer and its
+     * acquire-fence ownership remain unchanged; this only edits the not-yet-applied transaction.
+     */
+    bool configurePreparedSourceCrop(
+        PreparedSurfaceSubmission& prepared,
+        std::int32_t sourceTop,
+        std::int32_t sourceHeight,
+        std::int32_t geometryBaseSourceTop);
+
+    /**
+     * Moves the already-latched immutable buffer by changing only its source crop. No render
+     * target is acquired, no buffer is replaced, and no release fence is manufactured. The
+     * returned OnCommit identity still belongs to this exact geometry transaction.
+     */
+    ApplyDisposition applyGeometryTransactionDirect(
+        const FixedPreparedFrameIdentityBase& baseIdentity,
+        std::int32_t sourceTop,
+        std::int32_t sourceHeight,
+        std::int64_t frameTimelineVsyncId,
+        std::int64_t desiredPresentTimeNanos,
         SubmissionReceipt* receipt);
 
     bool abortPreparedBufferTransaction(
@@ -292,6 +389,9 @@ public:
     bool consumeCompositorLatch(
         const FixedPresentEvent& event,
         ExactPresentLatchObservation* observation) noexcept;
+    /** Renderer-thread classification before either callback record is consumed. */
+    bool isGeometryOnlyTransaction(
+        const FixedPresentEvent& event) const noexcept;
     bool consumeTransactionCompleted(
         const FixedPresentEvent& event) noexcept;
     bool consumePreviousBufferReleased(
@@ -306,15 +406,26 @@ public:
     bool hasPreparationCapacity() const noexcept {
         return attached_ && childSurface_ != nullptr &&
             preparedTransactionState_ == PreparedTransactionState::EMPTY &&
-            preparedTransactionSerial_ == 0;
+            preparedTransactionSerial_ == 0 && hasFreeCallbackCookie();
     }
     bool hasDirectSubmissionCapacity() const noexcept {
         return hasPreparationCapacity() &&
             logicalUnlatchedNow_ < kMaxDirectLogicalUnlatched;
     }
+    bool hasGeometryTransactionCapacity() const noexcept {
+        return attached_ && childSurface_ != nullptr &&
+            geometryPulseSurface_ != nullptr &&
+            hasFreeGeometryPulseBuffer() &&
+            latestAppliedBufferRef_.has_value() &&
+            logicalUnlatchedNow_ < kMaxGeometryLogicalUnlatched &&
+            freeAppliedCallbackRecordIndex().has_value() &&
+            hasFreeCallbackCookie();
+    }
     bool hasOutstandingSubmission() const noexcept {
         return callbackRecordCount() != 0;
     }
+    /** Installs the host display-rate vote with the first real pulse-buffer transaction. */
+    void configureGeometryPulseFrameRate(float frameRate) noexcept;
     bool detachAfterEvidenceDrained();
     // Lifecycle fallback for a parent ANativeWindow that is already being replaced. This is
     // legal only after every applied callback/fence/event has been consumed; it releases the
@@ -326,27 +437,49 @@ public:
     HardwareBufferRenderTargetPool& pool() noexcept { return pool_; }
     std::uint64_t surfaceSerial() const noexcept { return surfaceSerial_; }
     bool prepared() const noexcept { return prepared_; }
+    bool cpuComposerOnly() const noexcept { return cpuComposerOnly_; }
     bool preparedFor(
             EGLDisplay display,
             std::uint32_t width,
-            std::uint32_t height) const noexcept {
-        return prepared_ && display_ == display && width_ == width && height_ == height;
+            std::uint32_t height,
+            bool cpuComposerOnly = false) const noexcept {
+        return prepared_ && display_ == display && width_ == width && height_ == height &&
+            cpuComposerOnly_ == cpuComposerOnly;
     }
 
 private:
     friend struct SurfaceControlPresentBackendTestAccess;
-    static constexpr std::size_t kEventCapacity = 64;
-    static constexpr std::size_t kMaxAppliedCallbackRecords = 8;
+    // Buffer replacement remains bounded by the eight-slot render-target pool, but geometry
+    // commits use independent 1x1 pulse buffers. The stable pulse normally commits every display
+    // cut; the fixed ledger still retains a bounded callback window through host/lifecycle bursts.
+    // Size the event ring for both OnCommit and OnComplete plus releases from that full window.
+    static constexpr std::size_t kEventCapacity = 256;
+    static constexpr std::size_t kMaxAppliedCallbackRecords = 32;
     static constexpr std::size_t kMaxPreviousReleaseRecords = 7;
     static constexpr std::size_t kMaxAcquireFenceRecords = 8;
-    // A one-deep chain necessarily misses every other host-vsync: the successor can only be
-    // applied after its predecessor's OnCommit callback returns. Two identity-tracked buffers let
-    // rendering and callback delivery overlap while remaining far below the eight-slot ledger.
+    // Direct/device consumers can overlap one successor buffer with the current commit. Geometry
+    // transactions own independent callback records and may use the full fixed ledger. The native
+    // command mailbox remains depth one; this larger proof ledger only covers transactions that
+    // SurfaceFlinger has already accepted.
     static constexpr std::uint32_t kMaxDirectLogicalUnlatched = 2;
+    static constexpr std::uint32_t kMaxGeometryLogicalUnlatched =
+        static_cast<std::uint32_t>(kMaxAppliedCallbackRecords);
     static constexpr std::size_t kMaxCallbackCookies =
         kMaxAppliedCallbackRecords + 1;
     static constexpr std::size_t kMaxFenceWatches =
-        kMaxAcquireFenceRecords + kMaxPreviousReleaseRecords;
+        kMaxAcquireFenceRecords + kMaxPreviousReleaseRecords +
+        kMaxAppliedCallbackRecords;
+    // Pulse buffers are immutable for the complete backend lifetime. SurfaceFlinger may retain an
+    // additional reference after replacement, but the app never writes or releases that buffer,
+    // so alternating two identities is sufficient and avoids serial host-gralloc startup cost.
+    static constexpr std::size_t kGeometryPulseBufferCount = 2;
+
+    enum class GeometryPulseBufferState : std::uint8_t {
+        FREE = 0,
+        RESERVED = 1,
+        CURRENT = 2,
+        WAIT_RELEASE = 3,
+    };
 
     struct BufferIdentity {
         std::uint64_t slot = 0;
@@ -358,6 +491,9 @@ private:
         FixedFrameIdentity identity{};
         AppliedBufferRef previousAppliedBufferRef{};
         bool hasPreviousAppliedBufferRef = false;
+        bool geometryPulseUpdate = false;
+        std::uint32_t geometryPulseBufferIndex = UINT32_MAX;
+        std::uint32_t previousGeometryPulseBufferIndex = UINT32_MAX;
         bool teardown = false;
         std::uint32_t slotIndex = UINT32_MAX;
         std::atomic<bool> inUse{false};
@@ -367,6 +503,7 @@ private:
         std::atomic<std::uint64_t> onCompleteEventSequence{0};
         std::atomic<std::int64_t> onCommitLatchNanos{0};
         std::atomic<std::int64_t> onCommitObservedNanos{0};
+        std::atomic<std::int64_t> onCompletePresentNanos{0};
         std::atomic<std::int64_t> onCompleteObservedNanos{0};
         std::atomic<std::uint32_t> lifecycleFlags{0};
     };
@@ -379,6 +516,7 @@ private:
         std::int64_t latchNanos = 0;
         std::int64_t commitCallbackObservedNanos = 0;
         std::uint64_t completeEventSequence = 0;
+        std::int64_t presentNanos = 0;
         std::int64_t completeCallbackObservedNanos = 0;
         std::uint32_t consumedOnCommitCount = 0;
         std::uint32_t consumedOnCompleteCount = 0;
@@ -386,6 +524,11 @@ private:
         std::int64_t successorReadyNanos = 0;
         std::int64_t successorApplyBeginNanos = 0;
         bool applyIssued = false;
+        bool geometryOnly = false;
+        // Geometry's visible proof remains OnCommit. A real transparent pulse-buffer swap owns
+        // a private OnComplete/release-fence lifecycle, however, so its callback cookie cannot be
+        // retired with the visible record alone.
+        bool requiresComplete = false;
         bool commitEventConsumed = false;
         bool completeEventConsumed = false;
         bool poisoned = false;
@@ -437,6 +580,7 @@ private:
     enum class FenceWatchKind : std::uint8_t {
         ACQUIRE_PROOF = 1,
         PREVIOUS_RELEASE = 2,
+        GEOMETRY_PULSE_RELEASE = 3,
     };
 
     struct PendingFenceWatch {
@@ -457,6 +601,7 @@ private:
     struct SurfaceApi {
         using TransactionCallback = void (*)(void*, ASurfaceTransactionStats*);
         ASurfaceControl* (*createFromWindow)(ANativeWindow*, const char*) = nullptr;
+        ASurfaceControl* (*create)(ASurfaceControl*, const char*) = nullptr;
         void (*releaseSurface)(ASurfaceControl*) = nullptr;
         ASurfaceTransaction* (*createTransaction)() = nullptr;
         void (*deleteTransaction)(ASurfaceTransaction*) = nullptr;
@@ -475,15 +620,26 @@ private:
         void (*setGeometry)(
             ASurfaceTransaction*, ASurfaceControl*,
             const ARect&, const ARect&, std::int32_t) = nullptr;
+        void (*setPosition)(
+            ASurfaceTransaction*, ASurfaceControl*, std::int32_t, std::int32_t) = nullptr;
+        void (*setScale)(
+            ASurfaceTransaction*, ASurfaceControl*, float, float) = nullptr;
         void (*setBufferTransparency)(
             ASurfaceTransaction*, ASurfaceControl*,
             ASurfaceTransactionTransparency) = nullptr;
         void (*setBufferAlpha)(
             ASurfaceTransaction*, ASurfaceControl*, float) = nullptr;
+        void (*setColor)(
+            ASurfaceTransaction*, ASurfaceControl*, float, float, float,
+            float, ADataSpace) = nullptr;
         void (*setEnableBackPressure)(
             ASurfaceTransaction*, ASurfaceControl*, bool) = nullptr;
+        void (*setFrameRate)(
+            ASurfaceTransaction*, ASurfaceControl*, float, std::int8_t) = nullptr;
         void (*setFrameTimeline)(ASurfaceTransaction*, AVsyncId) = nullptr;
+        void (*setDesiredPresentTime)(ASurfaceTransaction*, std::int64_t) = nullptr;
         std::int64_t (*getLatchTime)(ASurfaceTransactionStats*) = nullptr;
+        int (*getPresentFenceFd)(ASurfaceTransactionStats*) = nullptr;
         int (*getPreviousReleaseFenceFd)(
             ASurfaceTransactionStats*, ASurfaceControl*) = nullptr;
 
@@ -528,11 +684,19 @@ private:
     std::optional<std::size_t> freeAppliedCallbackRecordIndex() const noexcept;
     std::optional<std::size_t> freePreviousReleaseRecordIndex() const noexcept;
     std::optional<std::size_t> freeAcquireFenceRecordIndex() const noexcept;
+    bool hasFreeCallbackCookie() const noexcept;
     std::optional<std::size_t> acquireCallbackCookie() noexcept;
     void releaseCallbackCookie(std::size_t index) noexcept;
     void completeCallbackPublication(SubmissionCookie& cookie) noexcept;
     void completeCallbackRecordConsumption(std::size_t index) noexcept;
     bool stateInvariantsHold() const noexcept;
+    bool hasFreeGeometryPulseBuffer() const noexcept;
+    bool geometryPulseBuffersAllFree() const noexcept;
+    bool initializeGeometryPulse() noexcept;
+    void releaseGeometryPulseResources() noexcept;
+    std::optional<std::uint32_t> reserveGeometryPulseBuffer() noexcept;
+    bool retirePreviousGeometryPulse(
+        SubmissionCookie& cookie, ASurfaceTransactionStats* stats) noexcept;
     ApplyReadiness queryApplyReadinessImpl(
         const PreparedSurfaceSubmission& prepared,
         bool allowDirectPipeline) noexcept;
@@ -541,7 +705,8 @@ private:
         PreparedSurfaceSubmission& prepared,
         const SwappyFixedExternalClaim& claim,
         SubmissionReceipt* receipt,
-        bool directSubmission);
+        bool directSubmission,
+        bool applyFrameTimeline);
     EGLDisplay display_ = EGL_NO_DISPLAY;
     void* androidLibrary_ = nullptr;
     void* syncLibrary_ = nullptr;
@@ -551,8 +716,24 @@ private:
     PFNEGLDUPNATIVEFENCEFDANDROIDPROC dupNativeFenceFd_ = nullptr;
     SyncFileInfoFn syncFileInfo_ = nullptr;
     SyncFileInfoFreeFn syncFileInfoFree_ = nullptr;
+    HardwareBufferAllocateFn hardwareBufferAllocate_ = nullptr;
+    HardwareBufferReleaseFn hardwareBufferRelease_ = nullptr;
+    HardwareBufferLockFn hardwareBufferLock_ = nullptr;
+    HardwareBufferUnlockFn hardwareBufferUnlock_ = nullptr;
     ANativeWindow* parentWindow_ = nullptr;
     ASurfaceControl* childSurface_ = nullptr;
+    /** Optional Java container. Buffer ownership stays on childSurface_. */
+    ASurfaceControl* geometrySurface_ = nullptr;
+    /** Stable transparent 1x1 sibling whose alternating identity prevents host transaction merge. */
+    ASurfaceControl* geometryPulseSurface_ = nullptr;
+    float geometryPulseFrameRate_ = 0.0F;
+    bool geometryPulseFrameRateConfigured_ = false;
+    std::array<AHardwareBuffer*, kGeometryPulseBufferCount>
+        geometryPulseBuffers_{};
+    std::array<std::atomic<std::uint8_t>, kGeometryPulseBufferCount>
+        geometryPulseBufferStates_{};
+    std::optional<std::uint32_t> currentGeometryPulseBufferIndex_;
+    bool geometryPulseBuffersOwned_ = false;
     HardwareBufferRenderTargetPool pool_{};
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
@@ -576,10 +757,12 @@ private:
     WakeCallback wakeCallback_ = nullptr;
     void* wakeContext_ = nullptr;
     bool prepared_ = false;
+    bool cpuComposerOnly_ = false;
     bool attached_ = false;
     PreparedTransactionState preparedTransactionState_ =
         PreparedTransactionState::EMPTY;
     std::uint64_t preparedTransactionSerial_ = 0;
+    const char* lastPreparationFailureReason_ = "none";
     std::array<std::optional<AppliedCallbackRecord>,
                kMaxAppliedCallbackRecords> appliedCallbacks_{};
     std::array<std::optional<PreviousReleaseRecord>,

@@ -16,6 +16,7 @@
 #include "AttachGenerationContract.h"
 #include "DetachedWarmContract.h"
 #include "NativeSurfaceLeaseRegistry.h"
+#include "ReleaseTrackerHistoryContract.h"
 #include "present/SurfaceControlPresentBackend.h"
 #include "present/AhbCompositorCoordinates.h"
 #include "present/FixedPresentJoinStateMachine.h"
@@ -809,6 +810,24 @@ enum class AuthorityLifecycle : std::uint8_t {
     FAILED,
 };
 
+ntk::release_history::TrackerState release_tracker_history_state(
+        AuthorityLifecycle lifecycle) noexcept {
+    using ntk::release_history::TrackerState;
+    switch (lifecycle) {
+        case AuthorityLifecycle::BOUND:
+            return TrackerState::BOUND;
+        case AuthorityLifecycle::RELEASING_UNCLAIMED:
+            return TrackerState::RELEASING_UNCLAIMED;
+        case AuthorityLifecycle::RELEASING_CLAIMED:
+            return TrackerState::RELEASING_CLAIMED;
+        case AuthorityLifecycle::RELEASED:
+            return TrackerState::RELEASED;
+        case AuthorityLifecycle::FAILED:
+            return TrackerState::FAILED;
+    }
+    return TrackerState::FAILED;
+}
+
 enum class PhysicalReleaseDisposition : int {
     EXPLICIT_DELETE = 0,
     CONTEXT_LOST = 1,
@@ -943,6 +962,8 @@ struct AuthorityReleaseTracker {
     std::vector<ReleaseResourceIdentity> released_resources;
     std::string captured_resource_digest;
     std::string released_resource_digest;
+    int captured_resource_count = 0;
+    int released_resource_count = 0;
     std::int64_t captured_rgba_bytes = 0;
     std::int64_t released_rgba_bytes = 0;
     std::unordered_map<TileKey, SceneTile, TileKeyHash> scene;
@@ -974,6 +995,29 @@ struct AuthorityReleaseTracker {
     std::int64_t physical_complete_ns = 0;
     bool ack_enqueued = false;
 };
+
+/** Move episode-sized proof/work storage to an upload-lane local after scalar proof freeze. */
+void compact_release_tracker_storage(
+        AuthorityReleaseTracker& tracker,
+        AuthorityReleaseTracker& discarded_storage) {
+    tracker.captured_resource_count = static_cast<int>(tracker.captured_resources.size());
+    tracker.released_resource_count = static_cast<int>(tracker.released_resources.size());
+    discarded_storage.captured_resources.swap(tracker.captured_resources);
+    discarded_storage.released_resources.swap(tracker.released_resources);
+    discarded_storage.scene.swap(tracker.scene);
+    discarded_storage.queued_uploads.swap(tracker.queued_uploads);
+    discarded_storage.ready_tiles.swap(tracker.ready_tiles);
+    discarded_storage.resource_deletes.swap(tracker.resource_deletes);
+    discarded_storage.preallocated_textures.swap(tracker.preallocated_textures);
+    discarded_storage.prepared_bank.swap(tracker.prepared_bank);
+    discarded_storage.slot_specs.swap(tracker.slot_specs);
+    discarded_storage.ordinal_keys.swap(tracker.ordinal_keys);
+    discarded_storage.key_ordinals.swap(tracker.key_ordinals);
+    discarded_storage.resident_intervals.swap(tracker.resident_intervals);
+    std::swap(discarded_storage.applied_protection, tracker.applied_protection);
+    discarded_storage.suppressed_latch_records.swap(tracker.suppressed_latch_records);
+    discarded_storage.suppressed_resolved_records.swap(tracker.suppressed_resolved_records);
+}
 
 enum class NativeHandleMode : std::int64_t {
     LIVE = 0,
@@ -1018,12 +1062,18 @@ enum class RetiredTrackerSelection : std::int64_t {
 RetiredTrackerSelection classify_retired_tracker_for_selection(
         const RetiredAuthoritySelection& selection, const AuthorityKey& key,
         AuthorityLifecycle lifecycle) {
-    if (selection.keys.find(key) != selection.keys.end()) {
-        return RetiredTrackerSelection::INCLUDE;
+    const auto disposition = ntk::release_history::contextLossSelection(
+        selection.keys.find(key) != selection.keys.end(),
+        release_tracker_history_state(lifecycle));
+    switch (disposition) {
+        case ntk::release_history::ContextLossSelection::INCLUDE:
+            return RetiredTrackerSelection::INCLUDE;
+        case ntk::release_history::ContextLossSelection::EXCLUDE_HISTORICAL_RELEASED:
+            return RetiredTrackerSelection::EXCLUDE_HISTORICAL_RELEASED;
+        case ntk::release_history::ContextLossSelection::FAIL:
+            return RetiredTrackerSelection::FAIL;
     }
-    return lifecycle == AuthorityLifecycle::RELEASED
-        ? RetiredTrackerSelection::EXCLUDE_HISTORICAL_RELEASED
-        : RetiredTrackerSelection::FAIL;
+    return RetiredTrackerSelection::FAIL;
 }
 
 template <typename MetadataPublisher, typename NativeTerminalizer,
@@ -1659,6 +1709,14 @@ struct AttachRequest {
     std::uint64_t completed_ns = 0;
 };
 
+struct PublishedResizeRequest {
+    std::uint64_t generation = 0;
+    std::uint64_t surface_epoch = 0;
+    std::uint64_t serial = 0;
+    int width = 0;
+    int height = 0;
+};
+
 ntk::surface_lease::Registry<ANativeWindow>& native_surface_lease_registry() {
     static ntk::surface_lease::Registry<ANativeWindow> registry(
         [](ANativeWindow* window) {
@@ -2089,26 +2147,38 @@ public:
             std::uint64_t attach_generation,
             std::uint64_t surface_epoch,
             std::uint64_t geometry_revision) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!attach_request_.has_value()) return false;
-        auto& request = *attach_request_;
-        if (!ntk::attach_generation::publishAllowed(
-                request.generation,
-                request.state == AttachState::READY ? request.generation : 0,
-                request.surface_epoch, surface_epoch,
-                request.requested_geometry_revision,
-                request.applied_geometry_revision,
-                request.surface_loss_requested,
-                request.state == AttachState::TERMINAL) ||
-            request.generation != attach_generation ||
-            request.applied_geometry_revision != geometry_revision ||
-            !request.success || !present_backend_attached_) {
-            return false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!attach_request_.has_value()) return false;
+            auto& request = *attach_request_;
+            if (!ntk::attach_generation::publishAllowed(
+                    request.generation,
+                    request.state == AttachState::READY ? request.generation : 0,
+                    request.surface_epoch, surface_epoch,
+                    request.requested_geometry_revision,
+                    request.applied_geometry_revision,
+                    request.surface_loss_requested,
+                    request.state == AttachState::TERMINAL) ||
+                request.generation != attach_generation ||
+                request.applied_geometry_revision != geometry_revision ||
+                !request.success || !present_backend_attached_) {
+                return false;
+            }
+            attach_published_ns_.store(monotonic_now_ns(), std::memory_order_release);
+            request.state = AttachState::PUBLISHED;
+            admitted_surface_epoch_.store(surface_epoch, std::memory_order_release);
+            presentation_blocked_.store(false, std::memory_order_release);
+            // Surface loss closes both gates. Re-publishing the same preserved ACTIVE scene must
+            // restore input admission; ARMED/STAGED scenes intentionally remain input-blocked.
+            if (renderer_mode_.load(std::memory_order_acquire) ==
+                RendererMode::ACTIVE) {
+                input_admission_blocked_.store(false, std::memory_order_release);
+            }
+            surface_refresh_requested_ = true;
+            render_requested_ = true;
+            ++command_generation_;
         }
-        attach_published_ns_.store(monotonic_now_ns(), std::memory_order_release);
-        request.state = AttachState::PUBLISHED;
-        admitted_surface_epoch_.store(surface_epoch, std::memory_order_release);
-        presentation_blocked_.store(false, std::memory_order_release);
+        render_condition_.notify_one();
         return true;
     }
 
@@ -2139,6 +2209,7 @@ public:
                     ? request.generation : 0,
                 identity_matches);
             if (!identity_matches) return disposition;
+            published_resize_request_.reset();
             block_input_and_presentation();
             admitted_surface_epoch_.store(0, std::memory_order_release);
             request.surface_loss_requested = true;
@@ -2178,19 +2249,32 @@ public:
             int width,
             int height) {
         if (width <= 0 || height <= 0) return;
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!attach_request_.has_value() ||
-            attach_request_->generation != attach_generation ||
-            attach_request_->surface_epoch != surface_epoch ||
-            attach_request_->state != AttachState::PUBLISHED) {
-            return;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!attach_request_.has_value() ||
+                attach_request_->generation != attach_generation ||
+                attach_request_->surface_epoch != surface_epoch ||
+                attach_request_->state != AttachState::PUBLISHED ||
+                attach_request_->surface_loss_requested) {
+                return;
+            }
+            const bool already_applied = attach_request_->width == width &&
+                attach_request_->height == height &&
+                !published_resize_request_.has_value();
+            if (already_applied) return;
+            std::uint64_t serial = ++published_resize_serial_;
+            if (serial == 0) serial = ++published_resize_serial_;
+            published_resize_request_ = PublishedResizeRequest{
+                .generation = attach_generation,
+                .surface_epoch = surface_epoch,
+                .serial = serial,
+                .width = width,
+                .height = height,
+            };
+            render_requested_ = true;
+            ++command_generation_;
         }
-        // Published Surface geometry changes are not expected in the fixed portrait profile.
-        // Keep exact identity and fail closed rather than silently mutating the schema11 pool.
-        if (width != width_ || height != height_) {
-            block_input_and_presentation();
-            authority_failed_.store(true, std::memory_order_release);
-        }
+        render_condition_.notify_one();
     }
 
     void set_context_loss_for_testing() {
@@ -2251,8 +2335,7 @@ public:
             if (authority_generation_candidate <= max_authority_generation_ ||
                 release_trackers_.find(request.successor) != release_trackers_.end() ||
                 pending_bind_request_.has_value()) return {};
-            active_authority_generation_.store(0, std::memory_order_release);
-            active_authority_.store(0, std::memory_order_release);
+            close_current_authority_for_successor_locked();
             upload_submission_blocked_.store(true, std::memory_order_release);
             input_admission_blocked_.store(true, std::memory_order_release);
             max_authority_generation_ = authority_generation_candidate;
@@ -2370,8 +2453,7 @@ public:
             if (authority_generation_candidate != authority_generation_) {
                 // Close the old admission gate before publishing successor bind metadata. An
                 // in-flight upload observes the exact generation mismatch at its next chunk.
-                active_authority_generation_.store(0, std::memory_order_release);
-                active_authority_.store(0, std::memory_order_release);
+                close_current_authority_for_successor_locked();
                 upload_submission_blocked_.store(true, std::memory_order_release);
                 // The JNI caller closes only external mutation/input admission. Presentation,
                 // phase, and render-owned state are closed at the next render-loop boundary so
@@ -2869,9 +2951,21 @@ public:
             stage_nonce <= 0) return false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            const GpuPhase phase = gpu_phase_.load(std::memory_order_acquire);
+            const bool exact_staged_reattach =
+                phase == GpuPhase::INPUT_ARMED &&
+                renderer_mode_.load(std::memory_order_acquire) ==
+                    RendererMode::ARMED &&
+                scene_sealed_.load(std::memory_order_acquire) &&
+                authority == authority_ &&
+                authority_generation == authority_generation_ &&
+                corridor_start == stage_corridor_start_ &&
+                corridor_end == stage_corridor_end_ &&
+                stage_nonce == stage_nonce_ &&
+                staged_nonce_.load(std::memory_order_acquire) == stage_nonce;
             if (authority != authority_ || authority_generation != authority_generation_ ||
                 corridor_start != 0 || corridor_end != content_height_ ||
-                gpu_phase_.load(std::memory_order_acquire) != GpuPhase::PRE_STAGE_GPU) {
+                (phase != GpuPhase::PRE_STAGE_GPU && !exact_staged_reattach)) {
                 NTK_LOGE("fatal stage request authority=%lld/%lld end=%lld/%lld phase=%d",
                          static_cast<long long>(authority),
                          static_cast<long long>(authority_),
@@ -2881,6 +2975,20 @@ public:
                 authority_failed_.store(true, std::memory_order_release);
                 gpu_phase_.store(GpuPhase::FAILED, std::memory_order_release);
                 return false;
+            }
+            if (exact_staged_reattach) {
+                // beginSurfaceLoss deliberately clears the Kotlin proof, while a preserved GL
+                // scene remains natively ARMED. Re-enter SEALING only for the exact immutable
+                // tuple so the replacement Surface can produce a fresh compositor-latch proof;
+                // no texture, authority, or scene admission is reopened.
+                gpu_phase_.store(GpuPhase::SEALING, std::memory_order_release);
+                stage_pin_active_.store(true, std::memory_order_release);
+                stage_requested_ = true;
+                surface_refresh_requested_ = false;
+                render_requested_ = true;
+                ++command_generation_;
+                render_condition_.notify_one();
+                return true;
             }
             stage_authority_ = authority;
             stage_corridor_start_ = corridor_start;
@@ -3134,15 +3242,25 @@ public:
         const AuthorityKey key{engine_generation, authority_generation, authority};
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (stopped_ || engine_failed_.load(std::memory_order_acquire) ||
-                released_authorities_.find(key) != released_authorities_.end() ||
-                pending_release_claims_.find(key) != pending_release_claims_.end()) return false;
-            ReleaseClaim claim{key, reducer_surface_epoch, release_nonce};
+            if (stopped_ || engine_failed_.load(std::memory_order_acquire)) return false;
             const auto existing = release_trackers_.find(key);
+            const bool pending_claim =
+                pending_release_claims_.find(key) != pending_release_claims_.end();
+            const auto state = existing == release_trackers_.end()
+                ? ntk::release_history::TrackerState::ABSENT
+                : release_tracker_history_state(existing->second->lifecycle);
+            if (!ntk::release_history::releaseClaimAllowed(
+                    true,
+                    active_authority_matches(key) ||
+                        successor_closed_authority_matches_locked(key),
+                    pending_claim, state,
+                    existing != release_trackers_.end() &&
+                        existing->second->claim.has_value())) {
+                return false;
+            }
+            ReleaseClaim claim{key, reducer_surface_epoch, release_nonce};
             if (existing != release_trackers_.end()) {
                 auto& tracker = *existing->second;
-                if (tracker.lifecycle != AuthorityLifecycle::RELEASING_UNCLAIMED ||
-                    tracker.claim.has_value()) return false;
                 tracker.claim = claim;
                 tracker.lifecycle = AuthorityLifecycle::RELEASING_CLAIMED;
                 tracker.release_claim_serial = next_release_protocol_serial_locked();
@@ -3151,9 +3269,6 @@ public:
                     return false;
                 }
             } else {
-                if (authority_ != authority || authority_generation_ != authority_generation) {
-                    return false;
-                }
                 // Admission closes synchronously at the JNI boundary. Render ownership is
                 // transferred on its lane without waiting for any GPU fence.
                 claim.admission_close_serial = next_release_protocol_serial_locked();
@@ -3163,6 +3278,9 @@ public:
                 upload_submission_blocked_.store(true, std::memory_order_release);
                 input_admission_blocked_.store(true, std::memory_order_release);
                 pending_release_claims_.emplace(key, claim);
+                if (successor_closed_authority_matches_locked(key)) {
+                    authority_closed_for_successor_.reset();
+                }
                 render_requested_ = true;
                 ++command_generation_;
             }
@@ -3265,7 +3383,9 @@ public:
         const auto& tracker = *found->second;
         return {{
             static_cast<std::int64_t>(tracker.lifecycle),
-            static_cast<std::int64_t>(tracker.captured_resources.size()),
+            static_cast<std::int64_t>(tracker.physical_complete
+                ? tracker.captured_resource_count
+                : static_cast<int>(tracker.captured_resources.size())),
             static_cast<std::int64_t>(tracker.scene.size()),
             static_cast<std::int64_t>(tracker.queued_uploads.size()),
             static_cast<std::int64_t>(tracker.ready_tiles.size()),
@@ -3282,6 +3402,7 @@ public:
     void request_render() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            surface_refresh_requested_ = true;
             render_requested_ = true;
             ++command_generation_;
         }
@@ -3313,12 +3434,14 @@ public:
         ANativeWindow* released = nullptr;
         if (attach_request_.has_value() &&
             attach_request_->surface_epoch == surface_epoch) {
+            published_resize_request_.reset();
             attach_request_->state = AttachState::TERMINAL;
             attach_request_->success = false;
             released = attach_request_->window;
             attach_request_->window = nullptr;
             attach_request_.reset();
         }
+        if (reusable) purge_released_trackers_locked();
         lock.unlock();
         if (released != nullptr) {
             ANativeWindow_release(released);
@@ -3506,12 +3629,12 @@ public:
                 proof.frozen_ack.feedback_barrier_serial = already_released
                     ? tracker.feedback_barrier_serial
                     : next_release_protocol_serial_locked();
-                proof.frozen_ack.captured_resource_count = static_cast<int>(
-                    tracker.captured_resources.size());
+                proof.frozen_ack.captured_resource_count =
+                    tracker.captured_resource_count;
                 proof.frozen_ack.captured_rgba_bytes = tracker.captured_rgba_bytes;
                 proof.frozen_ack.captured_resource_digest = tracker.captured_resource_digest;
-                proof.frozen_ack.released_resource_count = static_cast<int>(
-                    tracker.released_resources.size());
+                proof.frozen_ack.released_resource_count =
+                    tracker.released_resource_count;
                 proof.frozen_ack.released_rgba_bytes = tracker.released_rgba_bytes;
                 proof.frozen_ack.released_resource_digest = tracker.released_resource_digest;
                 proof.frozen_ack.deleted_texture_count = tracker.deleted_texture_count;
@@ -3608,6 +3731,63 @@ private:
 
     AuthorityKey current_authority_key() const {
         return AuthorityKey{engine_generation_, authority_generation_, authority_};
+    }
+
+    bool active_authority_matches(const AuthorityKey& key) const noexcept {
+        return key.engine_generation == engine_generation_ &&
+            key.authority_generation > 0 && key.authority > 0 &&
+            active_authority_generation_.load(std::memory_order_acquire) ==
+                key.authority_generation &&
+            active_authority_.load(std::memory_order_acquire) == key.authority;
+    }
+
+    bool successor_closed_authority_matches_locked(const AuthorityKey& key) const noexcept {
+        return authority_closed_for_successor_.has_value() &&
+            *authority_closed_for_successor_ == key;
+    }
+
+    void close_current_authority_for_successor_locked() {
+        const AuthorityKey current = current_authority_key();
+        if (active_authority_matches(current)) {
+            authority_closed_for_successor_ = current;
+        } else {
+            authority_closed_for_successor_.reset();
+        }
+        active_authority_generation_.store(0, std::memory_order_release);
+        active_authority_.store(0, std::memory_order_release);
+    }
+
+    bool callback_authority_open_locked(const AuthorityKey& key) const {
+        const auto tracker = release_trackers_.find(key);
+        const auto state = tracker == release_trackers_.end()
+            ? ntk::release_history::TrackerState::ABSENT
+            : release_tracker_history_state(tracker->second->lifecycle);
+        return ntk::release_history::callbackAllowed(
+            key.engine_generation == engine_generation_,
+            active_authority_matches(key) ||
+                successor_closed_authority_matches_locked(key),
+            pending_release_claims_.find(key) != pending_release_claims_.end(),
+            state);
+    }
+
+    std::size_t purge_released_trackers_locked() {
+        std::size_t purged = 0;
+        for (auto tracker = release_trackers_.begin();
+             tracker != release_trackers_.end();) {
+            const auto& key = tracker->first;
+            const auto& release = *tracker->second;
+            const bool worker_owns = resource_worker_owns(
+                key.authority_generation, key.authority);
+            if (release.physical_complete && release.ack_enqueued &&
+                ntk::release_history::reclaimable(
+                    release_tracker_history_state(release.lifecycle), worker_owns)) {
+                tracker = release_trackers_.erase(tracker);
+                ++purged;
+            } else {
+                ++tracker;
+            }
+        }
+        return purged;
     }
 
     void block_input_and_presentation() {
@@ -3989,6 +4169,9 @@ private:
             }
             release_trackers_.emplace(key, tracker);
             pending_release_claims_.erase(key);
+            if (successor_closed_authority_matches_locked(key)) {
+                authority_closed_for_successor_.reset();
+            }
         }
         scene_version_ = 0;
         // Frame telemetry is authority-scoped. An unstaged predecessor can integrate resources
@@ -5926,7 +6109,7 @@ private:
             frame.authority};
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (released_authorities_.find(key) != released_authorities_.end()) {
+            if (!callback_authority_open_locked(key)) {
                 engine_failed_.store(true, std::memory_order_release);
                 return;
             }
@@ -6239,7 +6422,7 @@ private:
             callback.key.authority};
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (released_authorities_.find(callback_key) != released_authorities_.end()) {
+            if (!callback_authority_open_locked(callback_key)) {
                 NTK_LOGE("callback after authority release authority=%lld generation=%lld",
                          static_cast<long long>(callback.key.authority),
                          static_cast<long long>(callback.authority_generation));
@@ -6450,7 +6633,6 @@ private:
                     return false;
                 }
                 found->second->lifecycle = AuthorityLifecycle::RELEASED;
-                released_authorities_.insert(ack->claim.key);
                 release_ack_count_.fetch_add(1, std::memory_order_acq_rel);
                 return true;
             },
@@ -7108,7 +7290,8 @@ private:
 
     bool attach_window(ANativeWindow* window, int width, int height,
                        std::uint64_t refresh_period_ns,
-                       std::uint64_t surface_epoch) {
+                       std::uint64_t surface_epoch,
+                       bool terminal_on_failure = true) {
         if (surface_control_attach_count_.load(std::memory_order_acquire) == 0 &&
             (detached_warm_ready_ns_.load(std::memory_order_acquire) <= 0 ||
              window_frame_id_count_.load(std::memory_order_acquire) != 0 ||
@@ -7150,7 +7333,9 @@ private:
             std::llabs(static_cast<std::int64_t>(fixed_period) -
                 static_cast<std::int64_t>(kNinetyHzPeriodNs)) >
                 static_cast<std::int64_t>(kRefreshPeriodToleranceNs)) {
-            authority_failed_.store(true, std::memory_order_release);
+            if (terminal_on_failure) {
+                authority_failed_.store(true, std::memory_order_release);
+            }
             return false;
         }
         fixed_transport_profile_ = ntk::present::makeFixedTransportProfile(
@@ -7159,7 +7344,9 @@ private:
             surface_epoch);
         if (!ntk::present::validFixedTransportProfile(
                 fixed_transport_profile_)) {
-            authority_failed_.store(true, std::memory_order_release);
+            if (terminal_on_failure) {
+                authority_failed_.store(true, std::memory_order_release);
+            }
             return false;
         }
         SwappyGL_setFixedNonPipelineModeNS(fixed_period);
@@ -7169,21 +7356,25 @@ private:
             SwappyGL_getPipelineModeForNtk() != 0 ||
             !SwappyGL_isBlockingWaitEnabledForNtk() ||
             SwappyGL_hasFatalPacingErrorForNtk()) {
-            attach_authority_failed_.store(true, std::memory_order_release);
-            authority_failed_.store(true, std::memory_order_release);
+            if (terminal_on_failure) {
+                attach_authority_failed_.store(true, std::memory_order_release);
+                authority_failed_.store(true, std::memory_order_release);
+            }
             return false;
         }
         swappy_window_end_ns_.store(monotonic_now_ns(), std::memory_order_release);
         surface_control_attach_begin_ns_.store(
             monotonic_now_ns(), std::memory_order_release);
         if (!present_backend_.attach(
-                display_, window, static_cast<std::uint32_t>(width),
+                display_, window, nullptr, nullptr, static_cast<std::uint32_t>(width),
                 static_cast<std::uint32_t>(height), surface_epoch,
                 &StripRenderer::wake_for_present_event, this)) {
             NTK_LOGE("fatal SurfaceControl/AHardwareBuffer backend unavailable epoch=%llu",
                 static_cast<unsigned long long>(surface_epoch));
-            attach_authority_failed_.store(true, std::memory_order_release);
-            authority_failed_.store(true, std::memory_order_release);
+            if (terminal_on_failure) {
+                attach_authority_failed_.store(true, std::memory_order_release);
+                authority_failed_.store(true, std::memory_order_release);
+            }
             return false;
         }
         surface_control_attach_end_ns_.store(
@@ -7191,8 +7382,16 @@ private:
         present_backend_attached_ = true;
         surface_control_attach_count_.fetch_add(1, std::memory_order_acq_rel);
         fixed_period_ns_ = fixed_period;
-        presented_view_state_.scroll_direction = 0;
-        presented_view_state_.velocity_px_per_second = 0.0F;
+        if (content_height_ > 0) {
+            viewport_width_ = width_;
+            viewport_height_ = height_;
+            presented_view_state_.scroll_top = std::clamp<std::int64_t>(
+                presented_view_state_.scroll_top, 0,
+                std::max<std::int64_t>(0, content_height_ - viewport_height_));
+        } else {
+            presented_view_state_.scroll_direction = 0;
+            presented_view_state_.velocity_px_per_second = 0.0F;
+        }
         fixed_scheduler_.reset(presented_view_state_);
         presented_visual_mutation_serial_ = 0;
         successful_swap_count_ = 0;
@@ -7286,8 +7485,16 @@ private:
         present_backend_attached_ = false;
         admitted_surface_epoch_.store(0, std::memory_order_release);
         admission_predecessor_.reset();
-        presented_view_state_.scroll_direction = 0;
-        presented_view_state_.velocity_px_per_second = 0.0F;
+        // Android does not guarantee that the retiring Surface receives a final CANCEL before
+        // its holder is destroyed. The replacement holder starts a new physical gesture domain.
+        ingress_pointer_down_.store(false, std::memory_order_release);
+        // The window is physical transport, not logical reader state. Preserve the last
+        // direction/velocity across Home, rotation, and split resize so reverse-priority and
+        // semantic scroll state resume on the replacement surface.
+        if (authority_ <= 0 || content_height_ <= 0) {
+            presented_view_state_.scroll_direction = 0;
+            presented_view_state_.velocity_px_per_second = 0.0F;
+        }
         cadence_qualification_state_.store(
             CadenceQualificationState::NO_SURFACE,
             std::memory_order_release);
@@ -8068,6 +8275,9 @@ private:
             std::uint64_t resize_surface_epoch = 0;
             std::uint64_t resize_attach_generation = 0;
             std::uint64_t resize_geometry_revision = 0;
+            std::optional<PublishedResizeRequest> published_resize;
+            ANativeWindow* published_resize_window = nullptr;
+            bool should_refresh_surface = false;
             bool should_detach = false;
             bool should_disarm = false;
             bool should_render = false;
@@ -8138,6 +8348,42 @@ private:
                         resize_attach_generation = attach.generation;
                         resize_geometry_revision =
                             attach.requested_geometry_revision;
+                    }
+                }
+                should_refresh_surface = surface_refresh_requested_;
+                surface_refresh_requested_ = false;
+                if (published_resize_request_.has_value() &&
+                    attach_request_.has_value()) {
+                    const auto& pending = *published_resize_request_;
+                    const auto& attach = *attach_request_;
+                    const bool exact_published =
+                        attach.generation == pending.generation &&
+                        attach.surface_epoch == pending.surface_epoch &&
+                        attach.state == AttachState::PUBLISHED &&
+                        !attach.surface_loss_requested && attach.window != nullptr;
+                    const bool resize_quiescent =
+                        present_backend_attached_ &&
+                        !context_loss_pending_ &&
+                        context_resources_valid_.load(std::memory_order_acquire) &&
+                        !detach_requested_ && !disarm_requested_ &&
+                        !pending_bind_request_.has_value() &&
+                        !current_authority_has_pending_release_locked() &&
+                        fixed_scheduler_.normalTerminalConservationExact() &&
+                        !fixed_scheduler_.hasUnjoinedTerminalObligation() &&
+                        fixed_scheduler_.reducer().gesture_state ==
+                            ntk::scheduler::ReducerGestureState::IDLE &&
+                        !fixed_scheduler_.headPresent() &&
+                        !fixed_scheduler_.successor().has_value() &&
+                        !prepared_frame_work_.has_value() &&
+                        input_control_commands_.empty() &&
+                        !ingress_pointer_down_.load(std::memory_order_acquire);
+                    if (exact_published && resize_quiescent) {
+                        published_resize = pending;
+                        published_resize_window = attach.window;
+                        ANativeWindow_acquire(published_resize_window);
+                        published_resize_request_.reset();
+                    } else if (!exact_published) {
+                        published_resize_request_.reset();
                     }
                 }
                 if (!prepared_frame_work_.has_value()) render_requested_ = false;
@@ -8403,6 +8649,84 @@ private:
                 attach_condition_.notify_all();
                 if (!resized) continue;
             }
+            if (published_resize.has_value() &&
+                published_resize_window != nullptr) {
+                const PublishedResizeRequest request = *published_resize;
+                bool exact_before_rebuild = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    exact_before_rebuild = attach_request_.has_value() &&
+                        attach_request_->generation == request.generation &&
+                        attach_request_->surface_epoch == request.surface_epoch &&
+                        attach_request_->state == AttachState::PUBLISHED &&
+                        !attach_request_->surface_loss_requested &&
+                        !context_loss_pending_ &&
+                        context_resources_valid_.load(std::memory_order_acquire);
+                }
+                const bool input_was_blocked =
+                    input_admission_blocked_.load(std::memory_order_acquire);
+                const bool presentation_was_blocked =
+                    presentation_blocked_.load(std::memory_order_acquire);
+                const bool resized = exact_before_rebuild && attach_window(
+                    published_resize_window,
+                    request.width,
+                    request.height,
+                    fixed_period_ns_,
+                    request.surface_epoch,
+                    false);
+                bool exact_after_rebuild = false;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    exact_after_rebuild = attach_request_.has_value() &&
+                        attach_request_->generation == request.generation &&
+                        attach_request_->surface_epoch == request.surface_epoch &&
+                        attach_request_->state == AttachState::PUBLISHED &&
+                        !attach_request_->surface_loss_requested &&
+                        !context_loss_pending_ &&
+                        context_resources_valid_.load(std::memory_order_acquire);
+                    if (resized && exact_after_rebuild) {
+                        attach_request_->width = request.width;
+                        attach_request_->height = request.height;
+                    }
+                }
+                ANativeWindow_release(published_resize_window);
+                published_resize_window = nullptr;
+                if (resized && exact_after_rebuild) {
+                    admitted_surface_epoch_.store(
+                        request.surface_epoch, std::memory_order_release);
+                    input_admission_blocked_.store(
+                        input_was_blocked, std::memory_order_release);
+                    presentation_blocked_.store(
+                        presentation_was_blocked, std::memory_order_release);
+                    should_refresh_surface = true;
+                    should_render = true;
+                    NTK_LOGI(
+                        "published Surface rebuilt generation=%llu epoch=%llu "
+                        "resizeSerial=%llu width=%d height=%d",
+                        static_cast<unsigned long long>(request.generation),
+                        static_cast<unsigned long long>(request.surface_epoch),
+                        static_cast<unsigned long long>(request.serial),
+                        request.width, request.height);
+                } else if (exact_after_rebuild) {
+                    block_input_and_presentation();
+                    attach_authority_failed_.store(true, std::memory_order_release);
+                    authority_failed_.store(true, std::memory_order_release);
+                    gpu_phase_.store(GpuPhase::FAILED, std::memory_order_release);
+                    NTK_LOGE(
+                        "published Surface rebuild failed generation=%llu epoch=%llu",
+                        static_cast<unsigned long long>(request.generation),
+                        static_cast<unsigned long long>(request.surface_epoch));
+                    continue;
+                } else if (resized) {
+                    // Holder/context loss won after the resize claim. Do not leave the
+                    // successfully recreated child SurfaceControl attached to the retiring
+                    // parent while the lifecycle lane is still preparing its detach barrier.
+                    detach_window();
+                }
+                // If surface loss won after claim, its exact detach request owns teardown. The
+                // local acquire above prevents the old ANativeWindow from being freed meanwhile;
+                // never restore gates or publish dimensions for that superseded generation.
+            }
             // One real pacing edge permits exactly one commit attempt. A
             // retained immutable head never blocks control/MOVE reduction into
             // the CPU-only successor below.
@@ -8531,6 +8855,31 @@ private:
                                      std::memory_order_release);
                 }
             }
+            if (should_refresh_surface) {
+                const GpuPhase refresh_phase =
+                    gpu_phase_.load(std::memory_order_acquire);
+                const bool refreshable =
+                    (refresh_phase == GpuPhase::INPUT_ARMED ||
+                     refresh_phase == GpuPhase::GESTURE_ACTIVE) &&
+                    scene_sealed_.load(std::memory_order_acquire) &&
+                    present_backend_attached_ && authority_ > 0 &&
+                    content_height_ > 0 &&
+                    !presentation_blocked_.load(std::memory_order_acquire) &&
+                    !prepared_frame_work_.has_value() &&
+                    !fixed_scheduler_.successor().has_value() &&
+                    !fixed_scheduler_.headPresent();
+                if (refreshable) {
+                    if (!queue_stage_frame()) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        surface_refresh_requested_ = true;
+                    }
+                } else {
+                    // A bind, stage proof, host resume, or predecessor retirement will advance
+                    // command_generation_ and retry this one-deep refresh request.
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    surface_refresh_requested_ = true;
+                }
+            }
             // A hidden staged Surface can be created while its Activity/ViewRoot is still
             // transitioning. Swapping an authority-less blank buffer enters Swappy's
             // post-swap Choreographer wait and can strand the render owner before the real bind.
@@ -8630,10 +8979,10 @@ private:
             ack->release_claim_serial = tracker->release_claim_serial;
             ack->resource_barrier_serial = tracker->resource_barrier_serial;
             ack->resource_completion_watermark = tracker->resource_completion_watermark;
-            ack->captured_resource_count = static_cast<int>(tracker->captured_resources.size());
+            ack->captured_resource_count = tracker->captured_resource_count;
             ack->captured_rgba_bytes = tracker->captured_rgba_bytes;
             ack->captured_resource_digest = tracker->captured_resource_digest;
-            ack->released_resource_count = static_cast<int>(tracker->released_resources.size());
+            ack->released_resource_count = tracker->released_resource_count;
             ack->released_rgba_bytes = tracker->released_rgba_bytes;
             ack->released_resource_digest = tracker->released_resource_digest;
             ack->deleted_texture_count = tracker->deleted_texture_count;
@@ -8667,6 +9016,9 @@ private:
 
     bool process_release_tracker_once(JNIEnv* env) {
         std::shared_ptr<AuthorityReleaseTracker> tracker;
+        // Episode-sized storage is swapped here under mutex and destroyed after the lock on the
+        // upload lane. The retained tracker is scalar proof only once physical_complete is set.
+        std::unique_ptr<AuthorityReleaseTracker> discarded_storage;
         enum class Work {
             NONE, QUEUED_UPLOAD, READY, RETIRED, SCENE, PREALLOC, PREPARED,
             SUPPRESSED_FEEDBACK
@@ -8953,7 +9305,6 @@ private:
                 tracker->ordinal_keys.clear();
                 tracker->key_ordinals.clear();
                 tracker->resident_intervals.clear();
-                tracker->applied_protection = AppliedProtection{};
                 inventory_candidate = true;
             }
         }
@@ -8968,6 +9319,7 @@ private:
                 tracker->captured_resources);
             const std::int64_t released_bytes = inventory_rgba_bytes(
                 tracker->released_resources);
+            discarded_storage = std::make_unique<AuthorityReleaseTracker>();
             std::lock_guard<std::mutex> lock(mutex_);
             const bool exact = tracker->captured_resources.size() ==
                     tracker->released_resources.size() &&
@@ -8977,6 +9329,7 @@ private:
                 tracker->released_resource_digest = released_digest;
                 tracker->captured_rgba_bytes = captured_bytes;
                 tracker->released_rgba_bytes = released_bytes;
+                compact_release_tracker_storage(*tracker, *discarded_storage);
                 tracker->physical_complete = true;
                 tracker->physical_complete_ns = monotonic_now_ns();
                 tracker->resource_completion_watermark =
@@ -9791,6 +10144,8 @@ private:
             if (!cancelled) {
                 authority_ = request.successor.authority;
                 authority_generation_ = request.successor.authority_generation;
+                purge_released_trackers_locked();
+                authority_closed_for_successor_.reset();
                 preparation_open_ = false;
                 prepared_geometry_bound_ = false;
                 preparation_admissions_closed_ = false;
@@ -10229,6 +10584,8 @@ private:
             if (!cancelled_at_commit) {
                 authority_ = request.successor.authority;
                 authority_generation_ = request.successor.authority_generation;
+                purge_released_trackers_locked();
+                authority_closed_for_successor_.reset();
                 preparation_open_ = false;
                 prepared_geometry_bound_ = false;
                 preparation_admissions_closed_ = false;
@@ -12336,10 +12693,13 @@ private:
     std::size_t native_outstanding_ = 0;
     std::atomic<int> native_outstanding_mirror_{0};
     std::optional<AttachRequest> attach_request_;
+    std::optional<PublishedResizeRequest> published_resize_request_;
+    std::uint64_t published_resize_serial_ = 0;
     std::uint64_t last_attach_generation_ = 0;
     bool detach_requested_ = false;
     bool disarm_requested_ = false;
     bool render_requested_ = false;
+    bool surface_refresh_requested_ = false;
     struct DeferredLifecycleState {
         bool active = false;
         std::uint64_t observed_terminal_progress = 0;
@@ -12348,6 +12708,7 @@ private:
     DeferredLifecycleState deferred_lifecycle_{};
     std::uint64_t terminal_progress_sequence_ = 0;
     std::optional<BindRequest> pending_bind_request_;
+    std::optional<AuthorityKey> authority_closed_for_successor_;
     std::uint64_t bind_request_generation_ = 0;
     ResourceWorkerStartState upload_start_state_ = ResourceWorkerStartState::IDLE;
     std::uint64_t upload_start_generation_ = 0;
@@ -12380,7 +12741,6 @@ private:
     std::deque<InputSample> input_control_commands_;
     std::map<AuthorityKey, std::shared_ptr<AuthorityReleaseTracker>> release_trackers_;
     std::map<AuthorityKey, ReleaseClaim> pending_release_claims_;
-    std::set<AuthorityKey> released_authorities_;
 
     std::mutex move_mailbox_mutex_;
     InputSample move_mailbox_;

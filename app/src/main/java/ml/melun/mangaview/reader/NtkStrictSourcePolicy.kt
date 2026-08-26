@@ -150,9 +150,10 @@ class NtkSourceDemandSnapshot(
  * Converts a rolling viewer demand into the physical source set owned by the transport.
  *
  * A restored session normally starts at [initialPageIndex], but an explicit reverse gesture can
- * move HARD/SOFT demand below that saved floor.  BACKGROUND entries are intentionally ignored:
- * they describe sources that the renderer has not asked to revisit and must not silently turn a
- * resume into a full-prefix download.
+ * move HARD/SOFT demand below that saved floor. BACKGROUND entries are intentionally ignored:
+ * they describe sources outside the current viewport runway and must not silently turn one
+ * viewport update into a full-episode download. Callers that want the old complete-forward
+ * workset express it explicitly by placing that workset in SOFT demand.
  */
 internal object NtkRollingPhysicalAdmissionPolicy {
     fun admittedForwardPages(
@@ -161,12 +162,25 @@ internal object NtkRollingPhysicalAdmissionPolicy {
         demand: NtkSourceDemandSnapshot,
     ): Set<Int> {
         require(pageCount > 0)
-        val initial = initialPageIndex.coerceIn(0, pageCount - 1)
-        val foregroundFloor = (demand.hardPages.asSequence() + demand.softPages.asSequence())
+        initialPageIndex.coerceIn(0, pageCount - 1)
+        return (demand.hardPages.asSequence() + demand.softPages.asSequence())
             .filter { it in 0 until pageCount }
-            .minOrNull()
-        val floor = minOf(initial, foregroundFloor ?: initial)
-        return (floor until pageCount).toSet()
+            .toSet()
+    }
+
+    /**
+     * Once a physically entered episode has requested exact idle completion, admission is a
+     * one-way state transition. Later viewport snapshots may add urgency, but must not revoke
+     * source work that the completion edge has already authorized or started.
+     */
+    fun reconcileDemandedPages(
+        previousAdmission: Set<Int>,
+        demandedAdmission: Set<Int>,
+        preserveExistingAdmission: Boolean,
+    ): Set<Int> = if (preserveExistingAdmission) {
+        previousAdmission + demandedAdmission
+    } else {
+        demandedAdmission
     }
 }
 

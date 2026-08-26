@@ -90,6 +90,26 @@ internal object NtkAdjacentRunwayPreparationPolicy {
         completeCurrentStructure &&
         (allCurrentDrawablesReady || currentTailDemandReady)
 
+    /**
+     * A host-emulator exact runway may finish after the gesture that requested it has already
+     * started. Decoded pixels can remain privately staged, but publishing new list structure in
+     * that interval invalidates the producer scene and forces multiple full-scene submissions
+     * under the finger. Keep the old, completely drawable tail authoritative until the physical
+     * gesture and its short hand-off fence have both retired. Other renderers and transports keep
+     * their established publication timing.
+     */
+    fun shouldDeferAtomicStructurePublication(
+        hostGpuEmulatorRuntime: Boolean,
+        directWifiStrictAdjacent: Boolean,
+        supportedEpisodePath: Boolean,
+        foregroundMotionActive: Boolean,
+        viewportBusy: Boolean,
+        physicalQuietRemainingMs: Long,
+    ): Boolean = hostGpuEmulatorRuntime &&
+        directWifiStrictAdjacent &&
+        supportedEpisodePath &&
+        (foregroundMotionActive || viewportBusy || physicalQuietRemainingMs > 0L)
+
     fun mayRetryFileFetch(attemptsCompleted: Int, startedAtMs: Long, nowMs: Long): Boolean {
         if (attemptsCompleted < 0) return false
         return attemptsCompleted < MAX_FILE_FETCH_ATTEMPTS && shouldJoin(startedAtMs, nowMs)

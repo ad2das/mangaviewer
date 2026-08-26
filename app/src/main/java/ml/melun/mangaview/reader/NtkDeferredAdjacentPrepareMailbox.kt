@@ -12,46 +12,91 @@ internal class NtkDeferredAdjacentPrepareMailbox {
         val anchor: Int,
         val direction: Int,
         val silentMissing: Boolean,
+        val revision: Long,
     )
 
-    private val lock = Any()
-    private var scheduled = false
-    private var anchor = -1
-    private var direction = 0
-    private var silentMissing = true
+    data class Wakeup(val token: Long)
 
-    /** Returns true exactly when the caller owns the one required wakeup. */
-    fun offer(anchor: Int, direction: Int, silentMissing: Boolean): Boolean = synchronized(lock) {
-        this.anchor = anchor
-        this.direction = direction
+    private val lock = Any()
+    private var pending: Request? = null
+    private var scheduledToken = 0L
+    private var nextToken = 0L
+    private var nextRevision = 0L
+
+    /** Returns the token for the one required wakeup, or null when one already owns the turn. */
+    fun offer(anchor: Int, direction: Int, silentMissing: Boolean): Wakeup? = synchronized(lock) {
+        val previous = pending
+        val revision = nextRevisionLocked()
         // Explicit physical-boundary ownership is stronger than silent look-ahead ownership.
         // Keep it sticky for the coalesced turn even if another near-boundary hint arrives later.
-        if (!scheduled) {
-            this.silentMissing = silentMissing
-        } else if (!silentMissing) {
-            this.silentMissing = false
-        }
-        if (scheduled) return@synchronized false
-        scheduled = true
-        true
+        pending = Request(
+            anchor = anchor,
+            direction = direction,
+            silentMissing = silentMissing && previous?.silentMissing != false,
+            revision = revision,
+        )
+        reserveWakeupLocked(replace = false)
     }
 
-    fun take(): Request? = synchronized(lock) {
-        if (!scheduled) return@synchronized null
-        val request = Request(anchor, direction, silentMissing)
-        anchor = -1
-        direction = 0
-        silentMissing = true
-        scheduled = false
+    /** Requeues a BUSY request without allowing it to overwrite a newer producer revision. */
+    fun reoffer(request: Request): Wakeup? = synchronized(lock) {
+        val current = pending
+        if (current == null || current.revision < request.revision) {
+            pending = request
+        } else if (current.direction == request.direction) {
+            // Preserve the newer anchor/revision, but do not let a silent producer erase an
+            // explicit Surface boundary owner that was concurrently running and returned BUSY.
+            pending = current.copy(
+                silentMissing = current.silentMissing && request.silentMissing,
+            )
+        }
+        reserveWakeupLocked(replace = false)
+    }
+
+    /** Replaces a delayed wakeup with one immediate token; the old callback becomes a no-op. */
+    fun accelerate(): Wakeup? = synchronized(lock) {
+        if (pending == null) return@synchronized null
+        reserveWakeupLocked(replace = true)
+    }
+
+    /** Keeps ownership across a quiet-period deferral while invalidating duplicate callbacks. */
+    fun defer(token: Long): Wakeup? = synchronized(lock) {
+        if (scheduledToken != token || pending == null) return@synchronized null
+        reserveWakeupLocked(replace = true)
+    }
+
+    fun take(token: Long): Request? = synchronized(lock) {
+        if (scheduledToken != token) return@synchronized null
+        val request = pending ?: return@synchronized null
+        pending = null
+        scheduledToken = 0L
         request
     }
 
-    fun hasPending(): Boolean = synchronized(lock) { scheduled }
+    fun hasPending(): Boolean = synchronized(lock) { pending != null }
 
     fun clear() = synchronized(lock) {
-        anchor = -1
-        direction = 0
-        silentMissing = true
-        scheduled = false
+        pending = null
+        scheduledToken = 0L
+        nextTokenLocked()
+    }
+
+    private fun reserveWakeupLocked(replace: Boolean): Wakeup? {
+        if (pending == null) return null
+        if (scheduledToken != 0L && !replace) return null
+        scheduledToken = nextTokenLocked()
+        return Wakeup(scheduledToken)
+    }
+
+    private fun nextTokenLocked(): Long {
+        nextToken++
+        if (nextToken <= 0L) nextToken = 1L
+        return nextToken
+    }
+
+    private fun nextRevisionLocked(): Long {
+        nextRevision++
+        if (nextRevision <= 0L) nextRevision = 1L
+        return nextRevision
     }
 }

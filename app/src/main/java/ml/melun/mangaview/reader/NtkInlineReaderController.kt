@@ -409,6 +409,14 @@ class NtkInlineReaderController private constructor(
     @Volatile private var plannedPageCount = 0
     @Volatile private var plannedSurfaceEpoch = 0L
     @Volatile private var publishedSurfaceIdentity: NtkPublishedSurfaceIdentity? = null
+    private data class LifecycleSurfaceReattach(
+        val previousIdentity: NtkPublishedSurfaceIdentity,
+        val controllerState: State,
+        val demandGeneration: Long,
+        var lossConfirmedWithResources: Boolean = false
+    )
+    private var pendingLifecycleSurfaceReattach: LifecycleSurfaceReattach? = null
+    @Volatile private var pipelineProofSurfaceEpoch = 0L
     @Volatile private var planReservedNanos = 0L
     @Volatile private var shellFrameCommitNanos = 0L
     @Volatile private var surfaceViewConstructedNanos = 0L
@@ -1030,6 +1038,23 @@ class NtkInlineReaderController private constructor(
         if (Looper.myLooper() !== Looper.getMainLooper() || state == State.DESTROYED) return
         val demand = currentSurfaceDemand ?: return
         if (identity.demandGeneration != demand.generation) return
+        val previousPublished = publishedSurfaceIdentity
+        val sameSurfaceGeometryUpdate = previousPublished != null &&
+            pendingLifecycleSurfaceReattach == null &&
+            state in setOf(State.BINDING, State.STAGED, State.ACTIVE) &&
+            previousPublished.engineGeneration == identity.engineGeneration &&
+            previousPublished.attachGeneration == identity.attachGeneration &&
+            previousPublished.surfaceEpoch == identity.surfaceEpoch &&
+            previousPublished.demandGeneration == identity.demandGeneration &&
+            identity.geometryRevision > previousPublished.geometryRevision
+        val reattach = pendingLifecycleSurfaceReattach?.takeIf {
+            it.lossConfirmedWithResources &&
+                it.demandGeneration == demand.generation &&
+                it.controllerState == state &&
+                it.previousIdentity.engineGeneration == identity.engineGeneration &&
+                it.previousIdentity.surfaceEpoch != identity.surfaceEpoch &&
+                state in setOf(State.STAGED, State.ACTIVE)
+        }
         targetReducer.onSurfacePublished(
             demandGeneration = identity.demandGeneration,
             engineGeneration = identity.engineGeneration,
@@ -1042,6 +1067,80 @@ class NtkInlineReaderController private constructor(
         }
         plannedSurfaceEpoch = identity.surfaceEpoch
         publishedSurfaceIdentity = identity
+        if (sameSurfaceGeometryUpdate) {
+            val pipeline = stripPipeline
+            val target = stripRenderViewTarget
+            if (pipeline != null && target != null) {
+                bindPipelinePresentationTarget(
+                    target,
+                    pipeline,
+                    bindingGeneration,
+                    identity.height
+                )
+            }
+            return
+        }
+        if (reattach != null) {
+            pendingLifecycleSurfaceReattach = null
+            val pipeline = stripPipeline ?: run {
+                noteInvariantViolation(bindingGeneration, "surface_reattach_without_pipeline")
+                return
+            }
+            bindPipelinePresentationTarget(
+                checkNotNull(stripRenderViewTarget),
+                pipeline,
+                bindingGeneration,
+                identity.height
+            )
+            // The full-scene proof owns one immutable logical surface epoch. A replacement
+            // Android holder is a new physical presentation epoch, not a new scene authority;
+            // frame samples are bridged to that logical epoch by the rebound listener above.
+            val target = checkNotNull(stripRenderViewTarget)
+            target.setHostPresentationEnabled(!hostPaused)
+            if (state == State.STAGED) {
+                val ticket = publishedStageTicket
+                if (ticket == null || !ticket.hasNativeStageProof() ||
+                    !target.stage(
+                        ticket.authority,
+                        ticket.corridorStartPx,
+                        ticket.corridorEndPx,
+                        ticket.stageNonce,
+                        ticket.manifestRevision,
+                        ticket.manifestDigest,
+                        ticket.geometryDigest
+                    ) { proof ->
+                        postMain {
+                            if (state != State.STAGED || publishedSurfaceIdentity != identity) {
+                                return@postMain
+                            }
+                            if (proof == null || proof.authority != ticket.authority ||
+                                proof.stageNonce != ticket.stageNonce
+                            ) {
+                                noteInvariantViolation(
+                                    bindingGeneration,
+                                    "staged_surface_reattach_proof_failed"
+                                )
+                            } else {
+                                publishedStageTicket = StageTicket(
+                                    ticket.generation,
+                                    ticket.authority,
+                                    ticket.path,
+                                    ticket.preparedKey,
+                                    ticket.pageCount,
+                                    proof
+                                )
+                            }
+                        }
+                    }
+                ) {
+                    noteInvariantViolation(
+                        bindingGeneration,
+                        "staged_surface_reattach_restage_rejected"
+                    )
+                }
+            }
+            return
+        }
         val strictDemand = strictDemandIdentity
         if (strictDemand == null) {
             failBindingNow(StageResult.PREPARED_IDENTITY_MISMATCH)
@@ -1093,6 +1192,45 @@ class NtkInlineReaderController private constructor(
         if (pipeline != null &&
             event.authority != 0L && event.authority != pipeline.authority
         ) return
+        val demand = currentSurfaceDemand
+        val controllerSurface = publishedSurfaceIdentity
+        val exactPhysicalSurface = controllerSurface != null &&
+            controllerSurface.engineGeneration == event.identity.engineGeneration &&
+            controllerSurface.attachGeneration == event.identity.attachGeneration &&
+            controllerSurface.surfaceEpoch == event.identity.surfaceEpoch &&
+            controllerSurface.demandGeneration == event.identity.demandGeneration
+        val canReattachLifecycleSurface =
+            event.reason == NtkSurfaceLossReason.HOLDER_DESTROYED &&
+                pipeline != null && demand != null &&
+                state in setOf(State.STAGED, State.ACTIVE) &&
+                exactPhysicalSurface &&
+                event.identity.demandGeneration == demand.generation
+        if (canReattachLifecycleSurface) {
+            val exactDemand = checkNotNull(demand)
+            val revoked = targetReducer.revokeCurrentSurface(exactDemand.generation)
+            targetReducer.onManifestOwned(
+                exactDemand.planGeneration,
+                exactDemand.planProofDigest
+            )
+            val sourceRestored = targetReducer.markSourceClaimed(exactDemand.generation)
+            val reducer = targetReducer.snapshot()
+            if (revoked.revokeSurface && sourceRestored && reducer.manifestOwned &&
+                reducer.sourceClaimed && reducer.publishedSurfaceEpoch == 0L
+            ) {
+                pendingLifecycleSurfaceReattach = LifecycleSurfaceReattach(
+                    previousIdentity = event.identity,
+                    controllerState = state,
+                    demandGeneration = exactDemand.generation
+                )
+                if (pipelineProofSurfaceEpoch == 0L) {
+                    pipelineProofSurfaceEpoch = event.identity.surfaceEpoch
+                }
+                publishedSurfaceIdentity = null
+                stripRenderViewTarget?.setHostPresentationEnabled(false)
+                return
+            }
+        }
+        pendingLifecycleSurfaceReattach = null
         val mustFailClosed = event.crossedStageBoundary ||
             state == State.STAGED || state == State.ACTIVE
         publishedStageTicket = null
@@ -1111,6 +1249,29 @@ class NtkInlineReaderController private constructor(
         if (Looper.myLooper() !== Looper.getMainLooper() || state == State.DESTROYED) return
         val pipeline = stripPipeline ?: return
         if (event.authority != 0L && event.authority != pipeline.authority) return
+        val pendingReattach = pendingLifecycleSurfaceReattach
+        if (pendingReattach != null && event.identity == pendingReattach.previousIdentity) {
+            if (event.resourcesPreserved &&
+                event.detachResult.disposition ==
+                    NtkNativeDetachDisposition.SURFACE_PRESERVED
+            ) {
+                pendingReattach.lossConfirmedWithResources = true
+                return
+            }
+            pendingLifecycleSurfaceReattach = null
+            publishedStageTicket = null
+            activationStateProof = null
+            firstDrawStrictRunwayReady = false
+            pressActivationPending = false
+            activationCommitQueued = false
+            synchronized(strictPreparationLock) {
+                strictPreparationProtocol.failClosed("lifecycle-surface-resources-lost")
+            }
+            pipeline.onSurfaceRevoked(
+                pendingReattach.previousIdentity,
+                crossedStageBoundary = true
+            )
+        }
         val mustFailClosed = event.crossedStageBoundary ||
             state == State.STAGED || state == State.ACTIVE
         val identity = event.identity
@@ -1778,6 +1939,9 @@ class NtkInlineReaderController private constructor(
         generation: Int,
         viewportHeight: Int
     ) {
+        if (pipelineProofSurfaceEpoch == 0L) {
+            pipelineProofSurfaceEpoch = publishedSurfaceIdentity?.surfaceEpoch ?: 0L
+        }
         target.frameListener = frameListener@{ frame ->
             val activePipeline = stripPipeline
             if (activePipeline !== pipeline ||
@@ -1824,7 +1988,8 @@ class NtkInlineReaderController private constructor(
                 null
             }
             activePipeline.onViewportSample(NtkViewportSample(
-                surfaceEpoch = frame.surfaceEpoch,
+                surfaceEpoch = pipelineProofSurfaceEpoch.takeIf { it > 0L }
+                    ?: frame.surfaceEpoch,
                 frameSequence = frame.frameSequence,
                 gestureId = frame.gestureId,
                 appliedInputSequence = frame.appliedInputSequence,
@@ -3405,6 +3570,8 @@ class NtkInlineReaderController private constructor(
         plannedPageCount = 0
         plannedSurfaceEpoch = 0L
         publishedSurfaceIdentity = null
+        pendingLifecycleSurfaceReattach = null
+        pipelineProofSurfaceEpoch = 0L
         synchronized(strictPreparationLock) {
             strictPreparationProtocol =
                 NtkStrictPreparationProtocol(nextStrictPreparationGeneration)
@@ -3621,6 +3788,8 @@ class NtkInlineReaderController private constructor(
         firstPage: Int,
         lastPage: Int,
         anchorPage: Int,
+        physicalFirstPage: Int,
+        physicalLastPage: Int,
         progressPage: Int,
         progressOffset: Int,
         busy: Boolean,

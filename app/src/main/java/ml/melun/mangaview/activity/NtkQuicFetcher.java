@@ -18,10 +18,12 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -44,6 +46,22 @@ public final class NtkQuicFetcher {
     private static final long EXACT_IDENTITY_TAIL_PROGRESS_GRACE_MS = 750L;
     private static final long DIRECT_WIFI_DRAIN_CLOSE_RETRY_MS = 250L;
     private static final int DIRECT_WIFI_DRAIN_CLOSE_MAX_ATTEMPTS = 20;
+    private static final int DIRECT_READ_BUFFER_POOL_CAPACITY = 8;
+    private static final int DIRECT_READ_BUFFER_TINY_BYTES = 256;
+    private static final int DIRECT_READ_BUFFER_PARTIAL_BYTES = 1024;
+    private static final int DIRECT_READ_BUFFER_CONTROL_BYTES = 4 * 1024;
+    private static final int DIRECT_READ_BUFFER_DOCUMENT_BYTES = 112 * 1024;
+    private static final int DIRECT_READ_BUFFER_BODY_BYTES = 128 * 1024;
+    private static final ArrayBlockingQueue<ByteBuffer> DIRECT_TINY_READ_BUFFERS =
+            new ArrayBlockingQueue<>(DIRECT_READ_BUFFER_POOL_CAPACITY);
+    private static final ArrayBlockingQueue<ByteBuffer> DIRECT_PARTIAL_READ_BUFFERS =
+            new ArrayBlockingQueue<>(DIRECT_READ_BUFFER_POOL_CAPACITY);
+    private static final ArrayBlockingQueue<ByteBuffer> DIRECT_CONTROL_READ_BUFFERS =
+            new ArrayBlockingQueue<>(DIRECT_READ_BUFFER_POOL_CAPACITY);
+    private static final ArrayBlockingQueue<ByteBuffer> DIRECT_DOCUMENT_READ_BUFFERS =
+            new ArrayBlockingQueue<>(DIRECT_READ_BUFFER_POOL_CAPACITY);
+    private static final ArrayBlockingQueue<ByteBuffer> DIRECT_BODY_READ_BUFFERS =
+            new ArrayBlockingQueue<>(DIRECT_READ_BUFFER_POOL_CAPACITY);
     private static final ScheduledExecutorService EXECUTOR_CLOSER =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "ntk-quic-executor-closer");
@@ -52,6 +70,49 @@ public final class NtkQuicFetcher {
             });
 
     private NtkQuicFetcher() {
+    }
+
+    /**
+     * HttpEngine requires a direct buffer for every outstanding read. ART allocation sampling
+     * showed the per-request allocateDirect call in the live chapter-scroll allocation tree.
+     * These five capacities are the protocol's exact read cadences; pooling only those known
+     * shapes preserves every observer boundary while avoiding a fresh non-movable array and
+     * NativeAlloc registration for each document/image request.
+     */
+    private static ByteBuffer acquireDirectReadBuffer(int capacity) {
+        ArrayBlockingQueue<ByteBuffer> pool = directReadBufferPool(capacity);
+        ByteBuffer buffer = pool == null ? null : pool.poll();
+        if(buffer == null)
+            buffer = ByteBuffer.allocateDirect(capacity);
+        buffer.clear();
+        return buffer;
+    }
+
+    private static void releaseDirectReadBuffer(ByteBuffer buffer) {
+        if(buffer == null || !buffer.isDirect())
+            return;
+        ArrayBlockingQueue<ByteBuffer> pool = directReadBufferPool(buffer.capacity());
+        if(pool == null)
+            return;
+        buffer.clear();
+        pool.offer(buffer);
+    }
+
+    private static ArrayBlockingQueue<ByteBuffer> directReadBufferPool(int capacity) {
+        switch(capacity) {
+            case DIRECT_READ_BUFFER_TINY_BYTES:
+                return DIRECT_TINY_READ_BUFFERS;
+            case DIRECT_READ_BUFFER_PARTIAL_BYTES:
+                return DIRECT_PARTIAL_READ_BUFFERS;
+            case DIRECT_READ_BUFFER_CONTROL_BYTES:
+                return DIRECT_CONTROL_READ_BUFFERS;
+            case DIRECT_READ_BUFFER_DOCUMENT_BYTES:
+                return DIRECT_DOCUMENT_READ_BUFFERS;
+            case DIRECT_READ_BUFFER_BODY_BYTES:
+                return DIRECT_BODY_READ_BUFFERS;
+            default:
+                return null;
+        }
     }
 
     public interface PartialTextObserver {
@@ -80,7 +141,12 @@ public final class NtkQuicFetcher {
      */
     public interface ExactResponseObserver {
         void onResponseStarted(int code, Map<String, List<String>> headers) throws Exception;
-        boolean onBodyPrefix(byte[] bytes) throws Exception;
+        /**
+         * The buffer is a synchronous, non-owning view and may contain unused capacity after
+         * {@code length}. Callers must neither retain nor mutate it. This keeps a compact document
+         * stream from cloning its entire cumulative body at every observation boundary.
+         */
+        boolean onBodyPrefix(byte[] bytes, int length) throws Exception;
 
         /** Preferred first cumulative prefix size; EOF ownership is always unchanged. */
         default int initialBodyPrefixBytes() {
@@ -604,6 +670,9 @@ public final class NtkQuicFetcher {
                                                   boolean followRedirects,
                                                   ExactResponseObserver exactResponseObserver)
             throws InterruptedException {
+        final boolean exactIdentityRequest =
+                "1".equalsIgnoreCase(headerValue(
+                        requestHeaders, "X-MangaViewer-Exact-Identity"));
         CountDownLatch done = new CountDownLatch(1);
         State state = new State();
         UrlRequest.Builder builder = engine.newUrlRequestBuilder(url, executor, new UrlRequest.Callback() {
@@ -615,10 +684,20 @@ public final class NtkQuicFetcher {
                         : Math.max(4 * 1024, exactResponseObserver.initialBodyPrefixBytes());
                 int nextExactPrefixObservation = exactPrefixObservationBytes;
                 int lastExactPrefixObservation = 0;
+                ByteBuffer readBuffer;
+                final AtomicBoolean readBufferReleased = new AtomicBoolean(false);
+
+                private void releaseReadBuffer() {
+                    if(readBufferReleased.compareAndSet(false, true)) {
+                        releaseDirectReadBuffer(readBuffer);
+                        readBuffer = null;
+                    }
+                }
 
                 private boolean failExactObserver(UrlRequest request, Throwable failure) {
                     state.error = failure;
                     state.terminalKind = TerminalKind.FAILED;
+                    releaseReadBuffer();
                     done.countDown();
                     request.cancel();
                     return false;
@@ -645,7 +724,7 @@ public final class NtkQuicFetcher {
                         return true;
                     try {
                         boolean complete = exactResponseObserver.onBodyPrefix(
-                                state.responseSnapshot());
+                                state.responseBackingArray(), available);
                         lastExactPrefixObservation = available;
                         if(complete) {
                             notifyExactPrefix = false;
@@ -663,6 +742,7 @@ public final class NtkQuicFetcher {
                         return false;
                     state.error = new InterruptedException("Exact request owner retired");
                     state.terminalKind = TerminalKind.CANCELED;
+                    releaseReadBuffer();
                     done.countDown();
                     request.cancel();
                     return true;
@@ -690,6 +770,10 @@ public final class NtkQuicFetcher {
                     state.code = info.getHttpStatusCode();
                     state.headers = new HashMap<>(info.getHeaders().getAsMap());
                     state.updateExactIdentityResponseInvariant();
+                    state.prepareResponseCapacity(
+                            exactIdentityRequest
+                                    ? (int) MAX_EXACT_IDENTITY_IMAGE_BYTES
+                                    : exactResponseObserver != null ? 1024 * 1024 : 0);
                     state.negotiatedProtocol = info.getNegotiatedProtocol();
                     if(!notifyExactResponseStarted(request))
                         return;
@@ -727,7 +811,16 @@ public final class NtkQuicFetcher {
                             : partialTextObserver != null
                             ? 256
                             : (notifyPartialText || notifyPartialBytes ? 1024 : 128 * 1024);
-                    request.read(ByteBuffer.allocateDirect(bufferBytes));
+                    try {
+                        readBuffer = acquireDirectReadBuffer(bufferBytes);
+                        request.read(readBuffer);
+                    } catch (Throwable failure) {
+                        state.error = failure;
+                        state.terminalKind = TerminalKind.FAILED;
+                        releaseReadBuffer();
+                        done.countDown();
+                        request.cancel();
+                    }
                 }
 
                 @Override
@@ -737,9 +830,7 @@ public final class NtkQuicFetcher {
                     if(state.completedEarly)
                         return;
                     byteBuffer.flip();
-                    byte[] bytes = new byte[byteBuffer.remaining()];
-                    byteBuffer.get(bytes);
-                    state.appendResponse(bytes);
+                    state.appendResponse(byteBuffer);
                     if(!notifyExactBodyPrefix(request, false))
                         return;
                     if(notifyPartialText) {
@@ -752,6 +843,7 @@ public final class NtkQuicFetcher {
                                 state.bodyBytes = state.responseSnapshot();
                                 state.completedEarly = true;
                                 state.terminalKind = TerminalKind.EARLY;
+                                releaseReadBuffer();
                                 done.countDown();
                                 request.cancel();
                                 return;
@@ -766,6 +858,7 @@ public final class NtkQuicFetcher {
                                 state.bodyBytes = partial;
                                 state.completedEarly = true;
                                 state.terminalKind = TerminalKind.EARLY;
+                                releaseReadBuffer();
                                 done.countDown();
                                 request.cancel();
                                 return;
@@ -787,8 +880,9 @@ public final class NtkQuicFetcher {
                     state.negotiatedProtocol = info.getNegotiatedProtocol();
                     if(!notifyExactBodyPrefix(request, true))
                         return;
-                    state.bodyBytes = state.responseSnapshot();
+                    state.bodyBytes = state.takeResponseBytes();
                     state.terminalKind = TerminalKind.SUCCEEDED;
+                    releaseReadBuffer();
                     done.countDown();
                 }
 
@@ -805,6 +899,7 @@ public final class NtkQuicFetcher {
                         } catch (Exception ignored) {
                         }
                     }
+                    releaseReadBuffer();
                     done.countDown();
                 }
 
@@ -815,6 +910,7 @@ public final class NtkQuicFetcher {
                     if(state.error == null)
                         state.error = new InterruptedException("cancelled");
                     state.terminalKind = TerminalKind.CANCELED;
+                    releaseReadBuffer();
                     done.countDown();
                 }
         });
@@ -854,9 +950,6 @@ public final class NtkQuicFetcher {
             long tailProbeBeforeBytes = -1L;
             long tailProbeAfterBytes = -1L;
             long tailProbeExpectedBytes = -1L;
-            boolean exactIdentityRequest =
-                    "1".equalsIgnoreCase(headerValue(
-                            requestHeaders, "X-MangaViewer-Exact-Identity"));
             try {
                 long boundedTimeoutMs = Math.max(1L, timeoutMs);
                 completed = done.await(boundedTimeoutMs, TimeUnit.MILLISECONDS);
@@ -908,7 +1001,8 @@ public final class NtkQuicFetcher {
             return new Result(state.code, state.bodyBytes == null ? new byte[0] : state.bodyBytes,
                     state.headers == null ? Collections.emptyMap() : state.headers,
                     state.negotiatedProtocol, null, state.terminalKind,
-                    exactIdentityRequest, tailProbeOutcome, tailProbeBeforeBytes,
+                    exactIdentityRequest || exactResponseObserver != null,
+                    tailProbeOutcome, tailProbeBeforeBytes,
                     tailProbeAfterBytes, tailProbeExpectedBytes);
         } finally {
             if(registered)
@@ -1078,8 +1172,40 @@ public final class NtkQuicFetcher {
         }
     }
 
+    private static final class ExposedByteArrayOutputStream extends ByteArrayOutputStream {
+        byte[] backingArray() {
+            return buf;
+        }
+
+        void ensureCapacityFor(int expectedSize) {
+            if(expectedSize <= buf.length)
+                return;
+            int grown = Math.max(expectedSize, Math.max(32, buf.length << 1));
+            if(grown < 0)
+                grown = Integer.MAX_VALUE;
+            buf = Arrays.copyOf(buf, grown);
+        }
+
+        void appendFrom(ByteBuffer source) {
+            int bytes = source.remaining();
+            if(bytes <= 0)
+                return;
+            int expectedSize = count + bytes;
+            if(expectedSize < count)
+                throw new OutOfMemoryError("Response body exceeds integer capacity");
+            ensureCapacityFor(expectedSize);
+            source.get(buf, count, bytes);
+            count = expectedSize;
+        }
+
+        byte[] takeExactArray() {
+            return count == buf.length ? buf : Arrays.copyOf(buf, count);
+        }
+    }
+
     private static final class State {
-        private final ByteArrayOutputStream response = new ByteArrayOutputStream();
+        private final ExposedByteArrayOutputStream response =
+                new ExposedByteArrayOutputStream();
         private final byte[] responsePrefix = new byte[4];
         private int responsePrefixLength;
         volatile int code;
@@ -1092,20 +1218,43 @@ public final class NtkQuicFetcher {
         private boolean exactIdentityResponseInvariant;
         private long exactIdentityExpectedLength = -1L;
 
-        synchronized void appendResponse(byte[] bytes) {
+        synchronized void appendResponse(ByteBuffer bytes) {
             int copyCount = Math.min(
-                    bytes.length,
+                    bytes.remaining(),
                     responsePrefix.length - responsePrefixLength);
             if(copyCount > 0) {
-                System.arraycopy(
-                        bytes, 0, responsePrefix, responsePrefixLength, copyCount);
+                int position = bytes.position();
+                for(int index = 0; index < copyCount; index++)
+                    responsePrefix[responsePrefixLength + index] = bytes.get(position + index);
                 responsePrefixLength += copyCount;
             }
-            response.write(bytes, 0, bytes.length);
+            response.appendFrom(bytes);
         }
 
         synchronized byte[] responseSnapshot() {
             return response.toByteArray();
+        }
+
+        synchronized byte[] responseBackingArray() {
+            return response.backingArray();
+        }
+
+        synchronized byte[] takeResponseBytes() {
+            return response.takeExactArray();
+        }
+
+        synchronized void prepareResponseCapacity(int maximumBytes) {
+            if(maximumBytes <= 0 || response.size() != 0 || headers == null)
+                return;
+            List<String> lengths = responseHeaderValues("Content-Length");
+            if(lengths.size() != 1 || !isAsciiDigits(lengths.get(0).trim()))
+                return;
+            try {
+                long expected = Long.parseLong(lengths.get(0).trim());
+                if(expected > 0L && expected <= maximumBytes)
+                    response.ensureCapacityFor((int) expected);
+            } catch(NumberFormatException ignored) {
+            }
         }
 
         synchronized int responseSize() {

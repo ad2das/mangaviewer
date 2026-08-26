@@ -23,6 +23,12 @@ public class ReaderPipelinePolicyTest {
     }
 
     @Test
+    public void hostGpuProtectedNumericDecodeIsSerializedWithoutChangingPhysicalDevices() {
+        assertEquals(1, ReaderPipelinePolicy.protectedNumericDecodeParallelism(true));
+        assertEquals(12, ReaderPipelinePolicy.protectedNumericDecodeParallelism(false));
+    }
+
+    @Test
     public void idleWindowStaysBoundedAroundAnchor() {
         assertEquals(1, ReaderPipelinePolicy.windowBefore(false));
         assertTrue(ReaderPipelinePolicy.windowAfter(false) <= ReaderPipelinePolicy.windowAfter(true));
@@ -45,6 +51,8 @@ public class ReaderPipelinePolicyTest {
     public void strictNtkBitmapWindowTracksDirectionWithoutManifestFanout() {
         assertArrayEquals(new int[]{5, 14},
                 ReaderSession.protectedNumericBitmapWindowForTest(20, 5, 1));
+        assertArrayEquals(new int[]{3, 12},
+                ReaderSession.protectedNumericBitmapWindowForTest(20, 12, -1));
     }
 
     @Test
@@ -52,6 +60,55 @@ public class ReaderPipelinePolicyTest {
         assertEquals(new kotlin.ranges.IntRange(0, 21),
                 ReaderSession.strictExactProtectedNumericBitmapWindowForTest(22));
         assertTrue(ReaderSession.strictExactProtectedNumericBitmapWindowForTest(0).isEmpty());
+    }
+
+    @Test
+    public void strictExactAppendedEpisodeUsesDirectionalPixelsWithoutWeakeningLaunchResidency() {
+        assertArrayEquals(new int[]{0, 14},
+                ReaderSession.strictExactScopedBitmapWindowBoundsForTest(
+                        40, 5, 1, 0, 14));
+        assertArrayEquals(new int[]{0, 23},
+                ReaderSession.strictExactScopedBitmapWindowBoundsForTest(
+                        40, 14, 1, 0, 14));
+        assertArrayEquals(new int[]{25, 34},
+                ReaderSession.strictExactScopedBitmapWindowBoundsForTest(
+                        40, 25, 1, -1, -1));
+        assertArrayEquals(new int[]{16, 25},
+                ReaderSession.strictExactScopedBitmapWindowBoundsForTest(
+                        40, 25, -1, -1, -1));
+        assertArrayEquals(new int[]{24, 34},
+                ReaderSession.strictExactScopedBitmapWindowWithPhysicalSpanForTest(
+                        40, 25, 1, -1, -1, 24, 27));
+        assertArrayEquals(new int[]{16, 27},
+                ReaderSession.strictExactScopedBitmapWindowWithPhysicalSpanForTest(
+                        40, 25, -1, -1, -1, 24, 27));
+        assertArrayEquals(new int[]{25, 34},
+                ReaderSession.strictExactScopedBitmapWindowWithPhysicalSpanForTest(
+                        40, 25, 1, -1, -1, 10, 9));
+    }
+
+    @Test
+    public void physicalDirectionHintOpensReversePixelsBeforeTheAnchorMoves() {
+        assertEquals(-1, ReaderSession.resolveWindowDirectionForTest(
+                25, 25, 1, -1));
+        assertEquals(1, ReaderSession.resolveWindowDirectionForTest(
+                25, 25, -1, 1));
+        assertEquals(-1, ReaderSession.resolveWindowDirectionForTest(
+                25, 24, 1, 0));
+    }
+
+    @Test
+    public void idleAnchorFallbackDoesNotInventAReverseGesture() {
+        assertEquals(1, ReaderSession.resolveWindowDirectionForTest(
+                0, 1, 1, 0, true));
+        assertEquals(1, ReaderSession.resolveWindowDirectionForTest(
+                1, 0, 1, 0, false));
+        assertEquals(1, ReaderSession.resolveWindowDirectionForTest(
+                0, 1, -1, 0, false));
+        assertEquals(-1, ReaderSession.resolveWindowDirectionForTest(
+                1, 0, 1, 0, true));
+        assertEquals(-1, ReaderSession.resolveWindowDirectionForTest(
+                1, 0, 1, -1, false));
     }
 
     @Test

@@ -30,6 +30,52 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
     }
 
     @Test
+    fun oldGenerationCleanupOwnsThePathUntilValidatedRearmIsPublished() {
+        val recovery = functionSlice(
+            readerSession,
+            "private fun holdOrRecoverAdjacentStrictSource(",
+            "private fun retireAdjacentStrictSourceGeneration(",
+        )
+        val ensure = functionSlice(
+            readerSession,
+            "private fun ensureAdjacentStrictSourceClaim(",
+            "private fun releaseAdjacentStrictClaimAfterPredecessorComplete(",
+        )
+        val validated = functionSlice(
+            readerSession,
+            "fun redriveCurrentForwardAdjacentExactRecoveryAfterValidated(",
+            "private fun reportAdjacentStrictRecoveryTerminal(",
+        )
+        val report = functionSlice(
+            readerSession,
+            "private fun reportAdjacentStrictRecoveryTerminal(",
+            "private fun remainingAdjacentRunwayBoundaryLocked(",
+        )
+        val firstRetirementFlag = recovery.indexOf("state.retirementInProgress = true")
+        val oldCleanup = recovery.indexOf("retireAdjacentStrictSourceGeneration(")
+        val ownerRelease = recovery.indexOf("state.retirementInProgress = false")
+        val validatedPublish = recovery.indexOf("ensureAdjacentStrictRecoveryManifestSubscription()")
+
+        assertTrue(recovery.contains("if (recovery?.retirementInProgress == true) return true"))
+        assertTrue(ensure.contains("if (recovery?.retirementInProgress == true) return false"))
+        assertTrue(firstRetirementFlag >= 0)
+        assertTrue(oldCleanup > firstRetirementFlag)
+        assertTrue(ownerRelease > oldCleanup)
+        assertTrue(validatedPublish > ownerRelease)
+        assertTrue(validated.contains("!state.retirementInProgress"))
+        assertTrue(
+            validated.indexOf("lastObservedAdjacentValidatedNetworkEpoch = validatedEpoch") <
+                validated.indexOf("!state.retirementInProgress"),
+        )
+        assertTrue(report.contains("!state.exhausted || !state.networkRearmableTerminal"))
+        assertTrue(report.contains("adjacentStrictPredecessorPaths.remove(path)"))
+        assertTrue(
+            report.indexOf("adjacentStrictPredecessorPaths.remove(path)") <
+                report.indexOf("if (!shouldReport) return"),
+        )
+    }
+
+    @Test
     fun replacementKeepsExactDigestAndRejectsTerminalRegistryAuthority() {
         val authority = functionSlice(
             readerSession,
@@ -43,6 +89,52 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
     }
 
     @Test
+    fun validatedFlightWindowIsBoundToTheExactInitialOrBodyRecoveryOwner() {
+        val initial = functionSlice(
+            readerSession,
+            "fun redriveCurrentForwardAdjacentExactManifestAfterValidated(",
+            "fun redriveCurrentForwardAdjacentExactRecoveryAfterValidated(",
+        )
+        val body = functionSlice(
+            readerSession,
+            "fun redriveCurrentForwardAdjacentExactRecoveryAfterValidated(",
+            "fun adjacentValidatedFlightRecoveryWindow(",
+        )
+        val window = functionSlice(
+            readerSession,
+            "fun adjacentValidatedFlightRecoveryWindow(",
+            "private fun reportAdjacentStrictRecoveryTerminal(",
+        )
+
+        assertTrue(initial.contains("live.lastValidatedRedriveAtMs = now"))
+        assertTrue(initial.contains("lastValidatedRedriveAtMs = now"))
+        assertTrue(body.contains("state.awaitingReplacement"))
+        assertTrue(body.contains("state.lastValidatedRedriveEpoch = validatedEpoch"))
+        assertTrue(body.contains("state.lastValidatedRedriveAtMs = now"))
+        val predecessorTerminal = body.indexOf(
+            "predecessorMatches(entry) && terminalEligible(entry.value)",
+        )
+        val predecessorActive = body.indexOf(
+            "predecessorMatches(entry) && activeEligible(entry.value)",
+        )
+        val targetTerminal = body.indexOf(
+            "targetMatches(entry) && terminalEligible(entry.value)",
+        )
+        val targetActive = body.indexOf(
+            "targetMatches(entry) && activeEligible(entry.value)",
+        )
+        assertTrue(predecessorTerminal >= 0)
+        assertTrue(predecessorActive > predecessorTerminal)
+        assertTrue(targetTerminal > predecessorActive)
+        assertTrue(targetActive > targetTerminal)
+        assertTrue(window.contains("forwardAdjacentCompletionTargetClaims[predecessorPath]"))
+        assertTrue(window.contains("adjacentStrictRecoveryStates[targetPath]"))
+        assertTrue(window.contains("!claim.structureCommitted"))
+        assertTrue(window.contains("!state.retirementInProgress && !state.exhausted"))
+        assertTrue(window.contains("state.predecessorEpisodePath.equals(predecessorPath"))
+    }
+
+    @Test
     fun coordinatorReplacementIsAdjacentAndGenerationScoped() {
         val retirement = functionSlice(
             coordinator,
@@ -53,7 +145,8 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
         assertTrue(retirement.contains("owned.lease.generation.value != discoveryGeneration"))
         assertTrue(retirement.contains("owned.viewerOwnerEpisodePath.equals(key, ignoreCase = true)"))
         assertTrue(retirement.contains("retireDiscoveryForReplacement("))
-        assertTrue(retirement.contains("flights.remove(key, owned)"))
+        assertTrue(retirement.contains("detachFlightForForegroundLeaveLocked(owned)"))
+        assertTrue(retirement.contains("completeDetachedFlightForegroundLeave(flight)"))
         assertFalse(retirement.contains("completedAdjacentPredecessors.remove"))
     }
 
@@ -74,8 +167,8 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
             ),
         )
         assertTrue(retirement.contains("retireDiscoveryForReplacement("))
-        assertTrue(retirement.contains("flights.remove(key, owned)"))
-        assertTrue(retirement.contains("leaveNtkStrictForegroundNetwork(key, viewerGeneration)"))
+        assertTrue(retirement.contains("detachFlightForForegroundLeaveLocked(owned)"))
+        assertTrue(retirement.contains("completeDetachedFlightForegroundLeave(flight)"))
     }
 
     @Test
@@ -106,6 +199,12 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
             fetch.indexOf("if (holdOrRecoverAdjacentStrictSource(target)) return true") <
                 fetch.indexOf("ReaderImageCache.getOrFetchFileForeground("),
         )
+        val recoveryProof = functionSlice(
+            readerSession,
+            "fun isAdjacentStrictReplacementDiscoveryCurrent(",
+            "private fun nextUnloadedAdjacentEpisode(",
+        )
+        assertTrue(recoveryProof.contains("!state.retirementInProgress"))
     }
 
     private fun functionSlice(source: String, startToken: String, endToken: String): String {

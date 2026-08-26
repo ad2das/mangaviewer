@@ -40,7 +40,7 @@ class NtkStrictSourceRouteOwnershipTest {
         assertFalse(launch.contains("PRODUCTION_NTK_STRICT_SOURCE_ROUTE_RESOLVER.resolve("))
         assertTrue(
             compactSession.contains(
-                "work.exactContext = beginExactOperationActor(work, manifest, route)"
+                "work.exactContext = beginNextExactOperationActor(work, manifest, route)"
             )
         )
         assertTrue(session.contains("ReaderImageCache.resolveStrictSourceRoute("))

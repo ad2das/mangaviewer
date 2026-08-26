@@ -720,6 +720,28 @@ class NtkStrictInitialWavePolicyTest {
         assertEquals(5, count)
         assertEquals((0 until 5).toSet(), admitted)
         assertEquals(
+            2,
+            NtkStrictInitialWavePolicy.adjacentActiveBodyTransferCount(
+                emulatorRuntime = true,
+                directWifiTransport = true,
+                cellularResilientTransport = false,
+                adjacentPrefetch = true,
+                episodePath = "/manhwa/work/next",
+                admittedRunwayBodyCount = count,
+            ),
+        )
+        assertEquals(
+            4,
+            NtkStrictInitialWavePolicy.adjacentActiveBodyTransferCount(
+                emulatorRuntime = false,
+                directWifiTransport = true,
+                cellularResilientTransport = false,
+                adjacentPrefetch = true,
+                episodePath = "/manhwa/work/next",
+                admittedRunwayBodyCount = 4,
+            ),
+        )
+        assertEquals(
             4,
             NtkStrictInitialWavePolicy.adjacentInitialRunwayBodyCount(
                 emulatorRuntime = false,
@@ -774,6 +796,30 @@ class NtkStrictInitialWavePolicyTest {
         assertEquals((0 until 4).toList(), directWifiAdjacent)
         assertEquals(listOf(0), ordinaryWifi)
         assertEquals(listOf(0), carrierAdjacent)
+    }
+
+    @Test
+    fun restoredForegroundDemandCanRepairItsBodyBeforeFirstFrameBulkRelease() {
+        assertTrue(
+            NtkStrictInitialWavePolicy.isPreBulkFallbackBodyAdmitted(
+                pageIndex = 12,
+                pageCount = 13,
+                initialPageIndex = 0,
+                directWifiTransport = true,
+                adjacentPrefetch = false,
+                foregroundDemanded = true,
+            ),
+        )
+        assertFalse(
+            NtkStrictInitialWavePolicy.isPreBulkFallbackBodyAdmitted(
+                pageIndex = 12,
+                pageCount = 13,
+                initialPageIndex = 0,
+                directWifiTransport = true,
+                adjacentPrefetch = false,
+                foregroundDemanded = false,
+            ),
+        )
     }
 
     @Test

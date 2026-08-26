@@ -132,7 +132,7 @@ class AdoptedDrawableIdentity private constructor(
                     tile.sourceTop != expectedTop || span <= 0 || tile.sourceBottom > pageHeight ||
                     (!tail && span != REQUIRED_TILE_SOURCE_HEIGHT) ||
                     (tail && span > REQUIRED_TILE_SOURCE_HEIGHT) ||
-                    bitmap.isRecycled || bitmap.config != Bitmap.Config.ARGB_8888 || bitmap.isMutable ||
+                    !bitmap.hasImmutableExactPixelConfig() ||
                     !tile.hasExactSourcePixelStorage()
                 ) {
                     return false
@@ -376,6 +376,10 @@ class ReaderSessionListenerGate(
         if (active()) downstream.onPagesAppended(count)
     }
 
+    override fun onPreparedAdjacentPagesAppended(count: Int) {
+        if (active()) downstream.onPreparedAdjacentPagesAppended(count)
+    }
+
     override fun onAdjacentExactP0HeadReady(
         publication: NtkAdjacentExactP0HeadPublication,
     ): Boolean = active() && downstream.onAdjacentExactP0HeadReady(publication)
@@ -592,6 +596,25 @@ class ReaderSessionListenerGate(
         return downstream.areAllAuthoritativeDrawablesInstalled(pageCount)
     }
 
+    override fun currentStrictForwardSuffixProofRevision(
+        episodePath: String,
+        discoveryGeneration: Long,
+        manifestDigest: String,
+        pageCount: Int,
+        firstSource: Int,
+        lastSource: Int,
+    ): Long {
+        if (!active()) return 0L
+        return downstream.currentStrictForwardSuffixProofRevision(
+            episodePath,
+            discoveryGeneration,
+            manifestDigest,
+            pageCount,
+            firstSource,
+            lastSource,
+        )
+    }
+
     override fun onStrictRollingHistoricalSceneActivated() {
         if (active()) downstream.onStrictRollingHistoricalSceneActivated()
     }
@@ -683,6 +706,23 @@ class ReaderSessionListenerGate(
         if (entry?.origin == DrawableOrigin.READER_SESSION) {
             adopted.remove(index, DrawableOrigin.READER_SESSION)
         }
+    }
+
+    override fun onPageHostPressureRollingEvicted(index: Int) {
+        if (!active()) return
+        val entry = adopted.entry(index)
+        if (entry?.origin == DrawableOrigin.PREPARED_STORE || suppressLegacyIndex(index)) return
+        downstream.onPageHostPressureRollingEvicted(index)
+        if (entry?.origin == DrawableOrigin.READER_SESSION) {
+            adopted.remove(index, DrawableOrigin.READER_SESSION)
+        }
+    }
+
+    override fun onSessionOwnedBitmapRetirement(bitmaps: List<Bitmap>): Boolean {
+        // This is a View-lifetime cleanup sink, not a visual mutation. A stale Session can still
+        // have GlobalRefs in a renderer being joined, so generation gating must never turn this
+        // callback into an unsafe direct-recycle fallback.
+        return downstream.onSessionOwnedBitmapRetirement(bitmaps)
     }
 
     override fun onMessage(message: String) {

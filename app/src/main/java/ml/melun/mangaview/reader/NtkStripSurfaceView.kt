@@ -93,6 +93,136 @@ internal class NtkHostPresentationGate(initiallyEnabled: Boolean = true) {
     }
 }
 
+/**
+ * One-slot hand-off for the first authoritative frame of a replacement Surface.
+ *
+ * Holder teardown and native frame delivery run on different threads. A frame from the retiring
+ * holder can therefore pass its outer identity check immediately before teardown and arrive after
+ * the replacement holder is published. The lifecycle-qualified identity rejects that stale offer,
+ * while the reservation prevents its already-posted Runnable from consuming a successor request.
+ */
+internal class NtkCompositorRevealDispatchGate {
+    data class Identity(
+        val engineGeneration: Long,
+        val attachGeneration: Long,
+        val surfaceEpoch: Long,
+    )
+
+    data class OfferResult(
+        val shouldPost: Boolean,
+        val reservation: Long,
+    )
+
+    private var acceptedIdentity: Identity? = null
+    private var latestIdentity: Identity? = null
+    private var scheduledReservation = 0L
+    private var nextReservation = 1L
+
+    /** Starts a new holder lifecycle and invalidates every callback from its predecessor. */
+    @Synchronized
+    fun activate(identity: Identity) {
+        acceptedIdentity = identity
+        latestIdentity = null
+        scheduledReservation = 0L
+    }
+
+    /** Retires the current holder without reusing its callback reservation. */
+    @Synchronized
+    fun clear() {
+        acceptedIdentity = null
+        latestIdentity = null
+        scheduledReservation = 0L
+    }
+
+    /** Keeps the latest exact identity and requests at most one main-thread owner. */
+    @Synchronized
+    fun offer(identity: Identity): OfferResult {
+        if (identity != acceptedIdentity) return OfferResult(false, 0L)
+        latestIdentity = identity
+        if (scheduledReservation != 0L) {
+            return OfferResult(false, scheduledReservation)
+        }
+        val reservation = nextReservation
+        nextReservation = if (nextReservation == Long.MAX_VALUE) 1L else nextReservation + 1L
+        scheduledReservation = reservation
+        return OfferResult(true, reservation)
+    }
+
+    /** A stale Runnable is inert and cannot clear or consume a successor lifecycle reservation. */
+    @Synchronized
+    fun take(reservation: Long): Identity? {
+        if (reservation <= 0L || scheduledReservation != reservation) return null
+        scheduledReservation = 0L
+        return latestIdentity.also { latestIdentity = null }
+    }
+}
+
+/**
+ * Reservation owner for one published-Surface resize commit.
+ *
+ * Owner matching is referential on purpose. Two resize requests may have equal geometry across a
+ * holder replacement, but a callback from the retired request must never clear the replacement's
+ * reservation or consume its queued successor geometry.
+ */
+internal class NtkPublishedResizeCommitGate<T : Any> {
+    data class Reservation(val token: Long)
+
+    private var activeOwner: T? = null
+    private var reservedOwner: T? = null
+    private var reservationToken = 0L
+    private var running = false
+    private var nextToken = 1L
+
+    @Synchronized
+    fun activate(owner: T) {
+        activeOwner = owner
+        reservedOwner = null
+        reservationToken = 0L
+        running = false
+    }
+
+    @Synchronized
+    fun clear() {
+        activeOwner = null
+        reservedOwner = null
+        reservationToken = 0L
+        running = false
+    }
+
+    /** Returns null when this exact owner already has a scheduled or running commit. */
+    @Synchronized
+    fun reserve(owner: T): Reservation? {
+        if (activeOwner !== owner || reservedOwner != null) return null
+        val token = nextToken
+        nextToken = if (nextToken == Long.MAX_VALUE) 1L else nextToken + 1L
+        reservedOwner = owner
+        reservationToken = token
+        return Reservation(token)
+    }
+
+    /** Claims only the still-current exact owner; stale callbacks leave successor state intact. */
+    @Synchronized
+    fun begin(owner: T, reservation: Reservation): Boolean {
+        if (activeOwner !== owner || reservedOwner !== owner || running ||
+            reservationToken != reservation.token
+        ) return false
+        running = true
+        return true
+    }
+
+    /** Completes only the matching running owner and cannot deactivate a replacement owner. */
+    @Synchronized
+    fun finish(owner: T, reservation: Reservation) {
+        if (activeOwner !== owner || reservedOwner !== owner || !running ||
+            reservationToken != reservation.token
+        ) return
+        activeOwner = null
+        reservedOwner = null
+        reservationToken = 0L
+        running = false
+    }
+}
+
 class NtkStripSurfaceView private constructor(
     context: Context,
     prewarmedEngine: NtkStripRenderEngine,
@@ -228,6 +358,23 @@ class NtkStripSurfaceView private constructor(
         ConcurrentHashMap<NtkNativeAuthorityToken, RetiringTelemetryBucket>()
     private val nextSurfaceEpoch = AtomicLong(0L)
     private val publishedSurface = AtomicReference<NtkPublishedSurfaceIdentity?>()
+    private data class PublishedResizeGeometry(
+        val geometryRevision: Long,
+        val width: Int,
+        val height: Int
+    )
+    private data class PublishedResizeInFlight(
+        val engineGeneration: Long,
+        val attachGeneration: Long,
+        val surfaceEpoch: Long,
+        val geometry: PublishedResizeGeometry,
+        val predecessorBackendSurfaceSerial: Long
+    )
+    private val publishedResizeInFlight =
+        AtomicReference<PublishedResizeInFlight?>()
+    private val publishedResizeCommitGate =
+        NtkPublishedResizeCommitGate<PublishedResizeInFlight>()
+    private var queuedPublishedResize: PublishedResizeGeometry? = null
     // Android main thread only except [viewClosing], which lifecycle completion reads to suppress
     // successor creation after final View teardown.
     private var holderCandidate: HolderSurfaceCandidate? = null
@@ -260,6 +407,8 @@ class NtkStripSurfaceView private constructor(
     private val lastMergedFrameKey = AtomicReference<NtkFrameOrderKey?>()
     private val structureEpoch = AtomicLong(0L)
     @Volatile private var compositorAlpha = 0f
+    @Volatile private var compositorTemporarilyHiddenForSurfaceLoss = false
+    private val compositorRevealDispatchGate = NtkCompositorRevealDispatchGate()
     private val hostPresentationGate = NtkHostPresentationGate()
     @Volatile internal var frameListener: ((NtkStripRenderEngine.FrameSnapshot) -> Unit)? = null
     private var holderCreatedNanos = 0L
@@ -308,9 +457,13 @@ class NtkStripSurfaceView private constructor(
         holderCreatedCount++
         val permit = installPermit.get()
         val target = liveEngineOrNull()
+        val surfaceState = engineSurfaceState
+        val waitingForExactDetach = surfaceState is EngineSurfaceState.Detaching &&
+            target != null && surfaceState.key.engineGeneration == target.engineGeneration
         if (permit == null || !permit.isExact || target == null ||
             permit.engineGeneration != target.engineGeneration ||
-            target.protocolPhaseSnapshot() != ProtocolPhase.LIVE_DETACHED
+            (target.protocolPhaseSnapshot() != ProtocolPhase.LIVE_DETACHED &&
+                !waitingForExactDetach)
         ) {
             terminalSurfaceFailure(
                 SurfaceFailureEvent(
@@ -401,19 +554,46 @@ class NtkStripSurfaceView private constructor(
             }
             is EngineSurfaceState.Published -> {
                 if (state.identity.surfaceEpoch != candidate.surfaceEpoch) return
-                val key = state.identity.toAttachKey()
-                liveEngineForGeneration(key.engineGeneration)?.resize(key, width, height)
-                val resized = state.identity.copy(
+                val requested = PublishedResizeGeometry(
                     geometryRevision = candidate.geometryRevision,
                     width = width,
                     height = height
                 )
-                if (publishedSurface.compareAndSet(state.identity, resized)) {
-                    engineSurfaceState = EngineSurfaceState.Published(resized)
+                if (publishedResizeInFlight.get() == null) {
+                    startPublishedResize(state.identity, requested)
+                } else {
+                    // Serialize physical backend rebuilds. The corresponding schema identity is
+                    // committed only after a frame from the new backend surface serial arrives.
+                    queuedPublishedResize = requested
                 }
             }
             is EngineSurfaceState.Detaching -> Unit
         }
+    }
+
+    private fun startPublishedResize(
+        identity: NtkPublishedSurfaceIdentity,
+        requested: PublishedResizeGeometry
+    ) {
+        checkMainThread()
+        val target = liveEngineForGeneration(identity.engineGeneration) ?: return
+        val predecessorBackendSerial = target.latestFrameSnapshot()
+            ?.takeIf { it.surfaceEpoch == identity.surfaceEpoch }
+            ?.backendSurfaceSerial
+            ?: 0L
+        val inFlight = PublishedResizeInFlight(
+            engineGeneration = identity.engineGeneration,
+            attachGeneration = identity.attachGeneration,
+            surfaceEpoch = identity.surfaceEpoch,
+            geometry = requested,
+            predecessorBackendSurfaceSerial = predecessorBackendSerial
+        )
+        if (!publishedResizeInFlight.compareAndSet(null, inFlight)) {
+            queuedPublishedResize = requested
+            return
+        }
+        publishedResizeCommitGate.activate(inFlight)
+        target.resize(identity.toAttachKey(), requested.width, requested.height)
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -588,6 +768,7 @@ class NtkStripSurfaceView private constructor(
             )
             return
         }
+        compositorRevealDispatchGate.activate(identity.compositorRevealIdentity())
         publishedSurface.set(identity)
         engineSurfaceState = EngineSurfaceState.Published(identity)
         surfacePublishedNanos = System.nanoTime()
@@ -597,13 +778,16 @@ class NtkStripSurfaceView private constructor(
 
     private fun revokeCurrentSurface(reason: NtkSurfaceLossReason) {
         checkMainThread()
+        publishedResizeInFlight.set(null)
+        publishedResizeCommitGate.clear()
+        queuedPublishedResize = null
         val candidate = holderCandidate
         candidate?.holderAlive = false
         holderCandidate = null
         candidate?.lease?.close()
         candidate?.lease = null
         val state = engineSurfaceState ?: run {
-            setCompositorAlpha(0f)
+            hideCompositorForSurfaceLoss()
             return
         }
         val key = when (state) {
@@ -616,7 +800,7 @@ class NtkStripSurfaceView private constructor(
         if (publishedIdentity != null) {
             publishedSurface.compareAndSet(publishedIdentity, null)
         }
-        setCompositorAlpha(0f)
+        hideCompositorForSurfaceLoss()
         val authority = geometry?.episode?.value ?: 0L
         val detachedEngine = liveEngineForGeneration(key.engineGeneration) ?: return
         val revocation = detachedEngine.beginSurfaceLoss(key, reason) { finalRevocation ->
@@ -1260,11 +1444,17 @@ class NtkStripSurfaceView private constructor(
         // the View's persistent alpha in sync so that transaction cannot restore a staged native
         // layer to alpha=1 after the one-shot SurfaceControl hide below. The direct transaction is
         // still required for the immediate ACTION_DOWN reveal; the View property owns durability.
-        if (alpha != clamped) super.setAlpha(clamped)
+        if (!compositorTemporarilyHiddenForSurfaceLoss && alpha != clamped) {
+            super.setAlpha(clamped)
+        }
     }
 
     internal fun applyPublishedCompositorAlphaRequired(): Boolean {
-        val clamped = compositorAlpha
+        val clamped = if (compositorTemporarilyHiddenForSurfaceLoss) {
+            0f
+        } else {
+            compositorAlpha
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || !isAttachedToWindow) {
             Log.e(
                 "NtkStripRenderer",
@@ -1273,8 +1463,74 @@ class NtkStripSurfaceView private constructor(
             )
             return false
         }
+        if (alpha != clamped) super.setAlpha(clamped)
         return applyPublishedCompositorAlphaApi29(clamped)
     }
+
+    /**
+     * A holder loss hides only the retiring physical layer.  It must not overwrite the desired
+     * ACTIVE/STAGED alpha because the next holder belongs to the same logical strip session.
+     * Keeping the View property at zero until publish also prevents the replacement BLAST layer
+     * from flashing black before the first authoritative child buffer is attached.
+     */
+    private fun hideCompositorForSurfaceLoss() {
+        compositorTemporarilyHiddenForSurfaceLoss = true
+        compositorRevealDispatchGate.clear()
+        if (alpha != 0f) super.setAlpha(0f)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || !isAttachedToWindow) return
+        val control: SurfaceControl? = surfaceControl
+        val validControl = control?.takeIf { it.isValid } ?: return
+        val transaction = SurfaceControl.Transaction()
+        try {
+            transaction.setAlpha(validControl, 0f).apply()
+        } catch (failure: RuntimeException) {
+            // surfaceDestroyed can invalidate the old control between the validity check and
+            // apply. The persistent View alpha above still owns replacement-layer visibility.
+            Log.d("NtkStripRenderer", "surface-loss alpha transaction raced teardown", failure)
+        } finally {
+            transaction.close()
+        }
+    }
+
+    private fun scheduleCompositorRevealAfterFreshFrame(
+        identity: NtkPublishedSurfaceIdentity
+    ) {
+        if (!compositorTemporarilyHiddenForSurfaceLoss) return
+        val offer = compositorRevealDispatchGate.offer(identity.compositorRevealIdentity())
+        if (!offer.shouldPost) return
+        AppDispatchers.runOnMain {
+            val requestedIdentity = compositorRevealDispatchGate.take(offer.reservation)
+                ?: return@runOnMain
+            if (!compositorTemporarilyHiddenForSurfaceLoss ||
+                publishedSurface.get()?.let {
+                    it.engineGeneration == requestedIdentity.engineGeneration &&
+                        it.attachGeneration == requestedIdentity.attachGeneration &&
+                        it.surfaceEpoch == requestedIdentity.surfaceEpoch
+                } != true
+            ) return@runOnMain
+            compositorTemporarilyHiddenForSurfaceLoss = false
+            val desired = compositorAlpha
+            if (alpha != desired) super.setAlpha(desired)
+            if (!applyPublishedCompositorAlphaApi29(desired)) {
+                terminalSurfaceFailure(
+                    SurfaceFailureEvent(
+                        requestedIdentity.engineGeneration,
+                        requestedIdentity.attachGeneration,
+                        requestedIdentity.surfaceEpoch,
+                        NtkSurfaceAttachFailure.COMPOSITOR_ALPHA_FAILED,
+                        publishedSurface.get()?.demandGeneration ?: 0L
+                    )
+                )
+            }
+        }
+    }
+
+    private fun NtkPublishedSurfaceIdentity.compositorRevealIdentity() =
+        NtkCompositorRevealDispatchGate.Identity(
+            engineGeneration = engineGeneration,
+            attachGeneration = attachGeneration,
+            surfaceEpoch = surfaceEpoch,
+        )
 
     @RequiresApi(Build.VERSION_CODES.Q)
     private fun applyPublishedCompositorAlphaApi29(clamped: Float): Boolean {
@@ -2454,6 +2710,8 @@ class NtkStripSurfaceView private constructor(
             frame.authority != currentGeometry.episode.value ||
             frame.surfaceEpoch != target.identity.surfaceEpoch
         ) return
+        scheduleCompositorRevealAfterFreshFrame(target.identity)
+        schedulePublishedResizeCommit(target.identity, frame)
         val frameKey = NtkFrameOrderKey(frame.surfaceEpoch, frame.frameSequence)
         while (true) {
             val previous = lastMergedFrameKey.get()
@@ -2601,6 +2859,60 @@ class NtkStripSurfaceView private constructor(
             }
         }
         frameListener?.invoke(frame)
+    }
+
+    private fun schedulePublishedResizeCommit(
+        identity: NtkPublishedSurfaceIdentity,
+        frame: NtkStripRenderEngine.FrameSnapshot
+    ) {
+        val inFlight = publishedResizeInFlight.get() ?: return
+        if (inFlight.engineGeneration != identity.engineGeneration ||
+            inFlight.attachGeneration != identity.attachGeneration ||
+            inFlight.surfaceEpoch != identity.surfaceEpoch ||
+            frame.backendSurfaceSerial <= inFlight.predecessorBackendSurfaceSerial
+        ) return
+        val reservation = publishedResizeCommitGate.reserve(inFlight) ?: return
+        AppDispatchers.runOnMain {
+            if (!publishedResizeCommitGate.begin(inFlight, reservation)) return@runOnMain
+            try {
+                if (publishedResizeInFlight.get() !== inFlight || viewClosing ||
+                    terminalSurfaceFailure != null
+                ) return@runOnMain
+                val state = engineSurfaceState as? EngineSurfaceState.Published
+                    ?: return@runOnMain
+                val current = state.identity
+                if (current.engineGeneration != inFlight.engineGeneration ||
+                    current.attachGeneration != inFlight.attachGeneration ||
+                    current.surfaceEpoch != inFlight.surfaceEpoch
+                ) return@runOnMain
+                val resized = current.copy(
+                    geometryRevision = inFlight.geometry.geometryRevision,
+                    width = inFlight.geometry.width,
+                    height = inFlight.geometry.height
+                )
+                if (publishedSurface.compareAndSet(current, resized)) {
+                    engineSurfaceState = EngineSurfaceState.Published(resized)
+                    surfaceLifecycleListener?.onSurfaceAvailable(resized)
+                }
+            } finally {
+                val releasedCurrent = publishedResizeInFlight.compareAndSet(inFlight, null)
+                publishedResizeCommitGate.finish(inFlight, reservation)
+                // Only the runnable that released the current exact owner may consume the
+                // main-thread successor slot. A stale holder callback leaves both untouched.
+                if (releasedCurrent) {
+                    val state = engineSurfaceState as? EngineSurfaceState.Published
+                    val queued = queuedPublishedResize
+                    queuedPublishedResize = null
+                    if (state != null && queued != null &&
+                        queued.geometryRevision > state.identity.geometryRevision &&
+                        (queued.width != state.identity.width ||
+                            queued.height != state.identity.height)
+                    ) {
+                        startPublishedResize(state.identity, queued)
+                    }
+                }
+            }
+        }
     }
 
     private fun onPreSubmitViewportGap(

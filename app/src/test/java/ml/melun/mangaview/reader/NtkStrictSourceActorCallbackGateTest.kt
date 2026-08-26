@@ -31,4 +31,24 @@ class NtkStrictSourceActorCallbackGateTest {
         assertEquals(0, gate.remainingExcludingCurrent(currentCallbackDepth = 1))
         assertEquals(0, gate.finish())
     }
+
+    @Test
+    fun closeFlagPublishesOnlyAfterItsActorCallbackIsReserved() {
+        val gate = NtkStrictSourceActorCallbackGate()
+        var closePublished = false
+        var awaitPublication: (() -> Unit)? = null
+
+        assertTrue(gate.admitClose(
+            publishCloseRequested = { closePublished = true },
+            submit = { await ->
+                assertFalse(closePublished)
+                awaitPublication = await
+            },
+        ))
+
+        assertTrue(closePublished)
+        checkNotNull(awaitPublication).invoke()
+        assertEquals(1, gate.remainingExcludingCurrent(currentCallbackDepth = 0))
+        assertEquals(0, gate.finish())
+    }
 }

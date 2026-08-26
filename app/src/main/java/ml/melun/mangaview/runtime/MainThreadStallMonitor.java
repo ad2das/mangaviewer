@@ -2,6 +2,7 @@ package ml.melun.mangaview.runtime;
 
 import android.os.Looper;
 import android.os.SystemClock;
+import android.os.Trace;
 import android.util.Log;
 import android.util.Printer;
 
@@ -60,9 +61,11 @@ public final class MainThreadStallMonitor {
             return;
         }
         long startedAtMs = SystemClock.uptimeMillis();
+        Trace.beginSection(name);
         try {
             runnable.run();
         } finally {
+            Trace.endSection();
             long durationMs = SystemClock.uptimeMillis() - startedAtMs;
             if(durationMs >= SECTION_WARN_MS) {
                 Log.w(TAG, "main_section_ms=" + durationMs + " name=" + name);
@@ -115,9 +118,11 @@ public final class MainThreadStallMonitor {
         if(!enabled)
             return supplier.get();
         long startedAtMs = SystemClock.uptimeMillis();
+        Trace.beginSection(name);
         try {
             return supplier.get();
         } finally {
+            Trace.endSection();
             long durationMs = SystemClock.uptimeMillis() - startedAtMs;
             if(durationMs >= SECTION_WARN_MS)
                 Log.w(TAG, "main_section_ms=" + durationMs + " name=" + name);

@@ -26,6 +26,8 @@ import ml.melun.mangaview.mangaview.CustomHttpClient;
 import ml.melun.mangaview.mangaview.NtkWebViewFallbackManager;
 import ml.melun.mangaview.report.CrashReporter;
 import ml.melun.mangaview.reader.ReaderImageCache;
+import ml.melun.mangaview.reader.HostExactHardwareTilePool;
+import ml.melun.mangaview.reader.NtkNativeSurfaceFrameRatePolicy;
 import ml.melun.mangaview.repository.room.MangaRoomStore;
 import ml.melun.mangaview.runtime.AppDispatchers;
 import ml.melun.mangaview.runtime.MainThreadStallMonitor;
@@ -116,6 +118,12 @@ public class MainApplication extends MultiDexApplication implements Configuratio
         p = new Preference(this);
         refreshWebViewDebuggingPolicy();
         PerfTrace.end("app_preference_init_ms", preferenceStartedAt);
+        boolean hostGpuEmulatorRuntime = NtkNativeSurfaceFrameRatePolicy.INSTANCE
+                .isEmulatorRuntime(Build.FINGERPRINT, Build.MODEL, Build.HARDWARE, Build.PRODUCT);
+        if(HostExactHardwareTilePool.INSTANCE.supported(hostGpuEmulatorRuntime)
+                && !NtkNativeSurfaceFrameRatePolicy.INSTANCE.isHwuiOverrideEnabled()) {
+            AppDispatchers.runIo(HostExactHardwareTilePool::primeProcessTokenReserve);
+        }
         AppDispatchers.runIo(() -> ClassificationDbStore.cleanupLegacyFiles(appContext));
         PerfTrace.end("app_on_create_ms", appStartedAt);
     }

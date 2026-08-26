@@ -96,6 +96,69 @@ class CompletedDrawDispatchQueueTest {
     }
 
     @Test
+    fun structureOnlyProgressReplacesPendingProtectedIdentityWithNewestProof() {
+        val queue = queue()
+        assertTrue(queue.offer(proof(1L, "episode-b", 0, 32, structure = 11L), false, 0L).shouldPost)
+        assertFalse(queue.offer(proof(2L, "episode-b", 0, 32, structure = 12L), false, 0L).shouldPost)
+
+        val snapshot = queue.snapshot()
+        assertEquals(1, snapshot.pendingSemanticTransitions)
+        assertEquals(1, snapshot.maxQueueDepth)
+        assertEquals(1L, snapshot.sameSemanticCoalesced)
+        assertTrue(queue.beginRun())
+        assertEquals(2L, queue.pollReady(0L)!!.proof.sequence)
+        queue.recordDeliveryResult(true)
+        assertFalse(queue.finishRun(0L).shouldPost)
+    }
+
+    @Test
+    fun protectedTransitionFollowedByOrdinaryPublicationBurstKeepsOneLatestSlot() {
+        val queue = queue()
+        var scheduleClaims = 0
+        if (queue.offer(proof(1L, "episode-b", 0, 32), false, 0L).shouldPost) {
+            scheduleClaims++
+        }
+        repeat(10_000) { index ->
+            val sourcePage = 5 + index % 90
+            val sequence = index + 2L
+            if (queue.offer(
+                    proof(
+                        sequence,
+                        "episode-b",
+                        sourcePage,
+                        40 + sourcePage,
+                        scrollOffset = index.toFloat(),
+                        structure = 12L + index,
+                    ),
+                    false,
+                    index * 1_000L,
+                ).shouldPost
+            ) {
+                scheduleClaims++
+            }
+        }
+
+        val pending = queue.snapshot()
+        assertEquals(1, scheduleClaims)
+        assertEquals(1, pending.pendingSemanticTransitions)
+        assertTrue(pending.ordinaryPending)
+        assertEquals(2, pending.maxQueueDepth)
+        assertEquals(0L, pending.criticalOverflowFailures)
+
+        assertTrue(queue.beginRun())
+        assertEquals(1L, queue.pollReady(0L)!!.proof.sequence)
+        queue.recordDeliveryResult(true)
+        assertEquals(null, queue.pollReady(0L))
+        val repost = queue.finishRun(0L)
+        assertTrue(repost.shouldPost)
+        assertEquals(CADENCE_NS, repost.delayNanos)
+        assertTrue(queue.beginRun())
+        assertEquals(10_001L, queue.pollReady(CADENCE_NS)!!.proof.sequence)
+        queue.recordDeliveryResult(true)
+        assertFalse(queue.finishRun(CADENCE_NS).shouldPost)
+    }
+
+    @Test
     fun ordinarySequentialFramesAreDeliveredOnlyAtSixteenMillisecondCadence() {
         val queue = queue()
         var scheduledAt = Long.MIN_VALUE
@@ -287,6 +350,7 @@ class CompletedDrawDispatchQueueTest {
         displayPage: Int,
         scrollOffset: Float = 0f,
         lifecycle: Long = 1L,
+        structure: Long = 11L,
         coverage: ReaderSurfaceView.VisibleCoverageSnapshot? = null,
     ): ReaderSurfaceView.CompletedDrawProof {
         val identity = ReaderSurfaceView.CommittedPageIdentity(
@@ -319,7 +383,7 @@ class CompletedDrawDispatchQueueTest {
             desiredVersion = sequence + 1L,
             drawnVersion = sequence + 1L,
             committedVersion = sequence + 1L,
-            structureEpoch = 11L,
+            structureEpoch = structure,
             visiblePageIndexes = intArrayOf(displayPage),
             visiblePageIdentities = listOf(identity),
             surfaceControlLatchObserved = true,

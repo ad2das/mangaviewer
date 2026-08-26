@@ -93,4 +93,168 @@ class ReaderStrictPerformanceContractTest {
             )
         )
     }
+
+    @Test
+    fun appendedExactEpisodesCannotGrowDecodedPixelsWithoutBound() {
+        val mib = 1024L * 1024L
+        assertEquals(
+            64L * mib,
+            ReaderStrictBitmapResidencyPolicy.totalBitmapBudgetBytes(
+                requiredLaunchBytes = 164L * mib,
+                maxHeapBytes = 1024L * mib,
+            ),
+        )
+        assertEquals(
+            64L * mib,
+            ReaderStrictBitmapResidencyPolicy.totalBitmapBudgetBytes(
+                requiredLaunchBytes = 164L * mib,
+                maxHeapBytes = 512L * mib,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.protectsLaunchPixel(
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                belongsToLaunchEpisode = true,
+                successorPhysicallyPresented = false,
+            ),
+        )
+        assertFalse(
+            ReaderStrictBitmapResidencyPolicy.protectsLaunchPixel(
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                belongsToLaunchEpisode = false,
+                successorPhysicallyPresented = false,
+            ),
+        )
+        assertFalse(
+            ReaderStrictBitmapResidencyPolicy.protectsLaunchPixel(
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                belongsToLaunchEpisode = true,
+                successorPhysicallyPresented = true,
+            ),
+        )
+        assertFalse(
+            ReaderStrictBitmapResidencyPolicy.protectsLaunchPixel(
+                strictColdSession = true,
+                rollingPixelResidency = true,
+                belongsToLaunchEpisode = true,
+                successorPhysicallyPresented = false,
+            ),
+        )
+        assertFalse(
+            ReaderStrictBitmapResidencyPolicy.protectsLaunchPixel(
+                strictColdSession = true,
+                rollingPixelResidency = true,
+                belongsToLaunchEpisode = true,
+                successorPhysicallyPresented = true,
+            ),
+        )
+        assertFalse(
+            ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                shortWebtoonRolling = false,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
+                strictColdSession = true,
+                rollingPixelResidency = true,
+                shortWebtoonRolling = false,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                shortWebtoonRolling = true,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldHardEvictOutsideRetainedWindow(
+                strictColdSession = false,
+                rollingPixelResidency = false,
+                shortWebtoonRolling = false,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
+                shortWebtoonRolling = false,
+                immediateGeneratedUx = true,
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                protectsImmediateSurface = true,
+                viewportBusy = false,
+                initialSettleActive = false,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
+                shortWebtoonRolling = false,
+                immediateGeneratedUx = true,
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                protectsImmediateSurface = false,
+                viewportBusy = true,
+                initialSettleActive = false,
+            ),
+        )
+        assertFalse(
+            ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
+                shortWebtoonRolling = false,
+                immediateGeneratedUx = true,
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                protectsImmediateSurface = false,
+                viewportBusy = false,
+                initialSettleActive = true,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
+                shortWebtoonRolling = false,
+                immediateGeneratedUx = true,
+                strictColdSession = true,
+                rollingPixelResidency = false,
+                protectsImmediateSurface = false,
+                viewportBusy = false,
+                initialSettleActive = false,
+            ),
+        )
+        assertFalse(
+            ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
+                shortWebtoonRolling = false,
+                immediateGeneratedUx = true,
+                strictColdSession = false,
+                rollingPixelResidency = false,
+                protectsImmediateSurface = true,
+                viewportBusy = false,
+                initialSettleActive = false,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
+                shortWebtoonRolling = true,
+                immediateGeneratedUx = true,
+                strictColdSession = true,
+                rollingPixelResidency = true,
+                protectsImmediateSurface = false,
+                viewportBusy = true,
+                initialSettleActive = false,
+            ),
+        )
+        assertTrue(
+            ReaderStrictBitmapResidencyPolicy.shouldTrimRetainedUnderBudgetPressure(
+                shortWebtoonRolling = false,
+                immediateGeneratedUx = true,
+                strictColdSession = false,
+                rollingPixelResidency = false,
+                protectsImmediateSurface = false,
+                viewportBusy = true,
+                initialSettleActive = false,
+            ),
+        )
+    }
 }

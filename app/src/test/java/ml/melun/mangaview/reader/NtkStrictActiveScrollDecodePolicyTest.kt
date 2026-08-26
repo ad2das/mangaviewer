@@ -9,6 +9,8 @@ class NtkStrictActiveScrollDecodePolicyTest {
     fun directWifiCurrentManhwaOffscreenDecodeSharesTheScrollGate() {
         assertTrue(
             NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                hostSurfaceRuntime = false,
+                physicalScrollEverStarted = false,
                 directWifi = true,
                 currentForegroundEpisode = true,
                 activeInput = true,
@@ -22,6 +24,8 @@ class NtkStrictActiveScrollDecodePolicyTest {
     fun visibleAnchorAndWebtoonKeepTheirExistingDecodePath() {
         assertFalse(
             NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                hostSurfaceRuntime = false,
+                physicalScrollEverStarted = false,
                 directWifi = true,
                 currentForegroundEpisode = true,
                 activeInput = true,
@@ -31,6 +35,8 @@ class NtkStrictActiveScrollDecodePolicyTest {
         )
         assertFalse(
             NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                hostSurfaceRuntime = false,
+                physicalScrollEverStarted = false,
                 directWifi = true,
                 currentForegroundEpisode = true,
                 activeInput = true,
@@ -44,6 +50,8 @@ class NtkStrictActiveScrollDecodePolicyTest {
     fun mobileSniAdjacentAndIdleDecodesRemainUnchanged() {
         val cases = listOf(
             NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                hostSurfaceRuntime = false,
+                physicalScrollEverStarted = false,
                 directWifi = false,
                 currentForegroundEpisode = true,
                 activeInput = true,
@@ -51,6 +59,8 @@ class NtkStrictActiveScrollDecodePolicyTest {
                 manhwa = true,
             ),
             NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                hostSurfaceRuntime = false,
+                physicalScrollEverStarted = false,
                 directWifi = true,
                 currentForegroundEpisode = false,
                 activeInput = true,
@@ -58,6 +68,8 @@ class NtkStrictActiveScrollDecodePolicyTest {
                 manhwa = true,
             ),
             NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                hostSurfaceRuntime = false,
+                physicalScrollEverStarted = false,
                 directWifi = true,
                 currentForegroundEpisode = true,
                 activeInput = false,
@@ -66,5 +78,33 @@ class NtkStrictActiveScrollDecodePolicyTest {
             ),
         )
         cases.forEach(::assertFalse)
+    }
+
+    @Test
+    fun interactiveHostCapsEveryCurrentEpisodeContentTypeAcrossGestureGaps() {
+        listOf(false, true).forEach { manhwa ->
+            assertTrue(
+                NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                    hostSurfaceRuntime = true,
+                    physicalScrollEverStarted = true,
+                    directWifi = false,
+                    currentForegroundEpisode = true,
+                    activeInput = false,
+                    anchor = false,
+                    manhwa = manhwa,
+                )
+            )
+        }
+        assertFalse(
+            NtkStrictActiveScrollDecodePolicy.shouldShareVisibleDecodeGate(
+                hostSurfaceRuntime = true,
+                physicalScrollEverStarted = false,
+                directWifi = false,
+                currentForegroundEpisode = true,
+                activeInput = false,
+                anchor = false,
+                manhwa = false,
+            )
+        )
     }
 }

@@ -7,6 +7,7 @@
 
 #include <cerrno>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -24,6 +25,17 @@ namespace {
 std::atomic<std::uint64_t> gSurfaceSerial{0};
 constexpr std::uint32_t kCookiePublicationComplete = 1U << 0U;
 constexpr std::uint32_t kCookieRecordConsumed = 1U << 1U;
+constexpr std::uint32_t kCookiePrivateCompleteObserved = 1U << 2U;
+
+void releaseProvidedSurfaceControl(ASurfaceControl* surface) noexcept {
+    if (surface == nullptr) return;
+    using ReleaseSurface = void (*)(ASurfaceControl*);
+    void* library = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+    auto releaseSurface = reinterpret_cast<ReleaseSurface>(
+        library != nullptr ? dlsym(library, "ASurfaceControl_release") : nullptr);
+    if (releaseSurface != nullptr) releaseSurface(surface);
+    if (library != nullptr) dlclose(library);
+}
 
 bool setCloseOnExec(int fd) noexcept {
     if (fd < 0) return false;
@@ -100,14 +112,17 @@ SwappyFixedAppliedBufferRefV1 toSwappyAppliedBufferRef(
 }
 
 bool SurfaceControlPresentBackend::SurfaceApi::complete() const noexcept {
-    return createFromWindow != nullptr && releaseSurface != nullptr &&
+    return createFromWindow != nullptr && create != nullptr &&
+        releaseSurface != nullptr &&
         createTransaction != nullptr && deleteTransaction != nullptr &&
         applyTransaction != nullptr && setOnComplete != nullptr &&
         setOnCommit != nullptr && reparent != nullptr &&
         setVisibility != nullptr && setBuffer != nullptr &&
         setGeometry != nullptr && setBufferTransparency != nullptr &&
-        setBufferAlpha != nullptr && setEnableBackPressure != nullptr &&
+        setBufferAlpha != nullptr && setColor != nullptr &&
+        setEnableBackPressure != nullptr &&
         setFrameTimeline != nullptr && getLatchTime != nullptr &&
+        getPresentFenceFd != nullptr &&
         getPreviousReleaseFenceFd != nullptr;
 }
 
@@ -261,6 +276,9 @@ SurfaceControlPresentBackend::acquireCallbackCookie() noexcept {
         cookie.identity = {};
         cookie.previousAppliedBufferRef = {};
         cookie.hasPreviousAppliedBufferRef = false;
+        cookie.geometryPulseUpdate = false;
+        cookie.geometryPulseBufferIndex = UINT32_MAX;
+        cookie.previousGeometryPulseBufferIndex = UINT32_MAX;
         cookie.teardown = false;
         cookie.slotIndex = static_cast<std::uint32_t>(i);
         cookie.onCommitCount.store(0, std::memory_order_release);
@@ -269,11 +287,19 @@ SurfaceControlPresentBackend::acquireCallbackCookie() noexcept {
         cookie.onCompleteEventSequence.store(0, std::memory_order_release);
         cookie.onCommitLatchNanos.store(0, std::memory_order_release);
         cookie.onCommitObservedNanos.store(0, std::memory_order_release);
+        cookie.onCompletePresentNanos.store(0, std::memory_order_release);
         cookie.onCompleteObservedNanos.store(0, std::memory_order_release);
         cookie.lifecycleFlags.store(0, std::memory_order_release);
         return i;
     }
     return std::nullopt;
+}
+
+bool SurfaceControlPresentBackend::hasFreeCallbackCookie() const noexcept {
+    for (const auto& cookie : callbackCookies_) {
+        if (!cookie.inUse.load(std::memory_order_acquire)) return true;
+    }
+    return false;
 }
 
 void SurfaceControlPresentBackend::releaseCallbackCookie(
@@ -284,6 +310,9 @@ void SurfaceControlPresentBackend::releaseCallbackCookie(
     cookie.identity = {};
     cookie.previousAppliedBufferRef = {};
     cookie.hasPreviousAppliedBufferRef = false;
+    cookie.geometryPulseUpdate = false;
+    cookie.geometryPulseBufferIndex = UINT32_MAX;
+    cookie.previousGeometryPulseBufferIndex = UINT32_MAX;
     cookie.teardown = false;
     cookie.slotIndex = UINT32_MAX;
     cookie.onCommitCount.store(0, std::memory_order_release);
@@ -292,6 +321,7 @@ void SurfaceControlPresentBackend::releaseCallbackCookie(
     cookie.onCompleteEventSequence.store(0, std::memory_order_release);
     cookie.onCommitLatchNanos.store(0, std::memory_order_release);
     cookie.onCommitObservedNanos.store(0, std::memory_order_release);
+    cookie.onCompletePresentNanos.store(0, std::memory_order_release);
     cookie.onCompleteObservedNanos.store(0, std::memory_order_release);
     cookie.lifecycleFlags.store(0, std::memory_order_release);
     cookie.inUse.store(false, std::memory_order_release);
@@ -301,7 +331,10 @@ void SurfaceControlPresentBackend::completeCallbackPublication(
         SubmissionCookie& cookie) noexcept {
     const std::uint32_t previous = cookie.lifecycleFlags.fetch_or(
         kCookiePublicationComplete, std::memory_order_acq_rel);
-    if ((previous & kCookieRecordConsumed) != 0U) {
+    const bool privateCompleteSatisfied = !cookie.geometryPulseUpdate ||
+        (previous & kCookiePrivateCompleteObserved) != 0U;
+    if ((previous & kCookieRecordConsumed) != 0U &&
+        privateCompleteSatisfied) {
         releaseCallbackCookie(cookie.slotIndex);
     }
 }
@@ -312,9 +345,155 @@ void SurfaceControlPresentBackend::completeCallbackRecordConsumption(
     SubmissionCookie& cookie = callbackCookies_[index];
     const std::uint32_t previous = cookie.lifecycleFlags.fetch_or(
         kCookieRecordConsumed, std::memory_order_acq_rel);
-    if ((previous & kCookiePublicationComplete) != 0U) {
+    const bool privateCompleteSatisfied = !cookie.geometryPulseUpdate ||
+        (previous & kCookiePrivateCompleteObserved) != 0U;
+    if ((previous & kCookiePublicationComplete) != 0U &&
+        privateCompleteSatisfied) {
         releaseCallbackCookie(index);
     }
+}
+
+bool SurfaceControlPresentBackend::hasFreeGeometryPulseBuffer() const noexcept {
+    for (const auto& state : geometryPulseBufferStates_) {
+        if (state.load(std::memory_order_acquire) ==
+                static_cast<std::uint8_t>(GeometryPulseBufferState::FREE)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SurfaceControlPresentBackend::geometryPulseBuffersAllFree() const noexcept {
+    if (currentGeometryPulseBufferIndex_.has_value()) return false;
+    for (const auto& state : geometryPulseBufferStates_) {
+        if (state.load(std::memory_order_acquire) !=
+                static_cast<std::uint8_t>(GeometryPulseBufferState::FREE)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::optional<std::uint32_t>
+SurfaceControlPresentBackend::reserveGeometryPulseBuffer() noexcept {
+    for (std::uint32_t index = 0; index < geometryPulseBufferStates_.size(); ++index) {
+        std::uint8_t expected = static_cast<std::uint8_t>(
+            GeometryPulseBufferState::FREE);
+        if (geometryPulseBufferStates_[index].compare_exchange_strong(
+                expected,
+                static_cast<std::uint8_t>(GeometryPulseBufferState::RESERVED),
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
+void SurfaceControlPresentBackend::releaseGeometryPulseResources() noexcept {
+    currentGeometryPulseBufferIndex_.reset();
+    for (std::size_t index = 0; index < geometryPulseBuffers_.size(); ++index) {
+        if (geometryPulseBuffersOwned_ && geometryPulseBuffers_[index] != nullptr) {
+            if (hardwareBufferRelease_ != nullptr) {
+                hardwareBufferRelease_(geometryPulseBuffers_[index]);
+            }
+        }
+        geometryPulseBuffers_[index] = nullptr;
+        geometryPulseBufferStates_[index].store(
+            static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+            std::memory_order_release);
+    }
+    geometryPulseBuffersOwned_ = false;
+    geometryPulseFrameRate_ = 0.0F;
+    geometryPulseFrameRateConfigured_ = false;
+    if (geometryPulseSurface_ != nullptr && surfaceApi_.releaseSurface != nullptr) {
+        surfaceApi_.releaseSurface(geometryPulseSurface_);
+    }
+    geometryPulseSurface_ = nullptr;
+}
+
+bool SurfaceControlPresentBackend::initializeGeometryPulse() noexcept {
+    if (parentWindow_ == nullptr || surfaceApi_.createFromWindow == nullptr ||
+        geometryPulseSurface_ != nullptr || geometryPulseBuffersOwned_) {
+        return false;
+    }
+    // Keep the proof pulse in the SurfaceView's stable layer space. Making it a child of the
+    // scrolling image layer translated the 1x1 buffer offscreen with the first crop; host
+    // SurfaceFlinger then classified it as invisible and delivered OnCommit/OnComplete in
+    // 250 ms-to-multi-second bursts. A sibling created from the parent window remains at (0,0)
+    // while the Java geometry container moves, so every buffer replacement remains a real,
+    // visible compositor input. The one-alpha-quantum pixel below has at most one 8-bit step of
+    // contribution and every in-flight transaction owns a distinct immutable buffer identity.
+    geometryPulseSurface_ = surfaceApi_.createFromWindow(
+        parentWindow_, "NtkGeometryPulse");
+    if (geometryPulseSurface_ == nullptr) return false;
+    AHardwareBuffer_Desc descriptor{};
+    descriptor.width = 1;
+    descriptor.height = 1;
+    descriptor.layers = 1;
+    descriptor.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+    descriptor.usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+        AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
+    for (std::size_t index = 0; index < geometryPulseBuffers_.size(); ++index) {
+        AHardwareBuffer* buffer = nullptr;
+        if (hardwareBufferAllocate_(&descriptor, &buffer) != 0 ||
+            buffer == nullptr) {
+            releaseGeometryPulseResources();
+            return false;
+        }
+        geometryPulseBuffers_[index] = buffer;
+        geometryPulseBuffersOwned_ = true;
+        void* pixels = nullptr;
+        if (hardwareBufferLock_(
+                buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1,
+                nullptr, &pixels) != 0 || pixels == nullptr) {
+            releaseGeometryPulseResources();
+            return false;
+        }
+        auto* rgba = static_cast<std::uint8_t*>(pixels);
+        rgba[0] = 0U;
+        rgba[1] = 0U;
+        rgba[2] = 0U;
+        // A fully transparent buffer is culled/content-detected by host SurfaceFlinger despite a
+        // layer-alpha vote of one, so its callbacks arrive in 3-4 Hz batches. One alpha quantum
+        // keeps this single corner pixel in the real composition graph while limiting its visual
+        // contribution to at most one 8-bit channel step. Because the crop and pulse share one
+        // transaction, its present fence is still evidence for the exact manga position rather
+        // than a timer proxy.
+        rgba[3] = 1U;
+        int writeFence = -1;
+        if (hardwareBufferUnlock_(buffer, &writeFence) != 0) {
+            if (writeFence >= 0) close(writeFence);
+            releaseGeometryPulseResources();
+            return false;
+        }
+        if (writeFence >= 0) {
+            pollfd descriptorFd{.fd = writeFence, .events = POLLIN, .revents = 0};
+            int result = -1;
+            do {
+                result = poll(&descriptorFd, 1, -1);
+            } while (result < 0 && errno == EINTR);
+            const bool signaled = result > 0;
+            close(writeFence);
+            if (!signaled) {
+                releaseGeometryPulseResources();
+                return false;
+            }
+        }
+    }
+    for (auto& state : geometryPulseBufferStates_) {
+        state.store(
+            static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+            std::memory_order_release);
+    }
+    currentGeometryPulseBufferIndex_.reset();
+    return true;
+}
+
+void SurfaceControlPresentBackend::configureGeometryPulseFrameRate(
+        float frameRate) noexcept {
+    geometryPulseFrameRate_ = std::isfinite(frameRate) && frameRate > 0.0F
+        ? frameRate : 0.0F;
+    geometryPulseFrameRateConfigured_ = false;
 }
 
 bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
@@ -322,6 +501,25 @@ bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
     std::uint32_t chainHead = 0;
     std::uint32_t replacedWait = 0;
     const auto states = pool_.stateSnapshot();
+    std::uint32_t pulseCurrentCount = 0;
+    std::uint32_t pulseReservedCount = 0;
+    for (std::size_t index = 0; index < geometryPulseBufferStates_.size(); ++index) {
+        const auto state = static_cast<GeometryPulseBufferState>(
+            geometryPulseBufferStates_[index].load(std::memory_order_acquire));
+        if (state == GeometryPulseBufferState::CURRENT) ++pulseCurrentCount;
+        if (state == GeometryPulseBufferState::RESERVED) ++pulseReservedCount;
+    }
+    if (attached_ && geometryPulseSurface_ == nullptr) return false;
+    if (pulseReservedCount != 0 || pulseCurrentCount > 1 ||
+        currentGeometryPulseBufferIndex_.has_value() !=
+            (pulseCurrentCount == 1) ||
+        (currentGeometryPulseBufferIndex_.has_value() &&
+         (*currentGeometryPulseBufferIndex_ >= geometryPulseBufferStates_.size() ||
+          geometryPulseBufferStates_[*currentGeometryPulseBufferIndex_].load(
+              std::memory_order_acquire) != static_cast<std::uint8_t>(
+                  GeometryPulseBufferState::CURRENT)))) {
+        return false;
+    }
     for (const auto state : states) {
         if (state == HardwareBufferRenderTargetPool::SlotState::
                 ACQUIRE_FENCE_EXPORTED) ++exported;
@@ -350,14 +548,17 @@ bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
                     HardwareBufferRenderTargetPool::SlotState::
                         ACQUIRE_FENCE_EXPORTED ||
                 localAcquireFence_->acquireFenceSerial == 0 ||
-                localAcquireFence_->frameworkAcquireFd < 0 ||
-                localAcquireFence_->proofAcquireFd < 0) return false;
+                (localTarget->readyWithoutAcquireFence
+                    ? (localAcquireFence_->frameworkAcquireFd != -1 ||
+                       localAcquireFence_->proofAcquireFd != -1)
+                    : (localAcquireFence_->frameworkAcquireFd < 0 ||
+                       localAcquireFence_->proofAcquireFd < 0))) return false;
         } else if (exported != 0) {
             return false;
         }
     }
-    if (logicalUnlatchedNow_ > kMaxDirectLogicalUnlatched ||
-        maxLogicalUnlatched_ > kMaxDirectLogicalUnlatched ||
+    if (logicalUnlatchedNow_ > kMaxGeometryLogicalUnlatched ||
+        maxLogicalUnlatched_ > kMaxGeometryLogicalUnlatched ||
         logicalUnlatchedNow_ > maxLogicalUnlatched_) {
         return false;
     }
@@ -428,13 +629,25 @@ bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
             cookie.onCommitLatchNanos.load(std::memory_order_acquire);
         const std::int64_t commitObservedNanos =
             cookie.onCommitObservedNanos.load(std::memory_order_acquire);
+        const std::int64_t completePresentNanos =
+            cookie.onCompletePresentNanos.load(std::memory_order_acquire);
         const std::int64_t completeObservedNanos =
             cookie.onCompleteObservedNanos.load(std::memory_order_acquire);
         if (!cookie.inUse.load(std::memory_order_acquire) ||
             cookie.backend != this || cookie.slotIndex != left.cookieIndex ||
             !exactIdentity(cookie.identity, left.identity) ||
             !left.applyIssued || !validAppliedBufferRef(left.producedRef) ||
-            !exactIdentity(left.identity, left.producedRef.identity) ||
+            (!left.geometryOnly &&
+             !exactIdentity(left.identity, left.producedRef.identity)) ||
+            (left.geometryOnly &&
+             (left.identity.surfaceEpoch !=
+                  left.producedRef.identity.surfaceEpoch ||
+              left.identity.backendSurfaceSerial !=
+                  left.producedRef.identity.backendSurfaceSerial ||
+              left.identity.bufferSlot !=
+                  left.producedRef.identity.bufferSlot ||
+              left.identity.bufferGeneration !=
+                  left.producedRef.identity.bufferGeneration)) ||
             left.poisoned || commitCount > 1 || completeCount > 1 ||
             completeCount > commitCount ||
             left.consumedOnCommitCount > 1 ||
@@ -442,7 +655,12 @@ bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
             left.commitEventConsumed !=
                 (left.consumedOnCommitCount == 1) ||
             left.completeEventConsumed !=
-                (left.consumedOnCompleteCount == 1)) return false;
+                (left.consumedOnCompleteCount == 1) ||
+            (!left.geometryOnly && cookie.geometryPulseUpdate) ||
+            (left.geometryOnly && left.requiresComplete &&
+             (!cookie.geometryPulseUpdate ||
+              cookie.geometryPulseBufferIndex >=
+                  geometryPulseBufferStates_.size()))) return false;
         if (commitSequence != 0 &&
             (commitCount != 1 || commitLatchNanos <= 0 ||
              commitObservedNanos < commitLatchNanos)) {
@@ -450,7 +668,8 @@ bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
         }
         if (completeSequence != 0 &&
             (completeCount != 1 || commitSequence == 0 ||
-             completeObservedNanos <= 0 ||
+             completePresentNanos <= 0 ||
+             completeObservedNanos < completePresentNanos ||
              completeObservedNanos < commitObservedNanos)) {
             return false;
         }
@@ -469,18 +688,36 @@ bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
                 left.commitCallbackObservedNanos != 0) return false;
             ++commitPending;
         }
-        if (left.completeEventConsumed) {
+        if (left.geometryOnly && !left.requiresComplete) {
+            // A position-only device transaction can still use OnCommit as its terminal proof.
+            // Pulse-backed host geometry sets requiresComplete and follows the ordinary completed
+            // transaction branch below because its real buffer update owns present-fence evidence.
+            if (left.completeEventConsumed ||
+                left.consumedOnCompleteCount != 0 ||
+                left.completeEventSequence != 0 || left.presentNanos != 0 ||
+                left.completeCallbackObservedNanos != 0 ||
+                cookie.hasPreviousAppliedBufferRef ||
+                (!left.requiresComplete &&
+                 (completeCount != 0 || completeSequence != 0 ||
+                  completePresentNanos != 0 || completeObservedNanos != 0))) {
+                return false;
+            }
+        } else if (left.completeEventConsumed) {
             if (completeSequence == 0 ||
                 left.completeEventSequence != completeSequence ||
+                left.presentNanos != completePresentNanos ||
                 left.completeCallbackObservedNanos !=
                     completeObservedNanos) {
                 return false;
             }
         } else {
             if (left.completeEventSequence != 0 ||
+                left.presentNanos != 0 ||
                 left.completeCallbackObservedNanos != 0) return false;
             ++completePending;
         }
+        if (left.geometryOnly && left.requiresComplete &&
+            cookie.hasPreviousAppliedBufferRef) return false;
         for (std::size_t j = i + 1; j < appliedCallbacks_.size(); ++j) {
             if (appliedCallbacks_[j].has_value() && exactIdentity(
                     left.identity, appliedCallbacks_[j]->identity)) return false;
@@ -528,12 +765,13 @@ bool SurfaceControlPresentBackend::stateInvariantsHold() const noexcept {
 bool SurfaceControlPresentBackend::prepare(
         EGLDisplay display,
         std::uint32_t width,
-        std::uint32_t height) {
+        std::uint32_t height,
+        bool cpuComposerOnly) {
     if (display == EGL_NO_DISPLAY || width == 0 || height == 0 ||
         android_get_device_api_level() < 33) {
         return false;
     }
-    if (preparedFor(display, width, height)) {
+    if (preparedFor(display, width, height, cpuComposerOnly)) {
         std::lock_guard<std::mutex> lock(fenceMutex_);
         return pool_.initialized() && pool_.allFree() && fenceLooperReady_ &&
             !fenceLooperFailed_ && fenceThread_.joinable();
@@ -553,6 +791,7 @@ bool SurfaceControlPresentBackend::prepare(
     display_ = display;
     width_ = width;
     height_ = height;
+    cpuComposerOnly_ = cpuComposerOnly;
     androidLibrary_ = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
     if (androidLibrary_ == nullptr) {
         (void)destroy();
@@ -562,6 +801,7 @@ bool SurfaceControlPresentBackend::prepare(
     surfaceApi_.member = reinterpret_cast<decltype(surfaceApi_.member)>( \
         dlsym(androidLibrary_, symbol))
     NTK_LOAD_SURFACE(createFromWindow, "ASurfaceControl_createFromWindow");
+    NTK_LOAD_SURFACE(create, "ASurfaceControl_create");
     NTK_LOAD_SURFACE(releaseSurface, "ASurfaceControl_release");
     NTK_LOAD_SURFACE(createTransaction, "ASurfaceTransaction_create");
     NTK_LOAD_SURFACE(deleteTransaction, "ASurfaceTransaction_delete");
@@ -572,18 +812,34 @@ bool SurfaceControlPresentBackend::prepare(
     NTK_LOAD_SURFACE(setVisibility, "ASurfaceTransaction_setVisibility");
     NTK_LOAD_SURFACE(setBuffer, "ASurfaceTransaction_setBuffer");
     NTK_LOAD_SURFACE(setGeometry, "ASurfaceTransaction_setGeometry");
+    NTK_LOAD_SURFACE(setPosition, "ASurfaceTransaction_setPosition");
+    NTK_LOAD_SURFACE(setScale, "ASurfaceTransaction_setScale");
     NTK_LOAD_SURFACE(
         setBufferTransparency, "ASurfaceTransaction_setBufferTransparency");
     NTK_LOAD_SURFACE(setBufferAlpha, "ASurfaceTransaction_setBufferAlpha");
+    NTK_LOAD_SURFACE(setColor, "ASurfaceTransaction_setColor");
     NTK_LOAD_SURFACE(
         setEnableBackPressure, "ASurfaceTransaction_setEnableBackPressure");
+    NTK_LOAD_SURFACE(setFrameRate, "ASurfaceTransaction_setFrameRate");
     NTK_LOAD_SURFACE(setFrameTimeline, "ASurfaceTransaction_setFrameTimeline");
     NTK_LOAD_SURFACE(
+        setDesiredPresentTime, "ASurfaceTransaction_setDesiredPresentTime");
+    NTK_LOAD_SURFACE(
         getLatchTime, "ASurfaceTransactionStats_getLatchTime");
+    NTK_LOAD_SURFACE(
+        getPresentFenceFd, "ASurfaceTransactionStats_getPresentFenceFd");
     NTK_LOAD_SURFACE(
         getPreviousReleaseFenceFd,
         "ASurfaceTransactionStats_getPreviousReleaseFenceFd");
 #undef NTK_LOAD_SURFACE
+    hardwareBufferAllocate_ = reinterpret_cast<HardwareBufferAllocateFn>(
+        dlsym(androidLibrary_, "AHardwareBuffer_allocate"));
+    hardwareBufferRelease_ = reinterpret_cast<HardwareBufferReleaseFn>(
+        dlsym(androidLibrary_, "AHardwareBuffer_release"));
+    hardwareBufferLock_ = reinterpret_cast<HardwareBufferLockFn>(
+        dlsym(androidLibrary_, "AHardwareBuffer_lock"));
+    hardwareBufferUnlock_ = reinterpret_cast<HardwareBufferUnlockFn>(
+        dlsym(androidLibrary_, "AHardwareBuffer_unlock"));
     // sync_file_info belongs to libsync, not libandroid, on current Android releases. Looking it
     // up on the SurfaceControl library made every real API-35 device/emulator reject preparation
     // even though all required EGL/AHardwareBuffer capabilities were present.
@@ -599,13 +855,15 @@ bool SurfaceControlPresentBackend::prepare(
     dupNativeFenceFd_ =
         reinterpret_cast<PFNEGLDUPNATIVEFENCEFDANDROIDPROC>(
             eglGetProcAddress("eglDupNativeFenceFDANDROID"));
-    if (!surfaceApi_.complete() || createSync_ == nullptr ||
+    if (!surfaceApi_.complete() || hardwareBufferAllocate_ == nullptr ||
+        hardwareBufferRelease_ == nullptr || hardwareBufferLock_ == nullptr ||
+        hardwareBufferUnlock_ == nullptr || createSync_ == nullptr ||
         destroySync_ == nullptr || dupNativeFenceFd_ == nullptr ||
         syncFileInfo_ == nullptr || syncFileInfoFree_ == nullptr) {
         (void)destroy();
         return false;
     }
-    if (!pool_.initialize(display_, width_, height_)) {
+    if (!pool_.initialize(display_, width_, height_, cpuComposerOnly_)) {
         (void)destroy();
         return false;
     }
@@ -643,6 +901,8 @@ bool SurfaceControlPresentBackend::prepare(
 bool SurfaceControlPresentBackend::attach(
         EGLDisplay display,
         ANativeWindow* parentWindow,
+        ASurfaceControl* providedChildSurface,
+        ASurfaceControl* providedGeometrySurface,
         std::uint32_t width,
         std::uint32_t height,
         std::uint64_t surfaceEpoch,
@@ -650,7 +910,15 @@ bool SurfaceControlPresentBackend::attach(
         void* wakeContext) {
     if (attached_ || display == EGL_NO_DISPLAY || parentWindow == nullptr ||
         width == 0 || height == 0 || surfaceEpoch == 0 ||
-        android_get_device_api_level() < 33 || !prepare(display, width, height)) {
+        android_get_device_api_level() < 33 ||
+        !prepare(display, width, height, cpuComposerOnly_)) {
+        if (providedChildSurface != nullptr) {
+            releaseProvidedSurfaceControl(providedChildSurface);
+        }
+        if (providedGeometrySurface != nullptr &&
+            providedGeometrySurface != providedChildSurface) {
+            releaseProvidedSurfaceControl(providedGeometrySurface);
+        }
         return false;
     }
     {
@@ -722,8 +990,19 @@ bool SurfaceControlPresentBackend::attach(
         ? static_cast<std::uint32_t>(parentWidth) : width_;
     destinationHeight_ = parentHeight > 0
         ? static_cast<std::uint32_t>(parentHeight) : height_;
-    childSurface_ = surfaceApi_.createFromWindow(parentWindow_, "NtkStripLayer");
+    // API-34+ host emulators create this child in Java so geometry-only frames can be merged into
+    // SurfaceView's next ViewRoot transaction. ASurfaceControl_fromJava transfers one native
+    // reference to this backend; older/device paths retain the established native child creation.
+    geometrySurface_ = providedGeometrySurface;
+    childSurface_ = providedChildSurface != nullptr
+        ? providedChildSurface
+        : surfaceApi_.createFromWindow(parentWindow_, "NtkStripLayer");
     if (childSurface_ == nullptr) {
+        (void)destroy();
+        return false;
+    }
+    if (geometrySurface_ == nullptr) geometrySurface_ = childSurface_;
+    if (!initializeGeometryPulse()) {
         (void)destroy();
         return false;
     }
@@ -745,13 +1024,158 @@ bool SurfaceControlPresentBackend::bindRenderTarget(
     return attached_ && pool_.bindForRendering(target);
 }
 
-bool SurfaceControlPresentBackend::exportAcquireFence(
+bool SurfaceControlPresentBackend::lockRenderTargetForCpuWrite(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        void** pixels,
+        std::uint32_t* stridePixels) {
+    if (!attached_) return false;
+    {
+        std::lock_guard<std::mutex> lock(fenceMutex_);
+        if (localAcquireFence_.has_value()) return false;
+    }
+    return pool_.lockForCpuWrite(target, pixels, stridePixels);
+}
+
+bool SurfaceControlPresentBackend::finishCpuWrite(
+        HardwareBufferRenderTargetPool::RenderTarget& target) {
+    if (!attached_) return false;
+    {
+        std::lock_guard<std::mutex> lock(fenceMutex_);
+        if (localAcquireFence_.has_value()) return false;
+    }
+    int frameworkFd = -1;
+    if (!pool_.finishCpuWrite(target, &frameworkFd)) return false;
+    int proofFd = frameworkFd >= 0 ? dup(frameworkFd) : -1;
+    const bool descriptorsExact = frameworkFd < 0 ||
+        (proofFd >= 0 && proofFd != frameworkFd &&
+         setCloseOnExec(frameworkFd) && setCloseOnExec(proofFd));
+    if (!descriptorsExact) {
+        if (frameworkFd >= 0) {
+            pollfd descriptor{.fd = frameworkFd, .events = POLLIN, .revents = 0};
+            int result = -1;
+            do {
+                result = poll(&descriptor, 1, -1);
+            } while (result < 0 && errno == EINTR);
+            close(frameworkFd);
+        }
+        if (proofFd >= 0) close(proofFd);
+        (void)pool_.abortBeforeSubmission(target.slot, target.generation);
+        return false;
+    }
+    std::uint64_t serial = ++acquireFenceSerial_;
+    if (serial == 0) serial = ++acquireFenceSerial_;
+    std::lock_guard<std::mutex> lock(fenceMutex_);
+    if (localAcquireFence_.has_value()) {
+        if (frameworkFd >= 0) close(frameworkFd);
+        if (proofFd >= 0) close(proofFd);
+        (void)pool_.abortBeforeSubmission(target.slot, target.generation);
+        return false;
+    }
+    // Preserve the same exact two-owner fence ledger used by GPU submissions. SurfaceControl gets
+    // one descriptor; the reactor gets an independent descriptor for the signal proof. If gralloc
+    // completed synchronously both remain -1 and the existing fence-free path is retained.
+    localAcquireFence_ = LocalAcquireFenceOwner{
+        .buffer = BufferIdentity{
+            .slot = target.slot,
+            .generation = target.generation,
+        },
+        .acquireFenceSerial = serial,
+        .frameworkAcquireFd = frameworkFd,
+        .proofAcquireFd = proofFd,
+        .phase = LocalAcquirePhase::EXPORTED_UNBOUND,
+    };
+    return true;
+}
+
+bool SurfaceControlPresentBackend::beginCpuPrecomposition(
+        HardwareBufferRenderTargetPool::RenderTarget& target) {
+    if (!attached_) return false;
+    {
+        std::lock_guard<std::mutex> lock(fenceMutex_);
+        if (localAcquireFence_.has_value()) return false;
+    }
+    return pool_.beginCpuPrecomposition(target);
+}
+
+bool SurfaceControlPresentBackend::lockCpuPrecompositionOffThread(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        void** pixels,
+        std::uint32_t* stridePixels) {
+    return attached_ &&
+        pool_.lockCpuPrecompositionOffThread(target, pixels, stridePixels);
+}
+
+bool SurfaceControlPresentBackend::finishCpuPrecompositionOffThread(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        int* completionFenceFd) {
+    return attached_ &&
+        pool_.finishCpuPrecompositionOffThread(target, completionFenceFd);
+}
+
+bool SurfaceControlPresentBackend::publishFinishedCpuPrecomposition(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        int completionFenceFd) {
+    int frameworkFd = completionFenceFd;
+    if (!attached_ || target.state !=
+            HardwareBufferRenderTargetPool::SlotState::PRECOMPOSING) {
+        if (frameworkFd >= 0) close(frameworkFd);
+        return false;
+    }
+    int proofFd = frameworkFd >= 0 ? dup(frameworkFd) : -1;
+    const bool descriptorsExact = frameworkFd < 0 ||
+        (proofFd >= 0 && proofFd != frameworkFd &&
+         setCloseOnExec(frameworkFd) && setCloseOnExec(proofFd));
+    if (!descriptorsExact) {
+        if (frameworkFd >= 0) close(frameworkFd);
+        if (proofFd >= 0) close(proofFd);
+        (void)pool_.abortBeforeSubmission(target.slot, target.generation);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(fenceMutex_);
+        if (localAcquireFence_.has_value()) {
+            if (frameworkFd >= 0) close(frameworkFd);
+            if (proofFd >= 0) close(proofFd);
+            (void)pool_.abortBeforeSubmission(target.slot, target.generation);
+            return false;
+        }
+    }
+    if (!pool_.publishFinishedCpuPrecomposition(target, frameworkFd < 0)) {
+        if (frameworkFd >= 0) close(frameworkFd);
+        if (proofFd >= 0) close(proofFd);
+        (void)pool_.abortBeforeSubmission(target.slot, target.generation);
+        return false;
+    }
+    std::uint64_t serial = ++acquireFenceSerial_;
+    if (serial == 0) serial = ++acquireFenceSerial_;
+    std::lock_guard<std::mutex> lock(fenceMutex_);
+    if (localAcquireFence_.has_value()) {
+        if (frameworkFd >= 0) close(frameworkFd);
+        if (proofFd >= 0) close(proofFd);
+        (void)pool_.abortBeforeSubmission(target.slot, target.generation);
+        return false;
+    }
+    localAcquireFence_ = LocalAcquireFenceOwner{
+        .buffer = BufferIdentity{
+            .slot = target.slot,
+            .generation = target.generation,
+        },
+        .acquireFenceSerial = serial,
+        .frameworkAcquireFd = frameworkFd,
+        .proofAcquireFd = proofFd,
+        .phase = LocalAcquirePhase::EXPORTED_UNBOUND,
+    };
+    return true;
+}
+
+bool SurfaceControlPresentBackend::beginGpuFenceExport(
         HardwareBufferRenderTargetPool::RenderTarget& target,
         std::int64_t renderBeginNanos,
         std::int64_t renderEndNanos,
-        GpuSubmissionProof* proof) {
-    if (!attached_ || proof == nullptr || renderBeginNanos <= 0 ||
-        renderEndNanos < renderBeginNanos ||
+        PendingGpuFenceExport* pending) {
+    if (pending != nullptr) *pending = {};
+    if (!attached_ || pending == nullptr || renderBeginNanos <= 0 ||
+        renderEndNanos < renderBeginNanos || createSync_ == nullptr ||
         target.state != HardwareBufferRenderTargetPool::SlotState::RENDERING) {
         return false;
     }
@@ -769,25 +1193,100 @@ bool SurfaceControlPresentBackend::exportAcquireFence(
     if (fence == EGL_NO_SYNC_KHR) return false;
     const std::int64_t fenceIssuedNanos = monotonicNowNanos();
     glFlush();
+    if (fenceIssuedNanos < renderEndNanos) {
+        (void)destroySync_(display_, fence);
+        return false;
+    }
+    *pending = {
+        .sync = fence,
+        .renderBeginNanos = renderBeginNanos,
+        .renderEndNanos = renderEndNanos,
+        .fenceIssuedNanos = fenceIssuedNanos,
+    };
+    return true;
+}
+
+void SurfaceControlPresentBackend::finishGpuFenceExportOffThread(
+        PendingGpuFenceExport* pending,
+        FinishedGpuFenceExport* finished) const {
+    FinishedGpuFenceExport discarded{};
+    FinishedGpuFenceExport* output = finished != nullptr ? finished : &discarded;
+    if (output->frameworkAcquireFd >= 0) close(output->frameworkAcquireFd);
+    if (output->proofAcquireFd >= 0) close(output->proofAcquireFd);
+    *output = {};
+    if (pending == nullptr) return;
+    const PendingGpuFenceExport input = *pending;
+    *pending = {};
+    if (input.sync == EGL_NO_SYNC_KHR || input.renderBeginNanos <= 0 ||
+        input.renderEndNanos < input.renderBeginNanos ||
+        input.fenceIssuedNanos < input.renderEndNanos ||
+        display_ == EGL_NO_DISPLAY || dupNativeFenceFd_ == nullptr ||
+        destroySync_ == nullptr) {
+        if (input.sync != EGL_NO_SYNC_KHR && display_ != EGL_NO_DISPLAY &&
+            destroySync_ != nullptr) {
+            (void)destroySync_(display_, input.sync);
+        }
+        return;
+    }
     // Export the GPU fence from EGL exactly once. A second
     // eglDupNativeFenceFDANDROID call re-enters the host GPU driver and can
     // stall the rolling reader long enough to miss the following compositor
     // cycle. dup() creates another descriptor for the same sync_file, so the
     // framework hand-off and our signal proof retain independent ownership
     // without a second driver round trip.
-    int frameworkFd = dupNativeFenceFd_(display_, fence);
+    int frameworkFd = dupNativeFenceFd_(display_, input.sync);
     int proofFd = frameworkFd >= 0 ? dup(frameworkFd) : -1;
-    const bool destroyed = destroySync_(display_, fence) == EGL_TRUE;
+    const bool destroyed = destroySync_(display_, input.sync) == EGL_TRUE;
     const std::int64_t exportReturnNanos = monotonicNowNanos();
     const bool descriptorsExact = frameworkFd >= 0 && proofFd >= 0 &&
         frameworkFd != proofFd && setCloseOnExec(frameworkFd) &&
         setCloseOnExec(proofFd);
     if (!destroyed || !descriptorsExact ||
-        fenceIssuedNanos < renderEndNanos ||
-        exportReturnNanos < fenceIssuedNanos) {
+        exportReturnNanos < input.fenceIssuedNanos) {
+        if (frameworkFd >= 0) close(frameworkFd);
+        if (proofFd >= 0) close(proofFd);
+        return;
+    }
+    *output = {
+        .frameworkAcquireFd = frameworkFd,
+        .proofAcquireFd = proofFd,
+        .renderBeginNanos = input.renderBeginNanos,
+        .renderEndNanos = input.renderEndNanos,
+        .fenceIssuedNanos = input.fenceIssuedNanos,
+        .exportReturnNanos = exportReturnNanos,
+        .success = true,
+    };
+}
+
+bool SurfaceControlPresentBackend::publishFinishedGpuFenceExport(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        FinishedGpuFenceExport* finished,
+        GpuSubmissionProof* proof) {
+    if (proof != nullptr) *proof = {};
+    if (finished == nullptr) return false;
+    const FinishedGpuFenceExport result = *finished;
+    *finished = {};
+    int frameworkFd = result.frameworkAcquireFd;
+    int proofFd = result.proofAcquireFd;
+    const bool valid = attached_ && proof != nullptr && result.success &&
+        frameworkFd >= 0 && proofFd >= 0 && frameworkFd != proofFd &&
+        result.renderBeginNanos > 0 &&
+        result.renderEndNanos >= result.renderBeginNanos &&
+        result.fenceIssuedNanos >= result.renderEndNanos &&
+        result.exportReturnNanos >= result.fenceIssuedNanos &&
+        target.state == HardwareBufferRenderTargetPool::SlotState::RENDERING;
+    if (!valid) {
         if (frameworkFd >= 0) close(frameworkFd);
         if (proofFd >= 0) close(proofFd);
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(fenceMutex_);
+        if (localAcquireFence_.has_value()) {
+            close(frameworkFd);
+            close(proofFd);
+            return false;
+        }
     }
     std::uint64_t serial = ++acquireFenceSerial_;
     if (serial == 0) serial = ++acquireFenceSerial_;
@@ -818,15 +1317,30 @@ bool SurfaceControlPresentBackend::exportAcquireFence(
     *proof = {
         .bufferSlot = target.slot,
         .bufferGeneration = target.generation,
-        .renderBeginNanos = renderBeginNanos,
-        .renderEndNanos = renderEndNanos,
-        .acquireFenceIssuedNanos = fenceIssuedNanos,
-        .acquireFenceExportReturnNanos = exportReturnNanos,
+        .renderBeginNanos = result.renderBeginNanos,
+        .renderEndNanos = result.renderEndNanos,
+        .acquireFenceIssuedNanos = result.fenceIssuedNanos,
+        .acquireFenceExportReturnNanos = result.exportReturnNanos,
         .acquireFenceSerial = serial,
         .acquireFenceDupCount = 2,
         .rendererGpuClientWaitCount = 0,
     };
     return validGpuSubmissionProof(*proof);
+}
+
+bool SurfaceControlPresentBackend::exportAcquireFence(
+        HardwareBufferRenderTargetPool::RenderTarget& target,
+        std::int64_t renderBeginNanos,
+        std::int64_t renderEndNanos,
+        GpuSubmissionProof* proof) {
+    PendingGpuFenceExport pending{};
+    FinishedGpuFenceExport finished{};
+    if (!beginGpuFenceExport(
+            target, renderBeginNanos, renderEndNanos, &pending)) {
+        return false;
+    }
+    finishGpuFenceExportOffThread(&pending, &finished);
+    return publishFinishedGpuFenceExport(target, &finished, proof);
 }
 
 bool SurfaceControlPresentBackend::prepareBufferTransaction(
@@ -838,23 +1352,50 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
         SwappyFixedExternalTransportReady* proof) {
     if (prepared) *prepared = {};
     if (proof) *proof = {};
-    if (!hasPreparationCapacity() || prepared == nullptr || proof == nullptr ||
-        target.state != HardwareBufferRenderTargetPool::SlotState::
-            ACQUIRE_FENCE_EXPORTED ||
-        target.hardwareBuffer == nullptr ||
-        baseIdentity.surfaceEpoch != surfaceEpoch_ ||
-        baseIdentity.engineGeneration == 0 ||
-        baseIdentity.workGeneration == 0 || baseIdentity.ntkFrameId == 0 ||
-        baseIdentity.authorityGeneration <= 0 || baseIdentity.authority <= 0 ||
-        baseIdentity.frameSequence == 0 || baseIdentity.capsuleSequence == 0 ||
-        firstStage != !latestAppliedBufferRef_.has_value() ||
-        (firstStage
-            ? (backpressureEnabled_ || backpressureEnableCount_ != 0)
-            : (!backpressureEnabled_ || backpressureEnableCount_ != 1)) ||
-        backpressureDisableCount_ != 0 ||
-        !validFixedTransportProfile(profile)) {
+    lastPreparationFailureReason_ = "none";
+    if (prepared == nullptr || proof == nullptr) {
+        lastPreparationFailureReason_ = "null-output";
         return false;
     }
+    if (!hasPreparationCapacity()) {
+        lastPreparationFailureReason_ = "prepared-capacity";
+        return false;
+    }
+    if (target.state != HardwareBufferRenderTargetPool::SlotState::
+            ACQUIRE_FENCE_EXPORTED || target.hardwareBuffer == nullptr) {
+        lastPreparationFailureReason_ = "target-not-exported";
+        return false;
+    }
+    if (baseIdentity.surfaceEpoch != surfaceEpoch_) {
+        lastPreparationFailureReason_ = "surface-epoch";
+        return false;
+    }
+    if (baseIdentity.engineGeneration == 0 ||
+        baseIdentity.workGeneration == 0 || baseIdentity.ntkFrameId == 0 ||
+        baseIdentity.authorityGeneration <= 0 || baseIdentity.authority <= 0 ||
+        baseIdentity.frameSequence == 0 || baseIdentity.capsuleSequence == 0) {
+        lastPreparationFailureReason_ = "identity";
+        return false;
+    }
+    if (firstStage != !latestAppliedBufferRef_.has_value()) {
+        lastPreparationFailureReason_ = "first-stage-chain-head";
+        return false;
+    }
+    if (firstStage
+            ? (backpressureEnabled_ || backpressureEnableCount_ != 0)
+            : (!backpressureEnabled_ || backpressureEnableCount_ != 1)) {
+        lastPreparationFailureReason_ = "backpressure-state";
+        return false;
+    }
+    if (backpressureDisableCount_ != 0) {
+        lastPreparationFailureReason_ = "backpressure-disabled";
+        return false;
+    }
+    if (!validFixedTransportProfile(profile)) {
+        lastPreparationFailureReason_ = "transport-profile";
+        return false;
+    }
+    const bool readyWithoutAcquireFence = target.readyWithoutAcquireFence;
     std::uint64_t acquireFenceSerial = 0;
     {
         std::lock_guard<std::mutex> lock(fenceMutex_);
@@ -863,12 +1404,21 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
             localAcquireFence_->buffer.slot != target.slot ||
             localAcquireFence_->buffer.generation != target.generation ||
             localAcquireFence_->acquireFenceSerial == 0 ||
-            localAcquireFence_->frameworkAcquireFd < 0 ||
-            localAcquireFence_->proofAcquireFd < 0) return false;
+            (readyWithoutAcquireFence
+                ? (localAcquireFence_->frameworkAcquireFd != -1 ||
+                   localAcquireFence_->proofAcquireFd != -1)
+                : (localAcquireFence_->frameworkAcquireFd < 0 ||
+                   localAcquireFence_->proofAcquireFd < 0))) {
+            lastPreparationFailureReason_ = "local-acquire-fence";
+            return false;
+        }
         acquireFenceSerial = localAcquireFence_->acquireFenceSerial;
     }
     const std::int64_t prepareBegin = monotonicNowNanos();
-    if (prepareBegin <= 0) return false;
+    if (prepareBegin <= 0) {
+        lastPreparationFailureReason_ = "monotonic-clock";
+        return false;
+    }
     FixedFrameIdentity identity{};
     identity.engineGeneration = baseIdentity.engineGeneration;
     identity.surfaceEpoch = baseIdentity.surfaceEpoch;
@@ -890,6 +1440,7 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
     const auto cookieIndex = acquireCallbackCookie();
     if (!cookieIndex.has_value()) {
         ++capacityExhaustedCount_;
+        lastPreparationFailureReason_ = "callback-cookie-capacity";
         return false;
     }
     auto* cookie = &callbackCookies_[*cookieIndex];
@@ -902,17 +1453,22 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
     ASurfaceTransaction* transaction = surfaceApi_.createTransaction();
     if (transaction == nullptr) {
         releaseCallbackCookie(*cookieIndex);
+        lastPreparationFailureReason_ = "transaction-create";
         return false;
     }
     if (firstStage) {
-        const ARect source{0, 0, static_cast<std::int32_t>(width_),
-            static_cast<std::int32_t>(height_)};
-        const ARect destination{
-            0, 0,
-            static_cast<std::int32_t>(destinationWidth_ > 0 ? destinationWidth_ : width_),
-            static_cast<std::int32_t>(destinationHeight_ > 0 ? destinationHeight_ : height_)};
-        surfaceApi_.setGeometry(
-            transaction, childSurface_, source, destination, 0);
+        if (surfaceApi_.setPosition == nullptr || surfaceApi_.setScale == nullptr) {
+            const ARect source{0, 0, static_cast<std::int32_t>(width_),
+                static_cast<std::int32_t>(height_)};
+            const ARect destination{
+                0, 0,
+                static_cast<std::int32_t>(destinationWidth_ > 0
+                    ? destinationWidth_ : width_),
+                static_cast<std::int32_t>(destinationHeight_ > 0
+                    ? destinationHeight_ : height_)};
+            surfaceApi_.setGeometry(
+                transaction, childSurface_, source, destination, 0);
+        }
         surfaceApi_.setBufferTransparency(
             transaction, childSurface_,
             ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);
@@ -932,6 +1488,7 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
     if (prepareEnd < prepareBegin) {
         surfaceApi_.deleteTransaction(transaction);
         releaseCallbackCookie(*cookieIndex);
+        lastPreparationFailureReason_ = "monotonic-regression";
         return false;
     }
     prepared->baseIdentity = baseIdentity;
@@ -948,13 +1505,14 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
     prepared->transportProfileDigest = profile.digest;
     prepared->timingGeneration = profile.timingGeneration;
     prepared->setBufferCount = 0;
-    prepared->acquireFenceDupCount = 2;
+    prepared->acquireFenceDupCount = readyWithoutAcquireFence ? 0 : 2;
     prepared->setBufferPending = 1;
     prepared->callbackCookieIndex = static_cast<std::uint32_t>(*cookieIndex);
     prepared->previousAppliedBufferRef =
         latestAppliedBufferRef_.value_or(AppliedBufferRef{});
     prepared->reservedAppliedBufferRefSerial =
         reservedAppliedRefSerial;
+    prepared->readyWithoutAcquireFence = readyWithoutAcquireFence;
     prepared->backpressureEnablePending = firstStage;
     prepared->firstStage = firstStage;
     prepared->state = PreparedTransactionState::PREPARED_NOT_CLAIMED;
@@ -977,7 +1535,7 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
     proof->prepareBeginNanos = prepareBegin;
     proof->prepareEndNanos = prepareEnd;
     proof->setBufferCount = 0;
-    proof->acquireFenceDupCount = 2;
+    proof->acquireFenceDupCount = prepared->acquireFenceDupCount;
     proof->setBufferPending = 1;
     proof->firstStage = firstStage ? 1U : 0U;
     proof->previousAppliedBufferRef =
@@ -993,6 +1551,7 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
             releaseCallbackCookie(*cookieIndex);
             *prepared = {};
             *proof = {};
+            lastPreparationFailureReason_ = "local-acquire-fence-race";
             return false;
         }
         localAcquireFence_->phase = LocalAcquirePhase::BOUND_TO_PREPARED;
@@ -1001,6 +1560,7 @@ bool SurfaceControlPresentBackend::prepareBufferTransaction(
     }
     preparedTransactionState_ = PreparedTransactionState::PREPARED_NOT_CLAIMED;
     preparedTransactionSerial_ = identity.transactionSerial;
+    lastPreparationFailureReason_ = "none";
     return true;
 }
 
@@ -1010,7 +1570,9 @@ bool SurfaceControlPresentBackend::abortRenderTargetBeforePreparation(
     auto* target = pool_.find(bufferSlot, bufferGeneration);
     if (target == nullptr) return false;
     if (target->state ==
-        HardwareBufferRenderTargetPool::SlotState::RENDERING) {
+            HardwareBufferRenderTargetPool::SlotState::RENDERING ||
+        target->state ==
+            HardwareBufferRenderTargetPool::SlotState::PRECOMPOSING) {
         std::lock_guard<std::mutex> lock(fenceMutex_);
         if (localAcquireFence_.has_value()) return false;
         return pool_.abortBeforeSubmission(bufferSlot, bufferGeneration);
@@ -1061,8 +1623,11 @@ SurfaceControlPresentBackend::queryApplyReadinessImpl(
                 prepared.acquireFenceSerial &&
             localAcquireFence_->preparedTransactionSerial ==
                 prepared.transactionSerial &&
-            localAcquireFence_->frameworkAcquireFd >= 0 &&
-            localAcquireFence_->proofAcquireFd >= 0;
+            (prepared.readyWithoutAcquireFence
+                ? (localAcquireFence_->frameworkAcquireFd == -1 &&
+                   localAcquireFence_->proofAcquireFd == -1)
+                : (localAcquireFence_->frameworkAcquireFd >= 0 &&
+                   localAcquireFence_->proofAcquireFd >= 0));
     }
     const bool preparedExact = attached_ && childSurface_ != nullptr &&
         prepared.transaction != nullptr && cookie != nullptr &&
@@ -1071,7 +1636,9 @@ SurfaceControlPresentBackend::queryApplyReadinessImpl(
         cookie->inUse.load(std::memory_order_acquire) &&
         target != nullptr && target->state ==
             HardwareBufferRenderTargetPool::SlotState::
-                ACQUIRE_FENCE_EXPORTED && localAcquireExact &&
+                ACQUIRE_FENCE_EXPORTED &&
+        target->readyWithoutAcquireFence == prepared.readyWithoutAcquireFence &&
+        localAcquireExact &&
         prepared.state == PreparedTransactionState::PREPARED_NOT_CLAIMED &&
         preparedTransactionState_ ==
             PreparedTransactionState::PREPARED_NOT_CLAIMED &&
@@ -1147,11 +1714,23 @@ SurfaceControlPresentBackend::queryApplyReadinessImpl(
             ++heldFrameworkRefs;
         }
     }
-    if (!freeAppliedCallbackRecordIndex().has_value() ||
-        !freeAcquireFenceRecordIndex().has_value() ||
+    const bool callbackCapacityUnavailable =
+        !freeAppliedCallbackRecordIndex().has_value() ||
+        (!prepared.readyWithoutAcquireFence &&
+         !freeAcquireFenceRecordIndex().has_value()) ||
         (latestAppliedBufferRef_.has_value() &&
          !freePreviousReleaseRecordIndex().has_value()) ||
-        heldFrameworkRefs > HardwareBufferRenderTargetPool::kSlotCount - 2) {
+        heldFrameworkRefs > HardwareBufferRenderTargetPool::kSlotCount - 2;
+    if (callbackCapacityUnavailable) {
+        if (allowDirectPipeline) {
+            // A host compositor can acknowledge OnCommit before delivering the corresponding
+            // OnComplete. After K pipelined transactions the exact callback ledger is therefore
+            // temporarily full even though every identity and ownership invariant is valid.
+            // Keep the FIFO head and retry after consumeEvents() drains a callback; treating this
+            // bounded state as corruption tears down a healthy Surface in a long reading session.
+            ++capacityWaitCount_;
+            return ApplyReadiness::WAITING_PRIOR_LATCH;
+        }
         ++capacityExhaustedCount_;
         return ApplyReadiness::FATAL;
     }
@@ -1164,15 +1743,16 @@ SurfaceControlPresentBackend::applyPreparedBufferTransaction(
         const SwappyFixedExternalClaim& claim,
         SubmissionReceipt* receipt) {
     return applyPreparedBufferTransactionImpl(
-        prepared, claim, receipt, false);
+        prepared, claim, receipt, false, true);
 }
 
 SurfaceControlPresentBackend::ApplyDisposition
 SurfaceControlPresentBackend::applyPreparedBufferTransactionDirect(
         PreparedSurfaceSubmission& prepared,
+        std::int64_t frameTimelineVsyncId,
         SubmissionReceipt* receipt) {
     const std::int64_t now = monotonicNowNanos();
-    if (now <= 0 || prepared.transaction == nullptr ||
+    if (now <= 0 || frameTimelineVsyncId < 0 || prepared.transaction == nullptr ||
         prepared.state != PreparedTransactionState::PREPARED_NOT_CLAIMED) {
         if (receipt != nullptr) *receipt = {};
         return ApplyDisposition::NOT_APPLIED;
@@ -1192,8 +1772,11 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionDirect(
     claim.opportunitySequence = admission;
     claim.candidateSequence = admission;
     claim.noticeSequence = admission;
-    claim.plannedTargetFrame = static_cast<std::int64_t>(timelineIdentity);
-    claim.frameTimelineVsyncId = static_cast<std::int64_t>(timelineIdentity);
+    const bool hasDisplayFrameTimeline = frameTimelineVsyncId > 0;
+    claim.plannedTargetFrame = hasDisplayFrameTimeline
+        ? frameTimelineVsyncId
+        : static_cast<std::int64_t>(timelineIdentity);
+    claim.frameTimelineVsyncId = claim.plannedTargetFrame;
     claim.decisionNanos = now;
     claim.ntkFrameId = prepared.baseIdentity.ntkFrameId;
     claim.engineGeneration = prepared.baseIdentity.engineGeneration;
@@ -1216,13 +1799,295 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionDirect(
     claim.claimReturnNanos = monotonicNowNanos();
     claim.transportAdmissionOutcome = 1;
     claim.setBufferCount = 0;
-    claim.acquireFenceDupCount = 2;
+    claim.acquireFenceDupCount = prepared.acquireFenceDupCount;
     claim.setBufferPending = 1;
     claim.firstStage = prepared.firstStage ? 1U : 0U;
     claim.previousAppliedBufferRef = toSwappyAppliedBufferRef(
         prepared.previousAppliedBufferRef);
     return applyPreparedBufferTransactionImpl(
-        prepared, claim, receipt, true);
+        prepared, claim, receipt, true, hasDisplayFrameTimeline);
+}
+
+bool SurfaceControlPresentBackend::configurePreparedSourceCrop(
+        PreparedSurfaceSubmission& prepared,
+        std::int32_t sourceTop,
+        std::int32_t sourceHeight,
+        std::int32_t geometryBaseSourceTop) {
+    if (!attached_ || childSurface_ == nullptr || prepared.transaction == nullptr ||
+        prepared.state != PreparedTransactionState::PREPARED_NOT_CLAIMED ||
+        preparedTransactionState_ != PreparedTransactionState::PREPARED_NOT_CLAIMED ||
+        preparedTransactionSerial_ != prepared.transactionSerial ||
+        sourceTop < 0 || sourceHeight <= 0 ||
+        sourceTop > static_cast<std::int32_t>(height_) - sourceHeight) {
+        return false;
+    }
+    const std::uint32_t destinationWidth = destinationWidth_ > 0
+        ? destinationWidth_ : width_;
+    const std::uint32_t destinationHeight = destinationHeight_ > 0
+        ? destinationHeight_ : static_cast<std::uint32_t>(sourceHeight);
+    if (surfaceApi_.setPosition != nullptr && surfaceApi_.setScale != nullptr) {
+        const bool separateGeometry = geometrySurface_ != nullptr &&
+            geometrySurface_ != childSurface_;
+        const float scaleX = static_cast<float>(destinationWidth) /
+            static_cast<float>(width_);
+        const float scaleY = static_cast<float>(destinationHeight) /
+            static_cast<float>(sourceHeight);
+        const std::int64_t offsetNumerator = static_cast<std::int64_t>(
+            separateGeometry ? geometryBaseSourceTop : sourceTop) * destinationHeight;
+        const std::int32_t positionY = -static_cast<std::int32_t>(
+            offsetNumerator >= 0
+                ? (offsetNumerator + sourceHeight / 2) / sourceHeight
+                : (offsetNumerator - sourceHeight / 2) / sourceHeight);
+        // A Java container separates geometry cadence from the large buffer layer. Full-buffer
+        // replacement atomically resets that same container, while geometry-only transactions
+        // move it on SurfaceFlinger's display timeline between replacements.
+        surfaceApi_.setScale(prepared.transaction, childSurface_, scaleX, scaleY);
+        if (separateGeometry) {
+            surfaceApi_.setPosition(prepared.transaction, childSurface_, 0, 0);
+            surfaceApi_.setPosition(prepared.transaction, geometrySurface_, 0, positionY);
+        } else {
+            surfaceApi_.setPosition(prepared.transaction, childSurface_, 0, positionY);
+        }
+    } else {
+        const ARect source{
+            0,
+            sourceTop,
+            static_cast<std::int32_t>(width_),
+            sourceTop + sourceHeight,
+        };
+        const ARect destination{
+            0,
+            0,
+            static_cast<std::int32_t>(destinationWidth),
+            static_cast<std::int32_t>(destinationHeight),
+        };
+        surfaceApi_.setGeometry(
+            prepared.transaction, childSurface_, source, destination, 0);
+    }
+    return true;
+}
+
+SurfaceControlPresentBackend::ApplyDisposition
+SurfaceControlPresentBackend::applyGeometryTransactionDirect(
+        const FixedPreparedFrameIdentityBase& baseIdentity,
+        std::int32_t sourceTop,
+        std::int32_t sourceHeight,
+        std::int64_t frameTimelineVsyncId,
+        std::int64_t desiredPresentTimeNanos,
+        SubmissionReceipt* receipt) {
+    if (receipt != nullptr) *receipt = {};
+    if (receipt == nullptr || !attached_ || childSurface_ == nullptr ||
+        geometryPulseSurface_ == nullptr ||
+        !latestAppliedBufferRef_.has_value() || frameTimelineVsyncId < 0 ||
+        sourceTop < 0 || sourceHeight <= 0 ||
+        sourceTop > static_cast<std::int32_t>(height_) - sourceHeight ||
+        logicalUnlatchedNow_ >= kMaxGeometryLogicalUnlatched ||
+        !hasFreeGeometryPulseBuffer() ||
+        !stateInvariantsHold()) {
+        return ApplyDisposition::NOT_APPLIED;
+    }
+    const auto recordIndex = freeAppliedCallbackRecordIndex();
+    const auto cookieIndex = acquireCallbackCookie();
+    if (!recordIndex.has_value() || !cookieIndex.has_value()) {
+        if (cookieIndex.has_value()) releaseCallbackCookie(*cookieIndex);
+        ++capacityExhaustedCount_;
+        return ApplyDisposition::NOT_APPLIED;
+    }
+
+    FixedFrameIdentity identity{};
+    identity.engineGeneration = baseIdentity.engineGeneration;
+    identity.surfaceEpoch = baseIdentity.surfaceEpoch;
+    identity.authorityGeneration = baseIdentity.authorityGeneration;
+    identity.authority = baseIdentity.authority;
+    identity.workGeneration = baseIdentity.workGeneration;
+    identity.ntkFrameId = baseIdentity.ntkFrameId;
+    identity.frameSequence = baseIdentity.frameSequence;
+    identity.capsuleSequence = baseIdentity.capsuleSequence;
+    identity.backendSurfaceSerial = surfaceSerial_;
+    identity.transactionSerial = ++transactionSerial_;
+    if (identity.transactionSerial == 0) identity.transactionSerial = ++transactionSerial_;
+    identity.bufferSlot = latestAppliedBufferRef_->identity.bufferSlot;
+    identity.bufferGeneration = latestAppliedBufferRef_->identity.bufferGeneration;
+
+    auto* cookie = &callbackCookies_[*cookieIndex];
+    cookie->identity = identity;
+    ASurfaceTransaction* transaction = surfaceApi_.createTransaction();
+    if (transaction == nullptr) {
+        releaseCallbackCookie(*cookieIndex);
+        return ApplyDisposition::NOT_APPLIED;
+    }
+    const auto pulseIndex = reserveGeometryPulseBuffer();
+    if (!pulseIndex.has_value() ||
+        geometryPulseBuffers_[*pulseIndex] == nullptr) {
+        if (pulseIndex.has_value()) {
+            geometryPulseBufferStates_[*pulseIndex].store(
+                static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+                std::memory_order_release);
+        }
+        surfaceApi_.deleteTransaction(transaction);
+        releaseCallbackCookie(*cookieIndex);
+        ++capacityExhaustedCount_;
+        return ApplyDisposition::NOT_APPLIED;
+    }
+    const std::uint32_t previousPulse = currentGeometryPulseBufferIndex_.
+        value_or(UINT32_MAX);
+    if (previousPulse != UINT32_MAX) {
+        std::uint8_t expected = static_cast<std::uint8_t>(
+            GeometryPulseBufferState::CURRENT);
+        if (!geometryPulseBufferStates_[previousPulse].compare_exchange_strong(
+                expected,
+                static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            geometryPulseBufferStates_[*pulseIndex].store(
+                static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+                std::memory_order_release);
+            surfaceApi_.deleteTransaction(transaction);
+            releaseCallbackCookie(*cookieIndex);
+            return ApplyDisposition::NOT_APPLIED;
+        }
+    }
+    std::uint8_t reserved = static_cast<std::uint8_t>(
+        GeometryPulseBufferState::RESERVED);
+    if (!geometryPulseBufferStates_[*pulseIndex].compare_exchange_strong(
+            reserved,
+            static_cast<std::uint8_t>(GeometryPulseBufferState::CURRENT),
+            std::memory_order_acq_rel, std::memory_order_acquire)) {
+        if (previousPulse != UINT32_MAX) {
+            geometryPulseBufferStates_[previousPulse].store(
+                static_cast<std::uint8_t>(GeometryPulseBufferState::CURRENT),
+                std::memory_order_release);
+        }
+        geometryPulseBufferStates_[*pulseIndex].store(
+            static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+            std::memory_order_release);
+        surfaceApi_.deleteTransaction(transaction);
+        releaseCallbackCookie(*cookieIndex);
+        return ApplyDisposition::NOT_APPLIED;
+    }
+    currentGeometryPulseBufferIndex_ = *pulseIndex;
+    cookie->geometryPulseUpdate = true;
+    cookie->geometryPulseBufferIndex = *pulseIndex;
+    cookie->previousGeometryPulseBufferIndex = previousPulse;
+    const std::uint32_t destinationWidth = destinationWidth_ > 0
+        ? destinationWidth_ : width_;
+    const std::uint32_t destinationHeight = destinationHeight_ > 0
+        ? destinationHeight_ : static_cast<std::uint32_t>(sourceHeight);
+    if (surfaceApi_.setPosition != nullptr && surfaceApi_.setScale != nullptr) {
+        const std::int64_t offsetNumerator =
+            static_cast<std::int64_t>(sourceTop) * destinationHeight;
+        const std::int32_t positionY = -static_cast<std::int32_t>(
+            (offsetNumerator + sourceHeight / 2) / sourceHeight);
+        // The scale was installed with the current full buffer. When Java supplied a separate
+        // geometry container, move that container exactly as the Java transaction path did and
+        // leave the scaled buffer child at zero. NDK OnComplete also supplies the actual
+        // present-fence timestamp instead of an executor observation time.
+        ASurfaceControl* movingSurface = geometrySurface_ != nullptr &&
+                geometrySurface_ != childSurface_
+            ? geometrySurface_
+            : childSurface_;
+        surfaceApi_.setPosition(transaction, movingSurface, 0, positionY);
+    } else {
+        const ARect source{
+            0,
+            sourceTop,
+            static_cast<std::int32_t>(width_),
+            sourceTop + sourceHeight,
+        };
+        const ARect destination{
+            0,
+            0,
+            static_cast<std::int32_t>(destinationWidth),
+            static_cast<std::int32_t>(destinationHeight),
+        };
+        surfaceApi_.setGeometry(transaction, childSurface_, source, destination, 0);
+    }
+    // A real display-owner AVsyncId is authoritative. The older desired-present fallback remains
+    // only for API/runtime paths that cannot supply that ID; applying both policies to one crop
+    // lets SurfaceFlinger defer an otherwise on-time transaction to the later heuristic clock.
+    if (frameTimelineVsyncId > 0) {
+        surfaceApi_.setFrameTimeline(transaction, frameTimelineVsyncId);
+    } else if (surfaceApi_.setDesiredPresentTime != nullptr && desiredPresentTimeNanos > 0) {
+        surfaceApi_.setDesiredPresentTime(transaction, desiredPresentTimeNanos);
+    }
+    // Position-only and fully transparent transactions are legally coalesced by the emulator's
+    // SurfaceFlinger. Alternate two immutable 1x1 buffers whose black pixel has one alpha quantum.
+    // That one-channel-step contribution prevents transparent-layer culling, and binding it in the
+    // same transaction makes its present fence exact evidence for this crop. Both buffers remain
+    // strongly owned and unwritten until teardown.
+    surfaceApi_.setBuffer(
+        transaction, geometryPulseSurface_,
+        geometryPulseBuffers_[*pulseIndex], -1);
+    surfaceApi_.setBufferTransparency(
+        transaction, geometryPulseSurface_,
+        ASURFACE_TRANSACTION_TRANSPARENCY_TRANSLUCENT);
+    surfaceApi_.setBufferAlpha(transaction, geometryPulseSurface_, 1.0F);
+    surfaceApi_.setVisibility(
+        transaction, geometryPulseSurface_,
+        ASURFACE_TRANSACTION_VISIBILITY_SHOW);
+    const bool installsGeometryPulseFrameRate =
+        !geometryPulseFrameRateConfigured_ && geometryPulseFrameRate_ > 0.0F &&
+        surfaceApi_.setFrameRate != nullptr;
+    if (installsGeometryPulseFrameRate) {
+        // The Java image/container layers already carry this vote, but the native pulse is a
+        // separate sibling. Without its own vote host SurfaceFlinger content-detects the
+        // alternating 1x1 buffer near 3.7 Hz and merges otherwise on-time crop proofs.
+        surfaceApi_.setFrameRate(
+            transaction, geometryPulseSurface_, geometryPulseFrameRate_,
+            ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+    }
+    const std::int64_t bufferSetEnd = monotonicNowNanos();
+    surfaceApi_.setOnCommit(transaction, cookie, &onCommitted);
+    surfaceApi_.setOnComplete(transaction, cookie, &onCompleted);
+
+    appliedCallbacks_[*recordIndex] = AppliedCallbackRecord{
+        .identity = identity,
+        .producedRef = *latestAppliedBufferRef_,
+        .cookieIndex = static_cast<std::uint32_t>(*cookieIndex),
+        .applyIssued = true,
+        .geometryOnly = true,
+        // The visible crop is proven by OnCommit, but the transparent pulse is a real buffer
+        // replacement. Its cookie and previous pulse slot therefore remain owned until the
+        // private OnComplete/release-fence path finishes. Mark that ownership explicitly so an
+        // unrelated image-buffer release cannot mistake the valid private completion for a
+        // geometry-record invariant violation.
+        .requiresComplete = true,
+    };
+    ++logicalUnlatchedNow_;
+    maxLogicalUnlatched_ = std::max(maxLogicalUnlatched_, logicalUnlatchedNow_);
+    maxAppliedCallbackRecordCount_ = std::max(
+        maxAppliedCallbackRecordCount_, callbackRecordCount());
+    maxCommitProofPending_ = std::max(maxCommitProofPending_, logicalUnlatchedNow_);
+    std::uint32_t completePending = 0;
+    for (const auto& record : appliedCallbacks_) {
+        if (record.has_value() &&
+            (!record->geometryOnly || record->requiresComplete) &&
+            !record->completeEventConsumed) ++completePending;
+    }
+    maxCompleteProofPending_ = std::max(maxCompleteProofPending_, completePending);
+
+    const std::int64_t applyBegin = monotonicNowNanos();
+    surfaceApi_.applyTransaction(transaction);
+    if (installsGeometryPulseFrameRate) geometryPulseFrameRateConfigured_ = true;
+    const std::int64_t applyEnd = monotonicNowNanos();
+    surfaceApi_.deleteTransaction(transaction);
+    completeCallbackPublication(*cookie);
+    receipt->identity = identity;
+    receipt->transactionApplyBeginNanos = applyBegin;
+    receipt->frameTimelineSetEndNanos = applyBegin;
+    receipt->bufferSetEndNanos = bufferSetEnd;
+    receipt->transactionApplyEndNanos = applyEnd;
+    receipt->setBufferCount = 0;
+    receipt->setFrameTimelineCount = frameTimelineVsyncId > 0 ? 1 : 0;
+    receipt->transactionApplyCount = 1;
+    receipt->applyDisposition = ApplyDisposition::APPLIED;
+    receipt->previousAppliedBufferRef = *latestAppliedBufferRef_;
+    receipt->appliedBufferRef = *latestAppliedBufferRef_;
+    receipt->submitted = true;
+    if (!stateInvariantsHold()) {
+        ++backendInvariantFatalCount_;
+        return ApplyDisposition::NOT_APPLIED;
+    }
+    return ApplyDisposition::APPLIED;
 }
 
 SurfaceControlPresentBackend::ApplyDisposition
@@ -1230,7 +2095,8 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionImpl(
         PreparedSurfaceSubmission& prepared,
         const SwappyFixedExternalClaim& claim,
         SubmissionReceipt* receipt,
-        bool directSubmission) {
+        bool directSubmission,
+        bool applyFrameTimeline) {
     if (receipt) *receipt = {};
     auto* cookie = static_cast<SubmissionCookie*>(prepared.cookie);
     auto* target = pool_.find(prepared.bufferSlot, prepared.bufferGeneration);
@@ -1269,7 +2135,11 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionImpl(
         claim.initialDecisionNanos <= claim.decisionNanos &&
         claim.claimReturnNanos >= claim.decisionNanos &&
         claim.claimReturnNanos <= applyEntryNanos &&
-        claim.setBufferCount == 0 && claim.acquireFenceDupCount == 2 &&
+        claim.setBufferCount == 0 &&
+        claim.acquireFenceDupCount == prepared.acquireFenceDupCount &&
+        (prepared.readyWithoutAcquireFence
+            ? claim.acquireFenceDupCount == 0
+            : claim.acquireFenceDupCount == 2) &&
         claim.setBufferPending == 1 &&
         prepared.backpressureEnablePending == prepared.firstStage &&
         (prepared.firstStage
@@ -1323,10 +2193,13 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionImpl(
     if (!exact) return ApplyDisposition::NOT_APPLIED;
 
     const auto callbackIndex = freeAppliedCallbackRecordIndex();
-    const auto acquireIndex = freeAcquireFenceRecordIndex();
+    const auto acquireIndex = prepared.readyWithoutAcquireFence
+        ? std::optional<std::size_t>{}
+        : freeAcquireFenceRecordIndex();
     const auto releaseIndex = latestAppliedBufferRef_.has_value()
         ? freePreviousReleaseRecordIndex() : std::optional<std::size_t>{};
-    if (!callbackIndex.has_value() || !acquireIndex.has_value() ||
+    if (!callbackIndex.has_value() ||
+        (!prepared.readyWithoutAcquireFence && !acquireIndex.has_value()) ||
         (latestAppliedBufferRef_.has_value() && !releaseIndex.has_value())) {
         ++capacityExhaustedCount_;
         ++backendInvariantFatalCount_;
@@ -1375,15 +2248,17 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionImpl(
     }
     {
         std::lock_guard<std::mutex> lock(fenceMutex_);
-        acquireFences_[*acquireIndex] = AcquireFenceRecord{
-            .identity = appliedIdentity,
-            .buffer = BufferIdentity{
-                .slot = prepared.bufferSlot,
-                .generation = prepared.bufferGeneration,
-            },
-            .acquireFenceSerial = prepared.acquireFenceSerial,
-            .phase = AcquireProofPhase::RESERVED,
-        };
+        if (acquireIndex.has_value()) {
+            acquireFences_[*acquireIndex] = AcquireFenceRecord{
+                .identity = appliedIdentity,
+                .buffer = BufferIdentity{
+                    .slot = prepared.bufferSlot,
+                    .generation = prepared.bufferGeneration,
+                },
+                .acquireFenceSerial = prepared.acquireFenceSerial,
+                .phase = AcquireProofPhase::RESERVED,
+            };
+        }
     }
     if (priorRef.has_value()) {
         previousReleases_[*releaseIndex] = PreviousReleaseRecord{
@@ -1457,7 +2332,7 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionImpl(
         frameworkAcquireFd = std::exchange(
             localAcquireFence_->frameworkAcquireFd, -1);
     }
-    if (!directSubmission) {
+    if (applyFrameTimeline) {
         surfaceApi_.setFrameTimeline(
             prepared.transaction, claim.frameTimelineVsyncId);
         prepared.setFrameTimelineCount = 1;
@@ -1484,7 +2359,9 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionImpl(
     for (const auto& record : appliedCallbacks_) {
         if (!record.has_value()) continue;
         if (!record->commitEventConsumed) ++commitPending;
-        if (!record->completeEventConsumed) ++completePending;
+        if (!record->geometryOnly && !record->completeEventConsumed) {
+            ++completePending;
+        }
     }
     maxCommitProofPending_ = std::max(
         maxCommitProofPending_, commitPending);
@@ -1509,15 +2386,18 @@ SurfaceControlPresentBackend::applyPreparedBufferTransactionImpl(
             localAcquireFence_.reset();
         }
     }
-    FixedPresentEvent acquireEvent{};
-    acquireEvent.kind = FixedPresentEventKind::ACQUIRE_FENCE_SIGNALED;
-    acquireEvent.identity = appliedIdentity;
-    acquireEvent.acquireFenceSerial = prepared.acquireFenceSerial;
     const std::uint64_t applyBeforeAcquireBaseline =
         applyBeforeAcquireSignalProvenCount_;
-    if (proofAcquireFd < 0 || !publishAcquireFenceProofAfterApply(
-            *acquireIndex, proofAcquireFd, acquireEvent)) {
-        ++backendInvariantFatalCount_;
+    if (!prepared.readyWithoutAcquireFence) {
+        FixedPresentEvent acquireEvent{};
+        acquireEvent.kind = FixedPresentEventKind::ACQUIRE_FENCE_SIGNALED;
+        acquireEvent.identity = appliedIdentity;
+        acquireEvent.acquireFenceSerial = prepared.acquireFenceSerial;
+        if (proofAcquireFd < 0 || !acquireIndex.has_value() ||
+            !publishAcquireFenceProofAfterApply(
+                *acquireIndex, proofAcquireFd, acquireEvent)) {
+            ++backendInvariantFatalCount_;
+        }
     }
     *receipt = {
         .identity = appliedIdentity,
@@ -1603,9 +2483,15 @@ void SurfaceControlPresentBackend::onCommitted(
     event.latchSource = FixedLatchSource::ANDROID_SURFACE_CONTROL_ON_COMMIT;
     event.eventSequence = cookie->backend->eventSequence_.fetch_add(
         1, std::memory_order_acq_rel) + 1;
-    event.latchNanos = stats != nullptr
-        ? cookie->backend->surfaceApi_.getLatchTime(stats) : 0;
     event.callbackObservedNanos = observedNanos;
+    const std::int64_t frameworkLatchNanos = stats != nullptr
+        ? cookie->backend->surfaceApi_.getLatchTime(stats) : 0;
+    // OnCommit is the platform's exact, identity-bound proof that this transaction was applied and
+    // is ready to be presented. The host SurfaceFlinger implementation may nevertheless expose an
+    // unavailable (-1) latch timestamp until OnComplete. Preserve the proof without inventing an
+    // earlier time: the callback observation is a conservative upper bound for that boundary.
+    event.latchNanos = frameworkLatchNanos > 0
+        ? frameworkLatchNanos : event.callbackObservedNanos;
     event.onCommitCallbackCount = count;
     event.onCompleteCallbackCount =
         cookie->onCompleteCount.load(std::memory_order_acquire);
@@ -1615,11 +2501,26 @@ void SurfaceControlPresentBackend::onCommitted(
         cookie->onCommitEventSequence.store(
             event.eventSequence, std::memory_order_release);
     }
-    if (count != 1 || !firstObserved || observedNanos <= 0 ||
+    if (stats == nullptr || count != 1 || !firstObserved || observedNanos <= 0 ||
         event.latchNanos <= 0) {
         event.kind = FixedPresentEventKind::INVALID_CALLBACK;
     }
     cookie->backend->publishEvent(event);
+}
+
+bool SurfaceControlPresentBackend::retirePreviousGeometryPulse(
+        SubmissionCookie& cookie, ASurfaceTransactionStats* stats) noexcept {
+    if (!cookie.geometryPulseUpdate) return true;
+    const std::uint32_t previous = cookie.previousGeometryPulseBufferIndex;
+    if (previous == UINT32_MAX) return true;
+    // Pulse buffers are written exactly once during attach, remain transparent and immutable, and
+    // stay strongly owned until the detach transaction has completed. A previous-release fence is
+    // required before an app writes or releases a buffer, but not before another transaction takes
+    // an additional reference to the same immutable buffer. Alternating two identities therefore
+    // preserves real compositor work without retaining one gralloc allocation per slow callback.
+    return previous < geometryPulseBuffers_.size() &&
+        geometryPulseBuffers_[previous] != nullptr && stats != nullptr &&
+        geometryPulseSurface_ != nullptr;
 }
 
 void SurfaceControlPresentBackend::onCompleted(
@@ -1638,6 +2539,29 @@ void SurfaceControlPresentBackend::onCompleted(
         cookie->onCompleteCount.fetch_add(1, std::memory_order_acq_rel) + 1;
     const std::uint32_t commitCount =
         cookie->onCommitCount.load(std::memory_order_acquire);
+    std::int64_t presentNanos = observedNanos;
+    bool presentEvidenceValid = teardown;
+    if (!teardown && stats != nullptr) {
+        const int presentFenceFd = backend->surfaceApi_.getPresentFenceFd(stats);
+        if (presentFenceFd >= 0) {
+            std::int64_t fenceSignalNanos = 0;
+            const bool exactFenceSignal = exactAcquireFenceSignal(
+                presentFenceFd, observedNanos,
+                backend->syncFileInfo_, backend->syncFileInfoFree_,
+                &fenceSignalNanos);
+            const bool closed = close(presentFenceFd) == 0;
+            // OnComplete itself guarantees that the transaction was included in a presented
+            // frame. Prefer the fence's hardware signal timestamp when available; the callback
+            // observation remains a conservative presentation upper bound on implementations
+            // whose completed fence exposes no child timestamp.
+            presentNanos = exactFenceSignal ? fenceSignalNanos : observedNanos;
+            presentEvidenceValid = closed;
+        } else if (presentFenceFd == -1) {
+            // The NDK explicitly permits -1 on devices without present-fence support. OnComplete
+            // is still the platform presentation proof in that case.
+            presentEvidenceValid = true;
+        }
+    }
 
     FixedPresentEvent completed{};
     completed.kind = cookie->teardown
@@ -1646,17 +2570,30 @@ void SurfaceControlPresentBackend::onCompleted(
     completed.identity = cookie->identity;
     completed.eventSequence = backend->eventSequence_.fetch_add(
         1, std::memory_order_acq_rel) + 1;
+    completed.latchSource = FixedLatchSource::
+        ANDROID_SURFACE_CONTROL_ON_COMPLETE;
+    completed.latchNanos = presentNanos;
     completed.callbackObservedNanos = observedNanos;
     completed.onCommitCallbackCount = commitCount;
     completed.onCompleteCallbackCount = count;
     if (count == 1 && firstObserved) {
+        cookie->onCompletePresentNanos.store(
+            presentNanos, std::memory_order_release);
         cookie->onCompleteEventSequence.store(
             completed.eventSequence, std::memory_order_release);
     }
     if ((!cookie->teardown && commitCount != 1) || count != 1 ||
-        !firstObserved || observedNanos <= 0 || stats == nullptr) {
+        !firstObserved || observedNanos <= 0 || presentNanos <= 0 ||
+        presentNanos > observedNanos || stats == nullptr ||
+        !presentEvidenceValid) {
         completed.kind = FixedPresentEventKind::INVALID_CALLBACK;
     }
+    const bool independentGeometryPulseCompletion =
+        cookie->geometryPulseUpdate && !cookie->teardown;
+    // A pulse-backed geometry transaction is real buffer work. OnCommit retires logical-unlatched
+    // ownership, while OnComplete is the only platform callback carrying presentation evidence.
+    // Publish both events; the renderer keeps the record across OnCommit when requiresComplete is
+    // set and releases its cookie only after this private callback and event consumption converge.
     backend->publishEvent(completed);
 
     if (cookie->hasPreviousAppliedBufferRef) {
@@ -1687,7 +2624,25 @@ void SurfaceControlPresentBackend::onCompleted(
             backend->publishEvent(released);
         }
     }
-    backend->completeCallbackPublication(*cookie);
+    if (!backend->retirePreviousGeometryPulse(*cookie, stats)) {
+        FixedPresentEvent invalid{};
+        invalid.kind = FixedPresentEventKind::INVALID_CALLBACK;
+        invalid.identity = cookie->identity;
+        invalid.eventSequence = backend->eventSequence_.fetch_add(
+            1, std::memory_order_acq_rel) + 1;
+        invalid.callbackObservedNanos = monotonicNowNanos();
+        backend->publishEvent(invalid);
+    }
+    if (independentGeometryPulseCompletion) {
+        const std::uint32_t previous = cookie->lifecycleFlags.fetch_or(
+            kCookiePrivateCompleteObserved, std::memory_order_acq_rel);
+        if ((previous & kCookiePublicationComplete) != 0U &&
+            (previous & kCookieRecordConsumed) != 0U) {
+            backend->releaseCallbackCookie(cookie->slotIndex);
+        }
+    } else {
+        backend->completeCallbackPublication(*cookie);
+    }
     if (teardown) {
         std::lock_guard<std::mutex> lock(backend->teardownMutex_);
         backend->teardownCompleted_ = true;
@@ -1726,6 +2681,17 @@ bool SurfaceControlPresentBackend::drainEvent(FixedPresentEvent* event) {
 bool SurfaceControlPresentBackend::hasPendingEvent() {
     std::lock_guard<std::mutex> lock(eventMutex_);
     return eventCount_ != 0;
+}
+
+bool SurfaceControlPresentBackend::isGeometryOnlyTransaction(
+        const FixedPresentEvent& event) const noexcept {
+    for (const auto& optionalRecord : appliedCallbacks_) {
+        if (optionalRecord.has_value() &&
+            exactIdentity(optionalRecord->identity, event.identity)) {
+            return optionalRecord->geometryOnly;
+        }
+    }
+    return false;
 }
 
 bool SurfaceControlPresentBackend::consumeCompositorLatch(
@@ -1801,7 +2767,8 @@ bool SurfaceControlPresentBackend::consumeCompositorLatch(
             .latchNanos = event.latchNanos,
             .source = event.latchSource,
         };
-        if (record.completeEventConsumed) {
+        if ((record.geometryOnly && !record.requiresComplete) ||
+            record.completeEventConsumed) {
             const std::uint32_t cookieIndex = record.cookieIndex;
             optionalRecord.reset();
             completeCallbackRecordConsumption(cookieIndex);
@@ -1832,13 +2799,17 @@ bool SurfaceControlPresentBackend::consumeTransactionCompleted(
             cookie.onCompleteEventSequence.load(std::memory_order_acquire);
         const std::int64_t callbackObservedNanos =
             cookie.onCompleteObservedNanos.load(std::memory_order_acquire);
+        const std::int64_t presentNanos =
+            cookie.onCompletePresentNanos.load(std::memory_order_acquire);
         const bool exact = event.kind ==
                 FixedPresentEventKind::TRANSACTION_COMPLETED &&
             event.structSize == sizeof(event) &&
             event.schemaVersion == kFixedPresentEventSchemaVersion &&
             event.eventSequence != 0 && event.onCommitCallbackCount == 1 &&
             event.onCompleteCallbackCount == 1 &&
-            record.applyIssued && !record.completeEventConsumed &&
+            record.applyIssued &&
+            (!record.geometryOnly || record.requiresComplete) &&
+            !record.completeEventConsumed &&
             record.consumedOnCompleteCount == 0 && !record.poisoned &&
             cookie.inUse.load(std::memory_order_acquire) &&
             cookie.backend == this && cookie.slotIndex == record.cookieIndex &&
@@ -1846,7 +2817,11 @@ bool SurfaceControlPresentBackend::consumeTransactionCompleted(
             cookie.onCommitCount.load(std::memory_order_acquire) == 1 &&
             cookie.onCompleteCount.load(std::memory_order_acquire) == 1 &&
             callbackSequence == event.eventSequence &&
-            callbackObservedNanos == event.callbackObservedNanos;
+            presentNanos == event.latchNanos && presentNanos > 0 &&
+            event.latchSource == FixedLatchSource::
+                ANDROID_SURFACE_CONTROL_ON_COMPLETE &&
+            callbackObservedNanos == event.callbackObservedNanos &&
+            event.callbackObservedNanos >= event.latchNanos;
         if (exact && event.callbackObservedNanos > 0 &&
             record.successorApplyBeginNanos > 0) {
             lastSuccessorApplyMinusPriorCompleteNanos_ =
@@ -1864,6 +2839,7 @@ bool SurfaceControlPresentBackend::consumeTransactionCompleted(
         record.completeEventConsumed = true;
         record.consumedOnCompleteCount = 1;
         record.completeEventSequence = event.eventSequence;
+        record.presentNanos = event.latchNanos;
         record.completeCallbackObservedNanos = event.callbackObservedNanos;
         if (record.commitEventConsumed) {
             const std::uint32_t cookieIndex = record.cookieIndex;
@@ -2187,6 +3163,32 @@ void SurfaceControlPresentBackend::finishFenceWatch(
     }
     if (!found) return;
     const std::int64_t observed = monotonicNowNanos();
+    if (kind == FenceWatchKind::GEOMETRY_PULSE_RELEASE) {
+        const bool closed = close(fd) == 0;
+        const std::uint64_t rawIndex = event.releasedBufferSlot;
+        bool exact = event.kind ==
+                FixedPresentEventKind::PREVIOUS_BUFFER_RELEASED &&
+            closed && rawIndex < geometryPulseBufferStates_.size();
+        if (exact) {
+            std::uint8_t expected = static_cast<std::uint8_t>(
+                GeometryPulseBufferState::WAIT_RELEASE);
+            exact = geometryPulseBufferStates_[rawIndex].compare_exchange_strong(
+                expected,
+                static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+                std::memory_order_acq_rel, std::memory_order_acquire);
+        }
+        if (!exact) {
+            event.kind = FixedPresentEventKind::INVALID_CALLBACK;
+            event.eventSequence = eventSequence_.fetch_add(
+                1, std::memory_order_acq_rel) + 1;
+            event.callbackObservedNanos = observed;
+            publishEvent(event);
+        } else {
+            eventCondition_.notify_all();
+            if (wakeCallback_ != nullptr) wakeCallback_(wakeContext_);
+        }
+        return;
+    }
     if (kind == FenceWatchKind::ACQUIRE_PROOF) {
         std::int64_t signal = 0;
         const bool exactSignal =
@@ -2284,6 +3286,12 @@ bool SurfaceControlPresentBackend::detachAfterEvidenceDrained() {
         acquireFenceRecordCount() != 0 ||
         appOwnedAcquireFdCount() != 0 || hasPendingEvent() ||
         !stateInvariantsHold()) return false;
+    for (const auto& state : geometryPulseBufferStates_) {
+        const auto value = static_cast<GeometryPulseBufferState>(
+            state.load(std::memory_order_acquire));
+        if (value == GeometryPulseBufferState::RESERVED ||
+            value == GeometryPulseBufferState::WAIT_RELEASE) return false;
+    }
     const auto cookieIndex = acquireCallbackCookie();
     if (!cookieIndex.has_value()) return false;
     auto* cookie = &callbackCookies_[*cookieIndex];
@@ -2320,6 +3328,24 @@ bool SurfaceControlPresentBackend::detachAfterEvidenceDrained() {
         latestConsumedCompositorLatchObservedNanos_ = 0;
         logicalUnlatchedNow_ = 0;
     }
+    if (currentGeometryPulseBufferIndex_.has_value()) {
+        const std::uint32_t pulseIndex = *currentGeometryPulseBufferIndex_;
+        std::uint8_t expected = static_cast<std::uint8_t>(
+            GeometryPulseBufferState::CURRENT);
+        if (!geometryPulseBufferStates_[pulseIndex].compare_exchange_strong(
+                expected,
+                static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            surfaceApi_.deleteTransaction(transaction);
+            releaseCallbackCookie(*cookieIndex);
+            return false;
+        }
+        cookie->geometryPulseUpdate = true;
+        cookie->geometryPulseBufferIndex = UINT32_MAX;
+        cookie->previousGeometryPulseBufferIndex = pulseIndex;
+        currentGeometryPulseBufferIndex_.reset();
+        surfaceApi_.reparent(transaction, geometryPulseSurface_, nullptr);
+    }
     teardownCompleted_ = false;
     surfaceApi_.reparent(transaction, childSurface_, nullptr);
     surfaceApi_.setOnComplete(transaction, cookie, &onCompleted);
@@ -2331,15 +3357,18 @@ bool SurfaceControlPresentBackend::detachAfterEvidenceDrained() {
     releaseCallbackCookie(*cookieIndex);
 
     bool teardownEventConsumed = false;
-    while (!pool_.allFree() || !teardownEventConsumed) {
+    while (!pool_.allFree() || !teardownEventConsumed ||
+           !geometryPulseBuffersAllFree()) {
         FixedPresentEvent event{};
         {
             std::unique_lock<std::mutex> eventLock(eventMutex_);
             eventCondition_.wait(eventLock, [this] {
                 return eventCount_ != 0 || eventOverflowed_.load(
-                    std::memory_order_acquire);
+                    std::memory_order_acquire) ||
+                    geometryPulseBuffersAllFree();
             });
             if (eventOverflowed_.load(std::memory_order_acquire)) return false;
+            if (eventCount_ == 0) continue;
             event = events_[eventRead_];
             eventRead_ = (eventRead_ + 1) % events_.size();
             --eventCount_;
@@ -2390,7 +3419,13 @@ bool SurfaceControlPresentBackend::retireAfterParentLifecycleEvidenceDrained() {
     latestConsumedCompositorLatchObservedNanos_ = 0;
     logicalUnlatchedNow_ = 0;
     backpressureEnabled_ = false;
-    return pool_.allFree();
+    currentGeometryPulseBufferIndex_.reset();
+    for (auto& state : geometryPulseBufferStates_) {
+        state.store(
+            static_cast<std::uint8_t>(GeometryPulseBufferState::FREE),
+            std::memory_order_release);
+    }
+    return pool_.allFree() && geometryPulseBuffersAllFree();
 }
 
 bool SurfaceControlPresentBackend::destroy() {
@@ -2418,7 +3453,8 @@ bool SurfaceControlPresentBackend::destroy() {
             appOwnedAcquireFdCount() != 0 || !eventsEmpty || !fencesEmpty ||
             latestAppliedBufferRef_.has_value() ||
             latestConsumedCompositorLatchRef_.has_value() ||
-            logicalUnlatchedNow_ != 0 || !pool_.allFree()) {
+            logicalUnlatchedNow_ != 0 || !pool_.allFree() ||
+            !geometryPulseBuffersAllFree()) {
             return false;
         }
     }
@@ -2428,6 +3464,11 @@ bool SurfaceControlPresentBackend::destroy() {
         fenceControlFd_ = -1;
     }
     pool_.destroy();
+    releaseGeometryPulseResources();
+    if (geometrySurface_ != nullptr && geometrySurface_ != childSurface_) {
+        surfaceApi_.releaseSurface(geometrySurface_);
+    }
+    geometrySurface_ = nullptr;
     if (childSurface_ != nullptr) {
         surfaceApi_.releaseSurface(childSurface_);
         childSurface_ = nullptr;
@@ -2446,6 +3487,10 @@ bool SurfaceControlPresentBackend::destroy() {
     dupNativeFenceFd_ = nullptr;
     syncFileInfo_ = nullptr;
     syncFileInfoFree_ = nullptr;
+    hardwareBufferAllocate_ = nullptr;
+    hardwareBufferRelease_ = nullptr;
+    hardwareBufferLock_ = nullptr;
+    hardwareBufferUnlock_ = nullptr;
     surfaceApi_ = {};
     if (androidLibrary_ != nullptr) {
         dlclose(androidLibrary_);
@@ -2505,6 +3550,7 @@ bool SurfaceControlPresentBackend::destroy() {
     teardownCompleted_ = false;
     teardownReleaseEventSequence_.store(0, std::memory_order_release);
     prepared_ = false;
+    cpuComposerOnly_ = false;
     attached_ = false;
     return true;
 }
@@ -2598,8 +3644,12 @@ SurfaceControlPresentBackend::conservationSnapshot() {
     for (const auto& record : appliedCallbacks_) {
         if (!record.has_value()) continue;
         if (!record->commitEventConsumed) ++snapshot.commitProofPendingNow;
-        if (!record->completeEventConsumed) ++snapshot.completeProofPendingNow;
-        if (record->commitEventConsumed &&
+        if ((!record->geometryOnly || record->requiresComplete) &&
+            !record->completeEventConsumed) {
+            ++snapshot.completeProofPendingNow;
+        }
+        if ((!record->geometryOnly || record->requiresComplete) &&
+            record->commitEventConsumed &&
             !record->completeEventConsumed) {
             ++snapshot.retainedWaitingOnCompleteCount;
         }

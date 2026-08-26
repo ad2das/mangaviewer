@@ -61,7 +61,12 @@ object ReaderPreparedStore {
         val originalWidth: Int,
         val originalHeight: Int,
         val inSampleSize: Int,
-        val postDecodeResized: Boolean = false
+        val postDecodeResized: Boolean = false,
+        /** Deterministic display crop within the immutable original; zero width means full. */
+        val sourceCropLeft: Int = 0,
+        val sourceCropTop: Int = 0,
+        val sourceCropWidth: Int = 0,
+        val sourceCropHeight: Int = 0,
     )
 
     data class PreparedTilePage @JvmOverloads constructor(
@@ -812,9 +817,9 @@ object ReaderPreparedStore {
                 if (tile.sourceWidth != page.pageWidth ||
                     tile.sourceHeight != page.pageHeight ||
                     tile.sourceTop != expectedTop || tile.sourceBottom <= tile.sourceTop ||
-                    tile.sourceBottom > page.pageHeight || tile.bitmap.isRecycled ||
+                    tile.sourceBottom > page.pageHeight ||
                     !tile.hasExactSourcePixelStorage() ||
-                    tile.bitmap.config != Bitmap.Config.ARGB_8888 || tile.bitmap.isMutable
+                    !tile.bitmap.hasImmutableExactPixelConfig()
                 ) {
                     return false
                 }
@@ -879,9 +884,8 @@ object ReaderPreparedStore {
             if (tile.sourceWidth != page.pageWidth || tile.sourceHeight != page.pageHeight ||
                 tile.sourceTop != expectedTop || span <= 0 || tile.sourceBottom > page.pageHeight ||
                 (!tail && span != tileSourceHeightPx) || (tail && span > tileSourceHeightPx) ||
-                tile.bitmap.isRecycled || !tile.hasExactSourcePixelStorage() ||
-                tile.bitmap.config != Bitmap.Config.ARGB_8888 ||
-                tile.bitmap.isMutable
+                !tile.hasExactSourcePixelStorage() ||
+                !tile.bitmap.hasImmutableExactPixelConfig()
             ) return false
             expectedTop = tile.sourceBottom
         }
@@ -896,11 +900,17 @@ object ReaderPreparedStore {
         pageHeight: Int
     ): Boolean {
         val expectedAsset = canonicalOriginalAssetIdentity(expectedImage)
-        return expectedAsset.isNotEmpty() && pageWidth > 0 && pageHeight > 0 &&
-            proof != null && proof.variant == PreparedAssetVariant.ORIGINAL &&
-            proof.canonicalAsset == expectedAsset && proof.inSampleSize == 1 &&
-            !proof.postDecodeResized && proof.originalWidth == pageWidth &&
-            proof.originalHeight == pageHeight
+        if (expectedAsset.isEmpty() || pageWidth <= 0 || pageHeight <= 0 ||
+            proof == null || proof.variant != PreparedAssetVariant.ORIGINAL ||
+            proof.canonicalAsset != expectedAsset || proof.inSampleSize != 1 ||
+            proof.postDecodeResized || proof.originalWidth <= 0 || proof.originalHeight <= 0
+        ) return false
+        val cropWidth = proof.sourceCropWidth.takeIf { it > 0 } ?: proof.originalWidth
+        val cropHeight = proof.sourceCropHeight.takeIf { it > 0 } ?: proof.originalHeight
+        return proof.sourceCropLeft >= 0 && proof.sourceCropTop >= 0 &&
+            proof.sourceCropLeft.toLong() + cropWidth <= proof.originalWidth.toLong() &&
+            proof.sourceCropTop.toLong() + cropHeight <= proof.originalHeight.toLong() &&
+            cropWidth == pageWidth && cropHeight == pageHeight
     }
 
     @JvmStatic

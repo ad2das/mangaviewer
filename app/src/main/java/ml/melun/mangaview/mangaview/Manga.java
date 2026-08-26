@@ -109,10 +109,6 @@ public class Manga {
             "(?i)(?:(?:https?:)?//" + NTK_IMAGE_HOST_PATTERN + ")?/(?:manhwa|webtoon|comic)/\\d+/[^/?#]+/(?:p)?\\d{1,4}\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
     private static final Pattern NTK_CURRENT_CDN_PAGE_IMAGE_PATTERN = Pattern.compile(
             "(?i)(?:https?:)?//(?:www\\.)?pl\\d+\\.com/.*/\\d+/\\d+/[^/?#]+\\.(?:jpg|jpeg|png|webp)(?:[?#].*)?$");
-    private static final Pattern VIEWER_EPISODE_PREFIX_PATTERN = Pattern.compile("^\\(\\s*\\d+\\s*/\\s*\\d+\\s*\\)\\s*");
-    private static final Pattern EPISODE_WHITESPACE_PATTERN = Pattern.compile("\\s+");
-    private static final Pattern EPISODE_NUMBER_PATTERN = Pattern.compile("(\\d+(?:\\.\\d+)?(?:\\s*[,~～\\-]\\s*\\d+(?:\\.\\d+)?)*)\\s*화");
-    private static final Pattern EPISODE_BLOCK_NUMBER_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)?");
     private static final int NTK_DEFAULT_GENERATED_PAGE_COUNT = 64;
     private static final int NTK_MAX_GENERATED_PAGE_COUNT = 300;
     private static final int NTK_GENERATED_INITIAL_VALIDATION_PAGE_COUNT = 5;
@@ -229,6 +225,7 @@ public class Manga {
     private String ntkViewerParseReason = "";
     private int ntkImageCount;
     private volatile boolean fetchInProgress;
+    private transient volatile CachedEpisodeNumber cachedEpisodeNumber;
 
     public Manga(int i, String n, String d, int baseMode) {
         id = i;
@@ -247,6 +244,16 @@ public class Manga {
 
     public String getName() {
         return name;
+    }
+
+    EpisodeNumberParser.Result visibleEpisodeNumberResult() {
+        String currentName = name;
+        CachedEpisodeNumber cached = cachedEpisodeNumber;
+        if(cached != null && cached.sourceName == currentName)
+            return cached.result;
+        EpisodeNumberParser.Result parsed = EpisodeNumberParser.parse(currentName);
+        cachedEpisodeNumber = new CachedEpisodeNumber(currentName, parsed);
+        return parsed;
     }
 
     public void addThumb(String src) {
@@ -476,7 +483,7 @@ public class Manga {
     private String matchingNtkEpisodePath(List<Manga> episodes) {
         if(episodes == null || episodes.size() == 0)
             return "";
-        String currentEpisodeNumber = episodeNumberKey(name);
+        String currentEpisodeNumber = visibleEpisodeNumberResult().key;
         List<Manga> snapshot;
         try {
             snapshot = new ArrayList<>(episodes);
@@ -489,7 +496,7 @@ public class Manga {
             String path = episode.ntkEpisodePath == null ? "" : episode.ntkEpisodePath.trim();
             if(path.length() == 0)
                 continue;
-            String episodeNumber = episodeNumberKey(episode.getName());
+            String episodeNumber = episode.visibleEpisodeNumberResult().key;
             if(currentEpisodeNumber.length() > 0 && episodeNumber.length() > 0) {
                 if(currentEpisodeNumber.equals(episodeNumber))
                     return path;
@@ -504,7 +511,7 @@ public class Manga {
     private int matchingNtkImageCount(List<Manga> episodes, String currentPath) {
         if(episodes == null || episodes.size() == 0)
             return 0;
-        String currentEpisodeNumber = episodeNumberKey(name);
+        String currentEpisodeNumber = visibleEpisodeNumberResult().key;
         List<Manga> snapshot;
         try {
             snapshot = new ArrayList<>(episodes);
@@ -517,7 +524,7 @@ public class Manga {
             String path = episode.ntkEpisodePath == null ? "" : episode.ntkEpisodePath.trim();
             if(currentPath.length() > 0 && currentPath.equals(path))
                 return episode.ntkImageCount;
-            String episodeNumber = episodeNumberKey(episode.getName());
+            String episodeNumber = episode.visibleEpisodeNumberResult().key;
             if(currentEpisodeNumber.length() > 0 && episodeNumber.length() > 0) {
                 if(currentEpisodeNumber.equals(episodeNumber))
                     return episode.ntkImageCount;
@@ -11502,6 +11509,38 @@ public class Manga {
         attachEpisodeSeriesMetadata();
     }
 
+    /**
+     * Attaches a snapshot whose order is already owned by Title.
+     *
+     * Continuous-reader progress persistence receives Title.eps itself. Re-running the visible
+     * episode regex sort for that same 260-row canonical list on every newly entered Manga held
+     * main-thread input for hundreds of milliseconds. Copy the authoritative order so callers
+     * cannot mutate it, while preserving the normal per-episode scalar metadata propagation.
+     */
+    public void setAuthoritativelyOrderedEps(List<Manga> orderedEps) {
+        if(orderedEps == null) {
+            this.eps = null;
+        } else {
+            try {
+                this.eps = new ArrayList<>(orderedEps);
+            } catch(RuntimeException e) {
+                ml.melun.mangaview.report.CrashReporter.record(e);
+                this.eps = new ArrayList<>();
+            }
+        }
+        attachEpisodeSeriesMetadata();
+    }
+
+    /** Attaches only the series identity without walking or replacing an episode snapshot. */
+    public void attachSeriesMetadata(Title title) {
+        if(title == null) return;
+        this.title = title;
+        this.titleId = title.getId();
+        String episodePath = ntkEpisodePath == null ? "" : ntkEpisodePath.trim();
+        if(episodePath.length() > 0)
+            title.applyNtkTitlePathFromEpisodePath(episodePath);
+    }
+
     private void attachEpisodeSeriesMetadata() {
         if(eps == null)
             return;
@@ -11512,10 +11551,19 @@ public class Manga {
         for(Manga episode : eps) {
             if(episode == null)
                 continue;
-            if(episode.getTitleId() <= 0 && currentTitleId > 0)
-                episode.setTitleId(currentTitleId);
-            if(episode.getTitle() == null && currentTitle != null)
-                episode.setTitle(currentTitle);
+            // This is one metadata propagation transaction over a shared episode snapshot. Calling
+            // the public setters here recursively re-entered attachEpisodeSeriesMetadata() for
+            // every episode whose own snapshot referenced the same 260-row list. A boundary attach
+            // consequently became an O(n^2), hundreds-of-milliseconds main-thread operation.
+            // Assign the two scalar links directly; no nested episode list needs propagation.
+            if(episode.titleId <= 0 && currentTitleId > 0)
+                episode.titleId = currentTitleId;
+            if(episode.title == null && currentTitle != null) {
+                episode.title = currentTitle;
+                String episodePath = episode.ntkEpisodePath == null ? "" : episode.ntkEpisodePath.trim();
+                if(episodePath.length() > 0)
+                    currentTitle.applyNtkTitlePathFromEpisodePath(episodePath);
+            }
         }
     }
 
@@ -11610,6 +11658,8 @@ public class Manga {
     }
 
     public void setTitle(Title title) {
+        if(title != null && this.title == title && titleId == title.getId())
+            return;
         this.title = title;
         if(title != null) {
             titleId = title.getId();
@@ -11621,6 +11671,8 @@ public class Manga {
     }
 
     public void setTitleId(int titleId) {
+        if(this.titleId == titleId)
+            return;
         this.titleId = titleId;
         attachEpisodeSeriesMetadata();
     }
@@ -11691,7 +11743,7 @@ public class Manga {
     private int matchingWolfEpisodeId(List<Manga> episodes) {
         if(episodes == null || episodes.size() == 0 || !hasExplicitWolfSource())
             return 0;
-        String currentEpisodeNumber = episodeNumberKey(name);
+        String currentEpisodeNumber = visibleEpisodeNumberResult().key;
         if(currentEpisodeNumber.length() == 0)
             return 0;
         List<Manga> snapshot;
@@ -11703,14 +11755,14 @@ public class Manga {
         for(Manga episode : snapshot) {
             if(episode == null || episode.getId() != id || !sameSeriesEpisode(episode))
                 continue;
-            String episodeNumber = episodeNumberKey(episode.getName());
+            String episodeNumber = episode.visibleEpisodeNumberResult().key;
             if(currentEpisodeNumber.equals(episodeNumber))
                 return id;
         }
         for(Manga episode : snapshot) {
             if(episode == null || episode == this || !sameSeriesEpisode(episode))
                 continue;
-            String episodeNumber = episodeNumberKey(episode.getName());
+            String episodeNumber = episode.visibleEpisodeNumberResult().key;
             if(currentEpisodeNumber.equals(episodeNumber))
                 return episode.getId();
         }
@@ -11875,8 +11927,8 @@ public class Manga {
         if(first.getId() != second.getId())
             return false;
         if(usesEpisodeNameDisambiguation(first, second)) {
-            String firstName = episodeNameKey(first.getName());
-            String secondName = episodeNameKey(second.getName());
+            String firstName = episodeNameKey(first);
+            String secondName = episodeNameKey(second);
             if(firstName.length() > 0 && secondName.length() > 0 && !firstName.equals(secondName))
                 return false;
         }
@@ -11893,8 +11945,8 @@ public class Manga {
         if(firstTitleId > 0 && secondTitleId > 0 && firstTitleId != secondTitleId)
             return false;
         if(isWfwfEpisode(first) || isWfwfEpisode(second) || isNtkEpisode(first) || isNtkEpisode(second)) {
-            String firstName = episodeNameKey(first.getName());
-            String secondName = episodeNameKey(second.getName());
+            String firstName = episodeNameKey(first);
+            String secondName = episodeNameKey(second);
             if(firstName.length() > 0 && secondName.length() > 0 && !firstName.equals(secondName))
                 return false;
         }
@@ -11907,14 +11959,14 @@ public class Manga {
     }
 
     private static boolean sameWolfEpisodeIdentity(Manga first, Manga second) {
-        String firstNumber = episodeNumberKey(first.getName());
-        String secondNumber = episodeNumberKey(second.getName());
+        String firstNumber = first.visibleEpisodeNumberResult().key;
+        String secondNumber = second.visibleEpisodeNumberResult().key;
         if(firstNumber.length() > 0 && secondNumber.length() > 0)
             return firstNumber.equals(secondNumber);
         if(first.getId() != second.getId())
             return false;
-        String firstName = episodeNameKey(first.getName());
-        String secondName = episodeNameKey(second.getName());
+        String firstName = episodeNameKey(first);
+        String secondName = episodeNameKey(second);
         return firstName.length() == 0 || secondName.length() == 0 || firstName.equals(secondName);
     }
 
@@ -11923,14 +11975,14 @@ public class Manga {
         String secondPath = ntkEpisodePathKey(second);
         if(firstPath.length() > 0 && secondPath.length() > 0)
             return firstPath.equals(secondPath);
-        String firstNumber = episodeNumberKey(first.getName());
-        String secondNumber = episodeNumberKey(second.getName());
+        String firstNumber = first.visibleEpisodeNumberResult().key;
+        String secondNumber = second.visibleEpisodeNumberResult().key;
         if(firstNumber.length() > 0 && secondNumber.length() > 0)
             return firstNumber.equals(secondNumber);
         if(first.getId() != second.getId())
             return false;
-        String firstName = episodeNameKey(first.getName());
-        String secondName = episodeNameKey(second.getName());
+        String firstName = episodeNameKey(first);
+        String secondName = episodeNameKey(second);
         return firstName.length() == 0 || secondName.length() == 0 || firstName.equals(secondName);
     }
 
@@ -11942,14 +11994,14 @@ public class Manga {
                 + ":" + resolvedTitleId(manga)
                 + ":" + manga.getId();
         if(isWfwfEpisode(manga)) {
-            String nameKey = episodeNameKey(manga.getName());
+            String nameKey = episodeNameKey(manga);
             if(nameKey.length() > 0)
                 key += ":" + nameKey;
         } else if(isNtkEpisode(manga)) {
             String pathKey = ntkEpisodePathKey(manga);
             if(pathKey.length() > 0)
                 key += ":" + pathKey;
-            String nameKey = episodeNameKey(manga.getName());
+            String nameKey = episodeNameKey(manga);
             if(nameKey.length() > 0)
                 key += ":" + nameKey;
         }
@@ -11992,37 +12044,31 @@ public class Manga {
     private static String episodeNameKey(String name) {
         if(name == null)
             return "";
-        String value = VIEWER_EPISODE_PREFIX_PATTERN.matcher(name.trim().toLowerCase(Locale.ROOT)).replaceFirst("");
-        String episodeNumbers = episodeNumberKey(value);
+        String value = EpisodeNumberParser.cleanViewerPrefix(name.toLowerCase(Locale.ROOT));
+        String episodeNumbers = EpisodeNumberParser.parse(value).key;
         if(episodeNumbers.length() > 0)
             return episodeNumbers;
-        return EPISODE_WHITESPACE_PATTERN.matcher(value).replaceAll("");
+        return EpisodeNumberParser.removeWhitespace(value);
+    }
+
+    private static String episodeNameKey(Manga manga) {
+        if(manga == null)
+            return "";
+        EpisodeNumberParser.Result parsed = manga.visibleEpisodeNumberResult();
+        return parsed.isValid() ? parsed.key : episodeNameKey(manga.getName());
     }
 
     private static String episodeNumberKey(String name) {
-        if(name == null)
-            return "";
-        String value = VIEWER_EPISODE_PREFIX_PATTERN.matcher(name.trim().toLowerCase(Locale.ROOT)).replaceFirst("");
-        String compact = EPISODE_WHITESPACE_PATTERN.matcher(value).replaceAll("");
-        if(compact.contains("번외")
-                || compact.contains("외전")
-                || compact.contains("특별")
-                || compact.contains("부록")
-                || compact.contains("기록")
-                || compact.contains("후기")
-                || compact.contains("프롤로그"))
-            return "";
-        Matcher matcher = EPISODE_NUMBER_PATTERN.matcher(value);
-        String episodeNumbers = "";
-        while(matcher.find())
-            episodeNumbers = matcher.group(1);
-        if(episodeNumbers.length() > 0)
-            return normalizeEpisodeNumbers(episodeNumbers);
-        return "";
+        return EpisodeNumberParser.parse(name).key;
     }
 
     public static String visibleEpisodeNumberKey(String name) {
         return episodeNumberKey(name);
+    }
+
+    /** Reuses the immutable episode object's parsed title instead of rebuilding adjacency keys. */
+    public static String visibleEpisodeNumberKey(Manga episode) {
+        return episode == null ? "" : episode.visibleEpisodeNumberResult().key;
     }
 
     public static Manga preferCloserVisibleEpisode(List<Manga> episodes, Manga current, Manga fallback, boolean next) {
@@ -12031,10 +12077,10 @@ public class Manga {
             return fallback;
         if(fallback == null)
             return visible;
-        EpisodeNumberRange currentRange = visibleEpisodeNumberRange(current == null ? null : current.getName());
-        EpisodeNumberRange visibleRange = visibleEpisodeNumberRange(visible.getName());
-        EpisodeNumberRange fallbackRange = visibleEpisodeNumberRange(fallback.getName());
-        if(currentRange == null || visibleRange == null || fallbackRange == null)
+        EpisodeNumberParser.Result currentRange = visibleEpisodeNumberResult(current);
+        EpisodeNumberParser.Result visibleRange = visible.visibleEpisodeNumberResult();
+        EpisodeNumberParser.Result fallbackRange = fallback.visibleEpisodeNumberResult();
+        if(!currentRange.isValid() || !visibleRange.isValid() || !fallbackRange.isValid())
             return fallback;
         if(next)
             return visibleRange.min + EPISODE_RANGE_EPSILON < fallbackRange.min ? visible : fallback;
@@ -12044,11 +12090,11 @@ public class Manga {
     private static Manga closestVisibleEpisode(List<Manga> episodes, Manga current, boolean next) {
         if(episodes == null || current == null)
             return null;
-        EpisodeNumberRange currentRange = visibleEpisodeNumberRange(current.getName());
-        if(currentRange == null)
+        EpisodeNumberParser.Result currentRange = current.visibleEpisodeNumberResult();
+        if(!currentRange.isValid())
             return null;
         Manga best = null;
-        EpisodeNumberRange bestRange = null;
+        EpisodeNumberParser.Result bestRange = null;
         List<Manga> snapshot;
         try {
             snapshot = new ArrayList<>(episodes);
@@ -12059,8 +12105,8 @@ public class Manga {
             if(episode == null || episode == current || !current.sameSeriesEpisode(episode)
                     || sameEpisodeIdentity(current, episode))
                 continue;
-            EpisodeNumberRange range = visibleEpisodeNumberRange(episode.getName());
-            if(range == null)
+            EpisodeNumberParser.Result range = episode.visibleEpisodeNumberResult();
+            if(!range.isValid())
                 continue;
             if(next) {
                 if(range.min <= currentRange.max + EPISODE_RANGE_EPSILON)
@@ -12083,104 +12129,24 @@ public class Manga {
         return best;
     }
 
-    private static EpisodeNumberRange visibleEpisodeNumberRange(String name) {
-        String key = episodeNumberKey(name);
-        if(key.length() == 0)
-            return null;
-        try {
-            if(key.contains("-")) {
-                String[] parts = key.split("-", 2);
-                double major = Double.parseDouble(parts[0]);
-                double part = Double.parseDouble(parts[1]);
-                double value = major + Math.min(part, 9999.0d) / 10000.0d;
-                return new EpisodeNumberRange(value, value);
-            }
-            String[] parts = key.split(",");
-            double min = Double.MAX_VALUE;
-            double max = -Double.MAX_VALUE;
-            for(String part : parts) {
-                if(part == null || part.length() == 0)
-                    continue;
-                double value = Double.parseDouble(part);
-                min = Math.min(min, value);
-                max = Math.max(max, value);
-            }
-            return min == Double.MAX_VALUE ? null : new EpisodeNumberRange(min, max);
-        } catch (NumberFormatException e) {
-            return null;
+    private static EpisodeNumberParser.Result visibleEpisodeNumberResult(Manga episode) {
+        return episode == null ? EpisodeNumberParser.EMPTY : episode.visibleEpisodeNumberResult();
+    }
+
+    private static final class CachedEpisodeNumber {
+        final String sourceName;
+        final EpisodeNumberParser.Result result;
+
+        CachedEpisodeNumber(String sourceName, EpisodeNumberParser.Result result) {
+            this.sourceName = sourceName;
+            this.result = result;
         }
     }
 
     private static final double EPISODE_RANGE_EPSILON = 0.0001d;
 
-    private static class EpisodeNumberRange {
-        final double min;
-        final double max;
-
-        EpisodeNumberRange(double min, double max) {
-            this.min = min;
-            this.max = max;
-        }
-    }
-
-    private static String normalizeEpisodeNumbers(String value) {
-        if(value == null)
-            return "";
-        ArrayList<String> numbers = new ArrayList<>();
-        Matcher matcher = EPISODE_BLOCK_NUMBER_PATTERN.matcher(value);
-        while(matcher.find()) {
-            String number = normalizeEpisodeNumberToken(matcher.group());
-            if(number.length() > 0)
-                numbers.add(number);
-        }
-        if(numbers.size() == 0)
-            return "";
-        if(numbers.size() == 2 && isHyphenPartEpisode(value, numbers.get(0), numbers.get(1)))
-            return numbers.get(0) + "-" + numbers.get(1);
-        StringBuilder key = new StringBuilder();
-        for(String number : numbers) {
-            if(key.length() > 0)
-                key.append(',');
-            key.append(number);
-        }
-        return key.toString();
-    }
-
-    private static String normalizeEpisodeNumberToken(String value) {
-        if(value == null)
-            return "";
-        String number = value.trim();
-        if(number.length() == 0)
-            return "";
-        int dot = number.indexOf('.');
-        String integer = dot >= 0 ? number.substring(0, dot) : number;
-        integer = integer.replaceFirst("^0+(?=\\d)", "");
-        if(integer.length() == 0)
-            integer = "0";
-        if(dot < 0)
-            return integer;
-        String decimal = number.substring(dot + 1).replaceFirst("0+$", "");
-        return decimal.length() == 0 ? integer : integer + "." + decimal;
-    }
-
-    private static boolean isHyphenPartEpisode(String value, String first, String second) {
-        if(value == null || !value.contains("-") || first == null || second == null)
-            return false;
-        if(first.contains(".") || second.contains("."))
-            return false;
-        try {
-            int firstNumber = Integer.parseInt(first);
-            int secondNumber = Integer.parseInt(second);
-            return firstNumber > 0 && secondNumber > 0 && secondNumber < firstNumber;
-        } catch (NumberFormatException e) {
-            return false;
-        }
-    }
-
     public static String cleanViewerEpisodeName(String name) {
-        if(name == null)
-            return "";
-        return VIEWER_EPISODE_PREFIX_PATTERN.matcher(name.trim()).replaceFirst("");
+        return EpisodeNumberParser.cleanViewerPrefix(name);
     }
 
     private static int resolvedTitleId(Manga manga) {

@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 internal object NtkGlobalSourceAdmissionPolicy {
@@ -278,11 +279,90 @@ object NtkStrictSourceOwnershipRegistry {
         override fun close() = complete()
     }
 
+    internal sealed interface OperationAdmissionObservation {
+        data class Ready(
+            val wake: OperationAdmissionWake,
+        ) : OperationAdmissionObservation
+        data object OwnerUnavailable : OperationAdmissionObservation
+        data class Blocked(
+            val wake: OperationAdmissionWake,
+        ) : OperationAdmissionObservation
+    }
+
+    /**
+     * One exact owner's one-shot wait for the process-wide physical source gate.
+     *
+     * Closing is identity-qualified and idempotent. A successful registry dispatch claims the
+     * token before invoking its callback, so a late Session close cannot remove a replacement
+     * wait and a late callback can only re-enter the Session through its own actor fence.
+     */
+    class OperationAdmissionWake internal constructor(
+        internal val registrationId: Long,
+        internal val path: String,
+        internal val discoveryGeneration: Long,
+        internal val manifestDigest: String,
+        internal val exactProofDigest: String,
+        internal val planBindingDigest: String,
+        internal val promotionNonce: Long,
+        internal val sessionId: Long,
+        private val state: AtomicInteger = AtomicInteger(STATE_WAITING),
+    ) : Closeable {
+        internal fun grantForDispatch(): Boolean {
+            check(Thread.holdsLock(globalLock))
+            return state.compareAndSet(STATE_WAITING, STATE_GRANTED)
+        }
+
+        internal fun consumeGranted(): Boolean {
+            check(Thread.holdsLock(globalLock))
+            return state.compareAndSet(STATE_GRANTED, STATE_TERMINAL)
+        }
+
+        internal fun isWaiting(): Boolean = state.get() == STATE_WAITING
+        internal fun isGranted(): Boolean = state.get() == STATE_GRANTED
+        internal fun isTerminal(): Boolean = state.get() == STATE_TERMINAL
+        internal fun cancelFromRegistry(): Boolean {
+            // Kept package-visible only so deterministic policy tests can inspect the token.
+            // Mutation itself is registry-owned: bypassing the lock would split token state from
+            // operationAdmissionGrant and recreate an un-clearable process-wide reservation.
+            check(Thread.holdsLock(globalLock))
+            return state.getAndSet(STATE_TERMINAL) != STATE_TERMINAL
+        }
+
+        override fun close() {
+            cancelOperationAdmissionWake(this)
+        }
+
+        private companion object {
+            const val STATE_WAITING = 0
+            const val STATE_GRANTED = 1
+            const val STATE_TERMINAL = 2
+        }
+    }
+
+    private data class OperationAdmissionWaiter(
+        val wake: OperationAdmissionWake,
+        val callback: (OperationAdmissionWake) -> Unit,
+    )
+
     /** Generation-keyed so a retired same-path session may drain beside its replacement. */
     private val records = LinkedHashMap<RecordKey, Record>()
     private val discoveryFences = LinkedHashMap<String, Long>()
+    private val operationAdmissionWaiters =
+        LinkedHashMap<Long, OperationAdmissionWaiter>()
+    /** A notification is also a short reservation, so only one actor can observe an empty gate. */
+    private var operationAdmissionGrant: OperationAdmissionWake? = null
     private val globalLock = java.lang.Object()
+    /**
+     * Callback failure may close its grant and make the next waiter ready synchronously. Keep
+     * that handoff iterative: a long queue of retired actors must not recurse through
+     * dispatch -> close -> dispatch until the source thread overflows its stack.
+     */
+    private val operationAdmissionDispatchLock = Any()
+    private val operationAdmissionDispatchQueue =
+        java.util.ArrayDeque<OperationAdmissionWaiter>()
+    private var operationAdmissionDispatching = false
     private val operationSequence = AtomicLong(1L)
+    private val operationAdmissionWakeSequence = AtomicLong(1L)
     private var globalPeakActiveTotal = 0
 
     @JvmStatic
@@ -315,6 +395,9 @@ object NtkStrictSourceOwnershipRegistry {
         require(normalized == token.episodePath)
         val now = monotonicMs()
         val reservation = synchronized(globalLock) {
+            check(discoveryFences[normalized] == token.discoveryGeneration) {
+                "Exact reservation lost its discovery fence"
+            }
             val key = RecordKey(normalized, token.discoveryGeneration)
             val record = records[key] ?: Record(
                     normalized,
@@ -463,7 +546,8 @@ object NtkStrictSourceOwnershipRegistry {
         require(pageIndexes.all { it >= 0 })
         if (pageIndexes.isEmpty()) return true
         val normalized = normalize(path)
-        return synchronized(globalLock) {
+        val ready = ArrayList<OperationAdmissionWaiter>()
+        val authorized = synchronized(globalLock) {
             val record = ownedRecordLocked(normalized, manifestDigest, sessionId)
                 ?: return@synchronized false
             if (record.state != State.OWNED || !record.primaryAdmissionsSealed ||
@@ -476,8 +560,11 @@ object NtkStrictSourceOwnershipRegistry {
                 }
             ) return@synchronized false
             record.rollingLateAdmissionPages.addAll(pageIndexes)
+            takeReadyOperationAdmissionWaitersLocked(ready)
             true
         }
+        dispatchOperationAdmissionWaiters(ready)
+        return authorized
     }
 
     @JvmStatic
@@ -537,7 +624,8 @@ object NtkStrictSourceOwnershipRegistry {
         discoveryGeneration: Long,
     ): Boolean {
         val normalized = normalize(path)
-        return synchronized(globalLock) {
+        val ready = ArrayList<OperationAdmissionWaiter>()
+        val removed = synchronized(globalLock) {
             val record = ownedRecordLocked(
                 normalized,
                 manifestDigest,
@@ -547,9 +635,19 @@ object NtkStrictSourceOwnershipRegistry {
             if (record.state != State.OWNED || record.manifestDigest != manifestDigest ||
                 record.sessionId != sessionId || record.operations.isNotEmpty()
             ) return@synchronized false
-            records.remove(RecordKey(normalized, record.discoveryGeneration), record)
-                .also { globalLock.notifyAll() }
+            val removed = records.remove(
+                RecordKey(normalized, record.discoveryGeneration),
+                record,
+            )
+            if (removed) {
+                cancelOperationAdmissionWaitersForRecordLocked(record)
+                takeReadyOperationAdmissionWaitersLocked(ready)
+                globalLock.notifyAll()
+            }
+            removed
         }
+        dispatchOperationAdmissionWaiters(ready)
+        return removed
     }
 
     internal fun rollbackReservation(reservation: ExactReservation): Boolean {
@@ -569,13 +667,64 @@ object NtkStrictSourceOwnershipRegistry {
             ) {
                 return@synchronized false
             }
-            records.remove(key, record).also { globalLock.notifyAll() }
+            records.remove(key, record).also { removed ->
+                if (removed) {
+                    cancelOperationAdmissionWaitersForRecordLocked(record)
+                    globalLock.notifyAll()
+                }
+            }
         }
+    }
+
+    /**
+     * Retires the exact authority represented by a still-pending promotion token.
+     *
+     * Spool close can linearize after [claimExact] changes RESERVED to OWNED but before the
+     * claimant publishes its [Owner] back under the path mutation lock.  The close action still
+     * owns the immutable promotion token in that interval, so use it to remove either side of the
+     * transition in one registry transaction.  A producer-visible owner is never eligible: every
+     * operation/admission/geometry ledger must still be pristine.
+     */
+    internal fun rollbackPendingExactAuthority(token: NtkPromotionToken): Boolean {
+        val normalized = normalize(token.episodePath)
+        require(normalized == token.episodePath)
+        val ready = ArrayList<OperationAdmissionWaiter>()
+        val removed = synchronized(globalLock) {
+            val key = RecordKey(normalized, token.discoveryGeneration)
+            val record = records[key] ?: return@synchronized false
+            val identityMatches = record.discoveryGeneration == token.discoveryGeneration &&
+                record.manifestDigest == token.exactManifestDigest &&
+                record.exactProofDigest == token.exactProofDigest &&
+                record.planBindingDigest == token.planBindingDigest &&
+                record.promotionNonce == token.nonce
+            val pendingStateMatches = when (record.state) {
+                State.RESERVED -> record.sessionId == 0L
+                State.OWNED -> record.sessionId == token.sessionId
+            }
+            if (!identityMatches || !pendingStateMatches || record.operations.isNotEmpty() ||
+                record.geometrySealed || record.primaryAdmissionsSealed ||
+                record.primaryStartedPages.isNotEmpty() || record.retryEligiblePages.isNotEmpty() ||
+                record.successfulPrimaryPages.isNotEmpty() ||
+                record.rollingLateAdmissionPages.isNotEmpty()
+            ) {
+                return@synchronized false
+            }
+            records.remove(key, record).also { didRemove ->
+                if (didRemove) {
+                    cancelOperationAdmissionWaitersForRecordLocked(record)
+                    takeReadyOperationAdmissionWaitersLocked(ready)
+                    globalLock.notifyAll()
+                }
+            }
+        }
+        dispatchOperationAdmissionWaiters(ready)
+        return removed
     }
 
     internal fun rollbackUninstalledOwner(owner: Owner): Boolean {
         val normalized = normalize(owner.path)
-        return synchronized(globalLock) {
+        val ready = ArrayList<OperationAdmissionWaiter>()
+        val removed = synchronized(globalLock) {
             val key = RecordKey(normalized, owner.discoveryGeneration)
             val record = records[key] ?: return@synchronized false
             if (record.state != State.OWNED ||
@@ -587,8 +736,16 @@ object NtkStrictSourceOwnershipRegistry {
                 record.sessionId != owner.sessionId ||
                 record.operations.isNotEmpty()
             ) return@synchronized false
-            records.remove(key, record).also { globalLock.notifyAll() }
+            records.remove(key, record).also { removed ->
+                if (removed) {
+                    cancelOperationAdmissionWaitersForRecordLocked(record)
+                    takeReadyOperationAdmissionWaitersLocked(ready)
+                    globalLock.notifyAll()
+                }
+            }
         }
+        dispatchOperationAdmissionWaiters(ready)
+        return removed
     }
 
     @JvmStatic
@@ -599,27 +756,51 @@ object NtkStrictSourceOwnershipRegistry {
     @JvmStatic
     fun nextOperationId(): Long = operationSequence.getAndIncrement()
 
+    /**
+     * Atomically observes the process-wide operation gate and, only when another exact source
+     * session owns it, installs one identity-bound wake. This replaces the unsafe
+     * `canBeginOperationNow() == false; return` actor pattern: the final foreign operation either
+     * precedes this transaction and yields [OperationAdmissionObservation.Ready], or follows it
+     * and owns the matching callback.
+     */
+    internal fun observeOperationAdmission(
+        owner: Owner,
+        callback: (OperationAdmissionWake) -> Unit,
+    ): OperationAdmissionObservation {
+        val normalized = normalize(owner.path)
+        return synchronized(globalLock) {
+            val record = records[RecordKey(normalized, owner.discoveryGeneration)]
+            if (record == null || !recordMatchesAdmissionOwnerLocked(record, owner)) {
+                return@synchronized OperationAdmissionObservation.OwnerUnavailable
+            }
+            if (!recordHasOperationAdmissionLocked(record)) {
+                return@synchronized OperationAdmissionObservation.OwnerUnavailable
+            }
+            if (operationAdmissionGrant == null && canAdmitOperationLocked(record)) {
+                val wake = createOperationAdmissionWakeLocked(record)
+                check(wake.grantForDispatch())
+                operationAdmissionGrant = wake
+                return@synchronized OperationAdmissionObservation.Ready(wake)
+            }
+            val wake = createOperationAdmissionWakeLocked(record)
+            operationAdmissionWaiters[wake.registrationId] =
+                OperationAdmissionWaiter(wake, callback)
+            OperationAdmissionObservation.Blocked(wake)
+        }
+    }
+
     /** Actor-safe admission probe. Source actors must never enter [beginOperation]'s wait path. */
     fun canBeginOperationNow(path: String, manifestDigest: String, sessionId: Long): Boolean {
         val normalized = normalize(path)
         return synchronized(globalLock) {
             val record = ownedRecordLocked(normalized, manifestDigest, sessionId)
                 ?: return@synchronized false
-            if (record.state != State.OWNED ||
-                (record.primaryAdmissionsSealed && record.retryEligiblePages.isEmpty() &&
-                    record.rollingLateAdmissionPages.isEmpty())
+            recordHasOperationAdmissionLocked(record) && when (val grant =
+                operationAdmissionGrant
             ) {
-                return@synchronized false
+                null -> canAdmitOperationLocked(record)
+                else -> recordMatchesAdmissionWakeLocked(record, grant)
             }
-            val allOperations = records.values.flatMap { it.operations.values }
-            val activeSessionKeys = allOperations.mapTo(LinkedHashSet()) { active ->
-                active.tag.sessionId to active.tag.manifestDigest
-            }
-            NtkGlobalSourceAdmissionPolicy.canAdmit(
-                activeSessionKeys,
-                sessionId to manifestDigest,
-                allOperations.size,
-            )
         }
     }
 
@@ -639,7 +820,46 @@ object NtkStrictSourceOwnershipRegistry {
         method: String = "GET",
         workId: Long = 0L,
         episodeAuthority: Long = 0L,
-        preclaim: Boolean = episodeAuthority == 0L
+        preclaim: Boolean = episodeAuthority == 0L,
+    ): OperationLease = beginOperationWithAdmissionWake(
+        path = path,
+        tag = tag,
+        routeKeyHash = routeKeyHash,
+        callFactoryId = callFactoryId,
+        attempt = attempt,
+        rangeStart = rangeStart,
+        rangeEnd = rangeEnd,
+        manifestRevision = manifestRevision,
+        demandEpoch = demandEpoch,
+        launchedPreGeometry = launchedPreGeometry,
+        metadataQueueDepth = metadataQueueDepth,
+        bodyQueueDepth = bodyQueueDepth,
+        method = method,
+        workId = workId,
+        episodeAuthority = episodeAuthority,
+        preclaim = preclaim,
+        admissionWake = null,
+    )
+
+    internal fun beginOperationWithAdmissionWake(
+        path: String,
+        tag: NtkStrictSourceCallTag,
+        routeKeyHash: String,
+        callFactoryId: String,
+        attempt: Int,
+        rangeStart: Long = -1L,
+        rangeEnd: Long = -1L,
+        manifestRevision: Long = -1L,
+        demandEpoch: Long = -1L,
+        launchedPreGeometry: Boolean = false,
+        metadataQueueDepth: Int = -1,
+        bodyQueueDepth: Int = -1,
+        method: String = "GET",
+        workId: Long = 0L,
+        episodeAuthority: Long = 0L,
+        preclaim: Boolean = episodeAuthority == 0L,
+        admissionWake: OperationAdmissionWake? = null,
+        allowBlocking: Boolean = true,
     ): OperationLease {
         require(tag.isProductionStrict)
         require(attempt >= 0)
@@ -659,17 +879,20 @@ object NtkStrictSourceOwnershipRegistry {
                 check(!record.operations.containsKey(tag.operationId)) {
                     "Duplicate strict source operation id"
                 }
-                val allOperations = records.values.flatMap { it.operations.values }
-                val activeSessionKeys = allOperations.mapTo(LinkedHashSet()) { active ->
-                    active.tag.sessionId to active.tag.manifestDigest
-                }
-                if (NtkGlobalSourceAdmissionPolicy.canAdmit(
-                        activeSessionKeys,
-                        tag.sessionId to tag.manifestDigest,
-                        allOperations.size
-                    )
-                ) {
+                val grant = operationAdmissionGrant
+                val ownsGrant = grant != null && grant === admissionWake &&
+                    grant.isGranted() && recordMatchesAdmissionWakeLocked(record, grant)
+                if (admissionWake != null) {
+                    check(ownsGrant) {
+                        "Strict source actor admission grant is no longer current"
+                    }
                     break
+                }
+                if (grant == null && canAdmitOperationLocked(record)) {
+                    break
+                }
+                check(allowBlocking) {
+                    "Strict source actor attempted to block on operation admission"
                 }
                 globalLock.wait()
                 record = ownedRecordLocked(normalized, tag.manifestDigest, tag.sessionId)
@@ -747,6 +970,13 @@ object NtkStrictSourceOwnershipRegistry {
             // that selected the retry pool. Hard-coding one made successful attempt-2/3 routing
             // appear unrotated in qualification evidence.
             val attemptOrdinal = tag.attemptOrdinal
+            operationAdmissionGrant?.let { grant ->
+                check(grant === admissionWake && grant.isGranted() &&
+                    recordMatchesAdmissionWakeLocked(record, grant)
+                ) { "Strict source operation did not own the granted actor admission" }
+                check(grant.consumeGranted())
+                operationAdmissionGrant = null
+            }
             record.operations[tag.operationId] = ActiveOperation(
                 tag,
                 startedAt,
@@ -768,6 +998,10 @@ object NtkStrictSourceOwnershipRegistry {
                 episodeAuthority,
                 preclaim
             )
+            // A legacy caller may already be asleep solely because the actor reservation was
+            // present. The new active operation is now the authoritative gate state; wake it to
+            // re-evaluate same-owner capacity (or continue waiting for the owning Session).
+            globalLock.notifyAll()
             val next = globalCountsLocked()
             record.peakActiveTotal = maxOf(record.peakActiveTotal, next.total)
             record.producerMax = maxOf(record.producerMax, activeForSourceKey + 1)
@@ -965,9 +1199,16 @@ object NtkStrictSourceOwnershipRegistry {
 
     internal fun clearForTest() {
         synchronized(globalLock) {
+            operationAdmissionWaiters.values.forEach { waiter ->
+                waiter.wake.cancelFromRegistry()
+            }
+            operationAdmissionWaiters.clear()
+            operationAdmissionGrant?.cancelFromRegistry()
+            operationAdmissionGrant = null
             records.clear()
             discoveryFences.clear()
             operationSequence.set(1L)
+            operationAdmissionWakeSequence.set(1L)
             globalPeakActiveTotal = 0
             globalLock.notifyAll()
         }
@@ -991,6 +1232,7 @@ object NtkStrictSourceOwnershipRegistry {
         metadataBindingDigest: String,
         bodyDigest: String
     ) {
+        val readyAdmissionWaiters = ArrayList<OperationAdmissionWaiter>()
         synchronized(globalLock) {
             val record = records.values.firstOrNull { candidate ->
                 candidate.path == normalize(path) &&
@@ -1103,6 +1345,149 @@ object NtkStrictSourceOwnershipRegistry {
                 record.retiredSessionMetrics.remove(retiredKey)
             }
             globalLock.notifyAll()
+            takeReadyOperationAdmissionWaitersLocked(readyAdmissionWaiters)
+        }
+        dispatchOperationAdmissionWaiters(readyAdmissionWaiters)
+    }
+
+    private fun recordMatchesAdmissionOwnerLocked(record: Record, owner: Owner): Boolean {
+        return record.state == State.OWNED && owner.state == State.OWNED &&
+            record.path == normalize(owner.path) &&
+            record.discoveryGeneration == owner.discoveryGeneration &&
+            record.manifestDigest == owner.manifestDigest &&
+            record.exactProofDigest == owner.exactProofDigest &&
+            record.planBindingDigest == owner.planBindingDigest &&
+            record.promotionNonce == owner.promotionNonce &&
+            record.sessionId == owner.sessionId
+    }
+
+    private fun recordMatchesAdmissionWakeLocked(
+        record: Record,
+        wake: OperationAdmissionWake,
+    ): Boolean {
+        return record.state == State.OWNED &&
+            record.path == wake.path &&
+            record.discoveryGeneration == wake.discoveryGeneration &&
+            record.manifestDigest == wake.manifestDigest &&
+            record.exactProofDigest == wake.exactProofDigest &&
+            record.planBindingDigest == wake.planBindingDigest &&
+            record.promotionNonce == wake.promotionNonce &&
+            record.sessionId == wake.sessionId
+    }
+
+    private fun recordHasOperationAdmissionLocked(record: Record): Boolean {
+        return record.state == State.OWNED &&
+            (!record.primaryAdmissionsSealed || record.retryEligiblePages.isNotEmpty() ||
+                record.rollingLateAdmissionPages.isNotEmpty())
+    }
+
+    private fun createOperationAdmissionWakeLocked(record: Record): OperationAdmissionWake =
+        OperationAdmissionWake(
+            registrationId = operationAdmissionWakeSequence.getAndIncrement(),
+            path = record.path,
+            discoveryGeneration = record.discoveryGeneration,
+            manifestDigest = record.manifestDigest,
+            exactProofDigest = record.exactProofDigest,
+            planBindingDigest = record.planBindingDigest,
+            promotionNonce = record.promotionNonce,
+            sessionId = record.sessionId,
+        )
+
+    private fun canAdmitOperationLocked(record: Record): Boolean {
+        val allOperations = records.values.flatMap { it.operations.values }
+        val activeSessionKeys = allOperations.mapTo(LinkedHashSet()) { active ->
+            active.tag.sessionId to active.tag.manifestDigest
+        }
+        return NtkGlobalSourceAdmissionPolicy.canAdmit(
+            activeSessionKeys,
+            record.sessionId to record.manifestDigest,
+            allOperations.size,
+        )
+    }
+
+    private fun takeReadyOperationAdmissionWaitersLocked(
+        ready: MutableList<OperationAdmissionWaiter>,
+    ) {
+        if (operationAdmissionGrant != null) return
+        val iterator = operationAdmissionWaiters.entries.iterator()
+        while (iterator.hasNext()) {
+            val waiter = iterator.next().value
+            val wake = waiter.wake
+            val record = records[RecordKey(wake.path, wake.discoveryGeneration)]
+            if (record == null || !recordMatchesAdmissionWakeLocked(record, wake)) {
+                iterator.remove()
+                wake.cancelFromRegistry()
+                continue
+            }
+            if (!recordHasOperationAdmissionLocked(record) ||
+                !canAdmitOperationLocked(record)
+            ) {
+                continue
+            }
+            iterator.remove()
+            if (wake.grantForDispatch()) {
+                operationAdmissionGrant = wake
+                ready += waiter
+                break
+            }
+            // close() is serialized by globalLock, but registry retirement may already have
+            // terminalized a stale token. Do not let that stale head strand the next waiter.
+            continue
+        }
+    }
+
+    private fun cancelOperationAdmissionWaitersForRecordLocked(record: Record) {
+        val iterator = operationAdmissionWaiters.entries.iterator()
+        while (iterator.hasNext()) {
+            val waiter = iterator.next().value
+            if (!recordMatchesAdmissionWakeLocked(record, waiter.wake)) continue
+            iterator.remove()
+            waiter.wake.cancelFromRegistry()
+        }
+        operationAdmissionGrant?.takeIf { grant ->
+            recordMatchesAdmissionWakeLocked(record, grant)
+        }?.let { grant ->
+            operationAdmissionGrant = null
+            grant.cancelFromRegistry()
+        }
+    }
+
+    private fun cancelOperationAdmissionWake(wake: OperationAdmissionWake) {
+        val ready = ArrayList<OperationAdmissionWaiter>()
+        synchronized(globalLock) {
+            if (!wake.cancelFromRegistry()) return
+            val current = operationAdmissionWaiters[wake.registrationId]
+            if (current?.wake === wake) operationAdmissionWaiters.remove(wake.registrationId)
+            if (operationAdmissionGrant === wake) {
+                operationAdmissionGrant = null
+                // beginOperation() is a public blocking ABI. A caller may be asleep only because
+                // this short actor reservation existed, so clearing it is a real gate edge.
+                globalLock.notifyAll()
+            }
+            if (operationAdmissionGrant == null) {
+                takeReadyOperationAdmissionWaitersLocked(ready)
+            }
+        }
+        dispatchOperationAdmissionWaiters(ready)
+    }
+
+    private fun dispatchOperationAdmissionWaiters(
+        ready: List<OperationAdmissionWaiter>,
+    ) {
+        if (ready.isEmpty()) return
+        synchronized(operationAdmissionDispatchLock) {
+            ready.forEach(operationAdmissionDispatchQueue::addLast)
+            if (operationAdmissionDispatching) return
+            operationAdmissionDispatching = true
+        }
+        while (true) {
+            val waiter = synchronized(operationAdmissionDispatchLock) {
+                operationAdmissionDispatchQueue.pollFirst().also { next ->
+                    if (next == null) operationAdmissionDispatching = false
+                }
+            } ?: return
+            runCatching { waiter.callback(waiter.wake) }
+                .onFailure { waiter.wake.close() }
         }
     }
 

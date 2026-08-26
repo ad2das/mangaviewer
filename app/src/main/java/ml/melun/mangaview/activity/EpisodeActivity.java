@@ -685,9 +685,8 @@ public class EpisodeActivity extends AppCompatActivity {
                     int adapterPosition,
                     @NonNull List<Object> payloads) {
                 super.onBindViewHolder(holder, adapterPosition, payloads);
-                if(adapterPosition > 0 && data != null && adapterPosition <= data.size()
-                        && EpisodeActivity.this.isExactOnlineNtkEpisode(
-                                data.get(adapterPosition - 1))) {
+                Manga boundEpisode = episodeAtAdapterPosition(adapterPosition);
+                if(EpisodeActivity.this.isExactOnlineNtkEpisode(boundEpisode)) {
                     // Cold NTK rows are user actions, not readiness indicators. Binding must
                     // never wait for a manifest, decoded bitmap, EGL target, or stage ticket.
                     holder.itemView.setEnabled(true);
@@ -2324,6 +2323,18 @@ public class EpisodeActivity extends AppCompatActivity {
             saveEpisodeCache(episodes);
             hideProgress();
             loaded = true;
+            invalidateOptionsMenu();
+            return;
+        }
+        if(hasRenderedEpisodes()) {
+            ntkLoadTimeoutHandled = true;
+            episodeAdapter.replaceData(loadedEpisodes);
+            episodes = loadedEpisodes;
+            attachLoadedEpisodesToTitle(episodes);
+            saveEpisodeCache(episodes);
+            hideProgress();
+            loaded = true;
+            ntkCaptchaRetryAfterVerifiedAttempted = false;
             invalidateOptionsMenu();
             return;
         }
