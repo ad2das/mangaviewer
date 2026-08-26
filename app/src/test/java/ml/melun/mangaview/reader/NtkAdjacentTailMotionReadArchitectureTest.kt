@@ -27,7 +27,7 @@ class NtkAdjacentTailMotionReadArchitectureTest {
     }
 
     @Test
-    fun promotedStrictOwnerCannotReopenTheSameAdjacentTailDuringMotion() {
+    fun promotedStrictOwnerKeepsOnlyOneViewportDemandGate() {
         val session = File(
             "src/main/java/ml/melun/mangaview/reader/NtkStrictSourceSession.kt",
         ).readText()
@@ -43,10 +43,48 @@ class NtkAdjacentTailMotionReadArchitectureTest {
             session.windowed("NtkAdjacentBodyStoragePolicy.deferOffscreenTailDuringPhysicalMotion(".length)
                 .count { it == "NtkAdjacentBodyStoragePolicy.deferOffscreenTailDuringPhysicalMotion(" } >= 2,
         )
+        assertTrue(
+            session.windowed("viewportDemandBoundsSuffix = demandBoundedAdjacentSuffix".length)
+                .count { it == "viewportDemandBoundsSuffix = demandBoundedAdjacentSuffix" } >= 2,
+        )
         assertTrue(strictSpool.contains("deferBodyReadsWhilePhysicalMotion: Boolean = false"))
         assertTrue(strictSpool.contains("NtkReaderTransferPacer.readOptionalChunk("))
         assertTrue(strictSpool.contains("NtkReaderTransferPacer.readOptionalByte("))
         assertTrue(strictSpool.contains("shouldRemainDeferred = ::shouldDeferStrictBodyRead"))
+    }
+
+    @Test
+    fun demandBoundedLookaheadDoesNotParkItsOwnedSocketTwice() {
+        assertTrue(
+            !NtkAdjacentBodyStoragePolicy.deferOffscreenTailDuringPhysicalMotion(
+                hostGpuEmulatorRuntime = true,
+                adjacentPrefetch = true,
+                pageIndex = 4,
+                initialPageIndex = 0,
+                adjacentInitialRunwayBodyCount = 4,
+                viewportDemandBoundsSuffix = true,
+            ),
+        )
+        assertTrue(
+            NtkAdjacentBodyStoragePolicy.deferOffscreenTailDuringPhysicalMotion(
+                hostGpuEmulatorRuntime = true,
+                adjacentPrefetch = true,
+                pageIndex = 4,
+                initialPageIndex = 0,
+                adjacentInitialRunwayBodyCount = 4,
+                viewportDemandBoundsSuffix = false,
+            ),
+        )
+        assertTrue(
+            !NtkAdjacentBodyStoragePolicy.deferOffscreenTailDuringPhysicalMotion(
+                hostGpuEmulatorRuntime = true,
+                adjacentPrefetch = true,
+                pageIndex = 3,
+                initialPageIndex = 0,
+                adjacentInitialRunwayBodyCount = 4,
+                viewportDemandBoundsSuffix = false,
+            ),
+        )
     }
 
     @Test

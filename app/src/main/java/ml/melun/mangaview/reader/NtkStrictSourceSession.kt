@@ -5048,6 +5048,13 @@ internal class NtkStrictSourceSession(
                                 initialPageIndex = initialPageIndex,
                                 adjacentInitialRunwayBodyCount =
                                     adjacentInitialRunwayBodyCount,
+                                // This profile starts pN+ only after an immutable HARD/SOFT
+                                // viewport-demand admission. Pausing that already-bounded socket
+                                // a second time leaves the upcoming page unread until the fling
+                                // reaches it and can turn the intentional park into a Range
+                                // timeout. Keep the existing process-wide two-lane/8 ms transfer
+                                // pacer, but remove the redundant all-bytes stop.
+                                viewportDemandBoundsSuffix = demandBoundedAdjacentSuffix,
                             ),
                     )
                 )
@@ -5112,6 +5119,7 @@ internal class NtkStrictSourceSession(
                                 initialPageIndex = initialPageIndex,
                                 adjacentInitialRunwayBodyCount =
                                     adjacentInitialRunwayBodyCount,
+                                viewportDemandBoundsSuffix = demandBoundedAdjacentSuffix,
                             ),
                     )
                     // EOF/SHA validation is the terminal operation of the physical network lane.

@@ -12,9 +12,13 @@ package ml.melun.mangaview.reader
  */
 internal object NtkAdjacentBodyStoragePolicy {
     /**
-     * Both the speculative click owner and the promoted strict source can physically read the
-     * same adjacent episode. Keep their offscreen-tail admission identical so ownership transfer
-     * cannot silently reopen pN+ network/EOF work during a foreground gesture.
+     * Pauses only an unbounded speculative tail during foreground motion.
+     *
+     * A demand-bounded strict suffix has already crossed the compositor's HARD/SOFT lookahead
+     * gate. Parking that owned socket again until motion ends defeats the lookahead, lets TCP
+     * flow-control go cold, and can turn the app-authored pause into a Range timeout. Such reads
+     * keep using [NtkReaderTransferPacer]'s two-lane active-motion cadence instead. Legacy
+     * speculative tails retain the full optional-byte pause.
      */
     fun deferOffscreenTailDuringPhysicalMotion(
         hostGpuEmulatorRuntime: Boolean,
@@ -22,8 +26,10 @@ internal object NtkAdjacentBodyStoragePolicy {
         pageIndex: Int,
         initialPageIndex: Int,
         adjacentInitialRunwayBodyCount: Int,
+        viewportDemandBoundsSuffix: Boolean = false,
     ): Boolean = hostGpuEmulatorRuntime &&
         adjacentPrefetch &&
+        !viewportDemandBoundsSuffix &&
         adjacentInitialRunwayBodyCount > 0 &&
         pageIndex - initialPageIndex >= adjacentInitialRunwayBodyCount
 
