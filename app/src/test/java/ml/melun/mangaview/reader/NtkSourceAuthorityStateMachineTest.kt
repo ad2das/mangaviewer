@@ -106,6 +106,47 @@ class NtkSourceAuthorityStateMachineTest {
     }
 
     @Test
+    fun identicalEncodedBodyConvergesAcrossAuthoritativeTransportRaces() {
+        val asset = "https://images.example/a.jpg"
+        val seal = NtkEpisodeManifestSeal.create(path, 19L, listOf(asset))
+        val bodySha = NtkStripDigests.sha256Tokens("same-encoded-body")
+        val firstMetadata = strictMetadata(
+            seal,
+            asset,
+            bodySha,
+            responseToken = "replica-a",
+            validatorToken = "etag-a",
+        )
+        val racedMetadata = strictMetadata(
+            seal,
+            asset,
+            bodySha,
+            responseToken = "replica-b",
+            validatorToken = "etag-b",
+        )
+        val firstProof = NtkEncodedOriginalProof.createStrict(firstMetadata, bodySha, 4096L)
+        val racedProof = NtkEncodedOriginalProof.createStrict(racedMetadata, bodySha, 4096L)
+
+        assertFalse(firstMetadata.hasSameAuthority(racedMetadata))
+        assertTrue(firstProof.hasSameEncodedSource(racedProof))
+
+        val changedBodySha = NtkStripDigests.sha256Tokens("changed-encoded-body")
+        val changedMetadata = strictMetadata(
+            seal,
+            asset,
+            changedBodySha,
+            responseToken = "replica-b",
+            validatorToken = "etag-b",
+        )
+        val changedProof = NtkEncodedOriginalProof.createStrict(
+            changedMetadata,
+            changedBodySha,
+            4096L,
+        )
+        assertFalse(firstProof.hasSameEncodedSource(changedProof))
+    }
+
+    @Test
     fun strictCallTagUsesTheSingleBoundedFullBodyLanePolicy() {
         val digest = authority(23L, listOf("https://images.example/a.jpg")).seal.digestSha256
         assertEquals(120, NtkSourceLanePolicy.MAX_NETWORK_OPERATIONS)
@@ -197,6 +238,30 @@ class NtkSourceAuthorityStateMachineTest {
             )
         )
     }
+
+    private fun strictMetadata(
+        seal: NtkEpisodeManifestSeal,
+        asset: String,
+        bodySha: String,
+        responseToken: String,
+        validatorToken: String,
+    ): NtkSourceMetadata = NtkSourceMetadata.createStrict(
+        manifestRevision = seal.revision,
+        manifestDigest = seal.digestSha256,
+        pageIndex = 0,
+        canonicalAsset = asset,
+        sourceWidth = 1100,
+        sourceHeight = 1600,
+        authority = NtkSourceMetadataAuthority.createStrict(
+            acquisition = NtkMetadataAcquisition.ADOPTED_QUARANTINE_FULL_BODY,
+            responseIdentityDigest = NtkStripDigests.sha256Tokens(responseToken),
+            byteWitnessSha256 = bodySha,
+            byteWitnessLength = 4096L,
+            encodedLength = 4096L,
+            strongValidatorDigest = NtkStripDigests.sha256Tokens(validatorToken),
+            imageFormat = "png",
+        ),
+    )
 
     private fun assertRejected(block: () -> Unit) {
         var rejected = false

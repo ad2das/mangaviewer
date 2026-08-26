@@ -3762,7 +3762,7 @@ class NtkColdRendererPreparationArchitectureTest {
     fun directWifiStrictResumeWaitsForSurfaceGeometryInsteadOfSelfTriggeringWindowCallbacks() {
         val window = functionBody("override fun onWindowChanged(", activitySource)
         val directWifiGate = window.indexOf(
-            "!directWifiStrictWebtoonRestoreOwnedBySurface()",
+            "!directWifiStrictEpisodeRestoreOwnedBySurface()",
         )
         val relock = window.indexOf("renderView.lockRestoredPageOffset(")
         val rerequest = window.indexOf("activeSession?.requestWindowAsync(", relock)
@@ -3771,7 +3771,7 @@ class NtkColdRendererPreparationArchitectureTest {
         assertTrue(rerequest > directWifiGate)
 
         val gate = functionBody(
-            "private fun directWifiStrictWebtoonRestoreOwnedBySurface()",
+            "private fun directWifiStrictEpisodeRestoreOwnedBySurface()",
             activitySource,
         )
         assertTrue(gate.contains("client.isNtkWifiTransportActive"))

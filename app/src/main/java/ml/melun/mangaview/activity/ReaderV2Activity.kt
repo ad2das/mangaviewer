@@ -303,6 +303,12 @@ class ReaderV2Activity : Activity(), ReaderSession.Listener, ReaderSurfaceView.W
     private val strictTelemetryCleanPhysicalSourcesByEpisode =
         LinkedHashMap<String, CleanPhysicalSourceSnapshot>()
     /**
+     * Newest clean physical presentation by compositor timestamp, including reverse motion.
+     * This is intentionally separate from the furthest-forward ledgers above: source index is
+     * progress, while presentation time is what the user is actually seeing now.
+     */
+    private var strictTelemetryLatestCleanPhysicalPresentation: CleanPhysicalSourceSnapshot? = null
+    /**
      * Presentation time paired with the public clean-source identity above.  This must not share
      * storage with [strictTelemetryLastCommitNanos]: that field is only the within-motion cadence
      * cursor and is deliberately cleared on UP.  Sharing them erased a genuinely latched short
@@ -6091,7 +6097,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
             ) {
                 val restorePage = activeInitialRestorePage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
                 val restoreOffset = activeInitialRestoreOffset
-                if (!directWifiStrictWebtoonRestoreOwnedBySurface()) {
+                if (!directWifiStrictEpisodeRestoreOwnedBySurface()) {
                     // Legacy/mobile/SNI readers retain their established retry. The direct-Wi-Fi
                     // strict resume already installed one immutable Surface restore lock before
                     // this callback. Re-locking and requesting a window here synchronously emits
@@ -6286,10 +6292,10 @@ if (firstResumeArmedUptimeNanos == 0L) {
         }
     }
 
-    private fun directWifiStrictWebtoonRestoreOwnedBySurface(): Boolean {
+    private fun directWifiStrictEpisodeRestoreOwnedBySurface(): Boolean {
         val path = currentManga?.ntkEpisodePath?.trim().orEmpty()
         val client = getHttpClient()
-        return shouldLetSurfaceOwnDirectWifiStrictWebtoonRestore(
+        return shouldLetSurfaceOwnDirectWifiStrictEpisodeRestore(
             path,
             client.isNtkWifiTransportActive,
             client.isNtkCellularResilientTransportActive,
@@ -7327,6 +7333,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
         strictTelemetryLastCleanPhysicalEpisodePath = ""
         strictTelemetryLastCleanFirstVisibleSourcePage = -1
         strictTelemetryCleanPhysicalSourcesByEpisode.clear()
+        strictTelemetryLatestCleanPhysicalPresentation = null
         strictTelemetryLastCleanPresentedUptimeNanos = 0L
         strictTelemetryBottomCommitWaitLogs = 0
         strictTelemetryLastScrollOffset = Float.NaN
@@ -8054,29 +8061,35 @@ if (!renderView.isShown ||
             coverage.visibleCards == 0 && coverage.widthFillFailures == 0 &&
             coverage.lowResolutionItems == 0 && !revealPending
         if (!cleanFullViewport) return
+        val candidate = CleanPhysicalSourceSnapshot(
+            sourcePage = sourcePage,
+            presentedUptimeNanos = presentedUptimeNanos,
+            physicalEpisodePath = physicalEpisodePath,
+            firstVisibleSourcePage = firstVisibleSourcePage,
+            physicalViewportPx = coverage.physicalViewportPx,
+            drawablePx = coverage.drawablePx,
+            missingPx = coverage.missingPx,
+            placeholderPx = coverage.placeholderPx,
+            visibleLoading = coverage.visibleLoading,
+            visibleErrors = coverage.visibleErrors,
+            visibleCards = coverage.visibleCards,
+            widthFillFailures = coverage.widthFillFailures,
+            lowResolutionItems = coverage.lowResolutionItems,
+            nativeSurfaceRevealPending = false,
+        )
+        val latestPresentation = strictTelemetryLatestCleanPhysicalPresentation
+        if (latestPresentation == null ||
+            presentedUptimeNanos > latestPresentation.presentedUptimeNanos
+        ) {
+            strictTelemetryLatestCleanPhysicalPresentation = candidate
+        }
         val prior = strictTelemetryCleanPhysicalSourcesByEpisode[physicalEpisodePath]
         if (prior != null &&
             (sourcePage < prior.sourcePage ||
                 (sourcePage == prior.sourcePage &&
                     presentedUptimeNanos <= prior.presentedUptimeNanos))
         ) return
-        strictTelemetryCleanPhysicalSourcesByEpisode[physicalEpisodePath] =
-            CleanPhysicalSourceSnapshot(
-                sourcePage = sourcePage,
-                presentedUptimeNanos = presentedUptimeNanos,
-                physicalEpisodePath = physicalEpisodePath,
-                firstVisibleSourcePage = firstVisibleSourcePage,
-                physicalViewportPx = coverage.physicalViewportPx,
-                drawablePx = coverage.drawablePx,
-                missingPx = coverage.missingPx,
-                placeholderPx = coverage.placeholderPx,
-                visibleLoading = coverage.visibleLoading,
-                visibleErrors = coverage.visibleErrors,
-                visibleCards = coverage.visibleCards,
-                widthFillFailures = coverage.widthFillFailures,
-                lowResolutionItems = coverage.lowResolutionItems,
-                nativeSurfaceRevealPending = false,
-            )
+        strictTelemetryCleanPhysicalSourcesByEpisode[physicalEpisodePath] = candidate
         if ((prior == null || sourcePage > prior.sourcePage) &&
             Log.isLoggable("ViewerPerf", Log.DEBUG)
         ) {
@@ -13431,6 +13444,10 @@ if (!renderView.isShown ||
         )
     }
 
+    /** Newest clean compositor presentation, so reverse motion cannot be hidden by max progress. */
+    fun testLatestCleanPhysicalPresentationSnapshot(): CleanPhysicalSourceSnapshot? =
+        strictTelemetryLatestCleanPhysicalPresentation
+
     /** Returns durable compositor evidence for one exact episode, independent of callback order. */
     fun testCleanPhysicalSourceSnapshot(
         physicalEpisodePath: String,
@@ -14144,11 +14161,11 @@ if (!renderView.isShown ||
         )
 
         @JvmStatic
-        fun shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+        fun shouldLetSurfaceOwnDirectWifiStrictEpisodeRestoreForTest(
             path: String,
             wifiTransportActive: Boolean,
             cellularResilientTransportActive: Boolean,
-        ): Boolean = shouldLetSurfaceOwnDirectWifiStrictWebtoonRestore(
+        ): Boolean = shouldLetSurfaceOwnDirectWifiStrictEpisodeRestore(
             path,
             wifiTransportActive,
             cellularResilientTransportActive,
@@ -14340,12 +14357,12 @@ if (!renderView.isShown ||
                 owner.normalizedEpisodePath.equals(normalizedEpisodePath, ignoreCase = true)
         }
 
-        private fun shouldLetSurfaceOwnDirectWifiStrictWebtoonRestore(
+        private fun shouldLetSurfaceOwnDirectWifiStrictEpisodeRestore(
             path: String,
             wifiTransportActive: Boolean,
             cellularResilientTransportActive: Boolean,
         ): Boolean {
-            return path.startsWith("/webtoon/") &&
+            return (path.startsWith("/webtoon/") || path.startsWith("/manhwa/")) &&
                 wifiTransportActive &&
                 !cellularResilientTransportActive
         }

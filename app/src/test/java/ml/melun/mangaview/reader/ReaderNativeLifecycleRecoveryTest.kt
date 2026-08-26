@@ -416,6 +416,12 @@ class ReaderNativeLifecycleRecoveryTest {
         assertTrue(drop.contains("nativePresentFailedRetirements++"))
         assertTrue(drop.contains("nativeLifecycleRetirements++"))
         assertTrue(drop.contains("nativeUnknownRetirements++"))
+        val registeredLookup = drop.indexOf("val registered = pendingFrameCommits[token]")
+        val unownedGuard = drop.indexOf("if (registered == null && !ownsPostedAdmission)")
+        val presentFailureCount = drop.indexOf("nativePresentFailedRetirements++")
+        assertTrue(registeredLookup >= 0)
+        assertTrue(unownedGuard > registeredLookup)
+        assertTrue(presentFailureCount > unownedGuard)
         assertTrue(registration.contains(
             "recoverDirectSurfaceSubmission(work.frameEpoch, work.frameToken)",
         ))

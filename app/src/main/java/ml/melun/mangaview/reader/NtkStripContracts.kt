@@ -2309,6 +2309,19 @@ data class NtkEncodedOriginalProof(
         }
     }
 
+    /**
+     * Two independently authoritative responses converge when they prove the same immutable
+     * manifest page and the same complete encoded bytes. Their response URL, validator, or
+     * acquisition route may legitimately differ (for example, a trusted replica or a cache race),
+     * so those transport facts must not turn an identical body into a source mutation.
+     */
+    fun hasSameEncodedSource(other: NtkEncodedOriginalProof): Boolean =
+        strictSourceKey == other.strictSourceKey &&
+            encodedSha256 == other.encodedSha256 &&
+            encodedLength == other.encodedLength &&
+            sourceWidth == other.sourceWidth &&
+            sourceHeight == other.sourceHeight
+
     companion object {
         @JvmStatic
         fun createStrict(

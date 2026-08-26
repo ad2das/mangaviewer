@@ -17011,23 +17011,27 @@ class ReaderSurfaceView @JvmOverloads constructor(
         // installed. Buffer only the unique currently admitted token; stale failures remain
         // fail-closed, while renderFrame consumes this outcome immediately after proof publication.
         val epoch = synchronized(stateLock) {
-            if (reason == NATIVE_FRAME_DROP_PRESENT_FAILED) {
-                nativePresentFailedRetirements++
-            } else {
-                nativeUnknownRetirements++
-            }
             earlyFrameSyncedGeometryRequests.remove(token)
             frameSyncedGeometryInFlightTokens.remove(token)
             frameSyncedGeometrySubmissionOrder.remove(token)
             val registered = pendingFrameCommits[token]
-            if (registered != null) {
-                registered.frameEpoch
-            } else if (framePipe == FramePipe.INVALIDATION_POSTED &&
+            val ownsPostedAdmission = registered == null &&
+                framePipe == FramePipe.INVALIDATION_POSTED &&
                 token == inFlightToken && token != 0L
-            ) {
-                earlyNativeOutcomes[token] = EarlyNativeOutcome.PresentFailed(reason)
+            if (registered == null && !ownsPostedAdmission) {
+                // A structure or lifecycle turn already retired this proof before an asynchronous
+                // post/callback completed. The command never owns a presentable frame anymore;
+                // counting it as a physical presentation failure manufactures an error and can
+                // redrive work into the replacement Surface.
                 null
             } else {
+                if (reason == NATIVE_FRAME_DROP_PRESENT_FAILED) {
+                    nativePresentFailedRetirements++
+                } else {
+                    nativeUnknownRetirements++
+                }
+                if (registered != null) return@synchronized registered.frameEpoch
+                earlyNativeOutcomes[token] = EarlyNativeOutcome.PresentFailed(reason)
                 null
             }
         } ?: return

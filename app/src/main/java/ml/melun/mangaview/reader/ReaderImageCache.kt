@@ -11687,13 +11687,16 @@ data class NtkResolvedSourceRoute(
                     cacheKey
                 )
                 if (existing != null) {
-                    if (existing.proof != proof ||
-                        !existing.metadata.hasSameAuthority(metadata)
-                    ) throw NtkSourceIdentityException(
-                        "Existing exact cache conflicts with quarantine adoption"
-                    )
+                    if (!existing.proof.hasSameEncodedSource(proof)) {
+                        throw NtkSourceIdentityException(
+                            "Existing exact cache conflicts with quarantine adoption"
+                        )
+                    }
                     quarantinedBody.sealedFile.delete()
                     touchCacheHitForLru(finalFile)
+                    existing.copy(
+                        predecodedOriginal = predecodedOriginal ?: existing.predecodedOriginal,
+                    )
                 } else {
                     if (finalFile.exists()) {
                         retireUnprovedStrictCacheTarget(cacheKey, finalFile)
@@ -11714,17 +11717,17 @@ data class NtkResolvedSourceRoute(
                         proof
                     )
                     deferStrictProofPersistence(resident)
+                    strictPublishedBody(
+                        finalFile,
+                        metadata,
+                        proof,
+                        predecodedOriginal = predecodedOriginal,
+                    )
                 }
-                finalFile
             }
         } ?: throw IOException("Quarantine adoption cache generation invalidated")
         scheduleTrim(context.applicationContext)
-        return strictPublishedBody(
-            published,
-            metadata,
-            proof,
-            predecodedOriginal = predecodedOriginal,
-        )
+        return published
     }
 
     /**
@@ -12247,7 +12250,7 @@ data class NtkResolvedSourceRoute(
                     val diskTmp = checkNotNull(tmp) {
                         "Strict disk-backed body omitted its spool file"
                     }
-                    val publishedFile = withCurrentCachePublication(generation) {
+                    val diskPublication = withCurrentCachePublication(generation) {
                         withCacheWriteLock(cacheKey) {
                             val existing = strictCachedPublishedBodyLocked(
                                 context.applicationContext,
@@ -12259,13 +12262,14 @@ data class NtkResolvedSourceRoute(
                                 cacheKey
                             )
                             if (existing != null) {
-                                if (!existing.metadata.hasSameAuthority(acceptedMetadata) ||
-                                    existing.proof != proof
-                                ) throw NtkSourceIdentityException(
-                                    "Strict primary cache authority changed"
-                                )
+                                if (!existing.proof.hasSameEncodedSource(proof)) {
+                                    throw NtkSourceIdentityException(
+                                        "Strict primary cache authority changed"
+                                    )
+                                }
                                 diskTmp.delete()
                                 touchCacheHitForLru(finalFile)
+                                existing
                             } else {
                                 replaceStrictEncodedBody(diskTmp, finalFile, encodedLength)
                                 finalFile.setLastModified(System.currentTimeMillis())
@@ -12276,14 +12280,14 @@ data class NtkResolvedSourceRoute(
                                     acceptedMetadata,
                                     proof
                                 )
+                                strictPublishedBody(finalFile, acceptedMetadata, proof)
                             }
-                            finalFile
                         }
                     } ?: throw IOException(
                         "Strict primary cache publication generation invalidated"
                     )
                     scheduleTrim(context.applicationContext)
-                    strictPublishedBody(publishedFile, acceptedMetadata, proof)
+                    diskPublication
                 }
                 publishedAtNs = SystemClock.elapsedRealtimeNanos()
                 call.markVerifiedBodyEof(encodedLength)

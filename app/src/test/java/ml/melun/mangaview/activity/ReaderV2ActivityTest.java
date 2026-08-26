@@ -146,15 +146,17 @@ public class ReaderV2ActivityTest {
     }
 
     @Test
-    public void surfaceOwnsRestoreOnlyForDirectWifiWebtoon() {
-        assertTrue(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+    public void surfaceOwnsRestoreForEveryDirectWifiStrictEpisode() {
+        assertTrue(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictEpisodeRestoreForTest(
                 "/webtoon/12868/1348822", true, false));
-        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
-                "/webtoon/12868/1348822", true, true));
-        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
-                "/webtoon/12868/1348822", false, false));
-        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictWebtoonRestoreForTest(
+        assertTrue(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictEpisodeRestoreForTest(
                 "/manhwa/12868/1348822", true, false));
+        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictEpisodeRestoreForTest(
+                "/webtoon/12868/1348822", true, true));
+        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictEpisodeRestoreForTest(
+                "/webtoon/12868/1348822", false, false));
+        assertFalse(ReaderV2Activity.shouldLetSurfaceOwnDirectWifiStrictEpisodeRestoreForTest(
+                "/legacy/12868/1348822", true, false));
     }
 
     @Test

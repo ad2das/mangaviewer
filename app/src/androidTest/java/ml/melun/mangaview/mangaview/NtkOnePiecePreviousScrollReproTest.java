@@ -604,6 +604,7 @@ public class NtkOnePiecePreviousScrollReproTest {
         ViewerTelemetry.NativeFrameStatsSnapshot[] nativePhaseEnds =
                 new ViewerTelemetry.NativeFrameStatsSnapshot[4];
         long[] pssCheckpointsKb = new long[4];
+        int homeRoundTrips = 0;
 
         long initialReadyDeadline = SystemClock.elapsedRealtime() + 90000L;
         while (SystemClock.elapsedRealtime() < initialReadyDeadline &&
@@ -766,6 +767,15 @@ public class NtkOnePiecePreviousScrollReproTest {
             logMultiEpisodeSnapshot(reader, chapter + 1, "physical-forward");
             current = next;
 
+            physical = performStrictHomeRoundTrip(
+                    device,
+                    reader,
+                    current,
+                    chapter + 1,
+                    lastPhysicalPresentation);
+            lastPhysicalPresentation = physical.getPresentedUptimeNanos();
+            homeRoundTrips++;
+
             if (phaseEnd) {
                 long completeDeadline = SystemClock.elapsedRealtime() + 90000L;
                 while (SystemClock.elapsedRealtime() < completeDeadline &&
@@ -795,6 +805,8 @@ public class NtkOnePiecePreviousScrollReproTest {
         }
         assertEquals("Ten-chapter run did not complete ten physical forward transitions",
                 TEN_CHAPTER_FORWARD_TRANSITIONS + 1, visitedPaths.size());
+        assertEquals("Ten-chapter run did not complete one HOME round-trip per transition",
+                TEN_CHAPTER_FORWARD_TRANSITIONS, homeRoundTrips);
         assertEquals("Ten-chapter run did not finish on its exact final chapter",
                 sequence.get(TEN_CHAPTER_FORWARD_TRANSITIONS).getNtkEpisodePath(),
                 reader.testCurrentNtkEpisodePath());
@@ -2070,6 +2082,18 @@ public class NtkOnePiecePreviousScrollReproTest {
         Manga resume = firstReader.testEpisodeByPath(episodePath);
         assertNotNull("Expected current episode metadata for home continue", resume);
 
+        ReaderV2Activity.CleanPhysicalSourceSnapshot beforeHome =
+                waitForCleanPhysicalSourceSnapshot(firstReader, 15000L);
+        assertNotNull("Webtoon never produced a clean physical frame before HOME", beforeHome);
+        ReaderV2Activity.CleanPhysicalSourceSnapshot afterHome = performStrictHomeRoundTrip(
+                device,
+                firstReader,
+                resume,
+                -1,
+                beforeHome.getPresentedUptimeNanos());
+        assertTrue("Webtoon HOME did not produce a newer physical presentation",
+                afterHome.getPresentedUptimeNanos() > beforeHome.getPresentedUptimeNanos());
+
         runOnMain(() -> Utils.openContinueViewer(firstReader, resume, -1));
         ReaderV2Activity replacement = null;
         long replacementDeadline = SystemClock.elapsedRealtime() + 90000L;
@@ -3055,8 +3079,188 @@ public class NtkOnePiecePreviousScrollReproTest {
     ) {
         AtomicReference<ReaderV2Activity.CleanPhysicalSourceSnapshot> result =
                 new AtomicReference<>();
-        runOnMain(() -> result.set(reader.testLastCleanPhysicalSourceSnapshot()));
+        runOnMain(() -> result.set(reader.testLatestCleanPhysicalPresentationSnapshot()));
         return result.get();
+    }
+
+    private ReaderV2Activity.CleanPhysicalSourceSnapshot performStrictHomeRoundTrip(
+            UiDevice device,
+            ReaderV2Activity reader,
+            Manga expectedEpisode,
+            int chapter,
+            long afterPresentedUptimeNanos
+    ) throws Exception {
+        String expectedPath = expectedEpisode.getNtkEpisodePath();
+        assertNotNull("HOME round-trip requires an exact episode path", expectedPath);
+        assertEquals("HOME round-trip started from the wrong episode; chapter=" + chapter,
+                expectedPath, reader.testCurrentNtkEpisodePath());
+
+        // A real user can press HOME while cache compaction or adjacent network work is active.
+        // Wait only for the physical gesture to settle and for a clean visible presentation;
+        // deliberately leave unrelated maintenance running so lifecycle synchronization is
+        // exercised under the production overlap instead of behind a global-idle test fence.
+        int stableMotionSamples = 0;
+        long stableDeadline = SystemClock.elapsedRealtime() + 5000L;
+        while (SystemClock.elapsedRealtime() < stableDeadline && stableMotionSamples < 5) {
+            ReaderSurfaceView.ScrollPositionSnapshot position =
+                    reader.testCurrentScrollPositionSnapshot();
+            ReaderV2Activity.CleanPhysicalSourceSnapshot physical =
+                    cleanPhysicalSourceSnapshot(reader);
+            if (position != null && !position.getBusy()
+                    && physical != null
+                    && expectedPath.equals(physical.getPhysicalEpisodePath())
+                    && physical.getMissingPx() == 0
+                    && physical.getPlaceholderPx() == 0
+                    && physical.getVisibleLoading() == 0
+                    && physical.getVisibleErrors() == 0
+                    && !reader.testNativeSurfaceRevealPending()) {
+                stableMotionSamples++;
+            } else {
+                stableMotionSamples = 0;
+            }
+            SystemClock.sleep(50L);
+        }
+        assertTrue("HOME round-trip never reached a stable clean viewport; chapter=" + chapter,
+                stableMotionSamples >= 5);
+
+        ReaderSurfaceView.ScrollPositionSnapshot beforeHome =
+                reader.testCurrentScrollPositionSnapshot();
+        assertNotNull("HOME round-trip lost its pre-background position; chapter=" + chapter,
+                beforeHome);
+        ReaderV2Activity.CleanPhysicalSourceSnapshot beforePhysical =
+                cleanPhysicalSourceSnapshot(reader);
+        assertNotNull("HOME round-trip has no clean pre-background presentation; chapter="
+                + chapter, beforePhysical);
+        long presentationFloor = Math.max(
+                afterPresentedUptimeNanos,
+                beforePhysical.getPresentedUptimeNanos());
+
+        device.pressHome();
+        assertTrue("HOME did not background the ten-chapter reader; chapter=" + chapter,
+                device.wait(Until.gone(By.pkg(PACKAGE_NAME)), 5000L));
+        SystemClock.sleep(1200L);
+        ReaderV2Activity resumed = reopenExistingReaderFromPixelLauncherRecents(device);
+        assertNotNull("HOME return did not resume the existing reader; chapter=" + chapter,
+                resumed);
+        assertTrue("HOME return replaced the reader Activity; chapter=" + chapter,
+                resumed == reader);
+        assertEquals("HOME return changed the exact episode; chapter=" + chapter,
+                expectedPath, resumed.testCurrentNtkEpisodePath());
+
+        ReaderV2Activity.CleanPhysicalSourceSnapshot resumedPhysical = null;
+        long cleanDeadline = SystemClock.elapsedRealtime() + 15000L;
+        while (SystemClock.elapsedRealtime() < cleanDeadline) {
+            ReaderV2Activity.CleanPhysicalSourceSnapshot candidate =
+                    cleanPhysicalSourceSnapshot(resumed);
+            ReaderSurfaceView.VisibleCoverageSnapshot coverage =
+                    resumed.testVisibleCoverageSnapshot();
+            if (candidate != null
+                    && expectedPath.equals(candidate.getPhysicalEpisodePath())
+                    && candidate.getPresentedUptimeNanos() > presentationFloor
+                    && candidate.getPhysicalViewportPx() > 0
+                    && candidate.getDrawablePx() >= candidate.getPhysicalViewportPx()
+                    && candidate.getMissingPx() == 0
+                    && candidate.getPlaceholderPx() == 0
+                    && candidate.getVisibleLoading() == 0
+                    && candidate.getVisibleErrors() == 0
+                    && candidate.getVisibleCards() == 0
+                    && candidate.getWidthFillFailures() == 0
+                    && candidate.getLowResolutionItems() == 0
+                    && !candidate.getNativeSurfaceRevealPending()
+                    && coverage != null
+                    && coverage.getMissingPx() == 0
+                    && coverage.getPlaceholderPx() == 0
+                    && coverage.getVisibleLoading() == 0
+                    && coverage.getVisibleErrors() == 0
+                    && !resumed.testNativeSurfaceRevealPending()) {
+                resumedPhysical = candidate;
+                break;
+            }
+            SystemClock.sleep(16L);
+        }
+        assertNotNull("HOME return never committed a fresh clean physical viewport; chapter="
+                + chapter + ",pipeline=" + resumed.testRenderPipelineDiagnosticSnapshot(),
+                resumedPhysical);
+
+        ReaderSurfaceView.ScrollPositionSnapshot afterHome =
+                resumed.testCurrentScrollPositionSnapshot();
+        assertNotNull("HOME return lost its restored position; chapter=" + chapter, afterHome);
+        assertEquals("HOME return changed the visible original page; chapter=" + chapter,
+                beforePhysical.getFirstVisibleSourcePage(),
+                resumedPhysical.getFirstVisibleSourcePage());
+        assertTrue("HOME return changed the page-local restored offset; chapter=" + chapter
+                        + ",beforePage=" + beforeHome.getPage()
+                        + ",afterPage=" + afterHome.getPage()
+                        + ",beforeOffset=" + beforeHome.getOffset()
+                        + ",afterOffset=" + afterHome.getOffset()
+                        + ",beforeAbsolute=" + beforeHome.getScrollOffset()
+                        + ",afterAbsolute=" + afterHome.getScrollOffset(),
+                Math.abs(afterHome.getOffset() - beforeHome.getOffset()) <= 4);
+
+        runOnMain(resumed::testResetFrameStatsSnapshot);
+        int x = device.getDisplayWidth() / 2;
+        int fromY = Math.min(device.getDisplayHeight() - 160,
+                device.getDisplayHeight() * 3 / 4);
+        int toY = Math.max(120, device.getDisplayHeight() / 4);
+        assertTrue("HOME return swipe injection failed; chapter=" + chapter,
+                device.swipe(x, fromY, x, toY, 18));
+        ReaderSurfaceView.ScrollPositionSnapshot moved = null;
+        long motionDeadline = SystemClock.elapsedRealtime() + 5000L;
+        while (SystemClock.elapsedRealtime() < motionDeadline) {
+            moved = resumed.testCurrentScrollPositionSnapshot();
+            if (moved != null && moved.getScrollOffset() >
+                    afterHome.getScrollOffset() + 100) break;
+            SystemClock.sleep(16L);
+        }
+        assertNotNull("HOME return lost scroll motion state; chapter=" + chapter, moved);
+        assertTrue("HOME return remained motion-locked; chapter=" + chapter
+                        + ",before=" + afterHome.getScrollOffset()
+                        + ",after=" + moved.getScrollOffset(),
+                moved.getScrollOffset() > afterHome.getScrollOffset() + 100);
+        SystemClock.sleep(80L);
+
+        List<ReaderSurfaceView.FrameStatsSnapshot> segments =
+                resumed.testTakeFrameStatsSnapshots();
+        assertTrue("HOME return produced no frame evidence; chapter=" + chapter,
+                segments != null && !segments.isEmpty());
+        long samples = 0L;
+        long missedIntervals = 0L;
+        int droppedFrames = 0;
+        int missingPx = 0;
+        float worstP95 = 0f;
+        for (ReaderSurfaceView.FrameStatsSnapshot segment : segments) {
+            samples += segment.getSamples();
+            missedIntervals += segment.getMissedIntervals();
+            droppedFrames += segment.getDroppedFrames();
+            missingPx = Math.max(missingPx, segment.getMaxMissingPx());
+            worstP95 = Math.max(worstP95, segment.getTotalP95());
+        }
+        double missedPercent = missedIntervals * 100.0 / Math.max(1L, samples);
+        assertTrue("HOME return lacks physical scroll samples; chapter=" + chapter
+                        + ",samples=" + samples,
+                samples >= 8L);
+        assertEquals("HOME return dropped a frame; chapter=" + chapter,
+                0, droppedFrames);
+        assertEquals("HOME return exposed missing pixels; chapter=" + chapter,
+                0, missingPx);
+        assertTrue("HOME return p95 exceeded 16ms; chapter=" + chapter
+                        + ",p95=" + worstP95,
+                worstP95 < STRICT_SCROLL_P95_MS);
+        assertTrue("HOME return missed intervals reached 1%; chapter=" + chapter
+                        + ",missed=" + missedIntervals + ",samples=" + samples
+                        + ",percent=" + missedPercent,
+                missedPercent < STRICT_SCROLL_MISSED_PERCENT);
+        assertEquals("HOME return swipe changed the exact episode; chapter=" + chapter,
+                expectedPath, resumed.testCurrentNtkEpisodePath());
+        assertTrue("HOME return corrupted canonical episode order; chapter=" + chapter,
+                resumed.testHasCanonicalEpisodeOrder(expectedEpisode));
+        Log.i(TAG, "tenChapterHomeRoundTrip chapter=" + chapter
+                + ",path=" + expectedPath
+                + ",samples=" + samples
+                + ",missedPercent=" + missedPercent
+                + ",p95=" + worstP95
+                + ",presented=" + resumedPhysical.getPresentedUptimeNanos());
+        return resumedPhysical;
     }
 
     private void waitForLongSessionPhaseIdle(
