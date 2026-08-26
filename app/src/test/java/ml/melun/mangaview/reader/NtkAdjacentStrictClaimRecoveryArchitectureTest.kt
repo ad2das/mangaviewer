@@ -12,6 +12,9 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
     private val coordinator = File(
         "src/main/java/ml/melun/mangaview/reader/NtkStrictEpisodeDiscoveryCoordinator.kt",
     ).readText()
+    private val activity = File(
+        "src/main/java/ml/melun/mangaview/activity/ReaderV2Activity.kt",
+    ).readText()
 
     @Test
     fun terminalAdjacentClaimIsRetiredBeforeSameIdentityRediscovery() {
@@ -185,6 +188,46 @@ class NtkAdjacentStrictClaimRecoveryArchitectureTest {
         assertTrue(wait.contains("retireCancelledAdjacentTargetForReplacement("))
         assertTrue(wait.contains("requestExactDiscovery(\"adjacent_exact_manifest_cancelled_retry\")"))
         assertTrue(wait.contains("if (!replacedCancelledFlight) holdOrRecoverAdjacentStrictSource(target)"))
+    }
+
+    @Test
+    fun bodyResidentControlProtectsExactTargetBeforePublishingDiscovery() {
+        val activation = functionSlice(
+            readerSession,
+            "private fun activateForwardAdjacentCompletionTargetClaim(",
+            "private fun startForwardAdjacentExactDiscoveryAtCompletion(",
+        )
+        val allow = activation.indexOf("ReaderImageCache.allowAdjacentNtkForegroundViewerPath(")
+        val control = activation.indexOf("if (controlOnly)", allow)
+        val launch = activation.indexOf("listener.onAdjacentExactManifestRequired(", control)
+        assertTrue(allow >= 0)
+        assertTrue(control > allow)
+        assertTrue(launch > control)
+        assertTrue(activation.contains("\"body_resident_exact_control\""))
+    }
+
+    @Test
+    fun centralExactOwnerReplacesAnEvidenceCancelledFlightBeforeJoiningItAgain() {
+        val watchdog = functionSlice(
+            activity,
+            "private fun postAdjacentExactManifestForGeneration(",
+            "private fun isCurrentNtkReader(",
+        )
+        val observeFlight = watchdog.indexOf(
+            "NtkStrictEpisodeDiscoveryCoordinator.isInFlight(capturedTargetPath)",
+        )
+        val retire = watchdog.indexOf("retireCancelledAdjacentTargetForReplacement(")
+        val recompute = watchdog.indexOf(
+            "isInFlight(capturedTargetPath)",
+            retire,
+        )
+        val join = watchdog.indexOf("if (inFlight &&", recompute)
+        assertTrue(observeFlight >= 0)
+        assertTrue(retire > observeFlight)
+        assertTrue(recompute > retire)
+        assertTrue(join > recompute)
+        assertTrue(watchdog.contains("capturedViewerGeneration"))
+        assertTrue(watchdog.contains("\"adjacent_exact_manifest_watchdog\""))
     }
 
     @Test

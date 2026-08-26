@@ -38770,6 +38770,20 @@ class ReaderSession(
             return targetPath
         }
         rememberAdjacentStrictPredecessor(targetPath, predecessorPath)
+        // Both activation modes publish the same exact discovery request. In particular the
+        // body-resident control edge can run while the Surface is still scrolling an older
+        // predecessor. Protect the selected target before that request becomes visible; otherwise
+        // active-scroll cleanup can classify its p0-p3 calls as unrelated episode work, cancel the
+        // physical bodies, and leave the completion owner joining an unfinished Flight forever.
+        ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
+            targetPath,
+            NTK_INITIAL_ADJACENT_PREFETCH_PATH_TTL_MS,
+            if (controlOnly) {
+                "body_resident_exact_control"
+            } else {
+                "current_complete_exact_discovery"
+            },
+        )
         if (controlOnly) {
             listener.onAdjacentExactManifestRequired(candidate, predecessorPath)
             Log.d(
@@ -38779,11 +38793,6 @@ class ReaderSession(
             )
             return targetPath
         }
-        ReaderImageCache.allowAdjacentNtkForegroundViewerPath(
-            targetPath,
-            NTK_INITIAL_ADJACENT_PREFETCH_PATH_TTL_MS,
-            "current_complete_exact_discovery",
-        )
         watchForwardAdjacentExactManifestForPreappend(
             candidate,
             predecessorPath,

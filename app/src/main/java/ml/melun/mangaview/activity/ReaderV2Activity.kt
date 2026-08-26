@@ -9021,8 +9021,32 @@ if (!renderView.isShown ||
                                 capturedViewerOwnerPath,
                             )
                     }
-                    val inFlight =
+                    var inFlight =
                         NtkStrictEpisodeDiscoveryCoordinator.isInFlight(capturedTargetPath)
+                    if (inFlight) {
+                        // A protected exact target should normally survive viewport cleanup, but
+                        // cancellation can still race a grant installed on the preceding main
+                        // turn. The cache records exact path/time evidence for that race. Replace
+                        // only the unfinished adjacent Flight owned by this viewer generation, then
+                        // let the existing bounded launch reservation start it again in this turn.
+                        val retiredCancelledFlight = NtkStrictEpisodeDiscoveryCoordinator
+                            .retireCancelledAdjacentTargetForReplacement(
+                                capturedTargetPath,
+                                capturedViewerGeneration,
+                                "adjacent_exact_manifest_watchdog",
+                            )
+                        if (retiredCancelledFlight) {
+                            inFlight = NtkStrictEpisodeDiscoveryCoordinator
+                                .isInFlight(capturedTargetPath)
+                            Log.w(
+                                TAG,
+                                "reader_ntk_adjacent_cancelled_flight_replaced " +
+                                    "target=$capturedTargetPath," +
+                                    "predecessor=$capturedPredecessorPath," +
+                                    "stillInFlight=$inFlight",
+                            )
+                        }
+                    }
                     if (inFlight && !predecessorDrawableReady &&
                         NtkStrictEpisodeDiscoveryCoordinator.isAdjacentControlGateOpen(
                             capturedTargetPath,
