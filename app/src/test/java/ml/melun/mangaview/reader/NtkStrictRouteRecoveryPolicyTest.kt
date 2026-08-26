@@ -2,6 +2,7 @@ package ml.melun.mangaview.reader
 
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLPeerUnverifiedException
@@ -149,6 +150,39 @@ class NtkStrictRouteRecoveryPolicyTest {
                 0,
                 directWifiCurrentViewer = true,
                 sameOriginFallbackConsumed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun currentCellularSocketAbortRestartsSameOriginButAdjacentDoesNot() {
+        val failure = SocketException("Software caused connection abort")
+
+        assertTrue(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                failure,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                sameOriginFallbackConsumed = false,
+                currentViewer = true,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                failure,
+                completedRecoveryAttempts = 0,
+                directWifiCurrentViewer = false,
+                sameOriginFallbackConsumed = false,
+                currentViewer = false,
+            ),
+        )
+        assertFalse(
+            NtkStrictRouteRecoveryPolicy.shouldRestartSameOriginWithoutResolver(
+                failure,
+                completedRecoveryAttempts = 1,
+                directWifiCurrentViewer = false,
+                sameOriginFallbackConsumed = false,
+                currentViewer = true,
             ),
         )
     }

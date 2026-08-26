@@ -3,6 +3,7 @@ package ml.melun.mangaview.reader
 import java.io.IOException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.security.cert.CertificateException
@@ -81,15 +82,24 @@ object NtkStrictRouteRecoveryPolicy {
         sameOriginFallbackConsumed: Boolean,
         directWifiAdjacentViewer: Boolean = false,
         hostGpuEmulatorRuntime: Boolean = false,
+        currentViewer: Boolean = directWifiCurrentViewer,
     ): Boolean {
+        val currentViewerSocketAbort = currentViewer && containsSocketAbort(failure)
         if ((!directWifiCurrentViewer &&
-                !(directWifiAdjacentViewer && hostGpuEmulatorRuntime)) ||
+                !(directWifiAdjacentViewer && hostGpuEmulatorRuntime) &&
+                !currentViewerSocketAbort) ||
             sameOriginFallbackConsumed ||
             completedRecoveryAttempts >= MAX_RECOVERY_ATTEMPTS
         ) {
             return false
         }
         if (failure !is IOException) return false
+        // A user-selected current episode can inherit a just-aborted fragmented-TLS socket while
+        // the preceding continuous owner is being retired. The origin is still valid; a single
+        // immutable fresh flight on the same origin is both faster and more precise than domain
+        // resolution. Adjacent/background flights remain ineligible, and owner retirement prevents
+        // explicit cancellation from creating a replacement.
+        if (currentViewerSocketAbort) return true
         // OkHttp/H2 can surface the strict control-plane read timeout directly rather than wrap
         // it with the HttpEngine stage message. The failed flight has not installed authority and
         // the caller permits only one same-origin replacement, so retrying the whole immutable
@@ -110,6 +120,18 @@ object NtkStrictRouteRecoveryPolicy {
             ) {
                 return true
             }
+            val next = current.cause
+            if (next === current) break
+            current = next
+        }
+        return false
+    }
+
+    private fun containsSocketAbort(failure: Throwable): Boolean {
+        var current: Throwable? = failure
+        var depth = 0
+        while (current != null && depth++ < 16) {
+            if (current is SocketException && current !is SocketTimeoutException) return true
             val next = current.cause
             if (next === current) break
             current = next

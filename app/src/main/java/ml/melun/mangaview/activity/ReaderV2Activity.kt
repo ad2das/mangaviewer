@@ -66,6 +66,7 @@ import ml.melun.mangaview.reader.NtkAdjacentExactP0Delta
 import ml.melun.mangaview.reader.NtkAdjacentExactP0HeadPublication
 import ml.melun.mangaview.reader.NtkAdjacentExactRunwayBatchPublication
 import ml.melun.mangaview.reader.NtkNativeSurfaceFrameRatePolicy
+import ml.melun.mangaview.reader.NtkPhysicalAdjacentMetadataAdoptionPolicy
 import ml.melun.mangaview.reader.NtkSourceSpoolRegistry
 import ml.melun.mangaview.reader.NtkStrictEpisodeDiscoveryCoordinator
 import ml.melun.mangaview.reader.NtkStripDigests
@@ -8118,7 +8119,17 @@ if (!renderView.isShown ||
         deferredEpisodeUpdatePage = -1
         deferredEpisodeUpdateOffset = 0
         deferredEpisodeUpdateSaveProgress = false
-        updateCurrentEpisode(displayPage, saveProgress = true)
+        // This callback runs only after the ordinary completed-draw path has proved that an
+        // identity-valid pixel from this exact adjacent episode was physically presented. Do not
+        // send that stronger proof back through the earlier clean-tail admission gate: the gate is
+        // what requested this compositor proof, so doing so leaves currentManga permanently on the
+        // launch episode. A stale currentManga makes both automatic boundary append and the toolbar
+        // next button resolve from the wrong episode.
+        updateCurrentEpisode(
+            displayPage,
+            saveProgress = true,
+            physicallyPresentedAdjacentPath = physicalEpisodePath,
+        )
         renderView.advanceCompletedForwardNativeTextureEpisode(
             physicalEpisodePath,
             displayPage,
@@ -12612,7 +12623,12 @@ if (!renderView.isShown ||
         setPageText(if (pageCount > 0) "${currentPage + 1} / $pageCount" else "- / -")
     }
 
-    private fun updateCurrentEpisode(anchorPage: Int, anchorOffset: Int = 0, saveProgress: Boolean = true) {
+    private fun updateCurrentEpisode(
+        anchorPage: Int,
+        anchorOffset: Int = 0,
+        saveProgress: Boolean = true,
+        physicallyPresentedAdjacentPath: String? = null,
+    ) {
         val info = MainThreadStallMonitor.traceResult("reader_page_info") {
             session?.pageInfo(anchorPage)
         }
@@ -12625,7 +12641,13 @@ if (!renderView.isShown ||
                 previousManga != null && anchorPage > currentEpisodeAnchorPage &&
                 previousPath.isNotEmpty() && targetPath.isNotEmpty() &&
                 session?.isNtkForwardAdjacentCompletionPolicyActive() == true
-            if (forwardExactEpisodeChange &&
+            val physicallyPresentedAdjacent =
+                NtkPhysicalAdjacentMetadataAdoptionPolicy.hasCommittedPhysicalAuthority(
+                    forwardExactEpisodeChange,
+                    targetPath,
+                    physicallyPresentedAdjacentPath,
+                )
+            if (forwardExactEpisodeChange && !physicallyPresentedAdjacent &&
                 !renderView.isForwardEpisodeMetadataAdoptionAllowed(
                     anchorPage,
                     previousPath,

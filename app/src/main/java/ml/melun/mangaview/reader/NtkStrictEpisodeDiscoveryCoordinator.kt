@@ -3014,6 +3014,10 @@ object NtkStrictEpisodeDiscoveryCoordinator {
                         Build.HARDWARE,
                         Build.PRODUCT,
                     ),
+                    currentViewer = flight.viewerOwnerEpisodePath.equals(
+                        path,
+                        ignoreCase = true,
+                    ),
                 )
             val resolveAfterSameOriginFallback = replacementEligible &&
                 NtkStrictRouteRecoveryPolicy.shouldResolveAfterSameOriginFallback(
