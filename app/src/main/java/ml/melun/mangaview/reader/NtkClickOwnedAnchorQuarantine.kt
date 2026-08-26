@@ -164,6 +164,15 @@ internal object NtkDirectWifiAdjacentResidentExactAdoptionPolicy {
     }
 }
 
+/** Breaks the adjacent anchor's release cycle after its first physical body fails. */
+internal object NtkClickOwnedAnchorFallbackAdmissionPolicy {
+    fun useDocumentValidatedGate(
+        directWifiAdjacentOwned: Boolean,
+        pageIndex: Int,
+        forwardFirstPage: Int,
+    ): Boolean = directWifiAdjacentOwned && pageIndex == forwardFirstPage
+}
+
 /** Authority-free request plan; publication still requires the fresh exact viewer manifest. */
 private data class NtkClickOwnedQuarantinePlan(
     val normalizedEpisodePath: String,
@@ -2832,7 +2841,24 @@ internal class NtkClickOwnedAnchorQuarantine private constructor(
     /** Re-resolves the finite extension set after the parallel HEAD race completed without a hit. */
     private fun startCompletedHeadMissCandidate(pageIndex: Int): CompletableFuture<HeldBody?> {
         val fallbackCancellation = checkNotNull(fallbackCancellations[pageIndex])
-        val admission = networkRelease.thenCombine(
+        // networkRelease is completed by this same anchor body's terminal result. If its inherited
+        // H1 Call hits a transient reset and the fallback waits for networkRelease, p0 waits for
+        // itself forever and exact discovery can never hand the page to the strict source. The
+        // document proof is the preceding authority gate for only that direct-WiFi adjacent p0;
+        // predecessor completion remains independently enforced below. Every suffix/current path
+        // retains the ordinary network-release fence.
+        val fallbackNetworkAdmission = if (
+            NtkClickOwnedAnchorFallbackAdmissionPolicy.useDocumentValidatedGate(
+                directWifiAdjacentOwned,
+                pageIndex,
+                forwardFirstPage,
+            )
+        ) {
+            documentValidated
+        } else {
+            networkRelease
+        }
+        val admission = fallbackNetworkAdmission.thenCombine(
             adjacentPhysicalAdmissionFuture(pageIndex, fallbackCancellation)
         ) { _, adjacentAdmitted -> adjacentAdmitted }
         val result = admission.thenCompose { admitted ->

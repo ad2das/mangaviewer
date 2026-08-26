@@ -11150,6 +11150,34 @@ class ReaderSession(
         strictExactShortWebtoonRollingPixelResidency.get()
 
     /**
+     * Admits the first source that physically intersects a restored viewport.
+     *
+     * A bookmark stores the progress page. Its saved offset can still expose one or more earlier
+     * short pages, so using the bookmark as an immutable network floor leaves those real viewport
+     * pixels permanently unavailable. This runtime floor only moves backward and the ordinary
+     * strict admission/identity checks still own every request and drawable publication.
+     */
+    fun recordStrictExactPhysicalVisibleFloor(physicalFirstPage: Int) {
+        if (!strictExactColdRolling || physicalFirstPage < 0 || cancelled.get()) return
+        val pageIndex = publishedPageIndex.get()
+        if (pageIndex.isEmpty()) return
+        val bounded = physicalFirstPage.coerceIn(0, pageIndex.lastIndex)
+        val first = pageIndex[bounded]
+        if (!isStrictExactLaunchPage(first)) return
+        val visibleFloor = first.sourceIndex.coerceAtLeast(0)
+        var floorLowered = false
+        while (true) {
+            val current = strictActiveSourceFloor.get()
+            if (visibleFloor >= current) break
+            if (strictActiveSourceFloor.compareAndSet(current, visibleFloor)) {
+                floorLowered = true
+                break
+            }
+        }
+        if (floorLowered) requestRetainedWindowAfterStructureChange()
+    }
+
+    /**
      * Preserves a compositor-proven reverse gesture before the latest-only control mailbox can
      * coalesce its busy MOVE with the following idle UP. This applies to every strict exact launch,
      * not only short webtoons: a resumed manhwa can otherwise move below its saved source floor

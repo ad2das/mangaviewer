@@ -14,6 +14,42 @@ import java.util.concurrent.atomic.AtomicInteger
 class NtkClickOwnedExactBodyStreamTest {
 
     @Test
+    fun failedAdjacentAnchorFallbackCannotWaitForItsOwnNetworkRelease() {
+        assertTrue(
+            NtkClickOwnedAnchorFallbackAdmissionPolicy.useDocumentValidatedGate(
+                directWifiAdjacentOwned = true,
+                pageIndex = 7,
+                forwardFirstPage = 7,
+            )
+        )
+        assertFalse(
+            NtkClickOwnedAnchorFallbackAdmissionPolicy.useDocumentValidatedGate(
+                directWifiAdjacentOwned = true,
+                pageIndex = 8,
+                forwardFirstPage = 7,
+            )
+        )
+        assertFalse(
+            NtkClickOwnedAnchorFallbackAdmissionPolicy.useDocumentValidatedGate(
+                directWifiAdjacentOwned = false,
+                pageIndex = 7,
+                forwardFirstPage = 7,
+            )
+        )
+        val quarantine = readSource("NtkClickOwnedAnchorQuarantine.kt")
+        val fallback = quarantine.substringAfter(
+            "private fun startCompletedHeadMissCandidate(pageIndex: Int)"
+        ).substringBefore("private fun startBoundedNumericCandidate(")
+        assertTrue(fallback.contains("val fallbackNetworkAdmission = if ("))
+        assertTrue(fallback.contains("documentValidated"))
+        assertTrue(fallback.contains("networkRelease"))
+        assertTrue(
+            fallback.indexOf("fallbackNetworkAdmission.thenCombine(") <
+                fallback.indexOf("adjacentPhysicalAdmissionFuture(")
+        )
+    }
+
+    @Test
     fun predecessorPhysicalExtensionEvidenceIsUniformOrdinaryAndConsumeOnce() {
         NtkDirectWifiPredecessorPhysicalExtensionRegistry.resetForTest()
         try {

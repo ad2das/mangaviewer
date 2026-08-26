@@ -2772,7 +2772,8 @@ class NtkInlineReaderController private constructor(
                 page.pageWidth,
                 page.pageHeight,
                 page.tiles,
-                proof
+                proof,
+                generation,
             )
             if (!surfaceInstalled || !renderView.hasPageDrawable(index)) return false
             return drawableRegistry.adoptPreparedStoreTiles(
@@ -2930,7 +2931,8 @@ class NtkInlineReaderController private constructor(
                         page.pageWidth,
                         page.pageHeight,
                         page.tiles,
-                        page.originalProof!!
+                        page.originalProof!!,
+                        generation,
                     )
                 )
             }

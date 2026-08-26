@@ -3190,6 +3190,7 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 pageHeight,
                 tiles,
                 proof,
+                generation,
             )
             val exact = installed && renderView.hasAuthoritativeOriginalTiles(
                 index,
@@ -3243,7 +3244,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 pageWidth,
                 pageHeight,
                 tiles,
-                proof
+                proof,
+                generation,
             )
             val exact = installed && renderView.hasAuthoritativeOriginalTiles(
                 index,
@@ -3347,7 +3349,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
                 it.pageWidth,
                 it.pageHeight,
                 it.tiles,
-                it.proof
+                it.proof,
+                generation,
             )
         }
         val firstBatchPage = batch.minOf { it.pageIndex }
@@ -3374,7 +3377,8 @@ if (firstResumeArmedUptimeNanos == 0L) {
                     install.pageWidth,
                     install.pageHeight,
                     install.tiles,
-                    install.proof
+                    install.proof,
+                    generation,
                 ) && renderView.hasAuthoritativeOriginalTiles(
                     index,
                     install.pageWidth,
@@ -6008,6 +6012,11 @@ if (firstResumeArmedUptimeNanos == 0L) {
         MainThreadStallMonitor.trace("reader_on_window_changed") {
             val now = SystemClock.uptimeMillis()
             val activeSession = session
+            // A restored bookmark names the progress page, not necessarily the first page that
+            // physically intersects the viewport. Lower the runtime source floor before any
+            // latest-only window coalescing so an exposed predecessor cannot remain a permanent
+            // loading band above the bookmarked page.
+            activeSession?.recordStrictExactPhysicalVisibleFloor(physicalFirstPage)
             val shortWebtoonRolling =
                 activeSession?.usesDirectWifiShortWebtoonRollingResidency() == true
             val physicalScrollOffset = if (shortWebtoonRolling) {

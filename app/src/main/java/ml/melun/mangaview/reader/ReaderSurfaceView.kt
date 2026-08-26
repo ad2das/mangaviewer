@@ -1825,7 +1825,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         var adjacentExactPlan: NtkPreGeometryPagePlan? = null,
         var adjacentExactSlots: List<ReaderTile?> = emptyList(),
         var adjacentExactCycles: Map<Int, AdjacentExactResidentCycle> = emptyMap(),
-        var committedIdentity: CommittedPageIdentity? = null
+        var committedIdentity: CommittedPageIdentity? = null,
+        var authoritativeInstallGeneration: Int = 0,
     ) {
         private var referenceLedger: IdentityReferenceLedger<Bitmap>? = null
         private var pendingResolveRegistry: MutableSet<Page>? = null
@@ -1942,6 +1943,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             adjacentExactSlots = adjacentExactSlots,
             adjacentExactCycles = adjacentExactCycles,
             committedIdentity = committedIdentity,
+            authoritativeInstallGeneration = authoritativeInstallGeneration,
         )
     }
 
@@ -6853,7 +6855,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         pageWidth: Int,
         pageHeight: Int,
         tiles: List<ReaderTile>,
-        proof: ReaderPreparedStore.PreparedOriginalProof
+        proof: ReaderPreparedStore.PreparedOriginalProof,
+        installGeneration: Int = 0,
     ): Boolean {
         if (!usableAuthoritativeOriginalTilePage(pageWidth, pageHeight, tiles, proof)) {
             Log.e(
@@ -6883,18 +6886,34 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 Log.e(TAG, "reader_authoritative_tiles_reject page=$index reason=strip_authority")
                 return false
             }
-            if (usableAuthoritativeOriginalTilePage(
+            val existingUsableOriginal = usableAuthoritativeOriginalTilePage(
                     page.width,
                     page.height,
                     page.tiles,
                     page.originalProof
-                ) && !hasSameTilesIdentity(page, tiles)
-            ) {
+                )
+            val sameTileIdentity = hasSameTilesIdentity(page, tiles)
+            val replaceRetainedGeneration =
+                NtkAuthoritativeOriginalGenerationPolicy.mayReplaceRetainedOriginal(
+                    existingUsableOriginal = existingUsableOriginal,
+                    sameTileIdentity = sameTileIdentity,
+                    sameCanonicalProof = page.originalProof == proof,
+                    existingGeneration = page.authoritativeInstallGeneration,
+                    incomingGeneration = installGeneration,
+                )
+            if (existingUsableOriginal && !sameTileIdentity && !replaceRetainedGeneration) {
                 Log.d(
                     TAG,
                     "reader_authoritative_tiles_reject page=$index reason=late_duplicate_original"
                 )
                 return false
+            }
+            if (replaceRetainedGeneration) {
+                Log.d(
+                    TAG,
+                    "reader_authoritative_tiles_replace_retained_generation page=$index " +
+                        "from=${page.authoritativeInstallGeneration},to=$installGeneration",
+                )
             }
             if (!usableAuthoritativeOriginalTilePage(pageWidth, pageHeight, tiles, proof)) {
                 return@synchronized null
@@ -6905,6 +6924,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             postNativeTexturePrewarmLocked(index, tiles)
             if (isSettledTilesDeliveryNoOpLocked(page, tiles, targetWidth, targetHeight)) {
                 page.originalProof = proof
+                if (installGeneration > 0) page.authoritativeInstallGeneration = installGeneration
                 lastVisibleCoverageSnapshot = null
                 installed = true
                 return@synchronized null
@@ -6922,6 +6942,7 @@ class ReaderSurfaceView @JvmOverloads constructor(
             page.width = targetWidth
             page.height = targetHeight
             page.originalProof = proof
+            if (installGeneration > 0) page.authoritativeInstallGeneration = installGeneration
             clearPendingResolveLocked(page)
             noteResolvedPageAspectLocked(page.width, page.height)
             page.loading = false
@@ -6993,7 +7014,8 @@ class ReaderSurfaceView @JvmOverloads constructor(
         val pageWidth: Int,
         val pageHeight: Int,
         val tiles: List<ReaderTile>,
-        val proof: ReaderPreparedStore.PreparedOriginalProof
+        val proof: ReaderPreparedStore.PreparedOriginalProof,
+        val installGeneration: Int = 0,
     )
 
     data class InstallBatchResult(val installedPages: Set<Int>, val rejectedPages: Set<Int>)
@@ -7031,13 +7053,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     rejected.add(command.index)
                     continue
                 }
-                if (usableAuthoritativeOriginalTilePage(
+                val existingUsableOriginal = usableAuthoritativeOriginalTilePage(
                         page.width,
                         page.height,
                         page.tiles,
                         page.originalProof
-                    ) && !hasSameTilesIdentity(page, command.tiles)
-                ) {
+                    )
+                val sameTileIdentity = hasSameTilesIdentity(page, command.tiles)
+                val replaceRetainedGeneration =
+                    NtkAuthoritativeOriginalGenerationPolicy.mayReplaceRetainedOriginal(
+                        existingUsableOriginal = existingUsableOriginal,
+                        sameTileIdentity = sameTileIdentity,
+                        sameCanonicalProof = page.originalProof == command.proof,
+                        existingGeneration = page.authoritativeInstallGeneration,
+                        incomingGeneration = command.installGeneration,
+                    )
+                if (existingUsableOriginal && !sameTileIdentity && !replaceRetainedGeneration) {
                     Log.d(
                         TAG,
                         "reader_authoritative_tiles_reject page=${command.index} " +
@@ -7046,11 +7077,22 @@ class ReaderSurfaceView @JvmOverloads constructor(
                     rejected.add(command.index)
                     continue
                 }
+                if (replaceRetainedGeneration) {
+                    Log.d(
+                        TAG,
+                        "reader_authoritative_tiles_replace_retained_generation " +
+                            "page=${command.index} from=${page.authoritativeInstallGeneration}," +
+                            "to=${command.installGeneration}",
+                    )
+                }
                 val targetWidth = max(1, command.pageWidth)
                 val targetHeight = max(1, command.pageHeight)
                 postNativeTexturePrewarmLocked(command.index, command.tiles)
                 if (isSettledTilesDeliveryNoOpLocked(page, command.tiles, targetWidth, targetHeight)) {
                     page.originalProof = command.proof
+                    if (command.installGeneration > 0) {
+                        page.authoritativeInstallGeneration = command.installGeneration
+                    }
                     installed.add(command.index)
                     continue
                 }
@@ -7072,6 +7114,9 @@ class ReaderSurfaceView @JvmOverloads constructor(
                 page.width = targetWidth
                 page.height = targetHeight
                 page.originalProof = command.proof
+                if (command.installGeneration > 0) {
+                    page.authoritativeInstallGeneration = command.installGeneration
+                }
                 clearPendingResolveLocked(page)
                 noteResolvedPageAspectLocked(page.width, page.height)
                 page.loading = false
