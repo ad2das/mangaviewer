@@ -44982,6 +44982,10 @@ class ReaderSession(
                 ?.takeIf { !it.isRecycled && seenBitmaps.add(it) }
                 ?.let(ownedBitmaps::add)
         }
+        // Wake a compatible host-slot allocator only after these exact token identities have a
+        // real retirement owner. Marking before the asynchronous main-thread Surface clear closes
+        // the selection/publication race without releasing pixels before native reference proof.
+        HostExactHardwareTilePool.noteRetirementPending(ownedBitmaps)
         for (page in pageOrder) {
             val fallback = pageFallbacks.getValue(page)
             val preserveStrictReady = pagePreserves.getValue(page)

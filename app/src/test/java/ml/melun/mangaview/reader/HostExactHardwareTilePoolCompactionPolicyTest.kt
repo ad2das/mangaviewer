@@ -9,6 +9,56 @@ import org.junit.Test
 class HostExactHardwareTilePoolCompactionPolicyTest {
 
     @Test
+    fun continuousInputNeverWaitsForADeferredRetirementOwner() {
+        assertFalse(
+            HostExactCompatibleRetirementWaitPolicy.shouldWaitForScheduledRetirement(
+                waitEnabled = true,
+                physicalMotionActive = true,
+                missingSlotCount = 1,
+                pendingCompatibleSlotCount = 1,
+            ),
+        )
+        assertFalse(
+            HostExactCompatibleRetirementWaitPolicy.shouldWaitForRetirementSelection(
+                waitEnabled = true,
+                physicalMotionActive = true,
+                missingSlotCount = 1,
+                compatibleSlotCount = 8,
+                pendingCompatibleSlotCount = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun idleAdmissionWaitsOnlyAfterCompatibleRetirementProof() {
+        assertTrue(
+            HostExactCompatibleRetirementWaitPolicy.shouldWaitForScheduledRetirement(
+                waitEnabled = true,
+                physicalMotionActive = false,
+                missingSlotCount = 2,
+                pendingCompatibleSlotCount = 2,
+            ),
+        )
+        assertFalse(
+            HostExactCompatibleRetirementWaitPolicy.shouldWaitForScheduledRetirement(
+                waitEnabled = true,
+                physicalMotionActive = false,
+                missingSlotCount = 2,
+                pendingCompatibleSlotCount = 1,
+            ),
+        )
+        assertTrue(
+            HostExactCompatibleRetirementWaitPolicy.shouldWaitForRetirementSelection(
+                waitEnabled = true,
+                physicalMotionActive = false,
+                missingSlotCount = 2,
+                compatibleSlotCount = 4,
+                pendingCompatibleSlotCount = 1,
+            ),
+        )
+    }
+
+    @Test
     fun displayStoragePreservesAspectRatioWithoutKeepingUndisplayableSourcePixels() {
         assertEquals(800, HostExactDisplayStorageGeometry.contentWidth(1_403))
         assertEquals(1_168, HostExactDisplayStorageGeometry.contentHeight(1_403, 2_048))

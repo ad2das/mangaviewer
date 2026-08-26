@@ -57,17 +57,20 @@ internal object HostExactHardwareTilePool {
     // smoother than allocating an equivalent AHardwareBuffer and provoking process-wide
     // NativeAlloc GC while the old slot is about to become reusable.
     private const val COMPATIBLE_RETIREMENT_GRACE_MS = 5_000L
-    // Normal reading has short pauses between gestures and episode transitions. Compacting during
-    // those pauses turns harmless transient overcommit into repeated gfxstream close/allocation
-    // churn. Five seconds still converges well before an idle memory checkpoint, while preserving
-    // the working set across ordinary continuous reading.
-    private const val IDLE_COMPACTION_QUIET_MS = 5_000L
+    // The display-priority grace already absorbs the short gap between consecutive gestures.
+    // Once activity has then remained quiet for another 1.5 seconds, retaining a 200+ MiB
+    // overcommit only delays reuse and lets its eventual close overlap the next-episode warmup.
+    // Compact at that genuine idle edge and recheck physical motion between native closes.
+    private const val IDLE_COMPACTION_QUIET_MS = 1_500L
     // These 1x1 Bitmaps are immutable lease identities, not pixel storage. Creating one still
     // enters NativeAllocationRegistry and can request a process-wide NativeAlloc GC. Keep a
     // rolling reserve large enough for long chapters and refill it only after physical activity
     // has gone quiet. Published identities are never returned or reused.
     private const val TOKEN_RESERVE_TARGET = 512
     private const val TOKEN_RESERVE_LOW_WATERMARK = 128
+    // Token creation enters NativeAllocationRegistry even though each identity is 1x1. Keep its
+    // heavier bulk refill on the original long idle fence, independently from slot compaction.
+    private const val TOKEN_RESERVE_REFILL_QUIET_MS = 5_000L
 
     private data class Slot(
         val nativeHandle: Long,
@@ -75,6 +78,8 @@ internal object HostExactHardwareTilePool {
         val capacityHeight: Int,
         val bytes: Long,
         var inUse: Boolean = false,
+        /** True only after the current immutable token has entered the Surface retirement path. */
+        var retirementPending: Boolean = false,
     )
 
     private data class Scratch(
@@ -96,6 +101,8 @@ internal object HostExactHardwareTilePool {
     )
 
     private val lock = Object()
+    /** Serializes emulator-wide AHardwareBuffer growth without holding the pool bookkeeping lock. */
+    private val slotAllocationLock = Any()
     private val slots = ArrayList<Slot>()
     private val owners = IdentityHashMap<Bitmap, Slot>()
     /**
@@ -291,6 +298,32 @@ internal object HostExactHardwareTilePool {
     fun subscribePressure(listener: (minimumRetirementBytes: Long) -> Unit): Closeable {
         pressureListeners.add(listener)
         return Closeable { pressureListeners.remove(listener) }
+    }
+
+    /**
+     * Publishes exact evidence that these logical tokens have left their Session owner and are
+     * waiting only for Surface/native reference retirement. A blocked allocator may wait for a
+     * compatible slot only after this marker exists; an arbitrary in-use slot is not evidence.
+     */
+    fun noteRetirementPending(bitmaps: Iterable<Bitmap>): Long {
+        val unique = java.util.Collections.newSetFromMap(
+            IdentityHashMap<Bitmap, Boolean>(),
+        )
+        bitmaps.forEach(unique::add)
+        if (unique.isEmpty()) return 0L
+        var pendingBytes = 0L
+        synchronized(lock) {
+            for (bitmap in unique) {
+                val slot = owners[bitmap] ?: continue
+                if (!slot.inUse) continue
+                if (!slot.retirementPending) {
+                    slot.retirementPending = true
+                    pendingBytes += slot.bytes
+                }
+            }
+            if (pendingBytes > 0L) lock.notifyAll()
+        }
+        return pendingBytes
     }
 
     /** Decodes a complete original into immutable logical row resources backed by pooled storage. */
@@ -547,6 +580,7 @@ internal object HostExactHardwareTilePool {
         synchronized(lock) {
             for ((_, slot) in retired) {
                 check(slot.inUse)
+                slot.retirementPending = false
                 slot.inUse = false
             }
             lastPoolActivityAtMs = SystemClock.elapsedRealtime()
@@ -618,7 +652,7 @@ internal object HostExactHardwareTilePool {
             tokenReservePrimed && freshTokenReserve.size < TOKEN_RESERVE_LOW_WATERMARK
         }
         if (!needed || !tokenRefillPosted.compareAndSet(false, true)) return
-        scheduleTokenReserveRefillWake(IDLE_COMPACTION_QUIET_MS)
+        scheduleTokenReserveRefillWake(TOKEN_RESERVE_REFILL_QUIET_MS)
     }
 
     private fun scheduleTokenReserveRefillWake(delayMs: Long) {
@@ -634,7 +668,7 @@ internal object HostExactHardwareTilePool {
     }
 
     private fun drainTokenReserveRefillAfterQuiet() {
-        val remainingQuietMs = IDLE_COMPACTION_QUIET_MS -
+        val remainingQuietMs = TOKEN_RESERVE_REFILL_QUIET_MS -
             (SystemClock.elapsedRealtime() - lastPoolActivityAtMs)
         if (remainingQuietMs > 0L) {
             scheduleTokenReserveRefillWake(remainingQuietMs)
@@ -670,6 +704,7 @@ internal object HostExactHardwareTilePool {
         val deadline = SystemClock.elapsedRealtime() + ACQUIRE_TIMEOUT_MS
         var allocationPlan: SlotAllocationPlan? = null
         var compatibleRetirementDeadlineMs = 0L
+        var retirementSelectionDeadlineMs = 0L
         synchronized(lock) {
             while (allocationPlan == null) {
                 if (deferWhilePhysicalMotion &&
@@ -689,24 +724,61 @@ internal object HostExactHardwareTilePool {
                     slot.capacityWidth >= capacityWidth &&
                         slot.capacityHeight >= capacityHeight
                 }
+                val pendingCompatibleSlotCount = slots.count { slot ->
+                    slot.inUse && slot.retirementPending &&
+                        slot.capacityWidth >= capacityWidth &&
+                        slot.capacityHeight >= capacityHeight
+                }
                 val newAllocationExceedsSettledTarget = newCount > 0 &&
                     allocatedBytes > MAX_POOL_BYTES - newBytes
-                if (waitForCompatibleRetirement && newAllocationExceedsSettledTarget &&
-                    compatibleSlotCount >= count
-                ) {
+                if (waitForCompatibleRetirement && newAllocationExceedsSettledTarget) {
                     val now = SystemClock.elapsedRealtime()
-                    if (compatibleRetirementDeadlineMs == 0L) {
-                        compatibleRetirementDeadlineMs =
-                            minOf(deadline, now + COMPATIBLE_RETIREMENT_GRACE_MS)
+                    val physicalMotionActive = NtkReaderTransferPacer.isPhysicalMotionActive()
+                    if (retirementSelectionDeadlineMs == 0L) {
+                        retirementSelectionDeadlineMs =
+                            minOf(deadline, now + RETIREMENT_SELECTION_GRACE_MS)
+                        // Under physical input the listener deliberately defers page-table and
+                        // Surface retirement. Preserve that safety policy, but do not make this
+                        // background allocator wait for work which cannot start until motion ends.
+                        // The queued pressure request still trims the overcommit at the idle edge.
                         signalPressureLocked(newBytes.coerceAtLeast(requiredBytes))
                     }
-                    val remainingGrace = compatibleRetirementDeadlineMs - now
-                    if (remainingGrace > 0L) {
-                        // An exact compatible slot already exists and its outgoing page clear is
-                        // ordered through Surface/native retirement. Give that proof one bounded
-                        // interval to return the slot instead of allocating the same geometry.
-                        lock.wait(remainingGrace.coerceAtMost(32L))
-                        continue
+                    if (HostExactCompatibleRetirementWaitPolicy
+                            .shouldWaitForScheduledRetirement(
+                                waitEnabled = true,
+                                physicalMotionActive = physicalMotionActive,
+                                missingSlotCount = newCount,
+                                pendingCompatibleSlotCount = pendingCompatibleSlotCount,
+                            )
+                    ) {
+                        if (compatibleRetirementDeadlineMs == 0L) {
+                            compatibleRetirementDeadlineMs =
+                                minOf(deadline, now + COMPATIBLE_RETIREMENT_GRACE_MS)
+                        }
+                        val remainingGrace = compatibleRetirementDeadlineMs - now
+                        if (remainingGrace > 0L) {
+                            // This exact geometry now has a real retirement owner. Give its
+                            // Surface/native reference fence a bounded interval to return storage.
+                            lock.wait(remainingGrace.coerceAtMost(32L))
+                            continue
+                        }
+                    } else if (HostExactCompatibleRetirementWaitPolicy
+                            .shouldWaitForRetirementSelection(
+                                waitEnabled = true,
+                                physicalMotionActive = physicalMotionActive,
+                                missingSlotCount = newCount,
+                                compatibleSlotCount = compatibleSlotCount,
+                                pendingCompatibleSlotCount = pendingCompatibleSlotCount,
+                            )
+                    ) {
+                        val remainingSelection = retirementSelectionDeadlineMs - now
+                        if (remainingSelection > 0L) {
+                            // Yield briefly for the asynchronous pressure listener to mark the
+                            // exact tokens it selected. Do not turn an unproved owner into a
+                            // multi-second decode stall.
+                            lock.wait(remainingSelection.coerceAtMost(32L))
+                            continue
+                        }
                     }
                 }
                 val reusableSet = java.util.Collections.newSetFromMap(
@@ -850,9 +922,9 @@ internal object HostExactHardwareTilePool {
         var allocationFailure: Throwable? = null
         repeat(plan.newCount) {
             val nativeHandle = try {
-                NtkRollingNativeBridge.nativeAllocateExactHardwareBuffer(
-                    capacityWidth,
-                    capacityHeight,
+                allocateExactHardwareBufferSerially(
+                    capacityWidth = capacityWidth,
+                    capacityHeight = capacityHeight,
                 )
             } catch (failure: Throwable) {
                 allocationFailure = failure
@@ -880,6 +952,7 @@ internal object HostExactHardwareTilePool {
                 capacityHeight = capacityHeight,
                 bytes = requiredBytes,
                 inUse = true,
+                retirementPending = false,
             )
         }
         val poolStats = synchronized(lock) {
@@ -901,11 +974,32 @@ internal object HostExactHardwareTilePool {
         return plan.reusable + allocatedSlots
     }
 
+    /**
+     * gfxstream performs HardwareBuffer allocation and host-resource registration through shared
+     * emulator services. Concurrent callers made otherwise short allocations overlap one another
+     * and the renderer, producing a 105 ms native presentation interval. Keep only the native call
+     * serial. Adding a time-based recovery delay reduced late-session presentation cadence even
+     * though the calls no longer overlapped, so admission remains work-driven and immediate.
+     */
+    private fun allocateExactHardwareBufferSerially(
+        capacityWidth: Int,
+        capacityHeight: Int,
+    ): Long = synchronized(slotAllocationLock) {
+        if (Thread.currentThread().isInterrupted) {
+            throw InterruptedException("Host exact slot allocation interrupted")
+        }
+        NtkRollingNativeBridge.nativeAllocateExactHardwareBuffer(
+            capacityWidth,
+            capacityHeight,
+        )
+    }
+
     private fun rollbackSlotAllocationPlan(plan: SlotAllocationPlan) {
         synchronized(lock) {
             plan.reusable.forEach { slot ->
                 check(slot.inUse)
                 check(owners.values.none { owner -> owner === slot })
+                slot.retirementPending = false
                 slot.inUse = false
             }
             check(allocatedBytes >= plan.newBytes)
@@ -962,6 +1056,7 @@ internal object HostExactHardwareTilePool {
     private fun releaseSlot(slot: Slot) {
         synchronized(lock) {
             check(slot.inUse)
+            slot.retirementPending = false
             slot.inUse = false
             lastPoolActivityAtMs = SystemClock.elapsedRealtime()
             lock.notifyAll()
@@ -1014,8 +1109,8 @@ internal object HostExactHardwareTilePool {
     private fun drainIdleCompactionAfterQuiet() {
         val remainingQuietMs = IDLE_COMPACTION_QUIET_MS -
             (SystemClock.elapsedRealtime() - lastPoolActivityAtMs)
-        if (remainingQuietMs > 0L) {
-            scheduleIdleCompactionWake(remainingQuietMs)
+        if (remainingQuietMs > 0L || NtkReaderTransferPacer.isPhysicalMotionActive()) {
+            scheduleIdleCompactionWake(remainingQuietMs.coerceAtLeast(32L))
             return
         }
         try {
@@ -1031,42 +1126,33 @@ internal object HostExactHardwareTilePool {
 
     private fun compactIdleSlotsToTarget() {
         while (true) {
-            val victims = synchronized(lock) {
+            // One native close at a time keeps the operation interruptible at the next real
+            // gesture. Selecting the complete victim set up front made every handle close even
+            // when input resumed after the quiet check.
+            if (NtkReaderTransferPacer.isPhysicalMotionActive()) return
+            val victim = synchronized(lock) {
                 val bytesToFree = (allocatedBytes - MAX_POOL_BYTES).coerceAtLeast(0L)
                 if (bytesToFree <= 0L) return
-                val idle = slots.asSequence()
+                val selected = slots.asSequence()
                     .filter { slot -> !slot.inUse }
                     .sortedBy(Slot::bytes)
-                    .toList()
-                val selected = ArrayList<Slot>()
-                var selectedBytes = 0L
-                for (slot in idle) {
-                    if (selectedBytes >= bytesToFree) break
-                    check(owners.values.none { owner -> owner === slot })
-                    selected += slot
-                    selectedBytes += slot.bytes
-                }
-                if (selected.isEmpty()) return
-                selected.forEach { slot ->
-                    check(slots.remove(slot))
-                    allocatedBytes -= slot.bytes
-                }
+                    .firstOrNull()
+                    ?: return
+                check(owners.values.none { owner -> owner === selected })
+                check(slots.remove(selected))
+                allocatedBytes -= selected.bytes
                 lock.notifyAll()
                 selected
             }
-            var closedBytes = 0L
-            victims.forEach { slot ->
-                closedBytes += slot.bytes
-                runCatching {
-                    NtkRollingNativeBridge.nativeReleaseExactHardwareBuffer(slot.nativeHandle)
-                }.onFailure { failure ->
-                    Log.e(TAG, "transient idle slot close failed", failure)
-                }
+            runCatching {
+                NtkRollingNativeBridge.nativeReleaseExactHardwareBuffer(victim.nativeHandle)
+            }.onFailure { failure ->
+                Log.e(TAG, "transient idle slot close failed", failure)
             }
             val remaining = synchronized(lock) { allocatedBytes }
             Log.i(
                 TAG,
-                "transient_idle_slots_compacted count=${victims.size},bytes=$closedBytes," +
+                "transient_idle_slots_compacted count=1,bytes=${victim.bytes}," +
                     "allocated=$remaining,target=$MAX_POOL_BYTES",
             )
         }
@@ -1079,5 +1165,6 @@ internal object HostExactHardwareTilePool {
     }
 
     private const val TAG = "HostExactTilePool"
+    private const val RETIREMENT_SELECTION_GRACE_MS = 64L
     private const val PRESSURE_SIGNAL_MIN_INTERVAL_MS = 96L
 }

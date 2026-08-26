@@ -108,6 +108,36 @@ internal object HostExactHardwareTilePoolCompactionPolicy {
     }
 }
 
+/**
+ * Decides whether host exact-storage admission can profit from waiting for another slot.
+ *
+ * Merely having an in-use compatible slot is not a retirement proof. During continuous input the
+ * Session deliberately postpones page-table/Surface retirement, so waiting for such a slot only
+ * serializes decoding before the allocator performs the same bounded overcommit it could have
+ * admitted immediately. A long wait is valid only after the owner has explicitly scheduled the
+ * compatible token for retirement. An idle allocator may briefly yield once so the asynchronous
+ * pressure listener can publish that proof.
+ */
+internal object HostExactCompatibleRetirementWaitPolicy {
+    fun shouldWaitForScheduledRetirement(
+        waitEnabled: Boolean,
+        physicalMotionActive: Boolean,
+        missingSlotCount: Int,
+        pendingCompatibleSlotCount: Int,
+    ): Boolean = waitEnabled && !physicalMotionActive && missingSlotCount > 0 &&
+        pendingCompatibleSlotCount >= missingSlotCount
+
+    fun shouldWaitForRetirementSelection(
+        waitEnabled: Boolean,
+        physicalMotionActive: Boolean,
+        missingSlotCount: Int,
+        compatibleSlotCount: Int,
+        pendingCompatibleSlotCount: Int,
+    ): Boolean = waitEnabled && !physicalMotionActive && missingSlotCount > 0 &&
+        compatibleSlotCount >= missingSlotCount &&
+        pendingCompatibleSlotCount < missingSlotCount
+}
+
 /** Bounded drawable window retained while the host exact-storage pool is physically full. */
 internal object HostExactHardwareTilePoolPressurePolicy {
     private const val BEHIND_PAGES = 1
